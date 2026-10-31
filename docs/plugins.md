@@ -165,14 +165,15 @@ fingerprint and is never updated automatically until one `fontaine plugin update
 **What the fingerprint covers.** The hook, MCP and LSP definitions as written (`hooks/hooks.json`,
 `.mcp.json`, `.lsp.json`, the manifest's `hooks`, `mcpServers` and `lspServers` values and the
 files they name), the `${VAR}` names they reference, the `!` command lines of skills and commands,
-and the content of every non-markdown file in the checkout, so a changed script or binary under
+and the content of every file in the checkout except the markdown under the skill, agent, style
+and command directories, so a changed script, binary or other markdown file under
 `${CLAUDE_PLUGIN_ROOT}` is covered too. JSON is compared as its parsed value, so reordered keys or
 reformatting are not a change. Skill, agent, style and command prose is left out, so ordinary
 content edits flow through.
 
 **Held revisions.** A revision whose fingerprint differs is held: the old checkout stays live,
-`held_pin` records the revision (shown as `held` in `plugin list`), and the next session start
-shows a notice telling you to run `fontaine plugin update <name>`, which prints the approval
+`held_pin` records the revision (shown as `held` in `plugin list`), and a notice, shown once in
+the open session when the background pass finishes, tells you to run `fontaine plugin update <name>`, which prints the approval
 summary and records the new approval. A held revision is not fetched or announced again until the
 upstream moves on.
 

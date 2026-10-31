@@ -842,14 +842,17 @@ fn the_fingerprint_ignores_prose_and_where_the_checkout_lives() {
         "install-time and update-time agree"
     );
 
-    // Skill prose, a README and a new agent file are content, not executable surface.
+    // Skill prose and a new agent file are content, not executable surface.
     write(
         &one.join("skills/s/SKILL.md"),
         "---\ndescription: a new description\n---\nBody, reworded !`git status`\n",
     );
-    write(&one.join("README.md"), "# readme\n");
     write(&one.join("agents/a.md"), "---\ndescription: d\n---\nhi");
     assert_eq!(before, fingerprint(&one));
+
+    // Markdown outside the component directories is hashed like any other file.
+    write(&one.join("README.md"), "# readme\n");
+    assert_ne!(before, fingerprint(&one));
 }
 
 #[test]

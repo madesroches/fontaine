@@ -896,7 +896,7 @@ pub(crate) fn fetch_plugin(
     known: &[&str],
 ) -> Result<PluginFetch, String> {
     let is_known = |pin: &str| known.iter().any(|k| same_pin(k, pin));
-    if would_pin(source, entry, fx.git).is_some_and(|pin| is_known(&pin)) {
+    if !known.is_empty() && would_pin(source, entry, fx.git).is_some_and(|pin| is_known(&pin)) {
         return Ok(PluginFetch::UpToDate);
     }
     let temp = workdir(&installed_parent(fx.config_dir, &source.market.name), kind)?;
@@ -1135,6 +1135,8 @@ pub(crate) fn update(dirs: &Dirs, host: &Host, name: &str) -> Result<(), String>
             println!("plugin `{name}` moved to {}", plugins::short_pin(&new));
             Ok(())
         }
+        // Never produced by `update_plugin` (it passes no known pins); the variant is shared
+        // with the background pass.
         PluginOutcome::UpToDate { pin } => {
             println!(
                 "plugin `{name}` is already up to date ({})",
@@ -1193,7 +1195,7 @@ fn update_plugin(
     };
     let fetched = match fetch_plugin(fx, &source, &entry, Workdir::Cli, &[]) {
         Ok(PluginFetch::Ready(m)) => *m,
-        Ok(PluginFetch::UpToDate) => return Ok(PluginOutcome::UpToDate { pin: plugin.pin }),
+        Ok(PluginFetch::UpToDate) => unreachable!("no known pins were passed"),
         Err(e) => {
             return fail(format!(
                 "the new revision of `{name}` did not validate; the old checkout stays live: {e}"

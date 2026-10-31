@@ -2307,10 +2307,31 @@ pub fn approval_fingerprint(plugin_root: &Path) -> Result<String, String> {
     lines.sort();
     section("skill commands", &lines.join("\n"));
 
+    // Markdown under the component bases is prompt text; markdown elsewhere (a script's
+    // template, a file a hook reads) can be executable surface, so it is hashed.
+    let mut bases: Vec<PathBuf> = Vec::new();
+    for (files, depth) in [
+        (&build.dir.skills, 1),
+        (&build.dir.commands, 0),
+        (&build.dir.agents, 0),
+        (&build.dir.styles, 0),
+    ] {
+        for file in files {
+            let mut base = file.path.parent();
+            for _ in 0..depth + file.segments.len() {
+                base = base.and_then(Path::parent);
+            }
+            if let Some(base) = base.and_then(|b| b.strip_prefix(plugin_root).ok()) {
+                bases.push(base.to_path_buf());
+            }
+        }
+    }
     // JSON is hashed as its parsed value, so reordered keys or reformatting are not a change.
     let tree = tree_hash(
         plugin_root,
-        &|rel| rel.extension().is_some_and(|e| e == "md"),
+        &|rel| {
+            rel.extension().is_some_and(|e| e == "md") && bases.iter().any(|b| rel.starts_with(b))
+        },
         &|path, bytes| {
             if path.extension().is_some_and(|e| e == "json")
                 && let Ok(value) = serde_json::from_slice::<Value>(&bytes)
