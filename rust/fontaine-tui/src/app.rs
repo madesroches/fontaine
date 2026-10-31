@@ -146,6 +146,9 @@ pub struct App {
     /// The next render erases the screen and its scrollback and writes the shown transcript
     /// again from the top.
     pub reprint: bool,
+    /// A one-line reason Enter did nothing, shown in the status bar until the next input event or
+    /// the end of the turn. Kept out of the transcript so repeated Enters add no history.
+    pub refusal: Option<String>,
     /// The screen wrote transcript rows into scrollback while the agents panel covered the live
     /// area, which leaves the last messages out of sight when it closes.
     pub committed_under_overlay: bool,
@@ -258,6 +261,7 @@ impl App {
             agent_views: HashMap::new(),
             viewing: None,
             reprint: false,
+            refusal: None,
             committed_under_overlay: false,
             agent_list: AgentList::default(),
             linear: false,
@@ -623,6 +627,11 @@ impl App {
     }
 
     pub fn handle_input(&mut self, input: Input) -> Action {
+        // Before dispatch: the refusal is set by the dispatch itself. Key releases (sent for
+        // every key on Windows) are dropped by dispatch and must not wipe the hint.
+        if !matches!(&input, Input::Key(key) if key.kind == KeyEventKind::Release) {
+            self.refusal = None;
+        }
         let action = self.dispatch_input(input);
         // Paste and history-search accept change the text outside handle_key's tails.
         self.refresh_slash();
@@ -1343,8 +1352,13 @@ impl App {
                 })
             }
             Some(Command::Loop(_)) | Some(Command::Other { .. }) => {
-                self.transcript
-                    .notice("a turn is running; wait for it or press Esc to interrupt");
+                let hint = "a turn is running; wait for it or press Esc to interrupt";
+                if self.linear {
+                    // The line renderer has no status bar to show the transient hint.
+                    self.transcript.notice(hint);
+                } else {
+                    self.refusal = Some(hint.into());
+                }
                 Action::None
             }
             Some(_) => {
@@ -1951,16 +1965,56 @@ mod tests {
         );
         assert!(app.input.is_empty());
 
+        let entries = app.transcript.entries.len();
         for refused in ["/nope with args", "/loop watch CI"] {
             type_text(&mut app, refused);
             assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
             assert_eq!(
-                last_notice(&app),
+                app.refusal.as_deref(),
                 Some("a turn is running; wait for it or press Esc to interrupt")
             );
+            assert_eq!(app.transcript.entries.len(), entries);
             assert_eq!(app.input.text(), refused);
             app.input.take();
         }
+    }
+
+    #[test]
+    fn the_refusal_is_one_transient_status_cleared_by_the_next_input() {
+        let mut app = app();
+        app.running = true;
+        let entries = app.transcript.entries.len();
+        type_text(&mut app, "/nope");
+        for _ in 0..3 {
+            assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+            assert!(app.refusal.is_some());
+        }
+        assert_eq!(app.transcript.entries.len(), entries);
+        let mut release = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        app.handle_input(Input::Key(release));
+        assert!(app.refusal.is_some());
+        press(&mut app, KeyCode::Left);
+        assert_eq!(app.refusal, None);
+
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert!(app.refusal.is_some());
+        app.handle_input(Input::Paste("x".into()));
+        assert_eq!(app.refusal, None);
+    }
+
+    #[test]
+    fn the_refusal_is_a_transcript_notice_in_line_mode() {
+        let mut app = app();
+        app.running = true;
+        app.linear = true;
+        type_text(&mut app, "/nope");
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(app.refusal, None);
+        assert_eq!(
+            last_notice(&app),
+            Some("a turn is running; wait for it or press Esc to interrupt")
+        );
     }
 
     #[test]

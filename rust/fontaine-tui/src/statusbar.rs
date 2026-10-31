@@ -61,7 +61,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         };
         format!("viewing {id} · {state} · ↓ then Enter on main to go back · shift+tab mode")
     });
-    let hint = if let Some(text) = &viewed_state {
+    // Only while the turn runs: some paths clear `running` without settling the turn.
+    let refusal = app.refusal.as_deref().filter(|_| app.running);
+    let hint = if let Some(text) = refusal {
+        text
+    } else if let Some(text) = &viewed_state {
         text.as_str()
     } else if app.running {
         "working · esc to interrupt · shift+tab mode"
@@ -105,6 +109,37 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    fn bar(app: &App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(120, 1)).unwrap();
+        terminal
+            .draw(|f| render(f, f.area(), app))
+            .expect("draw the status bar");
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn the_refusal_replaces_only_the_hint_and_only_while_running() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.running = true;
+        app.refusal = Some("a turn is running".into());
+        let text = bar(&app);
+        assert!(text.contains("a turn is running"), "{text}");
+        assert!(!text.contains("esc to interrupt"), "{text}");
+        assert!(text.contains(mode_label(app.mode).trim()), "{text}");
+
+        app.running = false;
+        let text = bar(&app);
+        assert!(!text.contains("a turn is running"), "{text}");
+    }
 
     #[test]
     fn the_cycle_includes_auto_and_wraps() {

@@ -751,6 +751,10 @@ All notable changes are recorded here. The format follows
 
 #### TUI
 
+- Resizing the terminal no longer leaves a stale copy of the input box, task list and menu in the
+  history above the live ones: a resize reprints the transcript at the new size. A slash command
+  refused during a running turn shows a one-line hint in the status bar instead of adding a
+  transcript line per Enter (#279).
 - `/guardian-model` with no argument opens the model picker over a live listing of every account,
   as `/model` does, instead of showing nothing when no account lists `models` (#151).
 - The approval prompt's rule line shows newlines, tabs and other control characters of a command as escapes

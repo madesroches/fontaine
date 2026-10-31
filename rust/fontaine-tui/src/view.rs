@@ -713,6 +713,19 @@ mod tests {
     }
 
     #[test]
+    fn issue_279_the_box_keeps_its_closing_corner_with_the_menu_open() {
+        let mut app = typed("/guardian-en");
+        app.running = true;
+        let rows = drawn(&app, 59, 24);
+        let bottom = rows
+            .iter()
+            .rposition(|r| r.contains('┘'))
+            .expect("the box's bottom border");
+        assert!(rows[bottom].trim_end().ends_with('┘'), "{rows:?}");
+        assert!(rows[bottom].starts_with('└'), "{rows:?}");
+    }
+
+    #[test]
     fn the_agent_list_sits_below_the_status_line_and_counts_in_the_chrome() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         let bare = chrome(&app, 80, 30);

@@ -346,13 +346,16 @@ pub struct Screen<B: Backend + Anchor> {
     placeholder: fn() -> B,
     /// The next draw must write every cell of the viewport, blanks included.
     repaint: bool,
+    /// The terminal's size when the live area was last laid out.
+    size: Size,
 }
 
 impl<B: Backend + Anchor> Screen<B> {
     /// The live area starts as the whole screen: earlier output above the cursor scrolls into the
     /// terminal's history.
     pub fn new(backend: B, placeholder: fn() -> B) -> Result<Self, B::Error> {
-        let height = backend.size()?.height;
+        let size = backend.size()?;
+        let height = size.height;
         let terminal = Terminal::with_options(
             backend,
             TerminalOptions {
@@ -364,6 +367,7 @@ impl<B: Backend + Anchor> Screen<B> {
             height,
             placeholder,
             repaint: false,
+            size,
         })
     }
 
@@ -390,14 +394,24 @@ impl<B: Backend + Anchor> Screen<B> {
     }
 
     fn draw_frame(&mut self, app: &mut App, all: bool) -> Result<(), B::Error> {
-        self.terminal.autoresize()?;
-        let width = self.terminal.get_frame().area().width;
-        let terminal_height = self.terminal.size()?.height;
-        let columns = usize::from(width).max(1);
+        // ratatui's own resize of an inline viewport erases from the viewport's top (the whole
+        // screen when it narrows), and tmux moves what is erased into its history, where the old
+        // live area stays as a copy above the new one; the terminal's reflow scrambles the old
+        // rows besides. So a resize reprints the transcript at the new size instead, and the
+        // rebuilt terminal leaves ratatui nothing to resize.
+        let size = self.terminal.size()?;
+        if size != self.size {
+            self.size = size;
+            app.reprint = true;
+        }
         if mem::take(&mut app.reprint) {
             app.shown_mut().recommit();
             self.reprint()?;
         }
+        self.terminal.autoresize()?;
+        let width = self.terminal.get_frame().area().width;
+        let terminal_height = self.terminal.size()?.height;
+        let columns = usize::from(width).max(1);
         let lines = if all {
             let (shown, theme) = app.shown_with_theme();
             shown.commit_all(columns, theme)
@@ -1143,6 +1157,13 @@ mod tests {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
                 let mut parser = self.0.lock().unwrap();
                 let mut rest = bytes;
+                // tmux moves the visible rows into its history on a whole-screen erase too, which
+                // only a scrollback erase in the same frame undoes.
+                if let Some(at) = rest.windows(4).position(|w| w == b"\x1b[2J")
+                    && !rest[at..].windows(4).any(|w| w == b"\x1b[3J")
+                {
+                    self.1.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 while let Some(at) = rest.windows(3).position(|w| w == b"\x1b[J") {
                     self.feed_pieces(&mut parser, &rest[..at]);
                     if parser.screen().cursor_position() == (0, 0) {
@@ -1317,6 +1338,15 @@ mod tests {
 
             pub fn height(&self) -> u16 {
                 self.height
+            }
+
+            /// Resizes the emulated terminal, as a window or pane resize does.
+            pub fn resize(&mut self, width: u16, height: u16) {
+                self.emulator
+                    .lock()
+                    .unwrap()
+                    .set_size(nz(height), nz(width));
+                self.height = height;
             }
 
             /// Renders once and returns what reached the writer, one entry per `write` call.
@@ -1673,6 +1703,130 @@ mod tests {
             resized > 0 && committed > 0,
             "{resized} resized, {committed} committed"
         );
+    }
+
+    fn press_key(app: &mut App, code: KeyCode) {
+        app.handle_input(crate::Input::Key(KeyEvent::new(code, KeyModifiers::NONE)));
+    }
+
+    /// Rows of the live area's chrome that must never reach the terminal's history.
+    fn chrome_in_history(harness: &emulated::Harness) -> Vec<String> {
+        harness
+            .scrollback()
+            .into_iter()
+            .filter(|r| {
+                r.contains("message ·")
+                    || r.contains(" commands ")
+                    || r.starts_with("Tasks ")
+                    || r.contains("Enter run")
+                    || r.contains("manual")
+            })
+            .collect()
+    }
+
+    /// The `/` menu opens, narrows and stays open while tool rows are live and extra notices
+    /// are committed under it.
+    fn popup_scenario(
+        width: u16,
+        height: u16,
+        todos: bool,
+        extra_notices: usize,
+        resizes: &[(u16, u16)],
+    ) {
+        let mut harness = emulated::Harness::new(width, height);
+        let mut app = app();
+        let what = |s: &str| format!("{s} from {width}x{height} todos={todos}");
+        for i in 0..usize::from(height) + 4 {
+            app.transcript.notice(format!("note {i}"));
+            harness.render(&mut app, &what("filling"));
+        }
+        app.running = true;
+        if todos {
+            app.todos.set_items(
+                (0..7)
+                    .map(|n| fontaine_tools::todo::TodoItem {
+                        content: format!("task {n}"),
+                        status: fontaine_tools::todo::TodoStatus::Completed,
+                    })
+                    .collect(),
+            );
+        }
+        started(&mut app, 0);
+        harness.render(&mut app, &what("start"));
+        finished_with(&mut app, 0, "row a\nrow b\nGATE_DONE\n[exit code 0]");
+        harness.render(&mut app, &what("finish"));
+        for c in "/guardian-enable".chars() {
+            press_key(&mut app, KeyCode::Char(c));
+            harness.render(&mut app, &what(&format!("typed {c}")));
+            let leaked = chrome_in_history(&harness);
+            assert!(leaked.is_empty(), "{}: {leaked:?}", what("typing"));
+        }
+        for n in 0..extra_notices {
+            app.transcript
+                .notice("a turn is running; wait for it or press Esc to interrupt");
+            harness.render(&mut app, &what(&format!("notice {n}")));
+            let leaked = chrome_in_history(&harness);
+            assert!(leaked.is_empty(), "{}: {leaked:?}", what("notice"));
+        }
+        started(&mut app, 1);
+        harness.render(&mut app, &what("next call"));
+        for &(w, h) in resizes {
+            harness.resize(w, h);
+            harness.render(&mut app, &what(&format!("resized to {w}x{h}")));
+            let leaked = chrome_in_history(&harness);
+            assert!(
+                leaked.is_empty(),
+                "{}: {leaked:?}",
+                what(&format!("{w}x{h}"))
+            );
+            let seen = [harness.scrollback(), harness.real()].concat();
+            for n in 0..usize::from(height) + 4 {
+                let note = format!("· note {n}");
+                let count = seen.iter().filter(|r| **r == note).count();
+                assert_eq!(count, 1, "{note} after {w}x{h}: {seen:?}");
+            }
+        }
+        press_key(&mut app, KeyCode::Esc);
+        harness.render(&mut app, &what("menu closed"));
+        app.input.take();
+        harness.render(&mut app, &what("input cleared"));
+        finished(&mut app, 1);
+        harness.render(&mut app, &what("next call done"));
+        let leaked = chrome_in_history(&harness);
+        assert!(leaked.is_empty(), "{}: {leaked:?}", what("end"));
+    }
+
+    /// A resize used to let ratatui erase the screen from its top-left corner (or the whole
+    /// screen, when narrower), which tmux answers by moving every visible row, the live area
+    /// included, into its history, where it stayed as a stale copy under the redrawn one.
+    #[test]
+    fn issue_279_a_resize_leaves_no_copy_of_the_live_area_in_history() {
+        for (width, height) in [(80, 30), (119, 30), (59, 12), (40, 10)] {
+            for resizes in [
+                [(width, height - 4)],
+                [(width, height + 4)],
+                [(width / 2, height)],
+                [(width + 20, height)],
+                [(width - 1, height - 2)],
+            ] {
+                popup_scenario(width, height, true, 2, &resizes);
+            }
+        }
+        popup_scenario(119, 30, true, 2, &[(59, 30), (58, 30), (119, 20)]);
+    }
+
+    /// The `/` menu, live tool rows and committed notices at a fixed size, which on its own
+    /// does not duplicate the live area: `cargo test -p fontaine-tui -- --ignored issue_279_sweep`.
+    #[test]
+    #[ignore]
+    fn issue_279_sweep() {
+        for height in 6..=30 {
+            for width in (40..=100).step_by(3) {
+                for todos in [false, true] {
+                    popup_scenario(width, height, todos, 2, &[]);
+                }
+            }
+        }
     }
 
     #[test]

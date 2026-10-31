@@ -611,6 +611,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// `human` is what the user typed, recorded in the ledger as theirs; `None` is a turn the
     /// harness started, whose prompt is not.
     async fn turn(&mut self, runtime: &AgentRuntime, text: String, human: Option<&str>) -> TurnEnd {
+        // A refusal left by a step that reset `running` without settling would show here, with
+        // no input event to clear it.
+        self.app.refusal = None;
         if let Some(typed) = human {
             runtime.append(Record::UserMessage {
                 text: typed.to_string(),
@@ -803,6 +806,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// area, and every line behind it, until the session ends.
     pub(crate) fn settle_turn(&mut self, end: &TurnEnd) {
         self.app.running = false;
+        self.app.refusal = None;
         self.app.deny_pending();
         self.drain_prompts();
         self.app.transcript.interrupt_pending();
