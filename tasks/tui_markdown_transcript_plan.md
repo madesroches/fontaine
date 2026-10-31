@@ -9,7 +9,8 @@ and pipe tables (a four-column table with long cells collapses into a wall of pi
 markdown in the transcript. This adds a bounded markdown renderer for `Entry::Assistant`: inline
 bold/italic/code, headings, bullet/numbered lists, fenced code blocks and aligned, wrapped tables.
 Everything it does not understand renders as the source text it is today. The stored text is never
-changed, so `/copy`, `/export` and the plain line-mode renderer keep exact source.
+changed, so `/copy`, `/export` (which builds from the core `Message::Assistant`, not `Entry.text`) and the plain
+line-mode renderer give exact source.
 
 ## Current State
 
@@ -23,7 +24,8 @@ changed, so `/copy`, `/export` and the plain line-mode renderer keep exact sourc
   survive a width change (`a_width_change_mid_stream_drops_and_repeats_nothing`).
 - `Cut::Lines` is used only by `rust/fontaine-tui/src/linear.rs:406` (line mode, no styling; the
   terminal wraps). It must stay raw.
-- `/copy` (`ui/commands/reports.rs:84`, `assistant_reply`) and `/export` read `Entry.text`.
+- `/copy` (`ui/commands/reports.rs:84`, `assistant_reply`) reads `Entry.text`; `/export` builds from core
+  `Message::Assistant` (`fontaine-core/src/export.rs`).
 - Styling precedent: `hint_spans`/`warning_lines` (~928-1005) pair backticks for bold. `Theme`
   (`theme.rs`) holds colour tokens; call sites add `BOLD`/`DIM`. `Glyphs` (`theme.rs`) has Unicode and
   ASCII sets selected by `FONTAINE_ASCII_GLYPHS`.
@@ -49,7 +51,10 @@ each top-level block knows the source char range it came from. Supported blocks:
 fenced code, bullet/ordered list (nested by indent), table. Supported inline: strong, emphasis, code,
 soft/hard break; link text renders as its text. **Soundness rule:** any block kind not in that list
 (blockquote, HTML, rule, indented code, footnotes, images) renders as its source lines wrapped plain,
-exactly as today.
+exactly as today. A list containing any unsupported nested block (blockquote, code block, table, HTML)
+falls back as a whole: the entire top-level list renders as its source lines wrapped plain.
+
+`into_offset_iter` yields byte ranges; they are converted to char offsets before use.
 
 **Styling** uses modifiers only, no new theme tokens (works in every theme): strong `BOLD`, emphasis
 `ITALIC`, inline code `BOLD` (the existing precedent for backtick spans), heading `BOLD` (h1 also
@@ -111,7 +116,7 @@ Line mode (`Cut::Lines`, `linear.rs`) is untouched: it prints source lines.
 ## Implementation Steps
 
 1. Add `pulldown-cmark = { version = "=0.13.6", default-features = false }` to `rust/Cargo.toml`
-   `[workspace.dependencies]` and to `fontaine-tui`; `cargo deny check`.
+   `[workspace.dependencies]` and to `fontaine-tui`; `cargo deny check` (from `rust/`, where `deny.toml` lives).
 2. `theme.rs`: add `bullet`/`col_sep`/`rule` (three new fields) to `Glyphs` (UNICODE and ASCII sets).
 3. `markdown.rs`: `wrap_spans`, inline flattening, blocks other than tables, `stable_end`, `rows`, with
    the unsupported-block fallback.
@@ -122,8 +127,8 @@ Line mode (`Cut::Lines`, `linear.rs`) is untouched: it prints source lines.
    calls `assistant_rows` directly), `Cut::rows` and `Cut::end` share the single Rows-path release
    function (stable-prefix rows only, tail held back, no pop); whole-block extension of the cut in
    `Cut::Budget`/`commit_within`.
-6. `examples/live_area.rs`: add a markdown scenario (streamed reply with a table and a fence) for the
-   tmux check.
+6. `examples/live_area.rs`: `main()` has no argument parsing and runs one fixed script, so append markdown
+   content (a streamed reply with a table and a fence) to that existing streamed script for the tmux check.
 7. Docs, CHANGELOG, plan Decisions.
 
 ## Files to Modify
@@ -142,9 +147,10 @@ Line mode (`Cut::Lines`, `linear.rs`) is untouched: it prints source lines.
 ## Documentation
 
 - `docs/tui.md`: new "Markdown in replies" section (supported subset, fallback, that `/copy`, `/export`
-  and line mode give source).
-- `CHANGELOG.md` entry; one dated TUI line in the master plan's `## Decisions` noting the markdown
-  subset and that line mode stays raw.
+  and line mode give source). Insert it before "## Messages during a turn".
+- `CHANGELOG.md` entry under `#### TUI` in `[Unreleased]` / Added; one dated line at the end of the
+  master plan's `## Decisions` / `### TUI` subsection noting the markdown subset and that line mode stays
+  raw, ending with `(#328)`.
 
 ## Testing Strategy
 
@@ -152,7 +158,8 @@ Unit tests in `markdown.rs` and `transcript.rs` (no live APIs):
 
 - Inline: bold/italic/code/nested, unmatched markers stay literal, spans keep style across a wrapped row.
 - Blocks: headings, bullet and numbered lists with wrapped continuation, fenced code (verbatim, indented,
-  long line wraps), each unsupported block kind falls back to its source text.
+  long line wraps), each unsupported block kind falls back to its source text; a list containing a nested blockquote, code
+  block, table or HTML falls back as a whole top-level list.
 - Tables: fits as natural widths; shrinks and wraps long cells; alignment markers; floors do not fit →
   raw fallback; ASCII glyph set; cells with inline markup.
 - `stable_end`: blank line, fence open/closed/mismatched closers, blank line inside a fence, half-arrived
@@ -169,7 +176,7 @@ Layout bugs in live area/scrollback must be reproduced in real tmux (`tasks/desi
 "Reproducing terminal layout bugs"; the vt100 model cannot see how the terminal treats erases):
 
 1. `cargo build -p fontaine-tui --example live_area`, then run it in a detached tmux as in that
-   section with the markdown scenario at `-x 80 -y 12` and again at `-x 50 -y 12`.
+   section and the appended markdown content at `-x 80 -y 12` and again at `-x 50 -y 12`.
 2. `tmux capture-pane -p -S - -E -`: each table row, heading and code line appears once in history, in
    order, and no raw `**` or pipe-table source remains for supported constructs.
 
