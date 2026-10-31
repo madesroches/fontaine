@@ -137,7 +137,10 @@ impl QuestionPanel {
             KeyCode::Up => self.selected = (self.selected + rows - 1) % rows,
             KeyCode::Down | KeyCode::Tab => self.selected = (self.selected + 1) % rows,
             KeyCode::Enter => return self.confirm(),
-            KeyCode::Char(c) if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 match c {
                     'k' => self.selected = (self.selected + rows - 1) % rows,
