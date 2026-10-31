@@ -21,11 +21,12 @@ one in the issue is possible from logs alone.
 
 ## Design
 - **Counter in the tree.** Add `AgentTree::note_writing(agent, chars)`: adds to a per-node
-  `writing: u64` and, throttled (at most one `changed` notification per ~250 ms per tree), wakes
-  watchers. `reset_writing(agent)` zeroes it. `AgentRow` gains `writing: u64`.
+  `writing: u64` and, throttled (at most one `changed` notification per ~250 ms per tree, measured with
+  `tokio::time::Instant`), wakes watchers. `reset_writing(agent)` zeroes it and always notifies,
+  bypassing the throttle. `AgentRow` gains `writing: u64`.
   It is display state: not part of `Spend`, never budgeted, never persisted.
-- **`drive` feeds it.** On `StreamEvent::Reasoning { text }` add `text.chars().count()`; on
-  `StreamEvent::Arguments { json }` add `json.chars().count()`; `Text` also counts (the fragment
+- **`drive` feeds it.** On `StreamEvent::Reasoning { text, .. }` add `text.chars().count()`; on
+  `StreamEvent::Arguments { json, .. }` add `json.chars().count()`; `Text` also counts (the fragment
   still goes out as `AssistantDelta` unchanged). Reset on `CompletionCall` and when the drive loop
   ends (including failure/stop), so a finished step never shows stale progress.
   No new `SessionEvent` variant: the tree is the channel, because it already serves the root and
@@ -33,8 +34,10 @@ one in the issue is possible from logs alone.
 - **TUI.** `ListRow` and `PanelRow` get `writing: u64`. While the agent is running and
   `writing > 0`, append `· writing 4.2k chars` (format `<n>` below 1000, else `<n.n>k`) after the
   spend text. `main`'s row uses the same field. One shared formatter next to `spend_text` in
-  `agents_panel.rs`.
-- **Debug logs.** In `drive`, `tracing::debug!(target = "fontaine::turn", agent.id, ...)` at model
+  `agents_panel.rs`. The TUI redraws on tree `changed` (it selects on `tree.changed().notified()`
+  and re-reads `tree.rows()`; the 1 s list tick is only a backstop), so the throttled notify is
+  what drives updates.
+- **Debug logs.** In `drive`, `tracing::debug!(agent.id = ..., ...)` at model
   request start and, at `CompletionCall`/failure, request end with elapsed ms and characters
   written. Debug level, not telemetry spans, so no telemetry doc contract changes.
 - **Agents panel last tool call + age** (issue's other suggestion): out of scope here; file a
@@ -46,7 +49,11 @@ one in the issue is possible from logs alone.
    notify) and `reset_writing`; populate in the snapshot.
 2. `fontaine-core/src/turn.rs`: handle `Reasoning`/`Arguments`/`Text` counts; reset points; debug logs.
 3. `fontaine-tui/src/agents_panel.rs`: `PanelRow.writing`, formatter, render; `agent_list.rs`:
-   `ListRow.writing`, render; update the driver code that maps `AgentRow` to both.
+   `ListRow.writing`, render; update the driver code that maps `AgentRow` to both. Update every
+   `ListRow`, `PanelRow` and `AgentRow` struct literal, including tests: `ListRow` at
+   `agent_list.rs:33,71`, `app.rs:1453,1465`, `view.rs:582,693`; `PanelRow` at `ui/mod.rs:93`,
+   `agents_panel.rs:299`, `screen.rs:1766`, `app.rs:1683`; `AgentRow` at `tree.rs:916`,
+   `agent_list.rs:340`.
 4. Docs: `docs/tui.md` (agent list / agents panel sections) and `docs/agents.md` mention.
 5. CHANGELOG entry.
 
@@ -54,11 +61,11 @@ one in the issue is possible from logs alone.
 - `rust/fontaine-agents/src/tree.rs`
 - `rust/fontaine-core/src/turn.rs`
 - `rust/fontaine-tui/src/agents_panel.rs`, `rust/fontaine-tui/src/agent_list.rs` (and the row mapping site)
+- `rust/fontaine-tui/src/app.rs`, `rust/fontaine-tui/src/view.rs`, `rust/fontaine-tui/src/screen.rs`,
+  `rust/fontaine-tui/src/ui/mod.rs` (struct literals)
 - `docs/tui.md`, `docs/agents.md`, `CHANGELOG.md`
 
 ## Trade-offs
-- New `SessionEvent` variant rejected: it would need handling in headless, linear and screen
-  consumers and would not reach the agents panel, which reads the tree.
 - Token estimates instead of chars rejected: no tokenizer is available mid-stream; chars are exact
   and enough to show motion.
 - Unthrottled notify rejected: reasoning streams emit many tiny fragments.
@@ -75,13 +82,8 @@ clears when the model step ends. `docs/agents.md`: one line.
   throttled (many calls → bounded wakeups), unknown agent id is a no-op.
 - Unit (tui): formatter (`999`, `1.0k`, `12.3k`), list/panel row render with and without `writing`,
   not shown for non-running agents.
-- Integration (core): drive a mock stream of `Reasoning` + `Arguments` + `CompletionCall` events
-  via `MockStreamEvent` (if it supports reasoning/argument deltas; otherwise unit-test the
-  fragment-counting helper extracted from the loop) and assert the tree counter rises mid-step and
-  is zero after the call. Pins the #343 bug: counter stayed invisible during reasoning-only steps.
-
-## Open Questions
-- Does `MockStreamEvent` in rig-core 0.45 emit `Reasoning`/`Arguments` deltas? Decides integration
-  vs helper-level test above.
-- Does the TUI redraw on the tree's `changed` notification, or only on its own tick? Confirm before
-  step 3; if tick-only, no extra wiring is needed.
+- Integration (core, `fontaine-core/tests/billing.rs` style): call `drive` with `MockStreamEvent`
+  (`ReasoningDelta`, `ToolCallNameDelta`, `ToolCallArgumentsDelta`, then `Text`) and read
+  `agents().rows()` inside `on_event` on `AssistantDelta` (`Usage`/`on_event` don't fire on
+  Reasoning/Arguments alone); assert the counter is nonzero mid-step and zero after the
+  `CompletionCall`. Pins the #343 bug: counter stayed invisible during reasoning-only steps.
