@@ -180,7 +180,8 @@ Each session keeps two stores, plus a task list, a schedule and a goal file, in 
 - the **model context**, the conversation the model sees, kept in `logs/` by rig's memory store.
   Compaction rewrites it: when the conversation outgrows the model's context window, or the
   `[context] autocompact_window` setting, or when you run `/compact`, the older part is replaced
-  by a summary the model wrote. `/clear` empties it.
+  by a summary the model wrote. `/clear` empties it. The same directory holds one `agent-<n>.jsonl`
+  per subagent, that agent's conversation, saved when a run ends and kept for the session's life.
 - the **session ledger**, `ledger/ledger.jsonl`: an append-only record, written by the harness and
   never by the model. It holds the user's messages verbatim (a message typed while a turn runs is
   recorded when the agent receives it with a tool result, not when it is typed), mode changes, approvals and grants,
