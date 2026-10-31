@@ -55,6 +55,7 @@ fn wires_belong_to_opencode_go_only() {
         "gemini",
         "openai-compatible",
         "ollama",
+        "openrouter",
     ] {
         let err = parse(&format!(
             "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\n\n[accounts.x.wires]\n\"m\" = \"chat\"\n"
@@ -72,7 +73,7 @@ fn wires_belong_to_opencode_go_only() {
 
 #[test]
 fn prompt_caching_keys_belong_to_the_kinds_that_accept_them() {
-    for kind in ["anthropic", "opencode-go"] {
+    for kind in ["anthropic", "opencode-go", "openrouter"] {
         let ok = parse(&format!(
             "[accounts.x]\nkind = \"{kind}\"\nprompt_caching = true\ncache_ttl = \"1h\"\n"
         ))
@@ -102,6 +103,7 @@ fn prompt_caching_defaults_per_kind() {
     for (kind, default) in [
         ("anthropic", true),
         ("opencode-go", false),
+        ("openrouter", true),
         ("openai", false),
         ("gemini", false),
         ("openai-compatible", false),
@@ -111,7 +113,7 @@ fn prompt_caching_defaults_per_kind() {
         assert_eq!(provider.default_prompt_caching(), default, "{kind}");
         assert_eq!(
             provider.accepts_prompt_caching(),
-            matches!(kind, "anthropic" | "opencode-go"),
+            matches!(kind, "anthropic" | "opencode-go" | "openrouter"),
             "{kind}"
         );
     }
@@ -168,6 +170,7 @@ fn model_options_belong_to_ollama_only() {
             "gemini",
             "openai-compatible",
             "opencode-go",
+            "openrouter",
         ] {
             let err = parse(&format!(
                 "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\n{key}\n"

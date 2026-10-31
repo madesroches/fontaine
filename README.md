@@ -1,8 +1,8 @@
 # Fontaine
 
 Fontaine is a terminal AI coding agent, written in Rust, that works with any model you configure:
-Anthropic, OpenAI, Gemini, or any OpenAI-compatible endpoint such as OpenRouter, Ollama, LM
-Studio, vLLM and LiteLLM.
+Anthropic, OpenAI, Gemini, OpenRouter (with prompt caching), or any OpenAI-compatible endpoint such
+as Ollama, LM Studio, vLLM and LiteLLM.
 
 Its signature feature is an auto mode in which a separate guardian agent reviews each tool call that
 is not provably safe, using your task and a short written policy, and answers allow, deny or ask
@@ -65,7 +65,7 @@ cargo run -p fontaine -- -p "explain what a Cargo workspace is"
 
 The answer goes to stdout and the exit code is 0 when the run completed. Add `--output-format
 stream-json` for one JSON event per line. Other providers, several accounts, credentials and
-OpenAI-compatible endpoints such as OpenRouter, LM Studio, vLLM and LiteLLM are in
+OpenRouter and OpenAI-compatible endpoints such as LM Studio, vLLM and LiteLLM are in
 [Configuration](docs/configuration.md); the flags and the output format are in
 [Headless runs](docs/headless.md).
 

@@ -240,6 +240,9 @@ All notable changes are recorded here. The format follows
   are 0, 1 and 2. `total_cost_usd` and `--max-budget-usd` include guardian and subagent spend, and
   `result.usage` breaks tokens and cost down into `main`, `guardian` and `subagents`. Notices go
   to stderr.
+- `result.usage.guardian`, `subagents` and `goal` report `cache_read_input_tokens` and
+  `cache_creation_input_tokens` like `main` (#331). The fields are required on every usage bucket
+  in `headless-v1.schema.json`, an additive change for consumers of the contract.
 
 #### MCP
 
@@ -343,6 +346,14 @@ All notable changes are recorded here. The format follows
   (`client_cert`, `client_key`) for model accounts, the guardian and its screen, `webfetch`, the
   scanner-model download, the `opencode-go` sign-in and HTTP MCP servers. An invalid setting is a
   configuration error (exit code 2), never a fallback to a direct or default-trust connection (#6).
+- An `openrouter` account kind reaches OpenRouter on its own endpoint and sends prompt-cache
+  markers: one top-level marker on the conversation, and a marker on the system prompt for the
+  guardian. Upstreams that cache by themselves (`openai/`, `deepseek/`, `x-ai/`, `groq/`) are sent
+  none. `prompt_caching` (on by default) and `cache_ttl` apply to it. An `openai-compatible`
+  account pointed at OpenRouter keeps working, uncached (#331).
+- A pinned Claude guardian whose model caches nothing below a length its prompt does not reach
+  (Haiku 4.5, Opus 4.5 and 4.6, and others, on `anthropic` and `openrouter` accounts) gets a
+  start-up notice instead of a silent no-op (#331).
 
 #### Research
 

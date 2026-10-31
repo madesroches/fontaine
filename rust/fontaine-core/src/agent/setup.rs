@@ -25,9 +25,11 @@ use crate::extensions::Extensions;
 use crate::fork_context::ParentContext;
 use crate::gate::{AutoContext, AutoEdits, ScreenStage, SessionState, StateParams, no_guardian};
 use crate::instructions::{self, InstructionStage, Sources};
-use crate::models::{GuardianModel, Models};
+use crate::models::{GuardianModel, ModelHandle, Models};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
+use crate::providers::PromptCaching;
+use crate::providers::cache_minimum::min_cacheable_tokens;
 use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::{Backend, ScannerStage};
 use crate::skills::SkillRuntime;
@@ -71,7 +73,12 @@ pub fn build_guardian_telling(
                 guardian = guardian.with_output_probe(probe.clone());
             }
             match approver {
-                Some(approver) => guardian.with_notifier(mode_notifier(approver.clone(), label)),
+                Some(approver) => {
+                    if let Some(notice) = cache_floor_notice(handle, config, profile) {
+                        approver.notice(&notice);
+                    }
+                    guardian.with_notifier(mode_notifier(approver.clone(), label))
+                }
                 None => guardian,
             }
         }
@@ -90,6 +97,34 @@ pub fn build_guardian_telling(
             )
         }
     }
+}
+
+/// Approximate token sizes of the guardian's static prefix, its system prompt, per profile.
+fn guardian_prefix_tokens(profile: Profile) -> u32 {
+    match profile {
+        Profile::Minimal => 1500,
+        Profile::Full => 3000,
+    }
+}
+
+/// Says so when the guardian's model caches nothing below a length its prefix does not reach,
+/// which would leave the cache markers a silent no-op.
+fn cache_floor_notice(handle: &ModelHandle, config: &Config, profile: Profile) -> Option<String> {
+    if !handle.kind.provider().accepts_prompt_caching() {
+        return None;
+    }
+    let account = config.accounts.get(&handle.reference.account)?;
+    if !PromptCaching::of(account).enabled {
+        return None;
+    }
+    let minimum = min_cacheable_tokens(handle.kind.as_str(), &handle.reference.model)?;
+    (minimum > guardian_prefix_tokens(profile)).then(|| {
+        format!(
+            "guardian model {} caches prompts of {minimum} tokens or more, longer than its \
+             prefix, so its cache markers have no effect; a model with a lower minimum caches it",
+            handle.reference
+        )
+    })
 }
 
 fn mode_notifier(approver: Arc<dyn Approver>, label: String) -> fontaine_guardian::Notifier {

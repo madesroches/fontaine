@@ -350,10 +350,11 @@ pub struct Account {
     pub context_tokens: Option<u32>,
     /// `ollama` only: `false` asks a thinking model to answer without reasoning.
     pub think: Option<bool>,
-    /// `anthropic` and `opencode-go` only: whether requests on the Messages wire carry cache
+    /// `anthropic`, `openrouter` and `opencode-go` only: whether requests carry cache
     /// breakpoints. Unset means the kind's default.
     pub prompt_caching: Option<bool>,
-    /// `anthropic` and `opencode-go` only: the lifetime of a cached prefix; `"5m"` when unset.
+    /// `anthropic`, `openrouter` and `opencode-go` only: the lifetime of a cached prefix; `"5m"`
+    /// when unset.
     pub cache_ttl: Option<CacheTtl>,
     /// Each network key replaces the `[network]` value for this account only. Declared here
     /// rather than flattened from `NetworkSection`, since `deny_unknown_fields` and `flatten`

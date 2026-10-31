@@ -205,7 +205,22 @@ struct RetryApproval {
 pub struct GuardianUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
+    pub cache_read_input_tokens: u64,
+    pub cache_creation_input_tokens: u64,
     pub cost_usd: Option<f64>,
+}
+
+impl GuardianUsage {
+    /// Adds one call's tokens and cost.
+    pub fn add(&mut self, usage: &Usage) {
+        self.input_tokens += usage.input_tokens.unwrap_or(0);
+        self.output_tokens += usage.output_tokens.unwrap_or(0);
+        self.cache_read_input_tokens += usage.cached_input_tokens.unwrap_or(0);
+        self.cache_creation_input_tokens += usage.cache_creation_input_tokens.unwrap_or(0);
+        if let Some(cost) = usage.cost {
+            *self.cost_usd.get_or_insert(0.0) += cost.total;
+        }
+    }
 }
 
 /// The rules in force, as they stand now.
@@ -604,17 +619,11 @@ impl SessionState {
     /// Counts a guardian call made for `agent`: in the session total, in the agent's own tally
     /// and against the agent's budget.
     pub fn add_guardian_usage(&self, agent: &str, usage: &Usage) {
-        let add = |total: &mut GuardianUsage| {
-            total.input_tokens += usage.input_tokens.unwrap_or(0);
-            total.output_tokens += usage.output_tokens.unwrap_or(0);
-            if let Some(cost) = usage.cost {
-                *total.cost_usd.get_or_insert(0.0) += cost.total;
-            }
-        };
-        add(&mut lock(&self.guardian_usage, "guardian usage"));
-        add(lock(&self.guardian_usage_by, "guardian usage by")
+        lock(&self.guardian_usage, "guardian usage").add(usage);
+        lock(&self.guardian_usage_by, "guardian usage by")
             .entry(agent.to_string())
-            .or_default());
+            .or_default()
+            .add(usage);
         self.agents.debit(agent, &spend_of(usage));
     }
 
@@ -634,13 +643,7 @@ impl SessionState {
     /// Counts a goal evaluation's model calls: in the session total and against the root, so
     /// the spend a goal's cost cap reads includes them.
     pub fn add_goal_usage(&self, usage: &Usage) {
-        let mut total = lock(&self.goal_usage, "goal usage");
-        total.input_tokens += usage.input_tokens.unwrap_or(0);
-        total.output_tokens += usage.output_tokens.unwrap_or(0);
-        if let Some(cost) = usage.cost {
-            *total.cost_usd.get_or_insert(0.0) += cost.total;
-        }
-        drop(total);
+        lock(&self.goal_usage, "goal usage").add(usage);
         self.agents.debit(ROOT_AGENT, &spend_of(usage));
     }
 
@@ -652,12 +655,7 @@ impl SessionState {
     /// Counts a subagent's model call. The agent's own tally is the tree's; this is the
     /// session-wide total the headless result reports.
     pub fn add_subagent_usage(&self, usage: &Usage) {
-        let mut total = lock(&self.subagent_usage, "subagent usage");
-        total.input_tokens += usage.input_tokens.unwrap_or(0);
-        total.output_tokens += usage.output_tokens.unwrap_or(0);
-        if let Some(cost) = usage.cost {
-            *total.cost_usd.get_or_insert(0.0) += cost.total;
-        }
+        lock(&self.subagent_usage, "subagent usage").add(usage);
     }
 
     pub fn subagent_usage(&self) -> GuardianUsage {
