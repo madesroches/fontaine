@@ -25,6 +25,8 @@ pub struct PanelRow {
     pub token_budget: Option<u64>,
     pub cost_usd: Option<f64>,
     pub cost_budget: Option<f64>,
+    /// `cost_usd` leaves out calls that carried no price.
+    pub cost_partial: bool,
     pub depth: usize,
     /// Why it stopped early, when its budget ran out.
     pub stopped_because: Option<String>,
@@ -70,23 +72,38 @@ pub fn status_label(status: ChildStatus) -> &'static str {
     }
 }
 
+/// The figures `spend_text` renders.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SpendView {
+    pub tokens: u64,
+    pub token_budget: Option<u64>,
+    pub cost_usd: Option<f64>,
+    pub cost_budget: Option<f64>,
+    pub cost_partial: bool,
+}
+
 /// What an agent has spent, against its budget when it has one.
-pub(crate) fn spend_text(
-    tokens: u64,
-    token_budget: Option<u64>,
-    cost_usd: Option<f64>,
-    cost_budget: Option<f64>,
-) -> String {
+pub(crate) fn spend_text(view: &SpendView) -> String {
+    let SpendView {
+        tokens,
+        token_budget,
+        cost_usd,
+        cost_budget,
+        cost_partial,
+    } = *view;
     let tokens = match token_budget {
         Some(cap) => format!("{tokens} / {cap} tok"),
         None => format!("{tokens} tok"),
     };
-    let cost = match (cost_usd, cost_budget) {
+    let mut cost = match (cost_usd, cost_budget) {
         (Some(spent), Some(cap)) => format!("${spent:.4} / ${cap:.2}"),
         (Some(spent), None) => format!("${spent:.4}"),
         (None, Some(_)) => "cost n/a".to_string(),
         (None, None) => String::new(),
     };
+    if cost_partial && cost_usd.is_some() {
+        cost.push_str(" + unpriced");
+    }
     if cost.is_empty() {
         tokens
     } else {
@@ -218,7 +235,13 @@ impl AgentsPanel {
             for piece in wrap(&head, width) {
                 out.push(Line::styled(piece, style));
             }
-            let spend = spend_text(row.tokens, row.token_budget, row.cost_usd, row.cost_budget);
+            let spend = spend_text(&SpendView {
+                tokens: row.tokens,
+                token_budget: row.token_budget,
+                cost_usd: row.cost_usd,
+                cost_budget: row.cost_budget,
+                cost_partial: row.cost_partial,
+            });
             for piece in wrap(&format!("    {spend}"), width) {
                 out.push(Line::styled(piece, dim));
             }
@@ -282,6 +305,7 @@ mod tests {
             token_budget: Some(200_000),
             cost_usd: Some(0.0042),
             cost_budget: Some(2.0),
+            cost_partial: false,
             depth: 1,
             stopped_because: None,
         }
@@ -304,6 +328,39 @@ mod tests {
         assert!(text.contains("killed"), "{text}");
         assert!(text.contains("1200 / 200000 tok"), "{text}");
         assert!(text.contains("$0.0042 / $2.00"), "{text}");
+    }
+
+    fn view(cost_budget: Option<f64>, cost_partial: bool) -> SpendView {
+        SpendView {
+            tokens: 4_863_024,
+            token_budget: None,
+            cost_usd: Some(0.0519),
+            cost_budget,
+            cost_partial,
+        }
+    }
+
+    #[test]
+    fn a_partial_cost_is_marked_with_and_without_a_cost_budget() {
+        assert_eq!(
+            spend_text(&view(None, true)),
+            "4863024 tok · $0.0519 + unpriced"
+        );
+        assert_eq!(
+            spend_text(&view(Some(2.0), true)),
+            "4863024 tok · $0.0519 / $2.00 + unpriced"
+        );
+    }
+
+    #[test]
+    fn a_complete_cost_is_not_marked() {
+        assert_eq!(spend_text(&view(None, false)), "4863024 tok · $0.0519");
+        let no_price = SpendView {
+            cost_usd: None,
+            cost_budget: Some(2.0),
+            ..view(None, true)
+        };
+        assert_eq!(spend_text(&no_price), "4863024 tok · cost n/a");
     }
 
     #[test]

@@ -204,8 +204,7 @@ async fn a_killed_or_budget_spent_child_cannot_be_resumed() {
         &spent,
         &fontaine_agents::budget::Spend {
             input_tokens: 5000,
-            output_tokens: 0,
-            cost_usd: None,
+            ..Default::default()
         },
     );
     // Done, but its budget is spent: whatever the status says.

@@ -99,6 +99,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 token_budget: row.budget.tokens,
                 cost_usd: row.spend.cost_usd,
                 cost_budget: row.budget.cost_usd,
+                cost_partial: row.spend.is_partial_cost(),
                 depth: row.depth,
                 stopped_because: row.exhausted.map(|why| why.describe()),
             })

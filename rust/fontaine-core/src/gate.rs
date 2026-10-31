@@ -894,6 +894,11 @@ pub fn spend_of(usage: &Usage) -> Spend {
         input_tokens: usage.input_tokens.unwrap_or(0),
         output_tokens: usage.output_tokens.unwrap_or(0),
         cost_usd: usage.cost.map(|cost| cost.total),
+        unpriced_tokens: if usage.cost.is_none() {
+            usage.input_tokens.unwrap_or(0) + usage.output_tokens.unwrap_or(0)
+        } else {
+            0
+        },
     }
 }
 
@@ -933,6 +938,21 @@ mod tests {
     use super::*;
     use crate::permissions::DenyAll;
     use fontaine_agents::tree::Limits;
+
+    #[test]
+    fn spend_of_counts_the_tokens_of_a_call_with_no_price_as_unpriced() {
+        let mut usage = Usage::new();
+        usage.input_tokens = Some(30);
+        usage.output_tokens = Some(12);
+        let unpriced = spend_of(&usage);
+        assert_eq!(unpriced.unpriced_tokens, 42);
+        assert_eq!(unpriced.cost_usd, None);
+
+        usage.cost = Some(rig_core::completion::Cost::from_total(0.5));
+        let priced = spend_of(&usage);
+        assert_eq!(priced.unpriced_tokens, 0);
+        assert_eq!(priced.cost_usd, Some(0.5));
+    }
 
     #[test]
     #[should_panic(expected = "the loop breaker lock is not poisoned")]

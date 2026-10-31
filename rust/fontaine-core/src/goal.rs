@@ -219,6 +219,7 @@ pub fn spend_since(now: &Spend, base: &Spend) -> Spend {
         cost_usd: now
             .cost_usd
             .map(|cost| (cost - base.cost_usd.unwrap_or(0.0)).max(0.0)),
+        unpriced_tokens: now.unpriced_tokens.saturating_sub(base.unpriced_tokens),
     }
 }
 

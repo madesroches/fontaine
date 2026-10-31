@@ -659,6 +659,8 @@ All notable changes are recorded here. The format follows
 
 #### Agents
 
+- The agents panel and agent list mark a dollar figure that leaves out unpriced calls with
+  `+ unpriced`, so a priced guardian spend is no longer shown as an agent's whole cost (#333).
 - Built-in `explore` subagents now run on the session model instead of `$guardian_default`
   (#286). A session whose main model is on another account no longer routes every `explore`
   spawn at the guardian model's account, so that account's quota no longer takes explore agents
