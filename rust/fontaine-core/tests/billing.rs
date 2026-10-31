@@ -153,3 +153,106 @@ async fn a_stopped_step_leaves_no_writing_behind() {
     assert!(seen[0] > 0);
     assert_eq!(after, 0);
 }
+
+fn argument_call() -> Vec<MockStreamEvent> {
+    let usage = Usage::new().input_tokens(10).output_tokens(5);
+    vec![
+        MockStreamEvent::ToolCallNameDelta {
+            id: "call-1".to_string(),
+            name: "read".to_string(),
+        },
+        MockStreamEvent::ToolCallArgumentsDelta {
+            id: "call-1".to_string(),
+            arguments: "{\"path\":".to_string(),
+        },
+        MockStreamEvent::ToolCallArgumentsDelta {
+            id: "call-1".to_string(),
+            arguments: "\"a.txt\"}".to_string(),
+        },
+        MockStreamEvent::ToolCallEnd {
+            id: "call-1".to_string(),
+        },
+        MockStreamEvent::FinalResponse(mock_final(usage)),
+    ]
+}
+
+fn plain_answer() -> Vec<MockStreamEvent> {
+    vec![
+        MockStreamEvent::Text("done".to_string()),
+        MockStreamEvent::FinalResponse(mock_final(Usage::new())),
+    ]
+}
+
+async fn writing_across_a_tool_call() -> Vec<u64> {
+    let w = World::new();
+    let built = build(&w, Manual, vec![argument_call(), plain_answer()], true);
+    let agents = built.runtime.state.agents();
+    let mut at_tool = Vec::new();
+    let mut on_event = |event: SessionEvent| {
+        let writing = agents.writing_of(fontaine_tools::gate::ROOT_AGENT);
+        match event {
+            SessionEvent::ToolCall { .. } | SessionEvent::ToolResult { .. } => {
+                at_tool.push(writing)
+            }
+            _ => {}
+        }
+        Flow::Continue
+    };
+    let outcome = run_turn(
+        TurnParams {
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            prompt: "hi".to_string(),
+            max_turns: Some(3),
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+            native_search: false,
+        },
+        &mut on_event,
+    )
+    .await;
+    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+    at_tool
+}
+
+#[tokio::test]
+async fn a_finished_request_has_no_writing_when_its_tool_runs() {
+    let at_tool = writing_across_a_tool_call().await;
+    assert!(!at_tool.is_empty());
+    assert!(at_tool.iter().all(|w| *w == 0), "{at_tool:?}");
+}
+
+#[tokio::test]
+async fn argument_characters_count_toward_writing_at_the_next_delta() {
+    let w = World::new();
+    let mut turn = argument_call();
+    let last = turn.pop().expect("a final response");
+    turn.push(MockStreamEvent::Text("done".to_string()));
+    turn.push(last);
+    let built = build(&w, Manual, vec![turn, plain_answer()], true);
+    let agents = built.runtime.state.agents();
+    let mut seen = Vec::new();
+    let mut on_event = |event: SessionEvent| {
+        if matches!(event, SessionEvent::AssistantDelta(_)) {
+            seen.push(agents.writing_of(fontaine_tools::gate::ROOT_AGENT));
+        }
+        Flow::Continue
+    };
+    run_turn(
+        TurnParams {
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            prompt: "hi".to_string(),
+            max_turns: Some(3),
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+            native_search: false,
+        },
+        &mut on_event,
+    )
+    .await;
+    let arguments = "{\"path\":\"a.txt\"}".len() as u64;
+    assert_eq!(seen[0], arguments + "done".len() as u64);
+}

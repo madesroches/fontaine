@@ -156,6 +156,7 @@ struct ModelStep<'a> {
     started: std::time::Instant,
     chars: u64,
     open: bool,
+    awaiting_next: bool,
 }
 
 impl<'a> ModelStep<'a> {
@@ -167,6 +168,7 @@ impl<'a> ModelStep<'a> {
             started: std::time::Instant::now(),
             chars: 0,
             open: true,
+            awaiting_next: false,
         }
     }
 
@@ -176,14 +178,23 @@ impl<'a> ModelStep<'a> {
         self.state.agents().note_writing(self.agent, chars);
     }
 
-    /// Ends the logged request and starts the next one.
-    fn next_request(&mut self) {
+    /// Ends the logged request. The next one starts at its first stream item, not here: the
+    /// tools run (and may wait on approval) before the engine sends it.
+    fn end_request(&mut self) {
         self.log_end();
         self.state.agents().reset_writing(self.agent);
         self.chars = 0;
-        self.started = std::time::Instant::now();
-        self.open = true;
-        tracing::debug!(agent.id = self.agent, "model request start");
+        self.open = false;
+        self.awaiting_next = true;
+    }
+
+    fn start_pending(&mut self) {
+        if self.awaiting_next {
+            self.awaiting_next = false;
+            self.started = std::time::Instant::now();
+            self.open = true;
+            tracing::debug!(agent.id = self.agent, "model request start");
+        }
     }
 
     /// The run is over and no further request follows.
@@ -402,6 +413,9 @@ async fn drive_once(
                 break;
             }
         };
+        if matches!(item, MultiTurnStreamItem::StreamAssistantItem(_)) {
+            step.start_pending();
+        }
         let flow = match item {
             MultiTurnStreamItem::StreamAssistantItem(Item::Event(event)) => match event {
                 StreamEvent::Text { text, .. } => {
@@ -427,7 +441,7 @@ async fn drive_once(
                 _ => Flow::Continue,
             },
             MultiTurnStreamItem::CompletionCall(call) => {
-                step.next_request();
+                step.end_request();
                 let mut usage = call.usage;
                 if !params.priced {
                     usage.cost = None;
