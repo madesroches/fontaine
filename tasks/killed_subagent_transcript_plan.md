@@ -139,14 +139,16 @@ shows the call that was cut short.
 What deliberately does not change: the tree flips the node to `Killed` immediately (the UI
 shows it at once; only the report and the ledger's `finished` record wait for the run to
 settle, up to the grace); a killed child still cannot be resumed; `kill_all` and session
-exit are unchanged (`tree.settled` already waits for the ledger records); the root agent's
-interrupt is untouched.
+exit are unchanged, but their `tree.settled` waits are only 5 s — far under `KILL_GRACE` —
+so a child still wedged past the choke point at exit keeps today's behavior (transcript
+dropped); the root agent's interrupt is untouched.
 
 ## Implementation Steps
 
 1. **`rust/fontaine-tools/src/kills.rs`** (new) — `KillSwitches` registry; register, `killed`,
-   and an `async fn wait(&self, agent) -> KillWait` (a `wait_for`-style future, or
-   `pending()` when the agent has no switch) for the choke-point select.
+   and a `fn wait(&self, agent: &str) -> KillWait` (`KillWait: Future<Output = ()>`, a
+   `wait_for`-style future, or `pending()` when the agent has no switch) for the
+   choke-point select.
 2. **`rust/fontaine-tools/src/guarded.rs`** — add `kills` to `Guard`; in `gated`, the
    pre-check refusal and the two kill-selects around `gate.check` and `run`; skip the result
    pipeline for a kill refusal; keep the `tool_result` telemetry record.
@@ -165,9 +167,8 @@ interrupt is untouched.
    struct literal, which must be touched to compile regardless. Store the session
    `Arc<KillSwitches>` on `AgentRuntime` (created in `AgentRuntime::new` alongside
    `pipeline`/`results`, so the same instance also feeds `subagent_support` and
-   `registry()`) and set `kills: self.kills.clone()` in the literal. The instance reaches
-   the runtime through `AgentSetup` — built in `fontaine/src/lib.rs`, driven by the TUI —
-   and `connect_mcp` runs from `fontaine-tui/src/ui/mcp.rs` and `fontaine/src/lib.rs`,
+   `registry()`) and set `kills: self.kills.clone()` in the literal. `connect_mcp` runs
+   from `fontaine-tui/src/ui/mcp.rs` and `fontaine/src/lib.rs`,
    a different path from the `registry()` call site; check it too.
 7. **Tests** (see Testing Strategy).
 8. **Docs** — `CHANGELOG.md` (`Fixed` under `[Unreleased]`); `docs/agents.md` (what kill
@@ -213,6 +214,10 @@ interrupt is untouched.
 - **No kill for the root.** The root has no kill switch and its interrupt is a separate
   surface; folding it in would touch the TUI's turn lifecycle for no issue requirement.
   Follow-up if wanted: the same KillHook pattern applies to a root interrupt channel.
+- **Exit path.** `kill_all` and session exit wait only 5 s after the kill, far below
+  `KILL_GRACE`. A killed child wedged on a hung provider stream at session exit can still
+  lose both its transcript and its ledger `finished` record — today's behavior, recorded
+  here as the accepted residual risk; the exit path is not redesigned.
 - **No config gate.** The behavior is unconditional, per the user's call: during
   development every agent's transcript is worth keeping, and an opt-out knob adds a test
   matrix for a failure mode (lost evidence) that has no upside to preserve.
