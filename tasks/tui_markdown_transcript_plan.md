@@ -49,7 +49,8 @@ pub(crate) fn stable_end(text: &str) -> usize;
 `Options::ENABLE_TABLES` is set at runtime. `into_offset_iter` gives source ranges, so
 each top-level block knows the source char range it came from. Supported blocks: paragraph, heading,
 fenced code, bullet/ordered list (nested by indent), table. Supported inline: strong, emphasis, code,
-soft/hard break; link text renders as its text. **Soundness rule:** any block kind not in that list
+soft/hard break; link text renders as its text. A soft break keeps the source line break (it does not
+reflow to a space as CommonMark does), matching today's renderer, which keeps every source newline. **Soundness rule:** any block kind not in that list
 (blockquote, HTML, rule, indented code, footnotes, images) renders as its source lines wrapped plain,
 exactly as today. A list containing any unsupported nested block (blockquote, code block, table, HTML)
 falls back as a whole: the entire top-level list renders as its source lines wrapped plain.
@@ -80,34 +81,44 @@ are not exact. The rule that keeps scrollback correct:
   its trailing blank lines). The commit cursor therefore only ever stops on a block boundary, and a
   resume from `committed_chars` re-parses from a block start. Width changes just re-layout from there.
   The budget path (`Cut::Budget` / `commit_within`) cuts at the Nth row as today, then extends the cut
-  to the end of the block containing that row, overshooting the budget as entries already do. Fenced-code
-  lines are cut per row; tables, paragraphs and lists are cut as a whole block.
-- **Fenced code lines are row-exact**, like plain text, so an open fence is renderable (and committable)
-  line by line without waiting for its closing fence.
+  to the end of the block containing that row, overshooting the budget as entries already do. Lines of
+  an open fence cut by the budget are cut per row; tables, paragraphs and lists are cut as a whole block.
+- **An open fence is held, not committed.** On the ordinary path a fenced block is released whole once
+  its closing fence has arrived; until then it stays in the live area (as plain tail), so the cursor
+  never lands inside a fence. Only the over-budget release may cut inside one, line by line (exact
+  offsets). Resume state is derived, not carried: `markdown::rows(text, from, ...)` scans `text[..from]`
+  with the same fence tracking as `stable_end` and, if `from` is inside an open fence, renders the
+  remainder as that fence's code lines (opener char and length known), so a Budget cut inside a fenced
+  tail and any width change resume correctly.
 - **The plain tail keeps today's exact offsets.**
 
 ### Streaming
 
-`stable_end(text)` is the end of the last blank line outside a fenced block (a closing fence must match
-the opener's character and be at least as long), plus, when inside an open fence, the end of its last
-complete line. A table ends at a blank line, so a half-arrived table row is always in the tail. A
-non-streaming entry (`streaming: false`) is all stable.
+`stable_end(text)` is the end of the last block boundary. A blank line is a boundary only when the next
+non-blank line has arrived and is neither indented nor a list marker (`-`, `*`, `+`, `N.`, `N)`), so a
+loose list ("- a\n\n  more", "1. a\n\n2. b", "- a\n\n  - b") is never split: a list stays in the plain
+tail until a column-0 non-list line follows it. Fences are tracked with up to 3 spaces of indent (a
+closing fence must match the opener's character and be at least as long); a blank line inside an open
+fence is not a boundary, and an open fence is not stable at all, so the boundary is before its opener
+line. A fence indented inside a list item belongs to the list and is covered by the list rule. A table
+ends at a blank line, so a half-arrived table row is always in the tail. A non-streaming entry
+(`streaming: false`) is all stable.
 
 `assistant_rows(text, from, width, streaming, glyphs)` gains `streaming: bool` (`entry_lines` takes it from the entry,
 so `take_retired` and `commit_all` get `true` for an entry still streaming at `/clear`; `live_lines` goes
 through `entry_lines`): rows = `markdown::rows` of the stable prefix after `from`, then plain rows (today's
 code) of the tail. The live area shows all of them. The ordinary commit path (`Transcript::commit()`,
-`Cut::Rows`) releases only the stable-prefix rows (block rows and row-exact fence lines) and holds the
+`Cut::Rows`) releases only the stable-prefix rows (whole blocks) and holds the
 plain tail back entirely: it stays in the live area, never committed. The old "keep the last row live"
 pop no longer applies; a stable row never grows, so nothing is popped from the prefix. The cursor
-therefore only stops on a block boundary or a complete fence line, and a paragraph shows raw until it
+therefore only stops on a block boundary, and a paragraph shows raw until it
 ends. Because the stable prefix is re-rendered per frame, no cache is kept.
 
 One function returns the releasable rows for the Rows path (the stable-prefix rows, without the tail);
 `commit()`, `Cut::rows` and `Cut::end` all call it, so the three sites cannot diverge.
 
 Only the over-budget release (`Cut::Budget` / `commit_within`) may commit plain tail rows (exact
-offsets), as it does today. The remainder of that paragraph is then rendered as markdown from the cut, so
+offsets, including rows of an open fence), as it does today. The remainder of that paragraph is then rendered as markdown from the cut, so
 a span straddling the cut shows its markers literally. This is the one visible degradation, and only
 for a single paragraph taller than the live area.
 
@@ -144,6 +155,12 @@ Line mode (`Cut::Lines`, `linear.rs`) is untouched: it prints source lines.
   atomic release makes the cursor a block boundary at the cost of a block possibly exceeding a row
   budget (the existing "entries commit whole" precedent).
 
+## Decisions
+
+- AFK: Resume inside a fence is derived by re-scanning the source before the cursor (not a carried flag); the ordinary path holds an open fence in the live area until it closes, and only the over-budget release cuts inside one.
+- AFK: `stable_end` treats a blank line as a boundary only once the next non-blank line has arrived and is neither indented nor a list marker; fences are tracked with up to 3 spaces of indent; a list stays in the plain tail until a column-0 non-list line follows.
+- AFK: A soft break keeps the source line break rather than reflowing to a space, matching today's renderer and source fidelity.
+
 ## Documentation
 
 - `docs/tui.md`: new "Markdown in replies" section (supported subset, fallback, that `/copy`, `/export`
@@ -162,11 +179,19 @@ Unit tests in `markdown.rs` and `transcript.rs` (no live APIs):
   block, table or HTML falls back as a whole top-level list.
 - Tables: fits as natural widths; shrinks and wraps long cells; alignment markers; floors do not fit →
   raw fallback; ASCII glyph set; cells with inline markup.
-- `stable_end`: blank line, fence open/closed/mismatched closers, blank line inside a fence, half-arrived
-  table row, whole text when not streaming.
+- `stable_end`: blank line, fence open/closed/mismatched closers, blank line inside a fence, fence with
+  1-3 spaces of indent, half-arrived table row, blank line followed by an indented or list-marker line
+  (not a boundary) or by a column-0 non-list line (boundary), blank line not yet followed by a next line,
+  whole text when not streaming.
+- Soft break: a two-line paragraph renders on two rows.
+- Resume in a fence: `rows` from an offset inside an open fence (found by the scan of the earlier text)
+  renders the remainder as code, equal to the one-shot render's rows.
 - Streaming: extend `streamed_commits_equal_the_whole_transcript` with a markdown sample over many chunk
   sizes and widths (commits through `Cut::Rows` equal the one-shot render); the width-change test with a
   table mid-stream drops and repeats nothing; a stable-prefix commit never pops a block row; the
+  streamed tests with a loose list ("- a\n\n  more", "1. a\n\n2. b"), a nested list ("- a\n\n  - b") and
+  an indented fence inside a list item equal the one-shot render; a Budget cut inside a fenced tail, then
+  resumed (also after a width change), equals the one-shot render; the
   over-budget release of tail and fence rows advances by exactly the rows it emits; a tall block under a
   small budget is emitted whole, none lost.
 
