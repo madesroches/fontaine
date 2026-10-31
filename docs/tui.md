@@ -731,7 +731,8 @@ for example `◯ agent-3 worker running 1m02s 1500 tok`. A nested agent is inden
 parent. The row on screen is marked `●` and the others `◯`. The list shows every running agent, the
 agent on screen, and an agent that failed, was killed or ran out of budget for 30 seconds after it
 ended or until you hide it with `x`. An agent that finished normally leaves at once. With nothing
-to list, the list is not drawn.
+to list, the list is not drawn. The spend uses the same format as the
+[agents panel](#the-agents-panel), including the `+ unpriced` marker.
 
 Down on the last line of the input moves the keyboard into the list, on `main`. Up and Down select a
 row, Enter shows that row, `x` stops a running subagent (or hides an ended one), and Esc, Up on the
@@ -783,7 +784,10 @@ model, its status (`running`, `waiting-on-permission`, `done`, `killed`, `budget
 `failed`) and what it has used, such as `1500 tok · $0.0021`; each `/ <cap>` form
 (`1500 / 200000 tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`
 shows in place of the spend when a cost budget is set but no priced call has been counted yet,
-as for a model with no known price. Up and Down select a row; Enter on an agent closes the panel
+as for a model with no known price. A dollar figure that leaves out some of the agent's calls
+(an unpriced account's main model next to its priced guardian calls) ends in `+ unpriced`, as in
+`4863024 tok · $0.0519 + unpriced`: the figure is a lower bound, and a cost budget still counts
+only the priced spend. Up and Down select a row; Enter on an agent closes the panel
 and shows that agent's transcript, which is how you reach an agent that has left the
 [agent list](#the-agent-list-and-the-agent-view).
 

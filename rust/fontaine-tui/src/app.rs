@@ -1671,6 +1671,7 @@ mod tests {
             token_budget: None,
             cost_usd: None,
             cost_budget: None,
+            cost_partial: false,
             depth: 1,
             stopped_because: None,
         }]);

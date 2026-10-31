@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
-use crate::agents_panel::{spend_text, status_label};
+use crate::agents_panel::{SpendView, spend_text, status_label};
 
 /// How long an agent that failed, was killed or ran out of budget stays listed.
 pub const ENDED_LISTED: Duration = Duration::from_secs(30);
@@ -77,12 +77,13 @@ pub fn rows(
                     .ended
                     .unwrap_or(now)
                     .saturating_duration_since(row.started),
-                spend: spend_text(
-                    row.spend.tokens(),
-                    row.budget.tokens,
-                    row.spend.cost_usd,
-                    row.budget.cost_usd,
-                ),
+                spend: spend_text(&SpendView {
+                    tokens: row.spend.tokens(),
+                    token_budget: row.budget.tokens,
+                    cost_usd: row.spend.cost_usd,
+                    cost_budget: row.budget.cost_usd,
+                    cost_partial: row.spend.is_partial_cost(),
+                }),
             });
         }
     }
@@ -279,17 +280,32 @@ impl AgentList {
             let viewed = row.id.as_deref() == viewing;
             let marker = if viewed { "●" } else { "◯" };
             let indent = "  ".repeat(row.depth.saturating_sub(1));
-            let text = match (&row.id, row.status) {
-                (Some(id), Some(status)) => format!(
-                    "{marker} {indent}{id} {} {} {} {}",
-                    row.agent_type,
-                    status_label(status),
-                    format_age(row.elapsed),
-                    row.spend
+            let (head, spend) = match (&row.id, row.status) {
+                (Some(id), Some(status)) => (
+                    format!(
+                        "{marker} {indent}{id} {} {} {}",
+                        row.agent_type,
+                        status_label(status),
+                        format_age(row.elapsed)
+                    ),
+                    format!(" {}", row.spend),
                 ),
-                _ => format!("{marker} main"),
+                _ => (format!("{marker} main"), String::new()),
             };
-            let shown: String = text.chars().take(width).collect();
+            let spend_len = spend.chars().count();
+            let shown: String = if head.chars().count() + spend_len <= width {
+                head + &spend
+            } else if spend.ends_with(" + unpriced") && spend_len < width {
+                // Cutting the tail would show a partial cost as complete, so the leading
+                // columns give way instead.
+                let keep = width - spend_len;
+                let mut cut: String = head.chars().take(keep.saturating_sub(1)).collect();
+                cut.push('…');
+                cut + &spend
+            } else {
+                // An ordinary row, or a partial one whose spend alone fills the width: cut the end.
+                (head + &spend).chars().take(width).collect()
+            };
             let style = if self.focused && at == self.selected {
                 Style::default().add_modifier(Modifier::REVERSED)
             } else {
@@ -331,7 +347,7 @@ mod tests {
             spend: Spend {
                 input_tokens: 700,
                 output_tokens: 500,
-                cost_usd: None,
+                ..Spend::default()
             },
             budget: Budget::default(),
             exhausted: None,
@@ -353,6 +369,53 @@ mod tests {
         list.set_rows(rows);
         list.focus();
         list
+    }
+
+    #[test]
+    fn a_mostly_unpriced_agent_marks_its_dollar_figure_as_partial() {
+        let now = Instant::now();
+        let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
+        worker.spend = Spend {
+            input_tokens: 4_800_000,
+            output_tokens: 63_024,
+            cost_usd: Some(0.0519),
+            unpriced_tokens: 4_850_000,
+        };
+        let rows = rows(&[worker], None, &HashSet::new(), now);
+        assert_eq!(rows[1].spend, "4863024 tok · $0.0519 + unpriced");
+    }
+
+    #[test]
+    fn a_narrow_row_keeps_the_partial_cost_marker() {
+        let now = Instant::now();
+        let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
+        worker.spend = Spend {
+            input_tokens: 4_800_000,
+            output_tokens: 63_024,
+            cost_usd: Some(0.0519),
+            unpriced_tokens: 4_850_000,
+        };
+        let mut rows = rows(&[worker], None, &HashSet::new(), now);
+        rows[1].agent_type = "general-purpose".into();
+        rows[1].status = Some(ChildStatus::WaitingOnPermission);
+        let mut list = AgentList::default();
+        list.set_rows(rows);
+        let lines = list.lines(None, 80, 5);
+        let text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.chars().count() <= 80, "{text}");
+        assert!(text.ends_with("$0.0519 + unpriced"), "{text}");
+    }
+
+    #[test]
+    fn a_narrow_ordinary_row_is_cut_at_the_end() {
+        let now = Instant::now();
+        let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
+        worker.agent_type = "general-purpose".into();
+        let mut list = AgentList::default();
+        list.set_rows(rows(&[worker], None, &HashSet::new(), now));
+        let lines = list.lines(None, 20, 5);
+        let text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "◯ agent-1 general-pu", "{text}");
     }
 
     #[test]

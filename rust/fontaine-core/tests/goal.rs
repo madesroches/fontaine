@@ -102,9 +102,33 @@ fn turn_then_not_met(goal: &SessionGoal, caps: &GoalCaps) -> Applied {
 fn spend(tokens: u64, cost: Option<f64>) -> Spend {
     Spend {
         input_tokens: tokens,
-        output_tokens: 0,
         cost_usd: cost,
+        ..Spend::default()
     }
+}
+
+#[test]
+fn spend_since_subtracts_the_unpriced_tokens() {
+    let now = Spend {
+        input_tokens: 100,
+        unpriced_tokens: 70,
+        cost_usd: Some(0.5),
+        ..Spend::default()
+    };
+    let base = Spend {
+        input_tokens: 40,
+        unpriced_tokens: 30,
+        cost_usd: Some(0.2),
+        ..Spend::default()
+    };
+    assert_eq!(
+        fontaine_core::goal::spend_since(&now, &base).unpriced_tokens,
+        40
+    );
+    assert_eq!(
+        fontaine_core::goal::spend_since(&base, &now).unpriced_tokens,
+        0
+    );
 }
 
 #[test]
