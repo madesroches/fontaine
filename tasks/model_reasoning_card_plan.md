@@ -44,12 +44,15 @@ entry if it has not yet been committed, replacing its text (End text replaces ra
 rig's Responses API can restate it), and is otherwise ignored. `AssistantDelta`, a tool call, a user
 entry and every other push settle a trailing streaming `Reasoning`: `finish_streaming` is
 generalised to both variants. An empty settled `Reasoning` (redacted block) is dropped, not
-rendered. Raw text is bounded: once the buffer passes `OUTPUT_KEEP_BYTES` it is head+tail clipped
-(the clip factored out of `keep_output`, `transcript.rs:131-159`) and `clipped` is set. The
-sanitised text is cached and refreshed only when the buffer grows (the UI renders live entries
-several times per frame). Per-line
-sanitise and redaction (`fontaine_core::preview::display_text`) plus the clip run on the
-accumulated text at render/settle time, not per delta; `/expand thinking` shows the clipped text.
+rendered. Deltas are appended raw. Once the buffer passes a margin above `OUTPUT_KEEP_BYTES`
+(2x), the whole buffer is run through `display_text` (`fontaine_core::preview`) and then the
+head+tail clip factored out of `keep_output` (`transcript.rs:131-159`), in that order, redacting
+before clipping as `keep_output` requires; the buffer is replaced by the result and `clipped` is
+set, so memory stays bounded while streaming and a cut never leaves an unredactable credential
+prefix. The settle runs the same sanitise-then-clip on the final text. The sanitised text is
+cached and refreshed only when the buffer grows (the UI renders live entries several times per
+frame); rendering uses the cache. `/expand thinking` shows the settled (sanitised, possibly
+clipped) text.
 
 **Rendering.** Dim, italic, behind a `thinking` header row, passed through the existing paint-safe
 text path (no markdown). While streaming the card shows the header plus the last `REASONING_ROWS`
@@ -60,10 +63,25 @@ stops at a streaming `Reasoning` entry as `commit_entries` stops at an unsettled
 writing it when the live area is over budget; it is committed once, folded to its first 5 rows
 plus a footer `  expand: /expand thinking`, when it settles, as tool cards are
 (`transcript.rs:636-647, 835-836`). `/expand thinking` prints the latest reasoning card in full
-(an `Expanded` wrapper generalised to hold a `Reasoning` entry; render arms in `transcript.rs`
+(see **`/expand thinking`** below; an `Expanded` wrapper generalised to hold a `Reasoning` entry; render arms in `transcript.rs`
 and `linear.rs`, and the `Expanded` doc comment at `transcript.rs:63` updated). Linear/screen-reader
 mode prints the settled text prefixed `thinking:`, folded with the same `expand:` hint as linear
 tool output (`linear.rs:270-286`).
+
+**`/expand thinking`.** The argument parses to a new
+`pub enum ExpandTarget { Latest, Call(usize), Thinking }`; `call_number` (`commands.rs:690-700`)
+is renamed `expand_target(argument) -> Result<ExpandTarget, String>`: empty is `Latest`, the exact
+lowercase word `thinking` is `Thinking`, a `usize` is `Call(n)` (unchanged: bare `/expand` is still
+the latest tool call), anything else errors with
+``/expand takes a call number or `thinking`, such as `/expand 3`, not `{argument}` ``.
+`Transcript::expand` takes `ExpandTarget` instead of `Option<usize>`; the tool arms keep their
+current error texts. `Thinking` picks the latest `Entry::Reasoning`: none (including when
+`show_reasoning` is false) errors `there is no reasoning to expand`; a still-streaming one errors
+`the reasoning is still streaming; /expand thinking works once it settles`; otherwise it pushes
+`Expanded(Reasoning)` with the full settled text, followed by the same clip notice the expanded
+tool output uses when `clipped` is set. The help hint becomes `[n | thinking]` and the
+`Command::Expand` doc comment (`commands.rs:61`) becomes `/expand [n | thinking]`. The caller in
+`ui/commands/reports.rs:102-114` and the `call_number` test (`commands.rs:~819`) follow the rename.
 
 **Config.** `[tui] show_reasoning` (bool, default `true`). When false the transcript
 ignores both events. Added to `TuiSection`/`Tui` (the schema is the `JsonSchema` derive on
@@ -90,7 +108,8 @@ a deviation since Claude Code's stream-json carries thinking blocks. `ReasoningD
    derive; `fontaine-core/src/config_catalog.rs`: `tui.show_reasoning` row.
 3. `fontaine-tui/src/transcript.rs`: `Entry::Reasoning`, event handling, clipping, row rendering,
    commit logic, `Expanded(Reasoning)` arm. `fontaine-tui/src/commands.rs` (`/expand` hint at
-   `:210-215`; `call_number` at `:690-700` accepts only numbers, add `thinking`, plus a parse test)
+   `:210-215` and doc comment at `:61`; `call_number` at `:690-700` becomes `expand_target`
+   returning `ExpandTarget`, plus a parse test)
    and `ui/commands/reports.rs:102-114`.
 4. `fontaine-tui/src/linear.rs` (incl. `Expanded(Reasoning)` arm), `ui/turn.rs`: handle the new variants / entry (compiler-driven).
 5. `fontaine/src/headless.rs`: no-op arms.
@@ -102,7 +121,8 @@ a deviation since Claude Code's stream-json carries thinking blocks. `ReasoningD
 `rust/fontaine-core/src/turn.rs`, `rust/fontaine-core/src/config.rs`,
 `rust/fontaine-core/src/config_catalog.rs`, `rust/fontaine-tui/src/transcript.rs`, `rust/fontaine-tui/src/linear.rs`,
 `rust/fontaine-tui/src/ui/turn.rs`, `rust/fontaine-tui/src/commands.rs`,
-`rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/src/lib.rs`,
+`rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/src/ui/tests.rs` (the old
+`/expand takes a call number` assertion at ~:322), `rust/fontaine-tui/src/lib.rs`,
 `rust/fontaine-tui/src/app.rs`, `rust/fontaine/src/headless.rs`, `docs/configuration.md`,
 `docs/tui.md`, `docs/terminal.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions).
 
@@ -118,6 +138,8 @@ a deviation since Claude Code's stream-json carries thinking blocks. `ReasoningD
   `[tui] show_reasoning = false` hides it; unlike Claude Code, as observed to keep thinking out of the main
   transcript (Ctrl-O transcript view; not re-verified with `claude -p` in this plan). Headless
   `stream-json` omits reasoning, though Claude Code's carries thinking blocks (#344). Appended to `### TUI` in `tasks/fontaine_harness_plan.md`.
+- 2026-10-31: AFK: Reasoning buffer is appended raw, then past 2x `OUTPUT_KEEP_BYTES` run through `display_text` and the head+tail clip in `keep_output`'s order (redact, then clip), so memory is bounded while streaming and redaction holds; the sanitised cache refreshes on growth.
+- 2026-10-31: AFK: `/expand thinking` parses via `ExpandTarget { Latest, Call(n), Thinking }` (`call_number` becomes `expand_target`, `Transcript::expand` takes it); bare `/expand` stays the latest tool call; only a settled card expands, errors `there is no reasoning to expand` / still-streaming message; hint `[n | thinking]`; clip notice shown when clipped.
 
 ## Documentation
 
@@ -137,9 +159,11 @@ gains a `tui.show_reasoning` row); `docs/terminal.md` (a
   ordering after the user entry; late `Reasoning(full)` settles the earlier entry and an
   interleaved Reasoning, ToolCall, Reasoning stays two entries; empty settled reasoning is dropped;
   an over-budget live area holding a streaming reasoning card is not committed by `commit_within`;
-  a view transcript for a subagent honors `show_reasoning`; clipping bounds memory; streaming card shows last 5 rows, settled
+  a view transcript for a subagent honors `show_reasoning`; clipping bounds memory while streaming and redacts before clipping (a credential straddling the cut is masked); streaming card shows last 5 rows, settled
   card shows first 5 plus footer; `show_reasoning = false` drops the entries; control characters
-  are stripped; `/expand thinking` prints the whole text.
+  are stripped; `/expand thinking` prints the whole settled text with the clip notice when clipped, errors with
+  `there is no reasoning to expand` when none, and reports a still-streaming card; `expand_target`
+  parses empty, number, `thinking` and rejects the rest.
 - Config: default true, schema; catalog row `tui.show_reasoning`.
 - Headless: `-p` output has no reasoning text.
 - Layout of live area and scrollback commits is reproduced in a real tmux per `tasks/design/testing.md`.
