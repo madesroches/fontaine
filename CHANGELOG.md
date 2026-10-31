@@ -582,6 +582,10 @@ All notable changes are recorded here. The format follows
   clippy line-count limit and one builder configuration shared by the root agent and subagents
   (#187).
 
+#### Guardian
+
+- The guardian prompt no longer mentions the removed `background` spawn argument (#326).
+
 #### Headless
 
 - A turn no longer stops at 1,000 model calls when `--max-turns` is not given; interactive
