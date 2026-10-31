@@ -271,8 +271,8 @@ impl Tool for JobOutputTool {
     fn description(&self) -> String {
         "List the background jobs you started (no `id`, main agent only), or wait on one thing \
          you started by id. For a job: what it printed since you last read it and whether it \
-         still runs; `wait_secs` waits for the job to end or `wait_secs` to elapse (default 0), then returns what it printed; never poll with \
-         `sleep` in `shell`. A monitor's lines always arrive as notifications; a wait reports \
+         still runs; `wait_secs` waits for the job to end or `wait_secs` to elapse (default 0), \
+         then returns what it printed; never poll with `sleep` in `shell`. A monitor's lines always arrive as notifications; a wait reports \
          whether one was posted, it ended, or it still runs. For a subagent (`agent-*`, from \
          `agent`): waits until it ends, or `wait_secs` if given; its report \
          is delivered as a notification attached to this result, never repeated here. Any wait \
@@ -286,7 +286,7 @@ impl Tool for JobOutputTool {
             "type": "object",
             "properties": {
                 "id": { "type": "string", "description": "The job or subagent to wait on or read, such as `job-3f2a` or `agent-2`; omit to list every job." },
-                "wait_secs": { "type": "integer", "minimum": 0, "description": "Seconds to wait. A job: for it to end, a monitor: for a note or its end, default 0. A subagent: for it to end, default until it ends." },
+                "wait_secs": { "type": "integer", "minimum": 0, "description": "Seconds to wait. A job: for it to end. A monitor: for a note or its end. Default 0 for both. A subagent: for it to end, default until it ends." },
             },
             "additionalProperties": false,
         })

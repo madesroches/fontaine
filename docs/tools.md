@@ -302,11 +302,12 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
   one whose end `job_output` already returned.
 - **`job_output`.** With no `id` it lists every job: id, state, age and the start of its command.
   With an `id` it returns what the job printed since it was last read and whether it still runs.
-  `wait_secs` (no ceiling) waits for the job to end or the wait to elapse, then returns what it printed (output alone does not end the wait; use [`monitor`](#monitor) for that), so the model has no need to poll
-  with `sleep`; any wait returns early when a message from another agent arrives or you type one. A job that ended and was already reported in a notification answers with a short
-  marker instead of its output. On a monitor the same call waits instead: it reports that a
-  notification was posted, the monitor ended, or it is still running — never output bytes. A
-  zero `wait_secs` asks for the status at once.
+  `wait_secs` (no ceiling) waits for the job to end or the wait to elapse, then returns what it
+  printed (output alone does not end the wait; use [`monitor`](#monitor) for that), so the model has no need to poll with `sleep`; any wait returns early when a message from
+  another agent arrives or you type one. A job that ended and was already reported in a notification
+  answers with a short marker instead of its output. On a monitor the same call waits instead: it
+  reports that a notification was posted, the monitor ended, or it is still running — never output
+  bytes. A zero `wait_secs` asks for the status at once.
 - **`job_cancel`.** Stops the job's whole process group (`SIGTERM`, then `SIGKILL` after 2 seconds)
   and returns what it printed since it was last read, not counting what a notification already
   carried. A job that already ended is left as it is.

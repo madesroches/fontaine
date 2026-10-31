@@ -40,19 +40,8 @@ line-by-line delivery to `monitor`.
 3. `rust/fontaine-tools/tests/jobs.rs`: adapt the L141 test (a running job with output now holds a
    `wait_secs: 10` call until expiry) to use a short wait or `wait_secs: 0`; add new tests below.
 4. `docs/tools.md`: update the table row and the `job_output` bullet (stale wording at L305).
-5. Master plan `## Decisions`: add a dated line at the end of `### Agents`, next to the #301
-   `job_output` lines (~L368-370); add a `CHANGELOG.md` entry under `### Changed` → `#### Agents`,
-   next to the existing `wait_secs` entry.
-
-## Files to Modify
-- `rust/fontaine-tools/src/jobs.rs`
-- `rust/fontaine-tools/src/jobs/tools.rs`
-- `rust/fontaine-tools/tests/jobs.rs`
-- `docs/tools.md`
-- `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`
-
-## Decisions`: add a dated line at the end of the `job_output` subject's
-   subsection, and a `CHANGELOG.md` entry.
+5. Master plan `## Decisions`: add a dated line at the end of `### Agents`; add a `CHANGELOG.md` entry under
+   `### Changed` → `#### Agents`, next to the existing `wait_secs` entry.
 
 ## Files to Modify
 - `rust/fontaine-tools/src/jobs.rs`
