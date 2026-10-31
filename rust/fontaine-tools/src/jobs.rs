@@ -964,7 +964,8 @@ impl Jobs {
             .is_some_and(|job| job.running() && job.control.request(Kill::User))
     }
 
-    /// New output from `id`, waiting up to `wait` for some or for its end. A job whose end the
+    /// Output from `id` since it was last read, waiting up to `wait` for the job to end; output
+    /// alone does not end the wait, since `monitor` owns line-by-line delivery. A job whose end the
     /// model was already told of in a note returns a marker instead, and one whose end this
     /// returns posts no note. A monitor has no read path: the wait reports only whether a note
     /// went out since it began, the monitor ended, or the wait expired, and its end note is
@@ -1010,9 +1011,8 @@ impl Jobs {
                         None
                     }
                 } else {
-                    let fresh = job.buffer.next > job.cursor;
                     let expired = deadline.is_some_and(|at| Instant::now() >= at);
-                    if job.ended.is_some() || fresh || expired || wait.is_zero() {
+                    if job.ended.is_some() || expired || wait.is_zero() {
                         Some(JobOutput::Read(read(job, false)))
                     } else {
                         if waiting.is_none() {

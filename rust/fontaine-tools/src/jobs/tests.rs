@@ -329,12 +329,12 @@ async fn the_buffer_drops_old_lines_and_counts_them_and_a_read_returns_only_new_
 }
 
 #[tokio::test]
-async fn waiting_returns_early_on_new_output() {
+async fn waiting_is_not_cut_short_by_new_output() {
     let (jobs, _) = jobs();
-    let id = start(&jobs, "sleep 1; echo news; sleep 30", true);
+    let id = start(&jobs, "echo news; sleep 30", true);
     let started = Instant::now();
-    let read = as_read(jobs.output(&id, Duration::from_secs(20)).await.unwrap());
-    assert!(started.elapsed() < Duration::from_secs(10));
+    let read = as_read(jobs.output(&id, Duration::from_secs(2)).await.unwrap());
+    assert!(started.elapsed() >= Duration::from_millis(1900));
     assert_eq!(lines(&read.chunk), "news\n");
     assert!(read.end.is_none());
     jobs.terminate_all().await;

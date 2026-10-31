@@ -561,6 +561,10 @@ All notable changes are recorded here. The format follows
   An omitted value still reads a job now and waits for a subagent to end. Any wait returns
   early when a message from another agent arrives or, in the main conversation, when the user
   types one (#301).
+- `job_output` on a shell job now waits until the job ends or `wait_secs` elapses instead of
+  returning at the first new output, so a chatty job (`gh pr checks --watch`) no longer cuts a long
+  wait short. The call returns everything printed since the last read; `monitor` still delivers
+  lines as they come (#336).
 - Subagents work as in Claude Code (#321). While any subagent exists, a list below the status line
   shows `main` and each agent with its status, age and spend; Down on the prompt focuses it, Enter
   views a row and x stops a running agent. Viewing an agent clears the screen and scrollback and
