@@ -154,6 +154,8 @@ pub enum PluginAction {
     Enable(NameArgs),
     /// Disable an installed plugin (it stays on disk and contributes nothing)
     Disable(NameArgs),
+    /// Turn automatic updates of one installed plugin on or off
+    AutoUpdate(AutoUpdateArgs),
     /// List installed plugins
     List(FormatArgs),
 }
@@ -174,6 +176,27 @@ pub enum MarketplaceAction {
     Update { name: Option<String> },
     /// Remove a marketplace (refused while a plugin names it)
     Remove { name: String },
+    /// Turn automatic updates of one marketplace on or off
+    AutoUpdate {
+        name: String,
+        #[arg(value_enum)]
+        setting: Toggle,
+    },
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AutoUpdateArgs {
+    /// An installed plugin's name
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    #[arg(value_enum)]
+    pub setting: Toggle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum Toggle {
+    Yes,
+    No,
 }
 
 #[derive(Args, Debug, Clone)]

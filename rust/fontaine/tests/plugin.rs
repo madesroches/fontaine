@@ -146,3 +146,226 @@ async fn install_refuses_duplicate_names_and_name_mismatches() {
     assert_ne!(dup.code, Some(0));
     assert!(dup.stderr.contains("already installed"), "{}", dup.stderr);
 }
+
+fn registry_text(sandbox: &Sandbox) -> String {
+    std::fs::read_to_string(sandbox.config.join("plugins.toml")).unwrap()
+}
+
+async fn add_and_install(sandbox: &Sandbox) -> String {
+    write_marketplace(sandbox, "team-market");
+    let path = sandbox.work.join("team-market");
+    let path = path.to_string_lossy().into_owned();
+    let add = sandbox.run(&["plugin", "marketplace", "add", &path]).await;
+    assert_eq!(add.code, Some(0), "{}", add.stderr);
+    let install = sandbox.run(&["plugin", "install", "review@team"]).await;
+    assert_eq!(install.code, Some(0), "{}", install.stderr);
+    install.stdout
+}
+
+#[tokio::test]
+async fn the_approval_summary_lists_the_executable_surface_without_secret_values() {
+    let mut sandbox = Sandbox::new();
+    sandbox.set_env("REVIEW_TOKEN", "s3cr3t-value");
+    write_marketplace(&sandbox, "team-market");
+    let plugin = "team-market/plugins/review";
+    sandbox.add_file(
+        &format!("{plugin}/hooks/hooks.json"),
+        r#"{"hooks": {"PreToolUse": [{"matcher": "mcp__srv__*", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/check.sh --token ${REVIEW_TOKEN}"}]}]}}"#,
+    );
+    sandbox.add_file(
+        &format!("{plugin}/.mcp.json"),
+        r#"{"mcpServers": {"srv": {"command": "${CLAUDE_PLUGIN_ROOT}/serve", "args": ["--port", "1"], "env": {"TOKEN": "${REVIEW_TOKEN}"}}}}"#,
+    );
+    sandbox.add_file(
+        &format!("{plugin}/skills/review/SKILL.md"),
+        "---\ndescription: reviews\n---\nBranch: !`git branch --show-current`\n",
+    );
+    let path = sandbox.work.join("team-market");
+    let path = path.to_string_lossy().into_owned();
+    assert_eq!(
+        sandbox
+            .run(&["plugin", "marketplace", "add", &path])
+            .await
+            .code,
+        Some(0)
+    );
+    let install = sandbox.run(&["plugin", "install", "review@team"]).await;
+    assert_eq!(install.code, Some(0), "{}", install.stderr);
+    let out = &install.stdout;
+    assert!(out.contains("1 hook(s)"), "{out}");
+    assert!(
+        out.contains("hook PreToolUse [mcp__plugin_review_srv__*]: ${CLAUDE_PLUGIN_ROOT}/check.sh --token ${REVIEW_TOKEN}"),
+        "{out}"
+    );
+    assert!(
+        out.contains("MCP server plugin_review_srv: ${CLAUDE_PLUGIN_ROOT}/serve --port 1 (env TOKEN=${REVIEW_TOKEN})"),
+        "{out}"
+    );
+    assert!(
+        out.contains("skill command in skills/review/SKILL.md: git branch --show-current"),
+        "{out}"
+    );
+    assert!(out.contains("fingerprint"), "{out}");
+    assert!(
+        !out.contains("s3cr3t-value") && !install.stderr.contains("s3cr3t-value"),
+        "{out}"
+    );
+    assert!(registry_text(&sandbox).contains("approved = \""));
+}
+
+#[tokio::test]
+async fn plugin_update_records_the_approval_and_clears_held_and_staged_state() {
+    let sandbox = Sandbox::new();
+    add_and_install(&sandbox).await;
+    let approved_at_install = registry_text(&sandbox)
+        .lines()
+        .find(|l| l.starts_with("approved"))
+        .unwrap()
+        .to_string();
+
+    // State the background pass leaves behind: a held revision and a staged one.
+    let mut registry: toml::Table = toml::from_str(&registry_text(&sandbox)).unwrap();
+    for table in ["plugin", "marketplace"] {
+        let entry = registry
+            .get_mut(table)
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+            .first_mut()
+            .unwrap()
+            .as_table_mut()
+            .unwrap();
+        entry.insert("staged_pin".into(), "deadbeefdeadbeef".into());
+        if table == "plugin" {
+            entry.insert("held_pin".into(), "deadbeefdeadbeef".into());
+        }
+    }
+    std::fs::write(
+        sandbox.config.join("plugins.toml"),
+        toml::to_string(&registry).unwrap(),
+    )
+    .unwrap();
+    let installed = sandbox.config.join("plugins/installed/team");
+    std::fs::create_dir_all(installed.join(".staged-review")).unwrap();
+    std::fs::create_dir_all(sandbox.config.join("plugins/marketplaces/.staged-team")).unwrap();
+
+    let list = sandbox.run(&["plugin", "list"]).await;
+    assert!(list.stdout.contains("held deadbee"), "{}", list.stdout);
+    let json = sandbox.run(&["plugin", "list", "--format", "json"]).await;
+    let value: serde_json::Value = serde_json::from_str(json.stdout.trim()).unwrap();
+    assert_eq!(value["plugins"][0]["held_pin"], json!("deadbeefdeadbeef"));
+    assert_eq!(value["plugins"][0]["auto_update"], json!(true));
+    assert_eq!(value["marketplaces"][0]["auto_update"], json!(true));
+
+    let update = sandbox.run(&["plugin", "update", "review"]).await;
+    assert_eq!(update.code, Some(0), "{}", update.stderr);
+    let text = registry_text(&sandbox);
+    assert!(text.contains(&approved_at_install), "{text}");
+    assert!(!text.contains("held_pin"), "{text}");
+    // The plugin's staged revision is discarded; the marketplace's is its own entry's.
+    assert!(!installed.join(".staged-review").exists());
+    assert!(
+        text.matches("staged_pin").count() == 1,
+        "only the marketplace keeps one: {text}"
+    );
+
+    let update = sandbox
+        .run(&["plugin", "marketplace", "update", "team"])
+        .await;
+    assert_eq!(update.code, Some(0), "{}", update.stderr);
+    assert!(!registry_text(&sandbox).contains("staged_pin"));
+    assert!(
+        !sandbox
+            .config
+            .join("plugins/marketplaces/.staged-team")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn auto_update_can_be_turned_off_per_marketplace_and_per_plugin() {
+    let sandbox = Sandbox::new();
+    add_and_install(&sandbox).await;
+
+    let off = sandbox
+        .run(&["plugin", "marketplace", "auto-update", "team", "no"])
+        .await;
+    assert_eq!(off.code, Some(0), "{}", off.stderr);
+    let off = sandbox
+        .run(&["plugin", "auto-update", "review", "no"])
+        .await;
+    assert_eq!(off.code, Some(0), "{}", off.stderr);
+    assert_eq!(
+        registry_text(&sandbox)
+            .matches("auto_update = false")
+            .count(),
+        2
+    );
+
+    let markets = sandbox.run(&["plugin", "marketplace", "list"]).await;
+    assert!(
+        markets.stdout.contains("auto-update off"),
+        "{}",
+        markets.stdout
+    );
+    let list = sandbox.run(&["plugin", "list"]).await;
+    assert!(list.stdout.contains("auto-update off"), "{}", list.stdout);
+    let json = sandbox.run(&["plugin", "list", "--format", "json"]).await;
+    let value: serde_json::Value = serde_json::from_str(json.stdout.trim()).unwrap();
+    assert_eq!(value["plugins"][0]["auto_update"], json!(false));
+    assert_eq!(value["marketplaces"][0]["auto_update"], json!(false));
+
+    let on = sandbox
+        .run(&["plugin", "auto-update", "review", "yes"])
+        .await;
+    assert_eq!(on.code, Some(0), "{}", on.stderr);
+    assert_eq!(
+        registry_text(&sandbox)
+            .matches("auto_update = false")
+            .count(),
+        1
+    );
+
+    let missing = sandbox.run(&["plugin", "auto-update", "nope", "no"]).await;
+    assert_ne!(missing.code, Some(0));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_headless_run_never_stages_swaps_or_stamps() {
+    let endpoint =
+        common::Endpoint::start(common::Wire::Chat, vec![common::Turn::text("done")]).await;
+    let sandbox = Sandbox::compatible(&endpoint.url());
+    add_and_install(&sandbox).await;
+
+    // The source moved, and an earlier interactive run staged a revision of the marketplace.
+    sandbox.add_file(
+        "team-market/plugins/review/skills/review/SKILL.md",
+        "---\ndescription: reviews a diff\n---\nNew body.",
+    );
+    let staged = sandbox.config.join("plugins/marketplaces/.staged-team");
+    std::fs::create_dir_all(&staged).unwrap();
+    let mut registry: toml::Table = toml::from_str(&registry_text(&sandbox)).unwrap();
+    registry["marketplace"].as_array_mut().unwrap()[0]
+        .as_table_mut()
+        .unwrap()
+        .insert("staged_pin".into(), "deadbeefdeadbeef".into());
+    std::fs::write(
+        sandbox.config.join("plugins.toml"),
+        toml::to_string(&registry).unwrap(),
+    )
+    .unwrap();
+    let before = registry_text(&sandbox);
+    let live_skill = sandbox
+        .config
+        .join("plugins/installed/team/review/skills/review/SKILL.md");
+    let live_before = std::fs::read_to_string(&live_skill).unwrap();
+
+    let out = sandbox.headless(&["go"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+
+    assert_eq!(registry_text(&sandbox), before, "the registry is untouched");
+    assert!(staged.is_dir(), "the staged revision is not swapped in");
+    assert_eq!(std::fs::read_to_string(&live_skill).unwrap(), live_before);
+    assert!(!sandbox.data.join("plugin-update.stamp").exists());
+    assert!(!sandbox.data.join("plugin-updates.jsonl").exists());
+}

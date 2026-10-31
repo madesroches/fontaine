@@ -61,7 +61,7 @@ do about it on dim lines indented underneath; text in backticks and `/commands` 
 bold, so the actionable part stands out without relying on colour. Warnings open the conversation:
 a guardian that runs on your main model, a `[guardian] profile = "minimal"` that is not in effect,
 a tool-result scanner that is unavailable, an additional directory that was skipped and an ignored
-`FONTAINE_AX_SCREEN_READER` value. Set `FONTAINE_ASCII_GLYPHS=1` to use `*` and `-` in place of
+`FONTAINE_AX_SCREEN_READER` value. The background [plugin auto-update](plugins.md#auto-update) pass adds a notice, once, for each marketplace or plugin it staged for the next start, for a plugin revision it held until you run `fontaine plugin update <name>`, and for a failed update; it appears whenever the pass finishes, in whichever session is open. Set `FONTAINE_ASCII_GLYPHS=1` to use `*` and `-` in place of
 `⚠` and `·` on terminals or fonts that lack them (see [Terminal setup](terminal.md#ascii-glyphs)).
 
 Narrowing the terminal clears the visible screen and redraws the live area over the whole screen. Output
@@ -403,7 +403,7 @@ error: an export never overwrites.
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
 | `/permissions` | Shows the permission mode and the `deny`, `ask` and `allow` rules in force, each with the scope that contributed it (session and always grants included), the workspace roots and the settings file where rules are edited. It is read-only; see [Permissions](permissions.md). While the guardian is off it adds that these rules are not being enforced. |
 | `/plan [<description>]` | Switches to plan mode, as Shift+Tab does. With a description it also sends it as your next message, so `/plan fix the auth bug` plans the fix. |
-| `/plugins` | Lists the installed [plugins](plugins.md): name, marketplace, pinned short sha, enabled or disabled, and their loaded component counts. Installs and marketplace changes stay on the CLI. |
+| `/plugins` | Lists the installed [plugins](plugins.md): name, marketplace, pinned short sha, enabled or disabled, and their loaded component counts. Installs and marketplace changes stay on the CLI; the only background change is the [auto-update](plugins.md#auto-update) pass, whose held revisions `fontaine plugin list` marks. |
 | `/rename [<name>]` | Names the session. Without a name, draws one from the first line of your first message. See [Sessions](#sessions). |
 | `/resume [<name-or-id>]` | Switches to another session started in this folder: the picker without an argument, that session with one. Sessions where nothing was said and that have no name are not listed. Only between turns. See [Sessions](#sessions). |
 | `/rewind`, `/checkpoint` | Opens a list of this conversation's prompts to restore the code, the conversation or both to the start of one. Esc twice does the same. See [Checkpoints and /rewind](checkpoints.md). Refused while a subagent runs. |

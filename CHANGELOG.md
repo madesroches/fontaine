@@ -128,6 +128,20 @@ All notable changes are recorded here. The format follows
 
 #### Extensibility
 
+- Plugin and marketplace auto-update (#283). Registered marketplaces and installed plugins update
+  themselves by default: a background pass at interactive start (at most once a day, never in
+  `fontaine -p`) fetches each upstream revision, validates it and stages it beside the live
+  checkout, and the next interactive start swaps it in before plugins load, so nothing changes
+  under a running session. The pin stays the approval boundary: a plugin revision applies only
+  when its approval fingerprint (hook, MCP and LSP definitions, skill `!` commands, referenced
+  variables and the content of every non-markdown file) equals the one recorded at install or at
+  the last `plugin update`; otherwise it is held with the old checkout live and a notice tells you
+  to run `fontaine plugin update <name>`. `plugin install` and `plugin update` now list every hook
+  command, MCP server definition and skill `!` line they approve. `[plugins] auto_update` (user
+  file only) turns it off; `fontaine plugin auto-update` and `plugin marketplace auto-update`
+  opt out one entry; `plugin list` marks held revisions. Outcomes are logged to
+  `plugin-updates.jsonl` and shown once as notices. This amends "installs, updates and marketplace
+  changes are CLI commands only".
 - Plugins and marketplaces (#30). A plugin bundles Claude Code's extension files into one
   directory with a manifest, and a marketplace is a git repository or local directory with a
   catalog. Installs are user-scope only and pinned by commit; `fontaine plugin marketplace` and

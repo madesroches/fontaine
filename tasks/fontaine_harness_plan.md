@@ -445,7 +445,9 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-28: Plugin hooks' `allow`/`retry` never count and plugin skills/agents follow project
   permission rules, even though install is a user action (stricter than Claude Code).
 - 2026-10-28: Installs, updates and marketplace changes are CLI commands only; the TUI gets a
-  read-only `/plugins`. No interactive marketplace browser in v1.
+  read-only `/plugins`. No interactive marketplace browser in v1. Amended 2026-10-31 (#283): the
+  one exception is the background auto-update pass below, which stages revisions the user already
+  approved the executables of; installs, approvals and marketplace registration stay CLI-only.
 - 2026-10-28: LSP server components were unsupported (ignored with a warning); superseded
   2026-10-30 below. Mods stay skipped (parity doc).
 - 2026-10-28: Plugins may add `deny`/`ask` rules and `hard_deny`/`soft_deny` guardian entries via
@@ -461,7 +463,8 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-28: `${CLAUDE_PLUGIN_ROOT}` keeps its Claude Code name for portability, expanding to the
   installed checkout.
 - 2026-10-28: A path-source plugin's pin is the marketplace's pin, and `plugin update` for one
-  re-copies from the current marketplace checkout, so it moves only after `marketplace update`.
+  re-copies from the current marketplace checkout, so it moves only after `marketplace update`
+  (or, since 2026-10-31, after auto-update moves the marketplace, in the same pass).
 - 2026-10-28: `!` commands in plugin skills run without the workspace-trust gate — install is the
   approval — and still pass the permission pipeline.
 - 2026-10-28: Hook matchers support single tool names, `|` alternation and trailing wildcards; a
@@ -495,6 +498,37 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-30: Plugin LSP `workspaceFolder` is accepted and ignored with a startup warning, like
   `transport` — a valid Claude Code plugin keeps its servers, and Fontaine roots every server at
   the workspace.
+- 2026-10-31 (#283): Deviation from Claude Code — a plugin revision that changes its executable
+  surface is held, not applied, by auto-update. The approval fingerprint covers hook, MCP and LSP
+  definitions, skill `!` lines, referenced `${VAR}` names and every non-markdown file; the user
+  applies a held revision with `plugin update`, which prints the extended approval summary. Reason:
+  install is the approval, and silently updating code that runs hooks and servers would void it
+  (Claude Code applies the update without such a check).
+- 2026-10-31 (#283): Deviation from Claude Code — the trigger is interactive start plus a 24 h
+  stamp, run on a background thread and staged for the next start; Claude Code refreshes after the
+  first message with a randomized delay. Reason: staging at start never delays the session and
+  never changes loaded code mid-session, and the stamp keeps an offline machine from retrying on
+  every start.
+- 2026-10-31 (#283): Deviation from Claude Code — one global `[plugins] auto_update` (user scope
+  only) plus a per-entry opt-out in the registry, set by `plugin auto-update` and `plugin
+  marketplace auto-update`, instead of Claude Code's per-marketplace `autoUpdate` and environment
+  variables. Reason: the global key fits Fontaine's settings scope rules, and the registry is
+  where per-entry state already lives.
+- 2026-10-31 (#283): Deviation from Claude Code — auto-update is on by default for every
+  marketplace and plugin, where Claude Code enables it for official marketplaces only (and the
+  issue asked for opt-in). Reason: the user instructed default-on; the fingerprint hold keeps the
+  install-time approval intact, and plugins installed before this change are skipped until one
+  manual `plugin update` records their fingerprint.
+- 2026-10-31 (#283): `fontaine -p` never fetches, stages or swaps plugin updates, as Claude Code's
+  headless runs do not auto-update; reason: deterministic CI and eval runs and no surprise
+  network.
+- 2026-10-31 (#283): Auto-update never swaps a live checkout: it stages `.staged-<name>` with
+  `staged_pin` in the registry and a startup swap under the registry lock applies it before
+  plugins load; leftover `.bak-*` is restored if a checkout is missing, and stale `.bak-*`,
+  `.auto-*` and unrecorded `.staged-*` directories are removed. Up-to-date is decided before
+  cloning (`git ls-remote`, or the catalog sha with no network), and a held pin equal to the
+  remote is neither re-cloned nor re-announced. Reason: nothing executable changes under a running
+  session, and the pass holds the registry lock only to record, never through git network work.
 
 ### Guardian
 

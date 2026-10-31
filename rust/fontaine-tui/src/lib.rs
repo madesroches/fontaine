@@ -98,6 +98,26 @@ enum Prompt {
     Notice(Severity, String),
 }
 
+/// Notices produced outside the session, such as the plugin auto-update pass's outcomes. The
+/// receiver is shared so a `/resume` or `/branch`, which ends one `drive` and starts another in
+/// the same process, hands whatever was not yet shown to the next session.
+pub type NoticeFeed = Arc<tokio::sync::Mutex<UnboundedReceiver<Notice>>>;
+
+/// What the caller of [`run`] or [`drive`] shows besides the session's own notices.
+#[derive(Default)]
+pub struct Notices {
+    /// Shown before every other notice.
+    pub startup: Vec<Notice>,
+    /// Shown as they arrive while the session runs.
+    pub feed: Option<NoticeFeed>,
+}
+
+/// A sender for [`NoticeFeed`] and the feed that receives from it.
+pub fn notice_feed() -> (UnboundedSender<Notice>, NoticeFeed) {
+    let (tx, rx) = unbounded_channel();
+    (tx, Arc::new(tokio::sync::Mutex::new(rx)))
+}
+
 /// Hands approval requests to the interface and waits for the human's answer. With the
 /// interface gone, nobody can approve anything.
 struct ChannelApprover {
@@ -237,17 +257,20 @@ struct Ui<R> {
 /// Runs the interface until the user quits or `input` closes. `render` is called with the
 /// interface state after every change; it may advance the transcript's commit cursor, and is
 /// called once more with `App::flush` set so whatever is still held back reaches the terminal.
-/// `startup` is shown before every other notice.
+/// `notices.startup` is shown before every other notice; whatever arrives on `notices.feed`
+/// while the session runs is shown as it comes.
 pub async fn drive(
     mut setup: AgentSetup,
     launch_dir: PathBuf,
-    startup: Vec<Notice>,
+    notices: Notices,
     input: UnboundedReceiver<Input>,
     render: impl FnMut(&mut App),
     clipboard: impl FnMut(&str) -> std::io::Result<()> + 'static,
     suspend: Suspend,
 ) -> Result<DriveOutcome, String> {
+    let Notices { startup, feed } = notices;
     let (tx, prompts) = unbounded_channel();
+    let feed_tx = tx.clone();
     setup.approver = Arc::new(ChannelApprover { tx });
     let model = setup.models.main.reference.to_string();
     let mode = setup.mode;
@@ -267,6 +290,24 @@ pub async fn drive(
     let (agent_sink, agent_events) = unbounded_channel();
     runtime.state.set_agent_event_sink(agent_sink);
     runtime.record_session_start().await;
+    // Merged into the prompts so a notice shows the way the approver's own do. Stopped with the
+    // session; what it had not yet taken stays in the feed for the next one.
+    let forwarder = feed.map(|feed| {
+        tokio::spawn(async move {
+            loop {
+                let next = feed.lock().await.recv().await;
+                let Some(notice) = next else {
+                    return;
+                };
+                if feed_tx
+                    .send(Prompt::Notice(notice.severity, notice.to_string()))
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        })
+    });
     let theme = Theme::preset(runtime.config.tui.theme);
     let mut ui = Ui {
         app: App::new(mode, model),
@@ -347,6 +388,9 @@ pub async fn drive(
     // What stays in the terminal is the main conversation, not an agent's view.
     if ui.app.viewing.is_some() {
         ui.app.view(None);
+    }
+    if let Some(forwarder) = forwarder {
+        forwarder.abort();
     }
     ui.app.flush = true;
     (ui.render)(&mut ui.app);
@@ -430,7 +474,7 @@ pub async fn run(
     setup: AgentSetup,
     launch_dir: PathBuf,
     screen_reader: Option<accessibility::Source>,
-    startup: Vec<Notice>,
+    notices: Notices,
 ) -> Result<DriveOutcome, String> {
     enable_raw_mode().map_err(|e| {
         format!(
@@ -511,7 +555,7 @@ pub async fn run(
     let result = drive(
         setup,
         launch_dir,
-        startup,
+        notices,
         rx,
         move |app| {
             let rendered = match &screen {

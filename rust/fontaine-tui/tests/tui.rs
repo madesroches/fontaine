@@ -775,6 +775,45 @@ async fn startup_warnings_open_the_conversation_as_warning_entries() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn notices_from_outside_the_session_show_up_and_wait_across_a_session_switch() {
+    use fontaine_core::Notice;
+    let (tx, feed) = fontaine_tui::notice_feed();
+    let mut w = World::new(vec![]);
+    w.feed = Some(feed);
+    tx.send(Notice::info(
+        "plugin `review` updated to abc1234; active next session",
+    ))
+    .unwrap();
+    w.run(|ui| async move {
+        idle(&ui).await;
+        let live = ui.live();
+        assert!(
+            live.contains("plugin `review` updated to abc1234; active next session"),
+            "{live}"
+        );
+    })
+    .await;
+
+    // Sent while no session ran, as when the pass finishes during a `/resume`: the next
+    // session shows it.
+    tx.send(Notice::warning(
+        "plugin `review` has a new revision",
+        Some("run `fontaine plugin update review` to review it".into()),
+    ))
+    .unwrap();
+    w.run(|ui| async move {
+        idle(&ui).await;
+        let live = ui.live();
+        assert!(
+            live.contains("plugin `review` has a new revision")
+                && live.contains("run `fontaine plugin update review`"),
+            "{live}"
+        );
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn ascii_glyphs_replace_the_warning_mark_when_asked() {
     use fontaine_core::Notice;
     let mut w = World::new(vec![]);

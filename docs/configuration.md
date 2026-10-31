@@ -27,12 +27,14 @@ Files in these directories:
 | File | Purpose |
 |---|---|
 | `<config dir>/config.toml` | The user settings file. |
-| `<config dir>/plugins.toml` | The [plugin and marketplace](plugins.md) registry, written by the `fontaine plugin` CLI. It is not a settings file. |
+| `<config dir>/plugins.toml` | The [plugin and marketplace](plugins.md) registry, written by the `fontaine plugin` CLI and by the [plugin auto-update](plugins.md#auto-update) pass. It is not a settings file. |
 | `<data dir>/trust.toml` | Workspace trust record (see [Workspace trust](#workspace-trust)). |
 | `<data dir>/credentials.toml` | Stored API keys (see [Credentials](#credentials)). |
 | `<data dir>/auto_mode/<project>/environment.json` | The project facts `fontaine auto-mode setup` collected for the [guardian](guardian.md#project-environment). Readable by the current user only; the agent's file tools cannot write it unprompted. |
 | `<config dir>/config.lock`, `<config dir>/plugins.lock`, `<data dir>/trust.lock`, `<data dir>/credentials.lock` | Empty lock files beside the files they guard. Sessions hold one while they edit that file, so concurrent edits do not overwrite each other, and briefly while they read the settings or trust file, so a read waits for an edit in progress; safe to delete when no session is running. |
 | `<data dir>/history.jsonl` | What you submitted in the terminal UI, for Up and Ctrl-R recall (see [History](tui.md#history)). Readable by the current user only. |
+| `<data dir>/plugin-update.stamp` | When the [plugin auto-update](plugins.md#auto-update) pass last ran, so it runs at most once a day. |
+| `<data dir>/plugin-updates.jsonl` | One JSON line for each plugin or marketplace update the pass staged, held or failed. Readable by the current user only. |
 | `<data dir>/recent_models.json` | The models you last switched to with `/model` and `/guardian-model`, for the picker's Recent group (see [Choosing a model](tui.md#choosing-a-model)). Readable by the current user only. |
 
 Files that hold secrets or trust decisions are created readable by the current user only: mode
@@ -115,6 +117,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[goal]` keys | no | no | yes |
 | `[shell] max_timeout_secs` | no | no | yes |
 | `[checkpoints]` keys | no | no | no |
+| `[plugins] auto_update` | no | no | no |
 | `[shell_preclassifier] allow_extra` | no | yes | yes |
 | Agent files `agents/*.md` | narrowing only | n/a | n/a |
 | `[[hooks.*]]` | yes, after workspace trust; `allow` ignored | yes, after workspace trust | yes |
@@ -838,6 +841,21 @@ Only the user file can set these; neither a repository nor `--settings` can.
 ```toml
 [checkpoints]
 max_file_bytes = 5242880
+```
+
+### `[plugins]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `auto_update` | Whether registered marketplaces and installed plugins update themselves in the background when the terminal UI starts (see [Auto-update](plugins.md#auto-update)). A plugin revision that changes its hooks, servers, skill `!` commands or scripts is held for `fontaine plugin update` either way. Headless runs never auto-update. | `true` |
+
+Updating changes code you approved at install, so only the user file can set it; a repository and
+`--settings` cannot. One marketplace or plugin can opt out on its own with `fontaine plugin
+marketplace auto-update <name> no` or `fontaine plugin auto-update <name> no`.
+
+```toml
+[plugins]
+auto_update = false
 ```
 
 ### `[shell_preclassifier]`
