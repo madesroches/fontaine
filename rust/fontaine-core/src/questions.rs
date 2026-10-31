@@ -86,7 +86,7 @@ mod tests {
     fn rig(approver: Arc<dyn Approver>) -> (HumanQuestions, Arc<Ledger>, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let ledger = Arc::new(Ledger::create(dir.path()).unwrap());
-        let agents = Arc::new(AgentTree::new(Limits::default()));
+        let agents = Arc::new(AgentTree::new(Limits::default(), 1));
         agents.set_root_tools(|| {
             fontaine_tools::descriptor::names()
                 .map(String::from)

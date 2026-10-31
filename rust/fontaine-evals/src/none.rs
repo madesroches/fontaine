@@ -122,6 +122,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
     let approver = Arc::new(DenyAll);
     let agents = Arc::new(fontaine_agents::tree::AgentTree::new(
         fontaine_agents::tree::Limits::default(),
+        1,
     ));
     agents.set_root_tools(|| {
         fontaine_tools::descriptor::names()

@@ -180,7 +180,8 @@ Each session keeps two stores, plus a task list, a schedule and a goal file, in 
 - the **model context**, the conversation the model sees, kept in `logs/` by rig's memory store.
   Compaction rewrites it: when the conversation outgrows the model's context window, or the
   `[context] autocompact_window` setting, or when you run `/compact`, the older part is replaced
-  by a summary the model wrote. `/clear` empties it.
+  by a summary the model wrote. `/clear` empties it. The same directory holds one `agent-<n>.jsonl`
+  per subagent, that agent's conversation, saved when a run ends and kept for the session's life.
 - the **session ledger**, `ledger/ledger.jsonl`: an append-only record, written by the harness and
   never by the model. It holds the user's messages verbatim (a message typed while a turn runs is
   recorded when the agent receives it with a tool result, not when it is typed), mode changes, approvals and grants,
@@ -243,6 +244,12 @@ main conversation's, so existing sessions load unchanged. Session naming, the fi
 listing shows and the `/rewind` count use main-conversation messages alone, and a rewind also
 drops the agent-directed messages recorded after the first message it drops. A `resumed` agent
 record marks the start of a later run of an ended subagent.
+
+The ledger does not only record the lifecycle, it anchors id continuity: the largest `agent-<n>`
+ordinal in its `spawned` records seeds the counter a resumed session mints ids from, so a restarted
+process never reuses an id whose per-agent log a previous process persisted. Folding the same
+records rebuilds the session's subagent list after a restart — id, parent, type and the latest
+finished status — which is what `/export` merges with the live tree when the tree is empty.
 
 ## Models
 

@@ -233,7 +233,7 @@ impl Rig {
             config.workspace.clone(),
             scratch.iter().chain(&memory).cloned(),
         ));
-        let agents = Arc::new(AgentTree::new(Limits::default()));
+        let agents = Arc::new(AgentTree::new(Limits::default(), 1));
         agents.set_root_tools(|| {
             fontaine_tools::descriptor::names()
                 .map(String::from)

@@ -195,7 +195,9 @@ pub struct AgentTree {
 }
 
 impl AgentTree {
-    pub fn new(limits: Limits) -> AgentTree {
+    /// `next_agent` seeds the id counter, one past the largest ordinal a previous process
+    /// of this session reserved, so ids never collide with persisted per-agent logs.
+    pub fn new(limits: Limits, next_agent: u64) -> AgentTree {
         let root = Node {
             info: NodeInfo {
                 id: ROOT_AGENT.to_string(),
@@ -226,7 +228,7 @@ impl AgentTree {
             root_mode: RwLock::new(Arc::new(|| RootMode::Ladder(Ladder::Manual))),
             root_tools: RwLock::new(None),
             changed: Notify::new(),
-            next: AtomicU64::new(1),
+            next: AtomicU64::new(next_agent),
             unpriced_noticed: AtomicBool::new(false),
         }
     }
@@ -969,10 +971,13 @@ mod tests {
     use super::*;
 
     fn tree(max_parallel: u32) -> AgentTree {
-        AgentTree::new(Limits {
-            max_parallel,
-            ..Limits::default()
-        })
+        AgentTree::new(
+            Limits {
+                max_parallel,
+                ..Limits::default()
+            },
+            1,
+        )
     }
 
     fn reserve(tree: &AgentTree, parent: &str) -> Result<String, Refusal> {
@@ -1061,10 +1066,13 @@ mod tests {
 
     #[test]
     fn the_depth_cap_stops_a_fourth_layer() {
-        let tree = AgentTree::new(Limits {
-            max_parallel: 10,
-            ..Limits::default()
-        });
+        let tree = AgentTree::new(
+            Limits {
+                max_parallel: 10,
+                ..Limits::default()
+            },
+            1,
+        );
         let a = reserve(&tree, ROOT_AGENT).unwrap();
         let b = reserve(&tree, &a).unwrap();
         let c = reserve(&tree, &b).unwrap();
@@ -1152,17 +1160,20 @@ mod tests {
 
     #[test]
     fn debits_stop_an_agent_at_its_budget_and_count_toward_the_session() {
-        let tree = AgentTree::new(Limits {
-            subagent: Budget {
-                tokens: Some(100),
-                cost_usd: None,
+        let tree = AgentTree::new(
+            Limits {
+                subagent: Budget {
+                    tokens: Some(100),
+                    cost_usd: None,
+                },
+                session: Budget {
+                    tokens: Some(150),
+                    cost_usd: None,
+                },
+                ..Limits::default()
             },
-            session: Budget {
-                tokens: Some(150),
-                cost_usd: None,
-            },
-            ..Limits::default()
-        });
+            1,
+        );
         let a = reserve(&tree, ROOT_AGENT).unwrap();
         let b = reserve(&tree, ROOT_AGENT).unwrap();
         let spend = |tokens| Spend {
@@ -1183,6 +1194,30 @@ mod tests {
             reserve(&tree, ROOT_AGENT),
             Err(Refusal::SessionBudget(_))
         ));
+    }
+
+    #[test]
+    fn two_trees_seeded_from_the_same_ledger_value_mint_disjoint_ids() {
+        // Two processes of one session both derive their counter from the same ledger.
+        let first = tree(8);
+        let _a = reserve(&first, ROOT_AGENT).unwrap();
+        let _b = reserve(&first, ROOT_AGENT).unwrap();
+        let seed = 3;
+        let second = AgentTree::new(Limits::default(), seed);
+        let id = reserve(&second, ROOT_AGENT).unwrap();
+        assert_eq!(id, "agent-3");
+        assert!(!first.rows().iter().any(|row| row.id == id));
+        assert!(!first.is_running(&id));
+    }
+
+    #[test]
+    fn a_tree_seeded_after_n_spawns_starts_at_ordinal_n_plus_one() {
+        let before = tree(8);
+        let _a = reserve(&before, ROOT_AGENT).unwrap();
+        let _b = reserve(&before, ROOT_AGENT).unwrap();
+        let seed = before.rows().len() as u64 + 1;
+        let after = AgentTree::new(Limits::default(), seed);
+        assert_eq!(reserve(&after, ROOT_AGENT).unwrap(), "agent-3");
     }
 
     #[test]
@@ -1438,13 +1473,16 @@ mod tests {
         tree.finish(&b, report(ChildStatus::Done));
         assert_eq!(tree.resume(&a), Ok(()));
 
-        let capped = AgentTree::new(Limits {
-            session: Budget {
-                tokens: Some(10),
-                cost_usd: None,
+        let capped = AgentTree::new(
+            Limits {
+                session: Budget {
+                    tokens: Some(10),
+                    cost_usd: None,
+                },
+                ..Limits::default()
             },
-            ..Limits::default()
-        });
+            1,
+        );
         let c = reserve(&capped, ROOT_AGENT).unwrap();
         capped.finish(&c, report(ChildStatus::Done));
         capped.debit(

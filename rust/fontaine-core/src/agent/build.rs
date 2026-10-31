@@ -269,7 +269,7 @@ fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
         ))
         .add_hook(RecoveryHook::new(
             p.session.store(),
-            CONVERSATION_LOG,
+            CONVERSATION_LOG.to_owned(),
             p.approver.clone(),
         ))
         .tool_server_handle(p.tool_server.clone());

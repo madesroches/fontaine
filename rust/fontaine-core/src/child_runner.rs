@@ -20,7 +20,7 @@ use futures::future::BoxFuture;
 use rig_agent::prelude::*;
 use rig_agent::tool::server::{ToolServer, ToolServerHandle};
 use rig_core::tool::ToolOutput;
-use rig_memory::MemoryStore;
+use rig_memory::DirStore;
 use serde_json::json;
 use tokio::sync::watch;
 use tracing::Instrument;
@@ -211,6 +211,9 @@ pub struct ChildContext {
     pub steering: Steering,
     /// Screens the notes a joining child reads, as the main conversation's are.
     pub results: Arc<ResultPipeline>,
+    /// The session store: each child's conversation persists under its own log, named for
+    /// its agent id, beside the root transcript.
+    pub store: DirStore,
 }
 
 pub struct CoreChildRunner {
@@ -420,15 +423,14 @@ impl ChildRunner for CoreChildRunner {
             let context = &self.context;
             let model = context.model_for(&request.model).await?;
             let forked = request.agent_type.inherits_context;
-            let store = if forked {
+            let store = context.store.clone();
+            if forked {
                 context
                     .parent_context
-                    .seed("main")
+                    .seed(&store, &request.id)
                     .await
-                    .map_err(|e| format!("could not fork the conversation: {}", chain(&e)))?
-            } else {
-                MemoryStore::default()
-            };
+                    .map_err(|e| format!("could not fork the conversation: {}", chain(&e)))?;
+            }
             context
                 .state
                 .agents()
@@ -457,10 +459,14 @@ impl ChildRunner for CoreChildRunner {
             let builder = AgentBuilder::new(model.completion.clone())
                 .preamble((context.preamble)(&request.agent_type))
                 .memory(store.clone())
-                .conversation("main");
+                .conversation(request.id.clone());
             let agent = apply_common(builder, &state, context.record_content)
                 .add_hook(SteeringHook::new(context.steering.clone(), state.clone()))
-                .add_hook(RecoveryHook::new(store, "main", context.approver.clone()))
+                .add_hook(RecoveryHook::new(
+                    store,
+                    request.id.clone(),
+                    context.approver.clone(),
+                ))
                 .tool_server_handle(tools)
                 .build();
             state.set_child_restrictions(&request.id, restrictions(&request.agent_type));
@@ -701,7 +707,7 @@ mod tests {
 
     #[test]
     fn a_message_the_human_typed_to_a_child_wakes_its_wait_and_no_other() {
-        let tree = Arc::new(AgentTree::new(fontaine_agents::tree::Limits::default()));
+        let tree = Arc::new(AgentTree::new(fontaine_agents::tree::Limits::default(), 1));
         let steering = Steering::default();
         let wake = CoreWake {
             tree,

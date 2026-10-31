@@ -11,7 +11,7 @@ use rig_agent::agent::{AgentHook, CompletionCallAction, CompletionCallEvent, Hoo
 use rig_core::conversation::Conversation;
 use rig_core::conversation::pairing::PairingError;
 use rig_core::message::Message;
-use rig_memory::{MemoryStore, SessionError, save_async};
+use rig_memory::{DirStore, SessionError, save_async};
 
 /// The snapshot ends in a user-role message, so the fork's history needs an assistant turn
 /// before its task arrives as the next user turn.
@@ -43,20 +43,20 @@ impl ParentContext {
         *lock(&self.messages, "parent context") = Some(messages);
     }
 
-    /// A fresh store holding the parent's conversation under `log`, ready for the fork's task
-    /// as its next user turn.
-    pub async fn seed(&self, log: &str) -> Result<MemoryStore, ForkError> {
+    /// Saves the parent's conversation into `log` of the session's store, ready for the
+    /// fork's task as its next user turn. The log is the child's own, so its runs persist
+    /// beside the root transcript.
+    pub async fn seed(&self, store: &DirStore, log: &str) -> Result<(), ForkError> {
         let messages = lock(&self.messages, "parent context")
             .clone()
             .ok_or(ForkError::NoContext)?;
         let mut conversation = Conversation::from_messages(messages);
         conversation.validate().map_err(ForkError::Unpaired)?;
         conversation.push(Message::assistant(BRIDGE));
-        let store = MemoryStore::default();
-        save_async(&store, log, &mut conversation)
+        save_async(store, log, &mut conversation)
             .await
             .map_err(ForkError::Store)?;
-        Ok(store)
+        Ok(())
     }
 }
 
@@ -132,8 +132,10 @@ mod tests {
         let history = vec![user("one"), Arc::new(Message::assistant("two"))];
         context.record(&history, &Message::user("three"));
         context.record(&history[..1], &Message::user("four"));
-        let store = context.seed("main").await.ok().unwrap();
-        let seeded = load_async(&store, "main").await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = rig_memory::DirStore::open(dir.path()).unwrap();
+        context.seed(&store, "agent-1").await.ok().unwrap();
+        let seeded = load_async(&store, "agent-1").await.unwrap();
         let texts: Vec<_> = seeded.messages().iter().map(|m| format!("{m:?}")).collect();
         assert_eq!(texts.len(), 3, "{texts:?}");
         assert!(texts[0].contains("one") && texts[1].contains("four"));
@@ -143,11 +145,19 @@ mod tests {
                 .iter()
                 .any(|t| t.contains("two") || t.contains("three"))
         );
+        // The seed is the child's own log, beside the root's in the session store.
+        assert!(dir.path().join("logs").join("agent-1.jsonl").is_file());
     }
 
     #[tokio::test]
     async fn an_empty_slot_fails_the_seed() {
-        let error = ParentContext::default().seed("main").await.err().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = rig_memory::DirStore::open(dir.path()).unwrap();
+        let error = ParentContext::default()
+            .seed(&store, "agent-1")
+            .await
+            .err()
+            .unwrap();
         assert!(matches!(error, ForkError::NoContext), "{error}");
     }
 
@@ -159,7 +169,9 @@ mod tests {
             serde_json::json!({}),
         )]));
         let context = ParentContext::fixed(vec![user("go"), Arc::new(call)]);
-        let error = context.seed("main").await.err().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let store = rig_memory::DirStore::open(dir.path()).unwrap();
+        let error = context.seed(&store, "agent-1").await.err().unwrap();
         assert!(matches!(error, ForkError::Unpaired(_)), "{error}");
         assert!(error.source().is_some());
     }

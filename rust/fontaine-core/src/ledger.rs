@@ -208,9 +208,20 @@ pub fn path_key(path: &str) -> String {
     }
 }
 
+/// What the ledger records about one subagent's lifecycle, oldest first: its spawn, the
+/// status of its latest finished run, or `None` while no run has finished (a crash
+/// mid-run, or a resume still in flight).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentRecord {
+    pub id: String,
+    pub parent: Option<String>,
+    pub agent_type: String,
+    pub ended: Option<String>,
+}
+
 /// What the ledger's records add up to, kept beside the file so the guardian's request is built
 /// from the ledger without re-reading it for every call.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct LedgerView {
     pub workspace_roots: Vec<String>,
     pub workspace_trust: String,
@@ -223,9 +234,41 @@ pub struct LedgerView {
     pub user_messages: Vec<String>,
     /// The messages typed to a subagent, oldest first.
     pub agent_messages: Vec<AgentMessage>,
+    /// One entry per subagent the ledger has seen, in spawn order.
+    pub agents: Vec<AgentRecord>,
+    /// One past the largest `agent-<n>` ordinal the ledger recorded spawning, so a resumed
+    /// session mints ids that never collide with a previous process's.
+    pub next_agent: u64,
     pub actions: Vec<ActionEntry>,
     pub denials: Vec<DenialEntry>,
     touched: HashSet<String>,
+}
+
+impl Default for LedgerView {
+    fn default() -> LedgerView {
+        LedgerView {
+            workspace_roots: Vec::new(),
+            workspace_trust: String::new(),
+            git_remotes: Vec::new(),
+            env_keys: Vec::new(),
+            project_environment: None,
+            index: HashSet::new(),
+            index_truncated: false,
+            user_messages: Vec::new(),
+            agent_messages: Vec::new(),
+            agents: Vec::new(),
+            // No spawned record yet: the first id is agent-1.
+            next_agent: 1,
+            actions: Vec::new(),
+            denials: Vec::new(),
+            touched: HashSet::new(),
+        }
+    }
+}
+
+/// The `n` of an `agent-<n>` id, when it is one; ids of any other shape are ignored.
+fn agent_ordinal(id: &str) -> Option<u64> {
+    id.strip_prefix("agent-").and_then(|rest| rest.parse().ok())
 }
 
 /// A human message typed to one subagent.
@@ -370,12 +413,41 @@ impl LedgerView {
                 // is stricter, never looser.
                 self.agent_messages.retain(|message| message.after <= keep);
             }
+            Record::Agent {
+                event,
+                agent,
+                parent,
+                detail,
+            } => match event.as_str() {
+                "spawned" => {
+                    if let Some(ordinal) = agent_ordinal(agent) {
+                        self.next_agent = self.next_agent.max(ordinal + 1);
+                    }
+                    self.agents.push(AgentRecord {
+                        id: agent.clone(),
+                        parent: parent.clone(),
+                        agent_type: detail.clone().unwrap_or_default(),
+                        ended: None,
+                    });
+                }
+                "finished" => {
+                    if let Some(entry) = self.agents.iter_mut().rev().find(|a| a.id == *agent) {
+                        entry.ended = detail.clone();
+                    }
+                }
+                // A resumed agent is unfinished again until a new finished record lands.
+                "resumed" => {
+                    if let Some(entry) = self.agents.iter_mut().rev().find(|a| a.id == *agent) {
+                        entry.ended = None;
+                    }
+                }
+                _ => {}
+            },
             Record::ModeChange { .. }
             | Record::GuardianOff { .. }
             | Record::Approval { .. }
             | Record::Grant { .. }
             | Record::Resumed { .. }
-            | Record::Agent { .. }
             | Record::UserShell { .. }
             | Record::Scheduled { .. }
             | Record::SessionNamed { .. }
@@ -933,5 +1005,117 @@ mod tests {
         said(&ledger, "to agent", Some("agent-1"));
         ledger.append(Record::ContextCleared {}).unwrap();
         assert!(ledger.view().agent_messages.is_empty());
+    }
+
+    fn agent_event(event: &str, agent: &str, parent: Option<&str>, detail: Option<&str>) -> Record {
+        Record::Agent {
+            event: event.into(),
+            agent: agent.into(),
+            parent: parent.map(str::to_string),
+            detail: detail.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn agent_records_fold_into_spawn_order_with_the_finished_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        ledger
+            .append(agent_event(
+                "spawned",
+                "agent-1",
+                Some("main"),
+                Some("worker"),
+            ))
+            .unwrap();
+        ledger
+            .append(agent_event(
+                "spawned",
+                "agent-2",
+                Some("agent-1"),
+                Some("explore"),
+            ))
+            .unwrap();
+        ledger
+            .append(agent_event("finished", "agent-1", None, Some("done")))
+            .unwrap();
+        let check = |ledger: &Ledger| {
+            let view = ledger.view();
+            assert_eq!(
+                view.agents,
+                [
+                    AgentRecord {
+                        id: "agent-1".into(),
+                        parent: Some("main".into()),
+                        agent_type: "worker".into(),
+                        ended: Some("done".into()),
+                    },
+                    AgentRecord {
+                        id: "agent-2".into(),
+                        parent: Some("agent-1".into()),
+                        agent_type: "explore".into(),
+                        ended: None,
+                    },
+                ]
+            );
+            assert_eq!(view.next_agent, 3);
+        };
+        check(&ledger);
+        drop(ledger);
+        check(&Ledger::open(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn next_agent_ignores_non_conforming_ids_and_an_empty_ledger_starts_at_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        assert_eq!(ledger.view().next_agent, 1);
+        ledger
+            .append(agent_event("spawned", "custom-x", None, Some("worker")))
+            .unwrap();
+        ledger
+            .append(agent_event(
+                "spawned",
+                "agent-7",
+                Some("main"),
+                Some("worker"),
+            ))
+            .unwrap();
+        ledger
+            .append(agent_event(
+                "spawned",
+                "agent-2",
+                Some("main"),
+                Some("worker"),
+            ))
+            .unwrap();
+        assert_eq!(ledger.view().next_agent, 8);
+        assert_eq!(ledger.view().agents.len(), 3);
+    }
+
+    #[test]
+    fn a_finished_then_resumed_agent_is_unfinished_until_a_new_finished_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        ledger
+            .append(agent_event(
+                "spawned",
+                "agent-1",
+                Some("main"),
+                Some("worker"),
+            ))
+            .unwrap();
+        ledger
+            .append(agent_event("finished", "agent-1", None, Some("done")))
+            .unwrap();
+        ledger
+            .append(agent_event("resumed", "agent-1", None, None))
+            .unwrap();
+        assert_eq!(ledger.view().agents[0].ended, None);
+        // The session crashed mid-second-run: still unfinished, not the stale done.
+        drop(ledger);
+        let reopened = Ledger::open(dir.path()).unwrap();
+        assert_eq!(reopened.view().agents[0].ended, None);
+        assert_eq!(reopened.view().next_agent, 2);
     }
 }

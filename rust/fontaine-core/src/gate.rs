@@ -940,7 +940,7 @@ mod tests {
     #[should_panic(expected = "the loop breaker lock is not poisoned")]
     fn a_poisoned_breaker_panics_instead_of_deciding() {
         let dir = tempfile::tempdir().unwrap();
-        let agents = Arc::new(AgentTree::new(Limits::default()));
+        let agents = Arc::new(AgentTree::new(Limits::default(), 1));
         agents.set_root_tools(|| {
             fontaine_tools::descriptor::names()
                 .map(String::from)

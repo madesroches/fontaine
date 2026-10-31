@@ -230,6 +230,15 @@ pub(super) fn agent_limits(config: &Config) -> Limits {
     }
 }
 
+/// The session's agent tree. The ledger of a resumed session anchors the id counter, so
+/// new ids never collide with the per-agent logs a previous process persisted.
+pub(super) fn agent_tree(setup: &AgentSetup) -> Arc<AgentTree> {
+    Arc::new(AgentTree::new(
+        agent_limits(&setup.config),
+        setup.session.ledger.view().next_agent,
+    ))
+}
+
 /// The permission state of a new session: its scope, rules, guardian and the agent tree.
 pub(super) fn session_state(
     setup: &AgentSetup,
@@ -482,6 +491,7 @@ pub(super) fn retained(
         searxng: Arc::default(),
         jobs: Arc::default(),
         lsp: super::lsp::build(&setup.config, state, setup.env.clone()),
+        store: setup.session.store(),
     })
 }
 
@@ -594,6 +604,7 @@ fn child_runner(
             parent_context: ParentContext::default(),
             steering: steering.clone(),
             results: results.clone(),
+            store: retained.store.clone(),
         }),
     })
 }

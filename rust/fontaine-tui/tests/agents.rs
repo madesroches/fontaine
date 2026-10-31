@@ -661,3 +661,62 @@ async fn a_joining_subagent_takes_a_turn_on_the_words_typed_into_its_view() {
     );
     assert!(ledger.contains(r#""kind":"user_message""#), "{ledger}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn export_with_a_subagent_writes_a_folder_with_the_index_and_transcripts() {
+    // The wiring no unit test reaches: spawn -> persisted log -> tree/ledger -> /export.
+    let server = start(vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool("c1", "agent", spawn("worker", "child task: dig in")),
+                Turn::text("launched"),
+            ],
+        ),
+        Route::new("dig in", vec![Turn::text("child did the work")]),
+    ])
+    .await;
+    let w = World::routed(&server.uri(), ALLOW_AGENT);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("root task");
+        ui.wait_for("launched").await;
+        idle(&ui).await;
+        ui.send("/export");
+        ui.wait_for("exported the session and 1 subagent transcript to")
+            .await;
+        // A second export to the same default target is an error, never a merge.
+        ui.send("/export");
+        ui.wait_for("already exists").await;
+    })
+    .await;
+    let dir = w.work.join("fontaine-00000000");
+    let main = std::fs::read_to_string(dir.join("main.md")).unwrap();
+    assert!(main.contains("## User\n\nroot task"), "{main}");
+    assert!(main.contains("## Subagents"), "{main}");
+    assert!(
+        main.contains("- `agent-1` — worker, child of `root`: done — [transcript](agent-1.md)"),
+        "{main}"
+    );
+    let child = std::fs::read_to_string(dir.join("agent-1.md")).unwrap();
+    assert!(
+        child.starts_with("# Subagent `agent-1` (worker)\n\nSession `"),
+        "{child}"
+    );
+    assert!(child.contains("Parent: `root`"), "{child}");
+    assert!(child.contains("Status: done"), "{child}");
+    assert!(child.contains("child did the work"), "{child}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "{mode:o}");
+        for name in ["main.md", "agent-1.md"] {
+            let mode = std::fs::metadata(dir.join(name))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "{name}: {mode:o}");
+        }
+    }
+}

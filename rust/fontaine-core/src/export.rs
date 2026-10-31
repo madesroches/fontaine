@@ -1,11 +1,15 @@
-//! The conversation as a Markdown file for a person to read. It is built from the model's
-//! conversation log, so a compaction shows as the summary that replaced the messages it took
-//! out, and after `/clear` only the conversation since is in it.
+//! The conversation as Markdown for a person to read, the root's and every subagent's. It
+//! is built from the model's conversation logs, so a compaction shows as the summary that
+//! replaced the messages it took out, and after `/clear` only the conversation since is in
+//! it. A session with subagents exports a folder: `main.md` with the root conversation and
+//! a Subagents index, plus one `<agent-id>.md` per subagent.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+use fontaine_agents::tree::{AgentRow, AgentTree};
 use rig_core::conversation::{AuthorKind, Conversation};
 use rig_core::message::{AssistantContent, Message, ToolResultContent, UserContent};
 use rig_memory::{COMPACTED, load_async, summary_author};
@@ -50,16 +54,133 @@ impl std::error::Error for ExportError {
     }
 }
 
-/// Writes the session's conversation to `path`, which must not exist. The file is readable by
-/// the current user alone, since a transcript can hold secrets.
-pub async fn export_session(session: &Session, path: &Path) -> Result<(), ExportError> {
-    let conversation = load_async(&session.store(), CONVERSATION_LOG)
+/// One subagent of the session as the export lists it. The ledger is the spine (oldest
+/// first); for an agent that also lives in this process's tree, status, parent and type are
+/// the live row's instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentSummary {
+    pub id: String,
+    pub parent: Option<String>,
+    pub agent_type: String,
+    /// The live status, the ledger's finished status, or `ended` when the ledger has no
+    /// finished record for it.
+    pub status: String,
+    /// The agent runs in this process; its transcript file holds completed runs only.
+    pub running: bool,
+    /// Whether a transcript file is written and linked; false only when the log cannot be
+    /// read at all.
+    pub linked: bool,
+}
+
+/// The session's subagents, merged from the ledger (the spine, oldest first) and the live
+/// tree (live status, parent and type), deduplicated by id.
+pub fn subagents(session: &Session, tree: &AgentTree) -> Vec<AgentSummary> {
+    let ledger_agents = session.ledger.view().agents.clone();
+    let live: HashMap<String, AgentRow> = tree
+        .rows()
+        .into_iter()
+        .map(|row| (row.id.clone(), row))
+        .collect();
+    let from_row = |row: &AgentRow| AgentSummary {
+        id: row.id.clone(),
+        parent: row.parent.clone(),
+        agent_type: row.agent_type.clone(),
+        status: row.status.as_str().to_string(),
+        running: row.status.is_running(),
+        linked: true,
+    };
+    let mut merged: Vec<AgentSummary> = ledger_agents
+        .iter()
+        .map(|record| match live.get(&record.id) {
+            Some(row) => from_row(row),
+            None => AgentSummary {
+                id: record.id.clone(),
+                parent: record.parent.clone(),
+                agent_type: record.agent_type.clone(),
+                status: record.ended.clone().unwrap_or_else(|| "ended".to_string()),
+                running: false,
+                linked: true,
+            },
+        })
+        .collect();
+    // Every live agent has a spawned record; this covers a tree fed by another ledger only.
+    for row in live.values() {
+        if !ledger_agents.iter().any(|record| record.id == row.id) {
+            merged.push(from_row(row));
+        }
+    }
+    merged
+}
+
+/// Writes the session's conversation to `path`, which must not exist. The export is
+/// readable by the current user alone, since a transcript can hold secrets. With no
+/// subagents `path` is one Markdown file, as it has always been; with subagents it is a
+/// folder holding `main.md` and one `<agent-id>.md` per subagent.
+pub async fn export_session(
+    session: &Session,
+    tree: &AgentTree,
+    path: &Path,
+) -> Result<(), ExportError> {
+    let name = session.name().ok().flatten();
+    // Every load happens before the folder exists, so a failed load cannot leave a
+    // half-written export behind.
+    let root = load_async(&session.store(), CONVERSATION_LOG)
         .await
         .map_err(ExportError::Conversation)?;
-    // A name that cannot be read only leaves the title plain.
-    let name = session.name().ok().flatten();
-    let text = render(&conversation, &session.id, name.as_deref());
-    write_new(path, &text)
+    let mut agents = subagents(session, tree);
+    if agents.is_empty() {
+        let text = render(&root, &session.id, name.as_deref());
+        return write_new(path, &text);
+    }
+    let store = session.store();
+    let mut transcripts = Vec::with_capacity(agents.len());
+    for agent in &mut agents {
+        match load_async(&store, &agent.id).await {
+            Ok(conversation) => transcripts.push(Some(conversation)),
+            Err(e) => {
+                tracing::warn!(agent = %agent.id, error = %e, "the subagent transcript could not be read");
+                transcripts.push(None);
+                agent.linked = false;
+            }
+        }
+    }
+    let mut files = vec![(
+        PathBuf::from("main.md"),
+        render_main(&root, &session.id, name.as_deref(), &agents),
+    )];
+    for (agent, transcript) in agents.iter().zip(&transcripts) {
+        if let Some(conversation) = transcript {
+            files.push((
+                PathBuf::from(format!("{}.md", agent.id)),
+                render_agent_file(agent, &session.id, conversation),
+            ));
+        }
+    }
+    export_folder(path, &files)
+}
+
+/// Creates the folder and writes one owner-only file per entry, never over an existing
+/// file. A failed write removes the folder again: it can hold only what this export just
+/// created.
+fn export_folder(path: &Path, files: &[(PathBuf, String)]) -> Result<(), ExportError> {
+    if let Err(e) = owner_only::create_dir(path) {
+        return Err(if e.kind() == io::ErrorKind::AlreadyExists {
+            ExportError::Exists(path.to_path_buf())
+        } else {
+            ExportError::Write {
+                path: path.to_path_buf(),
+                source: e,
+            }
+        });
+    }
+    let written = files
+        .iter()
+        .try_for_each(|(name, text)| write_new(&path.join(name), text));
+    if let Err(e) = written {
+        let _ = owner_only::remove_dir_all_retrying(path);
+        return Err(e);
+    }
+    Ok(())
 }
 
 fn write_new(path: &Path, text: &str) -> Result<(), ExportError> {
@@ -91,6 +212,13 @@ struct Doc {
 }
 
 impl Doc {
+    fn new() -> Doc {
+        Doc {
+            out: String::new(),
+            in_list: false,
+        }
+    }
+
     fn block(&mut self, text: &str) {
         if !self.out.is_empty() {
             self.out.push_str("\n\n");
@@ -121,21 +249,13 @@ fn result_chars(content: &[ToolResultContent]) -> usize {
         .sum()
 }
 
-/// The conversation as Markdown. Tool calls are one line each; tool results appear only as their
-/// length.
-pub fn render(conversation: &Conversation, id: &str, name: Option<&str>) -> String {
+fn render_messages(doc: &mut Doc, conversation: &Conversation) {
     let compacted: Vec<_> = conversation
         .asides()
         .filter(|(_, aside)| aside.kind == COMPACTED)
         .filter_map(|(_, aside)| aside.after)
         .collect();
     let summarizer = summary_author();
-    let mut doc = Doc {
-        out: String::new(),
-        in_list: false,
-    };
-    doc.block(&format!("# {}", name.unwrap_or("Fontaine session")));
-    doc.block(&format!("Session `{id}`"));
     for entry in conversation.entries() {
         match entry.message {
             Message::System { .. } => {}
@@ -206,6 +326,79 @@ pub fn render(conversation: &Conversation, id: &str, name: Option<&str>) -> Stri
             }
         }
     }
+}
+
+/// The "## Subagents" index of the main file: one bullet per subagent, oldest first, each
+/// linking its transcript file. A running agent's row says its file holds completed runs
+/// only; a transcript that could not be read is listed without a link.
+pub fn index_section(agents: &[AgentSummary]) -> String {
+    let mut doc = Doc::new();
+    doc.block("## Subagents");
+    for agent in agents {
+        let mut line = format!("- `{}` — {}", agent.id, agent.agent_type);
+        if let Some(parent) = &agent.parent {
+            line.push_str(&format!(", child of `{parent}`"));
+        }
+        line.push_str(": ");
+        if agent.running {
+            line.push_str("running at export; its file holds completed runs only");
+        } else {
+            line.push_str(&agent.status);
+        }
+        if agent.linked {
+            line.push_str(&format!(" — [transcript]({}.md)", agent.id));
+        } else {
+            line.push_str(" — transcript unavailable");
+        }
+        doc.item(&line);
+    }
+    doc.out
+}
+
+/// One subagent's file: an identifying header, then the same render the root export uses.
+/// A log with no completed runs says so.
+pub fn render_agent_file(
+    agent: &AgentSummary,
+    session_id: &str,
+    conversation: &Conversation,
+) -> String {
+    let mut doc = Doc::new();
+    doc.block(&format!("# Subagent `{}` ({})", agent.id, agent.agent_type));
+    doc.block(&format!("Session `{session_id}`"));
+    if let Some(parent) = &agent.parent {
+        doc.block(&format!("Parent: `{parent}`"));
+    }
+    doc.block(&format!("Status: {}", agent.status));
+    if conversation.entries().next().is_none() {
+        doc.block("_No completed runs at export time._");
+    } else {
+        render_messages(&mut doc, conversation);
+    }
+    doc.out.push('\n');
+    doc.out
+}
+
+/// The conversation as Markdown. Tool calls are one line each; tool results appear only as their
+/// length.
+pub fn render(conversation: &Conversation, id: &str, name: Option<&str>) -> String {
+    render_main(conversation, id, name, &[])
+}
+
+/// The main file of a folder export: the root render with the Subagents index after the
+/// session header. With no agents it is [`render`] exactly.
+fn render_main(
+    conversation: &Conversation,
+    id: &str,
+    name: Option<&str>,
+    agents: &[AgentSummary],
+) -> String {
+    let mut doc = Doc::new();
+    doc.block(&format!("# {}", name.unwrap_or("Fontaine session")));
+    doc.block(&format!("Session `{id}`"));
+    if !agents.is_empty() {
+        doc.block(&index_section(agents));
+    }
+    render_messages(&mut doc, conversation);
     doc.out.push('\n');
     doc.out
 }
@@ -213,9 +406,10 @@ pub fn render(conversation: &Conversation, id: &str, name: Option<&str>) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fontaine_agents::tree::{AgentTree, Limits};
     use rig_core::conversation::Entry;
     use rig_core::message::{CallId, Text, ToolCall, ToolFunction, ToolName, ToolResult};
-    use rig_memory::{SummaryState, apply_summary};
+    use rig_memory::{SummaryState, apply_summary, save_async};
     use serde_json::json;
 
     fn call(id: &str, name: &str, args: Value) -> AssistantContent {
@@ -248,6 +442,38 @@ mod tests {
         conversation.push(result("c1", "shell", "a.txt\nb.txt\n", false));
         conversation.push(Message::assistant("Two files."));
         conversation
+    }
+
+    fn summary(
+        id: &str,
+        parent: Option<&str>,
+        agent_type: &str,
+        status: &str,
+        running: bool,
+        linked: bool,
+    ) -> AgentSummary {
+        AgentSummary {
+            id: id.into(),
+            parent: parent.map(str::to_string),
+            agent_type: agent_type.into(),
+            status: status.into(),
+            running,
+            linked,
+        }
+    }
+
+    fn agent_event(
+        event: &str,
+        agent: &str,
+        parent: Option<&str>,
+        detail: Option<&str>,
+    ) -> crate::ledger::Record {
+        crate::ledger::Record::Agent {
+            event: event.into(),
+            agent: agent.into(),
+            parent: parent.map(str::to_string),
+            detail: detail.map(str::to_string),
+        }
     }
 
     #[test]
@@ -322,5 +548,193 @@ mod tests {
             write_new(&missing, "x"),
             Err(ExportError::Write { .. })
         ));
+    }
+
+    #[test]
+    fn the_index_lists_agents_oldest_first_with_their_links_and_annotations() {
+        let agents = [
+            summary("agent-1", None, "worker", "done", false, true),
+            summary("agent-2", Some("agent-1"), "explore", "running", true, true),
+            summary("agent-3", Some("agent-1"), "worker", "ended", false, false),
+        ];
+        let text = index_section(&agents);
+        assert_eq!(
+            text,
+            "## Subagents\n\n\
+             - `agent-1` — worker: done — [transcript](agent-1.md)\n\
+             - `agent-2` — explore, child of `agent-1`: running at export; its file holds completed runs only — [transcript](agent-2.md)\n\
+             - `agent-3` — worker, child of `agent-1`: ended — transcript unavailable"
+        );
+    }
+
+    #[test]
+    fn an_agent_file_opens_with_its_identity_and_renders_like_the_root() {
+        let agent = summary("agent-2", Some("agent-1"), "explore", "done", false, true);
+        let text = render_agent_file(&agent, "abc", &sample());
+        assert!(
+            text.starts_with(
+                "# Subagent `agent-2` (explore)\n\nSession `abc`\n\nParent: `agent-1`\n\nStatus: done\n"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("## User\n\nlist the files"), "{text}");
+        assert!(
+            text.contains("- result of `shell`: 12 characters"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn an_agent_file_with_no_completed_run_says_so() {
+        let agent = summary("agent-1", Some("main"), "worker", "ended", false, true);
+        let text = render_agent_file(&agent, "abc", &Conversation::default());
+        assert!(
+            text.contains("Status: ended\n\n_No completed runs at export time._\n"),
+            "{text}"
+        );
+    }
+
+    fn session_with_agents(data: &Path) -> (Session, AgentTree) {
+        let session = Session::create(data, "00000000-0000-4000-8000-000000000001").unwrap();
+        session
+            .ledger
+            .append(agent_event(
+                "spawned",
+                "agent-1",
+                Some("root"),
+                Some("worker"),
+            ))
+            .unwrap();
+        session
+            .ledger
+            .append(agent_event("finished", "agent-1", None, Some("done")))
+            .unwrap();
+        session
+            .ledger
+            .append(agent_event(
+                "spawned",
+                "agent-2",
+                Some("agent-1"),
+                Some("explore"),
+            ))
+            .unwrap();
+        (session, AgentTree::new(Limits::default(), 3))
+    }
+
+    async fn store_conversation(session: &Session, log: &str, conversation: &mut Conversation) {
+        save_async(&session.store(), log, conversation)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_session_with_recorded_agents_exports_a_folder_even_with_an_empty_tree() {
+        // The shape after --resume: the ledger holds every agent, the tree is empty.
+        let dir = tempfile::tempdir().unwrap();
+        let (session, tree) = session_with_agents(dir.path());
+        store_conversation(&session, CONVERSATION_LOG, &mut sample()).await;
+        let mut child = sample();
+        store_conversation(&session, "agent-1", &mut child).await;
+        let out = dir.path().join("out");
+        export_session(&session, &tree, &out).await.unwrap();
+        let main = std::fs::read_to_string(out.join("main.md")).unwrap();
+        assert!(
+            main.contains("Session `00000000-0000-4000-8000-000000000001`"),
+            "{main}"
+        );
+        assert!(
+            main.contains(
+                "## Subagents\n\n- `agent-1` — worker, child of `root`: done — [transcript](agent-1.md)"
+            ),
+            "{main}"
+        );
+        assert!(
+            main.contains(
+                "- `agent-2` — explore, child of `agent-1`: ended — [transcript](agent-2.md)"
+            ),
+            "{main}"
+        );
+        assert!(main.contains("## User\n\nlist the files"), "{main}");
+        // agent-2's log was never written: an empty transcript, still a real file.
+        let second = std::fs::read_to_string(out.join("agent-2.md")).unwrap();
+        assert!(
+            second.contains("# Subagent `agent-2` (explore)"),
+            "{second}"
+        );
+        assert!(
+            second.contains("_No completed runs at export time._"),
+            "{second}"
+        );
+        let first = std::fs::read_to_string(out.join("agent-1.md")).unwrap();
+        assert!(first.contains("# Subagent `agent-1` (worker)"), "{first}");
+        assert!(first.contains("list the files"), "{first}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&out).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{mode:o}");
+            for name in ["main.md", "agent-1.md", "agent-2.md"] {
+                let mode = std::fs::metadata(out.join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(mode & 0o077, 0, "{name}: {mode:o}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn an_export_never_merges_into_an_existing_folder_or_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let (session, tree) = session_with_agents(dir.path());
+        store_conversation(&session, CONVERSATION_LOG, &mut sample()).await;
+        let existing = dir.path().join("out");
+        owner_only::create_dir(&existing).unwrap();
+        std::fs::write(existing.join("keep.txt"), "mine").unwrap();
+        assert!(matches!(
+            export_session(&session, &tree, &existing).await,
+            Err(ExportError::Exists(_))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(existing.join("keep.txt")).unwrap(),
+            "mine"
+        );
+        assert!(!existing.join("main.md").exists());
+        let as_file = dir.path().join("file-target");
+        write_new(&as_file, "occupied").unwrap();
+        assert!(matches!(
+            export_session(&session, &tree, &as_file).await,
+            Err(ExportError::Exists(_))
+        ));
+        assert_eq!(std::fs::read_to_string(&as_file).unwrap(), "occupied");
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_removes_the_folder_the_export_created() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("out");
+        // The second file lands on the first: a write fails after the folder exists.
+        let files = [
+            (PathBuf::from("main.md"), "one".to_string()),
+            (PathBuf::from("main.md"), "two".to_string()),
+        ];
+        assert!(matches!(
+            export_folder(&target, &files),
+            Err(ExportError::Exists(_))
+        ));
+        assert!(!target.exists());
+    }
+
+    #[tokio::test]
+    async fn a_session_without_subagents_keeps_the_single_file_export() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::create(dir.path(), "00000000-0000-4000-8000-000000000002").unwrap();
+        store_conversation(&session, CONVERSATION_LOG, &mut sample()).await;
+        let tree = AgentTree::new(Limits::default(), 1);
+        let out = dir.path().join("out.md");
+        export_session(&session, &tree, &out).await.unwrap();
+        let text = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(text, render(&sample(), &session.id, None));
+        assert!(!text.contains("## Subagents"), "{text}");
     }
 }

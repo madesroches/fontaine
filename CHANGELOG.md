@@ -34,6 +34,18 @@ All notable changes are recorded here. The format follows
   would kill its children). Only the agent that started a subagent may wait on it, and a
   subagent whose type names `agent` also gets `job_output`. `BashOutputTool`, `AgentOutput`
   and `AgentOutputTool` are accepted as Claude Code names for `job_output` (#301).
+- Subagent conversations persist. Every subagent's conversation is written to the session
+  store as a per-agent log (`logs/agent-<n>.jsonl`, saved when a run ends, kept when a run
+  fails, reloaded when a resumed run starts), and agent ids are stable across `--resume`:
+  the session ledger anchors the id counter, so a restarted session never reuses an id whose
+  transcript is already on disk (#300).
+- `/export` of a session with subagents — live, or recorded in the ledger before a `--resume` —
+  writes a folder instead of one file: `main.md` carries the root conversation with a
+  `## Subagents` index (id, type, parent, status, oldest first), and one `<agent-id>.md` per
+  subagent renders its transcript with the same detail as the root. A running subagent is
+  exported rather than refused; its file holds its completed runs only, and its index row says
+  so. Everything stays owner-only, and an existing file or folder is still an error: an export
+  never overwrites (#300).
 
 #### Build and release
 

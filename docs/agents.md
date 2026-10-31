@@ -184,6 +184,17 @@ dialog in front of you.
   token cap, if set, still binds. (`--max-budget-usd` on a main model with no known price
   remains a usage error.)
 
+## A subagent's conversation
+
+A subagent does not keep its conversation in memory: it is written to the session store, one
+`logs/agent-<n>.jsonl` per agent beside the root transcript, and it stays there for the session's
+life. The log is saved when a run ends, so a subagent that is still running has its completed runs
+only on disk; a run that fails keeps what it committed, exactly like the main conversation. The
+ledger's `spawned` records anchor agent id continuity: a resumed session mints `agent-<n>` ids past
+the largest one its ledger recorded, so a restarted session never reuses an id whose transcript is
+already on disk. `/export` reads these logs (see [Sessions](tui.md#sessions)); pruning them is
+part of deleting the session.
+
 ## Agent files
 
 An agent file defines a type in Claude Code's format, so `.claude/agents/*.md` files port by
@@ -216,8 +227,9 @@ agent handles what you type mid-turn:
   is intent for that agent and its own subagents only: the guardian never judges the main
   conversation's calls, or a sibling's, by words those models have not read.
 - **An ended subagent** (`done` or `failed`) is resumed: another run starts on the same
-  conversation and the same `MemoryStore`, with the same tools, mode, budget (spend carries
-  over, so the cap is cumulative) and a `resumed` event in the ledger, followed by your words.
+  conversation — its own per-agent log, persisted in the session store — with the same tools,
+  mode, budget (spend carries over, so the cap is cumulative) and a `resumed` event in the
+  ledger, followed by your words.
   The resumed run is held to the same posture as before, never looser than its parent's on any
   call. Its report goes to the agent that started it, or to the main conversation when that agent
   has ended, and an idle main conversation gets a turn to read it.
