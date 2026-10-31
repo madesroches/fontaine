@@ -138,7 +138,7 @@ async fn a_background_job_is_listed_read_and_cancelled_through_the_tools() {
     );
 
     let read = text(
-        &call(&tools, "job_output", json!({"id": id, "wait_secs": 10}))
+        &call(&tools, "job_output", json!({"id": id, "wait_secs": 1}))
             .await
             .unwrap(),
     );
@@ -614,4 +614,74 @@ async fn a_message_ends_any_wait_early_with_the_zero_wait_answer() {
             && out.ends_with("[Stopped waiting: a message arrived.]"),
         "{out}"
     );
+}
+
+#[tokio::test]
+async fn a_job_wait_is_not_cut_short_by_output_and_returns_all_of_it_at_the_end() {
+    let (_d, tools, _, _) = session();
+    let out = call(
+        &tools,
+        "shell",
+        json!({"command": "for i in 1 2 3 4; do echo line$i; sleep 0.3; done", "run_in_background": true}),
+    )
+    .await
+    .unwrap();
+    let id = job_id(&text(&out));
+    let started = Instant::now();
+    let read = text(
+        &call(&tools, "job_output", json!({"id": id, "wait_secs": 30}))
+            .await
+            .unwrap(),
+    );
+    assert!(started.elapsed() >= Duration::from_millis(1000), "{read}");
+    assert!(
+        read.starts_with("line1\nline2\nline3\nline4\n") && read.contains("ended"),
+        "{read}"
+    );
+}
+
+#[tokio::test]
+async fn a_job_wait_on_a_running_job_returns_at_expiry_with_what_accumulated() {
+    let (_d, tools, jobs, _) = session();
+    let out = call(
+        &tools,
+        "shell",
+        json!({"command": "echo up; sleep 30", "run_in_background": true}),
+    )
+    .await
+    .unwrap();
+    let id = job_id(&text(&out));
+    let started = Instant::now();
+    let read = text(
+        &call(&tools, "job_output", json!({"id": id, "wait_secs": 1}))
+            .await
+            .unwrap(),
+    );
+    assert!(started.elapsed() >= Duration::from_millis(900), "{read}");
+    assert!(read.starts_with("up\n"), "{read}");
+    assert!(read.contains(&format!("[{id} is running")), "{read}");
+    jobs.terminate_all().await;
+}
+
+#[tokio::test]
+async fn a_zero_wait_returns_fresh_output_at_once() {
+    let (_d, tools, jobs, _) = session();
+    let out = call(
+        &tools,
+        "shell",
+        json!({"command": "echo up; sleep 30", "run_in_background": true}),
+    )
+    .await
+    .unwrap();
+    let id = job_id(&text(&out));
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let started = Instant::now();
+    let read = text(
+        &call(&tools, "job_output", json!({"id": id, "wait_secs": 0}))
+            .await
+            .unwrap(),
+    );
+    assert!(started.elapsed() < Duration::from_millis(500), "{read}");
+    assert!(read.starts_with("up\n"), "{read}");
+    jobs.terminate_all().await;
 }
