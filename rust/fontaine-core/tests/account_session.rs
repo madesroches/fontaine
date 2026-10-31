@@ -424,3 +424,77 @@ async fn a_guardian_on_the_main_model_marks_only_its_static_prefix() {
     let message = body["messages"].as_array().unwrap().last().unwrap();
     assert!(!message.to_string().contains("cache_control"), "{body}");
 }
+
+const ROUTED_MODEL: &str = "anthropic/claude-haiku-4.5";
+
+async fn openrouter_session(w: &World, server: &MockServer, extra: &str) -> AgentRuntime {
+    w.user_file(&format!(
+        "[accounts.main]\nkind = \"openrouter\"\nbase_url = \"{uri}\"\nmodels = [\"{ROUTED_MODEL}\"]\n{extra}\n[accounts.judge]\nkind = \"openrouter\"\nbase_url = \"{uri}\"\nmodels = [\"{ROUTED_MODEL}\"]\n{extra}\n[model]\nmodel = \"main/{ROUTED_MODEL}\"\n\n[guardian]\nmodel = \"judge/{ROUTED_MODEL}\"\n",
+        uri = server.uri()
+    ));
+    credentials::store(&w.data, "main", "sk-main").unwrap();
+    credentials::store(&w.data, "judge", "sk-judge").unwrap();
+    session(w).await
+}
+
+#[tokio::test]
+async fn an_openrouter_account_sends_the_cache_marker_by_default() {
+    let server = gateway().await;
+    let w = World::new();
+    let runtime = openrouter_session(&w, &server, "").await;
+    runtime
+        .models
+        .main
+        .completion
+        .call(caching_request())
+        .await
+        .unwrap();
+    let body = last_body(&server).await;
+    assert_eq!(
+        body["cache_control"],
+        json!({"type": "ephemeral"}),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn an_openrouter_account_with_prompt_caching_false_sends_no_marker() {
+    let server = gateway().await;
+    let w = World::new();
+    let runtime = openrouter_session(&w, &server, "prompt_caching = false\n").await;
+    runtime
+        .models
+        .main
+        .completion
+        .call(caching_request())
+        .await
+        .unwrap();
+    let body = last_body(&server).await;
+    assert!(!body.to_string().contains("cache_control"), "{body}");
+}
+
+#[tokio::test]
+async fn the_openrouter_guardian_marks_its_system_prompt_only() {
+    let server = gateway().await;
+    let w = World::new();
+    let runtime = openrouter_session(&w, &server, "").await;
+    let Some(fontaine_core::models::GuardianModel::Ready(handle)) = &runtime.models.guardian else {
+        panic!("the guardian is ready");
+    };
+    handle.completion.call(caching_request()).await.unwrap();
+    let body = last_body(&server).await;
+    assert!(body.get("cache_control").is_none(), "{body}");
+    let messages = body["messages"].as_array().unwrap();
+    assert!(
+        messages[0]["content"][0]["cache_control"].is_object(),
+        "{body}"
+    );
+    assert!(
+        !messages
+            .last()
+            .unwrap()
+            .to_string()
+            .contains("cache_control"),
+        "{body}"
+    );
+}

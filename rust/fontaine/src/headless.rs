@@ -324,16 +324,22 @@ fn result_event(
             "guardian": {
                 "input_tokens": guardian.input_tokens,
                 "output_tokens": guardian.output_tokens,
+                "cache_read_input_tokens": guardian.cache_read_input_tokens,
+                "cache_creation_input_tokens": guardian.cache_creation_input_tokens,
                 "cost_usd": guardian.cost_usd,
             },
             "subagents": {
                 "input_tokens": subagents.input_tokens,
                 "output_tokens": subagents.output_tokens,
+                "cache_read_input_tokens": subagents.cache_read_input_tokens,
+                "cache_creation_input_tokens": subagents.cache_creation_input_tokens,
                 "cost_usd": subagents.cost_usd,
             },
             "goal": {
                 "input_tokens": others.goal.input_tokens,
                 "output_tokens": others.goal.output_tokens,
+                "cache_read_input_tokens": others.goal.cache_read_input_tokens,
+                "cache_creation_input_tokens": others.goal.cache_creation_input_tokens,
                 "cost_usd": others.goal.cost_usd,
             },
         },
@@ -978,15 +984,28 @@ mod tests {
             started: std::time::Instant::now(),
             denials: Vec::new(),
         };
-        let none = || GuardianUsage::default();
+        let bucket = |read, written| GuardianUsage {
+            cache_read_input_tokens: read,
+            cache_creation_input_tokens: written,
+            ..GuardianUsage::default()
+        };
         let others = Others {
-            guardian: none(),
-            goal: none(),
-            subagents: none(),
+            guardian: bucket(10, 11),
+            goal: bucket(30, 31),
+            subagents: bucket(20, 21),
         };
         let result = result_event("s", &outcome, &totals, &others, None);
         assert_eq!(result["usage"]["main"]["input_tokens"], 3000);
         assert_eq!(result["usage"]["main"]["cache_read_input_tokens"], 1700);
         assert_eq!(result["usage"]["main"]["cache_creation_input_tokens"], 100);
+        for (name, read, written) in [
+            ("guardian", 10, 11),
+            ("subagents", 20, 21),
+            ("goal", 30, 31),
+        ] {
+            let bucket = &result["usage"][name];
+            assert_eq!(bucket["cache_read_input_tokens"], read, "{name}");
+            assert_eq!(bucket["cache_creation_input_tokens"], written, "{name}");
+        }
     }
 }

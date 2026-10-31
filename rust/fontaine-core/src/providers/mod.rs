@@ -18,12 +18,15 @@ use crate::credentials::StoredCredential;
 use fontaine_tools::tls::LoadedNetwork;
 
 pub mod anthropic;
+pub mod cache_minimum;
+mod cache_wire;
 pub mod device_flow;
 pub mod gemini;
 pub mod ollama;
 pub mod openai;
 pub mod openai_compatible;
 pub mod opencode_go;
+pub mod openrouter;
 pub mod token_source;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -272,6 +275,7 @@ const PROVIDERS: &[&dyn Provider] = &[
     &openai_compatible::OpenAiCompatible,
     &ollama::Ollama,
     &opencode_go::OpencodeGo,
+    &openrouter::OpenRouter,
 ];
 
 pub fn find(name: &str) -> Option<&'static dyn Provider> {

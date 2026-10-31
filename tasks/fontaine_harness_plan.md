@@ -561,6 +561,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-21: The headless I/O contract is versioned (`schema_version`; additive keeps it, rename or removal bumps it), mirroring Claude Code's flags plus `gate_decision` events.
 - 2026-10-21: The headless I/O contract is a checked-in JSON Schema per version, `docs/schemas/headless-v1.schema.json`, published with the docs and validated with the exact-pinned `jsonschema` crate (Phase 1).
 - 2026-10-30 (user, supersedes the 2026-10-21 1000-call cap): A turn, headless or interactive, and every subagent run has no model-call limit unless `--max-turns` sets one, as in Claude Code; rig's limit is set to `usize::MAX` when none is given, since unset it allows one call. The token and cost budgets bound a run; no per-spawn turn limit (#326).
+- 2026-10-30 (supersedes the 2026-10-25 line that kept cache fields on `usage.main` only): `usage.guardian`, `subagents` and `goal` carry `cache_read_input_tokens` and `cache_creation_input_tokens`, and `usage_bucket` in `headless-v1.schema.json` requires them on every bucket, so a cache that does nothing is visible there; additive within `v1` (#331).
 
 ### MCP
 
@@ -646,6 +647,12 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-25: `prompt_caching` has a per-kind provider default (true for `anthropic`, false for `opencode-go` until its Messages route is measured live), is user-scope only and is accepted only by kinds where `accepts_prompt_caching()` is true; `cache_ttl = "1h"` is opt-in because extended TTL costs more per write (#13).
 - 2026-10-25: The guardian handle marks only its static prefix (tools and system prompt), never the per-call final message, so it pays no write premium on a tail that is never reused; its prefix is near provider minimum lengths, so savings are model-dependent (#13).
 - 2026-10-25: Headless `usage.main` gains cache read and write tokens; `guardian` and `subagents` (`GuardianUsage`) carry no cache fields and are not extended (#13).
+- 2026-10-30: `openrouter` is a new kind on rig's OPENROUTER dialect rather than a `prompt_caching` key on `openai-compatible`, since only that dialect has the cache mapping and a flag on the generic gateway would send OpenRouter-specific fields to arbitrary endpoints; `prompt_caching` defaults to true (#331).
+- 2026-10-30: `openai-compatible` accounts pointing at OpenRouter are not migrated or detected; they keep working uncached, and the docs point to `kind = "openrouter"` (#331).
+- 2026-10-30: On `openrouter` the conversation takes rig's top-level automatic marker, while the guardian's marker is written onto its system message's last content block by a request-rewriting `Wire` wrapper (`CacheWire`), because a top-level marker would land on the per-call tail that is never reused. rig's OPENROUTER Chat encoding already emits the system prompt as a block array, so the rewrite only adds `cache_control` to it (#331).
+- 2026-10-30: `CacheWire` maps a one-hour retention to the short one for `openai/`, `deepseek/`, `x-ai/` and `groq/` model ids (a local copy of rig's automatic-upstream list that must track rig), never sets `CacheRetention::None`, and leaves `options.cache` unset when caching is off (#331).
+- 2026-10-30: Sticky routing (`prompt_cache_key`) is deferred, since rig's OPENROUTER Chat mapping omits `cache_key` and sending it would need a body rewrite; the opencode-go default is not flipped, since it needs a live Go measurement (#331).
+- 2026-10-30: The guardian's minimum-cacheable-length notice applies to Claude ids on `anthropic` and `openrouter` accounts only, compares against fixed per-profile prefix sizes (about 1500 tokens `minimal`, 3000 `full`), and is reachable only for pinned guardians; the shipped 512-minimum default never triggers it (#331).
 
 ### Sessions
 

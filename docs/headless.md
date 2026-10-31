@@ -201,7 +201,7 @@ The `result` object:
 | `num_turns` | Model calls made so far in the session |
 | `duration_ms` | Wall time of the turn |
 | `total_cost_usd` | Spend so far, main model plus guardian plus goal evaluator plus subagents, or null when none is priced |
-| `usage` | `main`, `guardian` and `subagents`, each with `input_tokens`, `output_tokens` and `cost_usd`; `main` also has `cache_read_input_tokens` and `cache_creation_input_tokens`, the parts of its input read from and written to the provider's prompt cache (0 when the provider reports none); `guardian` totals every adjudication that reached the model, subagents' included (cached verdicts cost nothing); `subagents` is their model calls; `goal` is the goal evaluator's calls, including attempts that gave no verdict |
+| `usage` | `main`, `guardian`, `subagents` and `goal`, each with `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` and `cost_usd`; the cache fields are the parts of the input read from and written to the provider's prompt cache (0 when the provider reports none); `guardian` totals every adjudication that reached the model, subagents' included (cached verdicts cost nothing); `subagents` is their model calls; `goal` is the goal evaluator's calls, including attempts that gave no verdict |
 | `denials` | One entry per denied call: `tool`, `tier`, `rule`, `explanation` |
 | `goal` | Only when a goal was set, continued, queried or cleared: `condition`, `status` (`active`, `met`, `impossible`, `paused` or `cleared`), `evaluations` and `reason` (the evaluator's last reason, or why it paused) |
 

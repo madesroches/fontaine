@@ -152,14 +152,14 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 
 | Key | Meaning | Default |
 |---|---|---|
-| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `ollama` or `opencode-go`. Required. | none |
+| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `ollama`, `opencode-go` or `openrouter`. Required. | none |
 | `api_key_env` | The name of the environment variable that holds the key. Omit it to use the stored credential. Raw keys are never accepted inline. Refused for `opencode-go`, which signs in instead. | unset |
 | `base_url` | Endpoint override. Required for `openai-compatible`. | the provider's public endpoint |
 | `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
 | `wires` | `opencode-go` only: a table from model id to the wire it is served on (`chat`, `responses`, `messages` or `gemini`), for a model the built-in routing gets wrong. | unset |
 | `context_tokens` | `ollama` only: the context window requested with every call (`options.num_ctx`), at least 2048. | `16384` |
-| `prompt_caching` | `anthropic` and `opencode-go` only: whether requests on the Messages wire carry cache breakpoints (tools, system prompt and the latest message), so the provider reuses the unchanged prefix at a fraction of the input price. On `opencode-go` it affects only models served on the Messages wire; the other wires cache by prefix on their own. User scope only, because it changes spend and what the provider stores. | `true` for `anthropic`, `false` for `opencode-go` |
-| `cache_ttl` | `anthropic` and `opencode-go` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
+| `prompt_caching` | `anthropic`, `openrouter` and `opencode-go` only: whether requests carry cache breakpoints, so the provider reuses the unchanged prefix at a fraction of the input price. On `anthropic` they sit on the tools, the system prompt and the latest message. On `openrouter` the conversation carries one top-level marker for every model except the self-caching `openai/`, `deepseek/`, `x-ai/` and `groq/` upstreams, which are sent none, and the guardian marks its system prompt. On `opencode-go` it affects only models served on the Messages wire; the other wires cache by prefix on their own. User scope only, because it changes spend and what the provider stores. | `true` for `anthropic` and `openrouter`, `false` for `opencode-go` |
+| `cache_ttl` | `anthropic`, `openrouter` and `opencode-go` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
 | `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. | unset |
 | `https_proxy`, `http_proxy`, `no_proxy`, `ca_bundle`, `client_cert`, `client_key` | Override the same key of [`[network]`](#network) for this account only. | the `[network]` value |
 
@@ -178,6 +178,7 @@ What each kind talks to:
 | `ollama` | Ollama's native `/api/chat` | `http://localhost:11434` | optional |
 | `openai-compatible` | Chat Completions | none; `base_url` is required | optional |
 | `opencode-go` | Chat Completions, Responses, Messages and `generateContent`, per model | `https://opencode.ai/inference/go` | sign-in |
+| `openrouter` | Chat Completions, with prompt caching | `https://openrouter.ai/api/v1` | required |
 
 An `openai-compatible` endpoint speaks Chat Completions, not the Responses API, and its models are
 unpriced, so `--max-budget-usd` does not apply to them.
@@ -190,7 +191,7 @@ unpriced, so `--max-budget-usd` does not apply to them.
 2. Otherwise the key is the account's entry in `credentials.toml`, written by `/login` in the
    terminal UI.
 3. With neither, an `ollama` or `openai-compatible` account sends no `Authorization` header. An
-   `anthropic`, `openai` or `gemini` account with no key is a configuration error (exit code 2)
+   `anthropic`, `openai`, `gemini` or `openrouter` account with no key is a configuration error (exit code 2)
    when the main model uses it.
 
 An `opencode-go` account has no key. Its credential is the sign-in that
@@ -301,12 +302,12 @@ when the conversation fills three quarters of a window under about 57k tokens; a
 model the catalog does not list never compacts by threshold, so a long session ends with that
 error at the window.
 
-OpenRouter, through its OpenAI-compatible endpoint:
+OpenRouter, with prompt caching (an `openai-compatible` account pointed at OpenRouter
+still works, but sends no cache markers):
 
 ```toml
 [accounts.router]
-kind = "openai-compatible"
-base_url = "https://openrouter.ai/api/v1"
+kind = "openrouter"
 api_key_env = "OPENROUTER_API_KEY"
 models = ["anthropic/claude-sonnet-4-6"]
 

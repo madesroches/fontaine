@@ -863,3 +863,23 @@ mod persistence {
         }
     }
 }
+
+#[tokio::test]
+async fn cache_tokens_reach_every_usage_bucket() {
+    let rig = Rig::new(Manual);
+    let mut usage = rig_core::completion::Usage::new();
+    usage.input_tokens = Some(10);
+    usage.cached_input_tokens = Some(7);
+    usage.cache_creation_input_tokens = Some(3);
+    rig.state.add_guardian_usage(ROOT_AGENT, &usage);
+    rig.state.add_guardian_usage(ROOT_AGENT, &usage);
+    rig.state.add_goal_usage(&usage);
+    rig.state.add_subagent_usage(&usage);
+    let reads = |u: fontaine_core::gate::GuardianUsage| {
+        (u.cache_read_input_tokens, u.cache_creation_input_tokens)
+    };
+    assert_eq!(reads(rig.state.guardian_usage()), (14, 6));
+    assert_eq!(reads(rig.state.guardian_usage_of(ROOT_AGENT)), (14, 6));
+    assert_eq!(reads(rig.state.goal_usage()), (7, 3));
+    assert_eq!(reads(rig.state.subagent_usage()), (7, 3));
+}

@@ -233,12 +233,21 @@ first: an `ask` rule or a critical path still asks.
 - A verdict is cached for 60 seconds (`[guardian] cache`). The key covers the call, the model, the rules, the environment, your messages, the session's
   recent actions and its denials, so any change misses. An identical call therefore reuses a verdict only when nothing else has happened in the session since (in practice consecutive identical calls under the minimal profile, or retries); this is deliberate, so an Allow is not reused after a security-relevant change. Only verdicts the model returned are cached,
   never a fail-closed outcome; the confidence rewrite applies after every lookup.
-- On an account that caches prompts (`prompt_caching`, on by default for `anthropic`), the
-  guardian's static prefix, its verdict tool and system prompt, is marked cacheable; the per-call
-  message is not. The system prompt holds the profile, the rules and the environment and no
-  per-call text, so it is identical across calls until the rules change. A provider caches a
-  prefix only above a model-dependent minimum length (about 1024 tokens on Sonnet and Opus, more
-  on Haiku), so on some guardian models this saves nothing.
+- On an account that caches prompts (`prompt_caching`, on by default for `anthropic` and
+  `openrouter`), the guardian's static prefix, its verdict tool and system prompt, is marked
+  cacheable; the per-call message is not. On `openrouter` the marker sits on the system prompt
+  itself, since OpenRouter's top-level marker would land on the per-call message, which is never
+  reused. Models from `openai/`, `deepseek/`, `x-ai/` and `groq/` cache by themselves and get no
+  marker. The system prompt holds the profile, the rules and the environment and no per-call
+  text, so it is identical across calls until the rules change. The cache read and write tokens
+  the guardian used are in the headless [`usage.guardian`](headless.md) output.
+- A provider caches a prefix only above a model-dependent minimum length, so on some guardian
+  models the marker saves nothing. When you pin a Claude guardian whose minimum is above the
+  size of its prompt (about 1500 tokens under the `minimal` profile, 6000 under `full`), with
+  caching on, Fontaine says so once at startup. Minimums, in tokens: Claude 5 models 512,
+  Sonnet 4 models 1024, Haiku 3.5 and Opus 4.7 2048, Opus 4.5 and 4.6 and Haiku 4.5 4096. A
+  guardian model with a lower minimum is the fix. The notice covers Claude ids on `anthropic`
+  and `openrouter` accounts; other models are not checked.
 - Calls are adjudicated one at a time, in order. The guardian is on the critical path, so a fast
   model matters.
 
