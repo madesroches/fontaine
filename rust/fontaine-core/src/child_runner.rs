@@ -13,10 +13,16 @@ use fontaine_guardian::WireIds;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::CallView;
 use fontaine_tools::jobs::{WAKE_POLL, WaitWake};
+use fontaine_tools::kills::{KILL_GRACE, KillSwitches};
 use fontaine_tools::lock::{lock, lock_recovering, read};
 use fontaine_tools::result_pipeline::{ResultPipeline, ResultStage, ToolOutcome, append_note};
 use fontaine_tools::risk::RiskClass;
+use futures::FutureExt as _;
 use futures::future::BoxFuture;
+use rig_agent::agent::{
+    AgentHook, CompletionCallAction, CompletionCallEvent, DispatchAction, DispatchEvent,
+    HookContext,
+};
 use rig_agent::prelude::*;
 use rig_agent::tool::server::{ToolServer, ToolServerHandle};
 use rig_core::tool::ToolOutput;
@@ -37,6 +43,54 @@ use crate::turn::{Drive, Flow, SessionEvent, TurnOutcome, drive};
 use crate::turn_recovery::RecoveryHook;
 
 const TARGET: &str = "fontaine::telemetry";
+
+/// The reason a killed run records when it settles: the report's words too.
+const KILL_REASON: &str = "it was killed";
+
+/// Stops a killed run at the hook boundaries that bracket a model turn, so the run settles
+/// through rig's cancel path and its committed messages reach the recovery hook instead of
+/// dying with a dropped drive future.
+struct KillHook {
+    kill: watch::Receiver<bool>,
+}
+
+impl KillHook {
+    /// What `on_completion_call` answers.
+    fn completion_call(&self) -> CompletionCallAction {
+        if *self.kill.borrow() {
+            CompletionCallAction::Stop(KILL_REASON.to_string())
+        } else {
+            CompletionCallAction::Continue
+        }
+    }
+
+    /// What `on_dispatch` answers for a tool call (`tool` is whether the effect is one).
+    fn dispatch(&self, tool: bool) -> DispatchAction {
+        if tool && *self.kill.borrow() {
+            DispatchAction::stop(KILL_REASON)
+        } else {
+            DispatchAction::Proceed
+        }
+    }
+}
+
+impl AgentHook for KillHook {
+    async fn on_completion_call(
+        &self,
+        _ctx: &HookContext,
+        _event: CompletionCallEvent<'_>,
+    ) -> CompletionCallAction {
+        // Fires before every model request: a kill that arrived mid-stream takes effect
+        // before the next request is sent.
+        self.completion_call()
+    }
+
+    async fn on_dispatch(&self, _ctx: &HookContext, event: DispatchEvent<'_>) -> DispatchAction {
+        // Fires before each tool call is dispatched: a kill between tool calls in a batch
+        // stops the batch before the next call runs.
+        self.dispatch(event.tool_name().is_some())
+    }
+}
 
 /// The main model as children see it: what `$main` means, and the listing that vouches for a
 /// model on its account.
@@ -214,6 +268,9 @@ pub struct ChildContext {
     /// The session store: each child's conversation persists under its own log, named for
     /// its agent id, beside the root transcript.
     pub store: DirStore,
+    /// The session's kill switches: each spawn registers its receiver so a killed child's
+    /// in-flight calls end at the tool choke point.
+    pub kills: Arc<KillSwitches>,
 }
 
 pub struct CoreChildRunner {
@@ -456,12 +513,17 @@ impl ChildRunner for CoreChildRunner {
             } = model.wire_ids();
             let state = context.state.clone();
             let tools = fork_tools(&context.tool_server, &request.tools);
+            // The channel lives above the agent build so the hook can subscribe; the choke
+            // point's registry takes the same receiver.
+            let (kill, kill_rx) = watch::channel(false);
+            context.kills.register(&request.id, kill_rx.clone());
             let builder = AgentBuilder::new(model.completion.clone())
                 .preamble((context.preamble)(&request.agent_type))
                 .memory(store.clone())
                 .conversation(request.id.clone());
             let agent = apply_common(builder, &state, context.record_content)
                 .add_hook(SteeringHook::new(context.steering.clone(), state.clone()))
+                .add_hook(KillHook { kill: kill_rx })
                 .add_hook(RecoveryHook::new(
                     store,
                     request.id.clone(),
@@ -478,7 +540,6 @@ impl ChildRunner for CoreChildRunner {
                 agent.type = request.agent_type.name.as_str(),
                 model.priced = priced,
             );
-            let (kill, _) = watch::channel(false);
             let (reports, _) = watch::channel((0, None));
             let shared = Arc::new(RunShared {
                 id: request.id.clone(),
@@ -622,10 +683,21 @@ async fn run_child(
             None,
             &mut on_event,
         );
+        tokio::pin!(run);
         let outcome = tokio::select! {
             biased;
-            _ = kill.wait_for(|killed| *killed) => break None,
-            outcome = run => outcome,
+            // `map` keeps the flag wait's borrowed value out of the arm, so the grace wait
+            // holds no watch guard across its await.
+            _ = kill.wait_for(|killed| *killed).map(|_| ()) => {
+                // The kill hook settles the run at the next hook boundary, normally well inside
+                // the grace; only a wedged run (a hung stream, a stuck hook) outlives it and is
+                // dropped exactly as an instantaneous kill drops it today.
+                match tokio::time::timeout(KILL_GRACE, &mut run).await {
+                    Ok(outcome) => break Some(outcome),
+                    Err(_) => break None,
+                }
+            }
+            outcome = &mut run => outcome,
         };
         let TurnOutcome::Answer(_) = outcome else {
             break Some(outcome);
@@ -643,28 +715,43 @@ async fn run_child(
     };
     // Partial text only labels an interrupted child's report; a stale value is harmless.
     let partial = lock_recovering(&last_text).clone();
-    match outcome {
-        None => ChildReport {
+    child_report(&tree, id, outcome, partial, *kill.borrow())
+}
+
+/// How a child's run reads once it has settled. A kill that fired first settles the report as
+/// `Killed` whatever the outcome was, including an answer that completed concurrently with the
+/// kill; the tree already showed the node `Killed` the moment the human stopped it.
+fn child_report(
+    tree: &AgentTree,
+    id: &str,
+    outcome: Option<TurnOutcome>,
+    partial: String,
+    killed: bool,
+) -> ChildReport {
+    if killed || outcome.is_none() {
+        return ChildReport {
             status: ChildStatus::Killed,
             text: partial,
-            reason: Some("it was killed".into()),
-        },
-        Some(TurnOutcome::Answer(text)) => ChildReport {
+            reason: Some(KILL_REASON.into()),
+        };
+    }
+    match outcome.expect("a live outcome when the kill flag is clear") {
+        TurnOutcome::Answer(text) => ChildReport {
             status: ChildStatus::Done,
             text,
             reason: None,
         },
-        Some(TurnOutcome::Stopped) => ChildReport {
+        TurnOutcome::Stopped => ChildReport {
             status: ChildStatus::BudgetExhausted,
             text: partial,
             reason: tree.exhausted_of(id).map(|why| why.describe()),
         },
-        Some(TurnOutcome::MaxTurns(_)) => ChildReport {
+        TurnOutcome::MaxTurns(_) => ChildReport {
             status: ChildStatus::BudgetExhausted,
             text: partial,
             reason: Some("it reached the limit on model calls".into()),
         },
-        Some(TurnOutcome::Failed(message)) => ChildReport {
+        TurnOutcome::Failed(message) => ChildReport {
             status: ChildStatus::Failed,
             text: partial,
             reason: Some(message),
@@ -703,6 +790,90 @@ mod tests {
         let only = restrictions(&typed(&["shell", "shell(git *)", "read(src/*)"])).only;
         let tools: Vec<&str> = only.iter().map(|r| r.tool.as_str()).collect();
         assert_eq!(tools, ["read"]);
+    }
+
+    fn kill_hook(flag: bool) -> KillHook {
+        let (tx, rx) = watch::channel(flag);
+        drop(tx);
+        KillHook { kill: rx }
+    }
+
+    #[test]
+    fn the_kill_hook_proceeds_with_the_flag_clear() {
+        let hook = kill_hook(false);
+        assert_eq!(hook.completion_call(), CompletionCallAction::Continue);
+        assert!(matches!(hook.dispatch(true), DispatchAction::Proceed));
+    }
+
+    #[test]
+    fn the_kill_hook_stops_the_run_with_the_flag_set() {
+        let hook = kill_hook(true);
+        assert_eq!(
+            hook.completion_call(),
+            CompletionCallAction::Stop(KILL_REASON.to_string())
+        );
+        let stopped = hook.dispatch(true);
+        let DispatchAction::Deny(report) = stopped else {
+            panic!("a killed tool call is refused, not dispatched: {stopped:?}");
+        };
+        assert_eq!(report.message, KILL_REASON);
+        // A non-tool effect is not a run-stopping tool denial; it proceeds.
+        assert!(matches!(hook.dispatch(false), DispatchAction::Proceed));
+    }
+
+    fn tree() -> Arc<AgentTree> {
+        Arc::new(AgentTree::new(fontaine_agents::tree::Limits::default(), 1))
+    }
+
+    #[test]
+    fn a_killed_run_reports_killed_whatever_it_settled_as() {
+        let tree = tree();
+        // A run that settled after the kill fired, as a failure from the cancel.
+        let report = child_report(
+            &tree,
+            "agent-1",
+            Some(TurnOutcome::Failed("the run was cancelled".into())),
+            String::new(),
+            true,
+        );
+        assert_eq!(report.status, ChildStatus::Killed);
+        assert_eq!(report.reason.as_deref(), Some(KILL_REASON));
+        // An answer that completed concurrently with the kill is still a kill.
+        let report = child_report(
+            &tree,
+            "agent-1",
+            Some(TurnOutcome::Answer("too late".into())),
+            "partial".into(),
+            true,
+        );
+        assert_eq!(report.status, ChildStatus::Killed);
+        assert_eq!(report.text, "partial");
+        // A dropped, never-settled run is a kill.
+        let report = child_report(&tree, "agent-1", None, String::new(), true);
+        assert_eq!(report.status, ChildStatus::Killed);
+    }
+
+    #[test]
+    fn a_run_without_the_kill_flag_keeps_its_own_outcome() {
+        let tree = tree();
+        let report = child_report(
+            &tree,
+            "agent-1",
+            Some(TurnOutcome::Answer("done".into())),
+            String::new(),
+            false,
+        );
+        assert_eq!(report.status, ChildStatus::Done);
+        assert_eq!(report.text, "done");
+        let report = child_report(
+            &tree,
+            "agent-1",
+            Some(TurnOutcome::Failed("provider error".into())),
+            "partial".into(),
+            false,
+        );
+        assert_eq!(report.status, ChildStatus::Failed);
+        assert_eq!(report.text, "partial");
     }
 
     #[test]

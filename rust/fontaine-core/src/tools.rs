@@ -9,6 +9,7 @@ use fontaine_tools::gate::ToolGate;
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::{Guard, GuardedTool};
 use fontaine_tools::jobs::{AgentWaits, Jobs, WaitWake};
+use fontaine_tools::kills::KillSwitches;
 use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, ToolSource, registered_risk};
@@ -108,6 +109,8 @@ pub struct RegistryParams {
     pub extension: Option<ExtensionTools>,
     /// Saves a file before `write` or `edit` changes it; `None` saves nothing.
     pub pre_images: Option<Arc<dyn PreImages>>,
+    /// The session's kill switches: every guarded tool refuses a killed agent's call.
+    pub kills: Arc<KillSwitches>,
 }
 
 fn register_extension<T: Tool + 'static>(tool: T, guard: &Guard) -> Registered {
@@ -131,6 +134,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         results: params.results,
         hide_mcp_names: params.hide_mcp_names,
         pre_images: params.pre_images,
+        kills: Some(params.kills),
     };
     let mut tools = builtins::build(&BuiltinEnv {
         scope: params.scope,

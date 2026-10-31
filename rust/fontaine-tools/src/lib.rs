@@ -9,6 +9,7 @@ pub mod gate;
 pub mod git_bash;
 pub mod guarded;
 pub mod jobs;
+pub mod kills;
 pub mod lock;
 pub mod lsp;
 pub mod names;

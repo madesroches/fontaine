@@ -218,6 +218,15 @@ prompts appear like any other, labelled with its id, whichever transcript is on 
 hides behind another. While a subagent's model is mid-step, its row shows how many characters it
 has written so far (`· writing 4.2k chars`), since its usage only updates when the call ends.
 
+Killing a subagent stops it at the next boundary: the in-flight model stream ends before the next
+request, an in-flight tool call or permission wait is cut short at the same gate every call
+passes, and a run that stays wedged past a bounded grace is dropped as before. The row shows
+`killed` immediately; the report and the ledger's `finished` record wait for the run to settle,
+normally within the grace. What the subagent committed up to the kill is kept in its own log,
+`logs/agent-<n>.jsonl` in the session store, so `/export` renders its conversation up to the kill
+and a later look has the evidence of what it was doing. A killed subagent still cannot be
+resumed.
+
 ### Messaging a subagent
 
 Text typed in a subagent's view is yours, not another agent's, and is handled as the main

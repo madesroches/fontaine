@@ -333,6 +333,7 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
         network: Default::default(),
         extension: None,
         pre_images: None,
+        kills: Arc::new(fontaine_tools::kills::KillSwitches::new()),
     })
     .unwrap();
     let shell = tools.into_iter().find(|t| t.name == "shell").unwrap();

@@ -9,6 +9,7 @@ use fontaine_agents::spawn::{AgentTool, SendMessageTool};
 use fontaine_tools::ask_user::AskUserTool;
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
+use fontaine_tools::kills::KillSwitches;
 use fontaine_tools::lsp::LspTool;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::schedule::{
@@ -95,6 +96,8 @@ pub(super) struct Parts<'a> {
     pub(super) output_style: Option<(String, String)>,
     pub(super) steering: &'a Steering,
     pub(super) instructions: &'a Arc<InstructionStage>,
+    /// The session's kill switches, handed to every tool's guard.
+    pub(super) kills: &'a Arc<KillSwitches>,
 }
 
 /// The agent, with its wrapped tools registered in the session's tool server.
@@ -190,6 +193,7 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         })),
         extension: Some(ExtensionTools(extension_tools(p, ledger_window))),
         pre_images: Some(Arc::new(StoreCapture(p.session.checkpoints().clone()))),
+        kills: p.kills.clone(),
     })
     .map_err(RuntimeError::new)?;
     for tool in registered {

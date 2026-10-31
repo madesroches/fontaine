@@ -16,6 +16,7 @@ use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, ROOT_AGENT};
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::jobs::Jobs;
+use fontaine_tools::kills::KillSwitches;
 use fontaine_tools::lock::write_recovering;
 use fontaine_tools::lsp::LspServers;
 use fontaine_tools::powershell::PowerShellSettings;
@@ -177,6 +178,9 @@ pub struct AgentRuntime {
     pub(crate) setup: Setup,
     tool_server: ToolServerHandle,
     results: Arc<ResultPipeline>,
+    /// The session's kill switches: the child runner registers each subagent, and the tool
+    /// choke point and the MCP guard cut a killed agent's in-flight calls short.
+    kills: Arc<KillSwitches>,
     /// The `llm` scanner's slot, which `install_guardian` keeps on the guardian's model.
     llm_scanner: Option<Arc<RwLock<Backend>>>,
     skills: Arc<SkillRuntime>,
@@ -255,7 +259,7 @@ impl AgentRuntime {
         let (extensions, skills) =
             setup::extension_runtimes(setup.extensions, &state, setup.project_executables);
         let steering = Steering::default();
-        let (main, tool_server, runner) = setup::subagent_support(
+        let (main, tool_server, runner, kills) = setup::subagent_support(
             &setup::ChildDeps::new(&retained, &state, &setup.approver, &steering, &results),
             &tree,
             &setup.models,
@@ -280,6 +284,7 @@ impl AgentRuntime {
             output_style: None,
             steering: &steering,
             instructions: &instruction_stage,
+            kills: &kills,
         })?;
         Ok(AgentRuntime {
             agent,
@@ -304,6 +309,7 @@ impl AgentRuntime {
             setup: retained,
             tool_server,
             results,
+            kills,
             llm_scanner,
             skills,
             agent_types,
@@ -339,6 +345,7 @@ impl AgentRuntime {
             output_style: self.output_style_text(),
             steering: &self.steering,
             instructions: &self.instruction_stage,
+            kills: &self.kills,
         })?;
         self.native_search = native_search;
         self.agent = agent;

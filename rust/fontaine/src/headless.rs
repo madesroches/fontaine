@@ -14,6 +14,7 @@ use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
 use fontaine_core::trust;
 use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn};
+use fontaine_tools::kills::KILL_SETTLE;
 use rig_core::schemars::Schema;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
@@ -890,11 +891,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             .filter(|_| handled.goal_ran && !failed);
         if failed {
             runtime.state.agents().kill_all();
-            runtime
-                .state
-                .agents()
-                .settled(std::time::Duration::from_secs(5))
-                .await;
+            runtime.state.agents().settled(KILL_SETTLE).await;
             runtime.jobs().terminate_all().await;
             runtime.lsp().shutdown_all().await;
         }
@@ -914,11 +911,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
         }
     }
     runtime.state.agents().kill_all();
-    runtime
-        .state
-        .agents()
-        .settled(std::time::Duration::from_secs(5))
-        .await;
+    runtime.state.agents().settled(KILL_SETTLE).await;
     // Jobs still running when the run ends are not waited for; they end with it.
     runtime.jobs().terminate_all().await;
     runtime.lsp().shutdown_all().await;

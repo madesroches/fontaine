@@ -695,6 +695,11 @@ All notable changes are recorded here. The format follows
 
 #### Agents
 
+- A killed subagent keeps the transcript it produced up to the kill: the run settles at the next
+  boundary of the in-flight model call or tool (with a bounded grace, then the hard drop as
+  backstop), and the committed messages are saved to its `logs/agent-<n>.jsonl`, so `/export`
+  renders the conversation instead of "transcript unavailable" and a diagnosis of why it was
+  stopped has evidence to work from (#348).
 - The agents panel and agent list mark a dollar figure that leaves out unpriced calls with
   `+ unpriced`, so a priced guardian spend is no longer shown as an agent's whole cost (#333).
 - Built-in `explore` subagents now run on the session model instead of `$guardian_default`

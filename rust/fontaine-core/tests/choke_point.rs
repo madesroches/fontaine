@@ -163,6 +163,7 @@ fn params(rig: &Rig) -> RegistryParams {
         network: Default::default(),
         extension: Some(extension()),
         pre_images: None,
+        kills: Arc::new(fontaine_tools::kills::KillSwitches::new()),
     }
 }
 
@@ -376,6 +377,7 @@ async fn serve(
         results: Arc::new(ResultPipeline::new()),
         hide_mcp_names: true,
         pre_images: None,
+        kills: None,
     };
     connect_transport("double", (cfs, c2s), handle.clone(), guard, false)
         .await

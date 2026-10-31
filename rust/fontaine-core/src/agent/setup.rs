@@ -12,6 +12,7 @@ use fontaine_guardian::{
 };
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::jobs::{JobNote, JobSink};
+use fontaine_tools::kills::KillSwitches;
 use fontaine_tools::lsp::DiagnosticsStage;
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
 use fontaine_tools::scope::Scope;
@@ -558,7 +559,8 @@ impl<'a> ChildDeps<'a> {
 }
 
 /// The main model slot and the tool server the root agent and its subagents share, the runner
-/// that starts the subagents, and the tree wired to both.
+/// that starts the subagents, and the kill switches the runner and the tools both take. The
+/// tree is wired to the model and tools.
 pub(super) fn subagent_support(
     deps: &ChildDeps<'_>,
     tree: &AgentTree,
@@ -568,20 +570,23 @@ pub(super) fn subagent_support(
     Arc<RwLock<MainModel>>,
     ToolServerHandle,
     Arc<CoreChildRunner>,
+    Arc<KillSwitches>,
 ) {
     let main = Arc::new(RwLock::new(MainModel {
         handle: models.main.clone(),
         listing: models.main_listing.clone(),
     }));
     let tool_server = ToolServer::new().run();
+    let kills = Arc::new(KillSwitches::new());
     let runner = child_runner(
         deps,
         &tool_server,
         &main,
         config.telemetry.records_content(),
+        &kills,
     );
     wire_root_tree(tree, models, &tool_server);
-    (main, tool_server, runner)
+    (main, tool_server, runner, kills)
 }
 
 /// The runner that starts subagents on the session's tools and models.
@@ -590,6 +595,7 @@ fn child_runner(
     tool_server: &ToolServerHandle,
     main: &Arc<RwLock<MainModel>>,
     record_content: bool,
+    kills: &Arc<KillSwitches>,
 ) -> Arc<CoreChildRunner> {
     let ChildDeps {
         retained,
@@ -640,6 +646,7 @@ fn child_runner(
             steering: steering.clone(),
             results: results.clone(),
             store: retained.store.clone(),
+            kills: kills.clone(),
         }),
     })
 }
