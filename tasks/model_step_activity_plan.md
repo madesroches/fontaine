@@ -6,8 +6,8 @@
 The ~60 s gaps in #343 are model output time (reasoning and tool-call arguments being written),
 not a harness stall. The defect is that nothing shows it: the drive loop drops `StreamEvent::Reasoning`
 and `StreamEvent::Arguments`, and tokens/cost only update at `CompletionCall`. This plan surfaces a
-live count of characters written in the current model step, per agent (main included), in the agent
-list and agents panel, and adds debug logs for model-request start and end so a diagnosis like the
+live count of characters written in the current model step, per agent, in the agent
+list (the `main` row included, whenever the list is shown) and the agents panel (subagents only), and adds debug logs for model-request start and end so a diagnosis like the
 one in the issue is possible from logs alone.
 
 ## Current State
@@ -23,7 +23,9 @@ one in the issue is possible from logs alone.
 - **Counter in the tree.** Add `AgentTree::note_writing(agent, chars)`: adds to a per-node
   `writing: u64` and, throttled (at most one `changed` notification per ~250 ms per tree, measured with
   `tokio::time::Instant`), wakes watchers. `reset_writing(agent)` zeroes it and always notifies,
-  bypassing the throttle. `AgentRow` gains `writing: u64`.
+  bypassing the throttle. `AgentRow` gains `writing: u64`. The root is a tree node but never an `AgentRow`
+  (`rows()` keeps `parent.is_some()`), so add an accessor `AgentTree::writing_of(agent) -> u64` that
+  works for any node, root included.
   It is display state: not part of `Spend`, never budgeted, never persisted.
 - **`drive_once` feeds it.** On `StreamEvent::Reasoning { text, .. }` add `text.chars().count()`; on
   `StreamEvent::Arguments { json, .. }` add `json.chars().count()`; `Text` also counts (the fragment
@@ -36,7 +38,11 @@ one in the issue is possible from logs alone.
 - **TUI.** `ListRow` and `PanelRow` get `writing: u64`, a separate field, not folded into the `spend` string. While the agent is running and
   `writing > 0`, append `· writing 4.2k chars` (format `<n>` below 1000, else `<n.n>k`) after the
   spend text (in the list it is dropped before the `+ unpriced` marker is truncated; in the panel it
-  goes on the spend line). `main`'s row uses the same field. One shared formatter next to `spend_text` in
+  goes on the spend line). `ListRow::main()` stays a constant row,
+  but the list builder sets its `writing` from `writing_of(ROOT_AGENT)`; it renders the suffix on
+  `writing > 0` alone (main has no Running status). List visibility is unchanged: `main` appears only
+  while at least one subagent row is listed, so a root step with no subagents shows no indicator, and
+  the agents panel has no main row. One shared formatter next to `spend_text` in
   `agents_panel.rs`. The TUI redraws on tree `changed` (it selects on `tree.changed().notified()`
   and re-reads `tree.rows()`; the 1 s list tick runs only while subagent rows exist), so the throttled notify is
   what drives updates. There is no trailing notify: a stale count after the model pauses is accepted
@@ -53,10 +59,10 @@ one in the issue is possible from logs alone.
 
 ## Implementation Steps
 1. `fontaine-agents/src/tree.rs`: add `writing` to the node and `AgentRow`; add `note_writing` (throttled
-   notify) and `reset_writing`; populate in the snapshot.
+   notify) and `reset_writing`; populate in the snapshot; add `writing_of`.
 2. `fontaine-core/src/turn.rs` (`drive_once`): handle `Reasoning`/`Arguments`/`Text` counts; reset on `CompletionCall` plus drop guard; debug logs.
 3. `fontaine-tui/src/agents_panel.rs`: `PanelRow.writing`, formatter, render; `agent_list.rs`:
-   `ListRow.writing`, render; update the mapping sites: `agent_list.rs::rows()` and `ui/mod.rs::refresh_panel`. Update every
+   `ListRow.writing` (main's set from `writing_of`), render; update the mapping sites: `agent_list.rs::rows()` and `ui/mod.rs::refresh_panel`. Update every
    `ListRow`, `PanelRow` and `AgentRow` struct literal, including tests: `ListRow` at
    `agent_list.rs:33,71`, `app.rs:1453,1465`, `view.rs:582,693`; `PanelRow` at `ui/mod.rs:93`,
    `agents_panel.rs:299`, `screen.rs:1766`, `app.rs:1683`; `AgentRow` at `tree.rs:916`,
@@ -77,6 +83,7 @@ one in the issue is possible from logs alone.
 ### Model-step activity
 - 2026-10-31: the indicator reads `· writing N chars` (`<n>` below 1000, else `<n.n>k`); chars, not token estimates.
 - 2026-10-31: tree wakeups from `note_writing` are throttled to ~250 ms per tree; `reset_writing` bypasses the throttle.
+- 2026-10-31: AFK: the root's indicator is read through `AgentTree::writing_of` and shown on the `main` list row only while the list is shown (a subagent row exists); the agents panel stays subagents-only, since the root is never an `AgentRow` and widening list/panel visibility is out of scope for #343.
 
 ## Documentation
 `docs/tui.md` agent list / agents panel: describe the `· writing 4.2k chars` indicator and that it
@@ -84,13 +91,14 @@ clears when the model step ends. `docs/agents.md`: one line.
 
 ## Testing Strategy
 - Unit (tree): `note_writing` accumulates, `reset_writing` zeroes, snapshot exposes it, notify is
-  throttled (many calls → bounded wakeups), unknown agent id is a no-op.
+  throttled (many calls → bounded wakeups), unknown agent id is a no-op, `writing_of` works for the root.
+- Unit (tui): main row shows the suffix when its `writing > 0` with a subagent row listed; no list (hence no main) without subagent rows.
 - Unit (tui): formatter (`999`, `1.0k`, `12.3k`), list/panel row render with and without `writing`,
   not shown for non-running agents.
 - Integration (core, `fontaine-core/tests/billing.rs` style): call `drive` (or `run_turn`) with `MockStreamEvent`
   (`ReasoningDelta`, `ToolCallNameDelta`, `ToolCallArgumentsDelta`, then `Text`) and read
   `agents().rows()` inside `on_event` on `AssistantDelta` (`Usage`/`on_event` don't fire on
-  Reasoning/Arguments alone); assert the counter is nonzero mid-step and zero after the
+  Reasoning/Arguments alone); assert the counter (via `writing_of(ROOT_AGENT)` for the root, since `rows()` omits it) is nonzero mid-step and zero after the
   `CompletionCall`. Pins the #343 bug: counter stayed invisible during reasoning-only steps.
 - Narrow-width list row with `+ unpriced` and `writing > 0` keeps the marker (the writing suffix is added only if the row still fits).
 - Dropping the `drive` future mid-stream zeroes the counter.
