@@ -64,18 +64,23 @@ New `providers/openrouter.rs`, `pub struct OpenRouter`, registered in `PROVIDERS
   proxies and wiremock tests).
 - `list` reuses `openai::Connected`'s listing (`/models`), so `/models` and account validation work.
 - The completion model is `Model<CacheWire>` where `CacheWire` is a `Wire` wrapper (below) over the
-  client's Chat wire. Because `openai::Connected` is generic over nothing, OpenRouter gets its own
+  client's Chat wire: `Connected` builds the model with `client.chat(model)` (rig's
+  `OpenAI::completion()` returns an enum of Chat and Responses wires) and wraps the resulting Chat
+  wire in `CacheWire`. Because `openai::Connected` is generic over nothing, OpenRouter gets its own
   `Connected` that holds the client, the resolved `PromptCaching`, and the session id.
 
 ### 2. The request-options seam: `CacheWire`
 
 A small `Wire` wrapper in `providers/` (shared module, e.g. `providers/cache_wire.rs`), modeled on
-`ollama::Tuned`: `encode` sets `request.options.cache` and `request.options.cache_key` when the
+`ollama::Tuned`. It carries a `CacheScope` field (the existing enum in `providers/mod.rs`, reused
+as-is); the OpenRouter `Connected` builds the conversation completion with `Conversation` scope and
+`guardian_completion` with `StaticPrefix` scope. `encode` sets `request.options.cache` and `request.options.cache_key` when the
 request does not already carry them, then delegates to the inner wire; every other `Wire` method
 delegates. It is generic over the inner `Wire<Op = Completion>` so another Chat-wire kind can adopt
 it later without a change here.
 
-- `CacheRetention`: `Short` for `cache_ttl = "5m"`, `Long` for `"1h"`; nothing set when
+- `CacheRetention`: `Short` for `cache_ttl = "5m"`, `Long` for `"1h"`, never `CacheRetention::None`
+  (rig treats `None` on an automatic upstream as unsupported too); `options.cache` is left unset when
   `prompt_caching` is off. `Long` on an automatic upstream is rejected by rig as "unsupported"; the
   wrapper must not make a request fail for that: map it to `Short` for upstreams rig treats as
   automatic, or set `OnUnsupported` to drop. The implementer picks whichever rig's
@@ -111,7 +116,8 @@ Rename-free: add `cache_read_input_tokens` and `cache_creation_input_tokens` (`u
 instead of three copies of the same four lines. Headless `result_event` emits the two fields for
 `guardian`, `subagents` and `goal`, and `docs/schemas/headless-v1.schema.json` makes
 `usage_bucket` carry them (`main_usage_bucket` collapses into `usage_bucket`, since every bucket now
-has the fields). The schema is `v1`: adding required integer fields to buckets is an additive
+has the fields; safe because `result_event` is the only emitter and neither def sets
+`additionalProperties`). The schema is `v1`: adding required integer fields to buckets is an additive
 change for consumers, called out in the CHANGELOG.
 
 ### 5. Minimum-cacheable-length notice
@@ -127,12 +133,6 @@ that a lower-minimum model is the fix. The table is data in one place, so a new 
 The caching-enabled check uses `PromptCaching::of(account)` for kinds where
 `accepts_prompt_caching()` is true.
 
-### 6. opencode-go (issue item 4)
-
-Not code. Needs a live Go account: run a guardian session after item 4 lands, read
-`usage.guardian.cache_read_input_tokens`, flip `OpencodeGo::default_prompt_caching()` if honored.
-Recorded under Manual Verification; this PR leaves the default false.
-
 ## Implementation Steps
 
 1. Spike (Design 3): wiremock a rig OPENROUTER Chat request with `.cache(Short)` and `.cache_key(..)`
@@ -142,9 +142,7 @@ Recorded under Manual Verification; this PR leaves the default false.
    `prompt_caching` / `cache_ttl` name `openrouter`.
 4. `GuardianUsage` cache fields and the shared `add`; `headless.rs` emission; schema update.
 5. `min_cacheable_tokens` and the `build_guardian_telling` notice.
-6. Provider dialog: include `openrouter` in the kind list (`fontaine-tui/src/provider_dialog.rs`) if
-   kinds are enumerated there; `CredentialPolicy::Required` makes the dialog ask for a key.
-7. Docs, CHANGELOG, plan Decisions.
+6. Docs, CHANGELOG, plan Decisions.
 
 ## Files to Modify
 
@@ -152,30 +150,15 @@ Recorded under Manual Verification; this PR leaves the default false.
   `providers/mod.rs`
 - `rust/fontaine-core/src/config.rs` (doc comments), `gate.rs`, `agent/setup.rs`
 - `rust/fontaine/src/headless.rs`, `docs/schemas/headless-v1.schema.json`
-- `rust/fontaine-tui/src/provider_dialog.rs` (only if it lists kinds)
 - `rust/fontaine-core/tests/account_session.rs`, `tests/providers.rs`
-- `docs/configuration.md`, `docs/guardian.md`, `docs/headless.md`, `README.md` (provider list)
+- `docs/configuration.md`, `docs/guardian.md`, `docs/headless.md`, `docs/architecture.md`, `README.md` (provider list)
 - `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
-
-## Trade-offs
-
-- **New kind vs a `prompt_caching` key on `openai-compatible`:** a dialect is chosen when the client
-  is built, and only rig's OPENROUTER dialect has the cache mapping and OpenRouter's `/key`
-  verification and pricing; a flag on the generic gateway would send OpenRouter-specific fields to
-  arbitrary endpoints. Existing `openai-compatible` OpenRouter accounts keep working unchanged
-  (and uncached).
-- **`Wire` wrapper vs per-request options at every call site:** call sites (agent loop, guardian,
-  scanner, goal evaluator, subagents) build requests in rig; one wrapper at the model covers all of
-  them, as `Tuned` does for Ollama.
-- **Session id as `cache_key`:** sticky routing is what makes OpenRouter's cache hit repeatedly;
-  the cost is that a session sticks to one upstream provider, which is the documented intent of the
-  field.
 
 ## Decisions
 
 - 2026-10-30: AFK: the opencode-go default is not flipped in this change, since it needs a live Go measurement; item 4 stays a manual step after the cache accounting lands.
 - 2026-10-30: AFK: `openai-compatible` accounts pointing at OpenRouter are not migrated or detected; they keep working uncached, and the docs point to `kind = "openrouter"`.
-- 2026-10-30: AFK: on OpenRouter the guardian never carries a tail cache marker; if a static-prefix marker cannot be expressed, the guardian sends none rather than a top-level one.
+- 2026-10-30: AFK: `openrouter` is a new kind on rig's OPENROUTER dialect rather than a `prompt_caching` key on `openai-compatible`, since only that dialect has the cache mapping and a flag on the generic gateway would send OpenRouter-specific fields to arbitrary endpoints.
 
 ## Documentation
 
@@ -183,6 +166,8 @@ Recorded under Manual Verification; this PR leaves the default false.
   `kind = "openrouter"`, document that `prompt_caching` / `cache_ttl` now apply to `openrouter`, the
   sticky-routing key, and that non-Anthropic upstreams cache automatically.
 - `docs/guardian.md`: OpenRouter guardian caching, the minimum-length notice and the table.
+- `docs/architecture.md`: lines ~268-270 say other wires cache automatically and cache counts are "of
+  the main model"; both go stale. Also check `docs/tui.md` and `docs/evals.md` for provider-kind lists.
 - `docs/headless.md`: `usage.guardian` / `subagents` / `goal` cache fields; schema file updated.
 - `README.md`: provider list if it names kinds.
 
@@ -192,14 +177,18 @@ Recorded under Manual Verification; this PR leaves the default false.
   when enabled, none when disabled; `prompt_cache_key` equals the session id (guardian: with the
   `:guardian` suffix) and is absent without one; an automatic upstream (`openai/gpt-...`) with a
   `Long` TTL does not fail; guardian scope sends no top-level marker.
-- Wiremock integration (`tests/account_session.rs`, helpers `gateway()` / `received_requests()`):
+- Wiremock integration (`tests/account_session.rs`, helpers `gateway()` / `last_body()`; only the
+  enabled and disabled cases, the encoded-body detail is covered by the `cache_wire` unit tests):
   a `kind = "openrouter"` account with `base_url` pointing at the mock sends the marker through the
   real resolve-and-complete path; the same account with `prompt_caching = false` sends none.
 - Config (`tests/providers.rs`): `prompt_caching` / `cache_ttl` accepted for `openrouter`, rejected
-  for other kinds as before; default is on; `openrouter` is in `names()`.
+  for other kinds as before; default is on; `openrouter` is in `names()`. The existing
+  `prompt_caching_keys_belong_to_the_kinds_that_accept_them` and `prompt_caching_defaults_per_kind`
+  hard-code kind lists and get `openrouter` added (accepted, default on).
 - Accounting: `GuardianUsage::add` and `add_guardian_usage` / `add_goal_usage` / `add_subagent_usage`
   carry cache read/write tokens; a headless test like `cache_tokens_reach_the_result_usage`
-  (`headless.rs:964`) asserts all four buckets; the JSON validates against the updated schema
+  (`headless.rs:964`) makes one `result_event` call with distinct per-bucket values and asserts all
+  four buckets; the JSON validates against the updated schema
   (existing schema test, if present, otherwise one assertion on the new required fields).
 - Notice: `min_cacheable_tokens` table cases (each tier, `anthropic/`-prefixed ids, unknown ids),
   and `build_guardian_telling` notices once for a 4096-minimum model with caching on, not for a
@@ -219,5 +208,4 @@ Recorded under Manual Verification; this PR leaves the default false.
 
 ## Open Questions
 
-- Whether rig's OPENROUTER Chat encoding can express a per-block breakpoint on the system message
-  (Design 3). Settled by the step 1 spike; the fallback order is already decided.
+None.
