@@ -37,6 +37,10 @@ pub enum SessionEvent {
     AssistantDelta(String),
     /// A complete piece of assistant text.
     Assistant(String),
+    /// A fragment of the model's reasoning as it streams. Display only.
+    ReasoningDelta(String),
+    /// The model's reasoning as it settled; may restate what the deltas carried.
+    Reasoning(String),
     ToolCall {
         id: String,
         tool: String,
@@ -424,7 +428,7 @@ async fn drive_once(
                 }
                 StreamEvent::Reasoning { text, .. } => {
                     step.note(text.chars().count());
-                    Flow::Continue
+                    on_event(SessionEvent::ReasoningDelta(text))
                 }
                 StreamEvent::Arguments { json, .. } => {
                     step.note(json.chars().count());
@@ -432,6 +436,9 @@ async fn drive_once(
                 }
                 StreamEvent::End { content, .. } => match content {
                     AssistantContent::Text(text) => on_event(SessionEvent::Assistant(text.text)),
+                    AssistantContent::Reasoning(reasoning) => {
+                        on_event(SessionEvent::Reasoning(reasoning.text))
+                    }
                     AssistantContent::ToolCall(_) => {
                         turn_calls_tool = true;
                         Flow::Continue

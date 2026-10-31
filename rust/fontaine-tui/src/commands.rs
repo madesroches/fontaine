@@ -59,7 +59,7 @@ pub enum Command {
     Rewind(String),
     /// `/rename [name]`.
     Rename(String),
-    /// `/expand [n]`.
+    /// `/expand [n | thinking]`.
     Expand(String),
     /// `/export [path]`.
     Export(String),
@@ -210,8 +210,8 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "expand",
         aliases: &[],
-        hint: Some("[n]"),
-        description: "print a tool call in full: command, output and diff",
+        hint: Some("[n | thinking]"),
+        description: "print a tool call (command, output and diff) or the model's reasoning in full",
         command: Command::Expand,
     },
     Builtin {
@@ -687,16 +687,32 @@ pub fn reply_number(argument: &str) -> Result<usize, String> {
     }
 }
 
-/// Which tool call `/expand` is asked for: none for the latest, otherwise the ordinal the call's
-/// card shows.
-pub fn call_number(argument: &str) -> Result<Option<usize>, String> {
+/// What `/expand` is asked to print.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpandTarget {
+    /// The latest tool call.
+    Latest,
+    /// The call whose card shows this ordinal.
+    Call(usize),
+    /// The latest reasoning card.
+    Thinking,
+}
+
+pub fn expand_target(argument: &str) -> Result<ExpandTarget, String> {
     if argument.is_empty() {
-        return Ok(None);
+        return Ok(ExpandTarget::Latest);
+    }
+    if argument == "thinking" {
+        return Ok(ExpandTarget::Thinking);
     }
     argument
         .parse::<usize>()
-        .map(Some)
-        .map_err(|_| format!("/expand takes a call number, such as `/expand 3`, not `{argument}`"))
+        .map(ExpandTarget::Call)
+        .map_err(|_| {
+            format!(
+                "/expand takes a call number or `thinking`, such as `/expand 3`, not `{argument}`"
+            )
+        })
 }
 
 /// Which instruction file `/memory` is asked to open: none for the bare list, otherwise the
@@ -816,9 +832,12 @@ mod tests {
             parse_command("/expand 3"),
             Some(Command::Expand("3".into()))
         );
-        assert_eq!(call_number(""), Ok(None));
-        assert_eq!(call_number("3"), Ok(Some(3)));
-        assert!(call_number("x").is_err());
+        assert_eq!(expand_target(""), Ok(ExpandTarget::Latest));
+        assert_eq!(expand_target("3"), Ok(ExpandTarget::Call(3)));
+        assert_eq!(expand_target("thinking"), Ok(ExpandTarget::Thinking));
+        assert!(expand_target("x").is_err());
+        assert!(expand_target("Thinking").is_err());
+        assert!(expand_target("thinking now").is_err());
         assert_eq!(
             parse_command("/loop 5m check the build"),
             Some(Command::Loop("5m check the build".into()))

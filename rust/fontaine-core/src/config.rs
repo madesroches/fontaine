@@ -809,6 +809,8 @@ impl ThemeName {
 pub struct TuiSection {
     pub theme: Option<ThemeName>,
     pub screen_reader: Option<bool>,
+    /// Show the model's reasoning in the transcript (default true).
+    pub show_reasoning: Option<bool>,
 }
 
 /// One `[env]` value. Its `Debug` is redacted so a stray `{config:?}` cannot put a proxy password
@@ -1675,6 +1677,7 @@ pub struct Shell {
 pub struct Tui {
     pub theme: ThemeName,
     pub screen_reader: Option<bool>,
+    pub show_reasoning: bool,
 }
 
 /// The merged, validated configuration.
@@ -1842,6 +1845,7 @@ impl Config {
             tui: Tui {
                 theme: ThemeName::default(),
                 screen_reader: None,
+                show_reasoning: true,
             },
             telemetry: Telemetry {
                 enabled: false,
@@ -1895,6 +1899,9 @@ impl Config {
             }
             if let Some(v) = tui.screen_reader {
                 self.tui.screen_reader = Some(v);
+            }
+            if let Some(v) = tui.show_reasoning {
+                self.tui.show_reasoning = v;
             }
         }
         if let Some(model) = s.model.as_ref().and_then(|m| m.model.clone()) {

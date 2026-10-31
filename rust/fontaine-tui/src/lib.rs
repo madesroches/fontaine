@@ -336,6 +336,7 @@ pub async fn drive(
             .and_then(|v| v.into_string().ok())
             .as_deref(),
     );
+    ui.app.transcript.show_reasoning = runtime.config.tui.show_reasoning;
     ui.app.history = history;
     ui.app.primary_root = primary_root;
     ui.app.todos.set_items(runtime.session.todos().root());

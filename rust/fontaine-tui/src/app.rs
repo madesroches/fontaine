@@ -347,9 +347,11 @@ impl App {
     /// The view of `id`, started empty the first time it is asked for.
     pub fn view_of(&mut self, id: String) -> &mut AgentView {
         let glyphs = self.transcript.glyphs;
+        let show_reasoning = self.transcript.show_reasoning;
         self.agent_views.entry(id).or_insert_with(|| {
             let mut view = AgentView::default();
             view.transcript.glyphs = glyphs;
+            view.transcript.show_reasoning = show_reasoning;
             view
         })
     }

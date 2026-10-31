@@ -107,7 +107,9 @@ fn main() {
         draw(&mut app, &mut screen);
     }
     // The full form of the latest call, printed above the live area like a command would.
-    app.transcript.expand(None).expect("a call to expand");
+    app.transcript
+        .expand(fontaine_tui::commands::ExpandTarget::Latest)
+        .expect("a call to expand");
     draw(&mut app, &mut screen);
     app.flush = true;
     screen.commit_all(&mut app).expect("final commit");

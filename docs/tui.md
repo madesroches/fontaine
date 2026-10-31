@@ -47,11 +47,28 @@ When a card was cut, its last row reads `expand: /expand N`. `/expand [n]` print
 full as new transcript lines (the whole command, all the retained output and the whole diff);
 without a number it prints the latest call. Numbers count the session's calls from 1 and are not
 reset by `/clear`, which empties the transcript, so a cleared call is an unknown call. It does not
-touch the model's context. In screen-reader mode a call is still one labelled line, followed by
+touch the model's context. `/expand thinking` does the same for the model's
+[reasoning](#model-reasoning). In screen-reader mode a call is still one labelled line, followed by
 the last ten lines of its output as plain lines and the same `expand:` hint.
 
 A long command under approval scrolls inside
 half the screen, so the call it asks about stays visible above the input.
+
+### Model reasoning
+
+The model's reasoning shows as a dim, italic card behind a `thinking` header. While it streams, the
+card shows the last five wrapped rows live and is not written to scrollback; once the reasoning
+settles it is written folded to its first five rows, so a long trace does not push the answer off
+screen; when the card was cut, `expand: /expand thinking` is its last row. `/expand thinking` prints the latest
+settled card in full as new transcript lines; it is an error while that card is still streaming,
+and when there is no reasoning. Like tool output, reasoning is made safe to paint (control
+characters blanked, credential-shaped text redacted) and at most 64 KiB of it is kept, its start
+and its end, which the expanded card notes. A model that withholds its reasoning shows no card.
+
+A subagent's reasoning shows in that agent's own transcript when you open it in the
+[agent view](#the-agent-list-and-the-agent-view), never inline in the main conversation.
+`[tui] show_reasoning = false` hides the cards; it is on by default. Headless `-p` prints no
+reasoning and `stream-json` carries none.
 
 ### Notices
 
@@ -394,7 +411,7 @@ error: an export never overwrites.
 | `/copy [<n>]` | Copies the latest assistant reply, or the `n`th latest, to the system clipboard. A reply is the text between tool calls, so a turn that calls a tool and then answers has two; `/copy` takes the last one. It is an error when there is no such reply. |
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/exit`, `/quit` | Leave. |
-| `/expand [<n>]` | Prints tool call `n` in full (command, retained output, diff) as new transcript lines; the latest call without a number. `n` is the number in the card's `expand:` hint, counted from the start of the session. It is an error for a call that does not exist or that `/clear` removed. |
+| `/expand [<n> \| thinking]` | Prints tool call `n` in full (command, retained output, diff) as new transcript lines; the latest call without a number. `n` is the number in the card's `expand:` hint, counted from the start of the session. It is an error for a call that does not exist or that `/clear` removed. `/expand thinking` prints the latest [reasoning card](#model-reasoning) in full instead. |
 | `/export [<path>]` | Writes the conversation to a Markdown file, owner-only, never over an existing file; with subagents it is a folder — `main.md` plus one `<agent-id>.md` per subagent. See [Sessions](#sessions). |
 | `/goal [<condition> \| clear]` | Keeps working until the condition is met; see [Goals](#goals). Bare `/goal` shows the goal's status. |
 | `/guardian-disable` | Turns the guardian and the permission floor off for the rest of this session, after a confirmation. A warning chip stays in the status bar until `/guardian-enable`. Session-scoped only: it is never saved to settings, a project cannot turn it on, and subagents are never loosened by it. Intended as a development escape hatch. |
@@ -501,6 +518,7 @@ one row each: the key, its effective value with defaults filled in, and the scop
   Settings · key, effective value, source
  > tui.theme                    dark-ansi                      default   ✎
    tui.screen_reader            unset                          default   ✎
+   tui.show_reasoning           true                           default   ✎
    context.autocompact_window   150000                         project-local ✎
    permissions.default_mode     unset (interactive: auto, ...  default
    permissions.deny             3 entries                      user, project
@@ -520,7 +538,7 @@ environment variable (`--model`, screen-reader mode) is not labelled as such.
 
 Typing filters the rows by key, space included. Up and Down select and wrap around, and Esc closes.
 
-Eight rows can be changed, marked `✎`. The rest are read-only: guardian, permission, account,
+Nine rows can be changed, marked `✎`. The rest are read-only: guardian, permission, account,
 network, telemetry, `env`, hook and MCP keys change what the guardian and the permission pipeline
 allow or send data off the machine, so they take a deliberate edit of the settings file. Rule
 editing stays in the files too; see [Permissions](permissions.md).
@@ -529,6 +547,7 @@ editing stays in the files too; see [Permissions](permissions.md).
 |---|---|---|
 | `tui.theme` | Cycles the themes | At once, as `/theme` |
 | `tui.screen_reader` | Cycles `true`, `false`, unset | From the next launch |
+| `tui.show_reasoning` | Cycles `true`, `false` | From the next launch |
 | `context.autocompact_window` | Opens a field for a positive whole number; empty clears the key | From the next launch |
 | `schedule.enabled` | Cycles `true`, `false` | From the next launch |
 | `memory.auto` | Cycles `true`, `false` | From the next launch |

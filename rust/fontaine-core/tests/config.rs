@@ -121,9 +121,13 @@ fn tui_defaults_parse_and_merge_cli_over_user() {
     let c = w.load().unwrap();
     assert_eq!(c.tui.theme, ThemeName::DarkAnsi);
     assert_eq!(c.tui.screen_reader, None);
+    assert!(c.tui.show_reasoning);
 
-    w.user_file("[tui]\ntheme = \"light-daltonized\"\nscreen_reader = false\n");
+    w.user_file(
+        "[tui]\ntheme = \"light-daltonized\"\nscreen_reader = false\nshow_reasoning = false\n",
+    );
     let c = w.load().unwrap();
+    assert!(!c.tui.show_reasoning);
     assert_eq!(c.tui.theme, ThemeName::LightDaltonized);
     assert_eq!(c.tui.screen_reader, Some(false));
 
