@@ -397,7 +397,7 @@ fn a_large_launch_set_warns_with_the_largest_files() {
     write(&w.work.join("FONTAINE.md"), "small");
     let loaded = instructions::load(&sources(&w));
     assert!(warned(&loaded, "CLAUDE.md"));
-    assert!(warned(&loaded, "41000 characters"));
+    assert!(warned(&loaded, "41.0k characters"));
 }
 
 #[test]

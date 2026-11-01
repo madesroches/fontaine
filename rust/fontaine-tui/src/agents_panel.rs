@@ -6,6 +6,7 @@
 use std::time::Duration;
 
 use fontaine_agents::runner::ChildStatus;
+use fontaine_tools::display::compact_count;
 use fontaine_tools::jobs::format_age;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
@@ -94,8 +95,8 @@ pub(crate) fn spend_text(view: &SpendView) -> String {
         cost_partial,
     } = *view;
     let tokens = match token_budget {
-        Some(cap) => format!("{tokens} / {cap} tok"),
-        None => format!("{tokens} tok"),
+        Some(cap) => format!("{} / {} tok", compact_count(tokens), compact_count(cap)),
+        None => format!("{} tok", compact_count(tokens)),
     };
     let mut cost = match (cost_usd, cost_budget) {
         (Some(spent), Some(cap)) => format!("${spent:.4} / ${cap:.2}"),
@@ -115,11 +116,7 @@ pub(crate) fn spend_text(view: &SpendView) -> String {
 
 /// `writing 4.2k chars`: the model's progress through a step that has not reported usage yet.
 pub(crate) fn writing_text(chars: u64) -> String {
-    if chars < 1000 {
-        format!("writing {chars} chars")
-    } else {
-        format!("writing {:.1}k chars", chars as f64 / 1000.0)
-    }
+    format!("writing {} chars", compact_count(chars))
 }
 
 impl AgentsPanel {
@@ -343,7 +340,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("killed"), "{text}");
-        assert!(text.contains("1200 / 200000 tok"), "{text}");
+        assert!(text.contains("1.2k / 200.0k tok"), "{text}");
         assert!(text.contains("$0.0042 / $2.00"), "{text}");
     }
 
@@ -361,23 +358,23 @@ mod tests {
     fn a_partial_cost_is_marked_with_and_without_a_cost_budget() {
         assert_eq!(
             spend_text(&view(None, true)),
-            "4863024 tok · $0.0519 + unpriced"
+            "4.9M tok · $0.0519 + unpriced"
         );
         assert_eq!(
             spend_text(&view(Some(2.0), true)),
-            "4863024 tok · $0.0519 / $2.00 + unpriced"
+            "4.9M tok · $0.0519 / $2.00 + unpriced"
         );
     }
 
     #[test]
     fn a_complete_cost_is_not_marked() {
-        assert_eq!(spend_text(&view(None, false)), "4863024 tok · $0.0519");
+        assert_eq!(spend_text(&view(None, false)), "4.9M tok · $0.0519");
         let no_price = SpendView {
             cost_usd: None,
             cost_budget: Some(2.0),
             ..view(None, true)
         };
-        assert_eq!(spend_text(&no_price), "4863024 tok · cost n/a");
+        assert_eq!(spend_text(&no_price), "4.9M tok · cost n/a");
     }
 
     #[test]
@@ -393,7 +390,7 @@ mod tests {
             .map(|l| l.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(text.contains("1200 tok"), "{text}");
+        assert!(text.contains("1.2k tok"), "{text}");
         assert!(!text.contains("1200 /"), "{text}");
         assert!(text.contains("$0.0042"), "{text}");
         assert!(!text.contains("/ $"), "{text}");

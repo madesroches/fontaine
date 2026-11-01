@@ -3,6 +3,7 @@ use crate::reports;
 use crate::reports::McpState;
 use crate::{App, Ui};
 use fontaine_core::agent::AgentRuntime;
+use fontaine_tools::display::compact_count;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     pub(crate) fn status(&mut self, runtime: &AgentRuntime) {
@@ -90,7 +91,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         match (self.clipboard)(&reply) {
             Ok(()) => self.app.shown_mut().notice(format!(
                 "copied reply {n} ({} characters) to the clipboard",
-                reply.chars().count()
+                compact_count(reply.chars().count() as u64)
             )),
             Err(e) => self.app.shown_mut().error(format!(
                 "could not copy to the clipboard: {}",

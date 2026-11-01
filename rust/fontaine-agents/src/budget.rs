@@ -50,15 +50,28 @@ pub enum Exhausted {
 
 impl Exhausted {
     pub fn describe(&self) -> String {
+        self.describe_with(|n| n.to_string())
+    }
+
+    /// Like `describe`, formatting token counts with `count`; cost figures stay as they are.
+    pub fn describe_with(&self, count: impl Fn(u64) -> String) -> String {
         match self {
             Exhausted::Tokens { spent, cap } => {
-                format!("its token budget is spent ({spent} of {cap})")
+                format!(
+                    "its token budget is spent ({} of {})",
+                    count(*spent),
+                    count(*cap)
+                )
             }
             Exhausted::Cost { spent, cap } => {
                 format!("its cost budget is spent (${spent:.4} of ${cap:.2})")
             }
             Exhausted::SessionTokens { spent, cap } => {
-                format!("the session's agent token budget is spent ({spent} of {cap})")
+                format!(
+                    "the session's agent token budget is spent ({} of {})",
+                    count(*spent),
+                    count(*cap)
+                )
             }
             Exhausted::SessionCost { spent, cap } => {
                 format!("the session's agent cost budget is spent (${spent:.4} of ${cap:.2})")
@@ -101,6 +114,24 @@ impl Budget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn describe_with_formats_token_counts_only() {
+        let why = Exhausted::Tokens {
+            spent: 90_887,
+            cap: 50_000,
+        };
+        assert_eq!(why.describe(), "its token budget is spent (90887 of 50000)");
+        assert_eq!(
+            why.describe_with(|n| format!("<{n}>")),
+            "its token budget is spent (<90887> of <50000>)"
+        );
+        let cost = Exhausted::Cost {
+            spent: 1.0,
+            cap: 2.0,
+        };
+        assert_eq!(cost.describe_with(|n| format!("<{n}>")), cost.describe());
+    }
 
     fn spend(input: u64, output: u64, cost: Option<f64>) -> Spend {
         Spend {

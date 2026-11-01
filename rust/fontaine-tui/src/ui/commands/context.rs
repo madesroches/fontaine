@@ -4,6 +4,7 @@ use crate::ui::turn::{Serve, TurnEnd};
 use crate::{App, Ui};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::session::{CompactReason, CompactResult};
+use fontaine_tools::display::compact_count;
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// `/clear`: empties the model's context and the transcript, and keeps the session.
@@ -86,8 +87,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Some(CompactResult::Compacted { before, after, .. }) => {
                 self.app.transcript.notice(format!(
                     "compacted the conversation: ~{} → ~{} tokens",
-                    reports::tokens(before),
-                    reports::tokens(after)
+                    compact_count(before),
+                    compact_count(after)
                 ));
             }
             Some(CompactResult::Skipped) => self.app.transcript.notice("nothing to compact"),

@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use fontaine_agents::budget::{Budget, Spend};
 use fontaine_guardian::EXTRACTOR_RETRIES;
 use fontaine_guardian::prompt_builder::neutralize;
+use fontaine_tools::display::compact_count;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::{lock, lock_recovering};
@@ -172,7 +173,7 @@ pub struct Summary {
 }
 
 impl Summary {
-    /// `Goal achieved: <condition> (3 evaluations, 4m, 182k tokens)`.
+    /// `Goal achieved: <condition> (3 evaluations, 4m, 182.0k tokens)`.
     pub fn achieved(&self) -> String {
         format!("Goal achieved: {} ({})", self.condition, self.figures())
     }
@@ -183,7 +184,7 @@ impl Summary {
             self.evaluations,
             if self.evaluations == 1 { "" } else { "s" },
             duration_text(self.elapsed),
-            tokens_text(self.spend.tokens()),
+            compact_count(self.spend.tokens()),
         )
     }
 }
@@ -197,17 +198,6 @@ pub fn duration_text(elapsed: Duration) -> String {
         format!("{}m", secs / 60)
     } else {
         format!("{}h {:02}m", secs / 3600, secs % 3600 / 60)
-    }
-}
-
-/// `950`, `182k`, `1.2M`.
-pub fn tokens_text(tokens: u64) -> String {
-    if tokens < 1_000 {
-        tokens.to_string()
-    } else if tokens < 1_000_000 {
-        format!("{}k", tokens / 1_000)
-    } else {
-        format!("{:.1}M", tokens as f64 / 1_000_000.0)
     }
 }
 
@@ -290,7 +280,7 @@ impl GoalStatus {
                     duration_text(active.elapsed),
                     active.evaluations,
                     if active.evaluations == 1 { "" } else { "s" },
-                    tokens_text(active.spend.tokens()),
+                    compact_count(active.spend.tokens()),
                 ));
                 if let Some(reason) = &active.last_reason {
                     lines.push(format!("  last evaluation: {reason}"));

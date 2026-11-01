@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
+use fontaine_tools::display::compact_count;
 use fontaine_tools::scope::Scope;
 
 use crate::gate::SessionState;
@@ -174,11 +175,18 @@ impl Loaded {
         let largest = sizes
             .iter()
             .take(3)
-            .map(|(size, path)| format!("{} ({size} characters)", path.display()))
+            .map(|(size, path)| {
+                format!(
+                    "{} ({} characters)",
+                    path.display(),
+                    compact_count(*size as u64)
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         Some(format!(
-            "the instruction files add up to {total} characters, which every request carries; the largest are {largest}"
+            "the instruction files add up to {} characters, which every request carries; the largest are {largest}",
+            compact_count(total as u64)
         ))
     }
 }
