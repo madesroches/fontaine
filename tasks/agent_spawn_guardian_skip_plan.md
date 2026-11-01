@@ -152,7 +152,8 @@ or what the model was told for a denial.
    exceptions become four); `docs/architecture.md` (the numbered pipeline diagram:
    show the new branch — a `Tier::Spawn` allow for `auto`/`plan`, a prompt for
    `manual`/`acceptEdits`, a deny for `dontAsk` — between the fast paths and the mode
-   dispatch). Add a dated line to `## Decisions` in
+   dispatch), and `tasks/design/permissions.md` (the Tier-enum paragraph and the
+   pipeline-step description). Add a dated line to `## Decisions` in
    `tasks/fontaine_harness_plan.md` recording that spawns are no longer guardian-judged at
    all, with the containment reason and the issue reference (#360). `CHANGELOG.md` is
    updated by the `pr` step.
@@ -166,7 +167,8 @@ or what the model was told for a denial.
 - `evals/dataset/spawn.jsonl`
 - `docs/schemas/headless-v1.schema.json`
 - `docs/permissions.md`, `docs/guardian.md`, `docs/agents.md`, `docs/evals.md`,
-  `docs/headless.md`, `docs/architecture.md`, `AGENTS.md`, `tasks/fontaine_harness_plan.md`
+  `docs/headless.md`, `docs/architecture.md`, `AGENTS.md`, `tasks/design/permissions.md`,
+  `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
@@ -189,9 +191,9 @@ or what the model was told for a denial.
 
 ## Decisions
 
-- 2025-11-14 (design): `plan`-mode spawns are allowed like `auto`'s; the child's plan block is
+- 2026-11-14 (design): `plan`-mode spawns are allowed like `auto`'s; the child's plan block is
   inherited, so the spawn cannot edit through the back door.
-- 2025-11-14 (design): a spawn of an unknown or malformed `agent_type` is allowed at the gate in
+- 2026-11-14 (design): a spawn of an unknown or malformed `agent_type` is allowed at the gate in
   `auto`/`plan` and refused by the `AgentTool` itself on execution, as it already is for
   allowed calls today. The gate gains no agent-type validation.
 
@@ -206,6 +208,9 @@ or what the model was told for a denial.
 - `docs/architecture.md`: the numbered pipeline diagram gains the spawn branch — a
   `Tier::Spawn` allow for `auto`/`plan`, a prompt for `manual`/`acceptEdits`, a deny for
   `dontAsk` — between the fast paths and the mode dispatch.
+- `tasks/design/permissions.md`: the Tier-enum paragraph (the audit log, `tool_decision`,
+  `gate_decision` and eval `expected_tier` now also carry `spawn`) and the pipeline-step
+  description.
 - `tasks/fontaine_harness_plan.md`: a dated line in `## Decisions` recording that spawns are
   no longer guardian-judged at all (every child call is gated by the same pipeline and the
   child's mode is never looser than the parent's), superseding the earlier line about
