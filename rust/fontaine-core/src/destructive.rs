@@ -274,30 +274,14 @@ fn destructive_argv(program: &str, args: &[String], depth: usize) -> bool {
 /// resolved against the call's working directory.
 pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
     const LIMIT: usize = 16;
-    let mut out = path_mentions(tool, args, scope, false);
+    let mut out = path_mentions(tool, args, scope);
     let mut seen = std::collections::HashSet::new();
     out.retain(|p| seen.insert(p.clone()));
     out.truncate(LIMIT);
     out
 }
 
-/// The resolved paths that `touched_paths` would report more than once: a command line that names
-/// one path twice can create it in one command and destroy it in the next.
-pub fn repeated_paths(
-    tool: &str,
-    args: &Value,
-    scope: &Scope,
-) -> std::collections::HashSet<String> {
-    let mut seen = std::collections::HashSet::new();
-    path_mentions(tool, args, scope, true)
-        .into_iter()
-        .filter(|p| !seen.insert(p.clone()))
-        .collect()
-}
-
-// `every_word` counts bare words that name no existing file too: a second command can create or
-// destroy a file the first one named without a path-like spelling.
-fn path_mentions(tool: &str, args: &Value, scope: &Scope, every_word: bool) -> Vec<String> {
+fn path_mentions(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
     let text = |key: &str| args.get(key).and_then(Value::as_str);
     let resolve = |path: &str| {
         scope
@@ -355,7 +339,7 @@ fn path_mentions(tool: &str, args: &Value, scope: &Scope, every_word: bool) -> V
                     }
                     let joined = join(literal);
                     let pathlike = literal.contains(['/', '\\']) || literal.starts_with('.');
-                    if every_word || pathlike || joined.exists() {
+                    if pathlike || joined.exists() {
                         out.push(joined.to_string_lossy().into_owned());
                     }
                 }

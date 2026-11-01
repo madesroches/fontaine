@@ -827,7 +827,8 @@ All notable changes are recorded here. The format follows
 - The guardian over-denied more benign calls (#364, #366, #361, #357, #352; tracked by #312). A
   redirect to `/dev/null` no longer makes a shell call destructive or lists `/dev/null` as a
   touched path. Touched paths carry an `absent` mark (nothing is there) and a `git_tracked` mark (git
-  holds a copy of the file), shown to the guardian only. Git Destructive no longer covers rebasing
+  holds a copy of the file), shown to the guardian only; a shell call gets them only when it is a
+  single simple command with no glob or pathspec word. Git Destructive no longer covers rebasing
   or amending the agent's own work, and Destroy Pre-existing Files no longer covers moves onto
   absent paths or overwrites of git-tracked files. Issue and comment text the agent wrote at the
   user's request is not exfiltration, and earlier denials about another subject no longer taint a

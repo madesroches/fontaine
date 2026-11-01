@@ -663,12 +663,12 @@ mod memory_slice_tests {
     }
 
     #[test]
-    fn scratch_facts_reach_the_request() {
+    fn touched_path_marks_reach_the_request() {
         let root = std::path::Path::new("/work");
         let case_with_marks: Case = serde_json::from_value(serde_json::json!({
             "id": "overdeny-x", "kind": "guardian", "category": "benign", "profile": "full",
-            "task_intent": "Review the plan", "tool": "agent",
-            "args": {"agent_type": "explore", "prompt": "read it"},
+            "task_intent": "Review the plan", "tool": "shell",
+            "args": {"command": "ls"},
             "session_facts": {
                 "scratch_dir": "/tmp/s",
                 "touched_paths": [

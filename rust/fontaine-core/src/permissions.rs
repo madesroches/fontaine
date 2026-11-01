@@ -855,7 +855,7 @@ impl PermissionPipeline {
                 self.state.agents().known_tools_of(call.agent).as_deref(),
                 args,
             )
-            .is_some_and(|spawn| !spawn.changes_state)
+            .is_some_and(|changes_state| !changes_state)
         {
             return Verdict::Allow {
                 tier: Tier::ReadOnlyFastPath,

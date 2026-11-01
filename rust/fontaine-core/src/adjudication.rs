@@ -66,18 +66,10 @@ fn status(existence: Existence) -> PreExistence {
     }
 }
 
-/// The toolset of the agent an `agent` call starts, computed by the harness.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SpawnFacts {
-    pub agent_type: String,
-    pub tools: Vec<String>,
-    pub changes_state: bool,
-}
-
-/// What the child of an `agent` call can do, from the same toolset `AgentTool` gives it. `None`
-/// when the type is unknown: the call then fails on its own.
+/// Whether the child of an `agent` call can change state, from the same toolset `AgentTool` gives
+/// it. `None` when the type is unknown: the call then fails on its own.
 ///
-/// `changes_state` is false only when every tool is read-only and non-destructive, or is
+/// The answer is false only when every tool is read-only and non-destructive, or is
 /// `send_message`, which reaches only agents of the same tree whose calls are all gated. A tool
 /// missing from the descriptor table (every MCP tool) counts as state-changing, and so does an
 /// unknown parent toolset (`parent_tools` is `None`: never set, which a type that inherits it
@@ -88,7 +80,7 @@ pub fn spawn_facts(
     types: &AgentTypes,
     parent_tools: Option<&[String]>,
     args: &Value,
-) -> Option<SpawnFacts> {
+) -> Option<bool> {
     let name = args.get("agent_type")?.as_str()?;
     let tools = types.get(name)?.toolset(parent_tools.unwrap_or_default());
     let read_only = |tool: &String| {
@@ -97,12 +89,7 @@ pub fn spawn_facts(
                 d.risk == RiskClass::ReadOnly && d.destructive == Destructive::Never
             })
     };
-    let changes_state = parent_tools.is_none() || !tools.iter().all(read_only);
-    Some(SpawnFacts {
-        agent_type: name.to_string(),
-        tools,
-        changes_state,
-    })
+    Some(parent_tools.is_none() || !tools.iter().all(read_only))
 }
 
 /// Whether `path`, already resolved, lies inside the scratch root. Component-wise, so a sibling
@@ -186,6 +173,25 @@ fn cwd_is_certain(tool: &str, args: &Value) -> bool {
     })
 }
 
+/// Whether the marks, computed before the call runs, describe what a shell command will hit. A
+/// later command can act on what an earlier one created or moved, and a glob or magic pathspec
+/// names files no literal word does, so only one simple command with plain words is marked.
+fn marks_are_sound(tool: &str, args: &Value) -> bool {
+    if !fontaine_tools::descriptor::is_shell_class(tool) {
+        return true;
+    }
+    let Some(command) = args.get("command").and_then(Value::as_str) else {
+        return true;
+    };
+    let analysis = fontaine_tools::preclassify::analyze(command);
+    analysis.commands.len() == 1
+        && analysis.commands[0].words.iter().all(|word| {
+            word.literal
+                .as_deref()
+                .is_none_or(|l| !l.contains(['*', '?', '[']) && !l.starts_with(':'))
+        })
+}
+
 fn facts(
     view: &LedgerView,
     scope: &Scope,
@@ -213,10 +219,7 @@ fn facts(
         scratch.map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
     let paths = touched_paths(tool, args, scope);
     let resolved: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
-    let certain = cwd_is_certain(tool, args);
-    // `absent` describes the path before the call runs; a path named twice may be created by one
-    // command and destroyed by the next.
-    let repeated = crate::destructive::repeated_paths(tool, args, scope);
+    let certain = cwd_is_certain(tool, args) && marks_are_sound(tool, args);
     let tracked = if certain {
         trust::tracked_files(scope.primary(), &resolved)
     } else {
@@ -228,7 +231,7 @@ fn facts(
         .map(|(path, git_tracked)| TouchedPath {
             status: status(view.existence(&path)),
             in_scratch: in_scratch(&path, scratch.as_deref()),
-            absent: certain && !repeated.contains(&path) && is_absent(&path),
+            absent: certain && is_absent(&path),
             git_tracked,
             path,
         })
@@ -428,9 +431,25 @@ mod tests {
         }
         std::fs::create_dir(work.join("tasks")).unwrap();
         std::fs::create_dir(work.join("tasks/completed")).unwrap();
-        assert!(marks(
+        assert!(!marks(
             "git mv tasks/x_plan.md tasks/completed/x_plan.md && git add -u"
         ));
+        assert!(marks("rm ./missing"));
+        for multi in [
+            "mv precious_dir newdir && rm newdir/notes.md",
+            "mv a ./b; rm ./b",
+            "echo x | tee ./b",
+        ] {
+            assert!(!marks(multi), "{multi}");
+        }
+        for glob in [
+            "git rm -f 'docs/*.md'",
+            "git checkout -- ':/docs'",
+            "rm ./f?.txt",
+            "rm ./f[12].txt",
+        ] {
+            assert!(!marks(glob), "{glob}");
+        }
         let absent = |command: &str| {
             facts(
                 &view,
@@ -445,10 +464,7 @@ mod tests {
             .any(|t| t.path.ends_with("/t") && t.absent)
         };
         assert!(absent("mv notes.txt ./t"));
-        assert!(!absent("mv notes.txt ./t && rm ./t"));
-        assert!(!absent("mv a ./t && cp junk ./t"));
-        assert!(!absent("mv a t && cp junk ./t"));
-        assert!(!absent("mv a t && echo x > t"));
+        assert!(marks("mv a ./b"));
         assert!(!marks("./mv a ./b"));
         assert!(
             facts(
@@ -457,7 +473,7 @@ mod tests {
                 None,
                 None,
                 "shell",
-                &serde_json::json!({ "command": "git mv tasks/x_plan.md tasks/completed/x_plan.md && git add -u" }),
+                &serde_json::json!({ "command": "git mv tasks/x_plan.md tasks/completed/x_plan.md" }),
             )
             .touched_paths
             .iter()
@@ -536,7 +552,7 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    fn spawn(types: &AgentTypes, parent: &[&str], agent_type: &str) -> Option<SpawnFacts> {
+    fn spawn(types: &AgentTypes, parent: &[&str], agent_type: &str) -> Option<bool> {
         spawn_facts(
             types,
             Some(&names(parent)),
@@ -548,33 +564,22 @@ mod tests {
     fn explore_cannot_change_state_and_worker_can() {
         let types = AgentTypes::builtin();
         let all: Vec<&str> = fontaine_tools::descriptor::names().collect();
-        let explore = spawn(&types, &all, "explore").unwrap();
-        let mut tools = explore.tools.clone();
-        tools.sort();
-        assert_eq!(
-            tools,
-            names(&["glob", "grep", "ls", "lsp", "read", "send_message"])
-        );
-        assert!(!explore.changes_state);
-        assert!(spawn(&types, &all, "worker").unwrap().changes_state);
-        assert!(spawn(&types, &all, "fork").unwrap().changes_state);
+        assert_eq!(spawn(&types, &all, "explore"), Some(false));
+        assert_eq!(spawn(&types, &all, "worker"), Some(true));
+        assert_eq!(spawn(&types, &all, "fork"), Some(true));
     }
 
     #[test]
     fn the_toolset_is_cut_to_the_parents_and_an_unknown_one_fails_closed() {
         let types = AgentTypes::builtin();
-        let cut = spawn(&types, &["read", "shell"], "explore").unwrap();
-        assert_eq!(cut.tools, names(&["read"]));
-        assert!(!cut.changes_state);
-        let empty = spawn(&types, &[], "explore").unwrap();
-        assert!(empty.tools.is_empty() && !empty.changes_state);
+        assert_eq!(spawn(&types, &["read", "shell"], "explore"), Some(false));
+        assert_eq!(spawn(&types, &[], "explore"), Some(false));
         let unknown = spawn_facts(
             &types,
             None,
             &serde_json::json!({ "agent_type": "explore", "prompt": "p" }),
-        )
-        .unwrap();
-        assert!(unknown.changes_state);
+        );
+        assert_eq!(unknown, Some(true));
         assert!(spawn(&types, &["read"], "nope").is_none());
         assert!(spawn_facts(&types, Some(&names(&["read"])), &serde_json::json!({})).is_none());
     }
@@ -603,10 +608,7 @@ mod tests {
         }
         let parent = ["read", "agent", "mcp__srv__lookup", "webfetch"];
         for name in ["nests", "mcp", "fetches"] {
-            assert!(
-                spawn(&types, &parent, name).unwrap().changes_state,
-                "{name}"
-            );
+            assert!(spawn(&types, &parent, name) == Some(true), "{name}");
         }
     }
 }

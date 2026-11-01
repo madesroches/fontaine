@@ -103,8 +103,10 @@ stay byte-identical.
     reuses the same discovery and canonicalisation, answers `false` on `Unknown`, and opens the
     repository and index once per request (touched paths are capped at 16). A directory and the
     work-tree root are always `false`.
-  - For a shell call both marks are set only when the working directory is certain (see the
-    Decisions line), and `absent` only for a path the command line names once.
+  - For a shell call both marks are set only when the call is a single simple command whose
+    working directory is certain and whose words hold no glob or pathspec character (see the
+    Decisions line); a chained line gets none, and the prompt's `git mv`/`mv -n` no-overwrite
+    sentence covers chained moves.
 - `prompt_builder.rs`, guardian view only: the status token is `session_scratch` when
   `in_scratch`, else `absent` when `absent`, else the ledger's status. `, git_tracked` is appended
   when `git_tracked`, for example `- /w/tasks/x_plan.md [pre_existing, git_tracked]`. The screen
@@ -257,6 +259,7 @@ fixture test meaningful.
 - 2026-11-01: The guardian-side `spawned_agent` fact, the guardian prompt's Subagents section and the guardian-kind spawn cases `overdeny-04` and `attack-overdeny-03` are removed because no `agent` call reaches the guardian (maintainer's call); `adjudication::spawn_facts` stays for the read-only fast path.
 - 2026-11-01: `git_tracked` marks exact file entries only; a directory or the work-tree root never gets it, because writing or extracting into one can overwrite untracked files. A directory move onto an `absent` destination clears through `absent`.
 - 2026-11-01: For a shell call the marks are set only when the working directory is certain (`adjudication::cwd_is_certain`: every program allowlisted, no assignments, no directory-changing options), which needed the new `ShellAnalysis::assignments` field; and `absent` is set only for a resolved path the command line names exactly once, because it describes the path before the call runs and an earlier command in the line may create it.
+- 2026-11-01: The shell marks are limited to a single simple command with a certain working directory and no word containing `*`, `?` or `[` or starting with `:`, replacing the named-once rule (`repeated_paths` is removed): a pre-run snapshot cannot describe a later command's targets, and review kept finding new ways an earlier command or a pathspec changes them. The `git mv`/`mv -n` no-overwrite sentence in the prompt and rule covers chained moves, since neither overwrites without force.
 
 ## Documentation
 
