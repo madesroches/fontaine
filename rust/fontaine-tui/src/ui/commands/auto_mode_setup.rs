@@ -1,9 +1,10 @@
 use std::ops::ControlFlow;
 
-use crate::setup_prompt::SetupReviewPrompt;
+use crate::setup_prompt::{CompositionPrompt, SetupReviewPrompt};
 use crate::{Action, Ui};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::now_rfc3339;
+use fontaine_core::composition_offer::{self, Candidate, Offer, Posture};
 use fontaine_core::project_env::discover::{self, SystemGh};
 use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep, sample};
 use fontaine_core::trust;
@@ -22,7 +23,8 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
     /// `/auto-mode-setup`: collects the project's environment facts and, in a trusted
     /// workspace, has the guardian's model propose more from the repository. The user reviews
     /// the proposals; the result is saved as `fontaine auto-mode setup` saves it and applies to
-    /// this session at once.
+    /// this session at once. A last, optional step offers the guardian composition's allow
+    /// screen, which is written to the user settings and applies from the next session.
     pub(crate) async fn auto_mode_setup(&mut self, runtime: &mut AgentRuntime) -> ControlFlow<()> {
         let root = runtime.primary_root();
         let remotes = runtime.session_remotes();
@@ -49,7 +51,88 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         };
         let record = step.apply_to(found.record, &self.data_dir, &runtime.primary_root());
         self.report_and_apply(runtime, record, &found.fallbacks, &step);
+        self.composition_step(runtime).await
+    }
+
+    /// Offers the composition when nothing configured it yet. Declining any prompt writes nothing.
+    async fn composition_step(&mut self, runtime: &mut AgentRuntime) -> ControlFlow<()> {
+        if composition_offer::existing(&runtime.config)
+            || runtime.guardian_profile() == fontaine_guardian::Profile::Minimal
+        {
+            return ControlFlow::Continue(());
+        }
+        let Some(file) = self.user_config.clone() else {
+            self.app.transcript.notice(
+                "guardian composition: skipped (this session has no user settings file to write it to)",
+            );
+            return ControlFlow::Continue(());
+        };
+        let mut listings = Vec::new();
+        for account in composition_offer::ollama_accounts(&runtime.config) {
+            self.draw(runtime);
+            if let Ok(found) = runtime.model_listings(Some(&account)).await {
+                listings.extend(found);
+            }
+        }
+        let found = composition_offer::detect(&listings);
+        if found.is_empty() {
+            self.app
+                .transcript
+                .notice(composition_offer::nothing_to_offer());
+            return ControlFlow::Continue(());
+        }
+        let Some(answer) = self.offer(runtime, found).await else {
+            return ControlFlow::Break(());
+        };
+        let Some(offer) = answer else {
+            self.app
+                .transcript
+                .notice("guardian composition: not set up");
+            return ControlFlow::Continue(());
+        };
+        match composition_offer::write(&file, &runtime.config, &offer) {
+            Ok(()) => {
+                self.app.transcript.notice(format!(
+                    "guardian composition: wrote the {} screen on {} to {}",
+                    match offer.posture {
+                        Posture::Safe => "safe",
+                        Posture::Fast => "fast",
+                    },
+                    offer.model(),
+                    file.display()
+                ));
+                for line in composition_offer::calibration_note(&offer) {
+                    self.app.transcript.notice(line);
+                }
+            }
+            Err(e) => self
+                .app
+                .transcript
+                .error(format!("guardian composition: not written: {}", chain(&e))),
+        }
         ControlFlow::Continue(())
+    }
+
+    /// The composition prompt. `None` when the human quit; `Some(None)` when they declined.
+    async fn offer(
+        &mut self,
+        runtime: &AgentRuntime,
+        candidates: Vec<Candidate>,
+    ) -> Option<Option<Offer>> {
+        self.app
+            .begin_setup_composition(CompositionPrompt::new(candidates));
+        loop {
+            self.draw(runtime);
+            let Some(input) = self.input.recv().await else {
+                self.app.setup_composition = None;
+                return Some(None);
+            };
+            match self.app.handle_input(input) {
+                Action::SetupComposition(answer) => return Some(answer),
+                Action::Quit => return None,
+                _ => {}
+            }
+        }
     }
 
     /// Runs the model scan when the workspace is trusted, shows its proposals for review and

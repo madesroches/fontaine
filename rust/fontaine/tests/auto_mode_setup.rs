@@ -198,3 +198,100 @@ async fn a_project_file_cannot_silence_the_reminder() {
         out.stderr
     );
 }
+
+const BENCHMARKED: &str = "qwen3:4b-instruct-2507-q4_K_M";
+
+/// The sandbox's config plus an Ollama account whose model list is explicit, so no network is
+/// needed to detect it.
+fn with_ollama(s: &Sandbox, models: &[&str], extra: &str) -> String {
+    let base = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
+    let list = models
+        .iter()
+        .map(|m| format!("\"{m}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let text = format!(
+        "{base}\n[accounts.local]\nkind = \"ollama\"\nbase_url = \"http://127.0.0.1:9\"\nmodels = [{list}]\n{extra}"
+    );
+    s.user_config(&text);
+    text
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_terminal_the_composition_is_reported_and_never_written() {
+    let model = endpoint().await;
+    let s = sandbox(&model.url());
+    let before = with_ollama(&s, &[BENCHMARKED], "");
+    let out = s
+        .run_with_stdin(
+            &["auto-mode", "setup", "--no-model", "--format", "json"],
+            "1\n1\ny\n",
+        )
+        .await;
+    let value = json(&out);
+    assert_eq!(value["composition"]["status"], "offered_unanswered");
+    assert_eq!(
+        value["composition"]["candidates"][0],
+        format!("local/{BENCHMARKED}")
+    );
+    assert_eq!(
+        std::fs::read_to_string(s.config.join("config.toml")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_near_tag_is_not_offered_and_the_benchmarked_tag_is_named() {
+    let model = endpoint().await;
+    let s = sandbox(&model.url());
+    with_ollama(&s, &["qwen3:4b-instruct-2507-q8_0"], "");
+    let out = s.run(&["auto-mode", "setup", "--no-model"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(
+        out.stdout.contains(&format!("ollama pull {BENCHMARKED}")),
+        "{}",
+        out.stdout
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn no_composition_skips_the_step() {
+    let model = endpoint().await;
+    let s = sandbox(&model.url());
+    with_ollama(&s, &[BENCHMARKED], "");
+    let out = s
+        .run(&[
+            "auto-mode",
+            "setup",
+            "--no-model",
+            "--no-composition",
+            "--format",
+            "json",
+        ])
+        .await;
+    let value = json(&out);
+    assert_eq!(value["composition"]["status"], "skipped");
+    assert_eq!(value["composition"]["candidates"], serde_json::json!([]));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_existing_composition_is_left_untouched() {
+    let model = endpoint().await;
+    let s = sandbox(&model.url());
+    let before = with_ollama(
+        &s,
+        &[BENCHMARKED],
+        &format!(
+            "\n[guardian.composition]\npreset = \"screen\"\nmodel = \"local/{BENCHMARKED}\"\nshadow = true\n"
+        ),
+    );
+    let out = s
+        .run(&["auto-mode", "setup", "--no-model", "--format", "json"])
+        .await;
+    let value = json(&out);
+    assert_eq!(value["composition"]["status"], "skipped");
+    assert_eq!(
+        std::fs::read_to_string(s.config.join("config.toml")).unwrap(),
+        before
+    );
+}

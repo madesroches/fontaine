@@ -8,6 +8,17 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+#### Guardian
+
+- `fontaine auto-mode setup` and `/auto-mode-setup` end with an optional offer of the guardian
+  composition's `screen` preset: when an Ollama account holds a model Fontaine has benchmarked
+  (`qwen3:4b-instruct-2507-q4_K_M`), you choose safe (the screen only stops calls) or fast (the
+  screen allows what it is confident about), confirm the benchmarked threshold shown with its
+  evidence, and setup writes `[guardian.composition]` to the user file with `shadow = false`. Nothing
+  is written without a yes, a configured composition or the `minimal` profile skips it,
+  `--no-composition` turns it off, and a run without a terminal reports `composition` in its JSON and
+  writes nothing (#372).
+
 #### Agents
 
 - The agent list and the agents panel show `· writing 4.2k chars` for an agent whose model is

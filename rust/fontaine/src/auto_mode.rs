@@ -1,14 +1,16 @@
 //! `fontaine auto-mode`: shows the rules the guardian judges against. Nothing here starts a
-//! session, runs a project executable or changes a setting.
+//! session or runs a project executable; the only setting `setup` can change is the guardian
+//! composition, and only after the user confirms it.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use fontaine_core::composition_offer::{self, Offer, Posture};
 use fontaine_core::config::{Config, Slot};
 use fontaine_core::containment;
 use fontaine_core::dirs::Dirs;
-use fontaine_core::models::{self, GuardianModel, ResolveParams};
+use fontaine_core::models::{self, GuardianModel, ResolveParams, Switcher};
 use fontaine_core::project_env::discover::{self, SystemGh};
 use fontaine_core::project_env::sample;
 use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep};
@@ -323,6 +325,147 @@ fn confirm(question: &str) -> bool {
         && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
+/// Asks a numbered question on the terminal. `None` is a declined or unreadable answer.
+fn choose(question: &str, options: &[String]) -> Option<usize> {
+    eprintln!("{question}");
+    for (i, option) in options.iter().enumerate() {
+        eprintln!("  {}. {option}", i + 1);
+    }
+    eprint!("choice [1-{}, anything else declines] ", options.len());
+    let _ = std::io::stderr().flush();
+    let mut answer = String::new();
+    std::io::stdin().lock().read_line(&mut answer).ok()?;
+    let n: usize = answer.trim().parse().ok()?;
+    (1..=options.len()).contains(&n).then(|| n - 1)
+}
+
+/// What the composition step did, for the report.
+pub struct CompositionReport {
+    /// `skipped`, `offered_unanswered`, `declined`, `written` or `failed`.
+    pub status: &'static str,
+    pub lines: Vec<String>,
+    /// The `<account>/<model>` pairs the step found.
+    pub candidates: Vec<String>,
+}
+
+impl CompositionReport {
+    fn skipped(lines: Vec<String>) -> CompositionReport {
+        CompositionReport {
+            status: "skipped",
+            lines,
+            candidates: Vec::new(),
+        }
+    }
+}
+
+async fn composition_step(
+    cli: &Cli,
+    args: &SetupArgs,
+    (config, dirs, host): (&Config, &Dirs, &Host),
+) -> CompositionReport {
+    let reason = if args.no_composition {
+        "--no-composition"
+    } else if composition_offer::existing(config) {
+        "a composition is already configured"
+    } else if profile(cli, config).0 == Profile::Minimal {
+        "the minimal profile"
+    } else {
+        ""
+    };
+    if !reason.is_empty() {
+        return CompositionReport::skipped(vec![format!(
+            "guardian composition: skipped ({reason})"
+        )]);
+    }
+    let ollama = composition_offer::ollama_accounts(config);
+    let listings = if ollama.is_empty() {
+        Vec::new()
+    } else {
+        Switcher::new(
+            config.clone(),
+            dirs.data.clone(),
+            crate::shared_env(host),
+            None,
+        )
+        .listings(None, Some(&ollama))
+        .await
+    };
+    let found = composition_offer::detect(&listings);
+    if found.is_empty() {
+        return CompositionReport::skipped(vec![composition_offer::nothing_to_offer()]);
+    }
+    let candidates: Vec<String> = found
+        .iter()
+        .map(|c| format!("{}/{}", c.account, c.benchmark.tag))
+        .collect();
+    if !std::io::stdin().is_terminal() {
+        return CompositionReport {
+            status: "offered_unanswered",
+            lines: vec![format!(
+                "guardian composition: available on {}; run `fontaine auto-mode setup` in a terminal to set it up",
+                candidates.join(", ")
+            )],
+            candidates,
+        };
+    }
+    let declined = |candidates: Vec<String>| CompositionReport {
+        status: "declined",
+        lines: vec!["guardian composition: not set up".to_owned()],
+        candidates,
+    };
+    let postures = [Posture::Safe, Posture::Fast];
+    let labels: Vec<String> = postures.iter().map(|p| p.describe().to_owned()).collect();
+    let Some(posture) = choose("Set up the guardian's allow screen?", &labels).map(|i| postures[i])
+    else {
+        return declined(candidates);
+    };
+    let pick = if found.len() == 1 {
+        Some(0)
+    } else {
+        choose("Which account runs the screen?", &candidates)
+    };
+    let Some(pick) = pick else {
+        return declined(candidates);
+    };
+    let offer = Offer {
+        account: found[pick].account.clone(),
+        benchmark: found[pick].benchmark,
+        posture,
+    };
+    eprintln!("\nsetup would write to your user settings:");
+    for line in offer.proposal() {
+        eprintln!("  {line}");
+    }
+    if !confirm("Write it?") {
+        return declined(candidates);
+    }
+    let file = dirs.config.join(fontaine_core::config::USER_FILE);
+    match composition_offer::write(&file, config, &offer) {
+        Ok(()) => {
+            let mut lines = vec![format!(
+                "guardian composition: wrote the {} screen on {} to {}",
+                match posture {
+                    Posture::Safe => "safe",
+                    Posture::Fast => "fast",
+                },
+                offer.model(),
+                file.display()
+            )];
+            lines.extend(composition_offer::calibration_note(&offer));
+            CompositionReport {
+                status: "written",
+                lines,
+                candidates,
+            }
+        }
+        Err(e) => CompositionReport {
+            status: "failed",
+            lines: vec![format!("guardian composition: not written: {}", chain(&e))],
+            candidates,
+        },
+    }
+}
+
 async fn scan_step(
     cli: &Cli,
     args: &SetupArgs,
@@ -378,6 +521,7 @@ pub fn setup_report(
     saved: &std::path::Path,
     fallbacks: &[String],
     step: &ScanStepReport<'_>,
+    composition: &CompositionReport,
     format: ReportFormat,
 ) -> String {
     match format {
@@ -390,6 +534,10 @@ pub fn setup_report(
                 out.push('\n');
             }
             out.push_str(&format!("saved to {}", saved.display()));
+            for line in &composition.lines {
+                out.push('\n');
+                out.push_str(line);
+            }
             out
         }
         ReportFormat::Json => json_text(&json!({
@@ -400,6 +548,10 @@ pub fn setup_report(
                 "status": step.status.line(),
                 "dropped": step.dropped,
                 "usage": step.usage,
+            },
+            "composition": {
+                "status": composition.status,
+                "candidates": composition.candidates,
             },
         })),
     }
@@ -437,6 +589,7 @@ fn setup_run(cli: &Cli, args: &SetupArgs, config: &Config, dirs: &Dirs, host: &H
         let found = discover::discover(&SystemGh, root, &remotes, audit::now_rfc3339()).await;
         let step = scan_step(cli, args, (config, dirs, host), &found).await;
         let record = step.apply_to(found.record, &dirs.data, root);
+        let composition = composition_step(cli, args, (config, dirs, host)).await;
         let saved = match project_env::store(&dirs.data, root, &record) {
             Ok(saved) => saved,
             Err(e) => {
@@ -455,6 +608,7 @@ fn setup_run(cli: &Cli, args: &SetupArgs, config: &Config, dirs: &Dirs, host: &H
                 dropped: &step.dropped,
                 usage: step.usage.as_deref(),
             },
+            &composition,
             args.format,
         ))
     })
@@ -684,6 +838,7 @@ mod tests {
             std::path::Path::new("/d/environment.json"),
             &fallbacks,
             &step,
+            &CompositionReport::skipped(Vec::new()),
             ReportFormat::Text,
         );
         assert!(

@@ -30,7 +30,7 @@ use crate::question::QuestionPanel;
 use crate::resume_picker::{ResumeKey, ResumePicker};
 use crate::rewind::{RewindKey, RewindPicker};
 use crate::server_prompt::ServerPrompt;
-use crate::setup_prompt::SetupReviewPrompt;
+use crate::setup_prompt::{CompositionPrompt, SetupReviewPrompt};
 use crate::theme::Theme;
 use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
@@ -111,6 +111,9 @@ pub enum Action {
     GuardianOff(bool),
     /// The human answered the `/auto-mode-setup` review of the scan's proposals.
     SetupReview(bool),
+    /// The human answered the `/auto-mode-setup` offer of the guardian composition; `None`
+    /// declined.
+    SetupComposition(Option<fontaine_core::composition_offer::Offer>),
 }
 
 /// Ctrl-R: the query typed so far and the history entry it found.
@@ -186,6 +189,8 @@ pub struct App {
     pub guardian_off_prompt: Option<GuardianOffPrompt>,
     /// The `/auto-mode-setup` review of the repository scan's proposals while it is open.
     pub setup_review: Option<SetupReviewPrompt>,
+    /// The `/auto-mode-setup` offer of the guardian composition while it is open.
+    pub setup_composition: Option<CompositionPrompt>,
     /// The escape hatch is on; the status bar says so for as long as it stays on.
     pub guardian_off: bool,
     /// The `/model` or `/guardian-model` picker while it is open.
@@ -241,6 +246,7 @@ pub struct App {
     servers_opened: u64,
     guardian_off_opened: u64,
     setup_review_opened: u64,
+    setup_composition_opened: u64,
     questions_opened: u64,
 }
 
@@ -323,6 +329,7 @@ impl App {
             server: None,
             guardian_off_prompt: None,
             setup_review: None,
+            setup_composition: None,
             guardian_off: false,
             models: None,
             resume: None,
@@ -354,6 +361,7 @@ impl App {
             servers_opened: 0,
             guardian_off_opened: 0,
             setup_review_opened: 0,
+            setup_composition_opened: 0,
             questions_opened: 0,
         }
     }
@@ -627,6 +635,12 @@ impl App {
         self.setup_review = Some(prompt);
     }
 
+    pub fn begin_setup_composition(&mut self, mut prompt: CompositionPrompt) {
+        self.setup_composition_opened += 1;
+        prompt.id = self.setup_composition_opened;
+        self.setup_composition = Some(prompt);
+    }
+
     pub fn begin_unavailable(&mut self, prompt: UnavailablePrompt) {
         self.unavailable = Some(prompt);
     }
@@ -699,6 +713,8 @@ impl App {
                     || self.server.is_some()
                     || self.guardian_off_prompt.is_some()
                     || self.setup_review.is_some()
+                    || self.setup_composition.is_some()
+                    || self.setup_composition.is_some()
                     || self.models.is_some()
                     || self.resume.is_some()
                     || self.rewind.is_some()
@@ -814,6 +830,15 @@ impl App {
                 Some(answer) => {
                     self.setup_review = None;
                     Action::SetupReview(answer)
+                }
+                None => Action::None,
+            };
+        }
+        if let Some(prompt) = &mut self.setup_composition {
+            return match prompt.handle_key(key) {
+                Some(answer) => {
+                    self.setup_composition = None;
+                    Action::SetupComposition(answer)
                 }
                 None => Action::None,
             };
