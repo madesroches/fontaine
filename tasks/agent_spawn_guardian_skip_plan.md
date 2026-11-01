@@ -130,12 +130,28 @@ or what the model was told for a denial.
    - Add an audit assertion: a guardian escalate writes a record whose `explanation` is the
      guardian's sentence; a guardian deny record's explanation is unchanged (the model-facing
      message).
+   - Rework `a_nested_child_whose_type_lists_agent_does_not_qualify`: the nested `nests` spawn
+     in `auto` is now allowed at tier `spawn` with `fake.calls() == 0`; it still does not
+     qualify for the read-only fast path.
+   - Rework `the_guardian_takes_its_intent_from_the_roots_human_messages_only`: the spawn's
+     guardian request is gone, so assert a single request for the child's shell call and keep
+     the intent assertions (`sent[0]`) on that call.
 5. `evals/dataset/spawn.jsonl`: `spawn-worker-not-fast-path` becomes
    `"expected": "allow", "expected_tier": "spawn"` with a matching `fixture_verdict`
    (`{"decision": "allow", "tier": "spawn"}`).
-6. Docs: `docs/permissions.md` (step 3's spawn paragraph, step 7, the tier list, the
-   "guardian skips" paragraph), `docs/guardian.md` (intro list and the subagents section), and
-   the fast-path invariant in `AGENTS.md` (three exceptions become four). `CHANGELOG.md` is
+6. `docs/schemas/headless-v1.schema.json`: add `"spawn"` to `$defs.tier.enum` (a closed list
+   consumed by `gate_decision` and `result.denials`; `guardian_off` already sits in the enum
+   at `schema_version` 1, so adding an enum value stays at v1). `headless_contract.rs`
+   validates real `fontaine -p` output against it.
+7. Docs: `docs/permissions.md` (step 3's spawn paragraph, step 7, the tier list, the
+   "guardian skips" paragraph), `docs/guardian.md` (intro list and the subagents section),
+   `docs/agents.md` (spawn paragraph: `auto`/`plan` allow at the `spawn` tier,
+   `manual`/`acceptEdits` ask), `docs/evals.md` (`spawn-worker-not-fast-path` sentence: a
+   `worker` spawn in `auto` is allowed at tier `spawn`), `docs/headless.md` (add `spawn` to
+   the `gate_decision` tier list), and the fast-path invariant in `AGENTS.md` (three
+   exceptions become four). Add a dated line to `## Decisions` in
+   `tasks/fontaine_harness_plan.md` recording that spawns are no longer guardian-judged at
+   all, with the containment reason and the issue reference (#360). `CHANGELOG.md` is
    updated by the `pr` step.
 
 ## Files to Modify
@@ -145,7 +161,9 @@ or what the model was told for a denial.
 - `rust/fontaine-core/src/audit.rs` (field doc only)
 - `rust/fontaine-core/tests/agent_pipeline.rs`
 - `evals/dataset/spawn.jsonl`
-- `docs/permissions.md`, `docs/guardian.md`, `AGENTS.md`
+- `docs/schemas/headless-v1.schema.json`
+- `docs/permissions.md`, `docs/guardian.md`, `docs/agents.md`, `docs/evals.md`,
+  `docs/headless.md`, `AGENTS.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
@@ -182,6 +200,10 @@ or what the model was told for a denial.
 - `docs/guardian.md`: the intro's list of what sits in front of the guardian, and the
   subagents section ("An `agent` call is decided by the floor and the mode…").
 - `AGENTS.md`: the fast-path invariant gains the spawn exception (four exceptions).
+- `tasks/fontaine_harness_plan.md`: a dated line in `## Decisions` recording that spawns are
+  no longer guardian-judged at all (every child call is gated by the same pipeline and the
+  child's mode is never looser than the parent's), superseding the earlier line about
+  read-only spawn skips, with the issue reference (#360).
 - `CHANGELOG.md`: entry under the release the PR lands in.
 
 ## Testing Strategy
@@ -200,10 +222,7 @@ or what the model was told for a denial.
   warnings`, `cargo test`, and both fixture eval runs
   (`cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` and
   `--profile minimal`), the last two covering the updated dataset case.
-
-## Open Questions
-
-- Whether `--guardian none` eval mode should stop skipping `auto`-mode pipeline cases now that
-  spawns no longer need the guardian there. It skips on `mode == auto` regardless of tool, and
-  non-spawn `auto` calls still need the guardian, so the skip stays correct; a finer-grained
-  skip is a possible follow-up, out of scope here.
+- The `--guardian none` eval run keeps skipping `auto`-mode pipeline cases: it skips on
+  `mode == auto` regardless of tool, and non-spawn `auto` calls still dispatch to the
+  guardian, so the skip remains correct for them. A finer-grained skip is a possible
+  follow-up, out of scope here.
