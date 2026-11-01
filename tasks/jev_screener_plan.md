@@ -82,6 +82,13 @@ once the total reaches the cap, stops asking and records every remaining case as
 reason `cost cap reached`. The cap is checked after each call, so the overshoot is at most one
 call. Both cost flags need `--guardian screen:<model>`, like the other `--screen-*` flags.
 
+The cap fails closed on unreported spend: when `--screen-max-cost-usd` is set and an answered
+response (the warm-up or a case, i.e. a `ScreenScore`) has no `cost_usd`, `score_screen` stops
+asking and records every remaining case as skipped with reason `cost not reported` (the case that
+lacked the cost keeps its result). Without the flag a missing cost is fine (vLLM/Laya report none).
+A failed or transport-error call carries no `ScreenScore` and so no cost; it is not counted
+toward the total, and `docs/evals.md` / `evals/README.md` say so.
+
 ### Invocation
 
 `~typesafe/jev-latest` is the floating alias. `--screen-url` is the base without `/v1/systemone`, so `https://openrouter.ai/api` composes to
@@ -101,16 +108,27 @@ exceeds the 10 s default timeout only on stalls; leave the default.
 2. `rust/fontaine-evals/src/runner.rs`
    - Add `--screen-api-key-file` and `--screen-max-cost-usd`; extend the "need `--guardian
      screen:<model>`" check (line 435) and its message; validate `--screen-max-cost-usd`.
-   - In `score_screen`, keep the running cost and skip the remainder at the cap; return the
-     warm-up's `Option<ScreenScore>` alongside `(results, scored, skipped)`.
+   - In `score_screen`, keep the running cost and skip the remainder at the cap, or with
+     `cost not reported` when the cap is set and an answered response (warm-up included) has no
+     `cost_usd`; return the warm-up's `Option<ScreenScore>` alongside `(results, scored, skipped)`.
 3. `rust/fontaine-evals/src/screen_report.rs`: add `cost_usd` and `model_resolved` to
    `ScreenAnalysis`, take the warm-up `Option<ScreenScore>` as an extra parameter of `analyze`, and
    print both in `render`.
 4. Docs and changelog (below).
-5. Live run: score the dataset with Jev and save `--out` (see Manual Verification).
-6. Record the results in md files:
+5. `research/typed-decision-screen/scripts/scorecard_auroc.py` (new, run with `python3 -I`): reads
+   an `--out` scorecard and prints `AUROC` (must-not-clear, i.e. `expected` deny/escalate, against
+   allow) and `atk` (`attack:*` against `benign`) over the cases that have a `screen`, with risk
+   `1 - probabilities.allow` (common.py's `choice3` risk) and common.py's `auroc` definition
+   (ties count half). It copies that one-line definition rather than importing `common.py`, which
+   loads its own case file at import. Fail-closed cases (no `screen`) are excluded and counted.
+6. Live run: score the dataset with Jev and save `--out` (see Manual Verification), then run
+   `scorecard_auroc.py` on it.
+7. Record the results in md files:
    - `research/analysis-jev-openrouter.md`: add a "Results" section with the scorecard (catch,
-     benign false-deny, escalation rate, AUROC, calibration/ECE, latency, `cost_usd`,
+     benign false-deny, escalation rate (`benign_stop_rate` minus `false_deny_rate`: benign cases
+     escalated rather than denied), AUROC and atk from `scorecard_auroc.py` (saturated 0/1
+     probabilities make these mostly ties, so read them as a ranking floor), calibration/ECE,
+     latency, `cost_usd`,
      `model_resolved`), a comparison with the Laya and qwen3-4b rows in
      `research/analysis-typed-decision-screen.md` (those Laya and qwen3-4b numbers come from an older
      dataset version, 5a79aa741c27 with 273 cases, so label the comparison cross-version; re-scoring
@@ -134,6 +152,7 @@ exceeds the 10 s default timeout only on stalls; leave the default.
 - `CHANGELOG.md`
 - `research/analysis-jev-openrouter.md`, `research/analysis-typed-decision-screen.md`
 - `evals/scorecards/screen-jev-1.14.json` (new)
+- `research/typed-decision-screen/scripts/scorecard_auroc.py` (new)
 
 ## Decisions
 
@@ -143,6 +162,18 @@ exceeds the 10 s default timeout only on stalls; leave the default.
   item open for someone with a GPU.
 - 2026-10-31: purpose-built `--screen-api-key-file` rather than a generic `--screen-header`, which
   invites secrets on argv.
+- AFK: 2026-10-31: With `--screen-max-cost-usd` set, an answered response (warm-up or case)
+  lacking `usage.cost` stops the run and skips the rest with `cost not reported`; failed calls
+  carry no cost and are documented as uncounted — the cap is the only spend guard, so it must
+  fail closed rather than silently never fire.
+- AFK: 2026-10-31: Keep `--screen-api-key-file`; decline resolving the key from a fontaine-core
+  `openrouter` account (`api_key_env` / `credentials.toml`, as `live:<account>/<model>` evals
+  do) — smaller change confined to fontaine-evals, matches the key already stored at a file
+  path, and keeps a reference-only scorer out of the user's account config.
+- AFK: 2026-10-31: Compute AUROC/atk with a small `scorecard_auroc.py` reading the `--out`
+  scorecard's per-case `screen.probabilities` (common.py's `auroc` and `choice3` risk), and define
+  the escalation rate as `benign_stop_rate` minus `false_deny_rate` — keeps the Results comparable
+  with the AUROC columns of the earlier screen tables without adding AUROC to fontaine-evals.
 
 ## Documentation
 
@@ -151,7 +182,9 @@ exceeds the 10 s default timeout only on stalls; leave the default.
   saturated-probability caveat if it holds. Note that Jev is a reference measurement and that the
   key is sent only over https.
 - `evals/README.md`: add the two new flags to the `--screen-*` rows under "Running the runner", the
-  cost fields to "Screen mode", and the new cost-flag usage error to the exit-code 2 row.
+  cost fields to "Screen mode", and the new cost-flag usage error to the exit-code 2 row. Say that
+  with the cap set a response without `usage.cost` stops the run (`cost not reported`), and that
+  failed calls report no cost and are not counted toward the cap.
 - `rust/fontaine-evals/src/screen.rs` module doc (lines 1-4, names Laya/DiffusionGemma) and the
   `evals/README.md` "Screen mode" intro (assumes a local server): name Jev via OpenRouter with
   `--screen-api-key-file` against an https `--screen-url`.
@@ -174,6 +207,10 @@ and never touch OpenRouter.
 - `screen.rs`: with a scripted per-call cost and `--screen-max-cost-usd`, the run stops after the
   call that reaches the cap, the remaining cases are skipped with `cost cap reached`, and the
   `ScreenAnalysis` `cost_usd` equals the sum of the warm-up and the scored cases.
+- `screen.rs`: with `--screen-max-cost-usd` set and a scripted endpoint whose responses omit
+  `usage.cost`, the run stops after the first answered response and the remaining cases are
+  skipped with `cost not reported`; the same endpoint without the flag scores every case; a
+  scripted HTTP error on one case does not stop a capped run and adds nothing to `cost_usd`.
 - Flag validation: both new flags are rejected without `--guardian screen:<model>`, and a
   non-positive or non-finite `--screen-max-cost-usd` is a usage error, extending the
   `usage_errors_exit_two` table at the end of `tests/screen.rs`.
