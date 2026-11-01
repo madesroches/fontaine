@@ -136,8 +136,13 @@ or what the model was told for a denial.
    - Rework `the_guardian_takes_its_intent_from_the_roots_human_messages_only`: the spawn's
      guardian request is gone, so assert a single request for the child's shell call and keep
      the intent assertions (`sent[0]`) on that call.
-5. `evals/dataset/spawn.jsonl`: `spawn-worker-not-fast-path` becomes
-   `"expected": "allow", "expected_tier": "spawn"` with a matching `fixture_verdict`
+   - Rework `a_spawn_prompt_claiming_authorization_is_never_the_guardians_intent` in
+     `rust/fontaine/tests/parallel_agents.rs` the same way: assert a single guardian request
+     (the child's shell call) and keep the intent-sanitization assertions on it.
+5. `evals/dataset/spawn.jsonl`: rename `spawn-worker-not-fast-path` to
+   `spawn-worker-auto-gate` (the old id claims the case is not on the fast path, which the
+   new expectation contradicts) and set it to `"expected": "allow",
+   "expected_tier": "spawn"` with a matching `fixture_verdict`
    (`{"decision": "allow", "tier": "spawn"}`).
 6. `docs/schemas/headless-v1.schema.json`: add `"spawn"` to `$defs.tier.enum` (a closed list
    consumed by `gate_decision` and `result.denials`; `guardian_off` already sits in the enum
@@ -146,7 +151,7 @@ or what the model was told for a denial.
 7. Docs: `docs/permissions.md` (step 3's spawn paragraph, step 7, the tier list, the
    "guardian skips" paragraph), `docs/guardian.md` (intro list and the subagents section),
    `docs/agents.md` (spawn paragraph: `auto`/`plan` allow at the `spawn` tier,
-   `manual`/`acceptEdits` ask), `docs/evals.md` (`spawn-worker-not-fast-path` sentence: a
+   `manual`/`acceptEdits` ask), `docs/evals.md` (`spawn-worker-auto-gate` sentence: a
    `worker` spawn in `auto` is allowed at tier `spawn`), `docs/headless.md` (add `spawn` to
    the `gate_decision` tier list), and the fast-path invariant in `AGENTS.md` (three
    exceptions become four); `docs/architecture.md` (the numbered pipeline diagram:
@@ -164,6 +169,7 @@ or what the model was told for a denial.
 - `rust/fontaine-core/src/permissions.rs`
 - `rust/fontaine-core/src/audit.rs` (field doc only)
 - `rust/fontaine-core/tests/agent_pipeline.rs`
+- `rust/fontaine/tests/parallel_agents.rs`
 - `evals/dataset/spawn.jsonl`
 - `docs/schemas/headless-v1.schema.json`
 - `docs/permissions.md`, `docs/guardian.md`, `docs/agents.md`, `docs/evals.md`,
@@ -196,26 +202,6 @@ or what the model was told for a denial.
 - 2026-11-14 (design): a spawn of an unknown or malformed `agent_type` is allowed at the gate in
   `auto`/`plan` and refused by the `AgentTool` itself on execution, as it already is for
   allowed calls today. The gate gains no agent-type validation.
-
-## Documentation
-
-- `docs/permissions.md`: step 3 (read-only spawn fast path), step 7 (mode table: `auto`/`plan`
-  spawns no longer reach the guardian), the tier vocabulary (add `spawn`), the "guardian skips"
-  paragraph.
-- `docs/guardian.md`: the intro's list of what sits in front of the guardian, and the
-  subagents section ("An `agent` call is decided by the floor and the mode…").
-- `AGENTS.md`: the fast-path invariant gains the spawn exception (four exceptions).
-- `docs/architecture.md`: the numbered pipeline diagram gains the spawn branch — a
-  `Tier::Spawn` allow for `auto`/`plan`, a prompt for `manual`/`acceptEdits`, a deny for
-  `dontAsk` — between the fast paths and the mode dispatch.
-- `tasks/design/permissions.md`: the Tier-enum paragraph (the audit log, `tool_decision`,
-  `gate_decision` and eval `expected_tier` now also carry `spawn`) and the pipeline-step
-  description.
-- `tasks/fontaine_harness_plan.md`: a dated line in `## Decisions` recording that spawns are
-  no longer guardian-judged at all (every child call is gated by the same pipeline and the
-  child's mode is never looser than the parent's), superseding the earlier line about
-  read-only spawn skips, with the issue reference (#360).
-- `CHANGELOG.md`: entry under the release the PR lands in.
 
 ## Testing Strategy
 
