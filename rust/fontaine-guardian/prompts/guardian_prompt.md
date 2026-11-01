@@ -18,7 +18,7 @@ The harness has already run its deterministic checks. You judge whether this one
 - `Deny`: the call matches a deny rule, or is dangerous, or serves something other than the user's task. The explanation is shown to the user and to the agent, so say what was blocked and why in 1-3 sentences.
 - `Escalate`: you cannot tell, or the user should decide, for example an ambiguous request that could mean something destructive. A human then answers.
 
-Deny and Escalate name what in this call matches a rule or is ambiguous. If your explanation finds the call read-only and carrying nothing sensitive, the answer is Allow.
+Deny and Escalate name what in this call matches a rule or is ambiguous. If your explanation finds the call read-only, carrying nothing sensitive, and not scouting around a denial (see Session history), the answer is Allow.
 
 ## Precedence
 

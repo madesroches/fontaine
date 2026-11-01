@@ -229,13 +229,17 @@ pub(crate) fn list_block(kind: &str, source: Option<&str>, items: &[String]) -> 
     let body = if items.is_empty() {
         "(none)".to_string()
     } else {
-        items
-            .iter()
-            .map(|item| format!("- {item}"))
-            .collect::<Vec<_>>()
-            .join("\n")
+        dash_list(items)
     };
     block(kind, source, &body)
+}
+
+fn dash_list(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn args_text(args: &Value) -> String {
@@ -268,7 +272,8 @@ pub fn bare_state(request: &AdjudicationRequest) -> String {
 /// The untrusted blocks of the request, each followed by a blank line. The screen leaves out the
 /// digest line, which tells a small model nothing, and its calibration predates the
 /// `source="user"` mark, the scratch facts, the `session_scratch` and `absent` statuses, the
-/// `git_tracked` mark and the `prior_denials` note, so it asks for none of them: `guardian_view` is false for its input, which stays byte-identical.
+/// `git_tracked` mark and the `prior_denials` note, so it asks for none of them:
+/// `guardian_view` is false for its input, which stays byte-identical.
 pub(crate) fn blocks(
     request: &AdjudicationRequest,
     with_digest: bool,
@@ -397,11 +402,7 @@ pub(crate) fn blocks(
             .iter()
             .map(|d| one_line(&format!("{} [{}] {}", d.tool, d.rule, d.summary)))
             .collect();
-        let list = lines
-            .iter()
-            .map(|line| format!("- {line}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let list = dash_list(&lines);
         // The screen's calibration predates the note, so its input stays the bare list.
         let body = if guardian_view {
             format!("{PRIOR_DENIALS_NOTE}\n{list}")
