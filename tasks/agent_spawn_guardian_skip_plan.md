@@ -157,8 +157,12 @@ or what the model was told for a denial.
    exceptions become four); `docs/architecture.md` (the numbered pipeline diagram:
    show the new branch — a `Tier::Spawn` allow for `auto`/`plan`, a prompt for
    `manual`/`acceptEdits`, a deny for `dontAsk` — between the fast paths and the mode
-   dispatch), and `tasks/design/permissions.md` (the Tier-enum paragraph and the
-   pipeline-step description). Add a dated line to `## Decisions` in
+   dispatch), `tasks/design/permissions.md` (the Tier-enum paragraph, the
+   pipeline-step description, and the "Where allow acts" sentence that the
+   containment fast path and Tier 0.5 are the only guardian skips earned
+   without a grant), and `README.md` (the "Auto mode" list: a spawn of a
+   subagent — read-only or state-changing — no longer reads as
+   guardian-reachable). Add a dated line to `## Decisions` in
    `tasks/fontaine_harness_plan.md` recording that spawns are no longer guardian-judged at
    all, with the containment reason and the issue reference (#360). `CHANGELOG.md` is
    updated by the `pr` step.
@@ -173,8 +177,8 @@ or what the model was told for a denial.
 - `evals/dataset/spawn.jsonl`
 - `docs/schemas/headless-v1.schema.json`
 - `docs/permissions.md`, `docs/guardian.md`, `docs/agents.md`, `docs/evals.md`,
-  `docs/headless.md`, `docs/architecture.md`, `AGENTS.md`, `tasks/design/permissions.md`,
-  `tasks/fontaine_harness_plan.md`
+  `docs/headless.md`, `docs/architecture.md`, `README.md`, `AGENTS.md`,
+  `tasks/design/permissions.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
@@ -218,7 +222,9 @@ or what the model was told for a denial.
 - CI steps from the repo conventions: `cargo fmt --check`, `cargo clippy --all-targets -- -D
   warnings`, `cargo test`, and both fixture eval runs
   (`cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` and
-  `--profile minimal`), the last two covering the updated dataset case.
+  `--profile minimal`); the full-profile run covers the renamed dataset case
+  (`spawn-worker-auto-gate` stays a `"profile": "full"` case, which `--profile
+  minimal` does not select).
 - The `--guardian none` eval run keeps skipping `auto`-mode pipeline cases: it skips on
   `mode == auto` regardless of tool, and non-spawn `auto` calls still dispatch to the
   guardian, so the skip remains correct for them. A finer-grained skip is a possible
