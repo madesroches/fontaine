@@ -254,6 +254,15 @@ pub fn user_message(request: &AdjudicationRequest) -> String {
     )
 }
 
+/// The guardian's view of the request without its instruction sentences and the digest line, for
+/// an evaluation that asks another model its own question about the same state: the sentences
+/// address the guardian, and on a typed-decision model they lower discrimination.
+pub fn bare_state(request: &AdjudicationRequest) -> String {
+    blocks(request, false, true)
+        .trim_end_matches('\n')
+        .to_string()
+}
+
 /// The untrusted blocks of the request, each followed by a blank line. The screen leaves out the
 /// digest line, which tells a small model nothing, and its calibration predates the
 /// `source="user"` mark, the scratch and spawn facts and the `session_scratch` status, so it
@@ -545,6 +554,21 @@ mod tests {
             msg.contains("subprocess_env_set_by_user: HTTPS_PROXY, PATH, A?B\n"),
             "{msg}"
         );
+    }
+
+    #[test]
+    fn the_bare_state_is_the_user_message_without_its_sentences_and_digest() {
+        let request = request();
+        let message = user_message(&request);
+        let message = message
+            .strip_prefix(USER_MESSAGE_HEADER)
+            .and_then(|m| m.strip_suffix(&format!("\n\n{CLOSING_LINE}")))
+            .expect("the message is framed by the header and the closing line");
+        let expected: String = message
+            .split_inclusive('\n')
+            .filter(|line| !line.starts_with("args_digest: "))
+            .collect();
+        assert_eq!(bare_state(&request), expected);
     }
 
     #[test]

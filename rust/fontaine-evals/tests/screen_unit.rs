@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use fontaine_evals::CaseResult;
-use fontaine_evals::screen::{ScreenScore, parse};
+use fontaine_evals::screen::{Framing, ScreenScore, parse, parse_employee, parse_employee_levels};
 use fontaine_evals::screen_report::{
     Obs, RefCase, Rule, analyze, calibration, option1, option2, rates_at, reference_diff,
 };
@@ -50,6 +50,9 @@ fn result(id: &str, category: &str, expected: &str, choice: &str, pass: bool) ->
             probabilities: BTreeMap::new(),
             input_tokens: None,
             truncated: None,
+            cost_usd: None,
+            model: None,
+            level: None,
         }),
     }
 }
@@ -156,7 +159,7 @@ fn reliability_puts_a_risk_of_one_in_the_last_bin_and_computes_ece() {
 
 #[test]
 fn empty_inputs_give_none_without_nan() {
-    let a = analyze(&[], None);
+    let a = analyze(&[], None, None, Framing::Verdict);
     assert_eq!(a.scored, 0);
     assert!(a.default.rates.catch_rate.is_none());
     assert!(a.option2.t_allow.is_none());
@@ -248,4 +251,152 @@ fn malformed_answers_are_unparseable() {
         let failure = parse(body.as_bytes()).unwrap_err();
         assert_eq!(failure.reason, "unparseable", "{body}");
     }
+}
+
+#[test]
+fn usage_cost_and_the_resolved_model_are_read() {
+    let body = json!({
+        "model": "typesafe/jev-1.14-20261014",
+        "answers": {"verdict": {"choice": "deny", "confidence": 1,
+            "probabilities": {"allow": 0, "deny": 1, "escalate": 0}}},
+        "usage": {"input_tokens": 335, "cost": 0.00001407}
+    });
+    let score = parse(body.to_string().as_bytes()).unwrap();
+    assert_eq!(score.cost_usd, Some(0.00001407));
+    assert_eq!(score.model.as_deref(), Some("typesafe/jev-1.14-20261014"));
+
+    let bare = json!({"answers": {"verdict": {"choice": "allow", "confidence": 0.9}}});
+    let score = parse(bare.to_string().as_bytes()).unwrap();
+    assert_eq!(score.cost_usd, None);
+    assert_eq!(score.model, None);
+}
+
+#[test]
+fn an_old_report_round_trips_without_the_cost_fields() {
+    let old = json!({"choice": "allow", "confidence": 0.9, "probabilities": {"allow": 0.9},
+        "input_tokens": 12});
+    let score: ScreenScore = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(score.cost_usd, None);
+    let again = serde_json::to_value(&score).unwrap();
+    assert!(again.get("cost_usd").is_none() && again.get("model").is_none());
+}
+
+#[test]
+fn analysis_sums_the_warm_up_and_cases_and_lists_models_sorted() {
+    let score = |cost: Option<f64>, model: &str| ScreenScore {
+        choice: "allow".into(),
+        confidence: 0.9,
+        probabilities: BTreeMap::new(),
+        input_tokens: None,
+        truncated: None,
+        cost_usd: cost,
+        model: Some(model.into()),
+        level: None,
+    };
+    let mut a = result("a", "benign", "allow", "allow", true);
+    a.screen = Some(score(Some(0.5), "z"));
+    let mut b = result("b", "benign", "allow", "allow", true);
+    b.screen = Some(score(None, "a"));
+    let warm = score(Some(0.25), "z");
+    let analysis = analyze(&[a, b], None, Some(&warm), Framing::Verdict);
+    assert_eq!(analysis.cost_usd, Some(0.75));
+    assert_eq!(analysis.model_resolved, vec!["a", "z"]);
+    assert_eq!(analyze(&[], None, None, Framing::Verdict).cost_usd, None);
+}
+
+#[test]
+fn an_invalid_key_error_does_not_echo_the_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("k");
+    std::fs::write(&path, "sk-secret two\n").unwrap();
+    let error = fontaine_evals::screen::read_key_file(&path).unwrap_err();
+    assert!(!error.contains("sk-secret"), "{error}");
+    std::fs::write(&path, "sk-secret\n").unwrap();
+    assert!(fontaine_evals::screen::read_key_file(&path).is_ok());
+}
+
+#[test]
+fn an_employee_answer_reads_yes_as_allow() {
+    let body = json!({"model": "jev", "answers": {"q": {"type": "noul", "noul": 0.3}},
+        "usage": {"input_tokens": 10, "cost": 0.00002}});
+    let score = parse_employee(body.to_string().as_bytes()).unwrap();
+    assert_eq!(score.choice, "deny");
+    assert!((score.confidence - 0.7).abs() < 1e-9);
+    assert_eq!(score.probabilities["allow"], Some(0.3));
+    assert!((score.probabilities["deny"].unwrap() - 0.7).abs() < 1e-9);
+    assert_eq!(score.probabilities["escalate"], None);
+    assert_eq!(score.cost_usd, Some(0.00002));
+    let yes = json!({"answers": {"q": {"noul": 0.5}}});
+    assert_eq!(
+        parse_employee(yes.to_string().as_bytes()).unwrap().choice,
+        "allow"
+    );
+}
+
+#[test]
+fn an_employee_answer_without_a_probability_is_unparseable() {
+    for body in [
+        r#"{"answers": {"verdict": {"choice": "allow", "confidence": 0.9}}}"#,
+        r#"{"answers": {"q": {"noul": "yes"}}}"#,
+        r#"{"answers": {"q": {"noul": 1.5}}}"#,
+        "not json",
+    ] {
+        let failure = parse_employee(body.as_bytes()).unwrap_err();
+        assert_eq!(failure.reason, "unparseable", "{body}");
+    }
+}
+
+#[test]
+fn an_employee_levels_answer_reads_within_as_allow() {
+    let body = json!({"model": "jev", "answers": {"q": {"type": "choice", "choice": "outside",
+        "probabilities": {"within": 0.3, "slightly_outside": 0.2, "outside": 0.4,
+            "far_outside": 0.05, "fireable": 0.05}}},
+        "usage": {"input_tokens": 10, "cost": 0.00003}});
+    let score = parse_employee_levels(body.to_string().as_bytes()).unwrap();
+    assert_eq!(score.choice, "deny");
+    assert_eq!(score.level.as_deref(), Some("outside"));
+    assert!((score.confidence - 0.7).abs() < 1e-9);
+    assert_eq!(score.probabilities["allow"], Some(0.3));
+    assert!((score.probabilities["deny"].unwrap() - 0.7).abs() < 1e-9);
+    assert_eq!(score.probabilities["escalate"], None);
+    assert_eq!(score.cost_usd, Some(0.00003));
+    // The choice follows p(within), not the server's conservative top level.
+    let boundary = json!({"answers": {"q": {"choice": "slightly_outside",
+        "probabilities": {"within": 0.5, "slightly_outside": 0.5}}}});
+    let score = parse_employee_levels(boundary.to_string().as_bytes()).unwrap();
+    assert_eq!(score.choice, "allow");
+    assert_eq!(score.level.as_deref(), Some("slightly_outside"));
+    let odd = json!({"answers": {"q": {"choice": "maybe", "probabilities": {"within": 0.49}}}});
+    let score = parse_employee_levels(odd.to_string().as_bytes()).unwrap();
+    assert_eq!(score.choice, "deny");
+    assert_eq!(score.level, None);
+    let serialized = serde_json::to_value(&score).unwrap();
+    assert!(serialized.get("level").is_none());
+}
+
+#[test]
+fn an_employee_levels_answer_without_p_within_is_unparseable() {
+    for body in [
+        r#"{"answers": {"verdict": {"choice": "allow", "confidence": 0.9}}}"#,
+        r#"{"answers": {"q": {"noul": 0.9}}}"#,
+        r#"{"answers": {"q": {"choice": "within", "confidence": 0.9}}}"#,
+        r#"{"answers": {"q": {"choice": "within", "probabilities": {"outside": 0.9}}}}"#,
+        r#"{"answers": {"q": {"choice": "within", "probabilities": {"within": "high"}}}}"#,
+        r#"{"answers": {"q": {"choice": "within", "probabilities": {"within": -0.1}}}}"#,
+        r#"{"answers": {"q": {"choice": "within", "probabilities": {"within": 1.2}}}}"#,
+        "not json",
+    ] {
+        let failure = parse_employee_levels(body.as_bytes()).unwrap_err();
+        assert_eq!(failure.reason, "unparseable", "{body}");
+    }
+}
+
+#[test]
+fn only_a_non_default_framing_is_recorded() {
+    let verdict = serde_json::to_value(analyze(&[], None, None, Framing::Verdict)).unwrap();
+    assert!(verdict.get("framing").is_none());
+    let employee = serde_json::to_value(analyze(&[], None, None, Framing::Employee)).unwrap();
+    assert_eq!(employee["framing"], "employee");
+    let levels = serde_json::to_value(analyze(&[], None, None, Framing::EmployeeLevels)).unwrap();
+    assert_eq!(levels["framing"], "employee-levels");
 }

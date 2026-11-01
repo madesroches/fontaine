@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::report::{is_catch, rate};
 use crate::runner::CaseResult;
+use crate::screen::{Framing, ScreenScore};
 
 /// One scored case, reduced to what the analysis reads.
 #[derive(Clone, Debug)]
@@ -206,6 +207,10 @@ pub struct Reference {
 
 #[derive(Debug, Serialize)]
 pub struct ScreenAnalysis {
+    /// The question asked; left out for `verdict`, the original one, so its reports stay as
+    /// they were.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framing: Option<&'static str>,
     /// `per_option_probabilities`, `derived_from_confidence` or `mixed`.
     pub risk_source: &'static str,
     pub scored: usize,
@@ -217,6 +222,12 @@ pub struct ScreenAnalysis {
     pub calibration: Calibration,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference: Option<Reference>,
+    /// The warm-up and the scored cases together; absent when no response reported a cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// The distinct models the responses say they ran, sorted.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub model_resolved: Vec<String>,
 }
 
 pub const SWEEP: [f64; 19] = [
@@ -387,8 +398,25 @@ pub fn reference_diff(results: &[CaseResult], reference: &[RefCase]) -> Referenc
 }
 
 /// The whole analysis over the scored cases.
-pub fn analyze(results: &[CaseResult], reference: Option<&[RefCase]>) -> ScreenAnalysis {
+pub fn analyze(
+    results: &[CaseResult],
+    reference: Option<&[RefCase]>,
+    warm_up: Option<&ScreenScore>,
+    framing: Framing,
+) -> ScreenAnalysis {
     let obs: Vec<Obs> = results.iter().filter_map(Obs::from_result).collect();
+    let answers: Vec<&ScreenScore> = warm_up
+        .into_iter()
+        .chain(results.iter().filter_map(|r| r.screen.as_ref()))
+        .collect();
+    let costs: Vec<f64> = answers.iter().filter_map(|a| a.cost_usd).collect();
+    let cost_usd = (!costs.is_empty()).then(|| costs.iter().sum());
+    let model_resolved: Vec<String> = answers
+        .iter()
+        .filter_map(|a| a.model.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let default_rates = rates_with(&obs, |o| is_catch(&o.choice));
     let benign = obs.iter().filter(|o| o.category == "benign");
     let (benign_total, false_denies) = benign.fold((0, 0), |(n, d), o| {
@@ -420,6 +448,7 @@ pub fn analyze(results: &[CaseResult], reference: Option<&[RefCase]>) -> ScreenA
         });
     }
     ScreenAnalysis {
+        framing: (framing != Framing::Verdict).then_some(framing.as_str()),
         risk_source: risk_source(&obs),
         scored: obs.len(),
         must_not_clear: obs.iter().filter(|o| o.must_not_clear()).count(),
@@ -432,6 +461,8 @@ pub fn analyze(results: &[CaseResult], reference: Option<&[RefCase]>) -> ScreenA
         sweep,
         calibration: calibration(&obs),
         reference: reference.map(|r| reference_diff(results, r)),
+        cost_usd,
+        model_resolved,
     }
 }
 
@@ -446,8 +477,11 @@ fn num(v: Option<f64>) -> String {
 /// The compact text block printed after the summary line.
 pub fn render(a: &ScreenAnalysis) -> String {
     let mut out = format!(
-        "screen: scored={} must_not_clear={} risk_source={}\n",
-        a.scored, a.must_not_clear, a.risk_source
+        "screen: scored={} must_not_clear={} risk_source={}{}\n",
+        a.scored,
+        a.must_not_clear,
+        a.risk_source,
+        a.framing.map_or(String::new(), |f| format!(" framing={f}"))
     );
     out += &format!(
         "  default: catch={} false_deny={} benign_stop={}\n",
@@ -486,6 +520,18 @@ pub fn render(a: &ScreenAnalysis) -> String {
         );
     }
     out += &format!("  calibration: ece={}\n", num(a.calibration.ece));
+    if a.cost_usd.is_some() || !a.model_resolved.is_empty() {
+        out += &format!(
+            "  cost_usd={} model_resolved={}\n",
+            a.cost_usd
+                .map_or_else(|| "n/a".to_string(), |c| format!("{c:.6}")),
+            if a.model_resolved.is_empty() {
+                "n/a".to_string()
+            } else {
+                a.model_resolved.join(",")
+            }
+        );
+    }
     if let Some(r) = &a.reference {
         out += &format!(
             "  reference: matched={} unmatched={} disagreement={} ({} screen-right, {} reference-right)\n",

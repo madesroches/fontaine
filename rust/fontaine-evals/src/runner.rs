@@ -163,6 +163,18 @@ struct RunArgs {
     /// A scorecard of another guardian to compare a `screen:` run with, case by case
     #[arg(long, value_name = "SCORECARD.JSON")]
     screen_reference: Option<PathBuf>,
+
+    /// File holding the bearer key a `screen:` run sends, only over https or to a loopback host
+    #[arg(long, value_name = "PATH")]
+    screen_api_key_file: Option<PathBuf>,
+
+    /// Stop a `screen:` run asking once the cost the server reports reaches this many USD
+    #[arg(long, value_name = "USD")]
+    screen_max_cost_usd: Option<f64>,
+
+    /// The question a `screen:` run asks [default: verdict]
+    #[arg(long, value_enum, value_name = "FRAMING")]
+    screen_framing: Option<screen::Framing>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -435,12 +447,27 @@ fn run_score(args: &RunArgs) -> u8 {
     if screen_spec.is_none()
         && (args.screen_url.is_some()
             || args.screen_timeout_ms.is_some()
-            || args.screen_reference.is_some())
+            || args.screen_reference.is_some()
+            || args.screen_api_key_file.is_some()
+            || args.screen_max_cost_usd.is_some()
+            || args.screen_framing.is_some())
     {
         return usage(
-            "`--screen-url`, `--screen-timeout-ms` and `--screen-reference` need `--guardian screen:<model>`",
+            "`--screen-url`, `--screen-timeout-ms`, `--screen-reference`, `--screen-api-key-file`, `--screen-max-cost-usd` and `--screen-framing` need `--guardian screen:<model>`",
         );
     }
+    if let Some(c) = args.screen_max_cost_usd
+        && !(c > 0.0 && c.is_finite())
+    {
+        return usage("`--screen-max-cost-usd` must be a positive number");
+    }
+    let screen_key = match &args.screen_api_key_file {
+        Some(path) => match screen::read_key_file(path) {
+            Ok(key) => Some(key),
+            Err(e) => return usage(&e),
+        },
+        None => None,
+    };
     if screen_spec.is_some() && matches!(args.profile, ProfileArg::Minimal) {
         return usage("`--guardian screen:<model>` has no profile; drop `--profile minimal`");
     }
@@ -494,6 +521,8 @@ fn run_score(args: &RunArgs) -> u8 {
     let mut skipped = Vec::new();
     let mut live_run = None;
     let mut screen_version = None;
+    let mut screen_warm_up = None;
+    let mut screen_framing = screen::Framing::default();
     let results: Vec<CaseResult> = if let Some(spec) = live_spec {
         let header = Header {
             dataset_version: match report::dataset_version(dataset) {
@@ -619,6 +648,8 @@ fn run_score(args: &RunArgs) -> u8 {
             std::time::Duration::from_millis(
                 args.screen_timeout_ms.unwrap_or(screen::DEFAULT_TIMEOUT_MS),
             ),
+            screen_key,
+            args.screen_framing.unwrap_or_default(),
         ) {
             Ok(connected) => connected,
             Err(e) => return usage(&e),
@@ -627,10 +658,16 @@ fn run_score(args: &RunArgs) -> u8 {
             Ok(rt) => rt,
             Err(code) => return code,
         };
-        let (results, scored, missed) = rt.block_on(score_screen(&selected, &connected));
+        let (results, scored, missed, warm) = rt.block_on(score_screen(
+            &selected,
+            &connected,
+            args.screen_max_cost_usd,
+        ));
         skipped = missed;
         selected = scored;
         screen_version = Some(version);
+        screen_warm_up = warm;
+        screen_framing = connected.framing();
         results
     } else if guardian == "none" {
         // The guardian and the scanner do not exist in this mode, and `auto` needs the guardian.
@@ -700,6 +737,8 @@ fn run_score(args: &RunArgs) -> u8 {
         summary.screen = Some(screen_report::analyze(
             &results,
             reference.as_ref().map(|r| r.cases.as_slice()),
+            screen_warm_up.as_ref(),
+            screen_framing,
         ));
     }
     print_summary(
@@ -832,11 +871,19 @@ async fn score_live<'a>(
 }
 
 /// Scores the `guardian` cases of `selected` against the screen, one at a time so each latency is
-/// its own. Returns the results, the cases they belong to and the cases that were not scored.
+/// its own. Returns the results, the cases they belong to, the cases that were not scored and the
+/// warm-up's answer, which is billed like a case. With `max_cost`, asking stops once the reported
+/// cost reaches it, or as soon as an answered call reports none: the cap would never fire.
 async fn score_screen<'a>(
     selected: &[&'a Case],
     screen: &Screen,
-) -> (Vec<CaseResult>, Vec<&'a Case>, Vec<Skipped>) {
+    max_cost: Option<f64>,
+) -> (
+    Vec<CaseResult>,
+    Vec<&'a Case>,
+    Vec<Skipped>,
+    Option<ScreenScore>,
+) {
     let (mut results, mut scored, mut skipped) = (Vec::new(), Vec::new(), Vec::new());
     let mut asked = Vec::new();
     for case in selected {
@@ -849,11 +896,36 @@ async fn score_screen<'a>(
             });
         }
     }
-    if let Some(first) = asked.first() {
-        screen::warm_up(first, screen).await;
+    let warm = match asked.first() {
+        Some(first) => screen::warm_up(first, screen).await,
+        None => None,
+    };
+    let mut spent = 0.0;
+    let mut tally = |score: &ScreenScore, stop: &mut Option<&'static str>| {
+        let Some(cap) = max_cost else { return };
+        match score.cost_usd {
+            Some(cost) => {
+                spent += cost;
+                if spent >= cap {
+                    *stop = Some("cost cap reached");
+                }
+            }
+            None => *stop = Some("cost not reported"),
+        }
+    };
+    let mut stop: Option<&'static str> = None;
+    if let Some(warm) = &warm {
+        tally(warm, &mut stop);
     }
     let total = asked.len();
     for (n, case) in asked.into_iter().enumerate() {
+        if let Some(reason) = stop {
+            skipped.push(Skipped {
+                id: case.id.clone(),
+                reason: reason.into(),
+            });
+            continue;
+        }
         let outcome = screen::score(case, screen)
             .await
             .unwrap_or_else(|e| unscored(case, e));
@@ -861,6 +933,9 @@ async fn score_screen<'a>(
             Scored::Result(result) => {
                 eprintln!("[{}/{total}] {}", n + 1, progress(&result));
                 print_case(&result);
+                if let Some(score) = &result.screen {
+                    tally(score, &mut stop);
+                }
                 results.push(*result);
                 scored.push(case);
             }
@@ -874,7 +949,7 @@ async fn score_screen<'a>(
             }
         }
     }
-    (results, scored, skipped)
+    (results, scored, skipped, warm)
 }
 
 /// Another guardian's scorecard, as far as a screen run compares with it.
