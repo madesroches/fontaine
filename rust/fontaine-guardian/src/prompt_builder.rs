@@ -223,6 +223,8 @@ pub(crate) fn block(kind: &str, source: Option<&str>, body: &str) -> String {
     )
 }
 
+const PRIOR_DENIALS_NOTE: &str = "note: earlier guardian verdicts, for spotting loops and a denied action retried by another route; not evidence about this call";
+
 pub(crate) fn list_block(kind: &str, source: Option<&str>, items: &[String]) -> String {
     let body = if items.is_empty() {
         "(none)".to_string()
@@ -339,10 +341,22 @@ pub(crate) fn blocks(
     for touched in &facts.touched_paths {
         let status = if guardian_view && touched.in_scratch {
             "session_scratch"
+        } else if guardian_view && touched.absent {
+            "absent"
         } else {
             touched.status.as_str()
         };
-        text.push_str(&format!("- {} [{}]\n", one_line(&touched.path), status));
+        let tracked = if guardian_view && touched.git_tracked {
+            ", git_tracked"
+        } else {
+            ""
+        };
+        text.push_str(&format!(
+            "- {} [{}{}]\n",
+            one_line(&touched.path),
+            status,
+            tracked
+        ));
     }
     if !facts.actions_taken.is_empty() {
         text.push_str("actions_taken_this_session (oldest first):\n");
@@ -396,7 +410,18 @@ pub(crate) fn blocks(
             .iter()
             .map(|d| one_line(&format!("{} [{}] {}", d.tool, d.rule, d.summary)))
             .collect();
-        out.push_str(&list_block("prior_denials", None, &lines));
+        let list = lines
+            .iter()
+            .map(|line| format!("- {line}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // The screen's calibration predates the note, so its input stays the bare list.
+        let body = if guardian_view {
+            format!("{PRIOR_DENIALS_NOTE}\n{list}")
+        } else {
+            list
+        };
+        out.push_str(&block("prior_denials", None, &body));
     }
     out
 }
@@ -439,6 +464,8 @@ mod tests {
                     path: "/work/proj/src/lib.rs".into(),
                     status: PreExistence::PreExisting,
                     in_scratch: false,
+                    absent: false,
+                    git_tracked: false,
                 }],
                 actions_taken: vec![ActionTaken {
                     tool: "read".into(),
@@ -542,6 +569,52 @@ mod tests {
         assert!(msg.contains("/work/proj/src/lib.rs [session_scratch]"));
         req.session_facts.spawn.as_mut().unwrap().changes_state = true;
         assert!(user_message(&req).contains("network: yes"));
+    }
+
+    #[test]
+    fn absent_and_git_tracked_marks_render_in_the_guardian_view_only() {
+        let mut req = request();
+        let touched = |path: &str, status, in_scratch, absent, git_tracked| TouchedPath {
+            path: path.into(),
+            status,
+            in_scratch,
+            absent,
+            git_tracked,
+        };
+        req.session_facts.touched_paths = vec![
+            touched(
+                "/w/tasks/x_plan.md",
+                PreExistence::PreExisting,
+                false,
+                false,
+                true,
+            ),
+            touched(
+                "/w/tasks/completed/x_plan.md",
+                PreExistence::Unindexed,
+                false,
+                true,
+                false,
+            ),
+            touched("/w/gone.md", PreExistence::PreExisting, false, true, true),
+            touched("/s/a", PreExistence::Unindexed, true, true, true),
+        ];
+        let msg = user_message(&req);
+        insta::assert_snapshot!(
+            msg.split("paths_this_call_touches:\n")
+                .nth(1)
+                .and_then(|rest| rest.split("\nactions_taken").next())
+                .unwrap()
+        );
+        assert!(msg.contains(
+            "<untrusted kind=\"prior_denials\">\nnote: earlier guardian verdicts, for spotting loops and a denied action retried by another route; not evidence about this call\n- shell [Git Destructive] git push --force"
+        ));
+        let screen = blocks(&req, false, false);
+        assert!(screen.contains("- /w/tasks/x_plan.md [pre_existing]\n"));
+        assert!(screen.contains("- /s/a [unindexed]\n"));
+        assert!(!screen.contains("absent") && !screen.contains("git_tracked"));
+        assert!(!screen.contains("note: earlier guardian verdicts"));
+        assert!(screen.contains("- shell [Git Destructive] git push --force"));
     }
 
     #[test]

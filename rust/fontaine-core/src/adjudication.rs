@@ -21,6 +21,7 @@ use crate::gate::SessionState;
 use crate::instructions::InstructionFile;
 use crate::ledger::{Existence, LedgerView};
 use crate::permissions::summarize;
+use crate::trust;
 
 /// Longest compact summary of a call's arguments kept in the ledger and shown to the guardian.
 pub const SUMMARY_CHARS: usize = 200;
@@ -108,6 +109,14 @@ fn in_scratch(path: &str, scratch: Option<&std::path::Path>) -> bool {
     })
 }
 
+/// Nothing is at `path` as the request is built. A dangling symlink is something.
+fn is_absent(path: &str) -> bool {
+    matches!(
+        std::fs::symlink_metadata(path),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
 fn facts(
     view: &LedgerView,
     scope: &Scope,
@@ -133,11 +142,17 @@ fn facts(
     .collect();
     let scratch =
         scratch.map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
-    let touched_paths = touched_paths(tool, args, scope)
+    let paths = touched_paths(tool, args, scope);
+    let resolved: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+    let tracked = trust::tracked_or_holds_tracked(scope.primary(), &resolved);
+    let touched_paths = paths
         .into_iter()
-        .map(|path| TouchedPath {
+        .zip(tracked)
+        .map(|(path, git_tracked)| TouchedPath {
             status: status(view.existence(&path)),
             in_scratch: in_scratch(&path, scratch.as_deref()),
+            absent: is_absent(&path),
+            git_tracked,
             path,
         })
         .collect();
@@ -262,6 +277,48 @@ mod tests {
         let got = facts(&view, &scope, Some(&memory), None, "Read", &Value::Null);
         assert_eq!(got.workspace_roots, vec![work.display().to_string()]);
         assert_eq!(got.memory_dir, Some(memory.display().to_string()));
+    }
+
+    #[test]
+    fn absent_and_git_tracked_are_read_from_the_disk_and_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = std::fs::canonicalize(dir.path()).unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&work)
+                .status()
+                .unwrap();
+            assert!(status.success(), "{args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(work.join("kept.txt"), "a").unwrap();
+        std::fs::write(work.join("loose.txt"), "a").unwrap();
+        git(&["add", "kept.txt"]);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(work.join("nowhere"), work.join("dangling")).unwrap();
+        let scope = Scope::new(work.clone(), []);
+        let view = LedgerView::default();
+        let command = "echo x > kept.txt > loose.txt > missing.txt > dangling";
+        let got = facts(
+            &view,
+            &scope,
+            None,
+            None,
+            "shell",
+            &serde_json::json!({ "command": command }),
+        );
+        let by_name = |name: &str| {
+            got.touched_paths
+                .iter()
+                .find(|t| t.path.ends_with(name))
+                .unwrap_or_else(|| panic!("{name} in {:?}", got.touched_paths))
+        };
+        assert!(by_name("kept.txt").git_tracked && !by_name("kept.txt").absent);
+        assert!(!by_name("loose.txt").git_tracked && !by_name("loose.txt").absent);
+        assert!(by_name("missing.txt").absent && !by_name("missing.txt").git_tracked);
+        #[cfg(unix)]
+        assert!(!by_name("dangling").absent);
     }
 
     #[cfg(unix)]

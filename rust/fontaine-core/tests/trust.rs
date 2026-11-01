@@ -3,7 +3,8 @@ mod common;
 use common::{World, git_init, write};
 use fontaine_core::config::ConfigError;
 use fontaine_core::trust::{
-    self, LocalClassification, ProjectDemotion, Tracking, classify_project_local, tracking,
+    self, LocalClassification, ProjectDemotion, Tracking, classify_project_local,
+    tracked_or_holds_tracked, tracking,
 };
 
 #[test]
@@ -271,4 +272,55 @@ fn tracking_outside_any_repo_is_unknown() {
         std::fs::canonicalize(w.root.join("plain")).unwrap()
     });
     assert_eq!(tracking(&plain, &plain.join("a.txt")), Tracking::Unknown);
+}
+
+#[test]
+fn tracked_or_holds_tracked_answers_for_files_and_directories() {
+    let w = World::new();
+    git_init(&w.work);
+    write(&w.work.join("kept.txt"), "a");
+    write(&w.work.join("loose.txt"), "a");
+    write(&w.work.join("dir/inner.txt"), "a");
+    write(&w.work.join("untracked_dir/x.txt"), "a");
+    std::fs::create_dir_all(w.work.join("empty")).unwrap();
+    common::git(&w.work, &["add", "kept.txt", "dir/inner.txt"]);
+    let work = std::fs::canonicalize(&w.work).unwrap();
+    let outside = std::fs::canonicalize(&w.root).unwrap().join("x.txt");
+    let paths = [
+        work.join("kept.txt"),
+        work.join("dir"),
+        work.join("loose.txt"),
+        work.join("untracked_dir"),
+        work.join("empty"),
+        work.join("absent.txt"),
+        work.join("no/dir/absent.txt"),
+        outside,
+        work.clone(),
+    ];
+    assert_eq!(
+        tracked_or_holds_tracked(&work, &paths),
+        [true, true, false, false, false, false, false, false, true]
+    );
+}
+
+#[test]
+fn the_work_tree_root_holds_tracked_files_only_with_a_non_empty_index() {
+    let w = World::new();
+    git_init(&w.work);
+    let work = std::fs::canonicalize(&w.work).unwrap();
+    assert_eq!(
+        tracked_or_holds_tracked(&work, std::slice::from_ref(&work)),
+        [false]
+    );
+}
+
+#[test]
+fn tracked_or_holds_tracked_outside_any_repo_is_false() {
+    let w = World::new();
+    std::fs::create_dir_all(w.root.join("plain")).unwrap();
+    let plain = std::fs::canonicalize(w.root.join("plain")).unwrap();
+    assert_eq!(
+        tracked_or_holds_tracked(&plain, &[plain.join("a.txt"), plain.clone()]),
+        [false, false]
+    );
 }

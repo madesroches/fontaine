@@ -393,6 +393,53 @@ pub fn tracking(root: &Path, resolved: &Path) -> Tracking {
     }
 }
 
+/// For each of `paths`, whether git's index has an exact entry for it or, for a directory, at
+/// least one entry under it, in the work tree that encloses `root`. Opens the repository and its
+/// index once for all of them. `false` wherever [`tracking`] would say `Unknown`.
+pub fn tracked_or_holds_tracked(root: &Path, paths: &[PathBuf]) -> Vec<bool> {
+    let none = || vec![false; paths.len()];
+    let Ok((repo, workdir)) = discover(root) else {
+        return none();
+    };
+    let Ok(index) = repo.index_or_empty() else {
+        return none();
+    };
+    paths
+        .iter()
+        .map(|resolved| {
+            let canonical = match std::fs::canonicalize(resolved) {
+                Ok(path) => path,
+                Err(_) => {
+                    let (Some(parent), Some(name)) = (resolved.parent(), resolved.file_name())
+                    else {
+                        return false;
+                    };
+                    match std::fs::canonicalize(parent) {
+                        Ok(parent) => parent.join(name),
+                        Err(_) => return false,
+                    }
+                }
+            };
+            let Ok(relative) = canonical.strip_prefix(&workdir) else {
+                return false;
+            };
+            let Ok(relative) = gix::path::into_bstr(relative) else {
+                return false;
+            };
+            let relative = gix::path::to_unix_separators(relative).into_owned();
+            if relative.is_empty() {
+                return !index.entries().is_empty();
+            }
+            if index.entry_by_path(relative.as_ref()).is_some() {
+                return true;
+            }
+            let mut prefix = relative;
+            prefix.push(b'/');
+            index.prefixed_entries(prefix.as_ref()).is_some()
+        })
+        .collect()
+}
+
 /// User trust is earned only by a file git does not know about (untracked or ignored — both
 /// mean absent from the index) in a trusted root. Everything else is project scope.
 pub fn classify_project_local(

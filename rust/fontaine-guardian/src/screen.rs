@@ -436,10 +436,20 @@ mod tests {
             path: "/s/a".into(),
             status: PreExistence::CreatedThisSession,
             in_scratch: false,
+            absent: false,
+            git_tracked: false,
         });
         let mut marked = cleared.clone();
         marked.session_facts.scratch_dir = Some("/s".into());
         marked.session_facts.touched_paths[0].in_scratch = true;
+        marked.session_facts.touched_paths[0].absent = true;
+        marked.session_facts.touched_paths[0].git_tracked = true;
+        marked.prior_denials.push(crate::request::DenialRecord {
+            tool: "shell".into(),
+            rule: "Git Destructive".into(),
+            summary: "git push -f".into(),
+        });
+        cleared.prior_denials = marked.prior_denials.clone();
         marked.session_facts.spawn = Some(SpawnFacts {
             agent_type: "explore".into(),
             tools: vec!["read".into()],
@@ -450,6 +460,10 @@ mod tests {
             screen_message(&marked, question),
             screen_message(&cleared, question)
         );
+        let message = screen_message(&marked, question);
+        assert!(message.contains("prior_denials"));
+        assert!(!message.contains("note: earlier guardian verdicts"));
+        assert!(!message.contains("git_tracked"));
     }
 
     #[test]

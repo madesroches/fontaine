@@ -1,0 +1,8 @@
+---
+source: fontaine-guardian/src/prompt_builder.rs
+expression: "msg.split(\"paths_this_call_touches:\\n\").nth(1).and_then(|rest|\nrest.split(\"\\nactions_taken\").next()).unwrap()"
+---
+- /w/tasks/x_plan.md [pre_existing, git_tracked]
+- /w/tasks/completed/x_plan.md [absent]
+- /w/gone.md [absent, git_tracked]
+- /s/a [session_scratch, git_tracked]

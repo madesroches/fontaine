@@ -319,6 +319,8 @@ fn facts_from(case: &Case, root: &str) -> SessionFacts {
             path: item["path"].as_str().unwrap_or("").to_string(),
             status,
             in_scratch: item["in_scratch"].as_bool().unwrap_or(false),
+            absent: item["absent"].as_bool().unwrap_or(false),
+            git_tracked: item["git_tracked"].as_bool().unwrap_or(false),
         });
     }
     facts
@@ -689,7 +691,9 @@ mod memory_slice_tests {
             "session_facts": {
                 "scratch_dir": "/tmp/s",
                 "touched_paths": [
-                    {"path": "/tmp/s/a", "status": "unindexed", "in_scratch": true}
+                    {"path": "/tmp/s/a", "status": "unindexed", "in_scratch": true},
+                    {"path": "/w/new", "status": "unindexed", "absent": true},
+                    {"path": "/w/old", "status": "pre_existing", "git_tracked": true}
                 ]
             },
             "expected": "allow", "fixture_verdict": "allow"
@@ -698,6 +702,9 @@ mod memory_slice_tests {
         let facts = request_for(&spawn, root).session_facts;
         assert_eq!(facts.scratch_dir.as_deref(), Some("/tmp/s"));
         assert!(facts.touched_paths[0].in_scratch);
+        assert!(!facts.touched_paths[0].absent && !facts.touched_paths[0].git_tracked);
+        assert!(facts.touched_paths[1].absent && !facts.touched_paths[1].git_tracked);
+        assert!(facts.touched_paths[2].git_tracked && !facts.touched_paths[2].absent);
         let spawned = facts.spawn.expect("an agent case carries the spawn fact");
         assert_eq!(spawned.agent_type, "explore");
         assert!(!spawned.changes_state);

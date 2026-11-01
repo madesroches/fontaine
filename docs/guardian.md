@@ -63,7 +63,7 @@ The request is built from the ledger and the call itself:
 | `project_instructions` | The instruction files the agent had at launch (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and their imports), as they stood when the session started: the primary root's level first, then each directory above it, then yours, cut at 16,000 characters. Files loaded later on demand never reach it. See [Instruction files](instructions.md#what-the-guardian-reads). |
 | `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
 | `tool_call` | The tool, its full arguments, a digest of them, and `destructive`, derived by Fontaine from the call itself (below). Every `powershell` call is judged, none is read as safe beforehand, and the request says the command was not parsed. |
-| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets and path-like arguments, the [project environment](#project-environment) when you ran the setup command, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status, and for an `agent` call a `spawned_agent` line with the type, its tools and whether it can write, run commands or reach the network. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the reads of a [composition](#composing-the-guardian) get neither the scratch nor the spawn line (they do get the memory line). The reads do not get the project environment, which only the guardian view renders; the minimal profile does. |
+| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed`, `absent` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets (a redirect to `/dev/null` writes no file and is not listed) and path-like arguments, a `git_tracked` mark on a path git's index holds (or, for a directory, holds something under), the [project environment](#project-environment) when you ran the setup command, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status, and for an `agent` call a `spawned_agent` line with the type, its tools and whether it can write, run commands or reach the network. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the reads of a [composition](#composing-the-guardian) get neither the scratch nor the spawn line (they do get the memory line). The reads do not get the project environment, which only the guardian view renders; the minimal profile does. The `absent` status and the `git_tracked` mark are likewise only in the guardian view: the reads and the minimal profile see the paths as before. |
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. They are context, not evidence about the current call (see [How history and your words are weighed](#how-history-and-your-words-are-weighed)). |
 
@@ -95,8 +95,13 @@ The guardian reads history and your messages by a few fixed rules:
   never clears a hard deny, however often you repeat it.
 - After a denial, a message that re-issues or approves the denied action counts as your consent to
   it. The agent re-issuing the same call with no new message from you does not.
-- A denial of one kind of action does not count against a different kind, and never against a
-  read-only call. Reading, listing or tailing a file the session itself created is routine unless
+- When you ask for an issue, pull request or comment, the agent writes its text; you need not
+  dictate it, and "in your own words" says so outright. The text is judged for secrets, sensitive
+  file contents and the deny rules, not for whether you wrote it.
+- A denial of one kind of action, or about one subject (a credential file, a host, a repository),
+  does not count against a different kind or subject, and never against a read-only call. The
+  earlier denials are shown to the guardian under a note saying they are for spotting loops and are
+  not evidence about the call. Reading, listing or tailing a file the session itself created is routine unless
   the call sends data out of the trust boundary.
 - A prior denial by itself never makes a read-only call suspicious. A read made to scout around a
   denial — to learn what the denial protected or to find another route to the denied action — is
@@ -210,7 +215,7 @@ the network (`curl`, `git push`, a package install, `webfetch`, `websearch`), sc
 run later (`cron_create`), runs a command as a `monitor` (judged like `shell`), starts a code runner
 (`sh`, `python` in any version, `pwsh`, `cmd`, `awk`, `make`, `cargo run`, `sudo`, ...; a launcher
 such as `timeout` is judged by the program it wraps), is an MCP call, or uses any construct the
-shell parser cannot classify. A plain `cargo test 2>&1 | tail` is not destructive.
+shell parser cannot classify. A plain `cargo test 2>&1 | tail` is not destructive, and neither is `rg x src 2>/dev/null`: a redirect to `/dev/null` (that exact spelling) writes no file.
 
 ### Denial limits
 
@@ -745,6 +750,8 @@ valid for the dataset it was scored on.
 
 ## Known limits
 
+- **`absent` is a snapshot.** Fontaine checks that nothing is at a path when it builds the
+  request, so a background job could create the path before the call runs.
 - **Latency.** Every call that reaches the guardian waits for a model. The 3-second p95 bar is a
   property of the listed models, not of yours.
 - **Injection.** Delimiting, redaction and a tool-less single-shot design reduce, and do not

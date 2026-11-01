@@ -56,6 +56,11 @@ pub struct TouchedPath {
     pub status: PreExistence,
     /// Set by the harness when the resolved path lies inside the session scratch directory.
     pub in_scratch: bool,
+    /// Set by the harness when nothing exists at the path (not even a dangling symlink) as the
+    /// request is built.
+    pub absent: bool,
+    /// Set by the harness when git's index holds the path, or for a directory something under it.
+    pub git_tracked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

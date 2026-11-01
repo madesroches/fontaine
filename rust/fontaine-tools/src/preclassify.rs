@@ -61,13 +61,18 @@ pub struct ShellAnalysis {
     /// substitution, a deep nesting); callers that need completeness fall back to the raw text.
     pub unanalyzed: bool,
     /// Some command, anywhere in the text, redirects output to a file (`>`, `>>`, `>|`, `<>`,
-    /// `&>`). Duplicating a descriptor (`2>&1`) is not a file.
+    /// `&>`). Duplicating a descriptor (`2>&1`) is not a file, and neither is `/dev/null`
+    /// (exactly that literal; `/dev/stderr` truncates whatever file stderr points to).
     pub output_redirect: bool,
     /// The target word of every redirect that writes a file, in source order, including those on
     /// compound commands, in substitutions and in nested runner command lines. Descriptor copies
-    /// (`2>&1`) have none. A target that expands has `literal == None`.
+    /// (`2>&1`) and `/dev/null` have none. A target that expands has `literal == None`.
     pub output_targets: Vec<ShellWord>,
     pub raw: String,
+}
+
+fn is_dev_null(word: &ShellWord) -> bool {
+    word.literal.as_deref() == Some("/dev/null")
 }
 
 fn options() -> ParserOptions {
@@ -218,9 +223,9 @@ impl Walk<'_> {
                             | IoFileRedirectKind::ReadAndWrite
                             | IoFileRedirectKind::Clobber
                     );
-                    self.out.output_redirect |= writes;
                     let classified = self.word(word);
-                    if writes {
+                    if writes && !is_dev_null(&classified) {
+                        self.out.output_redirect = true;
                         self.out.output_targets.push(classified);
                     }
                 }
@@ -231,7 +236,10 @@ impl Walk<'_> {
                         text == "-"
                             || (!text.is_empty() && text.chars().all(|c| c.is_ascii_digit()))
                     });
-                    if matches!(kind, IoFileRedirectKind::DuplicateOutput) && !copies_descriptor {
+                    if matches!(kind, IoFileRedirectKind::DuplicateOutput)
+                        && !copies_descriptor
+                        && !is_dev_null(&classified)
+                    {
                         self.out.output_redirect = true;
                         self.out.output_targets.push(classified);
                     }
@@ -245,9 +253,11 @@ impl Walk<'_> {
                 }
             }
             IoRedirect::OutputAndError(word, _) => {
-                self.out.output_redirect = true;
                 let classified = self.word(word);
-                self.out.output_targets.push(classified);
+                if !is_dev_null(&classified) {
+                    self.out.output_redirect = true;
+                    self.out.output_targets.push(classified);
+                }
             }
             IoRedirect::HereString(_, word) => {
                 self.word(word);
@@ -991,6 +1001,32 @@ mod tests {
             assert!(!analyze(text).output_redirect, "{text}");
             assert!(analyze(text).output_targets.is_empty(), "{text}");
         }
+    }
+
+    #[test]
+    fn a_redirect_to_dev_null_writes_no_file() {
+        for text in [
+            "echo x >/dev/null",
+            "rg x 2>/dev/null",
+            "echo x >>/dev/null",
+            "echo x &>/dev/null",
+            "echo x >&/dev/null",
+            "echo x > \"/dev/null\"",
+        ] {
+            let analysis = analyze(text);
+            assert!(!analysis.output_redirect, "{text}");
+            assert!(analysis.output_targets.is_empty(), "{text}");
+        }
+        for text in [
+            "echo x >/dev/stderr",
+            "echo x >/dev/../dev/null",
+            "echo x >/dev/nullx",
+            "echo x >$X",
+            "echo x >/dev/null >f",
+        ] {
+            assert!(analyze(text).output_redirect, "{text}");
+        }
+        assert_eq!(analyze("rg x 2>/dev/null").simple, None);
     }
 
     #[test]

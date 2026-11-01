@@ -802,6 +802,9 @@ async fn a_path_an_earlier_action_touched_is_created_this_session_unless_it_was_
     let fake = fake_guardian(allow_verdict());
     let rig = auto_rig(&fake, "");
     assert!(allowed(&rig.check("write", write_args("made.txt")).await));
+    for name in ["made.txt", "untouched.txt"] {
+        std::fs::write(rig.work().join(name), "x").unwrap();
+    }
     rig.check("shell", shell("make ./made.txt ./untouched.txt"))
         .await;
     let sent: String = fake

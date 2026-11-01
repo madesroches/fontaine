@@ -64,6 +64,8 @@ impl Profile {
                             .iter()
                             .map(|touched| TouchedPath {
                                 in_scratch: false,
+                                absent: false,
+                                git_tracked: false,
                                 ..touched.clone()
                             })
                             .collect(),
@@ -145,12 +147,16 @@ mod tests {
             path: "/s/a".into(),
             status: PreExistence::CreatedThisSession,
             in_scratch: true,
+            absent: true,
+            git_tracked: true,
         });
         let shaped = Profile::Minimal.shape(&request).session_facts;
         assert_eq!(shaped.scratch_dir, None);
         assert_eq!(shaped.spawn, None);
         assert_eq!(shaped.touched_paths.len(), 1);
         assert!(!shaped.touched_paths[0].in_scratch);
+        assert!(!shaped.touched_paths[0].absent);
+        assert!(!shaped.touched_paths[0].git_tracked);
         assert_eq!(
             shaped.touched_paths[0].status,
             PreExistence::CreatedThisSession
