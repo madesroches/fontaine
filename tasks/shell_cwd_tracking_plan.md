@@ -108,7 +108,15 @@ sh -c 'readonly __fnt_f=$2 __fnt_c=$1; set --; eval "$__fnt_c"; __fnt_rc=$?; com
   shell description's "({SUBAGENT_OUTPUT_MB} MB in a subagent)" text is dropped to match, along with the
   now-unused `SUBAGENT_OUTPUT_MB` const (`builtins.rs:~475`; dead code fails clippy `-D warnings`).
 - `monitor` (shell-class, no `cwd` field) keeps starting at the primary root and never moves the
-  tracked directory.
+  tracked directory; its tool description says so.
+- `/clear` (`clear_conversation`, `agent.rs:~831-855`) and conversation `/rewind` (`agent/rewind.rs:~86-92`)
+  reset the root agent's tracked directory to the primary root, since the model forgets its `cd`.
+- Skill `!` shell expansions (`fontaine-core/src/skills.rs:~165,190-197`) run through the same shell
+  tool and, like user `!` commands, do not move the tracked directory.
+- Forked subagents (`fork_context.rs`) start at the primary root under the same rule as other
+  subagents; their inherited history may show a parent `cd` that does not apply to them.
+- The shell approval summary (`summarize`, `permissions.rs:~2121-2126`, shown by `approval.rs:~240`)
+  includes the effective `cwd` when it is not the primary root.
 
 The call's explicit `cwd` argument stays a per-call starting directory; the directory the command
 *ends* in is what gets tracked, as in an interactive shell.
@@ -164,7 +172,8 @@ the deterministic floor is unchanged.
    relative `cwd` is relative to the primary root and omitting it uses the current (tracked)
    directory; update both tool descriptions, replacing "Each call starts
    a fresh sh: a cd or a variable does not carry over" (and the powershell equivalent) with: only
-   the working directory persists between calls, env vars and variables do not. The tracker, the
+   the working directory persists between calls, env vars and variables do not. The `monitor` tool
+   description states that it always starts at the primary root. The tracker, the
    `Scope` and the scratch path are threaded `RegistryParams` -> `BuiltinEnv` ->
    `ShellTool`/`PowerShellTool` as `jobs` is (set at the `build()` registrations in `builtins.rs`
    ~931/~981 and in `agent/build.rs` beside `jobs`) and passed into `run_job`; the scratch path
@@ -180,6 +189,8 @@ the deterministic floor is unchanged.
    on-demand instruction loading), `floor::critical_powershell` (`core/src/floor/powershell.rs:56-60`)
    and `Scope::locate` routing (`guarded.rs:145-147`, `scope.rs:181-298`).
 5. `fontaine-core/src/git_head.rs` (`discover`, `parse`) and its tests.
+   Also reset the root agent's entry in `clear_conversation` and conversation `/rewind`, and show the
+   effective `cwd` in the shell `summarize` text (`permissions.rs`) when it is not the primary root.
 6. `fontaine-tui`: `App.cwd`/`branch`, `draw` wiring with the HEAD-path cache, `statusbar::render`
    segment and path shortening via an existing clip helper.
 7. Docs, `CHANGELOG.md`, plan `## Decisions` lines (see below).
@@ -188,7 +199,8 @@ the deterministic floor is unchanged.
 
 - `rust/fontaine-tools/src/shell_cwd.rs` (new), `rust/fontaine-tools/src/builtins.rs`,
   `rust/fontaine-tools/src/lib.rs`
-- `rust/fontaine-core/src/agent.rs`, `rust/fontaine-core/src/agent/build.rs`,
+- `rust/fontaine-core/src/agent.rs`, `rust/fontaine-core/src/agent/rewind.rs`,
+  `rust/fontaine-core/src/agent/build.rs`, `rust/fontaine-core/src/permissions.rs`,
   `rust/fontaine-core/src/tools.rs`, `rust/fontaine-tools/src/guarded.rs`
 - `rust/fontaine-tools/src/git_bash.rs` (foreground script + reparse test),
   `rust/fontaine-tools/src/powershell.rs` (foreground-only `launch_args` variant with the trailer)
@@ -222,6 +234,14 @@ the deterministic floor is unchanged.
 - A write-class shell call in a tracked `sub/` loads `sub/AGENTS.md` on demand (the rewritten cwd
   feeds `touched_paths`); a retry grant keyed on the args digest no longer matches after the tracker
   moves (fails safe).
+- AFK: `/clear` and conversation `/rewind` reset the root agent's tracked directory to the primary root (the model forgets its `cd`).
+- AFK: `!` mode runs in the primary root as a deliberate Fontaine choice, with no Claude Code parity claim (not observable with `claude -p`).
+- AFK: skill `!` shell expansions run through the shell tool but do not move the tracked directory, like user `!` commands.
+- AFK: forked subagents start at the primary root under the same rule as other subagents; inherited history may show a parent `cd`.
+- AFK: the shell approval summary shows the effective `cwd` when it is not the primary root.
+- AFK: no opt-out equivalent of `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR` is added now; it can be added later as a user-scope config key.
+- AFK: `monitor` keeps starting at the primary root and gets no `cwd` field; its tool description says so.
+- AFK: with no scratch directory, tracking is simply off (the wrapper is not used).
 - Hook payload `cwd` stays the primary root (`workspace_view()`, documented in `docs/hooks.md`); the
   tracked directory is visible as `tool_input.cwd`.
 
@@ -238,12 +258,12 @@ the deterministic floor is unchanged.
   `### Tools` (Fontaine resets to the *primary root*, Claude Code resets to the project directory),
   under `### Agents` a dated line for the subagent deviation (a subagent that cds
   keeps its position across its own calls; starting at the primary root keeps the child's start
-  independent of the parent's mutable state), under `### Extensibility` a dated line that hook
+  independent of the parent's mutable state; forked subagents follow the same rule), under `### Extensibility` a dated line that hook
   payload `cwd` stays the workspace root (`docs/hooks.md:52`) where Claude Code's follows `cd`
   (the tracked directory is visible as `tool_input.cwd`),
-  and under `### TUI` the `!` line and the status-bar directory/branch segment (a Fontaine
-  addition). Observe Claude Code's `!`-mode cwd behaviour with `claude -p` (manual, not in tests)
-  and record any deviation as a dated line. `research/research-claude-code-parity.md` (~line 328
+  and under `### TUI` the `!` line (`!` runs in the primary root, a deliberate Fontaine choice with no
+  Claude Code parity claim) and the status-bar directory/branch segment (a Fontaine
+  addition). `research/research-claude-code-parity.md` (~line 328
   lists this feature as "missing | backlog"): mark the shell working-directory row done.
 
 ## Testing Strategy
@@ -263,7 +283,10 @@ Unit tests (no live APIs):
   existing `a_literal_exit_code_is_kept`, with `exit 7`, never reaches the trailer).
 - Pipeline: the gate sees the resolved cwd (`rust/fontaine-tools/tests/guarded.rs`, `Scripted` gate
   recording `seen` args).
-- Subagent: a child `cd` does not move the root's directory.
+- Subagent: a child `cd` does not move the root's directory; a forked subagent starts at the primary root.
+- `/clear` and conversation `/rewind` reset the root agent's tracked directory to the primary root.
+- A skill `!` expansion that runs `cd sub` does not move the tracked directory.
+- `summarize` for a shell call shows the effective `cwd` when it is not the primary root, and omits it otherwise.
 - Guardian: add `kind: guardian` dataset cases in `evals/dataset` with a tracked in-root cwd (none
   has `cwd` in args today; guardian input gains an absolute cwd only for a tracked subdirectory),
   and run the live guardian eval.
