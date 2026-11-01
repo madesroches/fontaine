@@ -2,7 +2,7 @@
 
 Date: 2026-10-31. Context: issue #127 lists Jev as "hosted, closed weights, reference only,
 needs an API key". This records what was found when checking whether OpenRouter now makes it
-cheap to score, and what it would cost. The scorer plan is `tasks/jev_screener_plan.md`.
+cheap to score, and what it would cost. The scorer plan is `tasks/completed/jev_screener_plan.md`.
 
 ## Pricing
 
