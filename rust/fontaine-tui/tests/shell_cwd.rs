@@ -57,7 +57,7 @@ async fn a_cd_out_of_the_workspace_leaves_the_bar_on_the_root() {
         ui.wait_for("moved").await;
         idle(&ui).await;
         let screen = ui.screen();
-        assert!(screen.contains("is outside the workspace"), "{screen}");
+        assert!(screen.contains("shell working directory reset"), "{screen}");
         assert!(!screen.contains("work/sub ·"), "{screen}");
     })
     .await;

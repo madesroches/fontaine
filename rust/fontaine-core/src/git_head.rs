@@ -60,11 +60,17 @@ mod tests {
         (tmp, base)
     }
 
+    /// gix returns Windows paths with the `\\?\` verbatim prefix that `canonicalize` also adds on
+    /// some paths and not others; the file is only read, so the prefix does not matter.
+    fn plain(path: Option<PathBuf>) -> Option<PathBuf> {
+        path.map(|p| PathBuf::from(p.to_string_lossy().trim_start_matches(r"\\?\")))
+    }
+
     #[test]
     fn a_branch_is_read_from_head() {
         let (_tmp, base) = tmp();
         let head = repo(&base, "ref: refs/heads/feature/x\n");
-        assert_eq!(discover(&base), Some(head.clone()));
+        assert_eq!(plain(discover(&base)), plain(Some(head.clone())));
         assert_eq!(parse(&head), Some(Head::Branch("feature/x".to_string())));
     }
 
@@ -83,7 +89,7 @@ mod tests {
         let head = repo(&base, "ref: refs/heads/main\n");
         let nested = base.join("a/b");
         std::fs::create_dir_all(&nested).unwrap();
-        assert_eq!(discover(&nested), Some(head));
+        assert_eq!(plain(discover(&nested)), plain(Some(head)));
     }
 
     #[test]
