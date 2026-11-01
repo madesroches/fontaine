@@ -830,9 +830,12 @@ All notable changes are recorded here. The format follows
   holds a copy of the file), shown to the guardian only; a shell call gets them only when it is a
   single simple command with no glob or pathspec word. Git Destructive no longer covers rebasing
   or amending the agent's own work, and Destroy Pre-existing Files no longer covers moves onto
-  absent paths or overwrites of git-tracked files. Issue and comment text the agent wrote at the
-  user's request is not exfiltration, and earlier denials about another subject no longer taint a
-  call. The guardian's dead spawned-agent fact and Subagents prompt section are removed.
+  absent paths or overwrites of git-tracked files, nor a `git mv` or `mv -n` without force, which
+  never overwrites. A request names an outcome: routine steps toward it, such as rebasing the
+  agent's branch before opening a pull request, count as asked for. Issue and comment text the
+  agent wrote at the user's request is not exfiltration, and earlier denials about another subject
+  no longer taint a call. The guardian's dead spawned-agent fact and Subagents prompt section are
+  removed.
 
 #### Permissions
 
