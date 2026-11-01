@@ -38,7 +38,7 @@ tests set them directly and no test depends on a clock.
 **New module `rust/fontaine-tui/src/spinner.rs`** (pure, unit-tested):
 - `lines(app, width) -> Vec<Line>`: empty unless the spinner is active, else one row:
   `<glyph> <label> (<elapsed> · ↓ <tokens> tokens)`, truncated to `width`.
-- Active when: the shown conversation is working and none of the overlays waiting on the human
+- Active when (`active`): `!app.linear && running && app.approval.is_none() && app.questions.is_empty() && app.unavailable.is_none()`, reading `App` fields directly like `App::covered` (`app.rs:755-769`) and never calling `overlay()` (`body_rows` runs inside `overlay()` and calls `spinner::lines`). The shown conversation is working and none of the overlays waiting on the human
   is open: approval, questions, unavailable (the prompts that block a turn). A waiting prompt is not "working"; the spinner stays
   visible for every other overlay (`server`, which is only opened at startup before any turn, pickers, agents panel, history search, completion, `/` menu). Main view: `app.running`;
   agent view: `app.viewed_row().and_then(|r| r.status).is_some_and(|s| s.is_running())`. In an agent view elapsed comes from
@@ -60,15 +60,16 @@ tests set them directly and no test depends on a clock.
   set where `running` becomes true. Every `running = true` site goes through one `App` setter that also sets/clears
   `turn_started`: the turn (`Ui::turn`, `ui/turn.rs:726`), goal evaluation (`ui/goal.rs:37`), `/compact`
   (`ui/commands/context.rs:66`), the `!` shell (`ui/commands/workspace.rs:37`) and skill expansion (`ui/turn.rs:444`).
-  With `turn_started` None the elapsed text is omitted.
+  With `turn_started` None the elapsed text is omitted. After a skill expansion the clock restarts at 0s when `Ui::turn` sets `running` again; accepted (the clock measures the model turn).
 
 **Turn token counter.** `App` gains `turn_tokens: TurnTokens` (in `spinner.rs`), reset with `turn_started`:
 - `settled: u64`: the sum of `output_tokens` over the turn's `SessionEvent::Usage` events (fed from `Ui::on_event`, `ui/turn.rs:855`;
   `Transcript::on_event` ignores `Usage` today).
 - `inflight_chars: usize`: characters of `AssistantDelta` and `ReasoningDelta` since the last `Usage`; cleared by it.
+- On `Usage`: `settled += output_tokens.unwrap_or(inflight_chars / 4)`, then `inflight_chars = 0`.
 - `shown() = settled + inflight_chars / 4`. Real usage only arrives when a call ends, so the 4-chars-per-token estimate keeps
   the counter moving while streaming; the reported figure replaces it at the call's end, so it may step down slightly. A call
-  whose provider reports no `output_tokens` keeps its estimate. Output tokens only (what Claude Code's `↓` shows), not input,
+  whose provider reports no `output_tokens` settles on its estimate. Output tokens only (what Claude Code's `↓` shows), not input,
   which every call re-reads in full and would swamp the figure.
 - Only the main conversation's events feed it (`Ui::on_event` handles those only).
 
@@ -127,7 +128,6 @@ Open in a browser (animated):
 - Over a prompt glyph (C): too easy to miss during long tool waits, which is the case the issue is about.
 - Stepped modifiers on named colours over forcing RGB: respects the 2026-10-24 decision to stay on the
   terminal's own palette instead of probing truecolor support.
-- Frame from elapsed time over a counter incremented per tick: a stalled loop skips frames instead of slowing.
 
 ## Decisions
 - 2026-11-01: `esc to interrupt` stays in the status bar (minus `working`); moving it into the spinner row would
@@ -145,8 +145,8 @@ Open in a browser (animated):
 Unit tests (all pure):
 - `shimmer_style`: RGB sweep is `theme.spinner` at the centre index and `mode_manual` at the far end; wraps; named colour yields
   DIM/normal/BOLD steps; zero-length label does not panic.
-- `TurnTokens`: the estimate grows with deltas (chars/4, rounds down); `Usage` replaces it with the reported `output_tokens`;
-  a missing report keeps the estimate; sums across several calls in one turn; reset on a new turn; the row hides the clause at 0.
+- `TurnTokens`: the estimate grows with deltas (chars/4, rounds down); `Usage` (built with `Usage::default()` plus field assignment, the struct is `#[non_exhaustive]`) replaces it with the reported `output_tokens`;
+  a missing `output_tokens` settles on the estimate; sums across several calls in one turn; reset on a new turn; the row hides the clause at 0.
 - `glyph_style`: the RGB hue advances with the frame and wraps after a full turn; named-colour mode cycles the deduped accent fields of `dark-ansi` and `light-ansi` and wraps.
 - `glyph`: every frame of every set is exactly one terminal column wide (ratatui's `Line::width()`, already a dependency, so the label never shifts); cycles through every frame and wraps; ASCII set used under `FONTAINE_ASCII_GLYPHS`.
 - `active`/`lines`: running → one row; idle → none; hidden while an approval, questions or unavailable overlay is open and shown with a picker open; agent view follows
@@ -154,7 +154,7 @@ Unit tests (all pure):
 - `statusbar`: running hint has `esc to interrupt` and no `working`; refusal/attach-notice precedence unchanged.
 - `view::chrome`/`height`: includes the spinner row exactly when active (screen budgeting stays exact).
 - `view` at small height with an expanded todo list while spinning: the budget stays exact.
-- `screen.rs`: `scripted()` toggles `running` mid-script (on before the deltas, off before the trailing notices); a spinner scenario beside `popup_scenario` (running on, `spinner_frame` stepped, a resize, running off) asserts `chrome_in_history` stays clean.
+- `screen.rs`: add the spinner label (`Working…`) to the `chrome_in_history` filter (`screen.rs:~1713`); a spinner scenario beside `popup_scenario` (running on, `spinner_frame` stepped, a resize, running off) asserts `chrome_in_history` stays clean.
 - Tick selection helper: spinner tick wins over `LIST_TICK`/`IDLE_POLL` only while active.
 
 Real tmux (per `tasks/design/testing.md`): the row appearing and disappearing resizes the live area,
