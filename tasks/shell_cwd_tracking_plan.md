@@ -69,6 +69,8 @@ sh -c 'readonly __fnt_f=$2 __fnt_c=$1; set --; eval "$__fnt_c"; __fnt_rc=$?; com
 - Exit status is preserved. A command that `exec`s or `exit`s, or fails under `set -e`, never
   reaches the trailer, so the directory stays unchanged: fail-safe. `command pwd` and `>|` keep a
   user-defined `pwd` function and `noclobber` from affecting the trailer.
+- With no scratch directory (`Scratch::create` can fail, `fontaine/src/lib.rs:676-689`, leaving
+  scratch `None`) the wrapper is not used and the tracked directory never moves: fail-safe.
 - The temp file lives in the session scratch directory, unique per call, and is removed after
   being read. A missing or unreadable file (or an empty one after a failed `pwd -P`) means the directory is
   unchanged, validated by the preparer's `is_dir()` check on the next call.
@@ -111,7 +113,7 @@ The call's explicit `cwd` argument stays a per-call starting directory; the dire
 One resolution point turns "no `cwd` argument" into "the tracked directory": in
 `GuardedTool::call` (`guarded.rs:~391-406`), before `gated()` (a free function MCP tools also use,
 called at `:437`, so it is not the place), an optional pre-gate preparer on `GuardedTool` (set only
-on the shell/powershell per-root registrations in `builtins.rs`; MCP passes none) inserts the tracked cwd when `cwd` is absent or `null` (`scope::string_field`, `scope.rs:330-336`, treats null as absent). The gate, floor, Tier-0.5
+on the shell/powershell per-root registrations in `builtins.rs`; MCP passes none) inserts the tracked cwd when `cwd` is absent or `null` and the tracked directory differs from `scope.primary()` (every consumer treats a missing cwd as the primary root, so untracked sessions' guardian input, hook `tool_input` and args digest are unchanged) (`scope::string_field`, `scope.rs:330-336`, treats null as absent). The gate, floor, Tier-0.5
 pre-classifier, scope validator, hooks, the guardian prompt and the launch then all see the same
 string, so a decision can never be made against one directory and run in another (even with
 parallel tool calls: the value is pinned per call). With this, no consumer in the pipeline changes:
@@ -135,8 +137,8 @@ the deterministic floor is unchanged.
   `HEAD`: `ref: refs/heads/<name>` gives `Head::Branch(name)`, a bare hash gives
   `Head::Detached(short7)`.
 - `App` gains `cwd: PathBuf` and `branch: Option<String>`. `ui/mod.rs:draw` sets `cwd` from the
-  root agent's tracker and refreshes `branch` through a small cache that stores the located HEAD path per cwd and stats only
-  that file (mtime plus length), so a redraw does not re-walk; the small HEAD file is re-read when its mtime or length changes.
+  root agent's tracker and refreshes `branch` through a small cache that stores only the located HEAD path per cwd (from the
+  gix discovery), so a redraw does not re-walk; that small file is re-read on every draw.
 - `statusbar::render` adds a segment after the mode labels: ` · <dir>` plus ` (<branch>)` when
   there is one, before the model. The directory is shown with the home directory as `~`, and
   truncated from the left with `…` to at most 40 columns; the branch is truncated at 24.
@@ -155,7 +157,11 @@ the deterministic floor is unchanged.
    relative `cwd` is relative to the primary root and omitting it uses the current (tracked)
    directory; update both tool descriptions, replacing "Each call starts
    a fresh sh: a cd or a variable does not carry over" (and the powershell equivalent) with: only
-   the working directory persists between calls, env vars and variables do not.
+   the working directory persists between calls, env vars and variables do not. The tracker, the
+   `Scope` and the scratch path are threaded `RegistryParams` -> `BuiltinEnv` ->
+   `ShellTool`/`PowerShellTool` as `jobs` is (set at the `build()` registrations in `builtins.rs`
+   ~931/~981 and in `agent/build.rs` beside `jobs`) and passed into `run_job`; the scratch path
+   comes from `AgentSetup.scratch` (`agent.rs:101`).
 3. `AgentRuntime` (`fontaine-core/src/agent.rs`) owns the `ShellCwd` and passes it into `registry`
    via `RegistryParams` (`fontaine-core/src/tools.rs`, as `jobs`), shared by all per-root shell
    instances and surviving `rebuild()`; it exposes the root agent's entry to the TUI.
@@ -180,7 +186,7 @@ the deterministic floor is unchanged.
 - `rust/fontaine-core/src/git_head.rs` (new), `rust/fontaine-core/src/lib.rs`
 - `rust/fontaine-tui/src/statusbar.rs`, `app.rs`, `ui/mod.rs`
 - `docs/` shell/permissions/TUI pages, `tasks/design/permissions.md`, `CHANGELOG.md`,
-  `tasks/fontaine_harness_plan.md` (Decisions)
+  `tasks/fontaine_harness_plan.md` (Decisions), `research/research-claude-code-parity.md`
 
 ## Trade-offs
 
@@ -200,7 +206,10 @@ the deterministic floor is unchanged.
 - Explicit `cwd` argument starts a call there, and the ending directory is tracked (no separate
   "temporary cwd" notion).
 - `!` user shell commands and background jobs do not move the tracked directory.
-- Subagents start at the primary root and never inherit the parent's tracked directory.
+- Subagents start at the primary root and never inherit the parent's tracked directory; each
+  subagent's `cd` is tracked per `AgentId`, persists across its own calls and never moves the
+  parent's. Claude Code starts a subagent in the main conversation's current directory and does not
+  persist its `cd` between calls.
 - A write-class shell call in a tracked `sub/` loads `sub/AGENTS.md` on demand (the rewritten cwd
   feeds `touched_paths`); a retry grant keyed on the args digest no longer matches after the tracker
   moves (fails safe).
@@ -218,9 +227,15 @@ the deterministic floor is unchanged.
   `cwd` (argument, else the tracked directory)".
 - `CHANGELOG.md` entry. Plan Decisions in `tasks/fontaine_harness_plan.md`: deviation lines under
   `### Tools` (Fontaine resets to the *primary root*, Claude Code resets to the project directory),
+  under `### Agents` (or `### Tools`) a dated line for the subagent deviation (a subagent that cds
+  keeps its position across its own calls; starting at the primary root keeps the child's start
+  independent of the parent's mutable state), under `### Extensibility` a dated line that hook
+  payload `cwd` stays the workspace root (`docs/hooks.md:52`) where Claude Code's follows `cd`
+  (the tracked directory is visible as `tool_input.cwd`),
   and under `### TUI` the `!` line and the status-bar directory/branch segment (a Fontaine
   addition). Observe Claude Code's `!`-mode cwd behaviour with `claude -p` (manual, not in tests)
-  and record any deviation as a dated line.
+  and record any deviation as a dated line. `research/research-claude-code-parity.md` (~line 328
+  lists this feature as "missing | backlog"): mark the shell working-directory row done.
 
 ## Testing Strategy
 
@@ -230,7 +245,7 @@ Unit tests (no live APIs):
   rejects a symlink pointing outside, handles a removed directory, and a call after the tracked directory is deleted between calls resets
   to the primary root with the notice instead of failing ENOENT, and returns `None` on an
   identical path.
-- Wrapper: exit code preserved; `exit 3` and `exec` leave the directory unchanged; a command with
+- Wrapper: with no scratch directory the wrapper is not used and the directory never moves; exit code preserved; `exit 3` and `exec` leave the directory unchanged; a command with
   quotes, newlines and a heredoc runs intact; a missing temp file leaves the directory unchanged; background jobs
   and timeout-to-background calls do not observe; `$#`, `shift` and `set -- a b` in the command
   behave as under `sh -c`; a command assigning `f=`, `c=`, `rc=` (and `for f in *.txt`) does not
@@ -241,13 +256,13 @@ Unit tests (no live APIs):
   recording `seen` args).
 - Subagent: a child `cd` does not move the root's directory.
 - Guardian: add `kind: guardian` dataset cases in `evals/dataset` with a tracked in-root cwd (none
-  has `cwd` in args today; guardian input gains an absolute cwd on every unqualified shell call),
+  has `cwd` in args today; guardian input gains an absolute cwd only for a tracked subdirectory),
   and run the live guardian eval.
 - Permission regression (silent class, so automated): after the tracker moves into `sub/`, a
   `cat .env`/`cat secrets` style command resolves its operand against `sub/` in the pre-classifier,
   the secret-file read rule and the floor, exactly as an explicit `cwd="sub"` does today; a
   tracker value never reaches the gate unresolved.
-- `git_head` cache: rewrite HEAD in a temp repo (same length and within one mtime tick) and assert the cache refreshes.
+- `git_head` cache: rewrite HEAD in a temp repo; the next read sees it.
 - Preparer: `"cwd": null` is rewritten to the tracked directory like an absent `cwd`.
 - `git_head`: normal repo, detached HEAD, worktree `gitdir:` file, nested directory walk-up, no
   repo, unreadable HEAD.
@@ -257,7 +272,7 @@ Unit tests (no live APIs):
   path truncated with `…`, home shown as `~`, hint still last, subagent view keeps the main segment.
 - Integration through `fontaine-tui` (`rust/fontaine-tui/tests/common/mod.rs`: `World`, `tool_turn`,
   `TestBackend` run; status-bar assertions as in `tests/extensions.rs`): a `cd sub` shell tool turn,
-  then the status bar shows `…/sub`. Covers the tracker, `AgentRuntime`, `draw`, `App.cwd` wiring.
+  then the status bar contains `work/sub` (World's root is `canonicalize(tempdir)/work`, `tests/common/mod.rs:119-128`, so neither `~` nor a bare `…/sub` applies); run the turn in a mode where the shell call is allowed (the default `DenyAll` approver at `:377` would refuse it in manual mode). Covers the tracker, `AgentRuntime`, `draw`, `App.cwd` wiring.
 - Integration through headless `fontaine -p` (`rust/fontaine/tests/common/mod.rs`
   `Endpoint`/`Turn::tool`/`Sandbox`, in `rust/fontaine/tests/headless_tools.rs`) with a deterministic
   completion model: call 1
