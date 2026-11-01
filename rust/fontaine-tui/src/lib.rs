@@ -29,6 +29,7 @@ pub mod screen;
 pub mod server_prompt;
 pub mod setup;
 pub mod setup_prompt;
+pub mod spinner;
 pub mod statusbar;
 pub mod theme;
 pub mod todo_panel;
@@ -228,6 +229,8 @@ struct Ui<R> {
     /// What every subagent run does, for the agents' own transcripts.
     agent_events: UnboundedReceiver<(String, AgentViewEvent)>,
     render: R,
+    /// Where the spinner's animation clock starts.
+    spinner_epoch: std::time::Instant,
     recent: RecentModels,
     /// A model picked while a turn ran, applied once the turn is over: only the idle loop owns
     /// the runtime mutably.
@@ -316,6 +319,7 @@ pub async fn drive(
         prompts,
         agent_events,
         render,
+        spinner_epoch: std::time::Instant::now(),
         recent,
         pending_pick: None,
         pending_resume: None,

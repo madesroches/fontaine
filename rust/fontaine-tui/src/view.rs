@@ -11,7 +11,7 @@ use crate::agents_panel::status_label;
 use crate::app::App;
 use crate::input::{InputBuffer, PendingMedia, wrap};
 use crate::model_picker::PickerPurpose;
-use crate::statusbar;
+use crate::{spinner, statusbar};
 
 const MAX_INPUT_ROWS: usize = 6;
 const MAX_MENU_ROWS: usize = 8;
@@ -97,6 +97,7 @@ pub fn chrome(app: &App, width: u16, max_height: u16) -> usize {
         shown_body_rows(body.len(), footer.len(), approval, max_height) + footer.len() + 2
     };
     let overlay_rows = overlay_rows + queued_lines(app, inner_width).len();
+    let spinner_rows = spinner::lines(app, usize::from(width).max(1)).len();
     let input_view = input_view(&app.input, inner_width);
     let input_rows = input_view.rows.len() + input_view.chip_rows + 2;
     let queued_rows = queued_lines(app, inner_width).len();
@@ -105,7 +106,7 @@ pub fn chrome(app: &App, width: u16, max_height: u16) -> usize {
         usize::from(width).max(1),
         max_height,
         input_rows,
-        queued_rows,
+        queued_rows + spinner_rows,
     )
     .len();
     let overlay_rows = overlay_rows
@@ -114,11 +115,11 @@ pub fn chrome(app: &App, width: u16, max_height: u16) -> usize {
             usize::from(width).max(1),
             max_height,
             input_rows,
-            queued_rows,
+            queued_rows + spinner_rows,
             list_rows,
         )
         .len();
-    overlay_rows + input_rows + 1 + list_rows
+    overlay_rows + spinner_rows + input_rows + 1 + list_rows
 }
 
 /// The rows the live area needs for the next frame, at most `max_height`.
@@ -144,19 +145,20 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let view = input_view(&app.input, inner_width);
     let input_height = view.rows.len() as u16 + view.chip_rows as u16 + 2;
     let queued = queued_lines(app, inner_width);
+    let spinner = spinner::lines(app, usize::from(area.width).max(1));
     let list = agent_list_lines(
         app,
         usize::from(area.width).max(1),
         area.height,
         usize::from(input_height),
-        queued.len(),
+        queued.len() + spinner.len(),
     );
     let todos = todo_lines(
         app,
         usize::from(area.width).max(1),
         area.height,
         usize::from(input_height),
-        queued.len(),
+        queued.len() + spinner.len(),
         list.len(),
     );
     let approval_height = if body.is_empty() {
@@ -166,7 +168,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
             as u16
             + 2)
         .min(area.height.saturating_sub(
-            input_height + queued.len() as u16 + todos.len() as u16 + list.len() as u16 + 1,
+            input_height
+                + queued.len() as u16
+                + spinner.len() as u16
+                + todos.len() as u16
+                + list.len() as u16
+                + 1,
         ))
     };
     let [
@@ -174,6 +181,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         approval,
         queued_area,
         todo_area,
+        spinner_area,
         input,
         status,
         list_area,
@@ -182,6 +190,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Constraint::Length(approval_height),
         Constraint::Length(queued.len() as u16),
         Constraint::Length(todos.len() as u16),
+        Constraint::Length(spinner.len() as u16),
         Constraint::Length(input_height),
         Constraint::Length(1),
         Constraint::Length(list.len() as u16),
@@ -198,6 +207,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
     frame.render_widget(Paragraph::new(queued), queued_area);
     frame.render_widget(Paragraph::new(todos), todo_area);
+    frame.render_widget(Paragraph::new(spinner), spinner_area);
     draw_input(frame, input, app, &view);
     statusbar::render(frame, status, app);
     frame.render_widget(Paragraph::new(list), list_area);
@@ -274,7 +284,7 @@ fn todo_lines(
 fn body_rows(app: &App, width: usize, height: u16, footer_len: usize) -> usize {
     let view = input_view(&app.input, width);
     let input_rows = view.rows.len() + view.chip_rows + 2;
-    let queued_rows = queued_lines(app, width).len();
+    let queued_rows = queued_lines(app, width).len() + spinner::lines(app, width + 2).len();
     let list_rows = agent_list_lines(app, width + 2, height, input_rows, queued_rows).len();
     let reserved = input_rows
         + queued_rows
@@ -805,6 +815,74 @@ mod tests {
         let rows = drawn(&app, 80, 12);
         let status = rows.iter().position(|r| r.contains("manual")).unwrap();
         assert!(rows[status + 1].contains("Enter view · x stop"), "{rows:?}");
+    }
+
+    #[test]
+    fn the_spinner_row_sits_above_the_box_and_counts_in_the_chrome() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        let bare = chrome(&app, 80, 30);
+        assert_eq!(height(&app, 80, 30) as usize, bare);
+        app.running = true;
+        assert_eq!(chrome(&app, 80, 30), bare + 1);
+        let rows = drawn(&app, 80, 12);
+        let spinner = rows
+            .iter()
+            .position(|r| r.contains("Working…"))
+            .expect("the spinner row");
+        assert!(rows[spinner + 1].starts_with('┌'), "{rows:?}");
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        app.approval = Some(crate::approval::Approval::new(
+            fontaine_core::permissions::ApprovalRequest {
+                tool: "shell".into(),
+                agent: "main".into(),
+                tool_use_id: None,
+                args: serde_json::json!({}),
+                summary: "ls".into(),
+                tier: fontaine_core::tier::Tier::AllowRule,
+                reason: "r".into(),
+                offers: fontaine_core::permissions::Offers::default(),
+                proposed_rule: None,
+                preview: None,
+            },
+            reply,
+        ));
+        assert_eq!(
+            lines_with_label(&drawn(&app, 80, 12)),
+            0,
+            "a waiting prompt is not working"
+        );
+    }
+
+    fn lines_with_label(rows: &[String]) -> usize {
+        rows.iter().filter(|r| r.contains("Working…")).count()
+    }
+
+    #[test]
+    fn the_budget_stays_exact_with_the_spinner_and_an_expanded_todo_list() {
+        for height_rows in 6..=20u16 {
+            let mut app = App::new(PermissionMode::Manual, "m".into());
+            app.running = true;
+            app.todos.set_items(
+                (0..8)
+                    .map(|n| fontaine_tools::todo::TodoItem {
+                        content: format!("task {n}"),
+                        status: fontaine_tools::todo::TodoStatus::Pending,
+                    })
+                    .collect(),
+            );
+            app.todos.toggle();
+            let rows = drawn(&app, 60, height_rows);
+            assert_eq!(rows.len(), usize::from(height_rows));
+            assert_eq!(
+                chrome(&app, 60, height_rows).min(usize::from(height_rows)),
+                usize::from(height(&app, 60, height_rows)),
+                "{height_rows}: {rows:?}"
+            );
+            assert!(
+                rows.iter().any(|r| r.contains("manual")),
+                "the status row survives at {height_rows}: {rows:?}"
+            );
+        }
     }
 
     #[test]

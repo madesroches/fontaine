@@ -173,6 +173,13 @@ pub struct App {
     pub mode: PermissionMode,
     pub model: String,
     pub running: bool,
+    /// When the main conversation's current model turn began; see [`App::set_running`].
+    pub turn_started: Option<std::time::Instant>,
+    /// `turn_started` as of the last redraw, so rendering reads no clock.
+    pub turn_elapsed: Option<std::time::Duration>,
+    /// The working indicator's animation step, set from the clock by each redraw.
+    pub spinner_frame: u64,
+    pub turn_tokens: crate::spinner::TurnTokens,
     pub approval: Option<Approval>,
     /// Approvals waiting behind the open one: several agents can ask at once.
     pub queued_approvals: VecDeque<Approval>,
@@ -321,6 +328,10 @@ impl App {
             mode,
             model,
             running: false,
+            turn_started: None,
+            turn_elapsed: None,
+            spinner_frame: 0,
+            turn_tokens: Default::default(),
             approval: None,
             queued_approvals: VecDeque::new(),
             questions: VecDeque::new(),
@@ -748,6 +759,17 @@ impl App {
                 Action::None
             }
             _ => Action::None,
+        }
+    }
+
+    /// Every start of main-conversation work goes through here so the spinner's clock and token
+    /// count begin with it.
+    pub fn set_running(&mut self, running: bool) {
+        self.running = running;
+        self.turn_tokens = Default::default();
+        self.turn_started = running.then(std::time::Instant::now);
+        if !running {
+            self.turn_elapsed = None;
         }
     }
 

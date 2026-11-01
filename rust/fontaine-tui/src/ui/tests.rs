@@ -33,6 +33,24 @@ fn a_cancel_removes_the_queued_sign_in_it_cancels() {
     assert_eq!(queue.len(), 1);
 }
 
+#[test]
+fn the_spinner_tick_wins_only_while_it_shows() {
+    use std::time::Duration;
+    let mut app = App::new(PermissionMode::Manual, "m".into());
+    let waits = [
+        Some(Duration::from_secs(1)),
+        Some(Duration::from_millis(500)),
+    ];
+    assert_eq!(
+        super::soonest_tick(&app, &waits),
+        Some(Duration::from_millis(500))
+    );
+    assert_eq!(super::soonest_tick(&app, &[None]), None);
+    app.running = true;
+    assert_eq!(super::soonest_tick(&app, &waits), Some(super::TICK));
+    assert_eq!(super::soonest_tick(&app, &[None]), Some(super::TICK));
+}
+
 fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
     Ui {
         app: App::new(PermissionMode::Manual, "m".into()),
@@ -40,6 +58,7 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         prompts,
         agent_events: unbounded_channel().1,
         render: |_: &mut App| {},
+        spinner_epoch: std::time::Instant::now(),
         recent: RecentModels::in_memory(),
         pending_pick: None,
         pending_resume: None,

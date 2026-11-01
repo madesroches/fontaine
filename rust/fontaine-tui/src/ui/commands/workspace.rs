@@ -34,7 +34,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         command: String,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
-        self.app.running = true;
+        self.app.set_running(true);
         self.app.shell_running = true;
         let started = Instant::now();
         let mut closed = false;
@@ -71,7 +71,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     .shell(command, "interrupted".to_string(), None);
             }
         }
-        self.app.running = false;
+        self.app.set_running(false);
         self.app.shell_running = false;
         self.app.deny_pending();
         self.drain_prompts();

@@ -364,6 +364,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let queueing = matches!(serve, Serve::Queueing);
         loop {
             self.draw(runtime);
+            let tick = super::soonest_tick(&self.app, &[]);
             tokio::select! {
                 biased;
                 result = &mut *fut => return Ok(result),
@@ -401,6 +402,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 },
                 Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
                 Some(first) = self.agent_events.recv() => self.on_agent_events(runtime, first),
+                () = async {
+                    match tick {
+                        Some(wait) => tokio::time::sleep(wait).await,
+                        None => std::future::pending().await,
+                    }
+                } => {}
             }
         }
     }
@@ -441,7 +448,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<(), SkillRun> {
         use std::ops::ControlFlow::{Break, Continue};
         // Esc during the expansion interrupts it, at idle and queued alike.
-        self.app.running = true;
+        self.app.set_running(true);
         // Recorded before the skill's commands run so the guardian judging them has
         // this turn's intent in the ledger.
         runtime.append(Record::UserMessage {
@@ -450,7 +457,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             agent: None,
         });
         let result = self.expand_serving(runtime, name, argument).await;
-        self.app.running = false;
+        self.app.set_running(false);
         match result {
             Ok(Ok(prompt)) => Continue(SkillRun::Prompt(prompt)),
             Ok(Err(e)) => {
@@ -723,7 +730,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             prompt.push_str("\n\n");
         }
         prompt.push_str(&text);
-        self.app.running = true;
+        self.app.set_running(true);
         let (events, mut seen) = unbounded_channel();
         let mut on_event = move |event: SessionEvent| {
             let _ = events.send(event);
@@ -764,7 +771,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
             tokio::pin!(display);
             display.as_mut().enable();
             self.draw(runtime);
-            let has_list = self.app.agent_list.counts_time();
+            let tick = super::soonest_tick(
+                &self.app,
+                &[self
+                    .app
+                    .agent_list
+                    .counts_time()
+                    .then_some(super::LIST_TICK)],
+            );
             tokio::select! {
                 biased;
                 _ = &mut changed => {}
@@ -823,10 +837,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
                 Some(first) = self.agent_events.recv() => self.on_agent_events(runtime, first),
                 () = async {
-                    if has_list {
-                        tokio::time::sleep(super::LIST_TICK).await;
-                    } else {
-                        std::future::pending::<()>().await;
+                    match tick {
+                        Some(wait) => tokio::time::sleep(wait).await,
+                        None => std::future::pending().await,
                     }
                 } => {}
             }
@@ -857,6 +870,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             &event,
             SessionEvent::ToolResult { tool, .. } if tool == "todo_write"
         );
+        self.app.turn_tokens.observe(&event);
         apply_event(&mut self.app.transcript, runtime, event);
         if todos_changed {
             self.app.todos.set_items(runtime.session.todos().root());
@@ -914,7 +928,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// Leaves nothing of the turn open: a call without a result would otherwise hold the live
     /// area, and every line behind it, until the session ends.
     pub(crate) fn settle_turn(&mut self, end: &TurnEnd) {
-        self.app.running = false;
+        self.app.set_running(false);
         self.app.refusal = None;
         self.app.attach_notice = None;
         self.app.deny_pending();

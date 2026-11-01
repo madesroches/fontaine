@@ -34,13 +34,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
         launch_dir: &Path,
     ) -> Option<ControlFlow<()>> {
         let pending = runtime.next_goal_step()?;
-        self.app.running = true;
+        self.app.set_running(true);
         let mut evaluation = Box::pin(runtime.evaluate_goal(&pending));
         let result = self
             .serve_while(runtime, &mut evaluation, Serve::Queueing)
             .await;
         drop(evaluation);
-        self.app.running = false;
+        self.app.set_running(false);
         let applied = match result {
             Ok(applied) => applied,
             Err(TurnEnd::InputClosed) => return Some(Break(())),

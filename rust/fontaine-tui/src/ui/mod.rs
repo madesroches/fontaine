@@ -38,6 +38,19 @@ use std::time::Duration;
 /// How often the agent list redraws while it lists anything.
 const LIST_TICK: Duration = Duration::from_secs(1);
 
+/// How often the spinner redraws while it shows.
+const TICK: Duration = Duration::from_millis(crate::spinner::FRAME_MS);
+
+/// The shortest of the waits that apply: the spinner's tick while it shows, and the caller's own.
+fn soonest_tick(app: &App, waits: &[Option<Duration>]) -> Option<Duration> {
+    waits
+        .iter()
+        .copied()
+        .chain([crate::spinner::tick(app)])
+        .flatten()
+        .min()
+}
+
 impl<R: FnMut(&mut App)> Ui<R> {
     fn draw(&mut self, runtime: &AgentRuntime) {
         self.app.mode = runtime.state.mode();
@@ -70,6 +83,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.scheduled = if scheduling { scheduler.count() } else { 0 };
         self.app.wakeup_pending = scheduling && scheduler.wakeup_pending();
         self.app.goal = runtime.session.goal().indicator();
+        self.app.spinner_frame =
+            (self.spinner_epoch.elapsed().as_millis() / TICK.as_millis()) as u64;
+        self.app.turn_elapsed = self.app.turn_started.map(|started| started.elapsed());
         // The completion index is advisory: a stale list only misses a suggestion.
         let files = read_recovering(&runtime.files).clone();
         self.app.set_files(files);
@@ -255,9 +271,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             // Elapsed times in the agent list, and the end of an ended row's 30 seconds there,
             // are shown without anything else happening.
-            if self.app.agent_list.counts_time() {
-                tick = Some(tick.map_or(LIST_TICK, |wait: Duration| wait.min(LIST_TICK)));
-            }
+            let list_tick = self.app.agent_list.counts_time().then_some(LIST_TICK);
+            let tick = soonest_tick(&self.app, &[tick, list_tick]);
             self.draw(runtime);
             let action = tokio::select! {
                 input = self.input.recv() => match input {

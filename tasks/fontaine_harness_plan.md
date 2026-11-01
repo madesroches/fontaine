@@ -857,6 +857,10 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-31: No Ctrl-_ undo in the prompt box (Claude Code's undo key); it needs its own history design (#257).
 - 2026-10-31: A terminal resize purges the scrollback and rewrites the transcript at the new size, instead of ratatui's inline resize, which erases from the viewport top and which tmux turns into a stale copy of the live area in history (fixes #279); Claude Code's resize behavior was not verified. The refusal of an unknown slash name or `/loop` mid-turn is a transient status-line hint, not a transcript notice, so repeated Enters add no history.
 - 2026-10-31: Model reasoning is shown in the transcript by default, folded once settled, and `[tui] show_reasoning = false` hides it; Claude Code keeps thinking out of the main transcript (Ctrl-O transcript view), not re-verified with `claude -p`.
+- 2026-11-01: `esc to interrupt` stays in the status bar (minus `working`) while the spinner row shows; moving it into the row would lose it whenever the row is hidden for a waiting prompt (#355).
+- 2026-11-01: No working spinner in screen-reader (linear) mode; it is animation with nothing to announce, and settled-only output is the rule there as for `thinking:` (#355).
+- 2026-11-01: The working spinner uses a breathing-dot glyph (`·∙•●•∙`, ASCII `.oO0Oo`) with a drifting hue instead of Claude Code's star glyphs; `⬤` is excluded because terminals draw it wider than the other frames (#355).
+- 2026-11-01: The spinner label is the fixed `Working…`, not Claude Code's rotating verb list; the issue asks for an activity indicator, not verb variety (#355).
 
 ## Open Questions
 

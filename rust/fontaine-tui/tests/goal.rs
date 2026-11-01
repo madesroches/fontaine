@@ -237,7 +237,7 @@ async fn escape_during_the_evaluation_pauses_the_goal_without_a_goal_turn() {
         idle(&ui).await;
         ui.send("/goal be done");
         ui.wait_for("worked on it").await;
-        ui.wait_for("working · esc to interrupt").await;
+        ui.wait_for("esc to interrupt").await;
         assert!(ui.screen().contains("◎ goal 0s"), "{}", ui.screen());
         ui.press(KeyCode::Esc);
         ui.wait_for("Goal paused: it was interrupted").await;
