@@ -1031,6 +1031,8 @@ mod killed {
                 agent: &built.runtime.agent,
                 state: &built.runtime.state,
                 prompt: prompt.to_string(),
+                attachments: Vec::new(),
+                modalities: rig_core::catalog::Modalities::default(),
                 max_turns: Some(5),
                 priced: true,
                 model: "scripted".to_string(),
