@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 use crate::config_panel::ConfigKey;
-use crate::input::PendingAttachment;
+use crate::input::{MAX_ATTACHMENT_BYTES, PendingAttachment};
 use crate::transcript::Transcript;
 use crate::{Action, App, Ui, parse_command};
 use fontaine_core::RuntimeError;
@@ -117,6 +117,14 @@ fn into_attachment(pending: PendingAttachment) -> Result<Attachment, String> {
             pending.path.display()
         )
     })?;
+    if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err(format!(
+            "{} is {} and was not sent: attachments are capped at {}",
+            pending.label,
+            fontaine_tools::notebook::human_size(bytes.len() as u64),
+            fontaine_tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
+        ));
+    }
     let media = match pending.media {
         PendingMedia::Image(media) => AttachmentMedia::Image(media),
         PendingMedia::Pdf => AttachmentMedia::Pdf,
@@ -906,5 +914,42 @@ impl<R: FnMut(&mut App)> Ui<R> {
             TurnEnd::Finished(_) | TurnEnd::InputClosed => {}
             TurnEnd::Interrupted => self.app.transcript.notice("interrupted"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::PendingMedia;
+
+    #[test]
+    fn an_attachment_over_the_cap_is_refused_before_sending() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.png");
+        std::fs::write(&path, vec![0u8; (MAX_ATTACHMENT_BYTES + 1) as usize]).unwrap();
+        let pending = PendingAttachment {
+            label: "big.png".into(),
+            path,
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: MAX_ATTACHMENT_BYTES + 1,
+        };
+        let err = into_attachment(pending).expect_err("an oversized attachment is refused");
+        assert!(err.contains("capped at 5.0 MB"), "{err}");
+    }
+
+    #[test]
+    fn an_attachment_under_the_cap_sends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, b"png").unwrap();
+        let pending = PendingAttachment {
+            label: "shot.png".into(),
+            path,
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 3,
+        };
+        let attachment = into_attachment(pending).expect("a small attachment sends");
+        assert_eq!(attachment.label, "shot.png");
+        assert_eq!(attachment.bytes, b"png");
     }
 }

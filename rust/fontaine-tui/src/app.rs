@@ -23,7 +23,7 @@ use crate::config_panel::{ConfigKey, ConfigPanel};
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
 use crate::guardian_prompt::GuardianOffPrompt;
 use crate::history::History;
-use crate::input::{InputBuffer, PendingAttachment, PendingMedia};
+use crate::input::{InputBuffer, MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia};
 use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
 use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::question::QuestionPanel;
@@ -707,8 +707,17 @@ impl App {
                     } else if let Some(pending) = dropped_pdf(&text) {
                         // A terminal delivers a dropped file as a paste of its path; a PDF
                         // becomes an attachment, other paths stay typed text.
-                        self.input.attach(pending);
-                        self.history.reset();
+                        if pending.size > MAX_ATTACHMENT_BYTES {
+                            self.attach_notice = Some(format!(
+                                "{} is {} and was not attached: attachments are capped at {}",
+                                pending.label,
+                                fontaine_tools::notebook::human_size(pending.size),
+                                fontaine_tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
+                            ));
+                        } else {
+                            self.input.attach(pending);
+                            self.history.reset();
+                        }
                     } else {
                         self.input.insert_str(&text);
                         self.history.reset();
@@ -2364,6 +2373,26 @@ mod tests {
         app.handle_input(Input::Paste(text.to_string_lossy().into_owned()));
         assert_eq!(app.input.text(), text.to_string_lossy());
         assert_eq!(app.input.attachments().len(), 1);
+    }
+
+    #[test]
+    fn a_dropped_pdf_over_the_cap_is_refused_with_a_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("big.pdf");
+        let mut body = b"%PDF-".to_vec();
+        body.resize((MAX_ATTACHMENT_BYTES + 1) as usize, b'x');
+        std::fs::write(&pdf, body).unwrap();
+
+        let mut app = app();
+        app.handle_input(Input::Paste(pdf.to_string_lossy().into_owned()));
+        assert!(!app.input.has_attachments());
+        assert!(
+            app.attach_notice
+                .as_deref()
+                .is_some_and(|why| why.contains("capped at 5.0 MB")),
+            "{:?}",
+            app.attach_notice
+        );
     }
 
     #[test]

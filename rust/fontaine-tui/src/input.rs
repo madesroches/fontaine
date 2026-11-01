@@ -15,6 +15,10 @@ pub enum PendingMedia {
     Pdf,
 }
 
+/// The most bytes one attached file may be: providers reject larger base64 parts
+/// (Anthropic takes 5 MB per part), so an oversized attachment must not reach the wire.
+pub const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
+
 /// One file attached to the message box, waiting to be sent: the clipboard image saved in
 /// the session scratch directory, or a dropped PDF. The bytes stay on disk until the message
 /// is sent.

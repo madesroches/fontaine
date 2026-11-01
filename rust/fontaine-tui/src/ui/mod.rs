@@ -16,7 +16,7 @@ use crate::agent_list;
 use crate::agents_panel::{AgentsPanel, JobRow, PanelRow};
 use crate::config_panel::ConfigKey;
 use crate::denials::{DeniedList, UnavailablePrompt};
-use crate::input::{PendingAttachment, PendingMedia};
+use crate::input::{MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia};
 use crate::resume_picker::ResumePicker;
 use crate::ui::schedule::IDLE_POLL;
 use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
@@ -474,6 +474,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     Some("webp") => PendingMedia::Image(rig_core::message::ImageMediaType::WEBP),
                     _ => PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
                 };
+                if size > MAX_ATTACHMENT_BYTES {
+                    self.app.attach_notice = Some(format!(
+                        "{label} is {} and was not attached: attachments are capped at {}",
+                        fontaine_tools::notebook::human_size(size),
+                        fontaine_tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
+                    ));
+                    return;
+                }
                 self.app.input.attach(PendingAttachment {
                     label,
                     path,
