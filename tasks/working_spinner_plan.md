@@ -1,5 +1,7 @@
 # Working Spinner Plan
 
+**GitHub Issue**: https://github.com/madesroches/fontaine/issues/355
+
 Issue: #355
 
 ## Overview
