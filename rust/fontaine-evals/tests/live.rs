@@ -1172,6 +1172,26 @@ async fn a_script_run_refuses_the_threshold_flags_and_unknown_parameters() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_steering_veto_param_is_accepted_with_an_allow_threshold() {
+    let endpoint = Endpoint::start(scripted(), verdict("allow", "allow", "fine")).await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let screen = screen_server().await;
+    with_screen_account(&lab, &screen);
+    let run = lab
+        .run(&[
+            "--screen",
+            "live:small/tiny",
+            "--allow-threshold",
+            "0.01",
+            "--composition-param",
+            "steering_veto=0.5",
+        ])
+        .await;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert_eq!(lab.report()["summary"]["cascade"]["steering_veto"], 0.5);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn concurrent_true_races_the_screen_against_the_guardian() {
     let endpoint = Endpoint::start_delayed(
         scripted(),

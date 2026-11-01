@@ -1084,6 +1084,19 @@ fn an_unknown_preset_is_a_config_error_naming_the_key() {
 }
 
 #[test]
+fn a_preset_with_reads_names_the_reads_key() {
+    let err = composition_world(
+        "preset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.reads.r]\nmodel = \"local/m\"\nprompt = \"hardened\"\nquestion = \"outside_request\"\n",
+    )
+    .load()
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("guardian.composition.reads"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_script_is_read_from_the_config_dir_and_must_compile() {
     let w = composition_world("script = \"g.rn\"\nmodel = \"local/m\"\n");
     let err = w.load().unwrap_err();

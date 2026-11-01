@@ -2658,6 +2658,12 @@ pub fn check_composition(
         }
         _ => {}
     }
+    if composition.preset.is_some() && !composition.reads.is_empty() {
+        return bad(
+            "guardian.composition.reads",
+            "a preset declares its own reads; `reads` is for scripts",
+        );
+    }
     if composition.preset.is_some() && composition.model.is_none() {
         return bad(
             "guardian.composition.model",

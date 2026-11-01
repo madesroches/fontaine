@@ -482,6 +482,12 @@ fn run_score(args: &RunArgs) -> u8 {
     }
     let steering_veto = args
         .steering_veto
+        .or_else(|| {
+            composition_params
+                .iter()
+                .find(|(k, _)| k == "steering_veto")
+                .and_then(|(_, v)| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+        })
         .unwrap_or(fontaine_guardian::DEFAULT_STEERING_VETO);
     let mut cascade =
         (cascade_screen.is_some() || cascade_script.is_some()).then(|| CascadeParams {
@@ -494,6 +500,7 @@ fn run_score(args: &RunArgs) -> u8 {
             stop_threshold,
             allow_threshold: args.allow_threshold,
             steering_veto: args.allow_threshold.map(|_| steering_veto),
+            steering_veto_flag: args.steering_veto,
         });
     if screen_spec.is_none()
         && (args.screen_url.is_some()
@@ -643,7 +650,7 @@ fn run_score(args: &RunArgs) -> u8 {
                     script: cascade_script,
                     stop_threshold: c.stop_threshold,
                     allow_threshold: c.allow_threshold,
-                    steering_veto: c.steering_veto,
+                    steering_veto: c.steering_veto_flag,
                     params: &composition_params,
                 },
                 guardian_profile,
@@ -1375,6 +1382,9 @@ struct CascadeParams {
     allow_threshold: Option<f64>,
     /// Set only with an allow threshold.
     steering_veto: Option<f64>,
+    /// Only an explicit `--steering-veto`; the composition otherwise gets the key from
+    /// `--composition-param` or its own default.
+    steering_veto_flag: Option<f64>,
 }
 
 struct SummaryParams<'a> {

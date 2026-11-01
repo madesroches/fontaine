@@ -468,6 +468,18 @@ async fn run_script(
     verdict_of(&value)
 }
 
+struct CancelOnDrop {
+    script: tokio::task::AbortHandle,
+    ctx: Arc<EvalCtx>,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.script.abort();
+        self.ctx.abort_reads();
+    }
+}
+
 async fn run(
     composition: Arc<Composition>,
     guardian: Arc<Guardian>,
@@ -485,6 +497,11 @@ async fn run(
     }
     let task = tokio::spawn(run_script(composition, ctx.clone()).in_current_span());
     let abort = task.abort_handle();
+    // Dropping the caller must cancel the script, its shared LLM request and every read.
+    let _cancel = CancelOnDrop {
+        script: abort.clone(),
+        ctx: ctx.clone(),
+    };
     let evaluation = async {
         match tokio::time::timeout(bound, task).await {
             Ok(Ok(Ok(kind))) => Ran::Verdict(kind),

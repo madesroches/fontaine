@@ -251,6 +251,28 @@ const CONCURRENT: [(&str, Param); 1] = [("concurrent", Param::Bool(true))];
 // ---------------------------------------------------------------- the screen preset, racing
 
 #[tokio::test]
+async fn dropping_the_caller_cancels_the_script_and_its_reads() {
+    let (endpoint, guardian) = slow_guardian(allow(0.95), Duration::from_secs(5)).await;
+    let server = screen_server(SAFE.0, SAFE.1, SAFE.2, Duration::from_secs(5)).await;
+    let composition = preset(&server, &with(both(), &CONCURRENT), false);
+    let request = Arc::new(request("ls", false));
+    let weak = Arc::downgrade(&request);
+    let dropped = tokio::time::timeout(
+        Duration::from_millis(300),
+        adjudicate(composition, guardian, request),
+    )
+    .await;
+    assert!(dropped.is_err(), "the evaluation outlasted the timeout");
+    // Every task that held the request is gone once the script and the reads are aborted.
+    let give_up = Instant::now() + Duration::from_secs(2);
+    while weak.strong_count() > 0 && Instant::now() < give_up {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(weak.strong_count(), 0, "a task outlived its dropped caller");
+    drop(endpoint);
+}
+
+#[tokio::test]
 async fn an_enforced_stop_drops_the_guardian() {
     let (endpoint, guardian) = slow_guardian(allow(0.95), Duration::from_secs(3)).await;
     let server = screen_server_after_guardian(RISKY.0, RISKY.1, RISKY.2, endpoint.arrivals()).await;
