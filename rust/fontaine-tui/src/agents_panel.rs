@@ -391,7 +391,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("1.2k tok"), "{text}");
-        assert!(!text.contains("1200 /"), "{text}");
+        assert!(!text.contains("1.2k /"), "{text}");
         assert!(text.contains("$0.0042"), "{text}");
         assert!(!text.contains("/ $"), "{text}");
     }
