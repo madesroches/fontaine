@@ -70,7 +70,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     } else if let Some(text) = &viewed_state {
         text.as_str()
     } else if app.running {
-        "working · esc to interrupt · shift+tab mode"
+        "esc to interrupt · shift+tab mode"
     } else {
         "shift+tab mode · /add-dir · /denied · /model · ctrl+t agents · /exit"
     };
@@ -141,6 +141,15 @@ mod tests {
         app.running = false;
         let text = bar(&app);
         assert!(!text.contains("a turn is running"), "{text}");
+    }
+
+    #[test]
+    fn the_running_hint_offers_interrupt_without_the_word_working() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.running = true;
+        let text = bar(&app);
+        assert!(text.contains("esc to interrupt · shift+tab mode"), "{text}");
+        assert!(!text.contains("working"), "{text}");
     }
 
     #[test]

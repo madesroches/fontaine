@@ -1,0 +1,36 @@
+<!doctype html><meta charset=utf-8><title>Spinner styles</title>
+<style>
+body{background:#101113;color:#d0d0d0;font:14px/1.4 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:24px}
+h1{font:600 15px system-ui;margin:0 0 4px}p{font:13px system-ui;color:#9aa0a6;max-width:760px;margin:0 0 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px;max-width:1160px}
+.card{background:#1b1d1f;border-radius:6px;padding:10px 14px}
+.name{font:12px system-ui;color:#9aa0a6;margin-bottom:6px}
+.row{white-space:pre;font-size:15px}
+.gl{display:inline-block;width:1ch;text-align:center;overflow:hidden;vertical-align:bottom}.dim{color:#7d8186}
+.ascii{margin-top:6px;color:#7d8186;font-size:12px}
+</style>
+<h1>10 spinner styles</h1>
+<p>Each has its own glyph animation and its own colour animation. The shimmer on the label is shared across all of them in the plan; what differs is the glyph set and how the glyph itself is coloured. Every style needs an ASCII fallback (shown dim under the name) for FONTAINE_ASCII_GLYPHS.</p>
+<div class=grid id=g></div>
+<script>
+const hsl=(h,s=70,l=62)=>`hsl(${h%360} ${s}% ${l}%)`;
+const S=[
+{n:'1 Braille dots · amber breathe',f:[...'⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'],c:t=>hsl(40,80,45+20*Math.abs(Math.sin(t/12))),a:'|/-\\'},
+{n:'2 Star bloom (Claude-like) · warm pulse',f:[...'·✢✳✶✻✽✻✶✳✢'],c:t=>hsl(20+15*Math.sin(t/10),85,60),a:'.+*x*+'},
+{n:'3 Scanner bar · red sweep',w:1,f:['[=     ]','[==    ]','[ ==   ]','[  ==  ]','[   == ]','[    ==]','[     =]','[    ==]','[   == ]','[  ==  ]','[ ==   ]','[==    ]'],c:t=>hsl(355,75,50+15*Math.sin(t/4)),a:'[<=>]'},
+{n:'4 Rising blocks · green level',f:[...'▁▂▃▄▅▆▇█▇▆▅▄▃▂'],c:t=>hsl(120+40*Math.sin(t/14),55,55),a:'_.-=-._'},
+{n:'5 Orbit quarter · cyan',f:[...'◐◓◑◒'],c:t=>hsl(190,70,50+18*Math.sin(t/6)),a:'|/-\\'},
+{n:'6 Breathing dot · hue drift',f:[...'·∙•●•∙'],c:t=>hsl(t*2,70,62),a:'.oO0Oo'},
+{n:'7 Ripple dots · violet wave',w:1,f:['·  ','·· ','···',' ··','  ·','   '],c:t=>hsl(270,65,60+12*Math.sin(t/5)),a:'.  ,.. ...'},
+{n:'8 Chevron chase · blue',w:1,f:['▸▹▹▹','▹▸▹▹','▹▹▸▹','▹▹▹▸','▹▹▸▹','▹▸▹▹'],c:t=>hsl(215,80,60+10*Math.sin(t/5)),a:'>---'},
+{n:'9 Braille snake · rainbow',f:[...'⣾⣽⣻⢿⡿⣟⣯⣷'],c:t=>hsl(t*6,75,62),a:'|/-\\'},
+{n:'10 Quadrant spin · mono shimmer',f:[...'▖▘▝▗'],c:t=>`hsl(0 0% ${45+35*Math.abs(Math.sin(t/8))}%)`,a:'|/-\\'}
+];
+const g=document.getElementById('g');
+S.forEach(s=>{g.insertAdjacentHTML('beforeend',`<div class=card><div class=name>${s.n}</div><div class=row><span class=gl></span> <span class=lb>Working…</span> <span class=dim>(42s · esc to interrupt)</span></div><div class=ascii>ascii: ${s.a}</div></div>`)});
+let t=0;
+setInterval(()=>{t++;document.querySelectorAll('.card').forEach((el,i)=>{const s=S[i];
+const gl=el.querySelector('.gl');gl.textContent=s.f[t%s.f.length];gl.style.color=s.c(t);
+const lb=el.querySelector('.lb'),txt='Working…';
+lb.innerHTML=[...txt].map((ch,k)=>{const d=Math.abs(((t/1.5)%(txt.length+6))-k);const l=d<2?90-d*18:45;return `<span style="color:hsl(0 0% ${l}%)">${ch}</span>`}).join('')})},80);
+</script>

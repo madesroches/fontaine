@@ -1,0 +1,33 @@
+<!doctype html><meta charset=utf-8><title>Option C — animated prompt glyph, no extra row</title><style>
+:root{--bg:#1b1d1f;--fg:#d0d0d0;--dim:#7d8186;--cyan:#4fc3d9;--green:#6fcf6f;--yellow:#e6c84f;--acc:#e6c84f}
+body{background:#101113;color:var(--fg);font:14px/1.35 ui-monospace,Menlo,Consolas,monospace;margin:0;padding:24px}
+h1{font:600 15px system-ui;margin:0 0 4px}p.note{font:13px system-ui;color:#9aa0a6;max-width:760px;margin:0 0 14px}
+.term{background:var(--bg);width:780px;max-width:100%;padding:10px 14px;border-radius:6px;white-space:pre-wrap;box-sizing:border-box;margin-bottom:22px}
+.lbl{font:12px system-ui;color:#9aa0a6;margin:10px 0 4px}
+.dim{color:var(--dim)}.cy{color:var(--cyan)}.gr{color:var(--green)}.ye{color:var(--yellow)}
+.box{border:1px solid var(--dim);border-radius:3px;padding:0 6px;margin-top:6px}
+.sp{display:inline-block;width:2ch}
+.shim span{animation:glim 1.6s linear infinite}
+@keyframes glim{0%,100%{color:#8a7a2e}25%{color:#e6c84f}40%{color:#fff3b0}55%{color:#e6c84f}}
+.pulse{animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{color:#8a7a2e}50%{color:#fff3b0}}
+.step span{animation:stp 1.6s steps(1) infinite}
+@keyframes stp{0%{color:var(--dim);font-weight:400}25%{color:var(--fg);font-weight:400}50%{color:var(--yellow);font-weight:700}75%{color:var(--fg);font-weight:400}}
+</style><h1>Option C — animated prompt glyph, no extra row</h1><p class=note>No new row: the input box's prompt glyph spins and its border pulses colour while running. Smallest layout change, zero height risk. Trade-off: easy to miss when the transcript has the user's attention, no room for elapsed time, and the glyph is part of the typed-input line.</p><div class=lbl>Running</div>
+<div class=term><span class=cy>&gt; run the core tests and fix any failure</span>
+
+<span class=gr>●</span> bash cargo test -p fontaine-core
+<span class=dim>│ running 412 tests…</span>
+
+<div class=box style="border-color:#e6c84f"><span class=ye><span class=sp>⠋</span></span> ▌</div>
+<span class=dim> manual · claude-sonnet · esc to interrupt · shift+tab mode</span></div>
+<div class=lbl>Idle</div>
+<div class=term><span class=cy>&gt; run the core tests and fix any failure</span>
+
+<span class=dim>done.</span>
+<div class=box><span class=dim>&gt; </span>▌</div>
+<span class=dim> manual · claude-sonnet · shift+tab mode · /add-dir · /denied · /model · ctrl+t agents · /exit</span></div><script>
+const F=['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];let i=0;
+setInterval(()=>{document.querySelectorAll('.sp').forEach(e=>e.textContent=F[i%F.length]);i++},80);
+document.querySelectorAll('.shim,.step').forEach(el=>{const t=el.textContent;el.innerHTML=[...t].map((c,k)=>`<span style="animation-delay:${-1.6+k*0.08}s">${c}</span>`).join('')});
+</script>

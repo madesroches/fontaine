@@ -17,6 +17,8 @@ pub struct Glyphs {
     pub col_sep: &'static str,
     /// Under a table's header row.
     pub rule: &'static str,
+    /// The working indicator's glyph, one frame per animation step, all one column wide.
+    pub spinner: &'static [&'static str],
 }
 
 impl Glyphs {
@@ -27,6 +29,7 @@ impl Glyphs {
         bullet: "• ",
         col_sep: "│",
         rule: "─",
+        spinner: &["·", "∙", "•", "●", "•", "∙"],
     };
     pub const ASCII: Glyphs = Glyphs {
         info: "- ",
@@ -35,6 +38,7 @@ impl Glyphs {
         bullet: "- ",
         col_sep: "|",
         rule: "-",
+        spinner: &[".", "o", "O", "0", "O", "o"],
     };
 
     /// ASCII when `FONTAINE_ASCII_GLYPHS` is set to anything but empty or `0`.
@@ -70,6 +74,8 @@ pub struct Theme {
     pub mode_accept: Color,
     pub mode_plan: Color,
     pub mode_auto: Color,
+    /// The working indicator's glyph and label.
+    pub spinner: Color,
     /// The `!` input border.
     pub shell: Color,
 }
@@ -93,6 +99,7 @@ impl Theme {
                 error: Color::Red,
                 warning: Color::Yellow,
                 heading: Color::Yellow,
+                spinner: Color::Yellow,
                 mode_manual: Color::Gray,
                 mode_accept: Color::Green,
                 mode_plan: Color::Cyan,
@@ -105,6 +112,7 @@ impl Theme {
                 error: Color::Red,
                 warning: Color::Magenta,
                 heading: Color::Magenta,
+                spinner: Color::Magenta,
                 mode_manual: Color::DarkGray,
                 mode_accept: Color::Green,
                 mode_plan: Color::Blue,
@@ -117,6 +125,7 @@ impl Theme {
                 error: rgb(255, 107, 128),
                 warning: rgb(255, 193, 7),
                 heading: rgb(255, 193, 7),
+                spinner: rgb(255, 193, 7),
                 mode_manual: rgb(153, 153, 153),
                 mode_accept: rgb(175, 135, 255),
                 mode_plan: rgb(72, 150, 140),
@@ -129,6 +138,7 @@ impl Theme {
                 error: rgb(171, 43, 63),
                 warning: rgb(150, 108, 30),
                 heading: rgb(150, 108, 30),
+                spinner: rgb(150, 108, 30),
                 mode_manual: rgb(102, 102, 102),
                 mode_accept: rgb(135, 0, 255),
                 mode_plan: rgb(0, 102, 102),
@@ -141,6 +151,7 @@ impl Theme {
                 error: rgb(255, 153, 51),
                 warning: rgb(255, 204, 0),
                 heading: rgb(255, 204, 0),
+                spinner: rgb(255, 204, 0),
                 mode_manual: rgb(153, 153, 153),
                 mode_accept: rgb(175, 135, 255),
                 mode_plan: rgb(72, 150, 140),
@@ -153,6 +164,7 @@ impl Theme {
                 error: rgb(204, 102, 0),
                 warning: rgb(150, 108, 30),
                 heading: rgb(150, 108, 30),
+                spinner: rgb(150, 108, 30),
                 mode_manual: rgb(102, 102, 102),
                 mode_accept: rgb(135, 0, 255),
                 mode_plan: rgb(0, 102, 102),

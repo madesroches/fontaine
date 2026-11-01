@@ -1720,6 +1720,7 @@ mod tests {
                     || r.starts_with("Tasks ")
                     || r.contains("Enter run")
                     || r.contains("manual")
+                    || r.contains("Working…")
             })
             .collect()
     }
@@ -1826,6 +1827,39 @@ mod tests {
                     popup_scenario(width, height, todos, 2, &[]);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_spinner_row_appearing_and_going_leaves_no_chrome_in_history() {
+        for (width, height) in [(80, 24), (59, 12), (119, 30)] {
+            let mut harness = emulated::Harness::new(width, height);
+            let mut app = app();
+            let what = |s: &str| format!("{s} from {width}x{height}");
+            for i in 0..usize::from(height) + 4 {
+                app.transcript.notice(format!("note {i}"));
+                harness.render(&mut app, &what("filling"));
+            }
+            app.set_running(true);
+            started(&mut app, 0);
+            for frame in 0..12 {
+                app.spinner_frame = frame;
+                harness.render(&mut app, &what(&format!("frame {frame}")));
+                let leaked = chrome_in_history(&harness);
+                assert!(leaked.is_empty(), "{}: {leaked:?}", what("spinning"));
+            }
+            for (w, h) in [(width - 7, height), (width, height - 4), (width, height)] {
+                harness.resize(w, h);
+                app.spinner_frame += 1;
+                harness.render(&mut app, &what(&format!("resized to {w}x{h}")));
+                let leaked = chrome_in_history(&harness);
+                assert!(leaked.is_empty(), "{}: {leaked:?}", what("resized"));
+            }
+            finished_with(&mut app, 0, "done");
+            app.set_running(false);
+            harness.render(&mut app, &what("stopped"));
+            let leaked = chrome_in_history(&harness);
+            assert!(leaked.is_empty(), "{}: {leaked:?}", what("stopped"));
         }
     }
 

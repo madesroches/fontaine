@@ -2,7 +2,8 @@
 //! then eighty streamed reply lines with tool calls (a shell call with fifteen rows of output, an edit with a diff) starting and finishing between them, and an `/expand` at the end. Run it
 //! inside tmux to see what the live area does to the terminal's scrollback (see
 //! `tasks/design/testing.md`, "Reproducing terminal layout bugs"). `live_area popup` holds the `/`
-//! menu open mid-turn so a tmux resize can be tried.
+//! menu open mid-turn so a tmux resize can be tried. `live_area spinner` runs the working
+//! indicator through one long tool call, so a resize can be tried while it animates.
 
 use fontaine_core::config::PermissionMode;
 use fontaine_core::preview::{DiffKind, DiffLine, DiffPreview};
@@ -32,6 +33,11 @@ fn main() {
     }
     if std::env::args().nth(1).as_deref() == Some("popup") {
         popup(&mut app, &mut screen, &draw);
+        disable_raw_mode().expect("restore the terminal");
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("spinner") {
+        spinner(&mut app, &mut screen, &draw);
         disable_raw_mode().expect("restore the terminal");
         return;
     }
@@ -175,4 +181,33 @@ where
     for _ in 0..4000 {
         draw(app, screen);
     }
+}
+
+/// The working indicator across a long shell call: the row appears, animates for about twenty
+/// seconds (long enough to resize the window), then goes when the turn ends.
+fn spinner<S, D>(app: &mut App, screen: &mut S, draw: &D)
+where
+    D: Fn(&mut App, &mut S),
+{
+    app.set_running(true);
+    app.on_event(SessionEvent::ToolCall {
+        id: "a".into(),
+        tool: "shell".into(),
+        args: serde_json::json!({ "command": "sleep 20; echo SPIN_DONE" }),
+    });
+    draw(app, screen);
+    for frame in 0..250 {
+        app.spinner_frame = frame;
+        app.turn_elapsed = Some(Duration::from_millis(frame * 80));
+        draw(app, screen);
+        std::thread::sleep(Duration::from_millis(65));
+    }
+    app.on_event(SessionEvent::ToolResult {
+        id: "a".into(),
+        tool: "shell".into(),
+        success: true,
+        text: "SPIN_DONE\n[exit code 0]".into(),
+    });
+    app.set_running(false);
+    draw(app, screen);
 }

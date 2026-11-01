@@ -63,7 +63,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         focus: String,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
-        self.app.running = true;
+        self.app.set_running(true);
         let mut closed = false;
         let result = {
             let mut run = Box::pin(runtime.compact_with(CompactReason::Asked { focus }));
@@ -80,7 +80,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let raws: Vec<&str> = queued.iter().map(|entry| entry.raw()).collect();
             self.app.restore_to_input(&raws.join("\n\n"));
         }
-        self.app.running = false;
+        self.app.set_running(false);
         self.app.deny_pending();
         self.drain_prompts();
         match result {

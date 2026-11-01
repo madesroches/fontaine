@@ -139,7 +139,8 @@ emphasis with it, so a selected row can lose its highlight. Most selected rows a
 
 Notices start with `·` and warnings with `⚠`. Where the terminal or its font cannot draw them, set
 `FONTAINE_ASCII_GLYPHS=1` and they start with `-` and `*` instead. Any value except empty or `0`
-turns it on; it is read once at startup, and there is no settings key.
+turns it on; it is read once at startup, and there is no settings key. The working spinner's
+glyph becomes `.oO0Oo`.
 
 ## Screen-reader mode
 
