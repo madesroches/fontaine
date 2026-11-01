@@ -70,7 +70,7 @@ Flow, after the environment step, in both surfaces:
    in the user settings file. It is validated through the same `check_composition` path before writing, so a
    section that would fail to load is refused.
 4. Print the calibration note: the value is a fit on a small dataset and is not zero-miss on every live run (the
-   fast threshold cleared `ngrok http 3000` live, which the guardian denies), so score it on your own traffic with
+   fast threshold let a call through live that the dataset expects denied or escalated), so score it on your own traffic with
    `fontaine-evals --screen live:<model>` / the recorded `screen_risk` (safe) or `screen_allow_risk` (fast) audit
    values, and set `shadow = true` to log scores without acting while you tune.
 
