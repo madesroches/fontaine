@@ -76,7 +76,7 @@ fn status(existence: Existence) -> PreExistence {
 /// would otherwise resolve to nothing). A toolset that is known and empty can change nothing.
 /// The depth trim that drops
 /// `agent` at the nesting limit is left out, which only makes the answer more conservative.
-pub fn spawn_facts(
+pub fn spawn_changes_state(
     types: &AgentTypes,
     parent_tools: Option<&[String]>,
     args: &Value,
@@ -131,6 +131,8 @@ const CWD_SAFE_PROGRAMS: [&str; 19] = [
 /// one created or moved, and a glob or magic pathspec names files no literal word does, so only
 /// one simple command with plain words is marked.
 fn marks_apply(tool: &str, args: &Value) -> bool {
+    const DIR_FLAGS: [&str; 5] = ["-C", "--directory", "--chdir", "--git-dir", "--work-tree"];
+    const DIR_PREFIXES: [&str; 4] = ["--directory=", "--chdir=", "--git-dir=", "--work-tree="];
     if !fontaine_tools::descriptor::is_shell_class(tool) {
         return true;
     }
@@ -141,43 +143,39 @@ fn marks_apply(tool: &str, args: &Value) -> bool {
     if !analysis.parsed || analysis.unanalyzed || analysis.nested_chain || analysis.assignments {
         return false;
     }
-    const DIR_FLAGS: [&str; 5] = ["-C", "--directory", "--chdir", "--git-dir", "--work-tree"];
-    const DIR_PREFIXES: [&str; 4] = ["--directory=", "--chdir=", "--git-dir=", "--work-tree="];
-    if analysis.commands.len() != 1 {
+    let [simple] = analysis.commands.as_slice() else {
+        return false;
+    };
+    let Some(first) = simple.words.first() else {
+        return true;
+    };
+    let Some(program) = first.literal.as_deref() else {
+        return false;
+    };
+    // A path-qualified program is not the allowlisted one.
+    if program.contains(['/', '\\']) {
         return false;
     }
-    analysis.commands.iter().all(|simple| {
-        let Some(first) = simple.words.first() else {
-            return true;
-        };
-        let Some(program) = first.literal.as_deref() else {
-            return false;
-        };
-        // A path-qualified program is not the allowlisted one.
-        if program.contains(['/', '\\']) {
-            return false;
-        }
-        let program = fontaine_tools::preclassify::program_name(program);
-        if !CWD_SAFE_PROGRAMS.contains(&program.as_ref()) {
-            return false;
-        }
-        // Git options before the subcommand (`-C`, `-c`, `--namespace`, ...) can all redirect it.
-        if program == "git"
-            && !simple
-                .words
-                .get(1)
-                .is_none_or(|w| w.literal.as_deref().is_some_and(|l| !l.starts_with('-')))
-        {
-            return false;
-        }
-        simple.words.iter().all(|word| {
-            word.literal.as_deref().is_none_or(|literal| {
-                !literal.contains(['*', '?', '['])
-                    && !literal.starts_with(':')
-                    && !DIR_FLAGS.contains(&literal)
-                    && !literal.starts_with("-C")
-                    && !DIR_PREFIXES.iter().any(|p| literal.starts_with(p))
-            })
+    let program = fontaine_tools::preclassify::program_name(program);
+    if !CWD_SAFE_PROGRAMS.contains(&program.as_ref()) {
+        return false;
+    }
+    // Git options before the subcommand (`-C`, `-c`, `--namespace`, ...) can all redirect it.
+    if program == "git"
+        && !simple
+            .words
+            .get(1)
+            .is_none_or(|w| w.literal.as_deref().is_some_and(|l| !l.starts_with('-')))
+    {
+        return false;
+    }
+    simple.words.iter().all(|word| {
+        word.literal.as_deref().is_none_or(|literal| {
+            !literal.contains(['*', '?', '['])
+                && !literal.starts_with(':')
+                && !DIR_FLAGS.contains(&literal)
+                && !literal.starts_with("-C")
+                && !DIR_PREFIXES.iter().any(|p| literal.starts_with(p))
         })
     })
 }
@@ -543,7 +541,7 @@ mod tests {
     }
 
     fn spawn(types: &AgentTypes, parent: &[&str], agent_type: &str) -> Option<bool> {
-        spawn_facts(
+        spawn_changes_state(
             types,
             Some(&names(parent)),
             &serde_json::json!({ "agent_type": agent_type, "prompt": "p" }),
@@ -564,14 +562,16 @@ mod tests {
         let types = AgentTypes::builtin();
         assert_eq!(spawn(&types, &["read", "shell"], "explore"), Some(false));
         assert_eq!(spawn(&types, &[], "explore"), Some(false));
-        let unknown = spawn_facts(
+        let unknown = spawn_changes_state(
             &types,
             None,
             &serde_json::json!({ "agent_type": "explore", "prompt": "p" }),
         );
         assert_eq!(unknown, Some(true));
         assert!(spawn(&types, &["read"], "nope").is_none());
-        assert!(spawn_facts(&types, Some(&names(&["read"])), &serde_json::json!({})).is_none());
+        assert!(
+            spawn_changes_state(&types, Some(&names(&["read"])), &serde_json::json!({})).is_none()
+        );
     }
 
     #[test]

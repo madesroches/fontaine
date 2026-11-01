@@ -274,14 +274,6 @@ fn destructive_argv(program: &str, args: &[String], depth: usize) -> bool {
 /// resolved against the call's working directory.
 pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
     const LIMIT: usize = 16;
-    let mut out = path_mentions(tool, args, scope);
-    let mut seen = std::collections::HashSet::new();
-    out.retain(|p| seen.insert(p.clone()));
-    out.truncate(LIMIT);
-    out
-}
-
-fn path_mentions(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
     let text = |key: &str| args.get(key).and_then(Value::as_str);
     let resolve = |path: &str| {
         scope
@@ -347,5 +339,8 @@ fn path_mentions(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
         }
         _ => {}
     }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|p| seen.insert(p.clone()));
+    out.truncate(LIMIT);
     out
 }
