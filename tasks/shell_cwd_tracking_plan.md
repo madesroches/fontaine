@@ -34,24 +34,28 @@ current directory and git branch in the TUI status bar (an addition requested al
 ### Tracker
 
 `ShellCwd` in `fontaine-tools` (new `shell_cwd.rs`): a cheap-to-clone handle
-(`Arc<std::sync::Mutex<PathBuf>>`, poisoning panics: it feeds permission decisions) holding the
-agent's current shell directory, initialised to the primary root. One tracker per agent toolset.
-The root agent's tracker is also held by `AgentRuntime` so the TUI can read it. A subagent gets a
-fresh tracker at the primary root; it never inherits the parent's.
+(`Arc<std::sync::Mutex<HashMap<AgentId, PathBuf>>>`, poisoning panics: it feeds permission
+decisions) holding each agent's current shell directory. There is no per-agent toolset:
+`tools::registry` builds one set of shell tools and subagents reuse the parent's wrapped instances,
+telling agents apart by the `AgentId` in `ToolContext`. So one tracker is shared by all per-root
+shell instances; a missing entry means the primary root, which gives a subagent its fresh start (it
+never inherits the parent's). The root agent's entry is exposed on `AgentRuntime` so the TUI can
+read it.
 
-- `current() -> PathBuf`
-- `observe(reported: &Path, scope: &Scope) -> Observation` where `Observation` is `Moved`,
-  `Unchanged`, or `Reset { from }`: if `scope.find(reported)` accepts the path (inside a root,
-  symlinks resolved) and it is a directory, store it; otherwise store the primary root and report
-  `Reset`.
+- `current(agent) -> PathBuf`
+- `observe(agent, reported: &Path, scope: &Scope) -> Option<Reset { from }>`: if `scope.find(reported)`
+  accepts the path (inside a root, symlinks resolved) and it is a directory, store it and return
+  `None`; otherwise store the primary root and return `Reset`.
 
 ### Capturing the final directory
 
 Foreground calls (and only those; background jobs never move the directory) launch through a
-fixed wrapper that receives the user's command as a positional argument, never interpolated:
+fixed wrapper that receives the user's command as a positional argument, never interpolated. The
+wrapper moves the temp path into a variable and clears the positional parameters before `eval`, so
+the command sees the same `$#`, `$@` and `shift` as under `sh -c <command>`:
 
 ```
-sh -c 'eval "$1"; rc=$?; pwd -P >"$2"; exit "$rc"' sh <command> <tempfile>
+sh -c 'f=$2; c=$1; set --; eval "$c"; rc=$?; pwd -P >"$f"; exit "$rc"' sh <command> <tempfile>
 ```
 
 (exact text settled at implementation). Properties that matter:
@@ -60,32 +64,48 @@ sh -c 'eval "$1"; rc=$?; pwd -P >"$2"; exit "$rc"' sh <command> <tempfile>
 - Exit status is preserved. A command that `exec`s or `exit`s never reaches the trailer, so the
   directory stays unchanged: fail-safe.
 - The temp file lives in the session scratch directory, unique per call, and is removed after
-  being read. A missing or unreadable file means `Unchanged`.
-- Windows: Git Bash path goes through the same wrapper with the reported path converted to a
-  native path before `observe`; `powershell` reports `(Get-Location).Path` the same way.
+  being read. A missing or unreadable file means the directory is unchanged.
+- Windows, Git Bash: that path carries the command in the env var `FONTAINE_SH_COMMAND` with
+  `RUN_COMMAND_SCRIPT` (`git_bash.rs`) because Git Bash re-parses its command line and halves
+  backslashes, so the script must stay backslash-free. The trailer is a change to
+  `sh_command`/`RUN_COMMAND_SCRIPT` that keeps the command in the env var and passes the temp path
+  through env too (cleared before the command runs). The trailer uses `pwd -W` (builtin, prints the
+  native `C:/...` path without spawning; combination with `-P` to be checked on Windows);
+  `scope::translate` (`/c/...` to `C:\...`) is the fallback, and anything untranslatable is `Reset`.
+- `powershell`: the command is spliced into a UTF-16LE `-EncodedCommand` script and a failing last
+  statement exits 1. The trailer captures `$?`/`$LASTEXITCODE` first, writes
+  `(Get-Location).ProviderPath` to a temp path passed via env var, then exits with the preserved
+  code. A non-FileSystem provider counts as `Reset`.
 - After the job ends, `run_job` calls `observe`. On `Reset` it appends one line to the tool
   result, e.g. `[shell working directory reset to <root>: <path> is outside the workspace]`, so the
   model learns why. This is Claude Code's behavior.
+- A call that moves to the background on timeout (`run_job` returns) does not move the directory,
+  as for background jobs; `run_job` removes its temp file at that point. The wrapper applies on the
+  foreground `run_job` path only, never in `launch()` (`monitor` calls `shell.launch`).
+- Subagent foreground shell calls currently go straight to rig's `shell.call`; they are routed
+  through the same wrapper path so subagent directories are tracked per `AgentId`.
+- `monitor` (shell-class, no `cwd` field) keeps starting at the primary root and never moves the
+  tracked directory.
 
 The call's explicit `cwd` argument stays a per-call starting directory; the directory the command
 *ends* in is what gets tracked, as in an interactive shell.
 
 ### Starting directory and the permission pipeline
 
-One resolution point turns "no `cwd` argument" into "the tracked directory": the shell tool wrapper
-materialises the effective `cwd` into the call's arguments **before** the permission pipeline sees
-them. The gate, floor, Tier-0.5 pre-classifier, scope validator, hooks, the guardian prompt and the
-launch then all see the same string, so a decision can never be made against one directory and run
-in another (even with parallel tool calls: the value is pinned per call). With this, no consumer
-in the pipeline changes: they already resolve against a call's `cwd`. Implementation must check where
-argument rewriting is allowed in the gate (the same place `updatedInput`-style hook rewrites
-land) and keep the rewrite a pure function of the tracker, never of model input.
+One resolution point turns "no `cwd` argument" into "the tracked directory": in `gated()`
+(`guarded.rs`), right after `normalize(args)` and before `CallView` is built, an optional pre-gate
+preparer on `GuardedTool` (set only on the shell/powershell per-root registrations in
+`builtins.rs`) inserts the tracked cwd when `cwd` is absent. The gate, floor, Tier-0.5
+pre-classifier, scope validator, hooks, the guardian prompt and the launch then all see the same
+string, so a decision can never be made against one directory and run in another (even with
+parallel tool calls: the value is pinned per call). With this, no consumer in the pipeline changes:
+they already resolve against a call's `cwd`. The tool itself never reads the tracker when starting a
+call (a missing `cwd` still means `launcher.cwd`). The rewrite is a pure function of the tracker,
+never of model input. An explicit relative `cwd` still resolves against the primary root, as today
+(`Scope::find`, `preclassify.rs`).
 
-Security reasoning, because this touches the gate: the tracked value is only ever written by
-`observe`, which accepts a path only if the scope validator accepts it. So it is always inside a
-root and always Fontaine-computed; project config cannot set it. `cd /etc && ls` is judged by the
-guardian before running as today (the command, not the starting directory, is the risk), and
-afterwards the directory resets. The deterministic floor is unchanged.
+Constraints: the tracker is written only by `observe` after scope validation; config cannot set it;
+the deterministic floor is unchanged.
 
 ### Status bar
 
@@ -107,25 +127,51 @@ afterwards the directory resets. The deterministic floor is unchanged.
 ## Implementation Steps
 
 1. `fontaine-tools/src/shell_cwd.rs`: `ShellCwd`, `Observation`, `observe`; export it.
-2. `fontaine-tools/src/builtins.rs`: wrapper launch for foreground `shell`/`powershell` calls,
-   temp file handling, `run_job` calls `observe` and appends the reset notice; materialise the
-   effective `cwd` into `ShellCall`/`ShellArgs`; update both tool descriptions (they say "in the
-   current directory") to say the directory persists between calls.
-3. Wire one `ShellCwd` per agent toolset where the toolsets are built (root and subagent
-   construction in `fontaine-agents` / `fontaine-core/src/agent.rs`); expose the root's handle on
-   `AgentRuntime`.
-4. Make the pre-gate rewrite point (see above) use the tracker; confirm `permissions.rs`,
-   `floor.rs`, `preclassify.rs` and `scope.rs` need no change beyond tests.
+2. `fontaine-tools/src/builtins.rs`: wrapper launch for foreground `shell`/`powershell` calls
+   (including subagent calls, routed through `run_job`), temp file handling, `run_job` calls
+   `observe` and appends the reset notice; update both tool descriptions, replacing "Each call starts
+   a fresh sh: a cd or a variable does not carry over" (and the powershell equivalent) with: only
+   the working directory persists between calls, env vars and variables do not.
+3. Wire one `ShellCwd` where the tools are built (`fontaine-core/src/tools.rs` `registry`, shared by
+   all per-root shell instances); expose the root agent's entry on `AgentRuntime`
+   (`fontaine-core/src/agent.rs`).
+4. Add the pre-gate preparer to `GuardedTool` in `fontaine-tools/src/guarded.rs` (applied in
+   `gated()` after `normalize`) and set it on the shell/powershell registrations; confirm
+   `permissions.rs`, `floor.rs`, `preclassify.rs` and `scope.rs` need no change beyond tests.
 5. `fontaine-core/src/git_head.rs` and its tests.
 6. `fontaine-tui`: `App.cwd`/`branch`, `draw` wiring with the HEAD cache, `statusbar::render`
-   segment and a path-shortening helper.
+   segment and path shortening via an existing clip helper.
 7. Docs, `CHANGELOG.md`, plan `## Decisions` lines (see below).
 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/shell_cwd.rs` (new), `rust/fontaine-tools/src/builtins.rs`,
   `rust/fontaine-tools/src/lib.rs`
-- `rust/fontaine-core/src/agent.rs` (and the subagent toolset builder in `fontaine-agents`)
+- `rust/fontaine-core/src/agent.rs`, `rust/fontaine-core/src/tools.rs`,
+  `rust/fontaine-tools/src/guarded.rs`
+- `rust/fontaine-core/src/git_head.rs` (new), `rust/fontaine-core/src/lib.rs`
+- `rust/fontaine-tui/src/statusbar.rs`, `app.rs`, `ui/mod.rs`
+- `docs/` shell/permissions/TUI pages, `tasks/design/permissions.md`, `CHANGELOG.md`,
+  `tasks/fontaine_harness_plan.md` (Decisions)
+
+## Trade-offs
+
+- **Persistent shell process vs. per-call wrapper.** A long-lived `sh` would keep env vars and
+  functions too (Claude Code keeps only cwd and env exports through a snapshot), but costs a
+  process lifecycle, output framing and a larger sandbox/guardian surface. The wrapper tracks only
+  the directory, which is what the issue asks for, and every call stays a fresh process.
+- **Reading `.git/HEAD` vs. spawning `git branch --show-current`.** Reading the file needs no
+  process, no `git` on `PATH`, and cannot be fooled by a repo-local `core.fsmonitor`/hook config
+  executing on every redraw (a spawned `git` in an untrusted repo can run configured helpers).
+
+## Decisions` lines (see below).
+
+## Files to Modify
+
+- `rust/fontaine-tools/src/shell_cwd.rs` (new), `rust/fontaine-tools/src/builtins.rs`,
+  `rust/fontaine-tools/src/lib.rs`
+- `rust/fontaine-core/src/agent.rs`, `rust/fontaine-core/src/tools.rs`,
+  `rust/fontaine-tools/src/guarded.rs`
 - `rust/fontaine-core/src/git_head.rs` (new), `rust/fontaine-core/src/lib.rs`
 - `rust/fontaine-tui/src/statusbar.rs`, `app.rs`, `ui/mod.rs`
 - `docs/` shell/permissions/TUI pages, `tasks/design/permissions.md`, `CHANGELOG.md`,
@@ -150,38 +196,56 @@ afterwards the directory resets. The deterministic floor is unchanged.
   "temporary cwd" notion).
 - `!` user shell commands and background jobs do not move the tracked directory.
 - Subagents start at the primary root and never inherit the parent's tracked directory.
+- Hook payload `cwd` stays the primary root (`workspace_view()`, documented in `docs/hooks.md`); the
+  tracked directory is visible as `tool_input.cwd`.
 
 ## Documentation
 
-- The shell tool page in `docs/`: the directory persists, resets when leaving the roots, the
-  reset notice.
-- The permissions/guardian page: relative paths resolve against the tracked directory.
-- The TUI page: the status bar shows directory and branch.
+- `docs/tools.md` (`## Shell`, `## PowerShell`): the directory persists, resets when leaving the
+  roots, the reset notice.
+- `docs/permissions.md` and `docs/guardian.md`: relative paths resolve against the tracked directory.
+- `docs/tui.md` (`## Status bar`): directory and branch. The `!` note (`docs/tui.md:181-182`, runs in
+  the primary root) stays true.
 - `tasks/design/permissions.md` lines 46/82/198: "the call's `cwd`" becomes "the call's effective
   `cwd` (argument, else the tracked directory)".
-- `CHANGELOG.md` entry. Plan Decisions: deviation record under the shell subject: Fontaine resets
-  to the *primary root* (Claude Code resets to the project directory), and the status-bar
-  directory/branch segment is a Fontaine addition.
+- `CHANGELOG.md` entry. Plan Decisions in `tasks/fontaine_harness_plan.md`: deviation lines under
+  `### Tools` (Fontaine resets to the *primary root*, Claude Code resets to the project directory),
+  and under `### TUI` the `!` line and the status-bar directory/branch segment (a Fontaine
+  addition). Observe Claude Code's `!`-mode cwd behaviour with `claude -p` (manual, not in tests)
+  and record any deviation as a dated line.
 
 ## Testing Strategy
 
 Unit tests (no live APIs):
 
 - `shell_cwd`: `observe` accepts a subdirectory, rejects a path outside every root (`Reset`),
-  rejects a symlink pointing outside, handles a removed directory, and `Unchanged` on identical
-  path.
+  rejects a symlink pointing outside, handles a removed directory, and returns `None` on an
+  identical path.
 - Wrapper: exit code preserved; `exit 3` and `exec` leave the directory unchanged; a command with
-  quotes, newlines and a heredoc runs intact; a missing temp file is `Unchanged`; background jobs
-  do not observe.
+  quotes, newlines and a heredoc runs intact; a missing temp file leaves the directory unchanged; background jobs
+  and timeout-to-background calls do not observe; `$#`, `shift` and `set -- a b` in the command
+  behave as under `sh -c`; Git Bash `RUN_COMMAND_SCRIPT` stays backslash-free
+  (extend `the_wrapper_script_survives_the_windows_reparse`); the powershell trailer preserves a
+  failing exit code.
+- Pipeline: the gate sees the resolved cwd (`rust/fontaine-tools/tests/guarded.rs`, `Scripted` gate
+  recording `seen` args).
+- Subagent: a child `cd` does not move the root's directory.
+- Guardian: add `kind: guardian` dataset cases in `evals/dataset` with a tracked in-root cwd (none
+  has `cwd` in args today; guardian input gains an absolute cwd on every unqualified shell call),
+  and run the live guardian eval.
 - Permission regression (silent class, so automated): after the tracker moves into `sub/`, a
   `cat .env`/`cat secrets` style command resolves its operand against `sub/` in the pre-classifier,
   the secret-file read rule and the floor, exactly as an explicit `cwd="sub"` does today; a
   tracker value never reaches the gate unresolved.
 - `git_head`: normal repo, detached HEAD, worktree `gitdir:` file, nested directory walk-up, no
   repo, unreadable HEAD.
+- Path truncation reuses an existing clip/truncate helper (`transcript.rs`, `config_panel.rs`,
+  `provider_dialog.rs`) rather than a new one.
 - Status bar via `TestBackend`: segment present with branch, without branch, detached form, long
   path truncated with `…`, home shown as `~`, hint still last, subagent view keeps the main segment.
-- Integration through headless `fontaine -p` with a deterministic completion model: call 1
+- Integration through headless `fontaine -p` (`rust/fontaine/tests/common/mod.rs`
+  `Endpoint`/`Turn::tool`/`Sandbox`, in `rust/fontaine/tests/headless_tools.rs`) with a deterministic
+  completion model: call 1
   `cd sub`, call 2 `pwd` prints `<root>/sub`; call 3 `cd /` then call 4 `pwd` shows the reset
   notice and the primary root.
 
@@ -196,7 +260,4 @@ Unit tests (no live APIs):
 
 ## Open Questions
 
-- Should the `cwd` field of hook payloads (`user_hooks.rs:190`) report the tracked directory? Left
-  as is (primary root) unless Claude Code is observed doing otherwise via `claude -p`.
-- Windows path conversion for Git Bash `pwd -P` output (`/c/Users/..`): confirm `cygpath -w` is
-  always available where `sh_command` already requires Git Bash.
+None.
