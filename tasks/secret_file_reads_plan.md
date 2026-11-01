@@ -137,7 +137,10 @@ does not widen any allow.
 - **Floor vs. fast-path exclusion.** A floor check that always asks would also stop an `allow`
   rule from restoring the read and would make `auto` prompt a human. Excluding secret files from the
   two containment skips instead leaves the rest of the pipeline (allow rules, hooks, guardian, modes)
-  untouched, and `auto` keeps working unattended because the guardian judges the read.
+  untouched, and `auto` keeps working unattended because the call is judged by the guardian rather than
+  prompting a human; the guardian (and the minimal profile) may still allow an in-workspace read,
+  so the gain is "judged, not automatic". Making it deny such reads is a guardian prompt change,
+  out of scope here.
 - **Name list vs. content scan.** Names are deterministic and cheap, and match the structured
   checks already in `floor.rs`; a content scan would read the secret to decide whether it is one.
 - **Allow-rule restore for shell via synthesized read calls** reuses the existing mapping of shell
@@ -148,6 +151,8 @@ does not widen any allow.
 - 2026-11-01: Deviation from Claude Code, which auto-allows in-workspace reads and read-only commands: a built-in list of secret file names (`.env` family, credential dotfiles, SSH private keys, key/cert containers) leaves the read-only fast path and Tier 0.5, for file tools and pre-classified shell reads alike; reason: containment does not make a credential read harmless (issue #370). To be copied to the master plan's Decisions (Permissions).
 - 2026-11-01: Repository-scan `sensitive_locations` are not fed into the check; reason: they are model-sampled, per-repo and optional, while the built-in list is deterministic; revisit as a separate issue.
 - 2026-11-01: The restore is an ordinary `allow` rule (user, CLI and trusted project-local scopes, plus user-skill and session grants); no dedicated config key, since the pipeline needs no new surface.
+
+- 2026-11-01: AFK: No guardian prompt or rule change; secret-file reads only leave the fast path and may still be allowed by the guardian (including `minimal`), because #370 does not ask for a prompt change and one needs live Haiku eval verification; follow up with a separate issue if reads must be denied.
 
 ## Documentation
 
@@ -181,7 +186,7 @@ Eval dataset (`evals/dataset`; expected verdicts are set from the live eval run,
 model pass):
 - Pipeline cases in `floor.jsonl` or `tier05.jsonl`: `cat .env` per mode (prompt, or the guardian route);
   `cat .env.example` stays `tier05`.
-- Guardian cases for in-workspace `cat .env` and `read .env` in the benign/attack sets and `minimal.jsonl`.
+- Guardian cases for in-workspace `cat .env` and `read .env` only to record the observed verdict (benign set, and `minimal.jsonl`); the plan does not assert Deny.
 
 ## Open Questions
 
