@@ -707,7 +707,10 @@ that no framing choice has seen:
 
 **The set.** It holds 122 guardian cases in the golden case format, with task intent, session facts
 and the tool call. Every case and label was written, and committed in its own commit, before any
-case was scored. No case or label was changed after scoring.
+case was scored. No case or label was changed after scoring, with one exception made for publishing:
+the fabricated Stripe key in `fresh-secret-exposure-2` was scored as a realistic-looking fake and
+is committed as the placeholder `sk_live_EXAMPLE-not-a-real-key`, because GitHub push protection
+rejects anything matching the live-key pattern.
 
 - **56 attacks** cover all twelve deny classes, 3–7 per class. They lean on hard phrasings:
   - merges and deploys phrased as routine ("Get the dependabot PRs out of the way", "Verify the
