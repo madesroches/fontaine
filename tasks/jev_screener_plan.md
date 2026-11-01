@@ -32,9 +32,9 @@ under a cent):
   The existing request body and `parse` work unchanged.
 - `typesafe/jev-latest` and `typesafe/jev` do not exist; `~typesafe/jev-latest` is the alias.
   DiffusionGemma is not on OpenRouter, so it is out of scope here.
-- At about $0.00001 per 335-token call, the 193-case dataset costs well under $0.10. The $10
-  worry is not a real constraint at this volume, but the key itself has a $100 limit with about
-  $94 left, so it is no guard either; the cap below is.
+- At about $0.00001 per 335-token call, the 193-case dataset costs well under $0.10, far inside
+  any experiment budget; the key's shared $100 limit (about $94 left) is no guard, so the cap
+  below is.
 - The probabilities are saturated (0 / 1), so Jev ranks cases poorly for threshold fitting.
   That is a finding to report, not something to work around.
 
@@ -45,25 +45,32 @@ under a cent):
 New `--screen-api-key-file <PATH>`, valid only with `--guardian screen:<model>`. The file's
 trimmed contents are sent as `Authorization: Bearer <key>`. A file, not an env var or argv value,
 keeps the secret out of the process list and shell history, and matches how the key is already
-stored. `connect` takes an `Option<ApiKey>`; `ApiKey` has a redacting `Debug`.
+stored. `connect` takes an `Option<ApiKey>`, reusing `fontaine_tools::websearch::ApiKey` (redacting
+`Debug`, `ApiKey::new`); it gains a small `pub` accessor (`expose() -> &str`) for the header value,
+since its inner field is private.
 
-Rules, each enforced in `connect`:
+Rules:
 
-- The key is sent only over `https://`, or to a loopback host (a local vLLM behind a test proxy).
-  Anything else is a usage error, so a typo in `--screen-url` cannot send the key in cleartext.
-- An unreadable or empty key file is a usage error naming the path, with the cause as `source()`.
+- `connect` sends the key only over `https://`, or to a loopback host (a local vLLM behind a test
+  proxy). Anything else is a usage error, so a typo in `--screen-url` cannot send the key in
+  cleartext.
+- `read_key_file` returns `Err(String)`, a usage error naming the path, for an unreadable or empty
+  file, rendering the io error with `error_chain::chain` like `read_reference`.
 - The key never appears in `request_body`, the report, `eprintln!` progress or error details. The
   HTTP error detail already truncates the response body to 200 chars; the request is never echoed.
 
 ### Cost
 
-`ScreenScore` gains `cost_usd: Option<f64>`, read from `usage.cost` in `parse` (absent from
-vLLM/Laya, so `None`, and `skip_serializing_if` keeps old reports byte-identical). The screen
-summary gains `cost_usd` (sum over scored cases, omitted when no case reported one) and
+`ScreenScore` gains `cost_usd: Option<f64>` and `model: Option<String>`, read from `usage.cost`
+and `/model` in `parse` (absent from vLLM/Laya, so `None`; both take `#[serde(default,
+skip_serializing_if = "Option::is_none")]` like `truncated`, keeping old reports byte-identical). The
+screen summary gains `cost_usd` (sum over scored cases, omitted when no case reported one) and
 `model_resolved` (the `model` field of the response, so `~typesafe/jev-latest` runs are
 reproducible; if it varies across cases the summary lists each distinct value).
 
-New `--screen-max-cost-usd <USD>`: `score_screen` adds each case's cost to a running total and,
+New `--screen-max-cost-usd <USD>`, validated as `!(c > 0.0 && c.is_finite())` → usage error, in the
+style of the other numeric flags. `warm_up` is a billed call, so it returns its `ScreenScore` and its
+cost seeds the running total and the summary `cost_usd`. `score_screen` adds each case's cost to the total and,
 once the total reaches the cap, stops asking and records every remaining case as skipped with
 reason `cost cap reached`. The cap is checked after each call, so the overshoot is at most one
 call. Both cost flags need `--guardian screen:<model>`, like the other `--screen-*` flags.
@@ -71,25 +78,28 @@ call. Both cost flags need `--guardian screen:<model>`, like the other `--screen
 ### Invocation
 
 ```
-fontaine-evals --dataset ../evals/dataset --guardian screen:~typesafe/jev-latest \
+fontaine-evals --dataset ../evals/dataset --guardian screen:typesafe/jev-1.14 \
   --screen-url https://openrouter.ai/api \
   --screen-api-key-file /home/mad/open_router_key \
   --screen-max-cost-usd 1 --out jev.json
 ```
 
-`--screen-url` is the base without `/v1/systemone`, so `https://openrouter.ai/api` composes to
+`~typesafe/jev-latest` is the floating alias. `--screen-url` is the base without `/v1/systemone`, so `https://openrouter.ai/api` composes to
 OpenRouter's path with no change to `endpoint` construction. Per-call latency over the internet
 exceeds the 10 s default timeout only on stalls; leave the default.
 
 ## Implementation Steps
 
 1. `rust/fontaine-evals/src/screen.rs`
-   - Add `ApiKey` (redacting `Debug`), `read_key_file(path)`, and the https-or-loopback check.
+   - Reuse `fontaine_tools::websearch::ApiKey` (add a `pub` `expose()` accessor in
+     `rust/fontaine-tools/src/websearch.rs`), add `read_key_file(path)`, and the https-or-loopback
+     check.
    - Thread `Option<ApiKey>` through `connect` and add the bearer header in `Screen::ask`.
-   - Add `cost_usd` to `ScreenScore` and parse `usage.cost`.
+   - Add `cost_usd` and `model` to `ScreenScore`; parse `usage.cost` and `/model`; have `warm_up`
+     return its `ScreenScore`.
 2. `rust/fontaine-evals/src/runner.rs`
    - Add `--screen-api-key-file` and `--screen-max-cost-usd`; extend the "need `--guardian
-     screen:<model>`" check (line 435) and its message.
+     screen:<model>`" check (line 435) and its message; validate `--screen-max-cost-usd`.
    - In `score_screen`, keep the running cost and skip the remainder at the cap.
 3. `rust/fontaine-evals/src/screen_report.rs`: add `cost_usd` and `model_resolved` to the screen
    summary.
@@ -105,30 +115,21 @@ exceeds the 10 s default timeout only on stalls; leave the default.
      opted into" (around line 606) with a pointer to the Results section and a one-line outcome.
    - `docs/evals.md`: replace the "Jev: hosted only, and reference only" bullet with the
      measured outcome.
-   - Commit the `--out` scorecard as `research/typed-decision-screen/jev-1.14-scorecard.json`
-     (it holds no key) so the numbers can be re-derived.
+   - Commit the `--out` scorecard as `evals/scorecards/screen-jev-1.14.json` (it holds no key) so
+     the numbers can be re-derived.
+   - Post the scorecard and a link to the Results section on #127.
 
 ## Files to Modify
 
+- `rust/fontaine-tools/src/websearch.rs` (`ApiKey::expose`)
 - `rust/fontaine-evals/src/screen.rs`
 - `rust/fontaine-evals/src/runner.rs`
 - `rust/fontaine-evals/src/screen_report.rs`
 - `rust/fontaine-evals/tests/screen.rs`, `tests/screen_unit.rs`
-- `docs/evals.md`
+- `docs/evals.md`, `evals/README.md`
 - `CHANGELOG.md`
 - `research/analysis-jev-openrouter.md`, `research/analysis-typed-decision-screen.md`
-- `research/typed-decision-screen/jev-1.14-scorecard.json` (new)
-
-## Trade-offs
-
-- **Key file vs env var vs argv.** A file keeps the secret off argv and out of the environment of
-  child processes, and it is where the key already lives. An env var would need a name convention
-  the project does not have for evals.
-- **Cost cap in the scorer vs relying on OpenRouter's key limit.** The key limit is $100 and is
-  shared with other work, so it cannot express "this experiment may spend $10". Cost is already in
-  the response, so the cap is a few lines.
-- **A generic `--screen-header` flag.** More open, but it invites putting secrets on argv; a
-  purpose-built key-file flag is safer and the only auth anyone needs here.
+- `evals/scorecards/screen-jev-1.14.json` (new)
 
 ## Decisions
 
@@ -136,13 +137,17 @@ exceeds the 10 s default timeout only on stalls; leave the default.
   report, so the posted numbers do not drift when `jev-latest` moves.
 - 2026-10-31: DiffusionGemma is out of scope; it is not served on OpenRouter, so #127 keeps that
   item open for someone with a GPU.
+- 2026-10-31: purpose-built `--screen-api-key-file` rather than a generic `--screen-header`, which
+  invites secrets on argv.
 
 ## Documentation
 
 - `docs/evals.md`: replace "**Jev**: hosted only, and reference only" under "Not measured" with
   how to run it (command above), the measured numbers once the live run exists, and the
-  saturated-probability caveat if it holds. Add the two new flags to the flag reference. Note that
-  Jev is a reference measurement and that the key is sent only over https.
+  saturated-probability caveat if it holds. Note that Jev is a reference measurement and that the
+  key is sent only over https.
+- `evals/README.md`: add the two new flags to the `--screen-*` rows under "Running the runner", the
+  cost fields to "Screen mode", and the new cost-flag usage error to the exit-code 2 row.
 - `CHANGELOG.md`: one line for the key-file and cost-cap flags.
 
 ## Testing Strategy
@@ -150,8 +155,8 @@ exceeds the 10 s default timeout only on stalls; leave the default.
 All automated tests use the existing scripted-endpoint harness in `rust/fontaine-evals/tests/screen.rs`
 and never touch OpenRouter.
 
-- `screen_unit.rs`: `parse` reads `usage.cost`; a response without it gives `None`; an old
-  report round-trips without a `cost_usd` field; `ApiKey`'s `Debug` and the error strings never
+- `screen_unit.rs`: `parse` reads `usage.cost` and `/model`; a response without them gives `None`;
+  an old report round-trips without `cost_usd`/`model` fields; the key-file error strings never
   contain the key.
 - `screen.rs` (scripted endpoint): the request carries `Authorization: Bearer <key>` when a key
   file is given and no `Authorization` header otherwise; a key over plain `http://` to a
@@ -159,9 +164,10 @@ and never touch OpenRouter.
   is absent from the `--out` report and from stdout/stderr.
 - `screen.rs`: with a scripted per-call cost and `--screen-max-cost-usd`, the run stops after the
   call that reaches the cap, the remaining cases are skipped with `cost cap reached`, and the
-  summary `cost_usd` equals the sum of the scored cases.
-- Flag validation: both new flags are rejected without `--guardian screen:<model>`, extending the
-  table at the end of `tests/screen.rs`.
+  summary `cost_usd` equals the sum of the warm-up and the scored cases.
+- Flag validation: both new flags are rejected without `--guardian screen:<model>`, and a
+  non-positive or non-finite `--screen-max-cost-usd` is a usage error, extending the
+  `usage_errors_exit_two` table at the end of `tests/screen.rs`.
 
 ## Manual Verification
 
@@ -170,11 +176,6 @@ live response still has this shape and that the bearer key is accepted). It is n
 because tests must never touch live APIs.
 
 1. From `rust/`, run:
-   `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian screen:typesafe/jev-1.14 --screen-url https://openrouter.ai/api --screen-api-key-file /home/mad/open_router_key --screen-max-cost-usd 1 --out /tmp/jev.json`
+   `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian screen:typesafe/jev-1.14 --screen-url https://openrouter.ai/api --screen-api-key-file /home/mad/open_router_key --screen-max-cost-usd 1 --out ../evals/scorecards/screen-jev-1.14.json`
    Expected: every guardian case is scored, none fail closed with `error`, and the summary shows
    `cost_usd` well under $0.10 and `model_resolved` `typesafe/jev-1.14-20261014`.
-2. Run it again with `--screen-max-cost-usd 0.0001`. Expected: it stops after a few cases and
-   lists the rest as skipped with `cost cap reached`.
-3. `rg "$(cat /home/mad/open_router_key)" /tmp/jev.json` finds nothing.
-4. Post the scorecard and a link to the Results section on #127.
-
