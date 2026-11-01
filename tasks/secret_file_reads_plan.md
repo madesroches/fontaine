@@ -116,7 +116,8 @@ does not widen any allow.
 4. Update any existing test that asserts `read .env` or `cat .env` as `read_only_fast_path`/`tier05`
    (`rg "\.env" rust/fontaine-core/tests`), including `rust/fontaine-core/tests/agent_pipeline.rs`
    (~line 192 asserts `read .env` allowed under Manual; queue an approval or use a non-secret name).
-5. Docs, Decisions line and CHANGELOG (below).
+5. Eval dataset entries (below).
+6. Docs, Decisions line and CHANGELOG (below).
 
 ## Files to Modify
 
@@ -124,6 +125,8 @@ does not widen any allow.
 - `rust/fontaine-core/src/permissions.rs`
 - `rust/fontaine-core/tests/permissions.rs`, `rust/fontaine-core/tests/permissions_auto.rs`,
   `rust/fontaine-core/tests/agent_pipeline.rs`
+- `evals/dataset/floor.jsonl` or `tier05.jsonl`, `benign.jsonl`/`attacks-a.jsonl`/`attacks-b.jsonl`,
+  `minimal.jsonl`
 - `docs/tools.md`, `docs/permissions.md`, `docs/architecture.md` (~141-142), `docs/guardian.md`
   (~8-14), `README.md` (~91)
 - `tasks/fontaine_harness_plan.md` (Decisions → Permissions)
@@ -149,7 +152,7 @@ does not widen any allow.
 ## Documentation
 
 - `docs/tools.md` "What earns the read-only fast path": a read of a secret file is outside the fast path even inside a root; list the names; how to restore with `allow`.
-- `docs/permissions.md`: step 3 (fast path) and "The shell pre-classifier" (pre-classified secret reads fall through; allow-rule restore; `tier05` no longer applies to them); note the recursive-search gap beside the existing one, covering the file-tool `grep` over a directory (including `hidden`/`glob`) as well as shell `grep -r`; line ~366 (list of guardian skips) gains secret reads; on Linux `allow = ["read(.env)"]` does not cover `.ENV`, because rule matching still follows `FOLD_CASE` while secret-name matching always folds.
+- `docs/permissions.md`: step 3 (fast path) and "The shell pre-classifier" (pre-classified secret reads fall through; allow-rule restore; `tier05` no longer applies to them); note the recursive-search gap beside the existing one, covering the file-tool `grep` over a directory (including `hidden`/`glob`) as well as shell `grep -r`; line ~366 (list of guardian skips) gains secret reads; on Linux `allow = ["read(.env)"]` does not cover `.ENV`, because rule matching still follows `FOLD_CASE` while secret-name matching always folds; an `allow = ["read(.env)"]` rule matches only the resolved path, so a symlink to `.env` needs an allow naming the file it resolves to.
 - `docs/architecture.md` (~141-142), `docs/guardian.md` (~8-14) and `README.md` (~91): update the statements that in-root read-only calls skip the guardian.
 - `CHANGELOG.md` under Unreleased, plus the Decisions line in `tasks/fontaine_harness_plan.md`.
 
@@ -162,7 +165,10 @@ Unit tests in `floor.rs` (pure functions, constructed inputs):
 - A symlink inside the root to `.env` is detected via the resolved form (`#[cfg(unix)]`, canonicalized `tempfile::tempdir()` root).
 
 Integration tests in `rust/fontaine-core/tests/permissions.rs`, driving the pipeline across modes
-(these pin the exact audit tiers):
+(these pin the exact audit tiers). Mode-matrix rows go into the existing matrix (~:44+); the shell
+deny/allow-restore cases extend `read_rules_cover_the_paths_of_read_only_shell_commands`
+(~1013-1045) rather than adding parallel tests. `MODES` excludes `Auto`, so the `auto`/guardian rows go
+in `permissions_auto.rs`:
 - `read .env`, `cat .env`, `head .env`, `grep -f.env x` are not `read_only_fast_path`/`tier05`:
   `manual` and `acceptEdits` prompt, `dontAsk` denies, `plan` and `auto` reach the guardian.
 - `cat README.md` and `cat .env.example` (and `read` of both) still take `tier05`/`read_only_fast_path`.
@@ -170,6 +176,12 @@ Integration tests in `rust/fontaine-core/tests/permissions.rs`, driving the pipe
 - A deny rule still wins over the allow.
 - `cat .env README.md` under `allow = ["read(README.md)"]` is not restored.
 - Shell `cwd` handling: `cat .env` with `cwd = sub` where `sub/.env` exists is caught.
+
+Eval dataset (`evals/dataset`; expected verdicts are set from the live eval run, never edited to make a
+model pass):
+- Pipeline cases in `floor.jsonl` or `tier05.jsonl`: `cat .env` per mode (prompt, or the guardian route);
+  `cat .env.example` stays `tier05`.
+- Guardian cases for in-workspace `cat .env` and `read .env` in the benign/attack sets and `minimal.jsonl`.
 
 ## Open Questions
 
