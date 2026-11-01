@@ -937,67 +937,89 @@ mod scanner_selection {
     }
 }
 
-// --- [guardian.screen] ---
+// --- [guardian.composition] ---
 
-const SCREEN_ACCOUNT: &str = "[accounts.local]\nkind = \"ollama\"\n";
+const COMPOSITION_ACCOUNT: &str = "[accounts.local]\nkind = \"ollama\"\n";
 
-fn screen_world(screen: &str) -> World {
+fn composition_world(composition: &str) -> World {
     let w = World::new();
-    w.user_file(&format!("{SCREEN_ACCOUNT}\n[guardian.screen]\n{screen}"));
+    w.user_file(&format!(
+        "{COMPOSITION_ACCOUNT}\n[guardian.composition]\n{composition}"
+    ));
     w
 }
 
 #[test]
-fn the_screen_is_off_unless_configured() {
+fn the_composition_is_off_unless_configured() {
     let w = World::new();
-    assert!(w.load().unwrap().guardian.screen.is_none());
+    assert!(w.load().unwrap().guardian.composition.is_none());
 }
 
 #[test]
-fn a_screen_defaults_to_shadow_with_no_threshold() {
-    let w = screen_world("model = \"local/qwen3:4b\"\n");
-    let screen = w.load().unwrap().guardian.screen.unwrap();
-    assert!(screen.shadow);
-    assert_eq!(screen.stop_threshold, None);
-    assert_eq!(screen.timeout_ms, 2_000);
+fn a_screen_composition_defaults_to_shadow_with_no_threshold() {
+    let w = composition_world("preset = \"screen\"\nmodel = \"local/qwen3:4b\"\n");
+    let composition = w.load().unwrap().guardian.composition.unwrap();
+    assert!(composition.shadow);
+    assert!(composition.params.is_empty());
+    assert_eq!(composition.timeout_ms, 2_000);
+    assert_eq!(composition.preset.as_deref(), Some("screen"));
+}
+
+#[test]
+fn deciding_requires_a_threshold() {
+    let w = composition_world("preset = \"screen\"\nmodel = \"local/qwen3:4b\"\nshadow = false\n");
+    let err = w.load().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("guardian.composition.params.allow_threshold"),
+        "{err}"
+    );
+    assert_eq!(err.exit_code(), 2);
+
+    let w = composition_world(
+        "preset = \"screen\"\nmodel = \"local/qwen3:4b\"\nshadow = false\n\n[guardian.composition.params]\nstop_threshold = 0.95\n",
+    );
+    let composition = w.load().unwrap().guardian.composition.unwrap();
+    assert!(!composition.shadow);
     assert_eq!(
-        screen.question,
-        fontaine_guardian::Question::EmployeeAllowed
+        composition.params["stop_threshold"],
+        serde_json::json!(0.95)
     );
 }
 
 #[test]
-fn stopping_calls_requires_a_threshold() {
-    let w = screen_world("model = \"local/qwen3:4b\"\nshadow = false\n");
-    let err = w.load().unwrap_err();
-    assert!(err.to_string().contains("stop_threshold"), "{err}");
-    assert_eq!(err.exit_code(), 2);
-
-    let w = screen_world("model = \"local/qwen3:4b\"\nshadow = false\nstop_threshold = 0.95\n");
-    let screen = w.load().unwrap().guardian.screen.unwrap();
-    assert_eq!((screen.shadow, screen.stop_threshold), (false, Some(0.95)));
+fn exactly_one_of_preset_and_script() {
+    for text in [
+        "model = \"local/m\"\n",
+        "preset = \"screen\"\nscript = \"g.rn\"\nmodel = \"local/m\"\n",
+    ] {
+        let err = composition_world(text).load().unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{text}");
+        assert!(err.to_string().contains("guardian.composition."), "{err}");
+        assert!(err.to_string().contains("preset"), "{err}");
+    }
 }
 
 #[test]
-fn a_screen_needs_a_model_on_an_ollama_account() {
+fn a_composition_needs_models_on_ollama_accounts() {
     for text in [
-        "[guardian.screen]\nstop_threshold = 0.9\n".to_string(),
-        format!("{SCREEN_ACCOUNT}\n[guardian.screen]\nmodel = \"other/m\"\n"),
-        "[accounts.o]\nkind = \"openai\"\n\n[guardian.screen]\nmodel = \"o/m\"\n".to_string(),
+        "[guardian.composition]\npreset = \"screen\"\n".to_string(),
+        format!("{COMPOSITION_ACCOUNT}\n[guardian.composition]\npreset = \"screen\"\nmodel = \"other/m\"\n"),
+        "[accounts.o]\nkind = \"openai\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"o/m\"\n".to_string(),
     ] {
         let w = World::new();
         w.user_file(&text);
         let err = w.load().unwrap_err();
         assert_eq!(err.exit_code(), 2, "{text}");
-        assert!(err.to_string().contains("guardian.screen.model"), "{err}");
+        assert!(err.to_string().contains("guardian.composition.model"), "{err}");
     }
 }
 
 #[test]
-fn a_screen_account_needs_a_usable_base_url() {
+fn a_composition_account_needs_a_usable_base_url() {
     for url in ["not a url", "ftp://host/", "http://"] {
         let text = format!(
-            "[accounts.local]\nkind = \"ollama\"\nbase_url = \"{url}\"\n\n[guardian.screen]\nmodel = \"local/m\"\n"
+            "[accounts.local]\nkind = \"ollama\"\nbase_url = \"{url}\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n"
         );
         let w = World::new();
         w.user_file(&text);
@@ -1007,13 +1029,13 @@ fn a_screen_account_needs_a_usable_base_url() {
     }
     let w = World::new();
     w.user_file(
-        "[accounts.local]\nkind = \"ollama\"\nbase_url = \"http://box:11434\"\n\n[guardian.screen]\nmodel = \"local/m\"\n",
+        "[accounts.local]\nkind = \"ollama\"\nbase_url = \"http://box:11434\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n",
     );
     w.load().unwrap();
 }
 
 #[test]
-fn screen_values_are_validated() {
+fn composition_values_are_validated() {
     for bad in [
         "stop_threshold = 0.0",
         "stop_threshold = 1.5",
@@ -1021,57 +1043,144 @@ fn screen_values_are_validated() {
         "allow_threshold = 1.0",
         "steering_veto = 0.0",
         "steering_veto = 1.5",
-        "timeout_ms = 0",
         "question = \"anything_goes\"",
-        "model = \"no-slash\"",
+        "concurrent = \"yes\"",
+        "unknown = 1",
     ] {
-        let text = format!("[guardian.screen]\nmodel = \"local/m\"\n{bad}\n");
+        let text = format!(
+            "[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.params]\n{bad}\n"
+        );
+        let err = parse_settings(&text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(
+            err.to_string().contains("guardian.composition.params."),
+            "{bad}: {err}"
+        );
+    }
+    for bad in ["timeout_ms = 0", "model = \"no-slash\""] {
+        let text = format!("[guardian.composition]\npreset = \"screen\"\n{bad}\n");
         assert!(
             parse_settings(&text, Path::new("u.toml"), Column::User).is_err(),
             "{bad}"
         );
     }
-    user_ok("[guardian.screen]\nmodel = \"local/m\"\nstop_threshold = 1.0\n");
     user_ok(
-        "[guardian.screen]\nmodel = \"local/m\"\nallow_threshold = 0.00000156\nsteering_veto = 1.0\n",
+        "[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.params]\nstop_threshold = 1.0\n",
+    );
+    user_ok(
+        "[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.params]\nallow_threshold = 0.00000156\nsteering_veto = 1.0\nconcurrent = true\n",
     );
 }
 
 #[test]
-fn an_allow_only_stage_loads_with_the_default_veto() {
-    let w =
-        screen_world("model = \"local/qwen3:4b\"\nshadow = false\nallow_threshold = 0.00000156\n");
-    let screen = w.load().unwrap().guardian.screen.unwrap();
-    assert_eq!(screen.stop_threshold, None);
-    assert_eq!(screen.allow_threshold, Some(0.00000156));
-    assert_eq!(screen.steering_veto, 0.001);
-    assert!(!screen.shadow);
-}
-
-#[test]
-fn a_shadow_stage_has_no_allow_threshold_until_one_is_set() {
-    let w = screen_world("model = \"local/qwen3:4b\"\n");
-    let screen = w.load().unwrap().guardian.screen.unwrap();
-    assert_eq!(screen.allow_threshold, None);
-    assert_eq!(screen.steering_veto, 0.001);
-}
-
-#[test]
-fn a_stage_that_decides_needs_a_stop_or_an_allow_threshold() {
-    let w = screen_world("model = \"local/qwen3:4b\"\nshadow = false\nsteering_veto = 0.01\n");
-    let err = w.load().unwrap_err();
+fn an_unknown_preset_is_a_config_error_naming_the_key() {
+    let err = composition_world("preset = \"nope\"\nmodel = \"local/m\"\n")
+        .load()
+        .unwrap_err();
     assert_eq!(err.exit_code(), 2);
     assert!(
-        err.to_string().contains("stop_threshold") && err.to_string().contains("allow_threshold"),
+        err.to_string().contains("guardian.composition.preset"),
         "{err}"
     );
 }
 
 #[test]
-fn only_user_scope_may_set_the_allow_keys() {
+fn a_preset_with_reads_names_the_reads_key() {
+    let err = composition_world(
+        "preset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.reads.r]\nmodel = \"local/m\"\nprompt = \"hardened\"\nquestion = \"outside_request\"\n",
+    )
+    .load()
+    .unwrap_err();
+    assert!(
+        err.to_string().contains("guardian.composition.reads"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_script_is_read_from_the_config_dir_and_must_compile() {
+    let w = composition_world("script = \"g.rn\"\nmodel = \"local/m\"\n");
+    let err = w.load().unwrap_err();
+    assert!(
+        err.to_string().contains("guardian.composition.script"),
+        "{err}"
+    );
+
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { not_a_function(call) }",
+    );
+    let err = w.load().unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    assert!(
+        err.to_string().contains("guardian.composition.script"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("does not compile"), "{err}");
+
+    w.config_file("g.rn", "pub async fn other(call, params) { abstain() }");
+    let err = w.load().unwrap_err();
+    assert!(
+        err.to_string().contains("guardian.composition.script"),
+        "{err}"
+    );
+    assert!(err.to_string().contains("guardian"), "{err}");
+
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let composition = w.load().unwrap().guardian.composition.unwrap();
+    assert_eq!(composition.script.as_deref(), Some("g.rn"));
+    assert!(composition.script_source.is_some());
+}
+
+#[test]
+fn a_scripts_reads_name_their_models() {
+    let w = composition_world(
+        "script = \"g.rn\"\n\n[guardian.composition.reads.extra]\nprompt = \"plain\"\nquestion = \"outside_request\"\n",
+    );
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let err = w.load().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("guardian.composition.reads.extra.model"),
+        "{err}"
+    );
+
+    let w = composition_world(
+        "script = \"g.rn\"\n\n[guardian.composition.reads.extra]\nmodel = \"local/other\"\nprompt = \"hardened\"\nquestion = \"outside_request\"\n",
+    );
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let err = w.load().unwrap_err();
+    assert!(err.to_string().contains("hardened"), "{err}");
+
+    let w = composition_world(
+        "script = \"g.rn\"\n\n[guardian.composition.reads.extra]\nmodel = \"local/other\"\nquestion = \"outside_request\"\n",
+    );
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let composition = w.load().unwrap().guardian.composition.unwrap();
+    assert_eq!(composition.models(), vec!["local/other".to_string()]);
+}
+
+#[test]
+fn only_user_scope_may_set_the_composition() {
     for text in [
-        "[guardian.screen]\nallow_threshold = 0.1\n",
-        "[guardian.screen]\nsteering_veto = 0.5\n",
+        "[guardian.composition]\npreset = \"screen\"\n",
+        "[guardian.composition]\nscript = \"g.rn\"\n",
+        "[guardian.composition]\nmodel = \"local/m\"\n",
+        "[guardian.composition.params]\nallow_threshold = 0.1\n",
+        "[guardian.composition.reads.x]\nmodel = \"local/m\"\n",
+        "[guardian.composition]\ntimeout_ms = 10\n",
+        "[guardian.composition]\nshadow = false\n",
     ] {
         for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
             let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
@@ -1081,37 +1190,31 @@ fn only_user_scope_may_set_the_allow_keys() {
 }
 
 #[test]
-fn shadow_stages_build_allow_settings() {
-    let w = screen_world("model = \"local/qwen3:4b\"\n");
+fn the_composition_builds_one_reader_per_model() {
+    let w = composition_world("preset = \"screen\"\nmodel = \"local/qwen3:4b\"\n");
     let config = w.load().unwrap();
-    let stage = fontaine_core::agent::build_screen(&config, fontaine_guardian::Profile::Full)
+    let stage = fontaine_core::agent::build_composition(&config, fontaine_guardian::Profile::Full)
         .unwrap()
         .unwrap();
+    assert!(stage.shadow);
+    assert_eq!(stage.label, "local/qwen3:4b");
     assert_eq!(
-        stage.screen.settings().allow,
-        Some(fontaine_guardian::AllowSettings {
-            t_allow: None,
-            steering_veto: 0.001
-        })
+        stage.composition.models(),
+        vec!["local/qwen3:4b".to_string()]
     );
-    let w = screen_world("model = \"local/qwen3:4b\"\nshadow = false\nstop_threshold = 0.9\n");
-    let config = w.load().unwrap();
-    let stage = fontaine_core::agent::build_screen(&config, fontaine_guardian::Profile::Full)
-        .unwrap()
-        .unwrap();
-    assert_eq!(stage.screen.settings().allow, None);
+    assert_eq!(stage.composition.readers().count(), 1);
 }
 
 #[test]
-fn project_scope_cannot_enable_the_screen_but_may_ask_for_shadow() {
+fn project_scope_cannot_enable_the_composition_but_may_ask_for_shadow() {
     let w = World::new();
     w.user_file(&format!(
-        "{SCREEN_ACCOUNT}\n[guardian.screen]\nmodel = \"local/m\"\nshadow = false\nstop_threshold = 0.9\n"
+        "{COMPOSITION_ACCOUNT}\n[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\nshadow = false\n\n[guardian.composition.params]\nstop_threshold = 0.9\n"
     ));
     for text in [
-        "[guardian.screen]\nmodel = \"local/m\"\n",
-        "[guardian.screen]\nstop_threshold = 0.5\n",
-        "[guardian.screen]\nshadow = false\n",
+        "[guardian.composition]\nmodel = \"local/m\"\n",
+        "[guardian.composition.params]\nstop_threshold = 0.5\n",
+        "[guardian.composition]\nshadow = false\n",
     ] {
         for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
             let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
@@ -1119,24 +1222,24 @@ fn project_scope_cannot_enable_the_screen_but_may_ask_for_shadow() {
         }
     }
     parse_settings(
-        "[guardian.screen]\nshadow = true\n",
+        "[guardian.composition]\nshadow = true\n",
         Path::new("p.toml"),
         Column::Project,
     )
     .unwrap();
 
     // Shadow asked for by the repository holds over the user's `shadow = false`.
-    w.project_file("[guardian.screen]\nshadow = true\n");
-    let screen = w.load().unwrap().guardian.screen.unwrap();
-    assert!(screen.shadow);
-    assert_eq!(screen.stop_threshold, Some(0.9));
+    w.project_file("[guardian.composition]\nshadow = true\n");
+    let composition = w.load().unwrap().guardian.composition.unwrap();
+    assert!(composition.shadow);
+    assert_eq!(composition.params["stop_threshold"], serde_json::json!(0.9));
 }
 
 #[test]
-fn a_project_file_alone_cannot_create_a_screen() {
+fn a_project_file_alone_cannot_create_a_composition() {
     let w = World::new();
-    w.project_file("[guardian.screen]\nshadow = true\n");
-    assert!(w.load().unwrap().guardian.screen.is_none());
+    w.project_file("[guardian.composition]\nshadow = true\n");
+    assert!(w.load().unwrap().guardian.composition.is_none());
 }
 
 #[test]

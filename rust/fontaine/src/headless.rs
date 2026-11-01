@@ -425,6 +425,7 @@ fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Value {
             "screen_risk": record.screen_risk,
             "screen_allow_risk": record.screen_allow_risk,
             "screen_steering": record.screen_steering,
+            "screen_scores": record.screen_scores,
             "screen_outcome": record.screen_outcome,
         }),
     )

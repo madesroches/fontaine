@@ -97,14 +97,16 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               on the tool's unconfined read-only fallback instance (below). An external
               path never becomes a root: no write reach, no fast path, no instruction discovery.
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
-           7. mode == auto → the composed guardian (`fontaine_guardian::cascade::adjudicate`):
-              the optional screen stage (`[guardian.screen]`) and `Guardian::adjudicate(request)`
-              start together ──▶ Verdict. While the guardian is pending, a screen stop (enforced)
-              escalates (`tier = screen`, prompt; headless Deny) and a screen allow (enforced,
-              `allow_threshold` set, steering below the veto) allows (`tier = screen`); the
-              guardian future is dropped. A guardian verdict already in hand, a screen pass, an
-              unavailable screen and shadow mode all leave the call to the guardian. A paused
-              breaker prompts before any of this, and a screen allow does not reset the breaker.
+           7. mode == auto → the composed guardian (`fontaine_guardian::composition::adjudicate`):
+              the Rune script of `[guardian.composition]` (the `screen` preset by default) over
+              the host leaves, the LLM guardian and the logprob reads ──▶ Verdict, inside a
+              fail-closed root (instruction budget, time bound, no verdict = Deny). A script
+              `escalate` (prompt; headless Deny) and `deny` (no prompt) are `tier = screen` with
+              `rule` = the node, and `allow_below` (a user-scope script's only way to allow) is
+              `tier = screen` too; a script that fails is a guardian denial like any other.
+              A completed LLM refusal in hand always wins, and shadow mode and a script that
+              ends in the LLM leave the call to it. A paused breaker prompts before any of this,
+              and a composition allow does not reset the breaker.
            8. mode == dontAsk → anything not pre-allowed is Denied (pre-allowed = steps 4, 5, 5a)
            9. mode == plan (not allowed by steps 4–5a): WorkspaceWrite / edit-class → BLOCKED
               outright (structural; no verdict or escalation can override the edit block while
@@ -168,7 +170,7 @@ event, the headless `gate_decision` event and the eval `expected_tier` all carry
 with no projection or renaming): `deny_rule` | `ask_rule` | `critical_path` | `protected_path` (the
 floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tracked_edit` and `scratch_write` (`auto` only, after the floor and hooks, before the guardian) | `tier05` (step 5) | `spawn` (an `agent` spawn after the floor, hooks and rules, never guardian-judged: `auto`/`plan` allow it) | `allow_rule`
 (step 5a) | `mode` (step 6: manual/acceptEdits prompt, acceptEdits edit auto-allow) | `guardian` (steps 7, 9) |
-`screen` (step 7/9: the screen stage's stop or allow) | `dont_ask` (step 8) | `plan_block` (step 9 edit block) | `human`. Two outcomes map explicitly: a prompt (or headless Deny) caused by the loop-breaker pause carries `guardian`; the pre-Phase-4 plan-mode step-9 fall-through prompt (and its headless Deny) carries `mode`. A protected-path call routed to the guardian in `auto` records `tier = guardian`; in manual/acceptEdits/dontAsk/headless it records `protected_path`.
+`screen` (step 7/9: a composition node's escalate, deny or allow) | `dont_ask` (step 8) | `plan_block` (step 9 edit block) | `human`. Two outcomes map explicitly: a prompt (or headless Deny) caused by the loop-breaker pause carries `guardian`; the pre-Phase-4 plan-mode step-9 fall-through prompt (and its headless Deny) carries `mode`. A protected-path call routed to the guardian in `auto` records `tier = guardian`; in manual/acceptEdits/dontAsk/headless it records `protected_path`.
 
 **Pipeline inputs**: mode, the workspace roots, the merged permission rules plus session-scope
 grants, the user-hook runner, the session ledger (source of task intent, recent user messages,
@@ -227,7 +229,7 @@ words (`shell(npm test)`, `shell(python script.py)`) is narrow and stays. The li
 `permission_rules.rs`, checked against `claude -p` baselines. Suspended rules are listed on entering
 `auto` (TUI notice, headless `init` event). An allow rule is a **user grant**: the containment fast path (step 4) and
 Tier 0.5 (step 5) remain the only guardian skips earned without one, apart from the `agent` spawn (never guardian-judged, #360) and the opt-in
-user-scope screen allow (step 7, a verdict of the composed guardian), and no tool label or server
+user-scope composition allow (step 7, `allow_below`, a verdict of the composed guardian), and no tool label or server
 declaration ever creates an allow rule.
 
 **Sources.** Allow rules are loosening, so they come only from user trust scopes: the user file,

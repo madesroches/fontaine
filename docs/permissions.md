@@ -146,11 +146,14 @@ verdict, confidence, whether the verdict came from the cache, how long the guard
 `verdict_transport` it was asked on (`tool`, a forced `submit` call, or `schema`, for an Ollama
 model with no tool support; see [Models with no tool
 support](guardian.md#models-with-no-tool-support)) and, when it failed closed, the reason (`error`,
-`timeout`, `unparseable`, `low_confidence` or `unavailable`). With a [screen
-stage](guardian.md#the-screen-stage) configured, the record also carries `screen_risk`,
-`screen_allow_risk`, `screen_steering`, `screen_model`, `screen_latency_ms` and `screen_outcome`,
-and a call the screen stopped or, with an `allow_threshold`, allowed has `tier = screen` (`decision
-= prompt` or `deny` for a stop, `allow` for an allow). When an enforcing screen settles a call while
+`timeout`, `unparseable`, `low_confidence` or `unavailable`). With a
+[composition](guardian.md#composing-the-guardian) configured, the record also carries
+`screen_risk`, `screen_allow_risk` and `screen_steering` (the reads named `stop`, `allow` and
+`steering`), `screen_scores` (every other read, by name), `screen_model`, `screen_latency_ms` and
+`screen_outcome`, and a call the composition escalated, denied or allowed has `tier = screen` and
+the deciding node as its `rule` (`decision = prompt` or `deny` for an escalation, `deny` for a
+denial, `allow` for an allow). A composition that fails (a script error, a timeout, no verdict) is
+a guardian denial with a `fail_closed_reason`. When an enforcing composition settles a call while
 the guardian request that raced it is still pending, the record also carries
 `guardian_dropped_input_tokens`, an estimate of that request's input, with
 `guardian_dropped_provider`, `guardian_dropped_model` and `guardian_dropped_priced`. They are

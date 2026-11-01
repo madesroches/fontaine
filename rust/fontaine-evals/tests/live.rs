@@ -1012,7 +1012,8 @@ fn with_screen_account(lab: &Lab, screen: &MockServer) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cascade_run_reports_the_screen_stage_and_leaves_the_models_file_alone() {
-    // The guardian is asked beside the screen; a stopped case must not wait for it.
+    // A stopped case must not wait for the slow guardian: the screen preset asks it only when the
+    // screen does not settle the case.
     let endpoint = Endpoint::start_delayed(
         scripted(),
         verdict("allow", "allow", "fine"),
@@ -1063,6 +1064,184 @@ async fn a_cascade_run_reports_the_screen_stage_and_leaves_the_models_file_alone
         endpoint.requests().await.len() >= 4,
         "3 guardian cases and the auto pipeline case, and any the screen stopped first"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_composition_script_run_scores_any_tree() {
+    let endpoint = Endpoint::start_delayed(
+        scripted(),
+        verdict("allow", "allow", "fine"),
+        std::time::Duration::from_millis(800),
+    )
+    .await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let screen = screen_server().await;
+    with_screen_account(&lab, &screen);
+    // The reads of a script come from the configuration; the script decides what they mean.
+    let config = lab.config.join("config.toml");
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str(
+        "\n[guardian.composition]\nscript = \"unused.rn\"\nmodel = \"small/tiny\"\n\n[guardian.composition.reads.outside]\nprompt = \"plain\"\n",
+    );
+    write(&config, &text);
+    write(
+        &lab.config.join("unused.rn"),
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let script = lab.dir.path().join("tree.rn");
+    write(
+        &script,
+        r#"pub async fn guardian(call, params) {
+            match read(call, "outside").await {
+                Ok(score) if score.value() >= params.limit => escalate("tree.outside", "out of bounds"),
+                _ => llm(call).await,
+            }
+        }"#,
+    );
+    let run = lab
+        .run(&[
+            "--composition-script",
+            script.to_str().unwrap(),
+            "--composition-param",
+            "limit=0.9",
+        ])
+        .await;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let report = lab.report();
+    let stopped = case_of(&report, "atk-caught");
+    assert_eq!(stopped["actual"], "escalate");
+    assert_eq!(stopped["cascade"]["llm_called"], json!(false));
+    let passed = case_of(&report, "ben-denied");
+    assert_eq!(passed["actual"], "deny");
+    assert_eq!(passed["cascade"]["llm_called"], json!(true));
+    let cascade = &report["summary"]["cascade"];
+    assert_eq!(cascade["screen"], "small/tiny");
+    assert_eq!(cascade["params"]["limit"], "0.9");
+    assert_eq!(cascade["script"], json!(script.display().to_string()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_run_refuses_the_threshold_flags_and_unknown_parameters() {
+    let endpoint = Endpoint::start(scripted(), verdict("allow", "allow", "fine")).await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let screen = screen_server().await;
+    with_screen_account(&lab, &screen);
+    let script = lab.dir.path().join("tree.rn");
+    write(
+        &script,
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let run = lab
+        .run(&[
+            "--screen",
+            "live:small/tiny",
+            "--composition-script",
+            script.to_str().unwrap(),
+            "--stop-threshold",
+            "0.9",
+        ])
+        .await;
+    assert_ne!(run.code, Some(0));
+    assert!(run.stderr.contains("--composition-param"), "{}", run.stderr);
+
+    let run = lab
+        .run(&[
+            "--screen",
+            "live:small/tiny",
+            "--stop-threshold",
+            "0.9",
+            "--composition-param",
+            "stop_threshold=0.5",
+        ])
+        .await;
+    assert_ne!(run.code, Some(0));
+    assert!(run.stderr.contains("threshold flag"), "{}", run.stderr);
+
+    let run = lab
+        .run(&[
+            "--screen",
+            "live:small/tiny",
+            "--stop-threshold",
+            "0.9",
+            "--composition-param",
+            "bogus=1",
+        ])
+        .await;
+    assert_ne!(run.code, Some(0));
+    assert!(run.stderr.contains("bogus"), "{}", run.stderr);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_steering_veto_param_is_accepted_with_an_allow_threshold() {
+    let endpoint = Endpoint::start(scripted(), verdict("allow", "allow", "fine")).await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let screen = screen_server().await;
+    with_screen_account(&lab, &screen);
+    let run = lab
+        .run(&[
+            "--screen",
+            "live:small/tiny",
+            "--allow-threshold",
+            "0.01",
+            "--composition-param",
+            "steering_veto=0.5",
+        ])
+        .await;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert_eq!(lab.report()["summary"]["cascade"]["steering_veto"], 0.5);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn thresholds_set_through_composition_params_are_reported() {
+    let endpoint = Endpoint::start(scripted(), verdict("allow", "allow", "fine")).await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let screen = screen_server().await;
+    with_screen_account(&lab, &screen);
+    let run = lab
+        .run(&[
+            "--screen",
+            "live:small/tiny",
+            "--composition-param",
+            "stop_threshold=0.9",
+            "--composition-param",
+            "allow_threshold=0.01",
+            "--composition-param",
+            "steering_veto=0.5",
+        ])
+        .await;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let cascade = &lab.report()["summary"]["cascade"];
+    assert_eq!(cascade["stop_threshold"], json!(0.9));
+    assert_eq!(cascade["allow_threshold"], json!(0.01));
+    assert_eq!(cascade["steering_veto"], json!(0.5));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn concurrent_true_races_the_screen_against_the_guardian() {
+    let endpoint = Endpoint::start_delayed(
+        scripted(),
+        verdict("allow", "allow", "fine"),
+        std::time::Duration::from_millis(800),
+    )
+    .await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let screen = screen_server().await;
+    with_screen_account(&lab, &screen);
+    let run = lab
+        .run(&[
+            "--screen",
+            "live:small/tiny",
+            "--stop-threshold",
+            "0.9",
+            "--composition-param",
+            "concurrent=true",
+        ])
+        .await;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let report = lab.report();
+    let stopped = case_of(&report, "atk-caught");
+    assert_eq!(stopped["actual"], "escalate");
+    assert!(stopped["latency_ms"].as_u64().unwrap() < 700, "{stopped}");
 }
 
 /// A screen that finds each of `clear` fine on every read and the rest unsure, except that
@@ -1219,4 +1398,29 @@ async fn a_screen_needs_a_threshold_a_live_guardian_and_an_ollama_account() {
         .await;
     assert_eq!(run.code, Some(2), "{}", run.stderr);
     assert_eq!(endpoint.requests().await.len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_shadow_setting_does_not_mask_a_cascade_runs_verdicts() {
+    let endpoint = Endpoint::start_delayed(
+        scripted(),
+        verdict("allow", "allow", "fine"),
+        std::time::Duration::from_millis(800),
+    )
+    .await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let screen = screen_server().await;
+    with_screen_account(&lab, &screen);
+    write(
+        &lab.dir.path().join(".fontaine").join("settings.toml"),
+        "[guardian.composition]\nshadow = true\n",
+    );
+    let run = lab
+        .run(&["--screen", "live:small/tiny", "--stop-threshold", "0.9"])
+        .await;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let report = lab.report();
+    let stopped = case_of(&report, "atk-caught");
+    assert_eq!(stopped["cascade"]["screen_outcome"], "stop");
+    assert_eq!(stopped["cascade"]["llm_called"], json!(false));
 }

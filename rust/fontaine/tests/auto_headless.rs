@@ -360,7 +360,7 @@ fn screen_config(screen: &wiremock::MockServer, shadow: bool) -> String {
 
 fn screen_config_with(screen: &wiremock::MockServer, shadow: bool, extra: &str) -> String {
     format!(
-        "\n[accounts.local]\nkind = \"ollama\"\nbase_url = \"{}\"\n\n[guardian.screen]\nmodel = \"local/tiny\"\nstop_threshold = 0.9\nshadow = {shadow}\n{extra}",
+        "\n[accounts.local]\nkind = \"ollama\"\nbase_url = \"{}\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"local/tiny\"\nshadow = {shadow}\n\n[guardian.composition.params]\nstop_threshold = 0.9\n{extra}",
         screen.uri()
     )
 }
@@ -429,7 +429,7 @@ async fn a_screen_stop_escalates_without_using_the_guardian() {
     assert!(!s.work.join("out.txt").exists());
     let text = of_type(&lines, "tool_result")[0]["text"].as_str().unwrap();
     assert!(
-        text.contains("a local screen judged this call outside the user's request"),
+        text.contains("the guardian composition stopped this call at screen.stop"),
         "{text}"
     );
 }
@@ -456,7 +456,7 @@ async fn a_screen_allow_runs_the_call_without_using_the_guardian() {
     assert_eq!(decisions.len(), 1);
     assert_eq!(decisions[0]["tier"], "screen");
     assert_eq!(decisions[0]["decision"], "allow");
-    assert_eq!(decisions[0]["rule"], "screen");
+    assert_eq!(decisions[0]["rule"], "screen.allow");
     assert_eq!(decisions[0]["screen_outcome"], "allow");
     assert!(decisions[0]["screen_allow_risk"].as_f64().unwrap() < 0.01);
     assert!(decisions[0]["screen_steering"].as_f64().unwrap() < 0.001);
@@ -509,7 +509,7 @@ async fn an_unreachable_screen_leaves_every_call_to_the_guardian() {
     let out = run_auto(&s, &[]).await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     assert!(
-        out.stderr.contains("the guardian decides every call"),
+        out.stderr.contains("did not run to the end"),
         "{}",
         out.stderr
     );
@@ -517,4 +517,69 @@ async fn an_unreachable_screen_leaves_every_call_to_the_guardian() {
     let decisions = of_type(&lines, "gate_decision");
     assert_eq!(decisions[0]["tier"], "guardian");
     assert_eq!(decisions[0]["screen_outcome"], "unavailable");
+}
+
+/// A script composition: the user's config names `g.rn` in the config directory.
+fn script_config(screen: &wiremock::MockServer, script: &str) -> (String, String) {
+    (
+        format!(
+            "\n[accounts.local]\nkind = \"ollama\"\nbase_url = \"{}\"\n\n[guardian.composition]\nscript = \"g.rn\"\nmodel = \"local/tiny\"\nshadow = false\n\n[guardian.composition.reads.extra]\nquestion = \"outside_request\"\n",
+            screen.uri()
+        ),
+        script.to_string(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_composition_is_a_recorded_guardian_denial_with_its_reason() {
+    let agent = Endpoint::start(Wire::Chat, agent_script()).await;
+    let guardian = Endpoint::start(Wire::Chat, vec![submit(verdict("allow", "allow", 0.95))]).await;
+    let screen = ollama_screen(0.1).await;
+    let (config, script) = script_config(
+        &screen,
+        "pub async fn guardian(call, params) { let x = 1 / 0; abstain() }",
+    );
+    let s = setup(&agent, &guardian, &config);
+    s.add_config_file("g.rn", &script);
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let decisions = of_type(&lines, "gate_decision");
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["tier"], "guardian");
+    assert_eq!(decisions[0]["decision"], "deny");
+    assert_eq!(decisions[0]["fail_closed_reason"], "error");
+    assert_eq!(decisions[0]["screen_outcome"], "unavailable");
+    assert!(!s.work.join("out.txt").exists());
+    // The failed composition decided; the guardian was never asked.
+    assert_eq!(guardian.requests().await.len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_deny_is_a_screen_tier_denial_named_for_its_node_and_logs_every_read() {
+    let agent = Endpoint::start(Wire::Chat, agent_script()).await;
+    let guardian = Endpoint::start(Wire::Chat, vec![submit(verdict("allow", "allow", 0.95))]).await;
+    let screen = ollama_screen(0.1).await;
+    let (config, script) = script_config(
+        &screen,
+        r#"pub async fn guardian(call, params) {
+            read(call, "extra").await;
+            deny("mine.node", "not on my watch")
+        }"#,
+    );
+    let s = setup(&agent, &guardian, &config);
+    s.add_config_file("g.rn", &script);
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let decisions = of_type(&lines, "gate_decision");
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["tier"], "screen");
+    assert_eq!(decisions[0]["decision"], "deny");
+    assert_eq!(decisions[0]["rule"], "mine.node");
+    assert_eq!(decisions[0]["screen_outcome"], "deny");
+    assert_eq!(decisions[0]["fail_closed_reason"], Value::Null);
+    assert!(decisions[0]["screen_scores"]["extra"].as_f64().is_some());
+    assert!(!s.work.join("out.txt").exists());
+    assert_eq!(guardian.requests().await.len(), 0);
 }

@@ -6,9 +6,9 @@ use std::sync::{Arc, RwLock};
 use fontaine_agents::mode::ModeSetting;
 use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
 use fontaine_agents::tree::{AgentTree, Limits, NotificationKind};
+use fontaine_guardian::composition::Composition;
 use fontaine_guardian::{
-    AllowSettings, Guardian, ModeNotice, Profile, Screen, ScreenSettings,
-    Settings as GuardianSettings,
+    Guardian, ModeNotice, Profile, Reader, ReaderSettings, Settings as GuardianSettings,
 };
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::jobs::{JobNote, JobSink};
@@ -24,7 +24,9 @@ use crate::child_runner::{ChildContext, CoreChildRunner, MainModel, Notification
 use crate::config::{Account, AgentMode, Config};
 use crate::extensions::Extensions;
 use crate::fork_context::ParentContext;
-use crate::gate::{AutoContext, AutoEdits, ScreenStage, SessionState, StateParams, no_guardian};
+use crate::gate::{
+    AutoContext, AutoEdits, CompositionStage, SessionState, StateParams, no_guardian,
+};
 use crate::instructions::{self, InstructionStage, Sources};
 use crate::models::{GuardianModel, ModelHandle, Models};
 use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
@@ -156,18 +158,17 @@ pub(crate) fn warm_output_mode(guardian: &Arc<Guardian>) {
 /// The default address of a local Ollama daemon.
 const OLLAMA_URL: &str = "http://localhost:11434";
 
-/// The screen stage `[guardian.screen]` configures, or `None` when it is not configured. The
-/// model names an account of kind `ollama`, whose `base_url` is the daemon to ask.
-pub fn build_screen(
+/// The reader of one `<account>/<model>`: the model names an account of kind `ollama`, whose
+/// `base_url` is the daemon to ask.
+fn build_reader(
     config: &Config,
+    reference: &str,
     profile: Profile,
-) -> Result<Option<ScreenStage>, RuntimeError> {
-    let Some(screen) = &config.guardian.screen else {
-        return Ok(None);
-    };
-    let (account, model) = screen.model.split_once('/').ok_or_else(|| {
-        RuntimeError::new(format!("`{}` is not `<account>/<model>`", screen.model))
-    })?;
+    timeout: std::time::Duration,
+) -> Result<Reader, RuntimeError> {
+    let (account, model) = reference
+        .split_once('/')
+        .ok_or_else(|| RuntimeError::new(format!("`{reference}` is not `<account>/<model>`")))?;
     let account_config = config.accounts.get(account);
     let context_tokens = account_config.map_or(
         crate::config::DEFAULT_OLLAMA_CONTEXT_TOKENS,
@@ -184,29 +185,57 @@ pub fn build_screen(
             e,
         )
     })?;
-    let settings = ScreenSettings {
-        endpoint,
-        model: model.to_string(),
-        context_tokens,
-        question: screen.question,
-        t_stop: screen.stop_threshold,
-        timeout: std::time::Duration::from_millis(screen.timeout_ms),
-        profile,
-        allow: (screen.allow_threshold.is_some() || screen.shadow).then_some(AllowSettings {
-            t_allow: screen.allow_threshold,
-            steering_veto: screen.steering_veto,
-        }),
-    };
     let network = config.loaded_network(Some(account)).map_err(|e| {
         RuntimeError::caused(format!("the network settings of account `{account}`"), e)
     })?;
-    Ok(Some(ScreenStage {
-        screen: Arc::new(Screen::new(
-            crate::transport::reqwest_client(&network)?,
-            settings,
-        )),
-        label: screen.model.clone(),
-        shadow: screen.shadow,
+    Ok(Reader::new(
+        crate::transport::reqwest_client(&network)?,
+        ReaderSettings {
+            endpoint,
+            model: model.to_string(),
+            context_tokens,
+            profile,
+            timeout,
+        },
+    ))
+}
+
+/// The composition `[guardian.composition]` configures, or `None` when it is not configured.
+pub fn build_composition(
+    config: &Config,
+    profile: Profile,
+) -> Result<Option<CompositionStage>, RuntimeError> {
+    let Some(composition) = &config.guardian.composition else {
+        return Ok(None);
+    };
+    let spec = composition
+        .spec()
+        .map_err(|e| RuntimeError::caused("the guardian composition is not valid", e))?;
+    let timeout = std::time::Duration::from_millis(composition.timeout_ms);
+    let models = spec
+        .read_models()
+        .map_err(|e| RuntimeError::caused("the guardian composition is not valid", e))?;
+    let readers = models
+        .iter()
+        .map(|model| {
+            Ok((
+                model.clone(),
+                build_reader(config, model, profile, timeout)?,
+            ))
+        })
+        .collect::<Result<Vec<_>, RuntimeError>>()?;
+    let label = if models.is_empty() {
+        "script".to_owned()
+    } else {
+        models.into_iter().collect::<Vec<_>>().join(",")
+    };
+    let shadow = spec.shadow;
+    let compiled = Composition::compile(spec, readers)
+        .map_err(|e| RuntimeError::caused("the guardian composition is not valid", e))?;
+    Ok(Some(CompositionStage {
+        composition: Arc::new(compiled),
+        label,
+        shadow,
     }))
 }
 
@@ -339,24 +368,24 @@ pub(super) fn session_state(
     }))
 }
 
-/// Puts the configured screen stage on the state. A screen that cannot be built is reported and
-/// left off.
-pub(super) fn attach_screen(state: &SessionState, setup: &AgentSetup) {
-    match build_screen(&setup.config, setup.guardian_profile) {
+/// Puts the configured composition on the state. One that cannot be built is reported and left
+/// off.
+pub(super) fn attach_composition(state: &SessionState, setup: &AgentSetup) {
+    match build_composition(&setup.config, setup.guardian_profile) {
         Ok(stage) => {
-            // Best-effort: a screen that never loads already reaches the user as an
-            // unavailable-screen warning on its first call.
+            // Best-effort: a reader that never loads already reaches the user as an
+            // unavailable warning on its first call.
             if let (Some(stage), Ok(runtime)) = (&stage, tokio::runtime::Handle::try_current()) {
-                let screen = stage.screen.clone();
+                let composition = stage.composition.clone();
                 runtime.spawn(async move {
-                    let _ = screen.warm_up().await;
+                    let _ = composition.warm_up().await;
                 });
             }
-            state.set_screen(stage)
+            state.set_composition(stage)
         }
         Err(e) => setup
             .approver
-            .warn(&format!("the guardian screen stage is off: {}", chain(&e))),
+            .warn(&format!("the guardian composition is off: {}", chain(&e))),
     }
 }
 

@@ -661,9 +661,9 @@ and the summary line says so. A guardian on the account becomes unavailable, so 
 it are denied until it has a credential again.
 
 **Removing** deletes the account's table from your user settings file and its stored credential. It
-is refused while the live main model, the live guardian or the `[guardian.screen]` model uses the
-account, while your user file's `[model] model`, `[guardian] model` or `[guardian.screen] model`
-names it, and for an account defined in a settings file other than your user file.
+is refused while the live main model, the live guardian or a `[guardian.composition]` read model
+uses the account, while your user file's `[model] model`, `[guardian] model`,
+`[guardian.composition] model` or a `[guardian.composition.reads.*] model` names it, and for an account defined in a settings file other than your user file.
 
 ### When no model is ready at startup
 

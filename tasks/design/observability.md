@@ -70,12 +70,14 @@ them via `record_content_telemetry`.
   confidence,cache_hit,latency_ms}`, `fail_closed_reason` = error | timeout | unparseable |
   low_confidence | unavailable, with the audit label: provider error, stream drop or connection reset → `error` / `GuardianUnavailable`; missing credential or unavailable pinned guardian → `unavailable` / `GuardianUnavailable`; timeout → `timeout` / `Timeout`; unparseable → `unparseable` / `Unparseable`; low confidence → `low_confidence` / `LowConfidence`), `permission_mode_changed`, `mcp_server_connection`, `subagent`
   (spawn | complete | killed | budget_exhausted), `internal_error` (`class` = `audit_write` | `ledger_write`, on every failed write; never the io error).
-- **Dropped guardian spend.** When an enforcing screen settles a call, the guardian request racing it is
-  dropped; it has usually been sent and billed, but its span closes without usage. The cascade estimates
-  its input as a quarter of the rendered prompt's bytes (`Guardian::dropped_estimate`); the audit record
+- **Dropped guardian spend.** When an enforcing composition settles a call while the guardian request it
+  started is pending, the request is dropped; it has usually been sent and billed, but its span closes
+  without usage. The composition root estimates its input as a quarter of the rendered prompt's bytes
+  (`Guardian::dropped_estimate`); a request that finished but was not used is not estimated: its usage
+  comes back in `Composed.llm_usage` and is added to the session's usage. The audit record
   carries it with the guardian's own provider, model id and `priced`, `tool_decision` projects it as
   `guardian.dropped_*`, and the bridge adds `fontaine.token.usage` / `fontaine.cost.usage` with
-  `query_source = guardian` and `estimated = true`. `/cost` and budgets do not count it.
+  `query_source = guardian` and `estimated = true`. `/cost` and budgets do not count the estimate.
 - **Analytics.** `analytics/notebooks/fontaine-overview.json` is a micromegas notebook (loaded with
   `micromegas-screens`) over the base `log_entries` and `measures` views. Event cells work on both
   backends; metric cells are native-only (OTLP histograms are dropped, OTLP sums are cumulative); it has no

@@ -242,7 +242,7 @@ async fn an_account_in_use_cannot_be_removed() {
     let server = gateway().await;
     let w = World::new();
     w.user_file(&format!(
-        "[accounts.main]\nkind = \"openai-compatible\"\nbase_url = \"{uri}\"\n\n[accounts.judge]\nkind = \"openai-compatible\"\nbase_url = \"{uri}\"\nmodels = [\"g1\"]\n\n[accounts.eyes]\nkind = \"ollama\"\n\n[accounts.spare]\nkind = \"ollama\"\n\n[model]\nmodel = \"main/m1\"\n\n[guardian]\nmodel = \"judge/g1\"\n\n[guardian.screen]\nmodel = \"eyes/screen\"\n",
+        "[accounts.main]\nkind = \"openai-compatible\"\nbase_url = \"{uri}\"\n\n[accounts.judge]\nkind = \"openai-compatible\"\nbase_url = \"{uri}\"\nmodels = [\"g1\"]\n\n[accounts.eyes]\nkind = \"ollama\"\n\n[accounts.spare]\nkind = \"ollama\"\n\n[model]\nmodel = \"main/m1\"\n\n[guardian]\nmodel = \"judge/g1\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"eyes/screen\"\n",
         uri = server.uri()
     ));
     let runtime = session(&w).await;
@@ -258,7 +258,9 @@ async fn an_account_in_use_cannot_be_removed() {
     ));
     assert!(matches!(
         runtime.removable("eyes"),
-        Err(AccountsError::InUse { .. })
+        Err(AccountsError::InUse {
+            by: "the guardian's composition"
+        })
     ));
     assert!(runtime.removable("spare").is_ok());
 }

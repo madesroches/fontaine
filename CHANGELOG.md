@@ -679,6 +679,15 @@ All notable changes are recorded here. The format follows
 #### Guardian
 
 - The guardian prompt no longer mentions the removed `background` spawn argument (#326).
+- The guardian's composition is a Rune script: `[guardian.composition]` (user file only) replaces
+  `[guardian.screen]`, with `preset = "screen"` or `script = "<file>"`, named logprob `reads`,
+  free-form `params` and `shadow`. The script orchestrates host leaves (`read`, `llm`,
+  `first_decisive`); only host functions mint verdicts, and the Rust root fails closed on errors,
+  the instruction budget, timeouts, abstain and non-verdict returns. A finished LLM denial in hand
+  always wins, and an unavailable guardian skips the script. The `screen` preset is now an allow
+  screen in front of the LLM guardian, sequential by default (`concurrent = true` races them), and
+  a cancelled call cancels its reads and LLM request. Audit records gain `screen_scores`, and
+  `fontaine-evals` gains `--composition-script` and `--composition-param` (#137, #136).
 
 #### Headless
 

@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use fontaine_guardian::cascade::{Decided, ScreenInput};
+use fontaine_guardian::composition::{self, Composed, Decided, ReadRecord};
 use fontaine_guardian::{
-    Adjudication, Decision as GuardianDecision, FailClosed, ScreenOutcome, ScreenScores, WireIds,
+    Adjudication, Decision as GuardianDecision, FailClosed, Guardian as LlmGuardian, WireIds,
 };
 use fontaine_tools::ask_user::{Question, QuestionReply};
 use fontaine_tools::descriptor::is_shell_class;
@@ -31,7 +31,7 @@ use crate::config::PermissionMode;
 use crate::destructive::touched_paths;
 use crate::floor::{self, CriticalEnv};
 use crate::gate::{
-    DeniedCall, RetrySource, ScreenStage, SessionState, UNREGISTERED_AGENT, permission_mode,
+    CompositionStage, DeniedCall, RetrySource, SessionState, UNREGISTERED_AGENT, permission_mode,
 };
 use crate::ledger::{Existence, Record};
 use crate::permission_rules::{
@@ -373,14 +373,16 @@ struct CallCtx<'a> {
     started: Instant,
 }
 
-/// What the screen made of a call, for the audit record of whatever decides it.
+/// What the composition made of a call, for the audit record of whatever decides it.
 struct Screened {
-    outcome: ScreenOutcome,
-    model: String,
+    reads: Vec<ReadRecord>,
+    outcome: &'static str,
+    latency_ms: Option<u64>,
+    model: Option<String>,
     dropped: Option<Dropped>,
 }
 
-/// The guardian request a settling screen cut short.
+/// The guardian request a settling composition cut short.
 struct Dropped {
     input_tokens: u64,
     provider: String,
@@ -389,13 +391,27 @@ struct Dropped {
 }
 
 impl Screened {
+    fn score(&self, name: &str) -> Option<f64> {
+        self.reads
+            .iter()
+            .find(|read| read.name == name)
+            .and_then(|read| read.result.as_ref().ok().copied())
+    }
+
     fn annotate(&self, record: &mut DecisionRecord) {
-        record.screen_risk = self.outcome.risk();
-        record.screen_allow_risk = self.outcome.allow_risk();
-        record.screen_steering = self.outcome.steering();
-        record.screen_model = Some(self.model.clone());
-        record.screen_latency_ms = Some(self.outcome.latency_ms());
-        record.screen_outcome = Some(self.outcome.as_str().to_string());
+        record.screen_risk = self.score("stop");
+        record.screen_allow_risk = self.score("allow");
+        record.screen_steering = self.score("steering");
+        let others: std::collections::BTreeMap<String, f64> = self
+            .reads
+            .iter()
+            .filter(|read| !matches!(read.name.as_str(), "stop" | "allow" | "steering"))
+            .filter_map(|read| read.result.as_ref().ok().map(|v| (read.name.clone(), *v)))
+            .collect();
+        record.screen_scores = (!others.is_empty()).then_some(others);
+        record.screen_model = self.model.clone();
+        record.screen_latency_ms = self.latency_ms;
+        record.screen_outcome = Some(self.outcome.to_string());
         if let Some(dropped) = &self.dropped {
             record.guardian_dropped_input_tokens = Some(dropped.input_tokens);
             record.guardian_dropped_provider = Some(dropped.provider.clone());
@@ -1165,6 +1181,7 @@ impl PermissionPipeline {
             screen_risk: None,
             screen_allow_risk: None,
             screen_steering: None,
+            screen_scores: None,
             screen_model: None,
             screen_latency_ms: None,
             screen_outcome: None,
@@ -1504,38 +1521,68 @@ impl PermissionPipeline {
             hook.guardian_context.clone(),
             call.annotations,
         );
-        let stage = self.state.screen();
+        let request = Arc::new(request);
+        let stage = self.state.composition();
         let guardian = self.state.guardian();
-        let composed = fontaine_guardian::cascade::adjudicate(
-            stage.as_ref().map(|stage| ScreenInput {
-                screen: &stage.screen,
-                enforce: !stage.shadow,
-            }),
-            &guardian,
-            &request,
-        )
-        .await;
-        let mut screened = self.note_screen(stage, composed.screen);
-        if let Some(screened) = &mut screened
-            && let Some(input_tokens) = composed.dropped_input_tokens
-            && let Some(WireIds { provider, model }) = guardian.wire_ids()
-        {
-            screened.dropped = Some(Dropped {
-                input_tokens,
-                provider,
-                model,
-                priced: guardian.settings().priced,
-            });
-        }
-        let mut adjudication = match composed.decided {
-            Decided::ScreenStop(scores) => {
-                let screened = screened.expect("a screen stop comes from a screen");
-                return self.screen_stop(cx, &screened, scores.risk).await;
+        let (decided, screened) = match stage {
+            None => (
+                Decided::Guardian(Box::new(guardian.adjudicate(&request).await)),
+                None,
+            ),
+            Some(stage) => {
+                let composed = composition::adjudicate(
+                    stage.composition.clone(),
+                    guardian.clone(),
+                    request.clone(),
+                )
+                .await;
+                let screened = self.note_composition(&stage, &composed, &guardian);
+                if let Some(usage) = &composed.llm_usage {
+                    self.state.add_guardian_usage(cx.call.agent, usage);
+                }
+                (composed.decided, Some(screened))
             }
-            Decided::ScreenAllow(scores) => {
-                let screened = screened.expect("a screen allow comes from a screen");
-                return self.screen_allow(cx, &screened, scores);
+        };
+        let mut adjudication = match decided {
+            Decided::Escalate { node, reason } => {
+                let screened = screened.expect("an escalation comes from a composition");
+                return self.screen_stop(cx, &screened, &node, &reason).await;
             }
+            Decided::Allow {
+                node,
+                score,
+                threshold,
+            } => {
+                let screened = screened.expect("an allow comes from a composition");
+                return self.screen_allow(cx, &screened, &node, score, threshold);
+            }
+            Decided::Deny {
+                node,
+                reason,
+                fail_closed: None,
+            } => {
+                let screened = screened.expect("a deny comes from a composition");
+                return self.screen_deny(cx, &screened, &node, &reason).await;
+            }
+            // A composition that failed is a guardian denial like any other: it can be approved
+            // from `/denied`, retried by a hook, and counts toward the breaker.
+            Decided::Deny {
+                reason,
+                fail_closed: Some(kind),
+                ..
+            } => Adjudication {
+                decision: GuardianDecision::Deny,
+                rule: kind.label(),
+                explanation: reason,
+                confidence: None,
+                fail_closed: Some(kind),
+                cache_hit: false,
+                latency_ms: 0,
+                model: guardian.label().to_string(),
+                profile: guardian.profile(),
+                usage: Default::default(),
+                transport: None,
+            },
             Decided::Guardian(adjudication) => *adjudication,
         };
         if adjudication.fail_closed == Some(FailClosed::Unavailable) && !self.headless {
@@ -1576,49 +1623,63 @@ impl PermissionPipeline {
         self.settle(cx, adjudication, screened.as_ref()).await
     }
 
-    /// What the screen made of a call, for the audit record. A screen that cannot answer is
-    /// reported once and the guardian decides.
-    fn note_screen(
+    /// What the composition made of a call, for the audit record. One that cannot run to the end
+    /// is reported once per session.
+    fn note_composition(
         &self,
-        stage: Option<ScreenStage>,
-        outcome: Option<ScreenOutcome>,
-    ) -> Option<Screened> {
-        let (stage, outcome) = stage.zip(outcome)?;
-        if let ScreenOutcome::Unavailable { reason, .. } = &outcome
-            && self.state.first_screen_warning()
+        stage: &CompositionStage,
+        composed: &Composed,
+        guardian: &LlmGuardian,
+    ) -> Screened {
+        if let Some(reason) = composed.unavailable_reason()
+            && self.state.first_composition_warning()
         {
             self.approver.warn(&format!(
-                "the screen model {} could not be asked ({reason}); the guardian decides every call",
+                "the guardian composition over {} did not run to the end ({reason}); a call it could not judge is left to the guardian or denied",
                 stage.label
             ));
         }
-        Some(Screened {
-            outcome,
-            model: stage.label,
-            dropped: None,
-        })
+        let models = composed.models();
+        let dropped = composed.dropped_input_tokens.and_then(|input_tokens| {
+            guardian
+                .wire_ids()
+                .map(|WireIds { provider, model }| Dropped {
+                    input_tokens,
+                    provider,
+                    model,
+                    priced: guardian.settings().priced,
+                })
+        });
+        Screened {
+            reads: composed.reads.clone(),
+            outcome: composed.outcome_name(),
+            latency_ms: (!composed.reads.is_empty()).then(|| composed.reads_latency_ms()),
+            model: (!models.is_empty()).then_some(models),
+            dropped,
+        }
     }
 
-    /// The screen judged the call clearly within the user's request and free of steering. The
-    /// guardian was dropped, so its breaker and cache are untouched.
+    /// A node of the composition allowed the call on a score it read. The guardian was dropped or
+    /// never asked, so its breaker and cache are untouched.
     fn screen_allow(
         &self,
         cx: &CallCtx<'_>,
         screened: &Screened,
-        scores: ScreenScores,
+        node: &str,
+        score: f64,
+        threshold: f64,
     ) -> GateDecision {
         let figure = |value: Option<f64>| value.map_or("n/a".to_string(), |v| format!("{v:.2e}"));
         let explanation = format!(
-            "a local screen judged this call clearly within the user's request (allow risk {}, steering {})",
-            figure(scores.allow_risk),
-            figure(scores.steering)
+            "the guardian composition allowed this call at {node} (score {score:.2e} below {threshold:.2e}, steering {})",
+            figure(screened.score("steering"))
         );
         Self::note(Tier::Screen, Decision::Allow);
         let mut record = self.record(
             cx,
             Tier::Screen,
             Decision::Allow,
-            Some("screen".to_string()),
+            Some(node.to_string()),
             Some(explanation),
         );
         screened.annotate(&mut record);
@@ -1629,12 +1690,17 @@ impl PermissionPipeline {
         }
     }
 
-    /// The screen judged the call outside the user's request. It escalates exactly as a guardian
-    /// escalation does; the guardian, its cache and its breaker are not involved.
-    async fn screen_stop(&self, cx: &CallCtx<'_>, screened: &Screened, risk: f64) -> GateDecision {
-        let reason =
-            format!("a local screen judged this call outside the user's request (risk {risk:.2})");
-        let rule = "screen".to_string();
+    /// A node of the composition stopped the call. It escalates exactly as a guardian escalation
+    /// does; the guardian, its cache and its breaker are not involved.
+    async fn screen_stop(
+        &self,
+        cx: &CallCtx<'_>,
+        screened: &Screened,
+        node: &str,
+        stopped: &str,
+    ) -> GateDecision {
+        let reason = format!("the guardian composition stopped this call at {node}: {stopped}");
+        let rule = node.to_string();
         let annotated = |decision, explanation| {
             let mut record =
                 self.record(cx, Tier::Screen, decision, Some(rule.clone()), explanation);
@@ -1660,12 +1726,38 @@ impl PermissionPipeline {
             cx.call.tool,
             &format!("{reason}, and a headless run cannot ask the user"),
         );
-        // The screen has nothing to retry, so a hook's retry offer is dropped.
+        // The composition has nothing to retry, so a hook's retry offer is dropped.
         self.denied_hooks(cx, Tier::Screen, &reason).await;
         Self::note(Tier::Screen, Decision::Deny);
         self.emit(annotated(Decision::Deny, Some(message.clone())));
         self.state
             .append(self.denial(cx, Tier::Screen, Some(&rule), &message));
+        GateDecision::Deny { message }
+    }
+
+    /// A node of the composition denied the call outright: no prompt, in any surface.
+    async fn screen_deny(
+        &self,
+        cx: &CallCtx<'_>,
+        screened: &Screened,
+        node: &str,
+        why: &str,
+    ) -> GateDecision {
+        let reason = format!("the guardian composition denied this call at {node}: {why}");
+        let message = denied(cx.call.tool, &reason);
+        self.denied_hooks(cx, Tier::Screen, &reason).await;
+        Self::note(Tier::Screen, Decision::Deny);
+        let mut record = self.record(
+            cx,
+            Tier::Screen,
+            Decision::Deny,
+            Some(node.to_string()),
+            Some(message.clone()),
+        );
+        screened.annotate(&mut record);
+        self.emit(record);
+        self.state
+            .append(self.denial(cx, Tier::Screen, Some(node), &message));
         GateDecision::Deny { message }
     }
 

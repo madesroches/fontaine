@@ -54,8 +54,9 @@ all tests pass:
   lives in the master plan's Decisions.
 - **The fast path is earned by Fontaine-enforced workspace containment, not by a label.**
   Read-only ≠ safe; MCP-declared `readOnlyHint` never skips the guardian. There are four
-  exceptions. The opt-in, user-scope `[guardian.screen] allow_threshold`: a verdict of the composed
-  guardian (a steering-hardened local screen), never before the floor. And in `auto`, after the
+  exceptions. The composed guardian's allow: `allow_below` in a user-scope
+  `[guardian.composition]` script, such as the `screen` preset's `allow_threshold` (a
+  steering-hardened local screen), a verdict of the composed guardian and never before the floor. And in `auto`, after the
   floor and hooks, file-tool edits to git-tracked, new or session-created files in the primary
   root (`tracked_edit`) and file-tool writes into the session scratch directory (`scratch_write`);
   instruction files and `.github/` are excluded, and project scope can only switch them off. And in every mode, an `agent` spawn whose

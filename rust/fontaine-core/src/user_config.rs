@@ -192,7 +192,8 @@ pub fn model_key_naming(path: &Path, name: &str) -> io::Result<Option<&'static s
             .and_then(crate::models::ModelRef::parse)
             .is_some_and(|r| r.account == name)
     };
-    let keys: [(&'static str, Option<&Item>); 3] = [
+    let composition = doc.get("guardian").and_then(|t| t.get("composition"));
+    let mut keys: Vec<(&'static str, Option<&Item>)> = vec![
         (
             "[model] model",
             doc.get("model").and_then(|t| t.get("model")),
@@ -202,12 +203,20 @@ pub fn model_key_naming(path: &Path, name: &str) -> io::Result<Option<&'static s
             doc.get("guardian").and_then(|t| t.get("model")),
         ),
         (
-            "[guardian.screen] model",
-            doc.get("guardian")
-                .and_then(|t| t.get("screen"))
-                .and_then(|t| t.get("model")),
+            "[guardian.composition] model",
+            composition.and_then(|t| t.get("model")),
         ),
     ];
+    if let Some(reads) = composition
+        .and_then(|t| t.get("reads"))
+        .and_then(Item::as_table_like)
+    {
+        keys.extend(
+            reads
+                .iter()
+                .map(|(_, read)| ("[guardian.composition.reads] model", read.get("model"))),
+        );
+    }
     Ok(keys
         .into_iter()
         .find(|(_, item)| names(*item))

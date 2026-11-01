@@ -103,26 +103,39 @@ struct RunArgs {
     #[arg(long, value_name = "MODE")]
     guardian: Option<String>,
 
-    /// Put a screen stage beside a `live:` guardian: `live:<account>/<model>`, an `ollama`
-    /// account. It needs `--stop-threshold`, `--allow-threshold` or both. The scorecard then
+    /// Compose a `live:` guardian with the `screen` preset: `live:<account>/<model>`, an `ollama`
+    /// account. It needs `--stop-threshold`, `--allow-threshold` or both, except with
+    /// `--composition-script`, where it only names the default read model. The scorecard then
     /// reports the cascade (catch, guardian calls, allowed-call latency, benign cases escalated,
-    /// calls the screen allowed) and leaves the guardian models file alone
+    /// calls the composition allowed) and leaves the guardian models file alone
     #[arg(long, value_name = "MODE")]
     screen: Option<String>,
 
-    /// The risk at which the screen stops a case. There is no default: a threshold is only
-    /// meaningful for the model and question it was calibrated on
+    /// The risk at which the screen preset stops a case. There is no default: a threshold is
+    /// only meaningful for the model and question it was calibrated on
     #[arg(long, value_name = "RISK", requires = "screen")]
     stop_threshold: Option<f64>,
 
-    /// The allow risk below which, with the steering score under the veto, the screen allows a
-    /// case without the guardian. There is no default, for the same reason as the stop threshold
+    /// The allow risk below which, with the steering score under the veto, the screen preset
+    /// allows a case without the guardian. There is no default, for the same reason as the stop
+    /// threshold
     #[arg(long, value_name = "RISK", requires = "screen")]
     allow_threshold: Option<f64>,
 
-    /// The steering score at or above which the screen never allows a case
+    /// The steering score at or above which the screen preset never allows a case
     #[arg(long, value_name = "P", requires = "allow_threshold")]
     steering_veto: Option<f64>,
+
+    /// Compose a `live:` guardian with this Rune script instead of the `screen` preset. Its reads
+    /// and their time limit come from `[guardian.composition]` in the user's configuration; with
+    /// `--screen` that sets only the default read model
+    #[arg(long, value_name = "FILE")]
+    composition_script: Option<PathBuf>,
+
+    /// A `key=value` parameter of the `screen` preset, or passed to the script; repeatable. The
+    /// value is read as TOML and is a string when it is not valid TOML
+    #[arg(long, value_name = "KEY=VALUE")]
+    composition_param: Vec<String>,
 
     /// Guardian profile under test
     #[arg(long, value_enum, default_value = "full")]
@@ -204,7 +217,7 @@ pub struct CaseResult {
     /// run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport: Option<String>,
-    /// What the screen stage did with the case, in a cascade run.
+    /// What the composition did with the case, in a cascade run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cascade: Option<CascadeStep>,
     /// The typed-decision model's answer, in a `screen:` run.
@@ -223,9 +236,9 @@ pub struct CascadeStep {
     /// The steering detector's score, when the allow reads ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steering: Option<f64>,
-    /// `stop`, `allow`, `pass` or `unavailable`.
+    /// `stop`, `allow`, `deny`, `pass` or `unavailable`.
     pub screen_outcome: String,
-    /// False when the screen settled the case and the guardian's verdict was not used.
+    /// False when the composition settled the case and the guardian's verdict was not used.
     pub llm_called: bool,
 }
 
@@ -276,7 +289,7 @@ pub struct Summary {
     /// out of every rate and of the latency.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub infrastructure_failures: Vec<Skipped>,
-    /// What the screen stage in front of the guardian did, in a cascade run.
+    /// What the composition in front of the guardian did, in a cascade run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cascade: Option<Cascade>,
 }
@@ -285,8 +298,14 @@ pub struct Summary {
 /// call the screen stopped counts as an `escalate`.
 #[derive(Debug, Serialize)]
 pub struct Cascade {
-    /// `<account>/<model>`.
+    /// `<account>/<model>`, comma-joined when the composition reads with several.
     pub screen: String,
+    /// The `--composition-script` path, in a script run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+    /// The `--composition-param` values, in a run that set any.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub params: std::collections::BTreeMap<String, String>,
     pub stop_threshold: Option<f64>,
     pub allow_threshold: Option<f64>,
     pub steering_veto: Option<f64>,
@@ -413,8 +432,21 @@ fn run_score(args: &RunArgs) -> u8 {
         Some(Some(spec)) => Some(spec),
         Some(None) => return usage("`--screen` takes `live:<account>/<model>`"),
     };
-    if cascade_screen.is_some() && live_spec.is_none() {
-        return usage("`--screen` puts a screen in front of a `live:` guardian");
+    let cascade_script = args.composition_script.as_deref();
+    if (cascade_screen.is_some() || cascade_script.is_some()) && live_spec.is_none() {
+        return usage(
+            "`--screen` and `--composition-script` compose a `live:` guardian; the others have none",
+        );
+    }
+    if cascade_screen.is_none() && cascade_script.is_none() && !args.composition_param.is_empty() {
+        return usage("`--composition-param` needs `--screen` or `--composition-script`");
+    }
+    let mut composition_params = Vec::new();
+    for text in &args.composition_param {
+        match parse_composition_param(text) {
+            Ok(param) => composition_params.push(param),
+            Err(message) => return usage(&message),
+        }
     }
     let stop_threshold = args.stop_threshold;
     if let Some(t) = stop_threshold
@@ -432,18 +464,50 @@ fn run_score(args: &RunArgs) -> u8 {
     {
         return usage("`--steering-veto` must be greater than 0 and at most 1");
     }
-    if cascade_screen.is_some() && stop_threshold.is_none() && args.allow_threshold.is_none() {
+    if cascade_script.is_some()
+        && (stop_threshold.is_some()
+            || args.allow_threshold.is_some()
+            || args.steering_veto.is_some())
+    {
+        return usage(
+            "`--composition-script` takes its parameters from `--composition-param`; drop the threshold flags",
+        );
+    }
+    if cascade_screen.is_some()
+        && cascade_script.is_none()
+        && stop_threshold.is_none()
+        && args.allow_threshold.is_none()
+        && !composition_params
+            .iter()
+            .any(|(k, _)| k == "stop_threshold" || k == "allow_threshold")
+    {
         return usage("`--screen` needs `--stop-threshold`, `--allow-threshold` or both");
     }
-    let steering_veto = args
-        .steering_veto
-        .unwrap_or(fontaine_guardian::DEFAULT_STEERING_VETO);
-    let cascade = cascade_screen.map(|screen| CascadeParams {
-        screen,
-        stop_threshold,
-        allow_threshold: args.allow_threshold,
-        steering_veto: args.allow_threshold.map(|_| steering_veto),
-    });
+    let param_number = |name: &str| {
+        composition_params
+            .iter()
+            .find(|(k, _)| k == name)
+            .and_then(|(_, v)| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+    };
+    let steering_veto_set = args.steering_veto.or_else(|| param_number("steering_veto"));
+    let steering_veto = steering_veto_set.unwrap_or(fontaine_guardian::DEFAULT_STEERING_VETO);
+    let reported_stop = stop_threshold.or_else(|| param_number("stop_threshold"));
+    let reported_allow = args
+        .allow_threshold
+        .or_else(|| param_number("allow_threshold"));
+    let mut cascade =
+        (cascade_screen.is_some() || cascade_script.is_some()).then(|| CascadeParams {
+            screen: cascade_screen.unwrap_or_default().to_string(),
+            script: cascade_script.map(|p| p.display().to_string()),
+            params: composition_params
+                .iter()
+                .map(|(k, v)| (k.clone(), v.to_string()))
+                .collect(),
+            stop_threshold: reported_stop,
+            allow_threshold: reported_allow,
+            steering_veto: reported_allow.map(|_| steering_veto).or(steering_veto_set),
+            steering_veto_flag: args.steering_veto,
+        });
     if screen_spec.is_none()
         && (args.screen_url.is_some()
             || args.screen_timeout_ms.is_some()
@@ -508,13 +572,20 @@ fn run_score(args: &RunArgs) -> u8 {
     let label = match &cascade {
         Some(c) => {
             let threshold = |t: Option<f64>| t.map_or("none".to_string(), |t| t.to_string());
-            format!(
+            let mut label = format!(
                 "{guardian} +screen live:{} stop={} allow={} veto={}",
                 c.screen,
                 threshold(c.stop_threshold),
                 threshold(c.allow_threshold),
                 threshold(c.steering_veto),
-            )
+            );
+            if let Some(script) = &c.script {
+                label.push_str(&format!(" script={script}"));
+            }
+            for (key, value) in &c.params {
+                label.push_str(&format!(" {key}={value}"));
+            }
+            label
         }
         None => guardian.clone(),
     };
@@ -578,27 +649,38 @@ fn run_score(args: &RunArgs) -> u8 {
             Err(e) => return usage(&e),
         };
         if let Some(c) = &cascade
-            && let Err(e) = live::add_screen(
+            && let Err(e) = live::add_composition(
                 &mut connected,
-                c.screen,
-                c.stop_threshold,
-                c.allow_threshold,
-                steering_veto,
+                live::CompositionArgs {
+                    screen: cascade_screen,
+                    script: cascade_script,
+                    stop_threshold: args.stop_threshold,
+                    allow_threshold: args.allow_threshold,
+                    steering_veto: c.steering_veto_flag,
+                    params: &composition_params,
+                },
                 guardian_profile,
             )
         {
             return usage(&e);
         }
+        if let (Some(c), Some(composition)) = (&mut cascade, &connected.composition)
+            && c.screen.is_empty()
+        {
+            c.screen = composition.models().join(",");
+        }
         let rt = match runtime() {
             Ok(rt) => rt,
             Err(code) => return code,
         };
-        // An unloaded screen answers no case, so a cascade scorecard without it measures nothing.
-        if let Some(screen) = &connected.screen
-            && let Err(e) = rt.block_on(screen.warm_up())
-        {
-            eprintln!("fontaine-evals: the screen model did not load: {e}");
-            return EXIT_FAIL;
+        // An unloaded model answers no read, so a cascade scorecard without it measures nothing.
+        if let Some(composition) = &connected.composition {
+            for (label, warmed) in rt.block_on(composition.warm_up()) {
+                if let Err(e) = warmed {
+                    eprintln!("fontaine-evals: the screen model {label} did not load: {e}");
+                    return EXIT_FAIL;
+                }
+            }
         }
         // Only once setup has succeeded: a sidecar left by a run that never started would block
         // the next one.
@@ -1295,18 +1377,25 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
 }
 
 /// What a cascade run was asked to measure.
-struct CascadeParams<'a> {
-    /// `<account>/<model>`.
-    screen: &'a str,
+struct CascadeParams {
+    /// `<account>/<model>`; the composition's read models when only a script names them.
+    screen: String,
+    /// The `--composition-script` path.
+    script: Option<String>,
+    /// The `--composition-param` values, as typed.
+    params: Vec<(String, String)>,
     stop_threshold: Option<f64>,
     allow_threshold: Option<f64>,
     /// Set only with an allow threshold.
     steering_veto: Option<f64>,
+    /// Only an explicit `--steering-veto`; the composition otherwise gets the key from
+    /// `--composition-param` or its own default.
+    steering_veto_flag: Option<f64>,
 }
 
 struct SummaryParams<'a> {
     guardian: &'a str,
-    cascade: Option<CascadeParams<'a>>,
+    cascade: Option<CascadeParams>,
     filter: Option<String>,
     profile: Profile,
     dataset_cases: usize,
@@ -1381,11 +1470,7 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
     }
 }
 
-fn cascade_summary(
-    params: CascadeParams<'_>,
-    selected: &[&Case],
-    results: &[CaseResult],
-) -> Cascade {
+fn cascade_summary(params: CascadeParams, selected: &[&Case], results: &[CaseResult]) -> Cascade {
     let scored: Vec<(&Case, &CaseResult)> = selected
         .iter()
         .copied()
@@ -1421,7 +1506,9 @@ fn cascade_summary(
         })
         .collect();
     Cascade {
-        screen: params.screen.to_string(),
+        screen: params.screen,
+        script: params.script,
+        params: params.params.into_iter().collect(),
         stop_threshold: params.stop_threshold,
         allow_threshold: params.allow_threshold,
         steering_veto: params.steering_veto,
@@ -1551,4 +1638,17 @@ fn print_summary(summary: &Summary, results: &[CaseResult], streamed: bool) {
     for (class, rate) in &summary.escape_classes {
         println!("  escape:{class} catch_rate={}", pct(*rate));
     }
+}
+
+/// A `key=value` of `--composition-param`: the value is TOML when it parses as one, else text.
+fn parse_composition_param(text: &str) -> Result<(String, toml::Value), String> {
+    let (key, value) = text
+        .split_once('=')
+        .filter(|(k, _)| !k.is_empty())
+        .ok_or_else(|| format!("`--composition-param {text}` must be `KEY=VALUE`"))?;
+    let parsed = toml::from_str::<toml::Table>(&format!("v = {value}"))
+        .ok()
+        .and_then(|mut table| table.remove("v"))
+        .unwrap_or_else(|| toml::Value::String(value.to_string()));
+    Ok((key.to_string(), parsed))
 }

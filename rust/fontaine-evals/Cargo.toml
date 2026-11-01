@@ -17,7 +17,7 @@ clap.workspace = true
 dirs.workspace = true
 fontaine-agents.workspace = true
 fontaine-core.workspace = true
-fontaine-guardian.workspace = true
+fontaine-guardian = { workspace = true, features = ["composition"] }
 fontaine-tools.workspace = true
 reqwest.workspace = true
 serde.workspace = true

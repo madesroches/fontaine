@@ -4,7 +4,8 @@
 
 mod breaker;
 mod cache;
-pub mod cascade;
+#[cfg(feature = "composition")]
+pub mod composition;
 pub mod critique;
 pub mod env_scan;
 mod guardian;
@@ -21,7 +22,6 @@ mod verdict;
 
 pub use breaker::{CONSECUTIVE_LIMIT, LoopBreaker, TOTAL_LIMIT};
 pub use cache::TTL as CACHE_TTL;
-pub use cascade::{Composed, Decided, ScreenInput};
 pub use guardian::{Adjudication, EXTRACTOR_RETRIES, Guardian, Settings, WireIds};
 pub use profile::{FULL_PROMPT, MINIMAL_PROMPT, Profile};
 pub use request::{
@@ -34,8 +34,7 @@ pub use rule_label::RuleLabel;
 pub use rules::{EnvironmentConfig, List, RuleConfig};
 pub use scanner::{CommandScanner, LlmScanner, Scan, Scanner};
 pub use screen::{
-    AllowSettings, DEFAULT_STEERING_VETO, Question, Screen, ScreenOutcome, ScreenScores,
-    ScreenSettings,
+    DEFAULT_STEERING_VETO, Prompt, Question, Read, Reader, ReaderSettings, check_pairing,
 };
 pub use structured::{
     FixedProbe, ModeNotice, Notifier, OutputMode, OutputProbe, PROBE_TIMEOUT, ProbeOutcome,

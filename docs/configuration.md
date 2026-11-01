@@ -102,7 +102,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[model] model` | no | yes | yes |
 | `[guardian] model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | yes |
 | `[guardian] scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no |
-| `[guardian.screen]` | `shadow = true` only | `shadow = true` only | `shadow = true` only |
+| `[guardian.composition]` | `shadow = true` only | `shadow = true` only | `shadow = true` only |
 | `[permissions] default_mode` | `manual` or `dontAsk` only | `manual` or `dontAsk` only | yes |
 | `[permissions] deny`, `ask` | add only | add only | add only |
 | `[permissions] allow` | no | yes | yes |
@@ -490,35 +490,56 @@ Keys of the guardian that judges tool calls in `auto` mode and in the consequent
 The `llm` scanner uses the guardian's model, so it follows `model`. `timeout_secs` bounds each scan
 of every scanner type, and the `pg2` model load at startup.
 
-#### `[guardian.screen]`
+#### `[guardian.composition]`
 
-An optional fast stage beside the guardian in `auto` and `plan` mode, which asks a small local
-model yes/no questions. It stops a call that is confidently outside what you asked for, as an
-escalation, and, only if you set `allow_threshold`, allows a call that is clearly safe without
-waiting for the guardian. Every other call meets the guardian.
-[The screen stage](guardian.md#the-screen-stage) explains it and how to calibrate it. The section
-is read from the user file only: other scopes may set `shadow = true`, which holds over the user
-file's `shadow = false`, and nothing else.
+How the guardian is composed from the LLM guardian and cheap local reads in `auto` and `plan`
+mode: a built-in preset or a Rune script. With the `screen` preset it is an allow screen in front
+of the guardian: a small local model that answers yes/no questions allows a call that is clearly
+safe without waiting for the guardian, and, only if you set `stop_threshold`, escalates a call that
+is confidently outside what you asked for. Every other call meets the guardian.
+[Composing the guardian](guardian.md#composing-the-guardian) explains it, how to calibrate it and
+how to write a script. The section is read from the user file only: other scopes may set
+`shadow = true`, which holds over the user file's `shadow = false`, and nothing else, so a
+repository cannot load a script. An invalid composition stops startup with exit code 2, naming the
+key.
 
 | Key | Meaning | Default |
 |---|---|---|
-| `model` | `<account>/<model>` of an `[accounts.*]` entry of kind `ollama`; its `base_url` is the daemon that is asked, without credentials, so the endpoint must not require authentication. The account's `context_tokens` is the window the screen requests; Ollama reloads a model whenever the requested window changes, so a screen and a guardian on the same model need the same value (the same account does). Required. | unset: no screen |
-| `question` | The question asked: `employee_allowed` ("If an employee were given the user's request, would they be allowed to take this action?") or `outside_request` ("Is this action outside what the user's request asked for?"). A threshold is calibrated for one question. | `employee_allowed` |
-| `stop_threshold` | The risk, greater than 0 and at most 1, at which a call is stopped. There is no default. | unset |
+| `preset` | A built-in preset: `screen`. Exactly one of `preset` and `script` is required. | unset |
+| `script` | A Rune file. A relative path resolves against the user config directory. It must compile against the host functions and define `guardian` with two parameters. | unset |
+| `model` | `<account>/<model>` of an `[accounts.*]` entry of kind `ollama`; its `base_url` is the daemon that is asked, without credentials, so the endpoint must not require authentication. The default model of every read, and required with a preset. The account's `context_tokens` is the window a read requests; Ollama reloads a model whenever the requested window changes, so a read and a guardian on the same model need the same value (the same account does). | unset |
+| `shadow` | Run the composition and record every read, but let the guardian decide. | `true` |
+| `timeout_ms` | Time allowed for each read; at least 1. On expiry the read fails. | `2000` |
+
+`[guardian.composition.params]` holds the preset's parameters, or free-form numbers, strings and
+booleans passed to a script as `params`. The `screen` preset takes:
+
+| Param | Meaning | Default |
+|---|---|---|
+| `question` | The stop read's question: `employee_allowed` ("If an employee were given the user's request, would they be allowed to take this action?") or `outside_request` ("Is this action outside what the user's request asked for?"). A threshold is calibrated for one question. | `employee_allowed` |
+| `stop_threshold` | The risk, greater than 0 and at most 1, at which a call is escalated. | unset: the screen never escalates |
 | `allow_threshold` | Allow a call without the guardian when the hardened allow read's risk is below this and the steering score is below `steering_veto`. Greater than 0 and less than 1. With `shadow = false`, at least one of `stop_threshold` and `allow_threshold` is required. | unset: no allow path |
 | `steering_veto` | The steering score, greater than 0 and at most 1, at or above which the screen never allows a call. | `0.001` |
-| `timeout_ms` | Time allowed for the screen's answer; at least 1. On expiry the guardian decides. | `2000` |
-| `shadow` | Score and record every call, but never stop or allow one; the guardian decides. The allow scores are recorded too. | `true` |
+| `concurrent` | Race the screen against the guardian instead of asking the guardian only for what the screen does not settle. A settled call then spends the guardian's input tokens. | `false` |
+
+`[guardian.composition.reads.<name>]` declares a script's reads; a preset declares its own and
+takes none. Each read has `model` (default: the composition's `model`), `prompt` (`plain` or
+`hardened`) and `question` (`employee_allowed`, `outside_request` or `steering`). The hardened
+prompt is valid only with `employee_allowed`, the one wording its threshold was fitted to.
 
 ```toml
 [accounts.local]
 kind = "ollama"
 
-[guardian.screen]
+[guardian.composition]
+preset = "screen"
 model = "local/qwen3:4b-instruct-2507-q4_K_M"
-stop_threshold = 0.0000599
-allow_threshold = 0.00000156
 shadow = false
+
+[guardian.composition.params]
+allow_threshold = 0.00000156
+# stop_threshold = 0.0000599
+# concurrent = true
 ```
 
 The model's answers are nearly certain, so its risk scores are tiny or near 1, and a working

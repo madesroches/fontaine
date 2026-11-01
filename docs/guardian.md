@@ -63,7 +63,7 @@ The request is built from the ledger and the call itself:
 | `project_instructions` | The instruction files the agent had at launch (`FONTAINE.md`, `CLAUDE.md`, `AGENTS.md`, rules and their imports), as they stood when the session started: the primary root's level first, then each directory above it, then yours, cut at 16,000 characters. Files loaded later on demand never reach it. See [Instruction files](instructions.md#what-the-guardian-reads). |
 | `environment`, `rules` | The `[auto_mode]` prose lists, with the shipped defaults spliced in. |
 | `tool_call` | The tool, its full arguments, a digest of them, and `destructive`, derived by Fontaine from the call itself (below). Every `powershell` call is judged, none is read as safe beforehand, and the request says the command was not parsed. |
-| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets and path-like arguments, the [project environment](#project-environment) when you ran the setup command, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status, and for an `agent` call a `spawned_agent` line with the type, its tools and whether it can write, run commands or reach the network. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the [screen stage](#the-screen-stage) get neither the scratch nor the spawn line (they do get the memory line). The screen stage does not get the project environment, which only the guardian view renders; the minimal profile does. |
+| `session_facts` | The workspace roots, the workspace trust state, the git remotes at session start, the names (never the values) of the [`[env]`](configuration.md#env) variables you set, the status (`pre_existing`, `created_this_session`, `unindexed` or `session_scratch`; never the file index) of only the paths this call touches, which for a shell command are its redirect targets and path-like arguments, the [project environment](#project-environment) when you ran the setup command, and the last 20 actions of the session. When [auto memory](memory.md) is on it also has an `agent_memory_directory` line naming the memory store, set by Fontaine and never from a tool argument. It also has a `session_scratch_directory` line naming the session scratch directory, whose paths carry the `session_scratch` status, and for an `agent` call a `spawned_agent` line with the type, its tools and whether it can write, run commands or reach the network. Fontaine sets all of these from the session, never from a tool argument; the [minimal profile](#the-minimal-profile) and the reads of a [composition](#composing-the-guardian) get neither the scratch nor the spawn line (they do get the memory line). The reads do not get the project environment, which only the guardian view renders; the minimal profile does. |
 | `hook_context` | Notes from `pre_tool_use` hooks, in an untrusted block. |
 | `prior_denials` | Reason-coded denials earlier in the session, for loop detection. They are context, not evidence about the current call (see [How history and your words are weighed](#how-history-and-your-words-are-weighed)). |
 
@@ -254,48 +254,69 @@ first: an `ask` rule or a critical path still asks.
   model matters.
 
 The guardian's model endpoint inherits the [network settings](configuration.md#network) of its
-account, and the screen those of its Ollama account. An invalid `[network]` stops startup with exit
+account, and a composition's reads those of their Ollama accounts. An invalid `[network]` stops startup with exit
 code 2; the guardian never falls back to a direct connection.
 
-## The screen stage
+## Composing the guardian
 
-A guardian verdict takes seconds. The guardian is a composition of two stages: an optional screen
-stage, a small local model that answers cheap yes/no questions about each call, and the LLM stage
-described above. The screen reads the probability of each answer from the first token's logprobs
-and turns it into a risk between 0 and 1. It is configured in
-[`[guardian.screen]`](configuration.md#guardianscreen) and needs an Ollama model, because Ollama's
-native chat endpoint is the one that returns logprobs. The screen requests the account's
+A guardian verdict takes seconds. The guardian can be composed: a short Rune script decides how
+the LLM stage described above and cheap local reads are combined, and Fontaine wraps the script in
+a fail-closed root. A read asks a small local model a yes/no question about the call and turns the
+first token's logprobs into a risk between 0 and 1; it needs an Ollama model, because Ollama's
+native chat endpoint is the one that returns logprobs. The composition is configured in
+[`[guardian.composition]`](configuration.md#guardiancomposition) and is either a built-in preset,
+`screen` being the one that ships, or a script of your own. Nothing is enabled without
+configuration: no model or threshold ships, and a guardian with no `[guardian.composition]` is the
+LLM stage alone.
+
+The composition runs after everything deterministic, only where the guardian would run, and not
+while the denial breaker is paused. A read requests the account's
 [`context_tokens`](configuration.md#accountsname) window, as every call to an `ollama` account does.
-A screen and a guardian on the same Ollama model avoid reloading it only when they request the
-same window, which they do on one account or on accounts with equal `context_tokens`. A screen
-prompt longer than the window makes the screen unavailable, and the guardian decides.
+A read and a guardian on the same Ollama model avoid reloading it only when they request the same
+window, which they do on one account or on accounts with equal `context_tokens`. A prompt longer
+than the window makes that read fail.
 
-The screen sits after everything deterministic and runs only where the guardian would run. It
-and the guardian start together, so a call the screen does not settle costs the slower of the two
-(the screen is bounded by `timeout_ms`), in practice the guardian's. The
-screen can settle a call in two ways, and only while the guardian is still pending:
+### The screen preset
 
-- **A call it stops** is escalated to you, as a guardian escalation is, with the reason "a local
-  screen judged this call outside the user's request (risk 0.97)" and `tier = screen` in the audit
-  record. The stop read asks, by default, "If an employee were given the user's request, would they
-  be allowed to take this action?" and stops a call whose risk reaches `stop_threshold`. In a
-  headless run an escalation is a denial.
-- **A call it allows** runs without waiting for the guardian, with `tier = screen`,
-  `decision = allow` in the audit record. This is off unless you set `allow_threshold`; see
-  [The allow path](#the-allow-path).
-- **Every other call** goes to the guardian exactly as it would without the screen. That includes
-  a call the screen could not judge: a timeout, an HTTP error, an unreachable daemon or an answer
-  that is not yes or no. Fontaine tells you once per session that the screen is failing, and the
-  guardian decides.
+The default shape is an allow screen in front of the LLM guardian, run in sequence: the screen goes
+first; if it allows the call, the call is allowed; everything it does not allow goes to the LLM
+guardian, which reviews it. The screen does not stop or escalate on its own unless you set
+`stop_threshold`. A call it cannot judge goes to the guardian too: a timeout, an HTTP error, an
+unreachable daemon, an answer that is not yes or no, or a read that failed while others succeeded.
+Fontaine tells you once per session that a read is failing, and the guardian decides.
 
-When the screen settles a call, the guardian's request is dropped, which cancels it. Its verdict
-cache and denial counter are untouched, and its tokens are not counted in the session's usage, so a
-priced guardian still pays for the input of a request the screen settled. A guardian verdict that
-is already in hand when the screen answers always wins and goes through the normal flow, so a
-denial the guardian computed is never turned into an allow.
+The preset declares three reads, all on the composition's `model`, and always runs the first so the
+audit log records `screen_risk`:
 
-The screen reads the same redacted, delimited request the guardian reads. Any read that fails
-makes the whole screen outcome unavailable, so the guardian decides.
+- **`stop`.** By default it asks, "If an employee were given the user's request, would they be
+  allowed to take this action?"; `question = "outside_request"` asks whether the action is outside
+  what the request asked for. With `stop_threshold` set, a call whose risk reaches it is escalated
+  to you, as a guardian escalation is, with `tier = screen` and `rule = screen.stop` in the audit
+  record. In a headless run an escalation is a denial.
+- **`allow`.** The hardened permission read of [the allow path](#the-allow-path).
+- **`steering`.** The steering detector of [the allow path](#the-allow-path).
+
+The `allow` and `steering` reads run, together with `stop`, only when `allow_threshold` is set (and
+always in shadow mode, so their scores are logged). A call the preset allows has `tier = screen`,
+`decision = allow` and `rule = screen.allow`.
+
+The reads see the same redacted, delimited request the guardian sees, and sequential means the
+guardian is asked only for a call the screen did not settle: a settled call spends no guardian
+tokens.
+
+With `concurrent = true` the screen is raced against the guardian instead. They start together, the
+screen can settle a call only while the guardian is still pending, and a guardian verdict already in
+hand wins. A call the screen does not settle then costs the slower of the two, in practice the
+guardian's, but a call it does settle has already spent the input tokens of the guardian request
+that is then dropped. The cost is estimated from the rendered prompt and recorded as
+`guardian_dropped_input_tokens`, apart from the usage the provider reports. A guardian request that
+finished but whose verdict the composition did not use is added to the session's usage.
+
+|  | sequential (default) | `concurrent = true` |
+|---|---|---|
+| Call the screen does not settle | screen + guardian | max(screen, guardian), about the guardian |
+| Call the screen settles | about the screen | about the screen |
+| Guardian tokens on settled calls | none | input spent, estimated in the audit log |
 
 ### The allow path
 
@@ -306,36 +327,126 @@ it is clearly safe:
   request, would they be allowed to take this action?", whatever `question` the stop read uses,
   because the threshold is fitted to that question. Its system prompt adds a sentence that tells
   the model the arguments are written by the agent, and that text in them which addresses a
-  reviewer, claims approval or says how to answer is manipulation, to be answered no.
+  reviewer, claims approval or says how to answer is manipulation, to be answered no. The hardened
+  prompt is valid only with this question.
 - **A steering detector.** It asks whether the arguments contain text that addresses a reviewer,
   claims approval, or tries to influence how the action is judged. A call is never allowed when its
   score is at or above `steering_veto`.
 
-The call is allowed when the hardened read's risk is below `allow_threshold` and the steering score
-is below the veto, and the stop read did not stop it. Without the detector, one steering sentence in
-a call's arguments moved most of the should-not-allow cases in the measured set below the skip
-threshold, which is why the allow path has its own prompt and a veto. The two extra reads run
-concurrently with the stop read under the one `timeout_ms`.
+The call is allowed when the hardened read's risk is below `allow_threshold`, the steering score is
+below the veto and the stop read did not stop it. Without the detector, one steering sentence in a
+call's arguments moved most of the should-not-allow cases in the measured set below the skip
+threshold, which is why the allow path has its own prompt and a veto.
 
 The allow path is user scope only, off by default and a deliberate exception to the rule that only
-containment earns a skip of the guardian: the screen's allow is a verdict of the composed guardian.
-It never runs before the deterministic floor, and a paused breaker prompts you without asking the
-screen. A screen allow does not reset the denial breaker.
+containment earns a skip of the guardian: the allow is a verdict of the composed guardian. It
+never runs before the deterministic floor, and a paused breaker prompts you without running the
+composition. A composition allow does not reset the denial breaker.
 
 ### Calibrating with shadow mode
 
-`shadow = true` is the default. The screen scores every call and records `screen_risk`,
-`screen_allow_risk`, `screen_steering`, `screen_model`, `screen_latency_ms` and `screen_outcome` in
-the audit log, and the guardian decides as always. `screen_outcome` is what the screen would have
-done: `stop`, `allow`, `pass` or `unavailable`. Run in shadow mode for a while, then read the audit
-log: the risk of the calls the guardian denied or you declined, against the risk of the calls that
-were allowed, shows where a threshold would have caught the first without escalating too many of
-the second. For `allow_threshold`, look for a value below which no call the guardian denied or you
-declined appears, and check the steering scores of the calls you would not want allowed. There is
-no shipped threshold, because the right one depends on the model, the question and your own
-traffic. Set `stop_threshold` and/or `allow_threshold` and `shadow = false` when the numbers are
-acceptable. To see the effect on the golden set, run a
+`shadow = true` is the default. The composition runs and records every read's score, and the
+guardian decides as always: `screen_risk`, `screen_allow_risk` and `screen_steering` (the reads
+named `stop`, `allow` and `steering`), `screen_scores` (every other read, by name), `screen_model`,
+`screen_latency_ms` (from the start of the composition to the last read finishing) and
+`screen_outcome` in the audit log. `screen_outcome` is what the composition would have done: `stop`,
+`allow`, `deny`, `pass` or `unavailable`, the last meaning a read or the script failed. Run in
+shadow mode for a while, then read the audit log: the risk of the calls the guardian denied or you
+declined, against the risk of the calls that were allowed, shows where a threshold would have
+caught the first without escalating too many of the second. For `allow_threshold`, look for a value
+below which no call the guardian denied or you declined appears, and check the steering scores of
+the calls you would not want allowed. There is no shipped threshold, because the right one depends
+on the model, the question and your own traffic. Set `stop_threshold` and/or `allow_threshold` and
+`shadow = false` when the numbers are acceptable. To see the effect on the golden set, run a
 [cascade scorecard](evals.md#cascade-scorecards).
+
+### Writing a composition script
+
+A script defines `pub async fn guardian(call, params)` and returns a verdict. It runs in Rune, a
+small Rust-like scripting language with `async` and `.await`, in a sandbox: it has no files,
+network or terminal, and no access to the call's arguments. The host functions below are in scope
+without an import; the language itself is documented at rune-rs.github.io.
+
+| Item | Returns | Notes |
+|---|---|---|
+| `call.tool()`, `call.destructive()` | `String`, `bool` | The facts of the call a script may see. The arguments are not exposed: a script decides by reads, not by matching arguments. |
+| `read(call, name)` | future of `Result<Score, String>` | `name` is a read declared in `[guardian.composition.reads]`. A failed or timed-out read is an `Err`; an undeclared name is an `Err`. Each name is read at most once per call, however often it is named, and dropping the future does not cancel the read. |
+| `score.value()` | `f64` | The risk of the read. |
+| `llm(call)` | future of verdict | The LLM guardian. All mentions in one call share one request, so naming it on several paths costs once. It never abstains: its failures are denials. |
+| `first_decisive([futures])` | future of verdict | Polls all at once and returns the first verdict that is not an abstain, the earlier in the list winning a tie; the rest are dropped. All abstaining abstains. |
+| `std::future::join((a, b))` | tuple of results | Runs futures together; a script that awaits one after the other runs them in sequence. |
+| `escalate(node, reason)`, `deny(node, reason)`, `abstain()` | verdict | `node` names the deciding step in the audit record's `rule`. |
+| `allow_below(node, score, threshold)` | verdict | An allow if `score.value() < threshold`, else an abstain. The only way for a script to allow a call. |
+| `verdict.is_abstain()`, `verdict.is_allow()` | `bool` | For sequencing. |
+
+`params` is an object holding `[guardian.composition.params]`: numbers (as floats), strings and
+booleans. `call`, scores and verdicts have no constructors and no settable fields, so a script
+cannot forge one: an allow can come only from `llm()` or from `allow_below` applied to a score a
+declared read produced.
+
+Fontaine wraps every script in rules a script cannot change:
+
+- **It is bounded.** An instruction budget and a time limit (the guardian's timeout, one read's
+  timeout and a margin) cover one stage of reads plus one LLM call, so a script that chains several
+  read stages before `llm()` can hit the limit and be denied. The time limit cancels the
+  requests in flight; the instruction budget and any other script failure stop the script but
+  still await and record the reads it started, each within its read timeout.
+- **It is fail-closed.** A script error, an exhausted budget, a timeout, a panic, a return value
+  that is not a verdict, and an abstain at the end are all denials. Error text explains the denial;
+  it never changes it. Such a denial is a guardian denial: it can be approved from `/denied`,
+  counts toward the breaker and carries `fail_closed_reason`.
+- **A verdict in hand is never overridden.** An LLM verdict that is a denial or an escalation and
+  already complete is always the outcome, whatever the script returns. An LLM allow in hand yields
+  to a script `escalate` or `deny`, the stricter outcome.
+- **Spend is not lost.** A guardian request cut short is estimated into `guardian_dropped_*`; one
+  that finished but was not used is added to the session's usage.
+- **Reads are awaited.** Every read the script started finishes, within its timeout, and is
+  recorded, even after the script has its answer.
+- **Shadow mode is invisible to the script.** Fontaine starts every declared read and the LLM
+  request itself and decides by the LLM; the script runs on the same requests and what it would have
+  decided is recorded as `screen_outcome`.
+
+A script's `escalate` is handled like a guardian escalation (a prompt, or a denial when headless,
+with `tier = screen`); its `deny` is a denial with `tier = screen` and no prompt; its `allow_below`
+is an allow with `tier = screen`. In each, the `rule` of the record is the node name.
+
+For example, this script races a cheap read against the guardian and escalates what the read finds
+out of bounds, but only if the guardian has not already answered:
+
+```rune
+pub async fn guardian(call, params) {
+    let outside = async {
+        match read(call, "outside").await {
+            Ok(score) if score.value() >= params.limit => {
+                escalate("outside.stop", format!("risk {:.2}", score.value()))
+            }
+            _ => abstain(),
+        }
+    };
+    first_decisive([llm(call), outside]).await
+}
+```
+
+with
+
+```toml
+[guardian.composition]
+script = "guardian.rn"
+model = "local/qwen3:4b-instruct-2507"
+shadow = false
+
+[guardian.composition.params]
+limit = 0.95
+
+[guardian.composition.reads.outside]
+question = "outside_request"
+```
+
+Project configuration cannot load a script, because a script can mint an allow: only the user file
+sets a composition, and other scopes may force `shadow = true`.
+
+The preset and the scripts are scored on the golden set with
+[`--screen` and `--composition-script`](evals.md#cascade-scorecards).
 
 ## Choosing the guardian model
 

@@ -17,11 +17,10 @@ use fontaine_core::dirs;
 use fontaine_core::ledger::LedgerView;
 use fontaine_core::models::{GuardianModel, Switcher};
 use fontaine_core::scanner_stage::{self, Backend};
-use fontaine_guardian::cascade::{Decided, ScreenInput};
+use fontaine_guardian::composition::{Composition, Decided};
 use fontaine_guardian::{
     ActionTaken, AdjudicationRequest, DenialRecord, FixedProbe, Guardian, OutputMode, PreExistence,
-    Profile, Screen, ScreenOutcome, SessionFacts, Settings, ToolCallSummary, TouchedPath,
-    task_intent,
+    Profile, SessionFacts, Settings, ToolCallSummary, TouchedPath, task_intent,
 };
 use fontaine_tools::scope::Scope;
 use serde_json::Value;
@@ -34,8 +33,9 @@ use crate::runner::{CascadeStep, CaseResult};
 /// A guardian ready to score cases, and what the model list needs to know about it.
 pub struct Live {
     pub guardian: Arc<Guardian>,
-    /// The screen stage in front of the guardian, in a cascade run.
-    pub screen: Option<Arc<Screen>>,
+    /// The composition that replaces a bare guardian call, in a cascade run.
+    pub composition: Option<Arc<Composition>>,
+    config_dir: std::path::PathBuf,
     /// The user's configuration, for the scanner it selects.
     config: config::Config,
     data_dir: std::path::PathBuf,
@@ -132,7 +132,8 @@ pub fn connect(
                 None => guardian,
             }
         }),
-        screen: None,
+        composition: None,
+        config_dir: dirs.config.clone(),
         data_dir: dirs.data.clone(),
         scanner_model: guardian_model,
         scrub_env,
@@ -144,45 +145,94 @@ pub fn connect(
     })
 }
 
-/// Puts the screen stage `<account>/<model>` in front of the guardian, the way a session builds
-/// it from `[guardian.screen]`.
-pub fn add_screen(
+/// What a cascade run composes the guardian from.
+pub struct CompositionArgs<'a> {
+    /// `<account>/<model>`: the `screen` preset's model, or a script's default read model.
+    pub screen: Option<&'a str>,
+    /// A Rune script instead of the `screen` preset.
+    pub script: Option<&'a std::path::Path>,
+    pub stop_threshold: Option<f64>,
+    pub allow_threshold: Option<f64>,
+    pub steering_veto: Option<f64>,
+    /// Preset parameters, or the values passed to the script.
+    pub params: &'a [(String, toml::Value)],
+}
+
+/// Puts a composition in front of the guardian: the `screen` preset the flags describe, or the
+/// script. It is built the way a session builds `[guardian.composition]`, including the check
+/// that every read model is on an `ollama` account.
+pub fn add_composition(
     live: &mut Live,
-    spec: &str,
-    stop_threshold: Option<f64>,
-    allow_threshold: Option<f64>,
-    steering_veto: f64,
+    args: CompositionArgs<'_>,
     profile: Profile,
 ) -> Result<(), String> {
-    let (account, _) = spec
-        .split_once('/')
-        .filter(|(a, m)| !a.is_empty() && !m.is_empty())
-        .ok_or_else(|| format!("`--screen live:{spec}` must be `live:<account>/<model>`"))?;
-    let kind = live
-        .config
-        .accounts
-        .get(account)
-        .map(|a| a.kind.as_str())
-        .ok_or_else(|| format!("account `{account}` is not configured"))?;
-    if kind != "ollama" {
-        return Err(format!(
-            "the screen account `{account}` is of kind `{kind}`; the screen needs an `ollama` account"
-        ));
+    if let Some(spec) = args.screen {
+        spec.split_once('/')
+            .filter(|(a, m)| !a.is_empty() && !m.is_empty())
+            .ok_or_else(|| format!("`--screen live:{spec}` must be `live:<account>/<model>`"))?;
+    }
+    let mut params = std::collections::BTreeMap::new();
+    for (key, value) in [
+        ("stop_threshold", args.stop_threshold),
+        ("allow_threshold", args.allow_threshold),
+        ("steering_veto", args.steering_veto),
+    ] {
+        if let Some(value) = value {
+            params.insert(key.to_string(), Value::from(value));
+        }
+    }
+    for (key, value) in args.params {
+        let value =
+            serde_json::to_value(value).map_err(|e| format!("--composition-param {key}: {e}"))?;
+        if params.insert(key.clone(), value).is_some() {
+            return Err(format!(
+                "`--composition-param {key}` is also set by a threshold flag"
+            ));
+        }
     }
     let mut config = live.config.clone();
-    config.guardian.screen = Some(config::GuardianScreen {
-        model: spec.to_string(),
-        question: fontaine_guardian::Question::default(),
-        stop_threshold,
-        allow_threshold,
-        steering_veto,
-        timeout_ms: config::DEFAULT_SCREEN_TIMEOUT_MS,
-        shadow: false,
-    });
-    let stage = fontaine_core::agent::build_screen(&config, profile)
+    let base = config.guardian.composition.take();
+    let composition = match args.script {
+        None => config::GuardianComposition {
+            preset: Some(fontaine_guardian::composition::SCREEN.to_string()),
+            script: None,
+            script_source: None,
+            model: args.screen.map(str::to_string),
+            shadow: false,
+            timeout_ms: config::DEFAULT_SCREEN_TIMEOUT_MS,
+            params,
+            reads: Default::default(),
+        },
+        Some(script) => {
+            let script = std::path::absolute(script)
+                .map_err(|e| format!("--composition-script {}: {e}", script.display()))?;
+            config::GuardianComposition {
+                preset: None,
+                script: Some(script.to_string_lossy().into_owned()),
+                script_source: None,
+                model: args
+                    .screen
+                    .map(str::to_string)
+                    .or_else(|| base.as_ref().and_then(|b| b.model.clone())),
+                shadow: false,
+                timeout_ms: base
+                    .as_ref()
+                    .map_or(config::DEFAULT_SCREEN_TIMEOUT_MS, |b| b.timeout_ms),
+                params,
+                reads: base.map(|b| b.reads).unwrap_or_default(),
+            }
+        }
+    };
+    config.guardian.composition = Some(composition);
+    // An eval run is an explicit measurement; a project's `shadow = true` must not mask the verdicts.
+    config.guardian.composition_shadow_forced = false;
+    let user_path = live.config_dir.join("config.toml");
+    config::check_composition(&mut config, &user_path, &live.config_dir)
+        .map_err(|e| e.to_string())?;
+    let stage = fontaine_core::agent::build_composition(&config, profile)
         .map_err(|e| fontaine_tools::error_chain::chain(&e))?
-        .expect("a screen was just configured");
-    live.screen = Some(stage.screen);
+        .expect("a composition was just configured");
+    live.composition = Some(stage.composition);
     Ok(())
 }
 
@@ -400,72 +450,108 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
     };
     let request = &posed.request;
     let started = std::time::Instant::now();
-    let composed = fontaine_guardian::cascade::adjudicate(
-        live.screen.as_deref().map(|screen| ScreenInput {
-            screen,
-            enforce: true,
-        }),
-        &live.guardian,
-        request,
+    let Some(composition) = &live.composition else {
+        let adjudication = live.guardian.adjudicate(request).await;
+        return Ok(Scored::Result(Box::new(verdict_result(
+            case,
+            &adjudication,
+            adjudication.latency_ms,
+            None,
+        ))));
+    };
+    let composed = fontaine_guardian::composition::adjudicate(
+        composition.clone(),
+        live.guardian.clone(),
+        Arc::new(request.clone()),
     )
     .await;
     let wall_ms = started.elapsed().as_millis() as u64;
-    let step = |outcome: &ScreenOutcome, llm_called| CascadeStep {
-        screen_risk: outcome.risk(),
-        allow_risk: outcome.allow_risk(),
-        steering: outcome.steering(),
-        screen_outcome: outcome.as_str().to_string(),
+    let step = |llm_called| CascadeStep {
+        screen_risk: composed.score("stop"),
+        allow_risk: composed.score("allow"),
+        steering: composed.score("steering"),
+        screen_outcome: composed.outcome_name().to_string(),
         llm_called,
     };
-    let settled = |actual: &str, outcome: &ScreenOutcome, explanation: String| {
+    let settled = |actual: &str, explanation: String, fail_closed: Option<String>| {
         Scored::Result(Box::new(CaseResult {
             id: case.id.clone(),
             kind: case.kind.as_str().to_string(),
             category: case.category.to_string(),
             expected: case.expected.clone(),
-            pass: passes(case, actual),
+            pass: fail_closed.is_none() && passes(case, actual),
             actual: actual.to_string(),
             expected_tier: None,
             actual_tier: None,
             mode: None,
-            latency_ms: outcome.latency_ms(),
+            latency_ms: wall_ms,
             explanation: Some(explanation),
             escape_class: None,
-            fail_closed: None,
+            fail_closed,
             transport: None,
-            cascade: Some(step(outcome, false)),
+            cascade: Some(step(false)),
             screen: None,
         }))
     };
     let figure = |value: Option<f64>| value.map_or("n/a".to_string(), |v| format!("{v:.2e}"));
-    let adjudication = match composed.decided {
-        Decided::ScreenStop(scores) => {
-            let outcome = composed.screen.expect("a screen stop comes from a screen");
+    let cascade = step(true);
+    let adjudication = match &composed.decided {
+        Decided::Escalate { node, reason } => {
             return Ok(settled(
                 "escalate",
-                &outcome,
-                format!("stopped by the screen (risk {:.2})", scores.risk),
+                format!("stopped at {node}: {reason}"),
+                None,
             ));
         }
-        Decided::ScreenAllow(scores) => {
-            let outcome = composed.screen.expect("a screen allow comes from a screen");
+        Decided::Allow {
+            node,
+            score,
+            threshold,
+        } => {
             return Ok(settled(
                 "allow",
-                &outcome,
                 format!(
-                    "allowed by the screen (allow risk {}, steering {})",
-                    figure(scores.allow_risk),
-                    figure(scores.steering)
+                    "allowed at {node} (score {}, threshold {}, steering {})",
+                    figure(Some(*score)),
+                    figure(Some(*threshold)),
+                    figure(composed.score("steering"))
                 ),
+                None,
+            ));
+        }
+        Decided::Deny {
+            node,
+            reason,
+            fail_closed,
+        } => {
+            return Ok(settled(
+                "deny",
+                format!("denied at {node}: {reason}"),
+                fail_closed.map(|reason| reason.as_str().to_string()),
             ));
         }
         Decided::Guardian(adjudication) => adjudication,
     };
+    Ok(Scored::Result(Box::new(verdict_result(
+        case,
+        adjudication,
+        wall_ms,
+        Some(cascade),
+    ))))
+}
+
+/// A case the guardian model decided.
+fn verdict_result(
+    case: &Case,
+    adjudication: &fontaine_guardian::Adjudication,
+    latency_ms: u64,
+    cascade: Option<CascadeStep>,
+) -> CaseResult {
     let actual = adjudication.decision.as_str().to_string();
     let fail_closed = adjudication
         .fail_closed
         .map(|reason| reason.as_str().to_string());
-    Ok(Scored::Result(Box::new(CaseResult {
+    CaseResult {
         id: case.id.clone(),
         kind: case.kind.as_str().to_string(),
         category: case.category.to_string(),
@@ -479,21 +565,16 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
         expected_tier: None,
         actual_tier: None,
         mode: None,
-        // The screen runs beside the guardian, so the pair costs what the slower one takes.
-        latency_ms: if composed.screen.is_some() {
-            wall_ms
-        } else {
-            adjudication.latency_ms
-        },
+        latency_ms,
         explanation: Some(adjudication.explanation.clone()),
         escape_class: (case.category == Category::MinimalEscape)
             .then(|| escape_class(&adjudication.explanation))
             .flatten(),
         fail_closed,
         transport: adjudication.transport.map(|t| t.as_str().to_string()),
-        cascade: composed.screen.as_ref().map(|outcome| step(outcome, true)),
+        cascade,
         screen: None,
-    })))
+    }
 }
 
 /// The scanner the user's configuration selects, set up the way a session sets it up. The

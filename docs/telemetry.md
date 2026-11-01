@@ -96,7 +96,7 @@ Both backends export the same tree: `fontaine.session` contains one `fontaine.in
 user message, and below it the model calls (`chat`) and tool executions (`execute_tool`). Each
 tool call also has a `fontaine.tool` span, with `tool_name`, `risk_class` (`read_only`,
 `workspace_write` or `arbitrary`), `tool_source` (`builtin` or `mcp`) and `success`.
-`fontaine.interaction` carries `prompt.id`, `prompt.length` and `model.priced`. Each tool call also has a `fontaine.permission` child span with `tool_name`, `permission_mode`, and the `tier` and `decision` of the pipeline's decision; while a human is asked, a `fontaine.tool.blocked_on_user` span below it measures the wait. With a `[guardian.screen]` stage, each call it scores adds a `fontaine.guardian.screen` span (`risk`, `allow_risk`, `steering`, `outcome`, `latency_ms`) below `fontaine.permission`. Calls that reach the guardian add a `fontaine.guardian` span below `fontaine.permission` with
+`fontaine.interaction` carries `prompt.id`, `prompt.length` and `model.priced`. Each tool call also has a `fontaine.permission` child span with `tool_name`, `permission_mode`, and the `tier` and `decision` of the pipeline's decision; while a human is asked, a `fontaine.tool.blocked_on_user` span below it measures the wait. With a [`[guardian.composition]`](guardian.md#composing-the-guardian), each call it scores adds a `fontaine.guardian.screen` span (`risk`, `allow_risk`, `steering`, `outcome`, `latency_ms`) below `fontaine.permission`. Calls that reach the guardian add a `fontaine.guardian` span below `fontaine.permission` with
 `tool_name`, `guardian_model`, `guardian_profile`, `model.priced`, the `decision`, whether it was a `cache_hit` and
 the `fail_closed_reason` when it failed closed; the guardian's own model call sits under it.
 A subagent adds a `fontaine.subagent` span (`agent.id`, `agent.type`, `model.priced`) under the span of the `agent`
@@ -123,7 +123,7 @@ the token counts. Source file paths and thread names are not exported.
 | `fontaine.tool_decision.count` | `{decision}` | `tier`, `decision` |
 | `fontaine.guardian.latency` | ms | `model`, `profile`, `cache_hit` |
 | `fontaine.guardian.fail_closed.count` | `{denial}` | `reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`) |
-| `fontaine.screen.count` | `{call}` | `outcome` (`stop`, `allow`, `pass`, `unavailable`; in shadow mode `stop` and `allow` are what the screen would have done) |
+| `fontaine.screen.count` | `{call}` | `outcome` (`stop`, `allow`, `deny`, `pass`, `unavailable`; in shadow mode `stop`, `allow` and `deny` are what the composition would have done) |
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
 which is always the case for an `openai-compatible` endpoint or an `opencode-go` account. An
@@ -134,13 +134,14 @@ guardian adjudication is open, `scanner` for the calls the `llm` tool-result sca
 Both guardian metrics are derived from the guardian attributes of the decision event. No metric
 carries a prompt or tool-call id.
 
-When a [screen](guardian.md) in enforcing mode stops or allows a call, the guardian request that
-was racing it is dropped. The request has usually been sent and billed by then, but no usage comes
-back for it. Fontaine adds an estimate to `fontaine.token.usage` (`type = input`) and, for a
+When a [composition](guardian.md#composing-the-guardian) in enforcing mode settles a call while the
+guardian request it started is still pending, the request is dropped. The request has usually been
+sent and billed by then, but no usage comes back for it. Fontaine adds an estimate to `fontaine.token.usage` (`type = input`) and, for a
 priced guardian model, to `fontaine.cost.usage`, with `query_source = guardian` and `estimated =
 true`: a quarter of the prompt's bytes, priced as input only. Real usage never carries
 `estimated`, so a query that leaves the estimate out filters on its absence. The session's `/cost`
-and budgets do not count the estimate.
+and budgets do not count the estimate. A guardian request that finished but whose verdict the
+composition did not use is counted in the session's usage like any other guardian call.
 
 ### Events
 
@@ -153,7 +154,7 @@ and budgets do not count the estimate.
 | `api_error` | `model`, `provider`, `query_source` (`main` or `subagent`), `agent.id`, `error_class` (rig's stable error code, such as `provider_response`, `http`, `timeout` or `json`), and `status_code` when the failure carries an HTTP status. The provider's message is not exported: it can echo the request. Retries are not visible, so there is no attempt count. Emitted for a main-agent or subagent turn that failed with a provider error or a rig error report, in practice a failed model call; `error_class` tells the rare rig-internal failures (such as `internal`, `divergence` or `handler_unavailable`) apart. A turn limit or a cancel is not one. |
 | `internal_error` | `class` (`audit_write` or `ledger_write`). Emitted for every failed write to the audit log or the session ledger, not only the first one the terminal reports. The I/O error text is not exported: it can contain a path. |
 | `permission_mode_changed` | `from`, `to` |
-| `tool_decision` | `tool_name`, `agent.id`, `agent.type`, `tool_use_id`, `tier`, `decision`, `permission_mode`, `headless`, `latency_ms`; for guardian decisions also `guardian.model`, `guardian.profile`, `guardian.verdict`, `guardian.confidence`, `guardian.cache_hit`, `guardian.latency_ms` and, when it failed closed, `fail_closed_reason`; when a [screen](guardian.md) scored the call, `screen.outcome`, `screen.risk`, `screen.allow_risk`, `screen.steering`, `screen.model` and `screen.latency_ms`, in shadow mode too; when the screen settled the call and cut a guardian request short, `guardian.dropped_input_tokens`, `guardian.dropped_provider`, `guardian.dropped_model` and `guardian.dropped_priced`. The rule label and explanation are not exported; they are in the audit log. |
+| `tool_decision` | `tool_name`, `agent.id`, `agent.type`, `tool_use_id`, `tier`, `decision`, `permission_mode`, `headless`, `latency_ms`; for guardian decisions also `guardian.model`, `guardian.profile`, `guardian.verdict`, `guardian.confidence`, `guardian.cache_hit`, `guardian.latency_ms` and, when it failed closed, `fail_closed_reason`; when a [composition](guardian.md#composing-the-guardian) scored the call, `screen.outcome`, `screen.risk`, `screen.allow_risk`, `screen.steering`, `screen.model` and `screen.latency_ms`, in shadow mode too; when the composition settled the call and cut a guardian request short, `guardian.dropped_input_tokens`, `guardian.dropped_provider`, `guardian.dropped_model` and `guardian.dropped_priced`. The rule label and explanation are not exported; they are in the audit log. |
 | `tool_result` | `tool_name`, `risk_class`, `tool_source`, `success`, `duration_ms`, `args_bytes`, `result_bytes` (sizes only: no arguments and no output); when the [tool-result scanner](guardian.md#scanning-tool-results) scanned the result, also `scanner_verdict` (`clean`, `flagged` or `error`) and `scanner_latency_ms`, absent when no scan ran. Emitted for every call, including a denied one. |
 
 A command you run with `!` in the terminal UI is not a gate decision, but it is reported through the
