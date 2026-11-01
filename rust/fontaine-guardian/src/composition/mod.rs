@@ -485,10 +485,22 @@ async fn run(
     guardian: Arc<Guardian>,
     request: Arc<AdjudicationRequest>,
 ) -> Composed {
-    // The probe runs outside the guardian's timeout, and concurrent callers wait for it serially,
-    // so the bound below starts only once it has answered. An error here is the LLM's own
-    // fail-closed denial to report.
-    let _ = guardian.resolve_mode().await;
+    // A guardian that cannot be asked at all gets its own fail-closed adjudication: no screen
+    // verdict may allow a call past it. The probe runs outside the guardian's timeout, and
+    // concurrent callers wait for it serially, so the bound below starts only once it has answered.
+    let unavailable = match guardian.unavailable_reason() {
+        Some(reason) => Some(reason.to_owned()),
+        None => guardian.resolve_mode().await.err(),
+    };
+    if let Some(reason) = unavailable {
+        return Composed {
+            decided: Decided::Guardian(Box::new(guardian.adjudicate(&request).await)),
+            reads: Vec::new(),
+            outcome: Outcome::Failed(reason),
+            dropped_input_tokens: None,
+            llm_usage: None,
+        };
+    }
     let shadow = composition.shadow;
     let bound = guardian.settings().timeout + composition.read_timeout() + COMPOSITION_SLACK;
     let ctx = EvalCtx::new(composition.clone(), guardian.clone(), request.clone());
@@ -633,8 +645,34 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let guardian = Guardian::unavailable("mock/none", "no model", Settings::default());
-        let request = AdjudicationRequest {
+        let guardian = ready_guardian();
+        let request = request();
+        let composed =
+            adjudicate(Arc::new(composition), Arc::new(guardian), Arc::new(request)).await;
+        assert!(matches!(
+            composed.decided,
+            Decided::Deny { fail_closed: Some(FailClosed::Error), ref reason, .. } if reason.contains("panicked")
+        ));
+        assert!(matches!(composed.outcome, Outcome::Failed(_)));
+    }
+
+    fn ready_guardian() -> Guardian {
+        use rig_core::providers::openai::OpenAIConfig;
+        use rig_core::providers::openai::wire::{Auth, Dialect};
+        const GATEWAY: Dialect = Dialect::gateway("openai-compatible", "", "");
+        let client = OpenAIConfig::with_key(&GATEWAY, "key")
+            .with_auth(Auth::OptionalBearer)
+            .with_base_url("http://127.0.0.1:1")
+            .client();
+        Guardian::new(
+            client.completion("scripted").erase(),
+            "mock/ready",
+            Settings::default(),
+        )
+    }
+
+    fn request() -> AdjudicationRequest {
+        AdjudicationRequest {
             task_intent: "fix the build".into(),
             recent_user_messages: vec![],
             project_instructions: None,
@@ -650,13 +688,6 @@ mod tests {
             session_facts: SessionFacts::default(),
             hook_context: Vec::new(),
             prior_denials: Vec::new(),
-        };
-        let composed =
-            adjudicate(Arc::new(composition), Arc::new(guardian), Arc::new(request)).await;
-        assert!(matches!(
-            composed.decided,
-            Decided::Deny { fail_closed: Some(FailClosed::Error), ref reason, .. } if reason.contains("panicked")
-        ));
-        assert!(matches!(composed.outcome, Outcome::Failed(_)));
+        }
     }
 }

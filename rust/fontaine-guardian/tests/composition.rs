@@ -1163,3 +1163,14 @@ async fn the_documented_example_races_a_read_against_the_guardian() {
         }
     }
 }
+
+#[tokio::test]
+async fn an_unavailable_guardian_denies_even_when_the_screen_would_allow() {
+    let server = screen_server(0.0, 1.0, 0.0, Duration::ZERO).await;
+    let guardian = Arc::new(Guardian::unavailable("mock/none", "no key", settings()));
+    let composed = run(&preset(&server, &both(), false), &guardian).await;
+    assert!(composed.unavailable());
+    let adjudication = adjudication(composed);
+    assert_eq!(adjudication.decision, Decision::Deny);
+    assert_eq!(adjudication.fail_closed, Some(FailClosed::Unavailable));
+}

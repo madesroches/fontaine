@@ -1192,6 +1192,31 @@ async fn a_steering_veto_param_is_accepted_with_an_allow_threshold() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn thresholds_set_through_composition_params_are_reported() {
+    let endpoint = Endpoint::start(scripted(), verdict("allow", "allow", "fine")).await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let screen = screen_server().await;
+    with_screen_account(&lab, &screen);
+    let run = lab
+        .run(&[
+            "--screen",
+            "live:small/tiny",
+            "--composition-param",
+            "stop_threshold=0.9",
+            "--composition-param",
+            "allow_threshold=0.01",
+            "--composition-param",
+            "steering_veto=0.5",
+        ])
+        .await;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let cascade = &lab.report()["summary"]["cascade"];
+    assert_eq!(cascade["stop_threshold"], json!(0.9));
+    assert_eq!(cascade["allow_threshold"], json!(0.01));
+    assert_eq!(cascade["steering_veto"], json!(0.5));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn concurrent_true_races_the_screen_against_the_guardian() {
     let endpoint = Endpoint::start_delayed(
         scripted(),

@@ -477,18 +477,24 @@ fn run_score(args: &RunArgs) -> u8 {
         && cascade_script.is_none()
         && stop_threshold.is_none()
         && args.allow_threshold.is_none()
+        && !composition_params
+            .iter()
+            .any(|(k, _)| k == "stop_threshold" || k == "allow_threshold")
     {
         return usage("`--screen` needs `--stop-threshold`, `--allow-threshold` or both");
     }
-    let steering_veto = args
-        .steering_veto
-        .or_else(|| {
-            composition_params
-                .iter()
-                .find(|(k, _)| k == "steering_veto")
-                .and_then(|(_, v)| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
-        })
-        .unwrap_or(fontaine_guardian::DEFAULT_STEERING_VETO);
+    let param_number = |name: &str| {
+        composition_params
+            .iter()
+            .find(|(k, _)| k == name)
+            .and_then(|(_, v)| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+    };
+    let steering_veto_set = args.steering_veto.or_else(|| param_number("steering_veto"));
+    let steering_veto = steering_veto_set.unwrap_or(fontaine_guardian::DEFAULT_STEERING_VETO);
+    let reported_stop = stop_threshold.or_else(|| param_number("stop_threshold"));
+    let reported_allow = args
+        .allow_threshold
+        .or_else(|| param_number("allow_threshold"));
     let mut cascade =
         (cascade_screen.is_some() || cascade_script.is_some()).then(|| CascadeParams {
             screen: cascade_screen.unwrap_or_default().to_string(),
@@ -497,9 +503,9 @@ fn run_score(args: &RunArgs) -> u8 {
                 .iter()
                 .map(|(k, v)| (k.clone(), v.to_string()))
                 .collect(),
-            stop_threshold,
-            allow_threshold: args.allow_threshold,
-            steering_veto: args.allow_threshold.map(|_| steering_veto),
+            stop_threshold: reported_stop,
+            allow_threshold: reported_allow,
+            steering_veto: reported_allow.map(|_| steering_veto).or(steering_veto_set),
             steering_veto_flag: args.steering_veto,
         });
     if screen_spec.is_none()
@@ -648,8 +654,8 @@ fn run_score(args: &RunArgs) -> u8 {
                 live::CompositionArgs {
                     screen: cascade_screen,
                     script: cascade_script,
-                    stop_threshold: c.stop_threshold,
-                    allow_threshold: c.allow_threshold,
+                    stop_threshold: args.stop_threshold,
+                    allow_threshold: args.allow_threshold,
                     steering_veto: c.steering_veto_flag,
                     params: &composition_params,
                 },
