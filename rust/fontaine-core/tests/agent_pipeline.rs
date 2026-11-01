@@ -155,10 +155,10 @@ async fn an_agent_types_specifiers_limit_and_forbid_calls() {
         &id,
         ChildRestrictions {
             only: vec![parse_rule("shell(git status)").unwrap()],
-            deny: vec![parse_rule("read(.env)").unwrap()],
+            deny: vec![parse_rule("read(private.txt)").unwrap()],
         },
     );
-    std::fs::write(rig.work().join(".env"), "k").unwrap();
+    std::fs::write(rig.work().join("private.txt"), "k").unwrap();
     std::fs::write(rig.work().join("a.txt"), "a").unwrap();
 
     // Only the named command; anything else is refused before the human is asked.
@@ -179,7 +179,8 @@ async fn an_agent_types_specifiers_limit_and_forbid_calls() {
 
     // A forbidden path is denied; another is not.
     assert!(!allowed(
-        &rig.check_as(&id, "read", json!({"path": ".env"})).await
+        &rig.check_as(&id, "read", json!({"path": "private.txt"}))
+            .await
     ));
     assert_eq!(
         rig.audit().last().unwrap().rule.as_deref(),
@@ -189,7 +190,9 @@ async fn an_agent_types_specifiers_limit_and_forbid_calls() {
         &rig.check_as(&id, "read", json!({"path": "a.txt"})).await
     ));
     // The root is not bound by a child's limits.
-    assert!(allowed(&rig.check("read", json!({"path": ".env"})).await));
+    assert!(allowed(
+        &rig.check("read", json!({"path": "private.txt"})).await
+    ));
 }
 
 #[tokio::test]

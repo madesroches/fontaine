@@ -71,6 +71,40 @@ async fn the_read_only_fast_path_never_reaches_the_guardian() {
 }
 
 #[tokio::test]
+async fn a_secret_file_read_reaches_the_guardian_unless_an_allow_rule_restores_it() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "");
+    std::fs::write(rig.work().join(".env"), "K=1").unwrap();
+    let mut calls = 0;
+    for (tool, args) in [
+        ("read", json!({"path": ".env"})),
+        ("grep", json!({"pattern": "K", "path": ".env"})),
+        ("shell", shell("cat .env")),
+        ("shell", shell("head .env")),
+        ("shell", shell("grep -f.env x")),
+    ] {
+        rig.check(tool, args).await;
+        calls += 1;
+        assert_eq!(fake.calls(), calls);
+        assert_eq!(last(&rig).tier, Tier::Guardian);
+    }
+    rig.check("shell", shell("cat .env.example")).await;
+    assert_eq!(fake.calls(), calls);
+    assert_eq!(last(&rig).tier, Tier::Tier05);
+
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "[permissions]\nallow = [\"read(.env)\"]\n");
+    for (tool, args) in [
+        ("read", json!({"path": ".env"})),
+        ("shell", shell("cat .env")),
+    ] {
+        assert!(allowed(&rig.check(tool, args).await));
+        assert_eq!(last(&rig).tier, Tier::AllowRule);
+    }
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
 async fn an_external_read_reaches_the_guardian_and_runs_with_the_resolved_target() {
     let fake = fake_guardian(allow_verdict());
     let rig = auto_rig(&fake, "");

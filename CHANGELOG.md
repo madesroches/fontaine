@@ -310,6 +310,12 @@ All notable changes are recorded here. The format follows
 
 #### Permissions
 
+- A read of a secret file inside the workspace (`.env` and `.env.*` except the example, sample and
+  template files, `*.env`, credential dotfiles, SSH private keys, `*.pem`, `*.key` and other key
+  containers) no longer takes the read-only fast path or the shell pre-classifier skip. It is
+  asked about in `manual` and `acceptEdits`, denied in `dontAsk` and headless runs, and judged by
+  the guardian in `auto` and `plan`; an `allow` rule for the file restores the skip (#370).
+
 - A spawned agent whose tools are all read-only (`explore`, or a type with no tools) starts
   without a prompt or a guardian call, in every mode, after the deny and ask rules and hooks;
   every call the child makes is still gated. A spawn whose parent toolset is unknown is not

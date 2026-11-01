@@ -31,6 +31,63 @@ pub const PROTECTED_FILES: [&str; 9] = [
     ".mcp.json",
 ];
 
+/// Credential files by exact name, wherever they sit.
+const SECRET_FILES: [&str; 13] = [
+    ".env",
+    ".netrc",
+    "_netrc",
+    ".npmrc",
+    ".pypirc",
+    ".git-credentials",
+    ".pgpass",
+    "id_rsa",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_ecdsa_sk",
+    "id_ed25519_sk",
+];
+
+/// Templates that share the `.env.` prefix but hold no secrets.
+const ENV_TEMPLATES: [&str; 3] = [".env.example", ".env.sample", ".env.template"];
+
+/// Extensions of key and certificate containers.
+const SECRET_SUFFIXES: [(&str, &str); 6] = [
+    (".pem", "*.pem"),
+    (".key", "*.key"),
+    (".p12", "*.p12"),
+    (".pfx", "*.pfx"),
+    (".jks", "*.jks"),
+    (".keystore", "*.keystore"),
+];
+
+/// The pattern a file name matches when it marks a credential file. Always case-folded:
+/// whether a name marks a secret must not depend on the file system.
+pub fn secret_file_name(name: &std::ffi::OsStr) -> Option<&'static str> {
+    let name = name.to_string_lossy().to_ascii_lowercase();
+    if let Some(exact) = SECRET_FILES.iter().find(|f| name == **f) {
+        return Some(exact);
+    }
+    if name.starts_with(".env.") && !ENV_TEMPLATES.contains(&name.as_str()) {
+        return Some(".env.*");
+    }
+    if name.ends_with(".env") {
+        return Some("*.env");
+    }
+    SECRET_SUFFIXES
+        .iter()
+        .find(|(suffix, _)| name.ends_with(suffix))
+        .map(|(_, pattern)| *pattern)
+}
+
+/// The credential-file pattern `given` names, as written or as resolved (so a symlink to
+/// `.env` is caught by where it leads).
+pub fn secret_path(scope: &Scope, given: &str) -> Option<String> {
+    [scope.written(given), scope.resolved(given)]
+        .iter()
+        .find_map(|path| secret_file_name(path.file_name()?).map(str::to_string))
+}
+
 /// Instruction files at any depth: an edit to one changes what later sessions are told to do.
 const INSTRUCTION_FILES: [&str; 5] = [
     "FONTAINE.md",
@@ -519,5 +576,66 @@ mod tests {
         assert!(!hit("agents.md", false));
         assert!(hit("agents.md", true));
         assert!(hit("Docs/RULES/x.md", true));
+    }
+
+    #[test]
+    fn secret_names() {
+        let hit = |n: &str| secret_file_name(std::ffi::OsStr::new(n)).is_some();
+        for n in [
+            ".env",
+            ".env.local",
+            ".env.production",
+            "prod.env",
+            ".netrc",
+            "_netrc",
+            ".npmrc",
+            ".pypirc",
+            ".git-credentials",
+            ".pgpass",
+            "id_rsa",
+            "id_dsa",
+            "id_ecdsa",
+            "id_ed25519",
+            "id_ecdsa_sk",
+            "id_ed25519_sk",
+            "a.pem",
+            "a.key",
+            "a.p12",
+            "a.pfx",
+            "a.jks",
+            "a.keystore",
+            "cert.PEM",
+            ".ENV",
+            "PROD.ENV",
+        ] {
+            assert!(hit(n), "{n}");
+        }
+        for n in [
+            ".env.example",
+            ".env.sample",
+            ".env.template",
+            "README.md",
+            "id_rsa.pub",
+            "environment.rs",
+            "env",
+            ".envrc",
+            "keyboard.rs",
+        ] {
+            assert!(!hit(n), "{n}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_symlink_is_caught_by_its_target() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().canonicalize().expect("canonical root");
+        std::fs::write(root.join(".env"), "K=1").expect("write");
+        std::os::unix::fs::symlink(root.join(".env"), root.join("config")).expect("symlink");
+        std::fs::write(root.join("plain"), "x").expect("write");
+        let scope = Scope::new(root, []);
+        assert_eq!(secret_path(&scope, "config").as_deref(), Some(".env"));
+        assert_eq!(secret_path(&scope, "sub/../.env").as_deref(), Some(".env"));
+        assert!(secret_path(&scope, "plain").is_none());
     }
 }

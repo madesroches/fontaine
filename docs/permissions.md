@@ -64,7 +64,10 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    A floor outcome that asks is a denial in `dontAsk` and in headless runs. In `auto` an `ask`
    rule, a server's approval marker and a critical path still ask you: no verdict approves them.
 3. **Read-only fast path.** A read-only tool (`read`, `ls`, `glob`, `grep`, `lsp`) whose paths all
-   resolve inside a workspace root runs. Symlinks are resolved first. The label alone earns
+   resolve inside a workspace root runs. Symlinks are resolved first. A `read`, `grep` or `lsp`
+   of a [secret file](tools.md#what-earns-the-read-only-fast-path) does not: it goes on to
+   the allow rules, the hooks and the mode, so `manual` and `acceptEdits` ask, `dontAsk` denies
+   and `auto` and `plan` send it to the guardian. The label alone earns
    nothing: a path outside the roots does not qualify, and an external read never takes this
    step. `lsp` has no external route at all: a path outside every root is denied, with the
    `/add-dir` hint. `skill`, `ask_user_question`, `todo_write` and the read-only scheduling tools name
@@ -362,6 +365,18 @@ checked: files a recursive search reaches under a directory (`grep -r KEY .`) ar
 one by one. `read` deny rules are not a containment boundary for shell; use a `shell` deny or
 ask rule, or the protected paths.
 
+A word that names a [secret file](tools.md#what-earns-the-read-only-fast-path) (`cat .env`,
+`grep -f.env x`; `ls` only lists names and is exempt) is not pre-classified: the call falls
+through to the allow rules, the hooks and the mode. An `allow` rule restores the skip only when
+every secret operand is covered by a rule of its own, so `allow = ["read(.env)"]` covers `cat .env`
+but `allow = ["read(README.md)"]` does not cover `cat .env README.md`; the call is then audited
+with `tier = allow_rule`. Secret-name matching always ignores case, while rule matching follows
+the file system (on Linux `read(.env)` does not cover `.ENV`), and a read rule matches the
+resolved path, so a symlink to `.env` needs an allow naming the file it resolves to. Files that a
+recursive search reaches (`grep -r KEY .`, or the `grep` tool over a directory, including its
+`hidden` and `glob` options) are not checked one by one. grep's pattern operand is treated as a
+path, so `grep .env README.md` may ask or be judged: this errs toward caution.
+
 A pre-classified call is audited with `tier = tier05`. In `auto` these calls, the read-only
-fast path (a read-only spawn included), every other `agent` spawn and the [tracked and scratch edits](#the-pipeline) are the only guardian skips earned without a grant of yours; an out-of-scope read such
+fast path (a read-only spawn included; a secret file read is not part of it), every other `agent` spawn and the [tracked and scratch edits](#the-pipeline) are the only guardian skips earned without a grant of yours; an out-of-scope read such
 as `ls ../`, anything the pre-classifier cannot fully parse, and every MCP tool go to the guardian.

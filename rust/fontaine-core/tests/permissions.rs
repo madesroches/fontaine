@@ -112,6 +112,83 @@ async fn the_mode_and_risk_class_matrix() {
             ],
         ),
         ("shell", shell("ls"), [(Allow, Tier05); 4]),
+        ("shell", shell("cat a.txt"), [(Allow, Tier05); 4]),
+        (
+            "read",
+            json!({"path": ".env"}),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "grep",
+            json!({"pattern": "K", "path": ".env"}),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "lsp",
+            json!({"operation": "hover", "path": ".env", "line": 1, "character": 1}),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "shell",
+            shell("cat .env"),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "shell",
+            shell("head .env"),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "shell",
+            shell("grep -f.env x"),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "read",
+            json!({"path": ".env.example"}),
+            [(Allow, ReadOnlyFastPath); 4],
+        ),
+        ("shell", shell("cat .env.example"), [(Allow, Tier05); 4]),
+        (
+            "ls",
+            json!({"path": ".env"}),
+            [(Allow, ReadOnlyFastPath); 4],
+        ),
+        (
+            "glob",
+            json!({"pattern": "*", "path": ".env"}),
+            [(Allow, ReadOnlyFastPath); 4],
+        ),
         (
             "webfetch",
             json!({"url": "https://example.com/"}),
@@ -1048,6 +1125,61 @@ async fn read_rules_cover_the_paths_of_read_only_shell_commands() {
     assert_eq!(
         first(&rig, "shell", shell("cat README.md")).await,
         (Decision::Allow, Tier::Tier05)
+    );
+}
+
+#[tokio::test]
+async fn an_allow_rule_restores_the_skip_for_secret_reads() {
+    let allow = "[permissions]\nallow = [\"read(.env)\"]\n";
+    for mode in [Manual, AcceptEdits, Plan, DontAsk] {
+        let rig = Rig::with(Options::new(mode).settings(allow));
+        for (tool, args) in [
+            ("read", json!({"path": ".env"})),
+            ("shell", shell("cat .env")),
+            ("shell", shell("cat .env .env")),
+        ] {
+            assert_eq!(
+                first(&rig, tool, args.clone()).await,
+                (Decision::Allow, Tier::AllowRule),
+                "{tool} {args} {mode:?}"
+            );
+        }
+    }
+    // A deny rule still wins over the allow.
+    let rig = Rig::with(
+        Options::new(Manual)
+            .settings("[permissions]\nallow = [\"read(.env)\"]\ndeny = [\"read(.env)\"]\n"),
+    );
+    for (tool, args) in [
+        ("read", json!({"path": ".env"})),
+        ("shell", shell("cat .env")),
+    ] {
+        assert_eq!(
+            first(&rig, tool, args).await,
+            (Decision::Deny, Tier::DenyRule)
+        );
+    }
+    // One operand's allow does not vouch for the secret beside it.
+    let rig =
+        Rig::with(Options::new(Manual).settings("[permissions]\nallow = [\"read(README.md)\"]\n"));
+    assert_eq!(
+        first(&rig, "shell", shell("cat .env README.md")).await,
+        (Decision::Prompt, Tier::Mode)
+    );
+    assert_eq!(
+        first(&rig, "shell", shell("cat README.md")).await,
+        (Decision::Allow, Tier::Tier05)
+    );
+}
+
+#[tokio::test]
+async fn a_secret_read_is_found_through_the_shell_cwd() {
+    let rig = Rig::new(Manual);
+    std::fs::create_dir(rig.work().join("sub")).unwrap();
+    std::fs::write(rig.work().join("sub/.env"), "k").unwrap();
+    assert_eq!(
+        first(&rig, "shell", json!({"command": "cat .env", "cwd": "sub"})).await,
+        (Decision::Prompt, Tier::Mode)
     );
 }
 

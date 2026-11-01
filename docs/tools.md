@@ -64,6 +64,17 @@ inside a workspace root after symlinks are resolved. The label alone earns nothi
 step, and it is read-only too. A call whose path arguments cannot be read, or that names a path
 outside every root, is outside the fast path.
 
+Inside a root the label is still not enough for a credential file: a read of one leaves the fast
+path, for the file tools (`read`, `grep`, `lsp`) and for pre-classified shell reads alike. The
+call is then asked about in `manual` and `acceptEdits`, denied in `dontAsk` and headless runs, and
+judged by the guardian in `auto` and `plan` (which may still allow it). The names, matched on the
+final path component and always ignoring case: `.env`, `.env.*` (except `.env.example`,
+`.env.sample` and `.env.template`), `*.env`, `.netrc`, `_netrc`, `.npmrc`, `.pypirc`,
+`.git-credentials`, `.pgpass`, the SSH private keys `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519`
+(and their `_sk` forms, never the `.pub` files), and `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`
+and `*.keystore`. A symlink is checked by where it leads as well as by its name. An `allow` rule
+for the file, such as `allow = ["read(.env)"]` in your user settings, restores the skip.
+
 A spawn of an agent type that can only read takes the same fast path: the child's toolset is
 enforced by Fontaine and each call the child makes is gated on its own. See
 [Agents](agents.md#every-call-is-gated).
