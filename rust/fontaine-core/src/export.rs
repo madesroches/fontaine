@@ -269,9 +269,33 @@ fn render_messages(doc: &mut Doc, conversation: &Conversation) {
                     _ => "## User".to_string(),
                 };
                 let mut headed = false;
+                // Non-text parts carry no prose worth exporting; one marker names how many.
+                let mut omitted = 0usize;
+                let flush = |doc: &mut Doc, headed: &mut bool, omitted: &mut usize| {
+                    if *omitted == 0 {
+                        return;
+                    }
+                    if !*headed {
+                        doc.block(&heading);
+                        if is_summary {
+                            doc.block(
+                                "_The conversation before this point was compacted into this summary._",
+                            );
+                        }
+                        *headed = true;
+                    }
+                    let marker = if *omitted == 1 {
+                        "_[1 attachment omitted]_".to_string()
+                    } else {
+                        format!("_[{} attachments omitted]_", *omitted)
+                    };
+                    doc.block(&marker);
+                    *omitted = 0;
+                };
                 for item in content {
                     match item {
                         UserContent::ToolResult(result) => {
+                            flush(doc, &mut headed, &mut omitted);
                             let mut line = format!(
                                 "- result of `{}`: {} characters",
                                 result.name.as_str(),
@@ -282,7 +306,8 @@ fn render_messages(doc: &mut Doc, conversation: &Conversation) {
                             }
                             doc.item(&line);
                         }
-                        other => {
+                        UserContent::Text(text) => {
+                            flush(doc, &mut headed, &mut omitted);
                             if !headed {
                                 doc.block(&heading);
                                 if is_summary {
@@ -292,13 +317,12 @@ fn render_messages(doc: &mut Doc, conversation: &Conversation) {
                                 }
                                 headed = true;
                             }
-                            match other {
-                                UserContent::Text(text) => doc.block(&text.text),
-                                _ => doc.block("_[attachment omitted]_"),
-                            }
+                            doc.block(&text.text);
                         }
+                        _ => omitted += 1,
                     }
                 }
+                flush(doc, &mut headed, &mut omitted);
             }
             Message::Assistant(message) => {
                 let mut headed = false;

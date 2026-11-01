@@ -1,8 +1,34 @@
 //! The multi-line text buffer behind the message box and the deny-reason field.
 
 use std::ops::Range;
+use std::path::PathBuf;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use rig_core::message::ImageMediaType;
+
+/// What an attached file is.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PendingMedia {
+    /// A clipboard image, sniffed when it was read.
+    Image(ImageMediaType),
+    /// A dropped PDF file.
+    Pdf,
+}
+
+/// The most bytes one attached file may be: providers reject larger base64 parts
+/// (Anthropic takes 5 MB per part), so an oversized attachment must not reach the wire.
+pub const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
+
+/// One file attached to the message box, waiting to be sent: the clipboard image saved in
+/// the session scratch directory, or a dropped PDF. The bytes stay on disk until the message
+/// is sent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingAttachment {
+    pub label: String,
+    pub path: PathBuf,
+    pub media: PendingMedia,
+    pub size: u64,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct InputBuffer {
@@ -10,6 +36,8 @@ pub struct InputBuffer {
     cursor: usize,
     /// The last non-empty kill, for Ctrl-Y; it outlives `take` and `set_text`.
     killed: String,
+    /// Files attached to the message, shown as chips above the typed text.
+    attachments: Vec<PendingAttachment>,
 }
 
 impl InputBuffer {
@@ -48,6 +76,29 @@ impl InputBuffer {
     pub fn take(&mut self) -> String {
         self.cursor = 0;
         std::mem::take(&mut self.chars).into_iter().collect()
+    }
+
+    pub fn attachments(&self) -> &[PendingAttachment] {
+        &self.attachments
+    }
+
+    pub fn has_attachments(&self) -> bool {
+        !self.attachments.is_empty()
+    }
+
+    /// Adds a chip to what the message will carry.
+    pub fn attach(&mut self, pending: PendingAttachment) {
+        self.attachments.push(pending);
+    }
+
+    /// The attached files, for the message being sent.
+    pub fn take_attachments(&mut self) -> Vec<PendingAttachment> {
+        std::mem::take(&mut self.attachments)
+    }
+
+    /// Drops the last attachment; what Backspace does on an empty input.
+    fn pop_attachment(&mut self) -> Option<PendingAttachment> {
+        self.attachments.pop()
     }
 
     pub fn insert(&mut self, c: char) {
@@ -245,6 +296,8 @@ impl InputBuffer {
             },
             KeyCode::Char(c) => self.insert(c),
             KeyCode::Backspace if control || alt => self.delete_word(),
+            // Backspace on an empty input removes the last attachment chip.
+            KeyCode::Backspace if self.chars.is_empty() && self.pop_attachment().is_some() => {}
             KeyCode::Backspace => self.backspace(),
             KeyCode::Delete if control => self.delete_word_forward(),
             KeyCode::Delete => self.delete(),
@@ -417,6 +470,50 @@ mod tests {
         let mut empty = InputBuffer::default();
         empty.yank();
         assert_eq!(empty.text(), "");
+    }
+
+    fn chip(name: &str) -> PendingAttachment {
+        PendingAttachment {
+            label: name.into(),
+            path: PathBuf::from("/scratch").join(name),
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 231_000,
+        }
+    }
+
+    #[test]
+    fn attachments_chip_take_and_pop_in_order() {
+        let mut b = InputBuffer::default();
+        assert!(!b.has_attachments());
+        b.attach(chip("one.png"));
+        b.attach(chip("two.png"));
+        assert_eq!(b.attachments().len(), 2);
+        // Backspace on an empty input pops the last chip.
+        assert!(b.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)));
+        assert_eq!(b.attachments().len(), 1);
+        assert_eq!(b.attachments()[0].label, "one.png");
+        // With text, Backspace edits the text and leaves the chips alone.
+        b.insert_str("x");
+        b.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(b.text().is_empty());
+        assert_eq!(b.attachments().len(), 1);
+        // take() leaves the chips for the message.
+        let taken = b.take_attachments();
+        assert_eq!(taken.len(), 1);
+        assert!(!b.has_attachments());
+    }
+
+    #[test]
+    fn backspace_pops_only_the_last_chip_until_none_are_left() {
+        let mut b = InputBuffer::default();
+        b.attach(chip("a.png"));
+        for _ in 0..2 {
+            b.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        }
+        assert!(!b.has_attachments());
+        // Nothing left: Backspace is a no-op, not a crash.
+        b.handle_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE));
+        assert!(b.text().is_empty());
     }
 
     #[test]

@@ -43,6 +43,7 @@ async fn say(built: &Built, prompt: &str) {
     built.runtime.begin_turn(prompt, false);
     built.runtime.append(Record::UserMessage {
         text: prompt.to_string(),
+        attachments: Vec::new(),
         agent: None,
     });
     let outcome = run_turn(
@@ -50,6 +51,8 @@ async fn say(built: &Built, prompt: &str) {
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: prompt.to_string(),
+            attachments: Vec::new(),
+            modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
             priced: true,
             model: "scripted".to_string(),

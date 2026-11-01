@@ -214,10 +214,13 @@ impl SteeringHook {
             std::mem::take(&mut queue.queued)
         };
         let target = (agent != ROOT_AGENT).then(|| agent.to_string());
-        let mut text = result.output().render();
+        // The queued messages ride a text view of the result, never the raw parts: base64 has
+        // no business in what reads as a transcript line.
+        let mut text = fontaine_tools::result_pipeline::text_view(result.output());
         for message in &messages {
             self.state.append(Record::UserMessage {
                 text: message.clone(),
+                attachments: Vec::new(),
                 agent: target.clone(),
             });
             text.push_str(

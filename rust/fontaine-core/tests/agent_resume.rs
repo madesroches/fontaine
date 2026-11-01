@@ -88,6 +88,8 @@ async fn with_one_child_seen(
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "start it".to_string(),
+            attachments: Vec::new(),
+            modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
             priced: true,
             model: "scripted".to_string(),
@@ -157,6 +159,7 @@ async fn a_done_child_resumed_with_text_continues_its_conversation_and_reports_t
             fontaine_core::ledger::Record::UserMessage {
                 text,
                 agent: Some(agent),
+                ..
             } => Some(format!("{agent}: {text}")),
             _ => None,
         })

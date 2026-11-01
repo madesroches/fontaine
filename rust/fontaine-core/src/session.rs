@@ -885,7 +885,9 @@ fn scan_ledger(path: &Path, wanted: Option<&str>) -> io::Result<Scan> {
                     scan.branched_from = Some(source);
                 }
             }
-            Record::UserMessage { text, agent: None } => {
+            Record::UserMessage {
+                text, agent: None, ..
+            } => {
                 if scan.first_prompt.is_none() {
                     scan.first_prompt = Some(text);
                 }

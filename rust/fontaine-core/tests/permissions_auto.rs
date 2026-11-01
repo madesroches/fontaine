@@ -668,6 +668,7 @@ async fn the_request_is_built_from_the_ledger_and_never_from_a_compaction_summar
             .ledger
             .append(Record::UserMessage {
                 text: question.clone(),
+                attachments: Vec::new(),
                 agent: None,
             })
             .unwrap();
@@ -948,6 +949,7 @@ async fn the_request_after_a_clear_carries_only_what_the_human_asked_since() {
             .ledger
             .append(Record::UserMessage {
                 text: text.into(),
+                attachments: Vec::new(),
                 agent: None,
             })
             .unwrap();

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fontaine TUI — attachment chips (option A)</title>
+<style>
+  :root {
+    --bg: #17181c;
+    --panel: #1e2026;
+    --border: #3a3d45;
+    --text: #d7dae0;
+    --dim: #8a8f99;
+    --user: #7ab4e8;
+    --success: #4eba65;
+    --error: #ff6b80;
+    --warning: #ffc107;
+    --accept: #af87ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px;
+    background: #0f1013;
+    color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; align-items: center; gap: 24px;
+  }
+  h1 { font-size: 15px; color: var(--dim); font-weight: normal; margin: 0; }
+  .screen {
+    width: 780px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; white-space: pre-wrap;
+  }
+  .transcript { margin-bottom: 12px; }
+  .user { color: var(--user); }
+  .attach-line { color: var(--accept); }
+  .gutter { color: var(--dim); }
+  .tool { color: var(--success); }
+  .text { color: var(--text); }
+  .dim { color: var(--dim); }
+  .err { color: var(--error); }
+
+  /* composer */
+  .composer { border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+  .composer-title { color: var(--dim); font-size: 12px; padding: 4px 10px; border-bottom: 1px solid var(--border); }
+  .chips { display: flex; gap: 8px; padding: 8px 10px 0; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: #262932; border: 1px solid var(--accept);
+    border-radius: 6px; padding: 4px 8px; color: var(--text); font-size: 12px;
+  }
+  .chip .thumb {
+    width: 28px; height: 22px; border-radius: 3px;
+    background: linear-gradient(135deg, #35507a, #22304a);
+    border: 1px solid var(--border);
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--dim); font-size: 9px;
+  }
+  .chip .size { color: var(--dim); }
+  .chip .x { color: var(--dim); cursor: pointer; padding: 0 2px; }
+  .chip .x:hover { color: var(--error); }
+  .typed { padding: 8px 10px; color: var(--text); }
+  .caret { display: inline-block; width: 7px; height: 15px; background: var(--text); vertical-align: -2px; }
+
+  .statusbar { margin-top: 12px; color: var(--dim); font-size: 12px; display: flex; justify-content: space-between; }
+  .note { width: 780px; color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Option A — attachment chips above the typed line (Claude Code style)</h1>
+
+<div class="screen">
+<div class="transcript">
+<span class="dim">─ transcript ──────────────────────────────────────────────</span>
+<span class="user">❯ why did the guardian deny that read?</span>
+<span class="attach-line">  [image attached: screenshot-guardian.png · 312 KB]</span>
+<span class="gutter">│ </span><span class="tool">read src/permissions.rs</span>
+<span class="gutter">│ </span><span class="dim">[image: PNG 1440×900 · screenshot-guardian.png]</span>
+<span class="gutter">│ </span><span class="text">The denial came from the protected-path rule on ~/.ssh —</span>
+<span class="gutter">│ </span><span class="text">the read target resolved inside a protected path, so the</span>
+<span class="gutter">│ </span><span class="text">deterministic floor denied it before the guardian ran.</span>
+</div>
+
+<div class="composer">
+  <div class="composer-title"> message · Enter sends · Alt+Enter new line </div>
+  <div class="chips">
+    <span class="chip"><span class="thumb">PNG</span> screenshot-guardian.png <span class="size">312 KB</span><span class="x">×</span></span>
+    <span class="chip"><span class="thumb">PDF</span> parity-notes.pdf <span class="size">88 KB</span><span class="x">×</span></span>
+  </div>
+  <div class="typed">what does the scanner stage do with this one?<span class="caret"></span></div>
+</div>
+
+<div class="statusbar"><span>claude/opus-4.6 · auto · guardian steering</span><span>Ctrl+V attach image · /help</span></div>
+</div>
+
+<p class="note">Attachments render as removable chips in a row above the typed text, inside the
+existing bordered composer. The sent transcript shows a one-line marker under the user's message,
+and a tool result that returned an image shows a dim placeholder line in the guttered output.
+Trade-off: matches Claude Code's mental model and scales to many attachments, but adds a chips
+row, chip hit-testing for removal, and wrapping logic to the input view.</p>
+</body>
+</html>

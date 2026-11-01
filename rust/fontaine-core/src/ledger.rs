@@ -50,9 +50,12 @@ pub enum Record {
         truncated: bool,
     },
     /// A human message, verbatim. `agent` names the subagent it was typed to in that agent's
-    /// view; `None` is the main conversation.
+    /// view; `None` is the main conversation. `attachments` names the labels of any inline
+    /// files it carried.
     UserMessage {
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
     },
@@ -361,10 +364,13 @@ impl LedgerView {
                 self.index = paths.iter().map(|p| path_key(p)).collect();
                 self.index_truncated = *truncated;
             }
-            Record::UserMessage { text, agent: None } => self.user_messages.push(text.clone()),
+            Record::UserMessage {
+                text, agent: None, ..
+            } => self.user_messages.push(text.clone()),
             Record::UserMessage {
                 text,
                 agent: Some(agent),
+                ..
             } => self.agent_messages.push(AgentMessage {
                 agent: agent.clone(),
                 text: text.clone(),
@@ -678,6 +684,7 @@ mod tests {
             ledger
                 .append(Record::UserMessage {
                     text: text.into(),
+                    attachments: Vec::new(),
                     agent: None,
                 })
                 .unwrap();
@@ -697,6 +704,7 @@ mod tests {
         ledger
             .append(Record::UserMessage {
                 text: "three".into(),
+                attachments: Vec::new(),
                 agent: None,
             })
             .unwrap();
@@ -718,6 +726,7 @@ mod tests {
         ledger
             .append(Record::UserMessage {
                 text: "three".into(),
+                attachments: Vec::new(),
                 agent: None,
             })
             .unwrap();
@@ -791,6 +800,7 @@ mod tests {
         ledger
             .append(Record::UserMessage {
                 text: "before".into(),
+                attachments: Vec::new(),
                 agent: None,
             })
             .unwrap();
@@ -816,6 +826,7 @@ mod tests {
         ledger
             .append(Record::UserMessage {
                 text: "after".into(),
+                attachments: Vec::new(),
                 agent: None,
             })
             .unwrap();
@@ -836,6 +847,7 @@ mod tests {
         ledger
             .append(Record::UserMessage {
                 text: text.into(),
+                attachments: Vec::new(),
                 agent: None,
             })
             .unwrap();
@@ -915,6 +927,7 @@ mod tests {
         ledger
             .append(Record::UserMessage {
                 text: text.into(),
+                attachments: Vec::new(),
                 agent: agent.map(str::to_string),
             })
             .unwrap();
@@ -967,6 +980,7 @@ mod tests {
             legacy,
             Record::UserMessage {
                 text: "legacy".into(),
+                attachments: Vec::new(),
                 agent: None
             }
         );

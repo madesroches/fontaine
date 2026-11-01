@@ -419,6 +419,15 @@ All notable changes are recorded here. The format follows
 
 #### Tools
 
+- Multimodal `read`: an image (PNG, JPEG, GIF or WebP, sniffed by magic bytes) is returned to the
+  model as an image content part when the current model accepts images — a text header names the
+  file, kind and size, then the image, capped at 5 MB — and as a text note otherwise. A PDF is never
+  returned as a tool result: the result is a stub naming the file and pointing at attach (#21).
+- The terminal UI attaches a clipboard image with Ctrl+V and a dropped PDF by dropping its path on
+  the prompt. Attachments render as chips above the typed text (Backspace on an empty input removes
+  the last one) and ride the message as base64 content parts: an image to a model that accepts
+  images, a PDF as a document, anything the model rejects as a text note instead. The ledger
+  records attachment labels with each user message (#21).
 - Background shell jobs and a `monitor` tool (#25). A main-conversation `shell` command still
   running at its `timeout_secs` (or, with the default timeout, after 60 s without output) is no
   longer stopped: the call returns the output so far and a job id, the command keeps running, and

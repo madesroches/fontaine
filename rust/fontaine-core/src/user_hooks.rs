@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use fontaine_tools::gate::CallView;
 use fontaine_tools::git_bash::{GitBash, sh_command};
-use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note};
+use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note, text_view};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
 use tokio::io::AsyncWriteExt;
@@ -370,9 +370,9 @@ impl PostHookStage {
 
     fn response(outcome: &ToolOutcome) -> Value {
         match outcome {
-            Ok(output) => json!({ "is_error": false, "output": output.render() }),
+            Ok(output) => json!({ "is_error": false, "output": text_view(output) }),
             Err(error) => {
-                json!({ "is_error": true, "output": error.model_output().render() })
+                json!({ "is_error": true, "output": text_view(error.model_output()) })
             }
         }
     }

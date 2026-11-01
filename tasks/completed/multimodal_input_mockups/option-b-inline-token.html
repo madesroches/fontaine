@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fontaine TUI — inline attachment token (option B)</title>
+<style>
+  :root {
+    --bg: #17181c;
+    --panel: #1e2026;
+    --border: #3a3d45;
+    --text: #d7dae0;
+    --dim: #8a8f99;
+    --user: #7ab4e8;
+    --success: #4eba65;
+    --error: #ff6b80;
+    --warning: #ffc107;
+    --accept: #af87ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px;
+    background: #0f1013;
+    color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    display: flex; flex-direction: column; align-items: center; gap: 24px;
+  }
+  h1 { font-size: 15px; color: var(--dim); font-weight: normal; margin: 0; }
+  .screen {
+    width: 780px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; white-space: pre-wrap;
+  }
+  .transcript { margin-bottom: 12px; }
+  .user { color: var(--user); }
+  .token { color: var(--accept); }
+  .gutter { color: var(--dim); }
+  .tool { color: var(--success); }
+  .text { color: var(--text); }
+  .dim { color: var(--dim); }
+
+  .composer { border: 1px solid var(--border); border-radius: 6px; background: var(--panel); }
+  .composer-title { color: var(--dim); font-size: 12px; padding: 4px 10px; border-bottom: 1px solid var(--border); }
+  .typed { padding: 8px 10px; color: var(--text); white-space: pre-wrap; }
+  .caret { display: inline-block; width: 7px; height: 15px; background: var(--text); vertical-align: -2px; }
+
+  .statusbar { margin-top: 12px; color: var(--dim); font-size: 12px; display: flex; justify-content: space-between; }
+  .note { width: 780px; color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+<h1>Option B — attachment as an inline token in the text flow</h1>
+
+<div class="screen">
+<div class="transcript">
+<span class="dim">─ transcript ──────────────────────────────────────────────</span>
+<span class="user">❯ why did the guardian deny that read?</span>
+<span class="gutter">│ </span><span class="tool">read src/permissions.rs</span>
+<span class="gutter">│ </span><span class="dim">[image: PNG 1440×900 · screenshot-guardian.png]</span>
+<span class="gutter">│ </span><span class="text">The denial came from the protected-path rule on ~/.ssh —</span>
+<span class="gutter">│ </span><span class="text">the floor denied it before the guardian ran.</span>
+</div>
+
+<div class="composer">
+  <div class="composer-title"> message · Enter sends · Alt+Enter new line </div>
+  <div class="typed">why did the guardian deny this? <span class="token">[img: screenshot-guardian.png 312 KB]</span><span class="caret"></span></div>
+</div>
+
+<div class="statusbar"><span>claude/opus-4.6 · auto · guardian steering</span><span>Ctrl+V attach image · /help</span></div>
+</div>
+
+<p class="note">The attachment is inserted at the cursor as a dim inline token, part of the text
+buffer itself (Backspace deletes it like any character; no chip row, no hit-testing). The sent
+message is parsed back into a text part plus an image part. Trade-off: the smallest possible
+change to the input view, but no thumbnail, no per-chip removal affordance, and a long filename
+wraps awkwardly inside the typed line.</p>
+</body>
+</html>

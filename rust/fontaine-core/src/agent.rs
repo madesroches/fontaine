@@ -568,8 +568,8 @@ impl AgentRuntime {
             .run(view, Ok(ToolOutput::text(text.to_string())))
             .await;
         match screened {
-            Ok(output) => output.render(),
-            Err(error) => error.model_output().render(),
+            Ok(output) => fontaine_tools::result_pipeline::text_view(&output),
+            Err(error) => fontaine_tools::result_pipeline::text_view(error.model_output()),
         }
     }
 
@@ -595,6 +595,12 @@ impl AgentRuntime {
     /// The workspace roots now, primary first; `/add-dir` extends them.
     pub fn roots(&self) -> Vec<PathBuf> {
         self.state.scope().roots().to_vec()
+    }
+
+    /// Variables no child process inherits, such as the clipboard readers a Ctrl+V attach
+    /// starts.
+    pub fn scrub_env(&self) -> &[OsString] {
+        &self.setup.scrub_env
     }
 
     /// The roots the completion and ledger file indexes scan: the workspace, not the memory

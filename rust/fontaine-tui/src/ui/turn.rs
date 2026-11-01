@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::path::Path;
 
 use crate::config_panel::ConfigKey;
+use crate::input::{MAX_ATTACHMENT_BYTES, PendingAttachment};
 use crate::transcript::Transcript;
 use crate::{Action, App, Ui, parse_command};
 use fontaine_core::RuntimeError;
@@ -13,7 +14,9 @@ use fontaine_core::ledger::Record;
 use fontaine_core::schedule::{Fired, Kind};
 use fontaine_core::steering::Queued;
 use fontaine_core::tier::Tier;
-use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn};
+use fontaine_core::turn::{
+    Attachment, AttachmentMedia, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
+};
 use tokio::sync::mpsc::unbounded_channel;
 
 /// How a turn ended from the interface's side.
@@ -35,7 +38,7 @@ pub(crate) enum Serve {
 }
 
 /// What becomes of input typed during a turn that the agent never received.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum EndOfTurn {
     /// The agent answered without another tool result: run what was queued, in order.
     Submit(Vec<Submission>),
@@ -45,10 +48,15 @@ pub(crate) enum EndOfTurn {
 }
 
 /// One unit of queued replay: what a retracted entry becomes once the turn ends.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Submission {
     /// Consecutive queued messages joined with a blank line, as a plain message reads today.
     Message(String),
+    /// A plain message with inline attachments: a clipboard image or a dropped PDF.
+    Attached {
+        text: String,
+        attachments: Vec<PendingAttachment>,
+    },
     Skill {
         raw: String,
         name: String,
@@ -70,6 +78,7 @@ impl Submission {
     pub(crate) fn raw(&self) -> &str {
         match self {
             Submission::Message(text) => text,
+            Submission::Attached { text, .. } => text,
             Submission::Skill { raw, .. } => raw,
             Submission::Command(raw) => raw,
             Submission::Shell(raw) => raw,
@@ -79,7 +88,7 @@ impl Submission {
 }
 
 /// What dispatching one queued command came to.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) enum CommandOutcome {
     /// The command did its work; the next submission runs.
     Done,
@@ -95,6 +104,50 @@ pub(crate) enum SkillRun {
     Prompt(String),
     /// An error or an interrupt: the notices are shown and the raw is spent.
     Spent,
+}
+
+/// Reads an attached file into what a turn carries. A file that vanished or cannot be read
+/// since it was attached is an error the transcript names, not a failed turn.
+fn into_attachment(pending: PendingAttachment) -> Result<Attachment, String> {
+    use crate::input::PendingMedia;
+
+    // Stat before opening: metadata does not block on a FIFO or device, but
+    // reading one would, and the recorded size cannot be trusted for the cap.
+    let metadata = std::fs::metadata(&pending.path).map_err(|e| {
+        format!(
+            "{} could not be read and was not sent: {e}",
+            pending.path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "{} is not a regular file and was not sent",
+            pending.path.display()
+        ));
+    }
+    if metadata.len() > MAX_ATTACHMENT_BYTES {
+        return Err(format!(
+            "{} is {} and was not sent: attachments are capped at {}",
+            pending.label,
+            fontaine_tools::notebook::human_size(metadata.len()),
+            fontaine_tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
+        ));
+    }
+    let bytes = std::fs::read(&pending.path).map_err(|e| {
+        format!(
+            "{} could not be read and was not sent: {e}",
+            pending.path.display()
+        )
+    })?;
+    let media = match pending.media {
+        PendingMedia::Image(media) => AttachmentMedia::Image(media),
+        PendingMedia::Pdf => AttachmentMedia::Pdf,
+    };
+    Ok(Attachment {
+        label: pending.label,
+        bytes,
+        media,
+    })
 }
 
 /// A dispatcher hand-off runs next, ahead of everything already pending, so nothing executes
@@ -223,7 +276,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         } else {
             "an agent reported back"
         });
-        let end = self.turn(runtime, prompt, None).await;
+        let end = self.turn(runtime, prompt, None, Vec::new()).await;
         self.harness_turn_tail(runtime, launch_dir, end).await
     }
 
@@ -271,7 +324,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .notice(format!("scheduled: {}", fired.job.id));
         let end = match self.refresh_native_search(runtime) {
             Some(end) => end,
-            None => self.turn(runtime, prompt, None).await,
+            None => self.turn(runtime, prompt, None, Vec::new()).await,
         };
         if matches!(end, TurnEnd::InputClosed) {
             return std::ops::ControlFlow::Break(());
@@ -293,7 +346,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let prompt = runtime.goal_prompt(&next).await;
         let end = match self.refresh_native_search(runtime) {
             Some(end) => end,
-            None => self.turn(runtime, prompt, None).await,
+            None => self.turn(runtime, prompt, None, Vec::new()).await,
         };
         self.harness_turn_tail(runtime, launch_dir, end).await
     }
@@ -337,6 +390,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             self.remember(entry.raw());
                             runtime.steering.queue(entry);
                         }
+                        Action::AttachClipboard => self.attach_clipboard(runtime).await,
                         Action::EditQueued if queueing => self.edit_queued(runtime),
                         Action::Command { command, raw } => {
                             self.remember(&raw);
@@ -392,6 +446,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         // this turn's intent in the ledger.
         runtime.append(Record::UserMessage {
             text: raw.to_string(),
+            attachments: Vec::new(),
             agent: None,
         });
         let result = self.expand_serving(runtime, name, argument).await;
@@ -439,7 +494,36 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Some(end) => end,
                         None => {
                             runtime.begin_turn(&text, false);
-                            self.turn(runtime, text.clone(), Some(&text)).await
+                            self.turn(runtime, text.clone(), Some(&text), Vec::new())
+                                .await
+                        }
+                    }
+                }
+                Submission::Attached { text, attachments } => {
+                    self.app.transcript.user(text.clone());
+                    let mut files = Vec::new();
+                    for pending in attachments {
+                        let label = pending.label.clone();
+                        let size = pending.size;
+                        match into_attachment(pending) {
+                            Ok(attachment) => {
+                                let kind = match attachment.media {
+                                    AttachmentMedia::Image(_) => "image",
+                                    AttachmentMedia::Pdf => "pdf",
+                                };
+                                self.app.transcript.attached(kind, &label, size);
+                                files.push(attachment);
+                            }
+                            Err(why) => self.app.transcript.error(why),
+                        }
+                    }
+                    // A prompt from the user resumes a paused goal.
+                    runtime.goal_user_prompt();
+                    match self.refresh_native_search(runtime) {
+                        Some(end) => end,
+                        None => {
+                            runtime.begin_turn(&text, false);
+                            self.turn(runtime, text.clone(), Some(&text), files).await
                         }
                     }
                 }
@@ -452,7 +536,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         None => {
                             // Recorded as the human's message before this point.
                             runtime.begin_turn(&text, true);
-                            self.turn(runtime, prompt, None).await
+                            self.turn(runtime, prompt, None, Vec::new()).await
                         }
                     }
                 }
@@ -584,7 +668,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Action::MessageAgent { id, text } => self.message_agent(runtime, id, text),
                 Action::KillJob(id) => self.kill_job(runtime, &id),
                 Action::None
-                | Action::Submit(_)
+                | Action::Submit(..)
+                | Action::AttachClipboard
                 | Action::Queue(_)
                 | Action::Command { .. }
                 | Action::Shell(_)
@@ -609,14 +694,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// Runs one user message while still serving keys and prompts.
     ///
     /// `human` is what the user typed, recorded in the ledger as theirs; `None` is a turn the
-    /// harness started, whose prompt is not.
-    async fn turn(&mut self, runtime: &AgentRuntime, text: String, human: Option<&str>) -> TurnEnd {
+    /// harness started, whose prompt is not. `attachments` are the message's inline files,
+    /// already read from disk.
+    async fn turn(
+        &mut self,
+        runtime: &AgentRuntime,
+        text: String,
+        human: Option<&str>,
+        attachments: Vec<Attachment>,
+    ) -> TurnEnd {
         // A refusal left by a step that reset `running` without settling would show here, with
         // no input event to clear it.
         self.app.refusal = None;
+        self.app.attach_notice = None;
         if let Some(typed) = human {
+            let labels: Vec<String> = attachments.iter().map(|a| a.label.clone()).collect();
             runtime.append(Record::UserMessage {
                 text: typed.to_string(),
+                attachments: labels,
                 agent: None,
             });
         }
@@ -642,6 +737,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     agent: &runtime.agent,
                     state: &runtime.state,
                     prompt,
+                    attachments,
+                    modalities: runtime
+                        .models
+                        .main
+                        .completion
+                        .spec()
+                        .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input),
                     max_turns: None,
                     priced: runtime.models.main.catalog_billed(),
                     model,
@@ -698,6 +800,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             self.remember(entry.raw());
                             runtime.steering.queue(entry);
                         }
+                        Action::AttachClipboard => self.attach_clipboard(runtime).await,
                         Action::EditQueued => self.edit_queued(runtime),
                         Action::Command { command, raw } => {
                             self.remember(&raw);
@@ -708,7 +811,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::OpenRewind | Action::Rewind { .. } => {}
                         Action::Server(_)
                         | Action::None
-                        | Action::Submit(_)
+                        | Action::Submit(..)
                         | Action::Shell(_)
                         | Action::GuardianOff(_)
                         | Action::SetupReview(_)
@@ -811,6 +914,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     pub(crate) fn settle_turn(&mut self, end: &TurnEnd) {
         self.app.running = false;
         self.app.refusal = None;
+        self.app.attach_notice = None;
         self.app.deny_pending();
         self.drain_prompts();
         self.app.transcript.interrupt_pending();
@@ -824,5 +928,72 @@ impl<R: FnMut(&mut App)> Ui<R> {
             TurnEnd::Finished(_) | TurnEnd::InputClosed => {}
             TurnEnd::Interrupted => self.app.transcript.notice("interrupted"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::PendingMedia;
+
+    #[test]
+    fn an_attachment_over_the_cap_is_refused_before_sending() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("big.png");
+        std::fs::write(&path, vec![0u8; (MAX_ATTACHMENT_BYTES + 1) as usize]).unwrap();
+        let pending = PendingAttachment {
+            label: "big.png".into(),
+            path,
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: MAX_ATTACHMENT_BYTES + 1,
+        };
+        let err = into_attachment(pending).expect_err("an oversized attachment is refused");
+        assert!(err.contains("capped at 5.0 MB"), "{err}");
+    }
+
+    #[test]
+    fn a_non_regular_attachment_is_refused_at_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = PendingAttachment {
+            label: "adir".into(),
+            path: dir.path().join("adir"),
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 3,
+        };
+        std::fs::create_dir(&pending.path).unwrap();
+        let err = into_attachment(pending).expect_err("a directory is refused");
+        assert!(err.contains("not a regular file"), "{err}");
+    }
+
+    #[test]
+    fn an_attachment_that_grew_past_the_cap_is_refused_at_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grown.png");
+        std::fs::write(&path, vec![0u8; (MAX_ATTACHMENT_BYTES + 1) as usize]).unwrap();
+        let pending = PendingAttachment {
+            label: "grown.png".into(),
+            path,
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 3,
+        };
+        let err =
+            into_attachment(pending).expect_err("an attachment grown past the cap is refused");
+        assert!(err.contains("capped at 5.0 MB"), "{err}");
+    }
+
+    #[test]
+    fn an_attachment_under_the_cap_sends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shot.png");
+        std::fs::write(&path, b"png").unwrap();
+        let pending = PendingAttachment {
+            label: "shot.png".into(),
+            path,
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 3,
+        };
+        let attachment = into_attachment(pending).expect("a small attachment sends");
+        assert_eq!(attachment.label, "shot.png");
+        assert_eq!(attachment.bytes, b"png");
     }
 }

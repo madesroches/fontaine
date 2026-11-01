@@ -15,7 +15,9 @@ use fontaine_tools::gate::CallView;
 use fontaine_tools::jobs::{WAKE_POLL, WaitWake};
 use fontaine_tools::kills::{KILL_GRACE, KillSwitches};
 use fontaine_tools::lock::{lock, lock_recovering, read};
-use fontaine_tools::result_pipeline::{ResultPipeline, ResultStage, ToolOutcome, append_note};
+use fontaine_tools::result_pipeline::{
+    ResultPipeline, ResultStage, ToolOutcome, append_note, text_view,
+};
 use fontaine_tools::risk::RiskClass;
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
@@ -187,8 +189,8 @@ async fn screened_notes(
     };
     let (screened, _) = results.run(view, Ok(ToolOutput::text(text))).await;
     match screened {
-        Ok(output) => output.render(),
-        Err(error) => error.model_output().render(),
+        Ok(output) => text_view(&output),
+        Err(error) => text_view(error.model_output()),
     }
 }
 
@@ -370,6 +372,7 @@ struct RunShared {
 fn record_human_prompt(shared: &RunShared, text: &str) {
     shared.state.append(Record::UserMessage {
         text: text.to_string(),
+        attachments: Vec::new(),
         agent: Some(shared.id.clone()),
     });
     shared
@@ -552,6 +555,10 @@ impl ChildRunner for CoreChildRunner {
                     priced,
                     model: model_id,
                     provider,
+                    modalities: model
+                        .completion
+                        .spec()
+                        .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input),
                 },
                 agent_type: request.agent_type.name.clone(),
                 kill,
@@ -581,6 +588,8 @@ struct ChildModel {
     priced: bool,
     model: String,
     provider: String,
+    /// What the child's model accepts, for the read tool's multimodal dispatch.
+    modalities: rig_core::catalog::Modalities,
 }
 
 /// How a child's wait for its own subagents ended.
@@ -673,6 +682,8 @@ async fn run_child(
                 state,
                 agent_id: id,
                 prompt,
+                attachments: Vec::new(),
+                modalities: shared.model.modalities,
                 max_turns: None,
                 priced: shared.model.priced,
                 model: shared.model.model.clone(),

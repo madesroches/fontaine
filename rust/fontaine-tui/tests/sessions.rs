@@ -42,6 +42,7 @@ fn earlier(w: &World, id: &str, name: Option<&str>, prompt: &str) {
         .ledger
         .append(Record::UserMessage {
             text: prompt.into(),
+            attachments: Vec::new(),
             agent: None,
         })
         .unwrap();

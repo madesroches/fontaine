@@ -6,10 +6,13 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use rig_core::completion::ToolAnnotations;
+use rig_core::message::{ImageMediaType, ToolResultContent};
 use rig_core::tool::{
-    FileRead, FilesChanged, FilesRead, Scope, Tool, ToolContext, ToolExecutionError, Touches,
-    content_hash,
+    FileRead, FilesChanged, FilesRead, Scope, Tool, ToolContext, ToolExecutionError, ToolOutput,
+    Touches, content_hash,
 };
 use rig_tools::fs::{file_change, io_error};
 use rig_tools::workspace::{Local, Workspace};
@@ -17,7 +20,13 @@ use rig_tools::{Read, ReadArgs, Seen, blocking};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::gate::InputModalities;
+
 const NOTEBOOK_EXTENSION: &str = "ipynb";
+
+/// The most bytes of image a `read` sends the model: providers refuse bigger ones
+/// (Anthropic takes 5 MB per image), the cap rig's own attach uses.
+const MAX_IMAGE_BYTES: u64 = 5 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -563,47 +572,127 @@ fn edit(
     Ok((format!("{} in {}.", edited.summary, args.path), change))
 }
 
-/// `read` that shows a notebook as cells and otherwise reads as rig's does.
+/// `read`, presenting more than notebooks: a Jupyter notebook (.ipynb) is shown as its cells,
+/// an image goes to the model as an image content part when the calling agent's model accepts
+/// images, and anything else reads as rig's `Read` does.
 #[derive(Clone, Debug)]
-pub struct NotebookRead {
+pub struct ReadView {
     pub read: Read,
 }
 
-impl Tool for NotebookRead {
-    const NAME: &'static str = "read";
-    type Args = ReadArgs;
-    type Output = String;
-    type Error = ToolExecutionError;
+/// What the first bytes of a file read as.
+enum Sniffed {
+    Image(ImageMediaType),
+    Pdf,
+    Other,
+}
 
-    fn description(&self) -> String {
-        format!(
-            "{} A Jupyter notebook (.ipynb) is shown as its cells: each with its index, id and \
-             type, its source, and its text outputs (images are noted, not shown). Edit one with \
-             `notebook_edit`.",
-            self.read.description()
-        )
+fn sniff(bytes: &[u8]) -> Sniffed {
+    if let Some(media) = ImageMediaType::sniff(bytes) {
+        return Sniffed::Image(media);
+    }
+    if bytes.starts_with(b"%PDF-") {
+        return Sniffed::Pdf;
+    }
+    Sniffed::Other
+}
+
+/// `size` the way the result header names it: `231 KB`, `1.2 MB`.
+pub fn human_size(size: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = 1024 * KB;
+    if size >= MB {
+        format!("{:.1} MB", size as f64 / MB as f64)
+    } else if size >= KB {
+        format!("{} KB", size.div_ceil(KB))
+    } else {
+        format!("{size} B")
+    }
+}
+
+impl ReadView {
+    /// The model's accepted modalities for this call; absent means text-only, the safe
+    /// fallback for callers that never insert them.
+    fn modalities(context: &ToolContext) -> rig_core::catalog::Modalities {
+        context
+            .get::<InputModalities>()
+            .ok()
+            .flatten()
+            .map_or_else(rig_core::catalog::Modalities::default, |m| m.0)
     }
 
-    fn parameters(&self) -> serde_json::Value {
-        self.read.parameters()
+    /// Reads the resolved `path` as an image: a text header naming the file, kind and size,
+    /// then the image itself. Over the size cap, or for a model that takes no images, the
+    /// result is a text explanation instead.
+    async fn image(
+        &self,
+        context: &mut ToolContext,
+        path: &Path,
+        media: ImageMediaType,
+        size: u64,
+    ) -> Result<ToolOutput, ToolExecutionError> {
+        let kind = format!("{:?}", media).to_uppercase();
+        let shown = path.to_string_lossy().into_owned();
+        if size > MAX_IMAGE_BYTES {
+            return Ok(ToolOutput::text(format!(
+                "{shown} is an image ({kind}, {}), over the {} MB limit `read` sends; no part of \
+                 it was shown. Read it in smaller pieces another way.",
+                human_size(size),
+                MAX_IMAGE_BYTES / (1024 * 1024),
+            )));
+        }
+        let workspace = self.read.workspace.clone();
+        let seen = self.read.seen.clone();
+        let probe = path.to_path_buf();
+        let shown_for_read = shown.clone();
+        let bytes = blocking(move || {
+            let contents = workspace
+                .read(&probe, MAX_IMAGE_BYTES)
+                .map_err(|e| io_error(&shown_for_read, e))?;
+            Ok(contents.bytes)
+        })
+        .await?;
+        let hash = content_hash(&bytes);
+        seen.saw(path, hash.clone());
+        context.insert_result(FilesRead(vec![FileRead::new(&shown, hash)]))?;
+        if !Self::modalities(context).image {
+            return Ok(ToolOutput::text(format!(
+                "{shown} is an image ({kind}, {}). The current model does not accept images, so \
+                 it cannot be shown; ask for it as an attachment or switch to a model that takes \
+                 images.",
+                human_size(size),
+            )));
+        }
+        let header = format!("[image: {kind} · {}] {shown}", human_size(size));
+        let image = ToolResultContent::Image(rig_core::message::Image {
+            data: rig_core::message::DocumentSourceKind::base64(STANDARD.encode(&bytes)),
+            media_type: Some(media),
+            detail: None,
+            native: None,
+        });
+        let output = ToolOutput::content(vec![ToolResultContent::text(header), image])
+            .expect("an image result has a text header part");
+        Ok(output)
     }
 
-    fn annotations(&self) -> ToolAnnotations {
-        self.read.annotations()
+    /// A PDF never leaves `read` as a tool result: the wire rejects document blocks there, so
+    /// the result is a stub naming the file and pointing at attaching it to the prompt.
+    fn pdf(&self, path: &Path, size: u64) -> ToolOutput {
+        ToolOutput::text(format!(
+            "{} is a PDF ({}). PDFs are not sent as `read` results; attach the file to your \
+             message (drop it on the prompt) so it reaches the model as a document.",
+            path.display(),
+            human_size(size),
+        ))
     }
 
-    fn footprint(&self, args: &ReadArgs) -> Touches {
-        self.read.footprint(args)
-    }
-
-    async fn call(
+    /// A notebook reads as its cells; one that is not an editable notebook reads as plain
+    /// text through rig's `Read`.
+    async fn notebook(
         &self,
         context: &mut ToolContext,
         args: ReadArgs,
-    ) -> Result<String, ToolExecutionError> {
-        if !is_notebook_path(&args.path) {
-            return self.read.call(context, args).await;
-        }
+    ) -> Result<ToolOutput, ToolExecutionError> {
         let path =
             self.read
                 .workspace
@@ -627,10 +716,72 @@ impl Tool for NotebookRead {
         // is still worth reading.
         let (output, read) = match parsed {
             Ok(parsed) => parsed,
-            Err(args) => return self.read.call(context, args).await,
+            Err(args) => return self.read.call(context, args).await.map(ToolOutput::text),
         };
         context.insert_result(FilesRead(vec![read]))?;
-        Ok(output)
+        Ok(ToolOutput::text(output))
+    }
+}
+
+impl Tool for ReadView {
+    const NAME: &'static str = "read";
+    type Args = ReadArgs;
+    type Output = ToolOutput;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        format!(
+            "{} An image (PNG, JPEG, GIF, WebP) is returned to the model as an image when the \
+             model accepts images, and as a note otherwise; over {} MB even an image-capable \
+             model gets a note. A Jupyter notebook (.ipynb) is shown as its cells: each with \
+             its index, id and type, its source, and its text outputs (images are noted, not \
+             shown). Edit one with `notebook_edit`. A PDF is never returned as a result: \
+             attach it to your message instead.",
+            self.read.description(),
+            MAX_IMAGE_BYTES / (1024 * 1024),
+        )
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.read.parameters()
+    }
+
+    fn annotations(&self) -> ToolAnnotations {
+        self.read.annotations()
+    }
+
+    fn footprint(&self, args: &ReadArgs) -> Touches {
+        self.read.footprint(args)
+    }
+
+    async fn call(
+        &self,
+        context: &mut ToolContext,
+        args: ReadArgs,
+    ) -> Result<ToolOutput, ToolExecutionError> {
+        if is_notebook_path(&args.path) {
+            return self.notebook(context, args).await;
+        }
+        // Resolved before any I/O, exactly as rig's `Read` resolves, so a confined path
+        // outside the root is refused with the same error text.
+        let path =
+            self.read
+                .workspace
+                .place(self.read.base.as_deref(), self.read.confine, &args.path)?;
+        let workspace = self.read.workspace.clone();
+        let probe = path.clone();
+        let (sniffed, size) = blocking(move || {
+            let contents = workspace
+                .read(&probe, 12)
+                .map_err(|e| io_error(&probe.to_string_lossy(), e))?;
+            Ok((sniff(&contents.bytes), contents.size))
+        })
+        .await?;
+        match sniffed {
+            Sniffed::Image(media) => self.image(context, &path, media, size).await,
+            Sniffed::Pdf => Ok(self.pdf(&path, size)),
+            Sniffed::Other => self.read.call(context, args).await.map(ToolOutput::text),
+        }
     }
 }
 
@@ -937,7 +1088,31 @@ mod tests {
 
     mod tools {
         use super::*;
+        use crate::gate::InputModalities;
+        use rig_core::catalog::Modalities;
+        use rig_core::message::DocumentSourceKind;
         use rig_tools::MAX_FILE_BYTES;
+
+        /// The smallest file each magic-byte sniff recognizes.
+        const PNG: &[u8] = b"\x89PNG\r\n\x1a\nrest";
+        const JPEG: &[u8] = b"\xff\xd8\xff\xe0rest";
+        const GIF: &[u8] = b"GIF89arest";
+        const WEBP: &[u8] = b"RIFF\0\0\0\0WEBPrest";
+        const PDF: &[u8] = b"%PDF-1.7 rest";
+
+        fn modalities(image: bool) -> ToolContext {
+            let mut context = ToolContext::new();
+            let mut accepted = Modalities::default();
+            accepted.image = image;
+            context
+                .insert(InputModalities(accepted))
+                .expect("modalities serialize");
+            context
+        }
+
+        fn text_of(output: &ToolOutput) -> String {
+            crate::result_pipeline::text_view(output)
+        }
 
         struct Rig {
             _dir: tempfile::TempDir,
@@ -960,8 +1135,12 @@ mod tests {
                 std::fs::write(self.root.join(name), text).unwrap();
             }
 
-            fn read_tool(&self) -> NotebookRead {
-                NotebookRead {
+            fn write_bytes(&self, name: &str, bytes: &[u8]) {
+                std::fs::write(self.root.join(name), bytes).unwrap();
+            }
+
+            fn read_tool(&self) -> ReadView {
+                ReadView {
                     read: crate::builtins::read_for(&self.root, &self.seen),
                 }
             }
@@ -970,10 +1149,18 @@ mod tests {
                 crate::builtins::notebook_edit_for(&self.root, &self.seen)
             }
 
-            async fn read(&self, path: &str) -> Result<String, ToolExecutionError> {
+            async fn read(&self, path: &str) -> Result<ToolOutput, ToolExecutionError> {
                 self.read_tool()
                     .call(&mut ToolContext::new(), ReadArgs::new(path))
                     .await
+            }
+
+            async fn read_with(
+                &self,
+                path: &str,
+                context: &mut ToolContext,
+            ) -> Result<ToolOutput, ToolExecutionError> {
+                self.read_tool().call(context, ReadArgs::new(path)).await
             }
 
             async fn edit(&self, a: NotebookEditArgs) -> Result<String, ToolExecutionError> {
@@ -988,11 +1175,139 @@ mod tests {
             }
         }
 
+        #[test]
+        fn the_sniff_reads_magic_bytes_only() {
+            assert!(matches!(sniff(PNG), Sniffed::Image(ImageMediaType::PNG)));
+            assert!(matches!(sniff(JPEG), Sniffed::Image(ImageMediaType::JPEG)));
+            assert!(matches!(sniff(GIF), Sniffed::Image(ImageMediaType::GIF)));
+            assert!(matches!(sniff(WEBP), Sniffed::Image(ImageMediaType::WEBP)));
+            assert!(matches!(sniff(PDF), Sniffed::Pdf));
+            assert!(matches!(sniff(b"plain text"), Sniffed::Other));
+            assert!(matches!(sniff(b""), Sniffed::Other));
+            assert!(matches!(sniff(b"%PDF"), Sniffed::Other), "the dash matters");
+        }
+
+        #[test]
+        fn sizes_read_the_way_headers_name_them() {
+            assert_eq!(human_size(512), "512 B");
+            assert_eq!(human_size(1024), "1 KB");
+            assert_eq!(human_size(231_000), "226 KB");
+            assert_eq!(human_size(5 * 1024 * 1024), "5.0 MB");
+        }
+
+        #[tokio::test]
+        async fn an_image_reads_as_parts_for_a_model_that_accepts_images() {
+            let rig = Rig::new();
+            rig.write_bytes("pixel.png", PNG);
+            let mut context = modalities(true);
+            let output = rig.read_with("pixel.png", &mut context).await.unwrap();
+            let parts = output.as_content();
+            assert_eq!(parts.len(), 2);
+            let shown = text_of(&output);
+            assert!(shown.contains("[image: PNG"), "{shown}");
+            assert!(shown.contains("pixel.png"), "{shown}");
+            assert!(!shown.contains("iVBOR"), "no base64 in the text view");
+            let ToolResultContent::Image(image) = &parts[1] else {
+                panic!("the second part is the image");
+            };
+            assert_eq!(image.media_type, Some(ImageMediaType::PNG));
+            let DocumentSourceKind::Base64(data) = &image.data else {
+                panic!("the image travels as base64");
+            };
+            assert_eq!(STANDARD.decode(data).unwrap(), PNG);
+            let read = context
+                .result::<FilesRead>()
+                .unwrap()
+                .expect("the read is published");
+            assert_eq!(read.0.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn an_image_without_modalities_reads_as_a_text_note() {
+            let rig = Rig::new();
+            rig.write_bytes("pixel.png", PNG);
+            // No InputModalities in the context at all: the text-only default.
+            let output = rig.read("pixel.png").await.unwrap();
+            let shown = text_of(&output);
+            assert!(shown.contains("is an image"), "{shown}");
+            assert!(shown.contains("does not accept images"), "{shown}");
+            assert!(!shown.contains("iVBOR"), "{shown}");
+        }
+
+        #[tokio::test]
+        async fn an_image_for_a_text_only_model_reads_as_a_text_note() {
+            let rig = Rig::new();
+            rig.write_bytes("pixel.png", PNG);
+            let mut context = modalities(false);
+            let output = rig.read_with("pixel.png", &mut context).await.unwrap();
+            let shown = text_of(&output);
+            assert!(shown.contains("does not accept images"), "{shown}");
+        }
+
+        #[tokio::test]
+        async fn an_image_over_the_cap_is_not_sent() {
+            let rig = Rig::new();
+            let mut big = PNG.to_vec();
+            big.resize((MAX_IMAGE_BYTES + 1) as usize, 0);
+            rig.write_bytes("big.png", &big);
+            let mut context = modalities(true);
+            let output = rig.read_with("big.png", &mut context).await.unwrap();
+            let shown = text_of(&output);
+            assert!(shown.contains("over the 5 MB limit"), "{shown}");
+            assert!(!shown.contains("iVBOR"), "{shown}");
+            assert_eq!(output.as_content().len(), 1, "a text-only result");
+        }
+
+        #[tokio::test]
+        async fn a_pdf_reads_as_a_stub_pointing_at_attach() {
+            let rig = Rig::new();
+            rig.write_bytes("doc.pdf", PDF);
+            let mut context = modalities(true);
+            let output = rig.read_with("doc.pdf", &mut context).await.unwrap();
+            let shown = text_of(&output);
+            assert!(shown.contains("doc.pdf"), "{shown}");
+            assert!(shown.contains("PDF"), "{shown}");
+            assert!(shown.contains("attach"), "{shown}");
+            assert!(!shown.contains("JVBER"), "no base64 in the stub");
+        }
+
+        #[tokio::test]
+        async fn an_image_outside_the_root_is_refused_like_any_read() {
+            let rig = Rig::new();
+            let outside = std::env::temp_dir().join(format!(
+                "fontaine-readview-test-{}-outside.png",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::write(&outside, PNG).unwrap();
+            let outside = outside.to_string_lossy().into_owned();
+            // The unconfined fallback read, as the gate's external fallback builds it.
+            let tool = ReadView {
+                read: crate::builtins::read_external(&rig.root, &rig.seen),
+            };
+            let mut context = modalities(true);
+            let output = tool
+                .call(&mut context, ReadArgs::new(&outside))
+                .await
+                .unwrap();
+            assert!(text_of(&output).contains("[image: PNG"));
+            // A confined read of the same path is refused before any I/O, with the same
+            // error text rig's own `Read` refuses it with.
+            let err = rig.read(&outside).await.unwrap_err();
+            let plain = crate::builtins::read_for(&rig.root, &rig.seen);
+            let err_plain = plain
+                .call(&mut ToolContext::new(), ReadArgs::new(&outside))
+                .await
+                .unwrap_err();
+            assert_eq!(err.to_string(), err_plain.to_string());
+            assert!(err.to_string().contains("outside"), "{err}");
+            std::fs::remove_file(&outside).unwrap();
+        }
+
         #[tokio::test]
         async fn reading_renders_cells_and_editing_writes_them_back() {
             let rig = Rig::new();
             rig.write("n.ipynb", &nb(5));
-            let shown = rig.read("n.ipynb").await.unwrap();
+            let shown = text_of(&rig.read("n.ipynb").await.unwrap());
             assert!(shown.contains("[cell 1 id=calc type=code]"), "{shown}");
             let reply = rig.edit(replace("n.ipynb")).await.unwrap();
             assert!(reply.contains("Replaced the source of cell 1"), "{reply}");
@@ -1061,12 +1376,12 @@ mod tests {
         async fn other_files_read_as_rig_reads_them() {
             let rig = Rig::new();
             rig.write("a.txt", "one\ntwo\n");
-            assert!(rig.read("a.txt").await.unwrap().contains("one"));
+            assert!(text_of(&rig.read("a.txt").await.unwrap()).contains("one"));
             rig.write("bad.ipynb", "not json");
             // Not an editable notebook: read as plain text rather than refused.
-            assert!(rig.read("bad.ipynb").await.unwrap().contains("not json"));
+            assert!(text_of(&rig.read("bad.ipynb").await.unwrap()).contains("not json"));
             rig.write("v3.ipynb", r#"{"nbformat": 3, "worksheets": []}"#);
-            assert!(rig.read("v3.ipynb").await.unwrap().contains("worksheets"));
+            assert!(text_of(&rig.read("v3.ipynb").await.unwrap()).contains("worksheets"));
         }
 
         #[tokio::test]
