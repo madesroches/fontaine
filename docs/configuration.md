@@ -30,7 +30,7 @@ Files in these directories:
 | `<config dir>/plugins.toml` | The [plugin and marketplace](plugins.md) registry, written by the `fontaine plugin` CLI and by the [plugin auto-update](plugins.md#auto-update) pass. It is not a settings file. |
 | `<data dir>/trust.toml` | Workspace trust record (see [Workspace trust](#workspace-trust)). |
 | `<data dir>/credentials.toml` | Stored API keys (see [Credentials](#credentials)). |
-| `<data dir>/auto_mode/<project>/environment.json` | The project facts `fontaine auto-mode setup` collected for the [guardian](guardian.md#project-environment). Readable by the current user only; the agent's file tools cannot write it unprompted. |
+| `<data dir>/auto_mode/<project>/environment.json` | The project facts `fontaine auto-mode setup` collected for the [guardian](guardian.md#project-environment) (setup also writes `[guardian.composition]` to the user settings file when you accept its [offer](guardian.md#setting-up-the-composition)). Readable by the current user only; the agent's file tools cannot write it unprompted. |
 | `<config dir>/config.lock`, `<config dir>/plugins.lock`, `<data dir>/trust.lock`, `<data dir>/credentials.lock` | Empty lock files beside the files they guard. Sessions hold one while they edit that file, so concurrent edits do not overwrite each other, and briefly while they read the settings or trust file, so a read waits for an edit in progress; safe to delete when no session is running. |
 | `<data dir>/history.jsonl` | What you submitted in the terminal UI, for Up and Ctrl-R recall (see [History](tui.md#history)). Readable by the current user only. |
 | `<data dir>/plugin-update.stamp` | When the [plugin auto-update](plugins.md#auto-update) pass last ran, so it runs at most once a day. |
@@ -739,7 +739,8 @@ defaults in where it stands.
 
 `fontaine auto-mode config` prints the lists a session would use and which scopes set them, and
 the project's stored environment record, or `none — run fontaine auto-mode setup`;
-`fontaine auto-mode setup` collects that record. See
+`fontaine auto-mode setup` collects that record and can write
+`[guardian.composition]` to the user file after a confirmation. See
 [Inspecting the rules](guardian.md#inspecting-the-rules).
 
 ```toml

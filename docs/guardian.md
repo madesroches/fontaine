@@ -266,8 +266,9 @@ first token's logprobs into a risk between 0 and 1; it needs an Ollama model, be
 native chat endpoint is the one that returns logprobs. The composition is configured in
 [`[guardian.composition]`](configuration.md#guardiancomposition) and is either a built-in preset,
 `screen` being the one that ships, or a script of your own. Nothing is enabled without
-configuration: no model or threshold ships, and a guardian with no `[guardian.composition]` is the
-LLM stage alone.
+configuration: a guardian with no `[guardian.composition]` is the LLM stage alone, and the only
+threshold Fontaine proposes is the one benchmarked for the model it is paired with, offered by
+[`fontaine auto-mode setup`](#setting-up-the-composition) and never applied without a yes.
 
 The composition runs after everything deterministic, only where the guardian would run, and not
 while the denial breaker is paused. A read requests the account's
@@ -599,7 +600,8 @@ every result carries the unscanned note until you fix it and restart.
 ## Inspecting the rules
 
 `fontaine auto-mode` shows what the guardian judges against. It starts no session, runs nothing
-the repository defines and changes no setting. `--cd` and `--settings` apply. Each subcommand takes
+the repository defines and, except for `setup`'s optional
+[composition offer](#setting-up-the-composition), changes no setting. `--cd` and `--settings` apply. Each subcommand takes
 `--format text|json`.
 
 - `fontaine auto-mode defaults` prints the shipped `environment`, `allow`, `soft_deny` and
@@ -625,9 +627,12 @@ the repository defines and changes no setting. `--cd` and `--settings` apply. Ea
   `[guardian] profile = "minimal"` it prints a note and makes no request, because the rule lists
   are not sent.
 
-- `fontaine auto-mode setup [--no-model] [--format text|json]` collects the project's
-  [environment](#project-environment) and stores it. It starts no session and exits 0 even when
-  steps fall back to unknown; it exits 1 only when the record cannot be written.
+- `fontaine auto-mode setup [--no-model] [--no-composition] [--format text|json]` collects the
+  project's [environment](#project-environment) and stores it, then offers the
+  [guardian composition](#setting-up-the-composition). It starts no session and exits 0 even when
+  steps fall back to unknown; it exits 1 only when the record cannot be written. The JSON report
+  gains a `composition` object with a `status` (`skipped`, `offered_unanswered`, `declined`,
+  `written` or `failed`) and the `candidates` it found.
 
 A prompt that is exactly `auto-mode` runs the subcommand, with or without `-p`; write
 `fontaine -p -- auto-mode` to give the agent that word as a task.
@@ -697,8 +702,38 @@ terminal UI a session that starts in another mode warns the first time it switch
 it, for example on CI with fresh checkouts. Having `[auto_mode] environment` entries does not:
 those are global, the record is per project.
 
-`/auto-mode-setup` applies its result to the running session at once; a command-line run from
-another terminal applies at the next start or resume.
+`/auto-mode-setup` applies the environment facts to the running session at once; a command-line run
+from another terminal applies at the next start or resume. A composition it writes applies from the
+next session in either case.
+
+### Setting up the composition
+
+The last, optional step of `fontaine auto-mode setup` and `/auto-mode-setup` offers the
+[`screen` preset](#composing-the-guardian) so you do not write `[guardian.composition]` by hand or
+guess a threshold. It looks for an `ollama` account that lists a model Fontaine has a benchmark for
+(today `qwen3:4b-instruct-2507-q4_K_M`, matched by its exact tag, since a threshold is fitted to one
+model, quantization, prompt and question) and asks one basic choice:
+
+- **safe**: `stop_threshold` only. The screen can only stop a call (escalate it, or deny it where
+  nobody can answer); it never allows, so the LLM guardian still reviews every call the screen did
+  not stop. It may stop some calls that would otherwise be allowed.
+- **fast**: `allow_threshold` only. The screen allows the calls it is confident about, which is a
+  guardian-tier allow; every call it does not clear goes to the LLM guardian, which decides it.
+
+You type no number. Setup shows what it will write, with the benchmark behind the threshold, and
+writes nothing unless you answer yes: `preset = "screen"`, `model = "<account>/<model>"`,
+`shadow = false` and the one threshold, to the user settings file only, in one edit that is first
+checked as a session start would check it. The step is skipped, with a line saying why, when a
+composition is already configured, under the `minimal` profile (the thresholds were fitted on full
+profile reads), with `--no-composition`, and when no reachable Ollama account holds a benchmarked
+model (the line names the model to pull). A run without a terminal lists what it found in the
+report and writes nothing.
+
+The value is a fit on a small dataset. The fast threshold let one call through live that the
+dataset expects denied or escalated, so score it on your own traffic with
+`fontaine-evals --screen live:<account>/<model>` or the `screen_risk` (safe) and `screen_allow_risk`
+(fast) values in the audit log, and set `shadow = true` to log scores without acting while you
+tune. See [Cascade scorecards](evals.md#cascade-scorecards).
 
 ## Prompt versioning
 

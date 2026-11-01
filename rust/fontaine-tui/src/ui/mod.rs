@@ -334,7 +334,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::Queue(_)
                 | Action::Command { .. }
                 | Action::GuardianOff(_)
-                | Action::SetupReview(_) => {}
+                | Action::SetupReview(_)
+                | Action::SetupComposition(_) => {}
             }
         }
     }

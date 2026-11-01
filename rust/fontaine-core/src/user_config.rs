@@ -118,6 +118,34 @@ pub fn set_value(path: &Path, key_path: &[&str], value: Option<Value>) -> io::Re
     Ok(true)
 }
 
+/// Replaces the table at `key_path` with `table` in one edit, creating the file and the parent
+/// tables as needed and touching nothing else in the file. An edit that would leave the file
+/// unloadable is refused and nothing is written. Several `set_value` calls could leave a
+/// half-written section between them; this cannot.
+pub fn set_table(path: &Path, key_path: &[&str], table: Table) -> io::Result<()> {
+    let (leaf, parents) = key_path
+        .split_last()
+        .expect("a settings key path has at least one segment");
+    let _lock = locked(path)?;
+    let mut doc = read_document(path, |p| std::fs::read_to_string(p))?;
+    let mut parent = doc.as_table_mut() as &mut dyn toml_edit::TableLike;
+    for segment in parents {
+        if parent.get(segment).is_none() {
+            let mut intermediate = Table::new();
+            intermediate.set_implicit(true);
+            parent.insert(segment, Item::Table(intermediate));
+        }
+        parent = parent
+            .get_mut(segment)
+            .and_then(Item::as_table_like_mut)
+            .ok_or_else(|| invalid(format!("`{segment}` in the settings file is not a table")))?;
+    }
+    parent.insert(leaf, Item::Table(table));
+    crate::config::validate_settings(&doc.to_string(), path, Column::User)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    write_document(path, &doc)
+}
+
 /// Removes `parents.leaf` and every table the removal empties; `false` when the key is not there.
 fn remove_key(table: &mut dyn toml_edit::TableLike, parents: &[&str], leaf: &str) -> bool {
     let Some((first, rest)) = parents.split_first() else {

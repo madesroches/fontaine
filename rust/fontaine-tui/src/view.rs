@@ -355,6 +355,16 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
             )
         };
     }
+    if let Some(prompt) = &app.setup_composition {
+        return Overlay {
+            instance: Some(prompt.id),
+            ..Overlay::new(
+                "auto-mode setup",
+                prompt.body(width, theme),
+                prompt.footer(),
+            )
+        };
+    }
     if let Some(picker) = &app.models {
         let title = match picker.purpose() {
             PickerPurpose::Main => "model",

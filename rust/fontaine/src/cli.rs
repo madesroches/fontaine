@@ -240,6 +240,9 @@ pub struct SetupArgs {
     /// Skip the model scan of the repository
     #[arg(long)]
     pub no_model: bool,
+    /// Skip the offer to set up the guardian composition's allow screen
+    #[arg(long)]
+    pub no_composition: bool,
     #[arg(long, value_enum, default_value_t = ReportFormat::Text, value_name = "FORMAT")]
     pub format: ReportFormat,
 }
