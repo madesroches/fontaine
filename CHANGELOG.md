@@ -530,14 +530,6 @@ All notable changes are recorded here. The format follows
 
 #### TUI
 
-- A working spinner row sits above the message box while a turn, goal evaluation, `/compact`,
-  `!` command or skill expansion runs, and in a running agent's view: a breathing-dot glyph whose
-  hue drifts, the label `Working…` with a shimmer sweeping across it, the elapsed time and `↓` output
-  tokens (estimated from streamed text until each model call reports its count). It hides while an
-  approval, question or guardian-unavailable prompt waits on you, and the status bar keeps `esc to
-  interrupt` without the word `working`. A 16-colour theme gets a stepped shimmer and a glyph that
-  cycles the theme's accents instead of a gradient; `FONTAINE_ASCII_GLYPHS=1` draws `.oO0Oo`. There is
-  no spinner in screen-reader mode (#355).
 - The model's reasoning shows in the transcript as a dim `thinking` card that streams its last five
   rows live and folds to its first five once it settles; `/expand thinking` prints it in full.
   `[tui] show_reasoning = false` hides it, and `tui.show_reasoning` is a row in the settings panel.
@@ -628,6 +620,14 @@ All notable changes are recorded here. The format follows
   else shows as its source text, and `/copy`, `/export` and line mode keep the exact source. A
   streaming reply is written to scrollback a block at a time, so a paragraph appears as source
   until it ends (#328).
+- A working spinner row sits above the message box while a turn, goal evaluation, `/compact`,
+  `!` command or skill expansion runs, and in a running agent's view: a breathing-dot glyph whose
+  hue drifts, the label `Working…` with a shimmer sweeping across it, the elapsed time and `↓` output
+  tokens (estimated from streamed text until each model call reports its count). It hides while an
+  approval, question or guardian-unavailable prompt waits on you, and the status bar keeps `esc to
+  interrupt` without the word `working`. A 16-colour theme gets a stepped shimmer and a glyph that
+  cycles the theme's accents instead of a gradient; `FONTAINE_ASCII_GLYPHS=1` draws `.oO0Oo`. There is
+  no spinner in screen-reader mode (#355).
 
 ### Changed
 
