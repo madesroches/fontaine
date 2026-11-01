@@ -37,7 +37,7 @@ tests set them directly and no test depends on a clock.
 
 **New module `rust/fontaine-tui/src/spinner.rs`** (pure, unit-tested):
 - `lines(app, width) -> Vec<Line>`: empty unless the spinner is active, else one row:
-  `<glyph> <label> (<elapsed> · ↓ <tokens> tokens)`, truncated to `width`.
+  `<glyph> <label> (<elapsed> · ↓ <tokens> tokens)`, truncated to `width`. The parentheses and separator show only the clauses present (elapsed omitted when `turn_started` is None; tokens omitted while 0 and in agent view), and the parentheses are dropped when neither is.
 - Active when (`active`): `!app.linear && running && app.approval.is_none() && app.questions.is_empty() && app.unavailable.is_none()`, reading `App` fields directly like `App::covered` (`app.rs:755-769`) and never calling `overlay()` (`body_rows` runs inside `overlay()` and calls `spinner::lines`). The shown conversation is working and none of the overlays waiting on the human
   is open: approval, questions, unavailable (the prompts that block a turn). A waiting prompt is not "working"; the spinner stays
   visible for every other overlay (`server`, which is only opened at startup before any turn, pickers, agents panel, history search, completion, `/` menu). Main view: `app.running`;
@@ -56,7 +56,7 @@ tests set them directly and no test depends on a clock.
   - Named ANSI colour (the default): no interpolation is portable across 16-colour palettes, so step through modifiers
     around the base colour: `DIM` → normal → `BOLD`. Same sweep, stepped.
 - Elapsed text from the turn start, then `↓ <tokens> tokens` (`fontaine_tools::display::compact_count` of `TurnTokens::shown()`,
-  below), the token clause omitted while 0 so a first-call wait shows no `↓ 0 tokens`. Elapsed uses `fontaine_tools::jobs::format_age` (`NmSSs`, as the agent list does) rather than a new formatter; `App` gains `turn_started: Option<Instant>`,
+  below), the token clause omitted while 0 so a first-call wait shows no `↓ 0 tokens`. Elapsed uses `fontaine_tools::jobs::format_age` (`Ns` / `NmSSs` / `NhMMm`, as `format_age` and the agent list give it) rather than a new formatter; `App` gains `turn_started: Option<Instant>`,
   set where `running` becomes true. Every `running = true` site goes through one `App` setter that also sets/clears
   `turn_started`: the turn (`Ui::turn`, `ui/turn.rs:726`), goal evaluation (`ui/goal.rs:37`), `/compact`
   (`ui/commands/context.rs:66`), the `!` shell (`ui/commands/workspace.rs:37`) and skill expansion (`ui/turn.rs:444`).
@@ -138,6 +138,8 @@ Open in a browser (animated):
 ## Documentation
 - `docs/tui.md` "Status bar" (l.106-116): hint text and the new spinner row (elapsed time and `↓` output tokens, estimated while streaming), hidden while a prompt waits, ASCII fallback
   via `FONTAINE_ASCII_GLYPHS`, 16-colour theme gets a stepped rather than gradient shimmer.
+- `docs/tui.md` live-area list (l.12-16): add the spinner row.
+- `docs/terminal.md` "ASCII glyphs" list (l.138-143): add the `.oO0Oo` spinner fallback.
 - `docs/terminal.md` limitation (l.197) unchanged; `CHANGELOG.md` entry.
 - Master plan `## Decisions` → TUI, dated lines appended at the end of the subsection: `esc to interrupt` stays in the status bar; no spinner in screen-reader mode; breathing-dot glyph instead of Claude Code's star glyphs.
 
@@ -148,7 +150,7 @@ Unit tests (all pure):
 - `TurnTokens`: the estimate grows with deltas (chars/4, rounds down); `Usage` (built with `Usage::default()` plus field assignment, the struct is `#[non_exhaustive]`) replaces it with the reported `output_tokens`;
   a missing `output_tokens` settles on the estimate; sums across several calls in one turn; reset on a new turn; the row hides the clause at 0.
 - `glyph_style`: the RGB hue advances with the frame and wraps after a full turn; named-colour mode cycles the deduped accent fields of `dark-ansi` and `light-ansi` and wraps.
-- `glyph`: every frame of every set is exactly one terminal column wide (ratatui's `Line::width()`, already a dependency, so the label never shifts); cycles through every frame and wraps; ASCII set used under `FONTAINE_ASCII_GLYPHS`.
+- `glyph`: every frame of every set is exactly one terminal column wide (ratatui's `Line::width()`, already a dependency, so the label never shifts); cycles through every frame and wraps; `Glyphs::ASCII.spinner` (or `Glyphs::from_env(Some("1"))`) is `.oO0Oo`.
 - `active`/`lines`: running → one row; idle → none; hidden while an approval, questions or unavailable overlay is open and shown with a picker open; agent view follows
   the row's status; width truncation.
 - `statusbar`: running hint has `esc to interrupt` and no `working`; refusal/attach-notice precedence unchanged.
@@ -164,7 +166,7 @@ which is a layout-bug class; reproduce a run through a long tool call in tmux wi
 1. `cargo run -p fontaine`, start a turn that runs `sleep 20`. Expect the glyph spinning and the label
    shimmering above the box, `esc to interrupt` in the status bar, row gone on completion. Not automated: the
    animation itself is only judged by eye.
-2. Repeat with `theme = "dark-daltonized"` (RGB gradient) and `FONTAINE_ASCII_GLYPHS=1` (`.oO0Oo`).
+2. Repeat with `[tui] theme = "dark-daltonized"` (or `/theme dark-daltonized`) (RGB gradient) and `FONTAINE_ASCII_GLYPHS=1` (`.oO0Oo`).
 3. In tmux, run the `examples/live_area.rs` spinner mode through a long tool call, resize the window while it spins, and
    check no stale live rows reach scrollback.
 
