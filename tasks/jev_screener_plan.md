@@ -32,7 +32,7 @@ under a cent):
   The existing request body and `parse` work unchanged.
 - `typesafe/jev-latest` and `typesafe/jev` do not exist; `~typesafe/jev-latest` is the alias.
   DiffusionGemma is not on OpenRouter, so it is out of scope here.
-- At about $0.00001 per 335-token call, the 193-case dataset costs well under $0.10, far inside
+- At about $0.00001 per 335-token call, the about 258 full-profile guardian cases a screen run scores cost well under $0.10, far inside
   any experiment budget; the key's shared $100 limit (about $94 left) is no guard, so the cap
   below is.
 - The probabilities are saturated (0 / 1), so Jev ranks cases poorly for threshold fitting.
@@ -52,10 +52,13 @@ since its inner field is private.
 Rules:
 
 - `connect` sends the key only over `https://`, or to a loopback host (a local vLLM behind a test
-  proxy). Anything else is a usage error, so a typo in `--screen-url` cannot send the key in
+  proxy): an IPv4/IPv6 host for which `is_loopback()` holds, or the literal domain `localhost`
+  (case-insensitive). Anything else is a usage error, so a typo in `--screen-url` cannot send the key in
   cleartext.
 - `read_key_file` returns `Err(String)`, a usage error naming the path, for an unreadable or empty
-  file, rendering the io error with `error_chain::chain` like `read_reference`.
+  file, or a trimmed key containing whitespace or control characters (the error does not echo the
+  key; otherwise reqwest fails at `send()` and every case fails closed instead of exiting 2),
+  rendering the io error with `error_chain::chain` like `read_reference`.
 - The key never appears in `request_body`, the report, `eprintln!` progress or error details. The
   HTTP error detail already truncates the response body to 200 chars; the request is never echoed.
 
@@ -65,8 +68,8 @@ Rules:
 and `/model` in `parse` (absent from vLLM/Laya, so `None`; both take `#[serde(default,
 skip_serializing_if = "Option::is_none")]` like `truncated`, keeping old reports byte-identical). The
 screen summary gains `cost_usd` (sum over scored cases, omitted when no case reported one) and
-`model_resolved` (the `model` field of the response, so `~typesafe/jev-latest` runs are
-reproducible; if it varies across cases the summary lists each distinct value).
+`model_resolved: Vec<String>` (the distinct `model` values of the responses, sorted, omitted when
+empty, so `~typesafe/jev-latest` runs are reproducible).
 
 New `--screen-max-cost-usd <USD>`, validated as `!(c > 0.0 && c.is_finite())` → usage error, in the
 style of the other numeric flags. `warm_up` is a billed call, so it returns its `ScreenScore` and its
@@ -94,7 +97,8 @@ exceeds the 10 s default timeout only on stalls; leave the default.
    - Reuse `fontaine_tools::websearch::ApiKey` (add a `pub` `expose()` accessor in
      `rust/fontaine-tools/src/websearch.rs`), add `read_key_file(path)`, and the https-or-loopback
      check.
-   - Thread `Option<ApiKey>` through `connect` and add the bearer header in `Screen::ask`.
+   - Thread `Option<ApiKey>` through `connect` and add the bearer header in `Screen::ask` with `.bearer_auth(key.expose())`, the repo's convention
+     (`websearch.rs`, `ollama.rs`).
    - Add `cost_usd` and `model` to `ScreenScore`; parse `usage.cost` and `/model`; have `warm_up`
      return its `ScreenScore`.
 2. `rust/fontaine-evals/src/runner.rs`
@@ -109,12 +113,13 @@ exceeds the 10 s default timeout only on stalls; leave the default.
    - `research/analysis-jev-openrouter.md`: add a "Results" section with the scorecard (catch,
      benign false-deny, escalation rate, AUROC, calibration/ECE, latency, `cost_usd`,
      `model_resolved`), a comparison with the Laya and qwen3-4b rows in
-     `research/analysis-typed-decision-screen.md`, and whether the 0/1 probabilities held. Drop
+     `research/analysis-typed-decision-screen.md` (those Laya and qwen3-4b numbers come from an older
+     dataset version, 5a79aa741c27 with 273 cases, so label the comparison cross-version; re-scoring
+     them is out of scope since Laya needs a local GPU server), and whether the 0/1 probabilities held. Drop
      the "No full-dataset Jev numbers yet" line from "Not covered".
    - `research/analysis-typed-decision-screen.md`: replace "Jev: hosted, needs an API key, not
      opted into" (around line 606) with a pointer to the Results section and a one-line outcome.
-   - `docs/evals.md`: replace the "Jev: hosted only, and reference only" bullet with the
-     measured outcome.
+   - `docs/evals.md`: update the Jev bullet as described under Documentation.
    - Commit the `--out` scorecard as `evals/scorecards/screen-jev-1.14.json` (it holds no key) so
      the numbers can be re-derived.
    - Post the scorecard and a link to the Results section on #127.
@@ -148,6 +153,9 @@ exceeds the 10 s default timeout only on stalls; leave the default.
   key is sent only over https.
 - `evals/README.md`: add the two new flags to the `--screen-*` rows under "Running the runner", the
   cost fields to "Screen mode", and the new cost-flag usage error to the exit-code 2 row.
+- `rust/fontaine-evals/src/screen.rs` module doc (lines 1-4, names Laya/DiffusionGemma) and the
+  `evals/README.md` "Screen mode" intro (assumes a local server): name Jev via OpenRouter with
+  `--screen-api-key-file` against an https `--screen-url`.
 - `CHANGELOG.md`: one line for the key-file and cost-cap flags.
 
 ## Testing Strategy
@@ -156,11 +164,13 @@ All automated tests use the existing scripted-endpoint harness in `rust/fontaine
 and never touch OpenRouter.
 
 - `screen_unit.rs`: `parse` reads `usage.cost` and `/model`; a response without them gives `None`;
-  an old report round-trips without `cost_usd`/`model` fields; the key-file error strings never
-  contain the key.
+  an old report round-trips without `cost_usd`/`model` fields; the invalid-key error does not
+  echo the key.
 - `screen.rs` (scripted endpoint): the request carries `Authorization: Bearer <key>` when a key
   file is given and no `Authorization` header otherwise; a key over plain `http://` to a
-  non-loopback host is a usage error; an empty or missing key file is a usage error; the key text
+  non-loopback host is a usage error, while `http://127.0.0.1`, `http://[::1]` and
+  `http://localhost` (any case) are accepted; an empty or missing key file, or a key containing
+  whitespace, is a usage error; the key text
   is absent from the `--out` report and from stdout/stderr.
 - `screen.rs`: with a scripted per-call cost and `--screen-max-cost-usd`, the run stops after the
   call that reaches the cap, the remaining cases are skipped with `cost cap reached`, and the
