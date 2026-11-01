@@ -159,6 +159,10 @@ fn cwd_is_certain(tool: &str, args: &Value) -> bool {
         let Some(program) = first.literal.as_deref() else {
             return false;
         };
+        // A path-qualified program is not the allowlisted one.
+        if program.contains(['/', '\\']) {
+            return false;
+        }
         let program = fontaine_tools::preclassify::program_name(program);
         if !CWD_SAFE_PROGRAMS.contains(&program.as_ref()) {
             return false;
@@ -443,6 +447,9 @@ mod tests {
         assert!(absent("mv notes.txt ./t"));
         assert!(!absent("mv notes.txt ./t && rm ./t"));
         assert!(!absent("mv a ./t && cp junk ./t"));
+        assert!(!absent("mv a t && cp junk ./t"));
+        assert!(!absent("mv a t && echo x > t"));
+        assert!(!marks("./mv a ./b"));
         assert!(
             facts(
                 &view,

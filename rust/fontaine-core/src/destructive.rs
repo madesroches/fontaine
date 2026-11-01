@@ -274,7 +274,7 @@ fn destructive_argv(program: &str, args: &[String], depth: usize) -> bool {
 /// resolved against the call's working directory.
 pub fn touched_paths(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
     const LIMIT: usize = 16;
-    let mut out = path_mentions(tool, args, scope);
+    let mut out = path_mentions(tool, args, scope, false);
     let mut seen = std::collections::HashSet::new();
     out.retain(|p| seen.insert(p.clone()));
     out.truncate(LIMIT);
@@ -289,13 +289,15 @@ pub fn repeated_paths(
     scope: &Scope,
 ) -> std::collections::HashSet<String> {
     let mut seen = std::collections::HashSet::new();
-    path_mentions(tool, args, scope)
+    path_mentions(tool, args, scope, true)
         .into_iter()
         .filter(|p| !seen.insert(p.clone()))
         .collect()
 }
 
-fn path_mentions(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
+// `every_word` counts bare words that name no existing file too: a second command can create or
+// destroy a file the first one named without a path-like spelling.
+fn path_mentions(tool: &str, args: &Value, scope: &Scope, every_word: bool) -> Vec<String> {
     let text = |key: &str| args.get(key).and_then(Value::as_str);
     let resolve = |path: &str| {
         scope
@@ -353,7 +355,7 @@ fn path_mentions(tool: &str, args: &Value, scope: &Scope) -> Vec<String> {
                     }
                     let joined = join(literal);
                     let pathlike = literal.contains(['/', '\\']) || literal.starts_with('.');
-                    if pathlike || joined.exists() {
+                    if every_word || pathlike || joined.exists() {
                         out.push(joined.to_string_lossy().into_owned());
                     }
                 }
