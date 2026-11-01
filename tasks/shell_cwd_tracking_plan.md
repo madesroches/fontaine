@@ -86,9 +86,14 @@ sh -c 'readonly __fnt_f=$2 __fnt_c=$1; set --; eval "$__fnt_c"; __fnt_rc=$?; com
   (`scope.rs:340-357`) cannot map `/tmp` (the scratch root under `%TEMP%` appears as `/tmp/...`).
   `translate` (`/c/...` to `C:\...`) stays only as the fallback, and anything untranslatable is `Reset`.
 - `powershell`: the command is spliced into a UTF-16LE `-EncodedCommand` script and a failing last
-  statement exits 1. The trailer captures `$?`/`$LASTEXITCODE` first, writes
-  `(Get-Location).ProviderPath` to a temp path passed via env var, then exits with the preserved
-  code. A non-FileSystem provider counts as `Reset`.
+  statement exits 1 (tool description, `builtins.rs:599-601`). The trailer, on a new line so a
+  trailing comment in the user's script cannot swallow it, captures `$?` right after the script,
+  writes `(Get-Location).ProviderPath` to a temp path passed via env var, then exits 1 when `$?`
+  was false and 0 otherwise; it ignores `$LASTEXITCODE`. It lives in a foreground-only variant of
+  `launch_args`; `launch_args` itself stays unchanged for background launches (`run_job` calls
+  `PowerShellTool::launch`, `builtins.rs:564`, for foreground, `run_in_background` and subagent
+  calls alike), and the temp path is passed with `shell.launcher.with_env(...)` as
+  `ShellTool::prepared` does (`builtins.rs:297-298`). A non-FileSystem provider counts as `Reset`.
 - After the job ends, `run_job` calls `observe`. On `Reset` it appends one line to the tool
   result, e.g. `[shell working directory reset to <root>: <path> is outside the workspace]`, so the
   model learns why. This is Claude Code's behavior.
@@ -132,14 +137,15 @@ the deterministic floor is unchanged.
 
 ### Status bar
 
-- New `fontaine-core/src/git_head.rs` (pure filesystem, no `git` spawn): `read(dir) -> Option<Head>`
-  walks up from `dir` to find `.git` (built on the gix discovery `fontaine-core` already uses,
-  `trust.rs:~255-285`, `ledger.rs:~618-621`, not hand-written), follows a `gitdir:` file (worktrees, submodules), parses
-  `HEAD`: `ref: refs/heads/<name>` gives `Head::Branch(name)`, a bare hash gives
+- New `fontaine-core/src/git_head.rs` (pure filesystem, no `git` spawn), two functions:
+  `discover(dir) -> Option<PathBuf>` returns the HEAD path (`repo.git_dir().join("HEAD")`, via the
+  gix discovery `fontaine-core` already uses, `trust.rs:~255-285`, `ledger.rs:~618-621`, not
+  hand-written; it covers worktree and submodule `gitdir:` files), and `parse(head_file) ->
+  Option<Head>`: `ref: refs/heads/<name>` gives `Head::Branch(name)`, a bare hash gives
   `Head::Detached(short7)`.
 - `App` gains `cwd: PathBuf` and `branch: Option<String>`. `ui/mod.rs:draw` sets `cwd` from the
-  root agent's tracker and refreshes `branch` through a small cache that stores only the located HEAD path per cwd (from the
-  gix discovery), so a redraw does not re-walk; that small file is re-read on every draw.
+  root agent's tracker and refreshes `branch` through a small cache that stores the `discover`ed HEAD path per cwd, so a
+  redraw does not re-walk; `parse` runs on every draw.
 - `statusbar::render` adds a segment after the mode labels: ` · <dir>` plus ` (<branch>)` when
   there is one, before the model. The directory is shown with the home directory as `~`, and
   truncated from the left with `…` to at most 40 columns; the branch is truncated at 24.
@@ -173,8 +179,8 @@ the deterministic floor is unchanged.
    (`fontaine-core/src/destructive.rs:302`; guardian destructive facts, ledger action paths,
    on-demand instruction loading), `floor::critical_powershell` (`core/src/floor/powershell.rs:56-60`)
    and `Scope::locate` routing (`guarded.rs:145-147`, `scope.rs:181-298`).
-5. `fontaine-core/src/git_head.rs` and its tests.
-6. `fontaine-tui`: `App.cwd`/`branch`, `draw` wiring with the HEAD cache, `statusbar::render`
+5. `fontaine-core/src/git_head.rs` (`discover`, `parse`) and its tests.
+6. `fontaine-tui`: `App.cwd`/`branch`, `draw` wiring with the HEAD-path cache, `statusbar::render`
    segment and path shortening via an existing clip helper.
 7. Docs, `CHANGELOG.md`, plan `## Decisions` lines (see below).
 
@@ -185,7 +191,7 @@ the deterministic floor is unchanged.
 - `rust/fontaine-core/src/agent.rs`, `rust/fontaine-core/src/agent/build.rs`,
   `rust/fontaine-core/src/tools.rs`, `rust/fontaine-tools/src/guarded.rs`
 - `rust/fontaine-tools/src/git_bash.rs` (foreground script + reparse test),
-  `rust/fontaine-tools/src/powershell.rs` (trailer in `launch_args`)
+  `rust/fontaine-tools/src/powershell.rs` (foreground-only `launch_args` variant with the trailer)
 - `evals/dataset/*.jsonl`
 - Tests: `rust/fontaine-tools/tests/guarded.rs`, `rust/fontaine/tests/headless_tools.rs`,
   `rust/fontaine-tui/tests/common/mod.rs` and the new tui test
@@ -253,7 +259,8 @@ Unit tests (no live APIs):
   behave as under `sh -c`; a command assigning `f=`, `c=`, `rc=` (and `for f in *.txt`) does not
   disturb the trailer; both Git Bash scripts (`RUN_COMMAND_SCRIPT` and the foreground one) stay
   backslash-free (extend `the_wrapper_script_survives_the_windows_reparse` to cover both); the powershell trailer preserves a
-  failing exit code.
+  failing exit code; a native command failing as the last statement still exits 1 (the
+  existing `a_literal_exit_code_is_kept`, with `exit 7`, never reaches the trailer).
 - Pipeline: the gate sees the resolved cwd (`rust/fontaine-tools/tests/guarded.rs`, `Scripted` gate
   recording `seen` args).
 - Subagent: a child `cd` does not move the root's directory.
@@ -264,11 +271,11 @@ Unit tests (no live APIs):
   `cat .env`/`cat secrets` style command resolves its operand against `sub/` in the pre-classifier,
   the secret-file read rule and the floor, exactly as an explicit `cwd="sub"` does today; a
   tracker value never reaches the gate unresolved.
-- `git_head` cache: rewrite HEAD in a temp repo; the next read sees it.
+- `git_head` cache: rewrite HEAD in a temp repo; the next draw's `parse` of the cached path sees it.
 - Preparer: `"cwd": null` is rewritten to the tracked directory like an absent `cwd`; a call after
   the tracked directory is deleted between calls resets to the primary root with the notice instead
   of failing ENOENT.
-- `git_head`: normal repo, detached HEAD, worktree `gitdir:` file, nested directory walk-up, no
+- `git_head` (`discover` and `parse`): normal repo, detached HEAD, worktree `gitdir:` file, nested directory walk-up, no
   repo, unreadable HEAD.
 - Path truncation reuses an existing clip/truncate helper (`transcript.rs`, `config_panel.rs`,
   `provider_dialog.rs`) rather than a new one.
@@ -280,12 +287,13 @@ Unit tests (no live APIs):
   bare `…/sub` applies). World hard-codes `scratch: None` (`:369`), and without scratch the wrapper
   is not used, so the harness gains a builder option that gives World a session scratch directory
   (sets `AgentSetup.scratch` and appends it to the roots). Run the turn in `PermissionMode::Auto`
-  with a guardian allow verdict as `tests/tui.rs:325-326` does (the default approver at `:380` is
-  `DenyAll`). Covers the tracker, `AgentRuntime`, `draw`, `App.cwd` wiring.
+  with a guardian allow verdict via `.in_mode(Auto).with_guardian(...)` as `tests/tui.rs:325-326` does
+  with a deny verdict (the default approver, `tests/common/mod.rs:380`, is `DenyAll`). Covers the tracker, `AgentRuntime`, `draw`, `App.cwd` wiring.
 - Integration through headless `fontaine -p` (`rust/fontaine/tests/common/mod.rs`
   `Endpoint`/`Turn::tool`/`Sandbox`, in `rust/fontaine/tests/headless_tools.rs`) with a deterministic
-  completion model and config allow rules `shell(cd *)` and `shell(pwd)` (pattern at
-  `headless_tools.rs:539`): call 1 `cd sub`, call 2 `pwd` prints `<root>/sub`; call 3 `cd /` returns
+  completion model and config allow rule `shell(cd *)` (pattern at
+  `headless_tools.rs:539`; `pwd` is pre-classified read-only), the test `#[cfg(unix)]` like the
+  neighbouring shell tests (Git Bash `cd /` and `pwd` paths differ on Windows): call 1 `cd sub`, call 2 `pwd` prints `<root>/sub`; call 3 `cd /` returns
   a result carrying the reset notice (`run_job` observes after the job ends and appends to that
   same result); call 4 `pwd` prints the primary root.
 
