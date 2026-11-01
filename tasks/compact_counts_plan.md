@@ -16,8 +16,10 @@ Three divergent formatters:
 - `fontaine-tui/src/reports.rs:399` `tokens()`: `{:.1}k`, no `M`; used by `/context`
   (`reports.rs:429-523`) and `ui/commands/context.rs:88-90` (compaction message). `window_label`
   (`reports.rs:407`) prints exact-thousand windows as `200k`.
-- `fontaine-core/src/goal.rs:205` `tokens_text`: `182k` (truncating) / `1.2M`; used by the goal
+- `fontaine-core/src/goal.rs:204` `tokens_text`: `182k` (truncating) / `1.2M`; used by the goal
   summary (`goal.rs:186`, `goal.rs:293`).
+- The headless `-p "/goal"` result text (`fontaine/src/headless/goal.rs:91`, via `GoalStatus::describe()`)
+  carries the goal figures, so it changes from `182k` to `182.0k`.
 
 - `fontaine-agents/src/budget.rs:55,61` `Exhausted::describe()` prints raw `({spent} of {cap})`;
   it reaches the agent tree via `fontaine-tui/src/ui/mod.rs:114` and `agents_panel.rs:264-265`,
@@ -61,11 +63,13 @@ Call sites switched to it:
 4. Delete `goal::tokens_text`, update `goal.rs` call sites and any tests asserting old output.
 5. Update existing test expectations to the compact forms: `agent_list.rs:416,474`;
    `agents_panel.rs:346-396`; `reports.rs:941,953`; `rust/fontaine-tui/tests/agents.rs:66,71`;
+   `rust/fontaine-core/tests/instructions.rs:400` (`"41000 characters"` -> `"41.0k characters"`);
    plus any `budget.rs` test asserting `describe()` output.
 6. Route the remaining display sites through `compact_count`:
    `fontaine-tui/src/ui/commands/reports.rs:91-93` (`copied reply {n} ({} characters)`) and
-   `fontaine-core/src/instructions/mod.rs:177,181` (`{path} ({size} characters)` startup
-   warnings). Messages echoing a configured limit (`goal.rs:87`, `session.rs:756`, `spawn.rs:415`,
+   `fontaine-core/src/instructions/mod.rs:177` (`{path} ({size} characters)` startup
+   warnings) and `:181` (the "instruction files add up to {total} characters" sentence); both
+   sizes are `usize` and need a `u64` conversion to call `compact_count`. Messages echoing a configured limit (`goal.rs:87`, `session.rs:756`, `spawn.rs:415`,
    `memory.rs:163`, the KiB constants in `transcript.rs:1075,1281`) and the markdown export
    (`export.rs:300`) stay exact. Finish with an `rg` sanity check for stragglers
    (`tok`, `tokens`, `chars`, `characters`).
@@ -74,7 +78,7 @@ Call sites switched to it:
 ## Files to Modify
 - `rust/fontaine-tools/src/display.rs`
 - `rust/fontaine-tui/src/agents_panel.rs`, `agent_list.rs` (tests), `reports.rs`,
-  `ui/commands/context.rs`, `rust/fontaine-tui/tests/agents.rs` (test expectations)
+  `ui/commands/context.rs`, `rust/fontaine-tui/tests/agents.rs`, `rust/fontaine-core/tests/instructions.rs` (test expectations)
 - `rust/fontaine-agents/src/budget.rs`
 - `rust/fontaine-tui/src/ui/commands/reports.rs`
 - `rust/fontaine-core/src/goal.rs`, `rust/fontaine-core/src/instructions/mod.rs`
@@ -102,7 +106,6 @@ Update the doc comment at `fontaine-core/src/goal.rs:175`. `CHANGELOG.md` entry.
 Unit tests (all behavior is pure formatting):
 - `compact_count` boundaries: 0, 999, 1000, 1049, 1050, 9950, 99_949, 999_949, 999_950, 999_999,
   1_000_000, 1_234_567, `u64::MAX` (no panic/overflow — use saturating add).
-- `spend_text` with/without budget and with cost.
 - Existing row/report/goal tests updated.
 
 ## Open Questions
