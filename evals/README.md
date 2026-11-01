@@ -57,7 +57,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 `fixture_verdict` is a plain label for `guardian` and `scanner` cases and an object
 `{"decision": ..., "tier": ...}` for `pipeline` cases. `tier` and `expected_tier` use the decision
 tier names: `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
-`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`, `plan_block`,
+`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`, `plan_block`,
 `human`.
 
 ### Categories

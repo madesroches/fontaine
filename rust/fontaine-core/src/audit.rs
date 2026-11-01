@@ -118,7 +118,7 @@ pub struct DecisionRecord {
     pub guardian_dropped_priced: Option<bool>,
     pub permission_mode: String,
     pub headless: bool,
-    /// What the model was told for a denial.
+    /// The guardian's reason sentence, or what the model was told for a denial.
     pub explanation: Option<String>,
 }
 

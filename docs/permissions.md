@@ -77,7 +77,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    the guardian or a prompt, in every mode. `worker`, `fork` and any type whose set holds `agent`,
    `shell`, a write tool, a network tool or an MCP tool do not qualify. A `deny` or `ask` rule on
    `agent` and a hook still act first, and each call the child makes goes through the whole
-   pipeline.
+   pipeline. A spawn of any other type is handled at step 7.
    A file-tool *write* (`write`, `edit`, `notebook_edit`) that names a path outside every root
    is denied, with a hint naming the session's scratch directory and `/add-dir`: the write tools
    are confined to the roots, so an approval could never make the call run. The scratch
@@ -121,8 +121,11 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    pausing. Turn them off with
    [`auto_tracked_edits` and `auto_scratch_writes`](configuration.md#permissions); project scope
    may only switch them off.
-7. **The mode**, as in the table above. In `auto`, and for the consequential calls of `plan`,
-   this is the guardian: it answers allow, deny or escalate. An allow runs the call; a deny comes
+7. **The mode**, as in the table above. An `agent` spawn that did not take step 4 is never judged
+   by the guardian: `auto` and `plan` allow it (`tier = spawn`), `manual` and `acceptEdits` ask you
+   and `dontAsk` denies it. Every call the child makes is gated on its own, and the child's mode is
+   never looser than its parent's, so judging the spawn's prompt would repeat that coverage. In
+   `auto`, and for the other consequential calls of `plan`, the mode is the guardian: it answers allow, deny or escalate. An allow runs the call; a deny comes
    back to the agent as `Denied by guardian: [Rule] explanation`; an escalate asks you with the
    guardian's explanation (and is a denial in a headless run). Three denials in a row, or twenty
    in a session, pause `auto` and prompting resumes until you approve a call.
@@ -134,7 +137,7 @@ tool, a SHA-256 digest of the arguments (never the arguments), the `tier` that d
 to a prompt adds a second record with `tier = human`. The same record is projected to the
 `tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree. The
 `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
-`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `allow_rule`, `mode`, `screen`,
+`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `allow_rule`, `mode`, `screen`,
 `guardian`, `dont_ask`, `plan_block` and `human`. A guardian decision also records the guardian model and profile, its
 verdict, confidence, whether the verdict came from the cache, how long the guardian took, the
 `verdict_transport` it was asked on (`tool`, a forced `submit` call, or `schema`, for an Ollama
@@ -260,7 +263,7 @@ While `auto` is on, **broad code-execution allow rules are suspended**: a bare `
 and `shell(<entry>)` or `shell(<entry> *)` for `sh`, `bash`, `zsh`, `python`, `node`,
 `ruby`, `perl`, `deno`, `bun`, `cargo run`, `npm run`, `npm exec`, `npx`, `bunx`, `pnpm`, `yarn`, `make`, `eval`,
 `exec`, `xargs`, `env`, `sudo`, `doas`, the interpreters `awk`, `gawk`, `mawk`, `nawk`, `php`, `lua`, `luajit`, `tclsh` and `wish`, the Windows shells `pwsh`, `powershell` and `cmd`, and the launchers `timeout`, `nohup`, `setsid`, `nice`, `stdbuf`, `chroot`, `command`, `busybox`, `ionice`, `watch` and `flock`. A wildcard rule is suspended whenever it can match something an entry covers: an interpreter counts by its program alone, so `shell(python -c *)`,
-`shell(/usr/bin/python3 *)` and `shell(python3.12 *)` are suspended too, and so are `shell(cargo *)` and `shell(npm *)`, which reach `cargo run` and `npm run`. `shell(cargo test *)` stays. A call they would have approved goes to the guardian instead.
+`shell(/usr/bin/python3 *)` and `shell(python3.12 *)` are suspended too, and so are `shell(cargo *)` and `shell(npm *)`, which reach `cargo run` and `npm run`. `shell(cargo test *)` stays. A call they would have approved goes to the guardian instead (a bare `agent` rule changes nothing, since a spawn is not guardian-judged).
 Narrower rules such as `shell(npm test)` stay. The terminal UI lists the suspended rules when you
 enter `auto`, and a headless run lists them in the `init` event; leaving `auto` restores them. A
 `pre_tool_use` hook's `allow` follows the same test on the hook's matcher.
@@ -360,5 +363,5 @@ one by one. `read` deny rules are not a containment boundary for shell; use a `s
 ask rule, or the protected paths.
 
 A pre-classified call is audited with `tier = tier05`. In `auto` these calls, the read-only
-fast path (a read-only spawn included) and the [tracked and scratch edits](#the-pipeline) are the only guardian skips earned without a grant of yours; an out-of-scope read such
+fast path (a read-only spawn included), every other `agent` spawn and the [tracked and scratch edits](#the-pipeline) are the only guardian skips earned without a grant of yours; an out-of-scope read such
 as `ls ../`, anything the pre-classifier cannot fully parse, and every MCP tool go to the guardian.

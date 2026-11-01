@@ -299,7 +299,6 @@ async fn broad_code_execution_rules_are_suspended_while_auto_is_on() {
         ("shell", Some("rm file.txt")),
         ("shell", Some("python script.py")),
         ("shell", Some("npm run build")),
-        ("agent", None),
     ] {
         let before = fake.calls();
         let args = command.map_or_else(|| json!({}), shell);
@@ -311,6 +310,11 @@ async fn broad_code_execution_rules_are_suspended_while_auto_is_on() {
         );
         assert_eq!(last(&rig).tier, Tier::Guardian);
     }
+    // A spawn is not judged by the guardian, so the set-aside rule changes nothing for it.
+    let before = fake.calls();
+    assert!(allowed(&rig.check("agent", json!({})).await));
+    assert_eq!(fake.calls(), before);
+    assert_eq!(last(&rig).tier, Tier::Spawn);
     // The narrow rule stays.
     let before = fake.calls();
     assert!(allowed(&rig.check("shell", shell("npm test")).await));

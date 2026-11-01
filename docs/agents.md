@@ -134,15 +134,17 @@ subagent drops to `manual` for non-edit calls. This follows the parent mid-run, 
 
 A subagent's tool calls go through the same [permission pipeline](permissions.md) as the main
 conversation's, with the same hooks, rules, pre-classifier and guardian. Starting a subagent is a
-pipeline request of its own: the `agent` call is an `arbitrary` call, so `manual` asks, `auto` has
-the guardian judge the task, toolset and model together, and a rule like `agent(worker)` in `deny`
-or `ask` works. A bare `agent` allow rule is one of the broad rules `auto` sets aside.
+pipeline request of its own: the `agent` call is an `arbitrary` call, so `manual` and `acceptEdits` ask, `auto` and `plan`
+allow it at the `spawn` tier without a guardian call, and a rule like `agent(worker)` in `deny`
+or `ask` works. A bare `agent` allow rule is one of the broad rules `auto` sets aside, though
+that changes nothing for spawns.
 
 The exception is a spawn whose child can only read, such as `explore`: Fontaine computes the
 child's toolset, and when every tool in it is read-only, the spawn takes the read-only fast path
 in every mode, with no prompt and no guardian call. `worker`, `fork` and any type with `agent`,
-`shell`, a write tool, a network tool or an MCP tool still go through the paths above, and the
-guardian is shown the child's toolset. A `deny` or `ask` rule on `agent` still applies first.
+`shell`, a write tool, a network tool or an MCP tool still go through the paths above. The
+guardian never judges the spawn itself: every call the child makes is gated on its own, and its
+mode is never looser than its parent's. A `deny` or `ask` rule on `agent` still applies first.
 
 The guardian's picture of what you asked for comes from your own messages in the root session's
 ledger, for every agent in the tree. A subagent's prompt, and a message another agent sends, reach

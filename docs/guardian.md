@@ -9,7 +9,7 @@ from being the only thing standing between a model and your machine.
 A call reaches the guardian in `auto` mode, and in `plan` mode for the consequential calls that
 mode does not block outright. The [deterministic floor](permissions.md#the-pipeline) (deny and ask
 rules, critical paths, protected-path handling), the read-only fast path (which includes a spawn of
-an agent type that can only read) and the shell
+an agent type that can only read), every other `agent` spawn and the shell
 pre-classifier all run first, in every mode; the guardian never sees a call they decided. In `auto`
 it also does not see file-tool edits to tracked, new or session-created files in your workspace or
 writes into the session scratch directory (see [the pipeline](permissions.md#the-pipeline)); it
@@ -121,12 +121,11 @@ of it does not. Every other rule still applies, such as running code downloaded 
 its contents out. Only literal paths carry the `session_scratch` status: a path built from a shell
 variable is not marked.
 
-An `agent` call delegates its prompt to a child whose tools the guardian is shown. The guardian
-denies a spawn only when the prompt asks the child for something a deny rule would block. A child
-that cannot write, run commands or reach the network cannot destroy files, rewrite history or
-exfiltrate by spawning, and each call the child makes is judged on its own when it makes it. A
-spawn whose child can only read skips the guardian altogether (see
-[the read-only fast path](permissions.md#the-pipeline)).
+An `agent` call is never shown to the guardian. A spawn delegates a prompt to a child whose every
+call goes through the whole pipeline on its own, guardian included, and whose mode is never looser
+than its parent's, so judging the prompt would only repeat that coverage. `auto` and `plan` allow
+the spawn (`tier = spawn`) after the deny and ask rules and hooks; `manual` and `acceptEdits` ask
+you (see [the pipeline](permissions.md#the-pipeline)).
 
 ## The verdict
 
