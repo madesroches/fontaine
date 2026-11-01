@@ -816,6 +816,7 @@ impl PermissionPipeline {
         // hooks and the mode, so a human or the guardian sees it unless an allow rule says so.
         let mut secret_note: Option<String> = None;
         if call.risk == RiskClass::ReadOnly
+            && matches!(tool, "read" | "grep" | "lsp")
             && let Some(given) = judged.get("path").and_then(Value::as_str)
             && let Some(pattern) = floor::secret_path(&scope, given)
         {

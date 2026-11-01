@@ -160,6 +160,16 @@ async fn the_mode_and_risk_class_matrix() {
         ),
         ("shell", shell("cat .env.example"), [(Allow, Tier05); 4]),
         (
+            "ls",
+            json!({"path": ".env"}),
+            [(Allow, ReadOnlyFastPath); 4],
+        ),
+        (
+            "glob",
+            json!({"pattern": "*", "path": ".env"}),
+            [(Allow, ReadOnlyFastPath); 4],
+        ),
+        (
             "webfetch",
             json!({"url": "https://example.com/"}),
             [
