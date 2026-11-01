@@ -41,8 +41,9 @@ decisions) holding each agent's current shell directory. There is no per-agent t
 `tools::registry` builds one set of shell tools and subagents reuse the parent's wrapped instances,
 telling agents apart by the `AgentId` in `ToolContext`. So one tracker is shared by all per-root
 shell instances; a missing entry means the primary root, which gives a subagent its fresh start (it
-never inherits the parent's). The root agent's entry is exposed on `AgentRuntime` so the TUI can
-read it.
+never inherits the parent's). `AgentRuntime` owns the tracker and passes it into `registry` through
+`RegistryParams`, as it does `jobs`, so it survives `rebuild()` (`/add-dir` rebuilds the agent);
+the TUI reads the root agent's entry from `AgentRuntime`.
 
 - `current(agent) -> PathBuf`
 - `observe(agent, reported: &Path, scope: &Scope) -> Option<Reset { from }>`: if `scope.find(reported)`
@@ -59,14 +60,15 @@ under `sh -c <command>`, and cannot clobber the trailer's inputs by assigning `f
 (a `for f in *.txt` loop would otherwise redirect the trailer's write into a file):
 
 ```
-sh -c 'readonly __fnt_f=$2 __fnt_c=$1; set --; eval "$__fnt_c"; __fnt_rc=$?; pwd -P >"$__fnt_f"; exit "$__fnt_rc"' sh <command> <tempfile>
+sh -c 'readonly __fnt_f=$2 __fnt_c=$1; set --; eval "$__fnt_c"; __fnt_rc=$?; command pwd -P >|"$__fnt_f" 2>/dev/null; exit "$__fnt_rc"' sh <command> <tempfile>
 ```
 
 (exact text settled at implementation). Properties that matter:
 
 - The command text is data, so quoting, newlines and heredocs behave as under `sh -c <command>`.
-- Exit status is preserved. A command that `exec`s or `exit`s never reaches the trailer, so the
-  directory stays unchanged: fail-safe.
+- Exit status is preserved. A command that `exec`s or `exit`s, or fails under `set -e`, never
+  reaches the trailer, so the directory stays unchanged: fail-safe. `command pwd` and `>|` keep a
+  user-defined `pwd` function and `noclobber` from affecting the trailer.
 - The temp file lives in the session scratch directory, unique per call, and is removed after
   being read. A missing or unreadable file (or an empty one after a failed `pwd -P`) means the directory is
   unchanged, validated by the preparer's `is_dir()` check on the next call.
@@ -77,9 +79,10 @@ sh -c 'readonly __fnt_f=$2 __fnt_c=$1; set --; eval "$__fnt_c"; __fnt_rc=$?; pwd
   into `RUN_COMMAND_SCRIPT`/`sh_command`: those stay unchanged. A separate foreground-only script
   (constant or `sh_command` variant), used only by `run_job`'s launch, keeps the command in the env
   var and passes the temp path through env too (cleared before the command runs); it is
-  backslash-free too. The trailer uses `pwd -W` (builtin, prints the
-  native `C:/...` path without spawning; combination with `-P` to be checked on Windows);
-  `scope::translate` (`/c/...` to `C:\...`) is the fallback, and anything untranslatable is `Reset`.
+  backslash-free too. The trailer uses `command pwd -W` without `-P` (builtin, prints the
+  native `C:/...` path without spawning): `Scope::find` resolves symlinks, and `scope::translate`
+  (`scope.rs:340-357`) cannot map `/tmp` (the scratch root under `%TEMP%` appears as `/tmp/...`).
+  `translate` (`/c/...` to `C:\...`) stays only as the fallback, and anything untranslatable is `Reset`.
 - `powershell`: the command is spliced into a UTF-16LE `-EncodedCommand` script and a failing last
   statement exits 1. The trailer captures `$?`/`$LASTEXITCODE` first, writes
   `(Get-Location).ProviderPath` to a temp path passed via env var, then exits with the preserved
@@ -95,7 +98,8 @@ sh -c 'readonly __fnt_f=$2 __fnt_c=$1; set --; eval "$__fnt_c"; __fnt_rc=$?; pwd
   through `run_job` following the `PowerShellTool` subagent pattern (`builtins.rs:641-650`: refuse
   `run_in_background`, throwaway `Jobs::new()`, `promotable=false`) so subagent directories are
   tracked per `AgentId`. `run_job` enforces `OUTPUT_CAP` (64 MB), not the 10 MB subagent cap, so the
-  shell description's "({SUBAGENT_OUTPUT_MB} MB in a subagent)" text is dropped to match.
+  shell description's "({SUBAGENT_OUTPUT_MB} MB in a subagent)" text is dropped to match, along with the
+  now-unused `SUBAGENT_OUTPUT_MB` const (`builtins.rs:~475`; dead code fails clippy `-D warnings`).
 - `monitor` (shell-class, no `cwd` field) keeps starting at the primary root and never moves the
   tracked directory.
 
@@ -107,13 +111,14 @@ The call's explicit `cwd` argument stays a per-call starting directory; the dire
 One resolution point turns "no `cwd` argument" into "the tracked directory": in
 `GuardedTool::call` (`guarded.rs:~391-406`), before `gated()` (a free function MCP tools also use,
 called at `:437`, so it is not the place), an optional pre-gate preparer on `GuardedTool` (set only
-on the shell/powershell per-root registrations in `builtins.rs`; MCP passes none) inserts the tracked cwd when `cwd` is absent. The gate, floor, Tier-0.5
+on the shell/powershell per-root registrations in `builtins.rs`; MCP passes none) inserts the tracked cwd when `cwd` is absent or `null` (`scope::string_field`, `scope.rs:330-336`, treats null as absent). The gate, floor, Tier-0.5
 pre-classifier, scope validator, hooks, the guardian prompt and the launch then all see the same
 string, so a decision can never be made against one directory and run in another (even with
 parallel tool calls: the value is pinned per call). With this, no consumer in the pipeline changes:
 they already resolve against a call's `cwd`. The preparer also checks `is_dir()` on the tracked directory: if it was deleted between calls
 (`launch_in` would fail ENOENT before `observe` runs; `Scope::find` checks containment, not
-existence), it resets the tracker to the primary root and attaches the reset notice to the result.
+existence), it resets the tracker to the primary root and attaches the reset notice to the result:
+`GuardedTool::call` receives the outcome from `gated()` and appends the notice there.
 The tool itself never reads the tracker when starting a
 call (a missing `cwd` still means `launcher.cwd`). The rewrite is a pure function of the tracker,
 never of model input. An explicit relative `cwd` still resolves against the primary root, as today
@@ -125,12 +130,13 @@ the deterministic floor is unchanged.
 ### Status bar
 
 - New `fontaine-core/src/git_head.rs` (pure filesystem, no `git` spawn): `read(dir) -> Option<Head>`
-  walks up from `dir` to find `.git`, follows a `gitdir:` file (worktrees, submodules), parses
+  walks up from `dir` to find `.git` (built on the gix discovery `fontaine-core` already uses,
+  `trust.rs:~255-285`, `ledger.rs:~618-621`, not hand-written), follows a `gitdir:` file (worktrees, submodules), parses
   `HEAD`: `ref: refs/heads/<name>` gives `Head::Branch(name)`, a bare hash gives
   `Head::Detached(short7)`.
 - `App` gains `cwd: PathBuf` and `branch: Option<String>`. `ui/mod.rs:draw` sets `cwd` from the
   root agent's tracker and refreshes `branch` through a small cache that stores the located HEAD path per cwd and stats only
-  that file (mtime), so a redraw neither re-walks nor re-reads when nothing changed.
+  that file (mtime plus length), so a redraw does not re-walk; the small HEAD file is re-read when its mtime or length changes.
 - `statusbar::render` adds a segment after the mode labels: ` · <dir>` plus ` (<branch>)` when
   there is one, before the model. The directory is shown with the home directory as `~`, and
   truncated from the left with `…` to at most 40 columns; the branch is truncated at 24.
@@ -150,9 +156,9 @@ the deterministic floor is unchanged.
    directory; update both tool descriptions, replacing "Each call starts
    a fresh sh: a cd or a variable does not carry over" (and the powershell equivalent) with: only
    the working directory persists between calls, env vars and variables do not.
-3. Wire one `ShellCwd` where the tools are built (`fontaine-core/src/tools.rs` `registry`, shared by
-   all per-root shell instances); expose the root agent's entry on `AgentRuntime`
-   (`fontaine-core/src/agent.rs`).
+3. `AgentRuntime` (`fontaine-core/src/agent.rs`) owns the `ShellCwd` and passes it into `registry`
+   via `RegistryParams` (`fontaine-core/src/tools.rs`, as `jobs`), shared by all per-root shell
+   instances and surviving `rebuild()`; it exposes the root agent's entry to the TUI.
 4. Add the pre-gate preparer to `GuardedTool` in `fontaine-tools/src/guarded.rs` (applied in
    `GuardedTool::call` before `gated()`) and set it on the shell/powershell registrations; confirm
    `permissions.rs`, `floor.rs`, `preclassify.rs` and `scope.rs` need no change beyond tests, nor do
@@ -241,13 +247,17 @@ Unit tests (no live APIs):
   `cat .env`/`cat secrets` style command resolves its operand against `sub/` in the pre-classifier,
   the secret-file read rule and the floor, exactly as an explicit `cwd="sub"` does today; a
   tracker value never reaches the gate unresolved.
-- `git_head` cache: rewrite HEAD in a temp repo and assert the cache refreshes.
+- `git_head` cache: rewrite HEAD in a temp repo (same length and within one mtime tick) and assert the cache refreshes.
+- Preparer: `"cwd": null` is rewritten to the tracked directory like an absent `cwd`.
 - `git_head`: normal repo, detached HEAD, worktree `gitdir:` file, nested directory walk-up, no
   repo, unreadable HEAD.
 - Path truncation reuses an existing clip/truncate helper (`transcript.rs`, `config_panel.rs`,
   `provider_dialog.rs`) rather than a new one.
 - Status bar via `TestBackend`: segment present with branch, without branch, detached form, long
   path truncated with `…`, home shown as `~`, hint still last, subagent view keeps the main segment.
+- Integration through `fontaine-tui` (`rust/fontaine-tui/tests/common/mod.rs`: `World`, `tool_turn`,
+  `TestBackend` run; status-bar assertions as in `tests/extensions.rs`): a `cd sub` shell tool turn,
+  then the status bar shows `…/sub`. Covers the tracker, `AgentRuntime`, `draw`, `App.cwd` wiring.
 - Integration through headless `fontaine -p` (`rust/fontaine/tests/common/mod.rs`
   `Endpoint`/`Turn::tool`/`Sandbox`, in `rust/fontaine/tests/headless_tools.rs`) with a deterministic
   completion model: call 1
@@ -259,8 +269,7 @@ Unit tests (no live APIs):
 1. `cargo run -p fontaine` in a git checkout inside tmux; expect the status bar to read
    `<mode> · ~/…/fontaine (main) · <model> …`. Why manual: the real terminal width and clip
    behavior is a layout concern (`tasks/design/testing.md`, terminal layout bugs).
-2. Ask the model to run `cd rust` then `pwd`; expect the bar to show `…/fontaine/rust`.
-3. In another terminal run `git switch -c scratch`; expect the bar to show `(scratch)` after the next input or event (an idle TUI does not redraw). Why manual: needs a real second process changing HEAD.
+2. In another terminal run `git switch -c scratch`; expect the bar to show `(scratch)` after the next input or event (an idle TUI does not redraw). Why manual: needs a real second process changing HEAD.
 
 ## Open Questions
 
