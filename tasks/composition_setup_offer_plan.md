@@ -129,6 +129,7 @@ select + confirm), which needs a new `Action` variant and `App` fields in `rust/
   LLM guardian double-checks allows (`stop_threshold`); fast = the screen allows and the LLM guardian decides every
   call the screen does not clear (`allow_threshold`). Fast writes an `allow_threshold` (AGENTS.md fast-path exception)
   only after explicit confirmation. No other knobs (question, steering veto, concurrency) are offered.
+- AFK: 2026-11-01: The setup step is skipped under the effective `minimal` profile (read from `containment::resolve`, not only the configured value): the benchmarked thresholds were fitted on full-profile reads, so a composition with them is not offered there.
 
 ## Documentation
 
