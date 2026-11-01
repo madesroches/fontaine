@@ -10,6 +10,7 @@ publish.workspace = true
 pg2 = ["fontaine-guardian/pg2"]
 
 [dependencies]
+base64.workspace = true
 chrono.workspace = true
 fontaine-agents.workspace = true
 fontaine-guardian.workspace = true

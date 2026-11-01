@@ -9,7 +9,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use crate::agent_list::ListRow;
 use crate::agents_panel::status_label;
 use crate::app::App;
-use crate::input::{InputBuffer, wrap};
+use crate::input::{InputBuffer, PendingMedia, wrap};
 use crate::model_picker::PickerPurpose;
 use crate::statusbar;
 
@@ -20,6 +20,39 @@ const MAX_MENU_ROWS: usize = 8;
 struct InputView {
     rows: Vec<String>,
     cursor: (usize, usize),
+    /// Rows the attachment chips take above the typed text, 0 or 1.
+    chip_rows: usize,
+}
+
+fn chip_label(attachment: &crate::input::PendingAttachment) -> String {
+    let kind = match &attachment.media {
+        PendingMedia::Image(media) => format!("{media:?}").to_uppercase(),
+        PendingMedia::Pdf => "PDF".to_string(),
+    };
+    format!(
+        "[{kind} {} · {}]",
+        attachment.label,
+        fontaine_tools::notebook::human_size(attachment.size)
+    )
+}
+
+/// The chips row above the typed text: one `[PNG name · size]` per attachment, cut to the
+/// width when they do not all fit.
+fn chip_row(attachments: &[crate::input::PendingAttachment], width: usize) -> Option<String> {
+    if attachments.is_empty() {
+        return None;
+    }
+    let row: String = attachments
+        .iter()
+        .map(chip_label)
+        .collect::<Vec<_>>()
+        .join(" ");
+    Some(if row.chars().count() > width {
+        let kept: String = row.chars().take(width.saturating_sub(1)).collect();
+        format!("{kept}…")
+    } else {
+        row
+    })
 }
 
 fn input_view(buffer: &InputBuffer, width: usize) -> InputView {
@@ -39,9 +72,11 @@ fn input_view(buffer: &InputBuffer, width: usize) -> InputView {
     }
     let first = (cursor_row + 1).saturating_sub(MAX_INPUT_ROWS);
     let visible: Vec<String> = rows.into_iter().skip(first).take(MAX_INPUT_ROWS).collect();
+    let chip_rows = usize::from(chip_row(buffer.attachments(), width).is_some());
     InputView {
         rows: visible,
-        cursor: (cursor_col % width, cursor_row - first),
+        cursor: (cursor_col % width, cursor_row - first + chip_rows),
+        chip_rows,
     }
 }
 
@@ -62,7 +97,8 @@ pub fn chrome(app: &App, width: u16, max_height: u16) -> usize {
         shown_body_rows(body.len(), footer.len(), approval, max_height) + footer.len() + 2
     };
     let overlay_rows = overlay_rows + queued_lines(app, inner_width).len();
-    let input_rows = input_view(&app.input, inner_width).rows.len() + 2;
+    let input_view = input_view(&app.input, inner_width);
+    let input_rows = input_view.rows.len() + input_view.chip_rows + 2;
     let queued_rows = queued_lines(app, inner_width).len();
     let list_rows = agent_list_lines(
         app,
@@ -106,7 +142,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         ..
     } = overlay(app, inner_width, area.height, false);
     let view = input_view(&app.input, inner_width);
-    let input_height = view.rows.len() as u16 + 2;
+    let input_height = view.rows.len() as u16 + view.chip_rows as u16 + 2;
     let queued = queued_lines(app, inner_width);
     let list = agent_list_lines(
         app,
@@ -236,7 +272,8 @@ fn todo_lines(
 
 /// Rows a dialog body may use so its header and the selection stay inside what `draw` allows.
 fn body_rows(app: &App, width: usize, height: u16, footer_len: usize) -> usize {
-    let input_rows = input_view(&app.input, width).rows.len() + 2;
+    let view = input_view(&app.input, width);
+    let input_rows = view.rows.len() + view.chip_rows + 2;
     let queued_rows = queued_lines(app, width).len();
     let list_rows = agent_list_lines(app, width + 2, height, input_rows, queued_rows).len();
     let reserved = input_rows
@@ -590,15 +627,24 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let lines: Vec<Line> = if viewed.is_some() && app.input.is_empty() && !covered {
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(chips) = chip_row(app.input.attachments(), usize::from(inner.width).max(1)) {
+        lines.push(Line::styled(
+            chips,
+            Style::default()
+                .fg(app.theme.success)
+                .add_modifier(Modifier::DIM),
+        ));
+    }
+    if viewed.is_some() && app.input.is_empty() && !app.input.has_attachments() && !covered {
         let dim = Style::default().add_modifier(Modifier::DIM);
-        vec![Line::styled(
+        lines.push(Line::styled(
             format!("Message {}…", viewed.unwrap_or_default()),
             dim,
-        )]
+        ));
     } else {
-        view.rows.iter().map(|r| Line::raw(r.clone())).collect()
-    };
+        lines.extend(view.rows.iter().map(|r| Line::raw(r.clone())));
+    }
     frame.render_widget(Paragraph::new(lines), inner);
     if !covered {
         frame.set_cursor_position(Position::new(
@@ -818,5 +864,69 @@ mod tests {
         );
         assert!(!rows.iter().any(|r| r.contains("for main")), "{rows:?}");
         assert!(!rows.iter().any(|r| r.contains("↑ to edit")), "{rows:?}");
+    }
+
+    fn shot() -> crate::input::PendingAttachment {
+        crate::input::PendingAttachment {
+            label: "shot.png".into(),
+            path: std::path::PathBuf::from("/scratch/shot.png"),
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 231_000,
+        }
+    }
+
+    #[test]
+    fn attachment_chips_draw_above_the_text_and_count_in_the_height() {
+        let mut app = typed("what does this show?");
+        let bare = chrome(&app, 80, 30);
+        app.input.attach(shot());
+        app.input.attach(crate::input::PendingAttachment {
+            label: "notes.pdf".into(),
+            path: std::path::PathBuf::from("/w/notes.pdf"),
+            media: PendingMedia::Pdf,
+            size: 90_112,
+        });
+        assert_eq!(chrome(&app, 80, 30), bare + 1, "the chips row");
+        let rows = drawn(&app, 80, 14);
+        let chips = rows
+            .iter()
+            .find(|r| r.contains("shot.png") && r.contains("notes.pdf"))
+            .expect("the chips row");
+        assert!(chips.contains("PNG"), "{chips}");
+        assert!(chips.contains("PDF"), "{chips}");
+        assert!(chips.contains("226 KB"), "{chips}");
+        assert!(chips.contains("88 KB"), "{chips}");
+        // The chips row sits inside the box, above the typed text.
+        let typed = rows
+            .iter()
+            .position(|r| r.contains("what does this show?"))
+            .expect("the typed text");
+        let chip_at = rows
+            .iter()
+            .position(|r| r.contains("shot.png"))
+            .expect("the chips");
+        assert!(chip_at < typed, "{rows:?}");
+    }
+
+    #[test]
+    fn an_attach_marker_renders_under_the_users_line() {
+        let mut transcript = crate::transcript::Transcript::default();
+        transcript.user("why did it deny that read?".into());
+        transcript.attached("image", "shot.png", 231_000);
+        let theme = crate::theme::Theme::default();
+        let lines: Vec<String> = transcript
+            .lines(80, &theme)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let at = lines
+            .iter()
+            .position(|l| l.contains("[image attached: shot.png · 226 KB]"))
+            .expect("the marker line");
+        let user = lines
+            .iter()
+            .position(|l| l.contains("why did it deny"))
+            .expect("the user line");
+        assert!(user < at, "{lines:?}");
     }
 }

@@ -507,6 +507,13 @@ async fn run_one(
             agent: &runtime.agent,
             state: &runtime.state,
             prompt: text,
+            attachments: Vec::new(),
+            modalities: runtime
+                .models
+                .main
+                .completion
+                .spec()
+                .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input),
             max_turns: options.max_turns,
             priced: runtime.models.main.catalog_billed(),
             model,
@@ -726,6 +733,7 @@ async fn handle_message(
             runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage {
                 text: text.clone(),
+                attachments: Vec::new(),
                 agent: None,
             });
             text
@@ -764,7 +772,11 @@ async fn handle_message(
             }
             involved = true;
             runtime.begin_turn(&text, false);
-            runtime.append(Record::UserMessage { text, agent: None });
+            runtime.append(Record::UserMessage {
+                text,
+                attachments: Vec::new(),
+                agent: None,
+            });
             first_turn_prompt(&condition)
         }
     };

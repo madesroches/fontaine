@@ -23,7 +23,7 @@ use crate::config_panel::{ConfigKey, ConfigPanel};
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
 use crate::guardian_prompt::GuardianOffPrompt;
 use crate::history::History;
-use crate::input::InputBuffer;
+use crate::input::{InputBuffer, PendingAttachment, PendingMedia};
 use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
 use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::question::QuestionPanel;
@@ -47,10 +47,12 @@ pub enum Input {
     Resize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     None,
-    Submit(String),
+    Submit(String, Vec<PendingAttachment>),
+    /// Ctrl+V: read the clipboard image into the session scratch directory and chip it.
+    AttachClipboard,
     /// Input typed while the agent works: a plain message, a skill invocation, a built-in
     /// command or a `!` line, queued as typed until the turn ends.
     Queue(Queued),
@@ -149,6 +151,10 @@ pub struct App {
     /// A one-line reason Enter did nothing, shown in the status bar until the next input event or
     /// the end of the turn. Kept out of the transcript so repeated Enters add no history.
     pub refusal: Option<String>,
+    /// A one-line attach result (a clipboard notice or the model-capability warning), shown in
+    /// the status bar until the next input event. Kept apart from `refusal`, which shows only
+    /// while a turn runs.
+    pub attach_notice: Option<String>,
     /// The screen wrote transcript rows into scrollback while the agents panel covered the live
     /// area, which leaves the last messages out of sight when it closes.
     pub committed_under_overlay: bool,
@@ -159,6 +165,8 @@ pub struct App {
     /// What the human typed to the viewed agent that it has not read yet.
     pub queued_agent: Vec<String>,
     pub input: InputBuffer,
+    /// Whether the current model's catalog row says it takes images, for the attach warning.
+    pub model_accepts_images: bool,
     pub mode: PermissionMode,
     pub model: String,
     pub running: bool,
@@ -249,6 +257,35 @@ pub struct SlashMenu<'a> {
 /// How soon the second Esc must follow the first to open `/rewind`.
 const ESC_DOUBLE_PRESS: std::time::Duration = std::time::Duration::from_millis(600);
 
+/// What a pasted file path becomes: an attachment when the paste is one line naming an
+/// existing PDF; `None` for anything else, which stays typed text. Terminals deliver a
+/// dropped file as a paste of its path.
+fn dropped_pdf(text: &str) -> Option<PendingAttachment> {
+    use std::io::Read as _;
+
+    let trimmed = text.trim();
+    if trimmed.is_empty() || trimmed.contains(['\n', '\r']) {
+        return None;
+    }
+    let path = PathBuf::from(trimmed.trim_matches(['"', '\'']));
+    let mut head = [0u8; 5];
+    std::fs::File::open(&path)
+        .ok()?
+        .read_exact(&mut head)
+        .ok()?;
+    if &head != b"%PDF-" {
+        return None;
+    }
+    let size = std::fs::metadata(&path).ok()?.len();
+    let label = path.file_name()?.to_string_lossy().into_owned();
+    Some(PendingAttachment {
+        label,
+        path,
+        media: PendingMedia::Pdf,
+        size,
+    })
+}
+
 fn is_cycle_key(key: &KeyEvent) -> bool {
     key.code == KeyCode::BackTab
         || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
@@ -262,11 +299,13 @@ impl App {
             viewing: None,
             reprint: false,
             refusal: None,
+            attach_notice: None,
             committed_under_overlay: false,
             agent_list: AgentList::default(),
             linear: false,
             queued_agent: Vec::new(),
             input: InputBuffer::default(),
+            model_accepts_images: false,
             mode,
             model,
             running: false,
@@ -633,6 +672,7 @@ impl App {
         // every key on Windows) are dropped by dispatch and must not wipe the hint.
         if !matches!(&input, Input::Key(key) if key.kind == KeyEventKind::Release) {
             self.refusal = None;
+            self.attach_notice = None;
         }
         let action = self.dispatch_input(input);
         // Paste and history-search accept change the text outside handle_key's tails.
@@ -664,6 +704,11 @@ impl App {
                     if let Some(search) = &mut self.search {
                         search.query.push_str(&text.replace(['\r', '\n'], " "));
                         self.search_step(false);
+                    } else if let Some(pending) = dropped_pdf(&text) {
+                        // A terminal delivers a dropped file as a paste of its path; a PDF
+                        // becomes an attachment, other paths stay typed text.
+                        self.input.attach(pending);
+                        self.history.reset();
                     } else {
                         self.input.insert_str(&text);
                         self.history.reset();
@@ -887,6 +932,9 @@ impl App {
             self.agent_list.focused = false;
             self.agents = Some(AgentsPanel::new());
             return Action::None;
+        }
+        if control && key.code == KeyCode::Char('v') && !typing_reason {
+            return Action::AttachClipboard;
         }
         if control && key.code == KeyCode::Char('o') && !typing_reason {
             self.todos.toggle();
@@ -1281,10 +1329,17 @@ impl App {
             return Action::Shell(command.to_string());
         }
         if self.running {
+            if self.input.has_attachments() {
+                // Queued steering carries text only; the chips wait for the turn to end.
+                self.refusal =
+                    Some("attachments cannot be queued mid-turn; wait for the turn to end".into());
+                return Action::None;
+            }
             return self.queue_during_turn(text.trim());
         }
         let text = self.input.take();
-        Action::Submit(text.trim().to_string())
+        let attachments = self.input.take_attachments();
+        Action::Submit(text.trim().to_string(), attachments)
     }
 
     /// Enter in an agent's view: plain text goes to that agent. A built-in command runs against
@@ -1293,6 +1348,11 @@ impl App {
     /// input.
     fn enter_in_view(&mut self, id: String, text: &str) -> Action {
         let text = text.trim();
+        if self.input.has_attachments() {
+            self.shown_mut()
+                .notice("attachments can only be sent from the main conversation");
+            return Action::None;
+        }
         if text.starts_with('!') {
             self.shown_mut().notice(MAIN_ONLY);
             return Action::None;
@@ -1326,7 +1386,7 @@ impl App {
                     return Action::None;
                 }
                 let text = self.input.take();
-                Action::Submit(text.trim().to_string())
+                Action::Submit(text.trim().to_string(), Vec::new())
             }
         }
     }
@@ -1448,7 +1508,7 @@ mod tests {
         app.handle_input(key(KeyCode::Char('x'), KeyModifiers::NONE));
         assert_eq!(
             app.handle_input(key(KeyCode::Enter, KeyModifiers::NONE)),
-            Action::Submit("hi\nx".into())
+            Action::Submit("hi\nx".into(), Vec::new())
         );
     }
 
@@ -1655,10 +1715,13 @@ mod tests {
     #[test]
     fn ui_commands_still_run_in_a_view() {
         let mut app = viewing_app();
-        assert_eq!(submit(&mut app, "/plan"), Action::Submit("/plan".into()),);
+        assert_eq!(
+            submit(&mut app, "/plan"),
+            Action::Submit("/plan".into(), Vec::new()),
+        );
         assert_eq!(
             submit(&mut app, "/status"),
-            Action::Submit("/status".into())
+            Action::Submit("/status".into(), Vec::new())
         );
         app.running = true;
         assert!(matches!(
@@ -2267,6 +2330,102 @@ mod tests {
         assert!(app.completion.is_some());
     }
 
+    #[test]
+    fn ctrl_v_asks_for_a_clipboard_attach() {
+        let mut app = app();
+        assert_eq!(
+            app.handle_input(Input::Key(KeyEvent::new(
+                KeyCode::Char('v'),
+                KeyModifiers::CONTROL,
+            ))),
+            Action::AttachClipboard
+        );
+        // A terminal that swallows Ctrl+V delivers its paste through the bracketed path.
+        app.handle_input(Input::Paste("typed text".into()));
+        assert_eq!(app.input.text(), "typed text");
+    }
+
+    #[test]
+    fn a_dropped_pdf_pastes_as_an_attachment_and_other_paths_stay_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("notes.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7\nbody").unwrap();
+        let text = dir.path().join("plain.txt");
+        std::fs::write(&text, b"hello").unwrap();
+
+        let mut app = app();
+        app.handle_input(Input::Paste(pdf.to_string_lossy().into_owned()));
+        assert_eq!(app.input.text(), "");
+        assert_eq!(app.input.attachments().len(), 1);
+        let pending = &app.input.attachments()[0];
+        assert_eq!(pending.label, "notes.pdf");
+        assert!(matches!(pending.media, PendingMedia::Pdf));
+
+        app.handle_input(Input::Paste(text.to_string_lossy().into_owned()));
+        assert_eq!(app.input.text(), text.to_string_lossy());
+        assert_eq!(app.input.attachments().len(), 1);
+    }
+
+    #[test]
+    fn enter_carries_the_chips_and_mid_turn_sending_refuses() {
+        let mut idle = app();
+        idle.input.attach(crate::input::PendingAttachment {
+            label: "shot.png".into(),
+            path: std::path::PathBuf::from("/scratch/shot.png"),
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 1024,
+        });
+        type_text(&mut idle, "look at this");
+        let action = press(&mut idle, KeyCode::Enter);
+        let Action::Submit(text, attachments) = action else {
+            panic!("a submit, got {action:?}");
+        };
+        assert_eq!(text, "look at this");
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].label, "shot.png");
+        assert!(!idle.input.has_attachments());
+
+        // Mid-turn, a message with attachments is not queued: the chips stay.
+        let mut mid = app();
+        mid.running = true;
+        mid.input.attach(crate::input::PendingAttachment {
+            label: "shot.png".into(),
+            path: std::path::PathBuf::from("/scratch/shot.png"),
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 1024,
+        });
+        type_text(&mut mid, "later");
+        assert_eq!(press(&mut mid, KeyCode::Enter), Action::None);
+        assert!(mid.input.has_attachments());
+        assert!(
+            mid.refusal
+                .as_deref()
+                .is_some_and(|why| why.contains("mid-turn")),
+            "{:?}",
+            mid.refusal
+        );
+    }
+
+    #[test]
+    fn chips_are_refused_in_an_agents_view() {
+        let mut app = viewing_app();
+        app.input.attach(crate::input::PendingAttachment {
+            label: "shot.png".into(),
+            path: std::path::PathBuf::from("/scratch/shot.png"),
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 1024,
+        });
+        type_text(&mut app, "look");
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert!(app.input.has_attachments());
+        assert!(
+            app.shown()
+                .entries
+                .iter()
+                .any(|e| matches!(e, crate::transcript::Entry::Notice { headline, .. } if headline.contains("main conversation")))
+        );
+    }
+
     fn unavailable() -> UnavailablePrompt {
         let (reply, _choice) = oneshot::channel();
         let info = fontaine_core::permissions::GuardianUnavailable {
@@ -2449,7 +2608,7 @@ mod tests {
         type_text(&mut app, "go /mod");
         assert_eq!(
             press(&mut app, KeyCode::Enter),
-            Action::Submit("go /mod".into())
+            Action::Submit("go /mod".into(), Vec::new())
         );
     }
 
@@ -2522,14 +2681,14 @@ mod tests {
         type_text(&mut app, "/rese");
         assert_eq!(
             press(&mut app, KeyCode::Enter),
-            Action::Submit("/clear".into())
+            Action::Submit("/clear".into(), Vec::new())
         );
         assert!(app.input.is_empty());
 
         type_text(&mut app, "/plan");
         assert_eq!(
             press(&mut app, KeyCode::Enter),
-            Action::Submit("/plan".into())
+            Action::Submit("/plan".into(), Vec::new())
         );
 
         type_text(&mut app, "/add");
@@ -2658,7 +2817,7 @@ mod tests {
         type_text(&mut app, "hello");
         assert_eq!(
             press(&mut app, KeyCode::Enter),
-            Action::Submit("hello".into())
+            Action::Submit("hello".into(), Vec::new())
         );
     }
 

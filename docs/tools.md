@@ -8,7 +8,7 @@ result passes one post-call step before the model sees it.
 
 | Tool | Risk class | What it does |
 |---|---|---|
-| `read` | read-only | Reads a text file (at most 16 MB), by line range. A Jupyter notebook (`.ipynb`) is shown as its cells: index, id and type, source, and text outputs (images are noted, not shown). |
+| `read` | read-only | Reads a text file (at most 16 MB), by line range. A Jupyter notebook (`.ipynb`) is shown as its cells: index, id and type, source, and text outputs (images are noted, not shown). An image (PNG, JPEG, GIF or WebP, by its magic bytes) is returned to the model as an image content part when the current model accepts images: a text header names the file, kind and size, then the image, capped at 5 MB — over the cap, or when the model takes no images, the result is a text note instead. A PDF is never returned as a tool result: the result is a text stub naming the file and its size, pointing at attaching it to the message. |
 | `ls` | read-only | Lists the files under a directory, honouring `.gitignore`. Arguments: `path`, `depth`, `glob`, `hidden`. |
 | `glob` | read-only | Finds files whose path matches a glob pattern such as `src/**/*.rs`. Arguments: `pattern`, `path`. Returns at most 1,000 files. |
 | `grep` | read-only | Searches file contents with a Rust regular expression, honouring `.gitignore`. Arguments: `pattern`, `path`, `glob`, `hidden`, `files`. Returns at most 200 matches; prefix the pattern with `(?i)` to ignore case. |

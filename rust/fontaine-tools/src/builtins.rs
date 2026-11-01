@@ -26,7 +26,7 @@ use crate::jobs::{
     AgentWaits, End, JobError, Jobs, Kill, MAX_RUNNING, NoPromote, OUTPUT_CAP, QUIET_LIMIT, Start,
     WaitWake, cut,
 };
-use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, NotebookRead};
+use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, ReadView};
 use crate::powershell::{self, PowerShellSettings};
 use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
@@ -865,10 +865,10 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             scope.clone(),
             risk_of(Read::NAME),
             guard.clone(),
-            |root| NotebookRead {
+            |root| ReadView {
                 read: read_for(root, &seen),
             },
-            |primary| NotebookRead {
+            |primary| ReadView {
                 read: read_external(primary, &seen),
             },
         )),

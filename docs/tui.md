@@ -123,6 +123,7 @@ below the bar.
 | Up, Down, Ctrl-P, Ctrl-N | With the `@` list or the slash-command menu open, move the selection. Otherwise, on the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. Down on the last line, when the input is not walking the history and the [agent list](#the-agent-list-and-the-agent-view) shows, moves the keyboard into the list: Up and Down select a row, Up on the first row gives the keyboard back. |
 | Enter, x, Esc in the agent list | Enter shows the selected row's transcript (`main` or a subagent). `x` stops a running subagent, or hides an ended one; on `main` or the agent on screen it is typed into the input. Esc gives the keyboard back to the input, and any printable key does too and is typed there. |
 | Ctrl-R | Search the prompt history; see [History](#history). |
+| Ctrl-V | Attach the clipboard's image to the message; see [Attaching files](#attaching-files). Terminals that turn Ctrl+V into a bracketed paste never deliver the key event; their paste arrives as text, and a dropped PDF path becomes a PDF attachment. |
 | Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the menu it first extends the name to what all the listed commands share. |
 | Shift+Tab | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. |
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one. While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
@@ -189,7 +190,33 @@ primary root are shown relative to it.
 
 Completion only edits your input. The message is sent as you typed it, and the agent reads the
 file through its `read` tool, so the content passes the same scope checks, deterministic floor and
-guardian as any other read.
+guardian as any other read. An image file read that way is returned to the model as an image part
+when the model accepts images.
+
+## Attaching files
+
+An inline file rides your message to the model as a content part, the way a typed sentence does.
+Two kinds exist: a clipboard image (Ctrl+V) and a dropped PDF (drop the file on the terminal, which
+pastes its path).
+
+- Ctrl+V reads the clipboard image with the desktop's own tool (`wl-paste`, `xclip` or
+  `pngpaste`) and saves it in the session's private scratch directory. No image on the clipboard
+  is a one-line notice, nothing more. Terminals that turn Ctrl+V into a bracketed paste never
+  deliver the key event; the paste path already handles their text.
+- A dropped file whose path lands in the input as a paste becomes a PDF attachment when the file
+  sniffs as `%PDF-`; any other path stays typed text.
+
+Each attachment shows as a removable chip above the typed text, with its kind and size. Backspace
+on an empty input removes the last chip. On Enter the chips become parts of the message: an image
+reaches a model that accepts images as an image, a PDF as a document, and the transcript shows a
+one-line marker — `[image attached: shot.png · 226 KB]` — under your line. What the current model
+does not accept is not sent: the turn notes each such attachment in text instead, and the status
+bar warns "model does not accept images" when you attach one to such a model. Attachments wait out
+a running turn and are refused in an agent's view: both keep the chips in the input.
+
+Attachments are base64, capped at 5 MB; the image is sniffed when it is read. The
+[context gauge](configuration.md) counts text tokens only and does not subtract what an image
+costs. A `read` of a PDF never returns the file — the result is a stub pointing here.
 
 ## History
 

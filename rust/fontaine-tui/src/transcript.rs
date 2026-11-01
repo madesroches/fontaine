@@ -83,6 +83,8 @@ pub enum Entry {
         headline: String,
         hint: Option<String>,
     },
+    /// A one-line marker naming an inline file a user message carried, under the user's line.
+    Attachment(String),
     Error(String),
     /// A `!` command the human ran. `output` already ends with the line saying how it ended.
     Shell {
@@ -205,6 +207,15 @@ impl Transcript {
     pub fn user(&mut self, text: String) {
         self.finish_streaming();
         self.entries.push(Entry::User(text));
+    }
+
+    /// The one-line marker under a user message that carried an inline file.
+    pub fn attached(&mut self, kind: &str, label: &str, size: u64) {
+        self.finish_streaming();
+        self.entries.push(Entry::Attachment(format!(
+            "[{kind} attached: {label} · {}]",
+            fontaine_tools::notebook::human_size(size)
+        )));
     }
 
     /// Empties the transcript after `/clear`. What was already written stays in the terminal's
@@ -988,6 +999,15 @@ fn entry_lines(
             headline,
             ..
         } => prefixed(headline, width, glyphs.info, dim, out),
+        Entry::Attachment(text) => prefixed(
+            text,
+            width,
+            "  ",
+            Style::default()
+                .fg(theme.success)
+                .add_modifier(Modifier::DIM),
+            out,
+        ),
         Entry::Notice { headline, hint, .. } => {
             warning_lines(headline, hint.as_deref(), width, theme, glyphs, out)
         }

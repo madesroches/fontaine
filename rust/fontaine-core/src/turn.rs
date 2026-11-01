@@ -2,13 +2,17 @@
 //! happens as typed session events to a consumer, which decides how to show them and may stop
 //! the run between model calls. Headless and the TUI both run on it.
 
-use fontaine_tools::gate::{AgentId, ROOT_AGENT};
+use base64::Engine;
+use fontaine_tools::gate::{AgentId, InputModalities, ROOT_AGENT};
 use futures::StreamExt;
 use rig_agent::agent::MultiTurnStreamItem;
 use rig_agent::completion::PromptError;
 use rig_agent::prelude::*;
+use rig_core::catalog::Modalities;
 use rig_core::completion::Usage;
-use rig_core::message::{AssistantContent, ToolResultContent};
+use rig_core::message::{
+    AssistantContent, DocumentMediaType, Message, ToolResultContent, UserContent,
+};
 use rig_core::streaming::{Item, StreamEvent};
 use rig_core::tool::ToolContext;
 use serde_json::Value;
@@ -84,6 +88,12 @@ pub struct TurnParams<'a> {
     pub agent: &'a Agent,
     pub state: &'a SessionState,
     pub prompt: String,
+    /// Inline files the prompt carries: a clipboard image or a dropped PDF. Gated by
+    /// `modalities` at the message build; what the model does not accept collapses into a
+    /// text note.
+    pub attachments: Vec<Attachment>,
+    /// What the current model accepts; decides which attachments become content parts.
+    pub modalities: Modalities,
     /// The most model calls the turn may make; `None` for no limit.
     pub max_turns: Option<usize>,
     /// Whether the cost the model's calls report is counted; see `ModelHandle::catalog_billed`.
@@ -93,6 +103,62 @@ pub struct TurnParams<'a> {
     pub provider: String,
     /// Whether the request carries the provider's built-in search tool.
     pub native_search: bool,
+}
+
+/// What an inline attachment is.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AttachmentMedia {
+    /// A clipboard image, sniffed at attach time.
+    Image(rig_core::message::ImageMediaType),
+    /// A dropped PDF file.
+    Pdf,
+}
+
+/// An inline file a user message carries.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Attachment {
+    /// What the user knows it as: a file name.
+    pub label: String,
+    pub bytes: Vec<u8>,
+    pub media: AttachmentMedia,
+}
+
+/// The user message for one run: the prompt's text part, then one content part per
+/// attachment the model accepts. An attachment the model does not accept becomes a text
+/// note naming it, so nothing the user sent reaches the model unseen.
+pub(crate) fn user_message(
+    prompt: &str,
+    attachments: &[Attachment],
+    modalities: &Modalities,
+) -> Message {
+    let mut content = vec![UserContent::text(prompt)];
+    for attachment in attachments {
+        let data = base64::engine::general_purpose::STANDARD.encode(&attachment.bytes);
+        match &attachment.media {
+            AttachmentMedia::Image(media) if modalities.image => {
+                content.push(UserContent::image_base64(data, Some(media.clone()), None));
+            }
+            AttachmentMedia::Pdf if modalities.pdf => {
+                content.push(UserContent::document_base64(
+                    data,
+                    Some(DocumentMediaType::PDF),
+                ));
+            }
+            media => {
+                let kind = match media {
+                    AttachmentMedia::Image(_) => "an image",
+                    AttachmentMedia::Pdf => "a PDF",
+                };
+                content.push(UserContent::text(format!(
+                    "[attachment: {kind} \"{}\" · {} not sent: the current model does not accept \
+                     it]",
+                    attachment.label,
+                    fontaine_tools::notebook::human_size(attachment.bytes.len() as u64),
+                )));
+            }
+        }
+    }
+    Message::User { content }
 }
 
 fn tool_text(content: &[ToolResultContent]) -> String {
@@ -129,6 +195,8 @@ pub async fn run_turn(
             state: params.state,
             agent_id: ROOT_AGENT,
             prompt: params.prompt,
+            attachments: params.attachments,
+            modalities: params.modalities,
             max_turns: params.max_turns,
             priced: params.priced,
             model: params.model,
@@ -231,6 +299,10 @@ pub struct Drive<'a> {
     pub state: &'a SessionState,
     pub agent_id: &'a str,
     pub prompt: String,
+    /// Inline files the prompt carries; sent as content parts the model accepts.
+    pub attachments: Vec<Attachment>,
+    /// What the current model accepts; decides which attachments become content parts.
+    pub modalities: Modalities,
     /// The most model calls the run may make; `None` for no limit.
     pub max_turns: Option<usize>,
     /// Whether the cost the model's calls report is counted. An unpriced model's is dropped
@@ -312,12 +384,21 @@ pub async fn drive(
     on_event: &mut (dyn FnMut(SessionEvent) -> Flow + Send),
 ) -> TurnOutcome {
     for attempt in 0..=MAX_RETRIES {
+        // A retry continues on a note: the failed attempt's message, attachments included,
+        // is already saved by the recovery hook, so the retry sends the note alone.
+        let attachments = if attempt == 0 {
+            std::mem::take(&mut params.attachments)
+        } else {
+            Vec::new()
+        };
         let end = drive_once(
             Drive {
                 agent: params.agent,
                 state: params.state,
                 agent_id: params.agent_id,
                 prompt: std::mem::take(&mut params.prompt),
+                attachments,
+                modalities: params.modalities,
                 max_turns: params.max_turns,
                 priced: params.priced,
                 model: params.model.clone(),
@@ -353,9 +434,18 @@ async fn drive_once(
     tool_context
         .insert(AgentId(params.agent_id.to_string()))
         .expect("the agent id serializes");
+    // Read tools ask the context what the model accepts, so a mid-session model switch
+    // takes effect on this turn without a rebuild.
+    tool_context
+        .insert(InputModalities(params.modalities))
+        .expect("the modalities serialize");
     let runner = params
         .agent
-        .prompt(rig_core::message::Message::user(params.prompt))
+        .prompt(user_message(
+            &params.prompt,
+            &params.attachments,
+            &params.modalities,
+        ))
         .tool_context(tool_context)
         // rig has no unbounded setting: left unset, a run makes a single model call.
         .max_turns(params.max_turns.unwrap_or(usize::MAX))
@@ -538,7 +628,116 @@ mod tests {
     use super::*;
     use http::StatusCode;
     use rig_core::error::ErrorReport;
+    use rig_core::message::ImageMediaType;
     use rig_core::{ProviderError, ProviderResponseError};
+
+    fn modalities(image: bool, pdf: bool) -> Modalities {
+        let mut accepted = Modalities::default();
+        accepted.text = true;
+        accepted.image = image;
+        accepted.pdf = pdf;
+        accepted
+    }
+
+    fn png() -> Attachment {
+        Attachment {
+            label: "screenshot.png".into(),
+            bytes: b"\x89PNG\r\n\x1a\nnot really".to_vec(),
+            media: AttachmentMedia::Image(ImageMediaType::PNG),
+        }
+    }
+
+    fn pdf() -> Attachment {
+        Attachment {
+            label: "notes.pdf".into(),
+            bytes: b"%PDF-1.7 not really".to_vec(),
+            media: AttachmentMedia::Pdf,
+        }
+    }
+
+    fn parts(message: &Message) -> &Vec<UserContent> {
+        let Message::User { content } = message else {
+            panic!("a user message");
+        };
+        content
+    }
+
+    #[test]
+    fn the_prompt_reads_as_the_first_text_part() {
+        let message = user_message("hello", &[], &modalities(false, false));
+        let content = parts(&message);
+        assert_eq!(content.len(), 1);
+        assert_eq!(content[0], UserContent::text("hello"));
+    }
+
+    #[test]
+    fn an_image_attachment_becomes_an_image_part_for_a_model_that_accepts_images() {
+        let message = user_message("look", &[png()], &modalities(true, false));
+        let content = parts(&message);
+        assert_eq!(content.len(), 2);
+        let UserContent::Image(image) = &content[1] else {
+            panic!("an image part, got {:?}", content[1]);
+        };
+        assert_eq!(image.media_type, Some(ImageMediaType::PNG));
+        assert!(
+            !format!("{:?}", image.data).contains("not really"),
+            "base64, not raw bytes"
+        );
+    }
+
+    #[test]
+    fn a_pdf_attachment_becomes_a_document_part_for_a_model_that_accepts_pdfs() {
+        let message = user_message("read", &[pdf()], &modalities(false, true));
+        let content = parts(&message);
+        assert_eq!(content.len(), 2);
+        let UserContent::Document(document) = &content[1] else {
+            panic!("a document part, got {:?}", content[1]);
+        };
+        assert_eq!(document.media_type, Some(DocumentMediaType::PDF));
+    }
+
+    #[test]
+    fn an_attachment_the_model_rejects_becomes_a_text_note() {
+        for (attachment, name) in [(png(), "screenshot.png"), (pdf(), "notes.pdf")] {
+            let message = user_message("hey", &[attachment], &modalities(false, false));
+            let content = parts(&message);
+            assert_eq!(content.len(), 2, "the note replaces the part");
+            let UserContent::Text(note) = &content[1] else {
+                panic!("a text note, got {:?}", content[1]);
+            };
+            assert!(note.text.contains(name), "{}", note.text);
+            assert!(note.text.contains("does not accept"), "{}", note.text);
+            assert!(!note.text.contains("iVBOR"), "{}", note.text);
+            assert!(!note.text.contains("JVBER"), "{}", note.text);
+        }
+    }
+
+    #[test]
+    fn the_modalities_gate_applies_per_attachment() {
+        let message = user_message("both", &[png(), pdf()], &modalities(true, false));
+        let content = parts(&message);
+        assert!(matches!(content[1], UserContent::Image(_)));
+        assert!(
+            matches!(content[2], UserContent::Text(_)),
+            "the PDF falls back"
+        );
+    }
+
+    #[test]
+    fn tool_text_marks_images_without_their_bytes() {
+        let text = tool_text(&[
+            ToolResultContent::text("header"),
+            ToolResultContent::Image(rig_core::message::Image {
+                data: rig_core::message::DocumentSourceKind::base64("aGk="),
+                media_type: Some(ImageMediaType::PNG),
+                detail: None,
+                native: None,
+            }),
+        ]);
+        assert!(text.contains("header"), "{text}");
+        assert!(text.contains("[image]"), "{text}");
+        assert!(!text.contains("aGk="), "{text}");
+    }
 
     fn provider_error(status: StatusCode) -> PromptError {
         PromptError::Provider(ProviderError::ProviderResponse(ProviderResponseError::new(

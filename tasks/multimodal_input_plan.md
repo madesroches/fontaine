@@ -219,6 +219,9 @@ Mockup A (attachment chips) is the chosen UX:
   supporting terminals deliver Ctrl+V as a key event, and no existing Ctrl+V binding
   conflicts; terminals that swallow it deliver the paste through the bracketed-paste
   path the plan already handles.
+- 2026-11-01: `InputModalities` is defined in `fontaine-tools` (next to `AgentId`), not
+  `fontaine-core` as §2 says: `fontaine-tools` must not depend on `fontaine-core`, so the
+  per-turn `ToolContext` value both crates share lives in the lower crate.
 
 ## Documentation
 

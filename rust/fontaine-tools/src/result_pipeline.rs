@@ -126,3 +126,29 @@ pub fn append_note(outcome: ToolOutcome, note: &str) -> ToolOutcome {
         }
     }
 }
+
+/// The text view of a tool result: text parts verbatim, JSON parts serialized, image parts as
+/// `[image: png]` placeholders. Never base64: every text-deriving result stage (scanner,
+/// notifications, instructions, hooks) works on this, so binary parts stay out of the scan
+/// text, the notifications and the hooks' input.
+pub fn text_view(output: &ToolOutput) -> String {
+    if let Some(text) = output.as_text() {
+        return text.to_string();
+    }
+    output
+        .as_content()
+        .iter()
+        .map(|part| match part {
+            ToolResultContent::Text(text) => text.text.clone(),
+            ToolResultContent::Json { value } => value.to_string(),
+            ToolResultContent::Image(image) => format!(
+                "[image: {}]",
+                image
+                    .media_type
+                    .as_ref()
+                    .map_or("image", |media| media.extension())
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}

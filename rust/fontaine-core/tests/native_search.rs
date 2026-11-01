@@ -62,6 +62,8 @@ async fn turn(built: &Built) -> TurnOutcome {
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hello".to_string(),
+            attachments: Vec::new(),
+            modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(3),
             priced: true,
             model: "scripted".to_string(),

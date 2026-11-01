@@ -10,7 +10,7 @@ use fontaine_guardian::{CommandScanner, LlmScanner, Scan, Scanner};
 use fontaine_tools::gate::CallView;
 use fontaine_tools::lock::read;
 use fontaine_tools::result_pipeline::{
-    ResultStage, ScanRecord, ScanVerdict, ToolOutcome, append_note,
+    ResultStage, ScanRecord, ScanVerdict, ToolOutcome, append_note, text_view,
 };
 use futures::future::BoxFuture;
 
@@ -85,8 +85,8 @@ fn unscanned_note(reason: &str) -> String {
 
 fn text_of(outcome: &ToolOutcome) -> String {
     match outcome {
-        Ok(output) => output.render(),
-        Err(error) => error.model_output().render(),
+        Ok(output) => text_view(output),
+        Err(error) => text_view(error.model_output()),
     }
 }
 

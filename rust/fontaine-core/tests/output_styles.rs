@@ -46,6 +46,8 @@ async fn first_prompt(built: &common::runtime::Built) -> String {
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hello".to_string(),
+            attachments: Vec::new(),
+            modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
             priced: true,
             model: "scripted".to_string(),
@@ -99,6 +101,7 @@ async fn the_guardians_request_and_rendered_prompt_are_byte_identical_with_and_w
         }
         built.runtime.state.append(Record::UserMessage {
             text: "tidy the repo".to_string(),
+            attachments: Vec::new(),
             agent: None,
         });
         let request = adjudication::build(

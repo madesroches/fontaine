@@ -35,6 +35,7 @@ impl QuestionSource for HumanQuestions {
                 if !typed.is_empty() {
                     self.state.append(Record::UserMessage {
                         text: typed.join("\n"),
+                        attachments: Vec::new(),
                         agent: None,
                     });
                 }

@@ -65,6 +65,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let refusal = app.refusal.as_deref().filter(|_| app.running);
     let hint = if let Some(text) = refusal {
         text
+    } else if let Some(text) = &app.attach_notice {
+        text.as_str()
     } else if let Some(text) = &viewed_state {
         text.as_str()
     } else if app.running {
@@ -139,6 +141,20 @@ mod tests {
         app.running = false;
         let text = bar(&app);
         assert!(!text.contains("a turn is running"), "{text}");
+    }
+
+    #[test]
+    fn an_attach_notice_shows_idle_and_yields_to_a_running_refusal() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.attach_notice = Some("no image on the clipboard".into());
+        let text = bar(&app);
+        assert!(text.contains("no image on the clipboard"), "{text}");
+
+        app.running = true;
+        app.refusal = Some("a turn is running".into());
+        let text = bar(&app);
+        assert!(text.contains("a turn is running"), "{text}");
+        assert!(!text.contains("no image on the clipboard"), "{text}");
     }
 
     #[test]

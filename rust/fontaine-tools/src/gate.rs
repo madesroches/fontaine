@@ -3,6 +3,7 @@
 //! depends on it.
 
 use futures::future::BoxFuture;
+use rig_core::catalog::Modalities;
 use rig_core::tool::ContextValue;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,6 +17,15 @@ pub struct AgentId(pub String);
 
 impl ContextValue for AgentId {
     const KEY: &'static str = "fontaine.agent_id";
+}
+
+/// What the calling agent's model accepts, minted per turn so a mid-session model switch
+/// takes effect on the next turn without rebuilding the tools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputModalities(pub Modalities);
+
+impl ContextValue for InputModalities {
+    const KEY: &'static str = "fontaine.input_modalities";
 }
 
 pub const ROOT_AGENT: &str = "root";

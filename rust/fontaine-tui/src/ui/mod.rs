@@ -16,6 +16,7 @@ use crate::agent_list;
 use crate::agents_panel::{AgentsPanel, JobRow, PanelRow};
 use crate::config_panel::ConfigKey;
 use crate::denials::{DeniedList, UnavailablePrompt};
+use crate::input::{PendingAttachment, PendingMedia};
 use crate::resume_picker::ResumePicker;
 use crate::ui::schedule::IDLE_POLL;
 use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
@@ -41,6 +42,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.mode = runtime.state.mode();
         self.app.guardian_off = runtime.state.guardian_off();
         self.app.model = runtime.models.main.reference.to_string();
+        self.app.model_accepts_images = runtime
+            .models
+            .main
+            .completion
+            .spec()
+            .is_some_and(|spec| spec.input.image);
         self.app.prune_closed();
         let rows = runtime.state.agents().rows();
         self.app.running_agents = rows.iter().filter(|r| r.status.is_running()).count();
@@ -276,12 +283,17 @@ impl<R: FnMut(&mut App)> Ui<R> {
             match action {
                 Action::Quit => return,
                 Action::CycleMode => self.cycle_mode(runtime),
-                Action::Submit(text) => {
+                Action::Submit(text, attachments) => {
                     self.remember(&text);
-                    if self.submit(runtime, launch_dir, text).await.is_break() {
+                    if self
+                        .submit(runtime, launch_dir, text, attachments)
+                        .await
+                        .is_break()
+                    {
                         return;
                     }
                 }
+                Action::AttachClipboard => self.attach_clipboard(runtime).await,
                 Action::Shell(command) => {
                     self.remember(&format!("!{command}"));
                     if self.shell(runtime, command).await.is_break() {
@@ -373,17 +385,26 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &mut AgentRuntime,
         launch_dir: &Path,
         text: String,
+        attachments: Vec<PendingAttachment>,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         match parse_command(&text) {
             // /loop is never dispatched here or queued: it needs the loop's own
             // first-iteration bookkeeping.
             Some(Command::Loop(argument)) => {
+                self.return_attachments(attachments);
                 return self
                     .loop_command(runtime, launch_dir, &text, &argument)
                     .await;
             }
             Some(command) => {
+                if !attachments.is_empty() {
+                    // Commands run, not send; the chips wait for a real message.
+                    self.return_attachments(attachments);
+                    self.app.transcript.notice(
+                        "attachments are sent with a message, not a command; they stay in the input",
+                    );
+                }
                 match self
                     .dispatch_command(runtime, launch_dir, command, &text, false)
                     .await
@@ -398,13 +419,76 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
             }
             None => {
-                self.converse(
-                    runtime,
-                    launch_dir,
-                    VecDeque::from([Submission::Message(text)]),
-                )
-                .await
+                let submission = if attachments.is_empty() {
+                    Submission::Message(text)
+                } else {
+                    Submission::Attached { text, attachments }
+                };
+                self.converse(runtime, launch_dir, VecDeque::from([submission]))
+                    .await
             }
+        }
+    }
+
+    /// Puts attachments the input sent with a command or a refused send back as chips.
+    fn return_attachments(&mut self, attachments: Vec<PendingAttachment>) {
+        for pending in attachments {
+            self.app.input.attach(pending);
+        }
+    }
+
+    /// Ctrl+V: read the clipboard image into the session scratch directory and chip it. No
+    /// image on the clipboard is a one-line notice, not an error. Blocking clipboard
+    /// programs run off the executor's threads.
+    async fn attach_clipboard(&mut self, runtime: &AgentRuntime) {
+        if self.app.viewing.is_some() {
+            self.app
+                .shown_mut()
+                .notice("attachments can only be sent from the main conversation");
+            return;
+        }
+        let Some(scratch) = runtime.state.scratch.clone() else {
+            self.app.attach_notice =
+                Some("this session has no scratch directory for attachments".into());
+            return;
+        };
+        let launcher = rig_tools::process::Launcher::default()
+            .without_env(runtime.scrub_env().iter().cloned());
+        let read = tokio::task::spawn_blocking(move || {
+            rig_tools::clipboard::read_image(&launcher, &scratch)
+        })
+        .await;
+        match read {
+            Ok(Ok(Some(path))) => {
+                let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
+                let label = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "clipboard".to_string());
+                // `read_image` sniffs before saving and names the file by the type.
+                let media = match path.extension().and_then(|ext| ext.to_str()) {
+                    Some("jpg" | "jpeg") => {
+                        PendingMedia::Image(rig_core::message::ImageMediaType::JPEG)
+                    }
+                    Some("gif") => PendingMedia::Image(rig_core::message::ImageMediaType::GIF),
+                    Some("webp") => PendingMedia::Image(rig_core::message::ImageMediaType::WEBP),
+                    _ => PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+                };
+                self.app.input.attach(PendingAttachment {
+                    label,
+                    path,
+                    media,
+                    size,
+                });
+                if !self.app.model_accepts_images {
+                    self.app.attach_notice = Some("model does not accept images".into());
+                }
+            }
+            Ok(Ok(None)) => self.app.attach_notice = Some("no image on the clipboard".into()),
+            Ok(Err(e)) => {
+                self.app.attach_notice = Some(format!("the clipboard could not be read: {e}"));
+            }
+            Err(e) => self.app.attach_notice = Some(format!("the clipboard read failed: {e}")),
         }
     }
 
@@ -531,6 +615,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     // guardian reads, and later goal turns are harness notes.
                     runtime.append(Record::UserMessage {
                         text: raw.to_string(),
+                        attachments: Vec::new(),
                         agent: None,
                     });
                     Continue(CommandOutcome::Turn(Submission::Expanded {
@@ -558,6 +643,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 // Recorded before the turn so the guardian judging the write has this intent.
                 runtime.append(Record::UserMessage {
                     text: format!("/init: create or improve {}", target.display()),
+                    attachments: Vec::new(),
                     agent: None,
                 });
                 Continue(CommandOutcome::Turn(Submission::Expanded {

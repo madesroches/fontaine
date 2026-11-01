@@ -352,6 +352,7 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
             headline,
             ..
         } => labelled("notice:", headline, out),
+        Entry::Attachment(text) => labelled("attachment:", text, out),
         Entry::Notice { headline, hint, .. } => {
             labelled("warning:", headline, out);
             if let Some(hint) = hint {

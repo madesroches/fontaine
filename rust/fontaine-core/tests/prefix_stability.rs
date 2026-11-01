@@ -17,6 +17,8 @@ async fn first_request(built: &Built) -> String {
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hello".to_string(),
+            attachments: Vec::new(),
+            modalities: rig_core::catalog::Modalities::default(),
             max_turns: Some(5),
             priced: true,
             model: "scripted".to_string(),
