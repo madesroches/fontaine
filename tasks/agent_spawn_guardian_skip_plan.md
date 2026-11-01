@@ -149,7 +149,10 @@ or what the model was told for a denial.
    `manual`/`acceptEdits` ask), `docs/evals.md` (`spawn-worker-not-fast-path` sentence: a
    `worker` spawn in `auto` is allowed at tier `spawn`), `docs/headless.md` (add `spawn` to
    the `gate_decision` tier list), and the fast-path invariant in `AGENTS.md` (three
-   exceptions become four). Add a dated line to `## Decisions` in
+   exceptions become four); `docs/architecture.md` (the numbered pipeline diagram:
+   show the new branch — a `Tier::Spawn` allow for `auto`/`plan`, a prompt for
+   `manual`/`acceptEdits`, a deny for `dontAsk` — between the fast paths and the mode
+   dispatch). Add a dated line to `## Decisions` in
    `tasks/fontaine_harness_plan.md` recording that spawns are no longer guardian-judged at
    all, with the containment reason and the issue reference (#360). `CHANGELOG.md` is
    updated by the `pr` step.
@@ -163,7 +166,7 @@ or what the model was told for a denial.
 - `evals/dataset/spawn.jsonl`
 - `docs/schemas/headless-v1.schema.json`
 - `docs/permissions.md`, `docs/guardian.md`, `docs/agents.md`, `docs/evals.md`,
-  `docs/headless.md`, `AGENTS.md`, `tasks/fontaine_harness_plan.md`
+  `docs/headless.md`, `docs/architecture.md`, `AGENTS.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
@@ -200,6 +203,9 @@ or what the model was told for a denial.
 - `docs/guardian.md`: the intro's list of what sits in front of the guardian, and the
   subagents section ("An `agent` call is decided by the floor and the mode…").
 - `AGENTS.md`: the fast-path invariant gains the spawn exception (four exceptions).
+- `docs/architecture.md`: the numbered pipeline diagram gains the spawn branch — a
+  `Tier::Spawn` allow for `auto`/`plan`, a prompt for `manual`/`acceptEdits`, a deny for
+  `dontAsk` — between the fast paths and the mode dispatch.
 - `tasks/fontaine_harness_plan.md`: a dated line in `## Decisions` recording that spawns are
   no longer guardian-judged at all (every child call is gated by the same pipeline and the
   child's mode is never looser than the parent's), superseding the earlier line about
