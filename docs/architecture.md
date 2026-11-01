@@ -138,7 +138,8 @@ decision before anything else sees it:
  2. floor: deny rule -> [plan: block edits] -> ask rule -> critical path -> protected path
     |
     v   (the floor can only ask or deny, in every mode)
- 3. read-only fast path: read-only tool, every path inside a workspace root -> allow;
+ 3. read-only fast path: read-only tool, every path inside a workspace root and none a secret
+    file (`.env`, key files, credential dotfiles) -> allow;
     also an `agent` spawn whose child's toolset is read-only
  4. shell pre-classifier: one literal simple command of the curated set -> allow
  5. allow rules (user trust scopes, session grants, always-allow rules) -> allow

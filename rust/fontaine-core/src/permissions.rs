@@ -440,13 +440,13 @@ fn denied(tool: &str, why: &str) -> String {
 /// validated as a `read` of it, and as the matching `ls`/`grep` when the
 /// command is one. Words that are not paths only cause an extra look at the rules.
 fn ruled_hit<'a>(
-    list: &'a [SourcedRule],
+    list: impl IntoIterator<Item = &'a SourcedRule>,
     reads: &[(&'static str, Value)],
     scope: &Scope,
     home: Option<&std::path::Path>,
     posture: Posture,
 ) -> Option<&'a SourcedRule> {
-    list.iter().find(|r| {
+    list.into_iter().find(|r| {
         reads.iter().any(|(tool, args)| {
             let ctx = CallContext {
                 tool,
@@ -485,6 +485,31 @@ fn ruled_read_calls(
         }
     }
     calls
+}
+
+/// The operands of a pre-classified read-only command that name a credential file, each with
+/// the pattern it matched and the read calls synthesized for it alone. `ls` lists names only.
+fn secret_read_calls(
+    command: &str,
+    paths: &[String],
+    cwd: Option<&str>,
+    scope: &Scope,
+) -> Vec<(String, Vec<(&'static str, Value)>)> {
+    let Some(argv) = analyze(command).simple else {
+        return Vec::new();
+    };
+    if argv[0].rsplit(['/', '\\']).next() == Some("ls") {
+        return Vec::new();
+    }
+    paths
+        .iter()
+        .filter_map(|path| {
+            let calls = ruled_read_calls(command, std::slice::from_ref(path), cwd, scope);
+            let given = calls.first()?.1.get("path")?.as_str()?;
+            let pattern = floor::secret_path(scope, given)?;
+            Some((pattern, calls))
+        })
+        .collect()
 }
 
 impl PermissionPipeline {
@@ -787,7 +812,19 @@ impl PermissionPipeline {
         }
 
         let located = scope.locate(tool, judged);
-        if call.risk == RiskClass::ReadOnly && (located.is_ok() || names_no_path(tool)) {
+        // A credential file read leaves both containment skips: the call goes on to allow rules,
+        // hooks and the mode, so a human or the guardian sees it unless an allow rule says so.
+        let mut secret_note: Option<String> = None;
+        if call.risk == RiskClass::ReadOnly
+            && let Some(given) = judged.get("path").and_then(Value::as_str)
+            && let Some(pattern) = floor::secret_path(&scope, given)
+        {
+            secret_note = Some(format!("it reads a secret file ({pattern})"));
+        }
+        if call.risk == RiskClass::ReadOnly
+            && secret_note.is_none()
+            && (located.is_ok() || names_no_path(tool))
+        {
             return Verdict::Allow {
                 tier: Tier::ReadOnlyFastPath,
                 rule: None,
@@ -840,10 +877,34 @@ impl PermissionPipeline {
                         },
                     );
                 }
-                return Verdict::Allow {
-                    tier: Tier::Tier05,
-                    rule: None,
-                };
+                let secrets = secret_read_calls(command, &paths, env.cwd, &scope);
+                if secrets.is_empty() {
+                    return Verdict::Allow {
+                        tier: Tier::Tier05,
+                        rule: None,
+                    };
+                }
+                // Every secret operand needs an allow of its own: one rule matching a plain
+                // operand must not vouch for the secret next to it.
+                let grants = self.state.skill_grants(call.agent);
+                let allows = rules.allow.iter().chain(grants.iter());
+                let mut restored = None;
+                for (_, calls) in &secrets {
+                    match ruled_hit(allows.clone(), calls, &scope, home, Posture::Allow) {
+                        Some(rule) => restored = Some(rule.label()),
+                        None => {
+                            restored = None;
+                            break;
+                        }
+                    }
+                }
+                if restored.is_some() {
+                    return Verdict::Allow {
+                        tier: Tier::AllowRule,
+                        rule: restored,
+                    };
+                }
+                secret_note = Some(format!("it reads a secret file ({})", secrets[0].0));
             }
         }
         // `auto` sets broad code-execution rules aside for as long as it is on: a blanket
@@ -916,7 +977,9 @@ impl PermissionPipeline {
         let needs_approval = || Prompt {
             tier: Tier::Mode,
             rule: None,
-            reason: "it needs the user's approval".to_string(),
+            reason: secret_note
+                .clone()
+                .unwrap_or_else(|| "it needs the user's approval".to_string()),
             forced: false,
         };
         // Every call the child makes is gated on its own way out and its mode is never looser

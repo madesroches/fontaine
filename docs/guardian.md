@@ -9,7 +9,7 @@ from being the only thing standing between a model and your machine.
 A call reaches the guardian in `auto` mode, and in `plan` mode for the consequential calls that
 mode does not block outright. The [deterministic floor](permissions.md#the-pipeline) (deny and ask
 rules, critical paths, protected-path handling), the read-only fast path (which includes a spawn of
-an agent type that can only read), every other `agent` spawn and the shell
+an agent type that can only read, and excludes reads of secret files such as `.env`), every other `agent` spawn and the shell
 pre-classifier all run first, in every mode; the guardian never sees a call they decided. In `auto`
 it also does not see file-tool edits to tracked, new or session-created files in your workspace or
 writes into the session scratch directory (see [the pipeline](permissions.md#the-pipeline)); it
