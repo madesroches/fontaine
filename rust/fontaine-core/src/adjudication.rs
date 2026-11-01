@@ -210,6 +210,9 @@ fn facts(
     let paths = touched_paths(tool, args, scope);
     let resolved: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
     let certain = cwd_is_certain(tool, args);
+    // `absent` describes the path before the call runs; a path named twice may be created by one
+    // command and destroyed by the next.
+    let repeated = crate::destructive::repeated_paths(tool, args, scope);
     let tracked = if certain {
         trust::tracked_files(scope.primary(), &resolved)
     } else {
@@ -221,7 +224,7 @@ fn facts(
         .map(|(path, git_tracked)| TouchedPath {
             status: status(view.existence(&path)),
             in_scratch: in_scratch(&path, scratch.as_deref()),
-            absent: certain && is_absent(&path),
+            absent: certain && !repeated.contains(&path) && is_absent(&path),
             git_tracked,
             path,
         })
@@ -424,6 +427,35 @@ mod tests {
         assert!(marks(
             "git mv tasks/x_plan.md tasks/completed/x_plan.md && git add -u"
         ));
+        let absent = |command: &str| {
+            facts(
+                &view,
+                &scope,
+                None,
+                None,
+                "shell",
+                &serde_json::json!({ "command": command }),
+            )
+            .touched_paths
+            .iter()
+            .any(|t| t.path.ends_with("/t") && t.absent)
+        };
+        assert!(absent("mv notes.txt ./t"));
+        assert!(!absent("mv notes.txt ./t && rm ./t"));
+        assert!(!absent("mv a ./t && cp junk ./t"));
+        assert!(
+            facts(
+                &view,
+                &scope,
+                None,
+                None,
+                "shell",
+                &serde_json::json!({ "command": "git mv tasks/x_plan.md tasks/completed/x_plan.md && git add -u" }),
+            )
+            .touched_paths
+            .iter()
+            .any(|t| t.path.ends_with("completed/x_plan.md") && t.absent)
+        );
     }
 
     #[cfg(unix)]
