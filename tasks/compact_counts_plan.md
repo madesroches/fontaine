@@ -4,12 +4,12 @@
 
 ## Overview
 Counts shown to a human in the TUI render inconsistently: agent spend prints raw tokens
-(`90887 tok`) next to chars with a `k` suffix (`writing 10.3k chars`). Three private formatters
+(`90887 tok`) next to chars with a `k` suffix (`writing 10.3k chars`). Four divergent formatters
 exist today. Replace them with one shared `compact_count` helper (`999`, `1.0k`, `90.9k`, `1.2M`)
 and route every display site through it. Machine-readable output keeps exact values.
 
 ## Current State
-Three divergent formatters:
+Four divergent formatters:
 - `fontaine-tui/src/agents_panel.rs:95-98` `spend_text` prints `{tokens} tok` and `{cap} tok` raw
   (used by the agent tree and list rows, `agent_list.rs`).
 - `fontaine-tui/src/agents_panel.rs:117` `writing_text`: `< 1000` exact, else `{:.1}k`; no `M`.
@@ -50,7 +50,7 @@ Call sites switched to it:
 - `spend_text`: `{compact(tokens)} / {compact(cap)} tok` (the cost half is unchanged).
 - `writing_text`: `writing {compact(chars)} chars`.
 - `Exhausted::describe()`: `({compact(spent)} of {compact(cap)})`.
-- `reports::tokens` becomes a thin removal: delete it and call `compact_count` directly in
+- delete `reports::tokens` and call `compact_count` directly in
   `reports.rs` and `context.rs`; `window_label` uses `compact_count` too (`200000` → `200.0k`,
   `1_000_000` → `1.0M`).
 - `goal::tokens_text` removed; goal summary uses `compact_count`.
