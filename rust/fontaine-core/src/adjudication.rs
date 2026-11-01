@@ -126,7 +126,11 @@ const CWD_SAFE_PROGRAMS: [&str; 19] = [
 /// assigns `GIT_WORK_TREE` and the like, or names another tree with `-C`/`--git-dir`/
 /// `--work-tree`, resolves its relative paths elsewhere, and a mark computed for the wrong file
 /// would tell the guardian an overwrite is safe. So only a short list of programs is trusted.
-fn cwd_is_certain(tool: &str, args: &Value) -> bool {
+///
+/// The marks are computed before the call runs, and a later command can act on what an earlier
+/// one created or moved, and a glob or magic pathspec names files no literal word does, so only
+/// one simple command with plain words is marked.
+fn marks_apply(tool: &str, args: &Value) -> bool {
     if !fontaine_tools::descriptor::is_shell_class(tool) {
         return true;
     }
@@ -139,6 +143,9 @@ fn cwd_is_certain(tool: &str, args: &Value) -> bool {
     }
     const DIR_FLAGS: [&str; 5] = ["-C", "--directory", "--chdir", "--git-dir", "--work-tree"];
     const DIR_PREFIXES: [&str; 4] = ["--directory=", "--chdir=", "--git-dir=", "--work-tree="];
+    if analysis.commands.len() != 1 {
+        return false;
+    }
     analysis.commands.iter().all(|simple| {
         let Some(first) = simple.words.first() else {
             return true;
@@ -165,31 +172,14 @@ fn cwd_is_certain(tool: &str, args: &Value) -> bool {
         }
         simple.words.iter().all(|word| {
             word.literal.as_deref().is_none_or(|literal| {
-                !DIR_FLAGS.contains(&literal)
+                !literal.contains(['*', '?', '['])
+                    && !literal.starts_with(':')
+                    && !DIR_FLAGS.contains(&literal)
                     && !literal.starts_with("-C")
                     && !DIR_PREFIXES.iter().any(|p| literal.starts_with(p))
             })
         })
     })
-}
-
-/// Whether the marks, computed before the call runs, describe what a shell command will hit. A
-/// later command can act on what an earlier one created or moved, and a glob or magic pathspec
-/// names files no literal word does, so only one simple command with plain words is marked.
-fn marks_are_sound(tool: &str, args: &Value) -> bool {
-    if !fontaine_tools::descriptor::is_shell_class(tool) {
-        return true;
-    }
-    let Some(command) = args.get("command").and_then(Value::as_str) else {
-        return true;
-    };
-    let analysis = fontaine_tools::preclassify::analyze(command);
-    analysis.commands.len() == 1
-        && analysis.commands[0].words.iter().all(|word| {
-            word.literal
-                .as_deref()
-                .is_none_or(|l| !l.contains(['*', '?', '[']) && !l.starts_with(':'))
-        })
 }
 
 fn facts(
@@ -219,7 +209,7 @@ fn facts(
         scratch.map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
     let paths = touched_paths(tool, args, scope);
     let resolved: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
-    let certain = cwd_is_certain(tool, args) && marks_are_sound(tool, args);
+    let certain = marks_apply(tool, args);
     let tracked = if certain {
         trust::tracked_files(scope.primary(), &resolved)
     } else {
