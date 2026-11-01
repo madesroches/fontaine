@@ -80,7 +80,7 @@ exactly (`rune = "=0.14.2"`) in `rust/Cargo.toml`.
 fontaine-guardian/src/
   screen.rs            -> the Ollama logprob reader only: `Reader`, `Read`, `Prompt`, `Question`
   composition/
-    mod.rs             Composition (compiled unit + context + reads + params), adjudicate(), Composed
+    mod.rs             Composition (compiled unit + context + reads + params + readers), adjudicate(), Composed
     host.rs            the Rune `guardian` module: Call, Score, Verdict, read, llm, first_decisive, ctors
     eval.rs            per-call evaluation context: shared LLM future, read log, dropped estimate
     preset.rs          built-in presets (name -> source, declared reads, param schema)
@@ -140,7 +140,9 @@ replaces a static "can this tree allow?" analysis with a structural guarantee.
 ### The fail-closed root (`composition::adjudicate`)
 
 ```rust
-pub async fn adjudicate(c: &Composition, guardian: Arc<Guardian>, request: Arc<AdjudicationRequest>) -> Composed;
+pub async fn adjudicate(c: Arc<Composition>, guardian: Arc<Guardian>, request: Arc<AdjudicationRequest>) -> Composed;
+// The `Reader`s (one per distinct read model, keyed by model label) live in `Composition`: the caller
+// builds them and passes them to `Composition::compile`; host `read()` resolves them through it.
 
 pub struct Composed {
     pub decided: Decided,
@@ -165,26 +167,26 @@ The rules below are in Rust and outside the script's reach:
    (`PROBE_TIMEOUT` because the output-mode probe runs outside `Settings.timeout`). The bound covers
    one read stage plus one LLM call. Both constants ship in code (the 2026-10-21 decision "Guardian
    constants ship in `fontaine-guardian`, not config keys"). A fresh `Vm`
-   is made per call; the session measured about 0.1 µs for that and about 0.8 µs for a
-   screen-sized evaluation.
+   is made per call. On timeout the root aborts the evaluation task (`JoinHandle::abort`; the
+   `LocalSet` fallback runs under an abortable wrapper), so no LLM request or read outlives the call
+   unaccounted.
 2. **Fail-closed.** `adjudicate` runs the VM evaluation in a spawned tokio task (or the `LocalSet`
-   fallback) and maps `JoinError::is_panic()` to `Deny { node: "composition", fail_closed:
+   fallback), aborts it on timeout (dropping a `JoinHandle` only detaches), and maps `JoinError::is_panic()` to `Deny { node: "composition", fail_closed:
    Some(Error) }`. A VM error, budget exhaustion, a timeout, a panic in a host function, or a
    return value that is not a host `Verdict` becomes `Decided::Deny { node: "composition",
    fail_closed: Some(Error | Timeout) }`. Error text explains the deny; it never changes it.
 3. **Abstain at the root is a deny.** (`fail_closed: Some(Unparseable)`, reason "the composition
    reached no verdict"). The `screen` preset never abstains at the root, because its last resort
    is `llm()`.
-4. **Monotone over verdicts in hand.** If the script returns a non-LLM `Allow` while a
-   completed `llm()` result in this evaluation is not an allow, the root returns that LLM verdict
-   (`Decided::Guardian`). A computed denial is never turned into an allow, which matches today's
-   "a guardian verdict in hand wins". More generally, a completed LLM non-allow in hand is always
+4. **Monotone over verdicts in hand.** A completed LLM non-allow in hand is always
    returned as `Decided::Guardian` whatever the script returns, so a computed guardian deny stays
    non-approvable and still feeds `record_denied` and the guardian-denied breaker. Only an LLM allow
    in hand yields to a script `Escalate`/`Deny`, the stricter outcome.
 5. **Spend is never lost.** When the evaluation ends with the shared LLM request started but not
    finished, it is dropped (cancelled) and `dropped_input_tokens` is set to
-   `Guardian::dropped_estimate` (as today). When it finished but the final verdict is not
+   `Guardian::dropped_estimate` (as today). This includes a root timeout with the request in
+   flight: the evaluation context, not the task, owns the shared future and its accounting, so the
+   root reads it after aborting the task. When it finished but the final verdict is not
    `Guardian`, its usage is returned in `llm_usage` so the pipeline adds it to the session's
    usage.
 6. **Reads are awaited.** The root waits for every started read (each bounded by the read timeout)
@@ -296,14 +298,13 @@ issue (see Decisions).
 
 ### Core wiring
 
-- `gate.rs`: `ScreenStage` becomes `CompositionStage { composition: Arc<Composition>, readers:
-  Vec<Arc<Reader>>, label: String, shadow: bool }`. `set_screen`/`screen()` and
+- `gate.rs`: `ScreenStage` becomes `CompositionStage { composition: Arc<Composition>, label: String, shadow: bool }`. `set_screen`/`screen()` and
   `first_screen_warning` are renamed. `CompositionStage` stays an `Option` like `ScreenStage`: with
   no composition configured, call sites call `guardian.adjudicate` directly. Subagents share the session state, so they run the same
   composition, as they share the screen today.
 - `agent/setup.rs`: `build_composition` resolves each distinct read model to an Ollama account
-  (`context_tokens`, base URL) and builds one `Reader` per model; `attach_composition` warms up
-  each reader.
+  (`context_tokens`, base URL) and builds one `Reader` per model, passed into `Composition::compile`;
+  `attach_composition` warms up each of `composition.readers()`.
 - `permissions.rs`: the call site passes `Arc`s. `Decided::Escalate` takes today's `screen_stop`
   path (prompt, or deny when headless, `tier = screen`, `rule = node`). A fail-closed `Decided::Deny` (`fail_closed = Some(..)`: VM error, budget, root timeout,
   non-verdict, root abstain) follows today's guardian fail-closed handling through the same path as
@@ -370,7 +371,8 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
 8. **Evals.** `fontaine-evals/src/live.rs` and `runner.rs` (new flags, preset construction, step
    recording); `rust/fontaine-evals/Cargo.toml` (`fontaine-guardian` dependency gains
    `features = ["composition"]`); update `fontaine-evals/tests/live.rs` if it touches the cascade
-   types.
+   types, and the race-describing comments at `fontaine-evals/tests/live.rs:1015` ("asked beside the
+   screen") and `fontaine-evals/src/live.rs:482` ("runs beside the guardian").
 9. **Tests.** See Testing Strategy, and port `fontaine-core/tests/config.rs` (the
    `[guardian.screen]` block), `permissions_screen.rs`, `account_ops.rs:275`,
    `account_session.rs:245`, `common/mod.rs` and `rust/fontaine/tests/auto_headless.rs`.
@@ -390,7 +392,7 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
 - `rust/fontaine-tui/src/config_panel.rs` (its `guardian.screen` filter test)
 - `rust/fontaine-evals/Cargo.toml`, `rust/fontaine-evals/src/{live.rs,runner.rs}`, `rust/fontaine-evals/tests/live.rs`, `evals/README.md`
 - `tasks/design/observability.md`, `docs/{guardian.md,configuration.md,headless.md,evals.md,permissions.md,telemetry.md,tui.md}`, `docs/schemas/headless-v1.schema.json`
-- `AGENTS.md` (line 57), `tasks/design/permissions.md` (~100-104, ~171)
+- `AGENTS.md` (line 57), `tasks/design/permissions.md` (~100-104, ~171, ~230)
 - `tasks/fontaine_harness_plan.md` (Decisions; amend lines 545-546)
 
 ## Trade-offs
@@ -438,11 +440,12 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
 - `docs/evals.md`: cascade scorecards via the preset and `--composition-script`; older cascade
   scorecards were measured racing, and `--composition-param concurrent=true` reproduces the race.
 - `docs/permissions.md`: update its screen references.
+- `docs/configuration.md:105`: the `[guardian.screen]` row in the scope table.
 - `docs/telemetry.md` (~99, ~126): `fontaine.screen.count` values gain `deny`; ~137 drop "racing".
 - `tasks/design/observability.md` ~73-78 and `docs/telemetry.md` ~137-142: completed-but-unused LLM
   spend is now counted via `llm_usage`; the dropped in-flight estimate stays as is.
 - `docs/tui.md` ~664-665: screen references.
-- `tasks/design/permissions.md` ~100-104 and ~171: the screen tier definition.
+- `tasks/design/permissions.md` ~100-104 and ~171: the screen tier definition; ~230: the screen allow as a verdict of the composed guardian.
 - `evals/README.md` ~155: the `--screen live:` row and the new flags.
 - `AGENTS.md:57`: the security invariant naming `[guardian.screen] allow_threshold` is rewritten to
   name the composed guardian's allow (`allow_below` in a user-scope composition, the `screen`
@@ -458,8 +461,8 @@ All of these are unit or integration tests with `wiremock` for the Ollama reads 
   (a struct literal, `Verdict::Allow`, or an unknown constructor) fails to compile; a script that
   returns a string, unit or a number becomes Deny; `allow_below` with a score at the threshold
   abstains; `read` of an undeclared name is `Err`.
-- **Root rules** (unit, `tokio::test` with paused time where useful): an infinite loop exhausts
-  the budget → Deny; a script that sleeps past the timeout → Deny `Timeout`; root abstain → Deny;
+- **Root rules** (unit, `tokio::test`): an infinite loop exhausts
+  the budget → Deny; a script whose wiremock-delayed read stages, chained sequentially, run past the root bound → Deny `Timeout`; root abstain → Deny;
   a script that returns a screen allow while a completed LLM deny is in hand → the LLM deny
   (monotone); a script that escalates with an LLM allow in hand → escalate; a script that escalates or denies with
   a completed LLM deny/escalate in hand → the LLM verdict as `Decided::Guardian`; a host panic → Deny;
@@ -468,8 +471,9 @@ All of these are unit or integration tests with `wiremock` for the Ollama reads 
 - **Concurrency and cost**: `first_decisive` returns the first decisive verdict and list order wins
   a same-poll tie; dropping an in-flight `llm()` sets `dropped_input_tokens`; a completed but unused
   LLM result is returned in `llm_usage`; `llm()` named twice sends one request (wiremock
-  `expect(1)`); every started read is awaited and recorded even after `first_decisive` settled; a sequential script runs reads in order, and `join` runs them together (paused-time
-  latency assertion).
+  `expect(1)`); every started read is awaited and recorded even after `first_decisive` settled; a sequential script runs reads in order, and `join` runs them together (real-time
+  assertion with generous bounds, as `tests/cascade.rs:148-190`: three reads each delayed 300 ms via
+  wiremock `set_delay` finish under ~600 ms joined and take ≥900 ms sequential).
 - **Shadow**: the script's verdict is recorded and the LLM decides; one LLM request.
 - **Preset parity**: port every case in `fontaine-guardian/tests/cascade.rs` and
   `fontaine-core/tests/permissions_screen.rs` (stop, allow, pass, unavailable read, guardian in
