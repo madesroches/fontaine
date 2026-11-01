@@ -17,7 +17,7 @@ use crate::scope::Scope;
 /// cannot disturb the trailer by assigning a variable of its own. A command that `exit`s, is
 /// `exec`ed over or fails under `set -e` never reaches the trailer, which leaves the directory
 /// unchanged.
-pub const TRACKED_SCRIPT: &str = "readonly __fnt_f=$2 __fnt_c=$1; set --; eval \"$__fnt_c\"; \
+pub const TRACKED_SCRIPT: &str = "readonly __fnt_f=\"$2\" __fnt_c=\"$1\"; set --; eval \"$__fnt_c\"; \
      __fnt_rc=$?; command pwd -P >|\"$__fnt_f\" 2>/dev/null; exit \"$__fnt_rc\"";
 
 /// A tracked directory the call moved out of the workspace, or that is no longer a directory.

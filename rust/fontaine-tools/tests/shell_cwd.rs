@@ -311,15 +311,24 @@ async fn the_monitor_starts_in_the_primary_root() {
     shell(&tools, json!({"command": "cd sub"})).await;
     let definition = tool(&tools, "monitor").tool.definition();
     assert!(definition.description.contains("primary workspace root"));
-    // The monitor's command runs where the tracked directory is not consulted.
+    let out = r.scratch.join("monitor_pwd");
     let started = text(
         &call(
             &tools,
             "monitor",
-            json!({"command": "pwd", "description": "d"}),
+            json!({"command": format!("pwd > '{}'", out.display()), "description": "d"}),
         )
         .await
         .unwrap(),
     );
     assert!(started.contains("monitor"), "{started}");
+    let mut seen = String::new();
+    for _ in 0..100 {
+        seen = std::fs::read_to_string(&out).unwrap_or_default();
+        if seen.ends_with('\n') {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(seen.trim_end(), path_text(&r.root));
 }
