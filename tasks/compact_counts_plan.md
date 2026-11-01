@@ -53,8 +53,6 @@ Call sites switched to it:
   `1_000_000` → `1.0M`).
 - `goal::tokens_text` removed; goal summary uses `compact_count`.
 
-Open/closed: a future count (bytes, files) calls the same helper; no per-site formatting.
-
 ## Implementation Steps
 1. Add `compact_count` + unit tests to `fontaine-tools/src/display.rs`.
 2. Replace `spend_text`, `writing_text` internals in `fontaine-tui/src/agents_panel.rs`, and
@@ -64,10 +62,13 @@ Open/closed: a future count (bytes, files) calls the same helper; no per-site fo
 5. Update existing test expectations to the compact forms: `agent_list.rs:416,474`;
    `agents_panel.rs:346-396`; `reports.rs:941,953`; `rust/fontaine-tui/tests/agents.rs:66,71`;
    plus any `budget.rs` test asserting `describe()` output.
-6. Audit pass: `rg` for remaining `tok`/`tokens`/`chars` format sites and `{spent}`-style counts
-   without the word `tok` in `fontaine-tui/`, `fontaine/`, `fontaine-agents/` and `fontaine-core/`
-   (including spend/budget summaries in command output and the status bar) and route any
-   stragglers through the helper; leave machine-readable paths.
+6. Route the remaining display sites through `compact_count`:
+   `fontaine-tui/src/ui/commands/reports.rs:91-93` (`copied reply {n} ({} characters)`) and
+   `fontaine-core/src/instructions/mod.rs:177,181` (`{path} ({size} characters)` startup
+   warnings). Messages echoing a configured limit (`goal.rs:87`, `session.rs:756`, `spawn.rs:415`,
+   `memory.rs:163`, the KiB constants in `transcript.rs:1075,1281`) and the markdown export
+   (`export.rs:300`) stay exact. Finish with an `rg` sanity check for stragglers
+   (`tok`, `tokens`, `chars`, `characters`).
 7. Docs and changelog.
 
 ## Files to Modify
@@ -75,12 +76,12 @@ Open/closed: a future count (bytes, files) calls the same helper; no per-site fo
 - `rust/fontaine-tui/src/agents_panel.rs`, `agent_list.rs` (tests), `reports.rs`,
   `ui/commands/context.rs`, `rust/fontaine-tui/tests/agents.rs` (test expectations)
 - `rust/fontaine-agents/src/budget.rs`
-- `rust/fontaine-core/src/goal.rs`
+- `rust/fontaine-tui/src/ui/commands/reports.rs`
+- `rust/fontaine-core/src/goal.rs`, `rust/fontaine-core/src/instructions/mod.rs`
 - `docs/tui.md`, `CHANGELOG.md`
 
 ## Trade-offs
-- Home in `fontaine-tools` rather than `fontaine-core`/`fontaine-tui`: both consume it and
-  `fontaine-tools` already holds `display`; a new crate or a core→tui dependency is unwarranted.
+- A new crate or a core→tui dependency is unwarranted.
 - One decimal always (`1.0k`) over trimming `.0`: stable width in the k/M forms. `window_label`
   adopts `200.0k` for consistency with every other count, not for column width.
 - Round half up vs truncate (old `tokens_text` truncated): matches the issue's `90.9k` for 90887
@@ -101,9 +102,8 @@ Update the doc comment at `fontaine-core/src/goal.rs:175`. `CHANGELOG.md` entry.
 Unit tests (all behavior is pure formatting):
 - `compact_count` boundaries: 0, 999, 1000, 1049, 1050, 9950, 99_949, 999_949, 999_950, 999_999,
   1_000_000, 1_234_567, `u64::MAX` (no panic/overflow — use saturating add).
-- `spend_text` with/without budget and with cost; `writing_text` at 999/1000/10_300.
-- Existing row/report/goal tests updated; a test asserting the headless/ledger exact values are
-  unchanged where one already exists (no code change expected there).
+- `spend_text` with/without budget and with cost.
+- Existing row/report/goal tests updated.
 
 ## Open Questions
 None.
