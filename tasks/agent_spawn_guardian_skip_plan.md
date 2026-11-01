@@ -81,7 +81,7 @@ the eval `expected_tier` comparison is string-based and needs no code change.
 
 Plan mode allows the spawn because the child's edits are plan-blocked: the child's posture is
 the tighter of its own and its parent's, so a plan-mode spawn can plan but cannot edit, and
-each of its calls is still judged.
+each of its calls is still gated.
 
 The `fontaine-guardian` crate is untouched: it keeps its spawn-aware request (`SpawnFacts`,
 the child-toolset section of the prompt) because it is lift-out-able and an embedding harness
@@ -120,11 +120,9 @@ or what the model was told for a denial.
      the deny-rule arms stay.
    - Replace `a_spawn_that_can_change_state_still_reaches_the_guardian` with its inverse: a
      state-changing spawn (`worker`, `fork`, `nests`, `shelly`, `fetchy`, `mcpish`) in `auto` is
-     allowed at tier `spawn`, guardian not consulted.
-   - Add a regression test pinning the incident (#360): in `auto`, a worker spawn whose prompt
-     is an unsupervised "the user is away, resolve these items" instruction, with a fixture
-     guardian that would escalate `Download+Execute`, is allowed; assert the guardian was never
-     called and the approver never asked.
+     allowed at tier `spawn`. Its fake guardian is an escalate-verdict fixture (`Download+Execute`)
+     and the spawn prompt is the AFK-style "the user is away, resolve these items" instruction
+     from #360; assert `fake.calls() == 0` and `asked() == 0`.
    - Add mode coverage for a state-changing spawn: `plan` allows at tier `spawn`,
      `acceptEdits` prompts, `dontAsk` denies.
    - Add an audit assertion: a guardian escalate writes a record whose `explanation` is the
@@ -133,12 +131,19 @@ or what the model was told for a denial.
    - Rework `a_nested_child_whose_type_lists_agent_does_not_qualify`: the nested `nests` spawn
      in `auto` is now allowed at tier `spawn` with `fake.calls() == 0`; it still does not
      qualify for the read-only fast path.
-   - Rework `the_guardian_takes_its_intent_from_the_roots_human_messages_only`: the spawn's
-     guardian request is gone, so assert a single request for the child's shell call and keep
-     the intent assertions (`sent[0]`) on that call.
+   - Rework `the_guardian_takes_its_intent_from_the_roots_human_messages_only`: the spawn
+     prompt never reaches the guardian, so the positive `contains(injected)` and
+     delimited-tool-call assertions (~236) are dropped or inverted, `len() == 2` becomes 1, and
+     only the intent-sanitization assertions that still apply to the child's shell request
+     (`sent[0]`) are kept.
    - Rework `a_spawn_prompt_claiming_authorization_is_never_the_guardians_intent` in
-     `rust/fontaine/tests/parallel_agents.rs` the same way: assert a single guardian request
-     (the child's shell call) and keep the intent-sanitization assertions on it.
+     `rust/fontaine/tests/parallel_agents.rs` the same way (~891): drop or invert the positive
+     spawn-prompt assertions, assert a single guardian request (the child's shell call), keep
+     only the intent-sanitization assertions that still apply to it.
+   - Fix `broad_code_execution_rules_are_suspended_while_auto_is_on` in
+     `rust/fontaine-core/tests/permissions_auto.rs` (~292-325): its loop over `("agent", None)`
+     in `auto` asserts a Guardian tier call; drop `agent` from the loop or assert tier `Spawn`
+     with 0 guardian calls. The suspended-rule listing assertions stay.
 5. `evals/dataset/spawn.jsonl`: rename `spawn-worker-not-fast-path` to
    `spawn-worker-auto-gate` (the old id claims the case is not on the fast path, which the
    new expectation contradicts) and set it to `"expected": "allow",
@@ -173,6 +178,7 @@ or what the model was told for a denial.
 - `rust/fontaine-core/src/permissions.rs`
 - `rust/fontaine-core/src/audit.rs` (field doc only)
 - `rust/fontaine-core/tests/agent_pipeline.rs`
+- `rust/fontaine-core/tests/permissions_auto.rs`
 - `rust/fontaine/tests/parallel_agents.rs`
 - `evals/dataset/spawn.jsonl`
 - `docs/schemas/headless-v1.schema.json`
@@ -187,12 +193,6 @@ or what the model was told for a denial.
   judge natural-language prompts at the exact moment the user asked for the spawn. Not
   classifying removes the judgment; deterministic deny rules remain the answer for "never let
   this session spawn workers unattended", with no model in the loop.
-- **Allow in `plan`.** The alternative (prompt, or keep the guardian for plan only) re-introduces
-  the same interruption in a non-interactive-ish mode and buys nothing: the child's edits are
-  plan-blocked and every child call is judged on its own.
-- **Keep the guardian crate spawn-aware.** Removing `SpawnFacts` would shrink the crate's API and
-  invalidate its guardian-kind spawn evals, to no benefit for Fontaine: the pipeline simply stops
-  sending spawns. Embedders keep the capability.
 - **New tier vs reusing `mode`.** A distinct `spawn` tier keeps the audit/telemetry record of why
   the call ran — the observability the issue asks for — at the cost of one enum variant. The
   tier string is a plain value in every consumer.
@@ -211,11 +211,6 @@ or what the model was told for a denial.
 
 - Unit/integration through the pipeline test rig (`Rig` in
   `rust/fontaine-core/tests/common`), with the fake/fixture guardian — no live APIs anywhere.
-- The #360 regression test (step 4) pins the incident: worker spawn with an AFK-style prompt in
-  `auto`, escalate-fixture guardian, assert allow at `spawn` with zero guardian calls and zero
-  prompts. It reproduces the bug at the tier that actually failed (the pipeline), not lower.
-- Mode matrix for a state-changing spawn (`auto`/`plan` allow, `manual`/`acceptEdits` prompt,
-  `dontAsk` deny) and for the read-only spawn fast path (unchanged, every mode).
 - Floor precedence on spawns stays pinned by the existing deny-rule, ask-rule and hook tests.
 - Audit assertions: escalate/allow records carry the guardian's explanation; the deny record's
   explanation is the unchanged model-facing message.
