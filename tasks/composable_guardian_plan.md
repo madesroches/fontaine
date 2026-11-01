@@ -9,9 +9,7 @@ and flattens it into keys. This plan makes the guardian's composition a **Rune s
 script is the composition, the host supplies the leaves (the LLM guardian, logprob reads) and
 mints every verdict, and Rust wraps the script in a fail-closed root. Today's screen ships as the
 built-in `screen` preset, a Rune script compiled into `fontaine-guardian`, so the common case stays
-a few lines of TOML. The preset is an allow screen in front of the LLM guardian. Concurrency is opt-in: Rune futures are lazy, so a script that awaits calls
-one after another runs them in sequence, and only `first_decisive([...])` or
-`std::future::join(...)` runs them together. It folds in #136 (sequential versus concurrent
+a few lines of TOML. It folds in #136 (sequential versus concurrent
 cost, dropped-request spend).
 
 ## Current State
@@ -114,7 +112,9 @@ threshold was fitted to, and the load-time check rejects any other combination.
 ### The script contract
 
 Script entry point: `pub async fn guardian(call, params)`. `params` is a Rune object built from
-`[guardian.composition.params]` (numbers, strings, booleans). The host module `guardian` (all
+`[guardian.composition.params]` (numbers, strings, booleans). `Composition` stores them as a `Send`
+Rust map of typed values (implementing `ToValue`) and converts them to a Rune object inside each
+evaluation, since a Rune `Value` is not `Send`. The host module `guardian` (all
 functions are `use`-able as `guardian::…`; the prelude imports them) exposes:
 
 | Item | Returns | Notes |
@@ -167,7 +167,9 @@ The rules below are in Rust and outside the script's reach:
    constants ship in `fontaine-guardian`, not config keys"). A fresh `Vm`
    is made per call; the session measured about 0.1 µs for that and about 0.8 µs for a
    screen-sized evaluation.
-2. **Fail-closed.** A VM error, budget exhaustion, a timeout, a panic in a host function, or a
+2. **Fail-closed.** `adjudicate` runs the VM evaluation in a spawned tokio task (or the `LocalSet`
+   fallback) and maps `JoinError::is_panic()` to `Deny { node: "composition", fail_closed:
+   Some(Error) }`. A VM error, budget exhaustion, a timeout, a panic in a host function, or a
    return value that is not a host `Verdict` becomes `Decided::Deny { node: "composition",
    fail_closed: Some(Error | Timeout) }`. Error text explains the deny; it never changes it.
 3. **Abstain at the root is a deny.** (`fail_closed: Some(Unparseable)`, reason "the composition
@@ -209,7 +211,9 @@ Nothing is enabled without config: no model or threshold ships, and a guardian w
 
 It declares reads `stop` (`Plain`, `params.question`, default `employee_allowed`), `allow`
 (`Hardened`, `employee_allowed`) and `steering` (`Plain`, `Steering`), all on the composition's
-`model`; only the reads the params need are run. Its logic is today's `Screen::run` plus
+`model`. The `stop` read always runs, whether or not `stop_threshold` is set, so `screen_risk` is
+recorded as `Screen::run` does today (`screen.rs:272-290`); it is joined with the `allow` and
+`steering` reads when `allow_threshold` is set. Its logic is today's `Screen::run` plus
 `cascade::adjudicate`:
 
 ```rune
@@ -223,8 +227,8 @@ pub async fn guardian(call, params) {
 }
 
 async fn screen(call, params) {
-    // reads the params call for run together; every joined read must be Ok, else abstain,
-    // before any stop check
+    // `stop` always; `allow` and `steering` only when allow_threshold is set (or in shadow).
+    // Every joined read must be Ok, else abstain, before any stop check
     let (stop, allow, steering) = std::future::join((read(call, "stop"), read(call, "allow"), read(call, "steering"))).await;
     let (stop, allow, steering) = match (stop, allow, steering) {
         (Ok(a), Ok(b), Ok(c)) => (a, b, c),
@@ -238,8 +242,8 @@ async fn screen(call, params) {
 }
 ```
 
-(This is illustrative; the implementer writes valid Rune 0.14, including running only the reads
-the params need. Shadow mode always runs the allow reads so their scores are logged, as
+(This is illustrative; the implementer writes valid Rune 0.14, including always running `stop` and
+running `allow`/`steering` only when `allow_threshold` is set. Shadow mode always runs the allow reads so their scores are logged, as
 `build_screen` does today.) Preset params, checked in Rust at load with today's ranges and
 messages: `question`, `stop_threshold` (0, 1], `allow_threshold` (0, 1), `steering_veto` (0, 1],
 default `DEFAULT_STEERING_VETO`, and `concurrent` (bool, default `false`: sequential whether or not
@@ -272,16 +276,19 @@ prompt = "plain"                  # plain | hardened
 question = "outside_request"      # employee_allowed | outside_request | steering
 ```
 
+Each read is bounded and recorded separately (today one timeout covers the whole joined set and any
+failure discards all scores), and sequential read stages each get their own bound.
+
 Load-time checks (`config.rs` validation and `check_composition`, which replaces `check_screen`):
 exactly one of `preset`/`script`; the preset name is known; preset params are known and in range;
 every read model is `<account>/<model>` on an `ollama` account; `hardened` only with
 `employee_allowed`; a script compiles against the host context with Rune's link checks on, so an
 unknown function is a load error; and it defines `guardian` with two parameters. A composition that
-fails these checks **stops startup** with a `ConfigError` naming the key, as an invalid `[network]`
-does. It does not silently fall back to a guardian without its stop stage.
+fails these checks **stops startup** with a `ConfigError` naming the key, as an invalid
+`[guardian.screen]` does today (`check_screen`, `config.rs:2500`), so a configured composition never
+silently disappears.
 
-Scope (`config_scope.rs`): every `guardian.composition.*` key is user-only (user file, `--settings`,
-untracked `settings.local.toml` of a trusted root, as `Rule::user_only` already resolves), except
+Scope (`config_scope.rs`): every `guardian.composition.*` key is user-only (the user file only, as `Rule::user_only` resolves today), except
 `shadow`, which other scopes may set to `true` only (`Rule::shadow_true`, as today). A project
 therefore cannot load a script, so a project-defined script can never mint an allow. A project
 tighten-only script (with a host context that has no `allow_below` and no reads) is a follow-up
@@ -298,8 +305,13 @@ issue (see Decisions).
   (`context_tokens`, base URL) and builds one `Reader` per model; `attach_composition` warms up
   each reader.
 - `permissions.rs`: the call site passes `Arc`s. `Decided::Escalate` takes today's `screen_stop`
-  path (prompt, or deny when headless, `tier = screen`, `rule = node`). `Decided::Deny` is a deny
-  with `tier = screen`, `rule = node`, no prompt and no hook retry. `Decided::Allow` takes the
+  path (prompt, or deny when headless, `tier = screen`, `rule = node`). A fail-closed `Decided::Deny` (`fail_closed = Some(..)`: VM error, budget, root timeout,
+  non-verdict, root abstain) follows today's guardian fail-closed handling through the same path as
+  `settle`'s deny arm: the `permission_denied` hook retry, `record_denied` (so `/denied` then `r` can
+  approve it), the guardian-denied breaker, and `fail_closed_reason` in the audit and headless
+  records. A script's deliberate `deny(node, …)` (`fail_closed = None`) is a deny with `tier = screen`,
+  `rule = node` and no prompt, matching today's headless `screen_stop` deny: `denied_hooks` runs and
+  its retry offer is dropped. `Decided::Allow` takes the
   `screen_allow` path; `screen_allow` takes (node, score, threshold) plus the reads (steering, for
   the explanation) and `screen_stop` takes (node, reason), and both set `rule = node`. `Screened`
   is built from `Composed.reads` and `outcome`. `Decided::Guardian` goes to `settle`. `llm_usage` goes through
@@ -311,7 +323,9 @@ issue (see Decisions).
   read models. `screen_outcome` gains `deny`; its values stay `stop`, `allow`, `pass` and
   `unavailable` (`unavailable` = a read failed or the script failed). The deciding node is the
   record's `rule`. The telemetry `fontaine.screen.count` keeps working from `screen.outcome`.
-- `config_catalog.rs`, `user_config.rs` and `agent/models.rs`: move to the new keys. A model used
+- `config_catalog.rs`, `user_config.rs` and `agent/models.rs`: move to the new keys.
+  `guardian.composition.params` and `guardian.composition.reads` are `Map` rows in
+  `config_catalog.rs`, each with a `Rule::user_only` row in `config_scope.rs`. A model used
   by any read is "in use by the guardian's composition".
 
 ### Evals
@@ -321,7 +335,11 @@ issue (see Decisions).
 `--composition-script <path>` and repeatable `--composition-param key=value`, so any tree can be
 scored. `live.rs::adjudicate` calls `composition::adjudicate`, and the cascade step records
 `reads` and `outcome`, so `llm_call_rate`, `allowed_latency_ms` and the screen metrics are computed
-for any composition. Scorecard JSON keys stay the same; the preset's `stop`/`allow`/`steering` map
+for any composition. `--composition-param key=value` values are parsed as a TOML value, falling back
+to a string. `--screen live:` now runs the preset sequentially, so `allowed_latency_ms` on
+LLM-decided cases is screen + LLM; `docs/evals.md` notes that older cascade scorecards
+(`evals/scorecards/cascade-*.json`) were measured racing, and that `--composition-param
+concurrent=true` reproduces the race. Scorecard JSON keys stay the same; the preset's `stop`/`allow`/`steering` map
 to the existing `screen_risk`/`allow_risk`/`steering` fields.
 
 ## Implementation Steps
@@ -358,7 +376,7 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
    `account_session.rs:245`, `common/mod.rs` and `rust/fontaine/tests/auto_headless.rs`.
 10. **Docs and plan.** See Documentation. Add the Decisions lines below to the master plan's
     `### Guardian` subsection (at its end) and to this plan, and amend (mark superseded, not only
-    append) the master plan's 2026-10-24 screen lines at 545-547. File the follow-up issues named in
+    append) the master plan's 2026-10-24 screen lines at 545-546. File the follow-up issues named in
     Decisions.
 
 ## Files to Modify
@@ -371,9 +389,9 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
 - `rust/fontaine/src/headless.rs`, `rust/fontaine/tests/auto_headless.rs`
 - `rust/fontaine-tui/src/config_panel.rs` (its `guardian.screen` filter test)
 - `rust/fontaine-evals/Cargo.toml`, `rust/fontaine-evals/src/{live.rs,runner.rs}`, `rust/fontaine-evals/tests/live.rs`, `evals/README.md`
-- `docs/{guardian.md,configuration.md,headless.md,evals.md,permissions.md,telemetry.md,tui.md}`, `docs/schemas/headless-v1.schema.json`
+- `tasks/design/observability.md`, `docs/{guardian.md,configuration.md,headless.md,evals.md,permissions.md,telemetry.md,tui.md}`, `docs/schemas/headless-v1.schema.json`
 - `AGENTS.md` (line 57), `tasks/design/permissions.md` (~100-104, ~171)
-- `tasks/fontaine_harness_plan.md` (Decisions; amend lines 545-547)
+- `tasks/fontaine_harness_plan.md` (Decisions; amend lines 545-546)
 
 ## Trade-offs
 
@@ -396,8 +414,6 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
 
 - 2026-11-01: Rune (`=0.14.2`) is the composition language; no new crate, behind the
   `fontaine-guardian` `composition` feature (user).
-- 2026-11-01: A composition that fails to load stops startup, rather than dropping to a guardian
-  without its stop stage, because a silent fallback would remove a configured tightening.
 - 2026-11-01: v1 loads scripts from user scope only; project scopes may only force `shadow = true`.
   The project-scope tighten-only script (a context without `allow_below` or reads, strictest-wins
   over the user composition) is a follow-up issue.
@@ -419,9 +435,12 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
 - `docs/configuration.md`: replace `#guardianscreen` with `#guardiancomposition` (keys, reads,
   params, scope).
 - `docs/headless.md`: the `gate_decision` row (`screen_scores`, `screen_outcome` = `deny`).
-- `docs/evals.md`: cascade scorecards via the preset and `--composition-script`.
+- `docs/evals.md`: cascade scorecards via the preset and `--composition-script`; older cascade
+  scorecards were measured racing, and `--composition-param concurrent=true` reproduces the race.
 - `docs/permissions.md`: update its screen references.
 - `docs/telemetry.md` (~99, ~126): `fontaine.screen.count` values gain `deny`; ~137 drop "racing".
+- `tasks/design/observability.md` ~73-78 and `docs/telemetry.md` ~137-142: completed-but-unused LLM
+  spend is now counted via `llm_usage`; the dropped in-flight estimate stays as is.
 - `docs/tui.md` ~664-665: screen references.
 - `tasks/design/permissions.md` ~100-104 and ~171: the screen tier definition.
 - `evals/README.md` ~155: the `--screen live:` row and the new flags.
@@ -455,7 +474,8 @@ All of these are unit or integration tests with `wiremock` for the Ollama reads 
 - **Preset parity**: port every case in `fontaine-guardian/tests/cascade.rs` and
   `fontaine-core/tests/permissions_screen.rs` (stop, allow, pass, unavailable read, guardian in
   hand wins, shadow scores logged, dropped estimate, `any_failed_read_makes_the_whole_outcome_unavailable`, `screen.rs:884-910`) to the
-  preset; add: the default is allow-only and sequential (everything not allowed goes to the LLM),
+  preset; add: the default is allow-only and sequential (everything not allowed goes to the LLM) and still
+  records `screen_risk` from the stop read,
   a stop escalates only when `stop_threshold` is set, and `concurrent = true` races.
 - **Config** (`fontaine-core/tests/config.rs`, `config_scope.rs` unit tables): every rejection
   that exists today, moved to the new keys; `preset` and `script` together or both missing;
@@ -463,7 +483,8 @@ All of these are unit or integration tests with `wiremock` for the Ollama reads 
   `guardian` entry are `ConfigError`s naming the key; project scope cannot set any key except
   `shadow = true`.
 - **Pipeline** (headless `fontaine -p` integration, `rust/fontaine/tests/auto_headless.rs`): a
-  script deny is a `tier = screen` deny with `rule` = the node name; the audit and headless records
+  fail-closed composition deny (a script error) is recorded in `/denied`, feeds the guardian-denied
+  breaker and carries `fail_closed_reason`; a script deny is a `tier = screen` deny with `rule` = the node name; the audit and headless records
   carry `screen_scores`. These go through the real pipeline because a mis-wired arm would be a
   silent permission bug.
 - **Evals**: the existing offline cascade scorecard tests pass unchanged through the preset; add
