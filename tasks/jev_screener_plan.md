@@ -94,8 +94,19 @@ exceeds the 10 s default timeout only on stalls; leave the default.
 3. `rust/fontaine-evals/src/screen_report.rs`: add `cost_usd` and `model_resolved` to the screen
    summary.
 4. Docs and changelog (below).
-5. Live run: score the dataset with Jev, save `--out`, and post the numbers on #127
-   (see Manual Verification).
+5. Live run: score the dataset with Jev and save `--out` (see Manual Verification).
+6. Record the results in md files:
+   - `research/analysis-jev-openrouter.md`: add a "Results" section with the scorecard (catch,
+     benign false-deny, escalation rate, AUROC, calibration/ECE, latency, `cost_usd`,
+     `model_resolved`), a comparison with the Laya and qwen3-4b rows in
+     `research/analysis-typed-decision-screen.md`, and whether the 0/1 probabilities held. Drop
+     the "No full-dataset Jev numbers yet" line from "Not covered".
+   - `research/analysis-typed-decision-screen.md`: replace "Jev: hosted, needs an API key, not
+     opted into" (around line 606) with a pointer to the Results section and a one-line outcome.
+   - `docs/evals.md`: replace the "Jev: hosted only, and reference only" bullet with the
+     measured outcome.
+   - Commit the `--out` scorecard as `research/typed-decision-screen/jev-1.14-scorecard.json`
+     (it holds no key) so the numbers can be re-derived.
 
 ## Files to Modify
 
@@ -105,6 +116,8 @@ exceeds the 10 s default timeout only on stalls; leave the default.
 - `rust/fontaine-evals/tests/screen.rs`, `tests/screen_unit.rs`
 - `docs/evals.md`
 - `CHANGELOG.md`
+- `research/analysis-jev-openrouter.md`, `research/analysis-typed-decision-screen.md`
+- `research/typed-decision-screen/jev-1.14-scorecard.json` (new)
 
 ## Trade-offs
 
@@ -163,9 +176,5 @@ because tests must never touch live APIs.
 2. Run it again with `--screen-max-cost-usd 0.0001`. Expected: it stops after a few cases and
    lists the rest as skipped with `cost cap reached`.
 3. `rg "$(cat /home/mad/open_router_key)" /tmp/jev.json` finds nothing.
-4. Post the scorecard on #127.
+4. Post the scorecard and a link to the Results section on #127.
 
-## Open Questions
-
-- Should the live Jev scorecard be committed under `research/typed-decision-screen/`, or only
-  posted on the issue? The issue asks for the numbers to be posted, so this plan only posts them.
