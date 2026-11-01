@@ -39,10 +39,10 @@ tests set them directly and no test depends on a clock.
 - `lines(app, width) -> Vec<Line>`: empty unless the spinner is active, else one row:
   `<glyph> <label> (<elapsed> · ↓ <tokens> tokens)`, truncated to `width`.
 - Active when: the shown conversation is working and none of the overlays waiting on the human
-  is open: approval, questions, unavailable, server (`app.rs:176-221`). A waiting prompt is not "working"; the spinner stays
-  visible for every other overlay (pickers, agents panel, history search, completion, `/` menu). Main view: `app.running`;
-  agent view: the viewed row's status `is_running()`. In an agent view elapsed comes from
-  `app.viewed_row().elapsed` (`agent_list.rs` `ListRow`) and the token clause is omitted (the agent's list row already shows its spend).
+  is open: approval, questions, unavailable (the prompts that block a turn). A waiting prompt is not "working"; the spinner stays
+  visible for every other overlay (`server`, which is only opened at startup before any turn, pickers, agents panel, history search, completion, `/` menu). Main view: `app.running`;
+  agent view: `app.viewed_row().and_then(|r| r.status).is_some_and(|s| s.is_running())`. In an agent view elapsed comes from
+  `app.viewed_row().map(|r| r.elapsed)` (`agent_list.rs` `ListRow`) and the token clause is omitted (the agent's list row already shows its spend).
 - `glyph(frame, glyphs)`: breathing-dot frames `·∙•●•∙` (the mockup's style #6); ASCII `.oO0Oo`. New `Glyphs.spinner: &'static [&'static str]` (data only, so other styles can be added later) so the ASCII
   set stays the one place that names fallbacks.
 - `glyph_style(theme, frame) -> Style`: the glyph's own colour animation. RGB theme colour: the hue drifts one full turn over
@@ -109,13 +109,14 @@ Open in a browser (animated):
 3. `app.rs`: `spinner_frame`, turn elapsed, `turn_started`, `turn_tokens`; one setter for `running` that sets/clears `turn_started` and resets `turn_tokens`, used at every site
    (`ui/turn.rs`, `ui/goal.rs`, `ui/commands/context.rs`, `ui/commands/workspace.rs`).
 4. `view.rs`: spinner row in `draw` and `chrome`, and its count in `agent_list_lines`, `todo_lines`, `body_rows`, `approval_height`.
-5. `statusbar.rs`: drop `working` from the running hint.
+5. `statusbar.rs`: drop `working` from the running hint; `rust/fontaine-tui/tests/goal.rs:240` waits for `esc to interrupt` instead of `working · esc to interrupt`.
 6. `lib.rs`, `ui/mod.rs` and `ui/turn.rs`: add a fixed `Instant` field to `struct Ui` (`lib.rs:224`, built at `lib.rs:313` and `ui/tests.rs:37`); set `spinner_frame` and the turn's elapsed `Duration` in `Ui::draw`; feed `app.turn_tokens` from `Ui::on_event` (`ui/turn.rs:~855`); `TICK` via the shared fold helper in the idle loop, turn loop and `serve_while`.
 7. `examples/live_area.rs`: a mode that sets `running`, steps `spinner_frame` across a long tool call, resizes, then clears `running`.
 8. Docs, CHANGELOG, master-plan Decisions lines.
 
 ## Files to Modify
 - `rust/fontaine-tui/src/theme.rs`, `spinner.rs` (new), `lib.rs`, `app.rs`, `view.rs`, `statusbar.rs`
+- `rust/fontaine-tui/tests/goal.rs`
 - `rust/fontaine-tui/src/ui/mod.rs`, `ui/turn.rs`, `ui/goal.rs`, `ui/commands/context.rs`, `ui/commands/workspace.rs`, `ui/tests.rs`
 - `rust/fontaine-tui/examples/live_area.rs`
 - `docs/tui.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions → TUI)
@@ -148,12 +149,12 @@ Unit tests (all pure):
   a missing report keeps the estimate; sums across several calls in one turn; reset on a new turn; the row hides the clause at 0.
 - `glyph_style`: the RGB hue advances with the frame and wraps after a full turn; named-colour mode cycles the deduped accent fields of `dark-ansi` and `light-ansi` and wraps.
 - `glyph`: every frame of every set is exactly one terminal column wide (ratatui's `Line::width()`, already a dependency, so the label never shifts); cycles through every frame and wraps; ASCII set used under `FONTAINE_ASCII_GLYPHS`.
-- `active`/`lines`: running → one row; idle → none; hidden while an approval, questions, unavailable or server overlay is open and shown with a picker open; agent view follows
+- `active`/`lines`: running → one row; idle → none; hidden while an approval, questions or unavailable overlay is open and shown with a picker open; agent view follows
   the row's status; width truncation.
 - `statusbar`: running hint has `esc to interrupt` and no `working`; refusal/attach-notice precedence unchanged.
 - `view::chrome`/`height`: includes the spinner row exactly when active (screen budgeting stays exact).
 - `view` at small height with an expanded todo list while spinning: the budget stays exact.
-- Existing `screen.rs` bottom-row invariants re-run with `running = true`.
+- `screen.rs`: `scripted()` toggles `running` mid-script (on before the deltas, off before the trailing notices); a spinner scenario beside `popup_scenario` (running on, `spinner_frame` stepped, a resize, running off) asserts `chrome_in_history` stays clean.
 - Tick selection helper: spinner tick wins over `LIST_TICK`/`IDLE_POLL` only while active.
 
 Real tmux (per `tasks/design/testing.md`): the row appearing and disappearing resizes the live area,
