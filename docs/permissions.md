@@ -17,7 +17,7 @@ run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default
 | `acceptEdits` | `write`, `edit` and `notebook_edit` inside the workspace roots run; everything else asks. |
 | `plan` | No edit ever runs: `write`, `edit` and `notebook_edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, `websearch`, every MCP call, reads outside the roots) go to the guardian, as in `auto`. |
 | `dontAsk` | Denied. Only calls that are pre-approved run. |
-| `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. Edits to tracked, new and session-created files and file-tool writes into scratch skip it (step 6 below). |
+| `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. Edits to tracked, new and session-created files and file-tool writes into scratch, and every `agent` spawn (step 7 below), skip it. |
 
 In the terminal UI, `/permissions` shows the mode and the effective rules with the scope each came
 from, including session and always grants; in `auto` it marks the broad allow rules that mode sets

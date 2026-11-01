@@ -595,9 +595,7 @@ async fn a_state_changing_spawn_follows_the_mode_outside_auto() {
         let rig = rig_for_spawns(mode, &fake, state_changing_types());
         let out = rig.check("agent", spawn_of("worker")).await;
         assert_eq!(allowed(&out), expect_allowed, "{mode:?}");
-        if expect_tier != Tier::Mode {
-            assert_eq!(rig.audit().last().unwrap().tier, expect_tier, "{mode:?}");
-        }
+        assert_eq!(rig.audit()[0].tier, expect_tier, "{mode:?}");
         assert_eq!(rig.approver.asked(), asked, "{mode:?}");
         assert_eq!(fake.calls(), 0, "{mode:?}");
     }
