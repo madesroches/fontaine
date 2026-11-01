@@ -40,8 +40,8 @@ A few calls (under one cent in total) against OpenRouter with the project's key.
    "id":"gen-dec-...","provider":"TypeSafe"}
   ```
 
-- That is $0.000014 for 335 input tokens. Scoring the 193-case dataset would cost well under
-  $0.10.
+- That is $0.000014 for 335 input tokens. Scoring the about 258 guardian cases would cost well
+  under $0.10.
 - The response carries `usage.cost`, so a run can total its own spend. The existing parser reads
   `confidence` as the probability for Jev-shaped answers and needs no change to read this one.
 - Probabilities are saturated (0 and 1). One sample is not a measurement, but if it holds across
