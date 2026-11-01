@@ -39,12 +39,18 @@ restores the skip.
 A new pure helper in `floor.rs`, next to the protected-path code:
 
 ```
-pub fn secret_file_name(name: &OsStr, fold: bool) -> Option<&'static str /* the matched pattern */>
+pub fn secret_file_name(name: &OsStr) -> Option<&'static str /* the matched pattern */>
 pub fn secret_path(scope: &Scope, given: &str) -> Option<String>   // checks written + resolved forms
 ```
 
 `secret_file_name` matches the final path component by exact name, prefix and suffix tests only
-(no regex, no globbing library), case-folded when `FOLD_CASE`:
+(no regex, no globbing library), always case-folded: whether a name marks a secret does not depend
+on the filesystem.
+
+The `.env` rows are the same predicate as `is_env_like` in `project_env/discover.rs:834`, which
+already covers `.env`, `.env.*` and `*.env` with no exceptions. `secret_file_name` is a separate
+predicate (it adds the `.env.example`/`.sample`/`.template` exceptions) and may reuse or move
+`is_env_like`; either way the repository-scan call site must keep working.
 
 | Pattern | Rule |
 |---|---|
@@ -63,22 +69,27 @@ resolved form and a not-yet-resolved spelling by its written form (same two-form
 ### Pipeline change (`permissions.rs`)
 
 1. **File tools.** Compute `secret = self.secret_read(tool, judged)` once before the fast path:
-   for a `ReadOnly` call with a string `path` argument (`read`, `ls`, `grep`, `glob`, `lsp`), the
-   result of `floor::secret_path`. The fast-path condition becomes `... && secret.is_none()`. The
+   for a `ReadOnly` call with a string `path` argument (`read`, `grep`, `lsp`), the result of
+   `floor::secret_path`. `ls` and `glob` are not checked: they return names only, and glob's target
+   is in `pattern`. The fast-path condition becomes `... && secret.is_none()`. The
    agent-spawn and `names_no_path` branches are unaffected. The call then flows on: allow rules (a
    user-scope `read(.env)` allow matches here, tier `allow_rule`), hooks, then the mode.
 2. **Shell.** In the Tier 0.5 branch, after the deny/ask rule checks, test the `paths` from
-   `read_paths` (resolved against the `cwd` like `ruled_read_calls` does) with `secret_path`. If one
-   is a secret file, return `Tier05` only when an allow rule matches the same synthesized read calls
-   (`ruled_hit(&rules.allow, &reads, ...)`, returning `Allow { tier: AllowRule, rule }`); otherwise
-   do not return — fall through to the general allow rules (`shell(cat .env)`), hooks and the mode.
-3. The prompt reason for the manual/acceptEdits route and the guardian's view should say a secret
-   file is read. In `manual`/`acceptEdits` the generic `needs_approval` prompt is reused with an
-   added `reason` naming the file, but `forced` stays `false` (the user may grant it for the session
-   like any other prompt). In `auto`/`plan` the guardian judges the call as it does any call that
-   missed the fast path; no guardian prompt change is needed.
-4. A project-scope config can only add deny/ask, so a project cannot add the allow that restores the
-   skip; no config-scope change is needed (allow rules are already user-scope only).
+   `read_paths` (resolved against the `cwd` like `ruled_read_calls` does) with `secret_path`,
+   skipping the check when the command is `ls`. If one or more are secret files, restore the skip
+   only when every secret operand's own synthesized read calls are matched by an allow rule (check
+   each secret path's calls separately: `ruled_hit` matches if ANY read matches, so `cat .env
+   README.md` must not pass under `allow = ["read(README.md)"]`). The allow rules are `rules.allow`
+   chained with `skill_grants(call.agent)`, exactly as the general allow stage does. When restored,
+   return `Allow { tier: AllowRule, rule }`; otherwise do not return, and fall through to the
+   general allow rules (`shell(cat .env)`), hooks and the mode.
+3. The prompt reason for the manual/acceptEdits route should say a secret file is read. Both
+   branches set one function-scope `Option<String>` secret note, which `needs_approval` uses as its
+   reason when set, but `forced` stays `false` (the user may grant it for the session like any other
+   prompt). In `auto`/`plan` the guardian judges the call as it does any call that missed the fast
+   path; no guardian prompt change is needed.
+4. Allow rules are accepted from user, CLI and trusted project-local scopes (plus user-skill and
+   session grants); no config-scope change is needed.
 
 The check applies to every mode, including `dontAsk` (denied, as an unapproved call) and headless
 (`manual` semantics, so denied). Hooks and the floor still run first; this is not a floor change and
@@ -86,8 +97,11 @@ does not widen any allow.
 
 ### Not in scope
 
-- Recursive searches (`grep -r KEY .`) reach files that are not checked one by one; documented as a
-  known gap, same as the existing deny-rule note.
+- Recursive searches (shell `grep -r KEY .`, and the file-tool `grep` over a directory, including
+  its `hidden`/`glob` options) reach files that are not checked one by one; documented as a known
+  gap, same as the existing deny-rule note.
+- Accepted false positive: grep's pattern operand (`grep .env README.md`) is treated as a path by
+  `curated`, so it may prompt or be guardian-judged; this errs toward caution.
 - Feeding repository-scan `sensitive_locations` into the check: deferred (see Decisions).
 
 ## Implementation Steps
@@ -100,15 +114,18 @@ does not widen any allow.
 3. Integration tests in `rust/fontaine-core/tests/permissions.rs` (and `permissions_auto.rs` for the
    guardian route), see Testing Strategy.
 4. Update any existing test that asserts `read .env` or `cat .env` as `read_only_fast_path`/`tier05`
-   (`rg "\.env" rust/fontaine-core/tests`).
+   (`rg "\.env" rust/fontaine-core/tests`), including `rust/fontaine-core/tests/agent_pipeline.rs`
+   (~line 192 asserts `read .env` allowed under Manual; queue an approval or use a non-secret name).
 5. Docs, Decisions line and CHANGELOG (below).
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/floor.rs`
 - `rust/fontaine-core/src/permissions.rs`
-- `rust/fontaine-core/tests/permissions.rs`, `rust/fontaine-core/tests/permissions_auto.rs`
-- `docs/tools.md`, `docs/permissions.md`
+- `rust/fontaine-core/tests/permissions.rs`, `rust/fontaine-core/tests/permissions_auto.rs`,
+  `rust/fontaine-core/tests/agent_pipeline.rs`
+- `docs/tools.md`, `docs/permissions.md`, `docs/architecture.md` (~141-142), `docs/guardian.md`
+  (~8-14), `README.md` (~91)
 - `tasks/fontaine_harness_plan.md` (Decisions → Permissions)
 - `CHANGELOG.md`
 
@@ -127,12 +144,13 @@ does not widen any allow.
 
 - 2026-11-01: Deviation from Claude Code, which auto-allows in-workspace reads and read-only commands: a built-in list of secret file names (`.env` family, credential dotfiles, SSH private keys, key/cert containers) leaves the read-only fast path and Tier 0.5, for file tools and pre-classified shell reads alike; reason: containment does not make a credential read harmless (issue #370). To be copied to the master plan's Decisions (Permissions).
 - 2026-11-01: Repository-scan `sensitive_locations` are not fed into the check; reason: they are model-sampled, per-repo and optional, while the built-in list is deterministic; revisit as a separate issue.
-- 2026-11-01: The restore is an ordinary user-scope `allow` rule; no dedicated config key, since allow already is user-scope only and the pipeline needs no new surface.
+- 2026-11-01: The restore is an ordinary `allow` rule (user, CLI and trusted project-local scopes, plus user-skill and session grants); no dedicated config key, since the pipeline needs no new surface.
 
 ## Documentation
 
 - `docs/tools.md` "What earns the read-only fast path": a read of a secret file is outside the fast path even inside a root; list the names; how to restore with `allow`.
-- `docs/permissions.md`: step 3 (fast path) and "The shell pre-classifier" (pre-classified secret reads fall through; allow-rule restore; `tier05` no longer applies to them); note the recursive-search gap beside the existing one.
+- `docs/permissions.md`: step 3 (fast path) and "The shell pre-classifier" (pre-classified secret reads fall through; allow-rule restore; `tier05` no longer applies to them); note the recursive-search gap beside the existing one, covering the file-tool `grep` over a directory (including `hidden`/`glob`) as well as shell `grep -r`; line ~366 (list of guardian skips) gains secret reads; on Linux `allow = ["read(.env)"]` does not cover `.ENV`, because rule matching still follows `FOLD_CASE` while secret-name matching always folds.
+- `docs/architecture.md` (~141-142), `docs/guardian.md` (~8-14) and `README.md` (~91): update the statements that in-root read-only calls skip the guardian.
 - `CHANGELOG.md` under Unreleased, plus the Decisions line in `tasks/fontaine_harness_plan.md`.
 
 ## Testing Strategy
@@ -140,8 +158,8 @@ does not widen any allow.
 Unit tests in `floor.rs` (pure functions, constructed inputs):
 - Each listed name is a secret; `.env.example`, `.env.sample`, `.env.template`, `README.md`,
   `id_rsa.pub`, `environment.rs`, `env`, `.envrc`, `keyboard.rs` are not; `.env.local`,
-  `.env.production`, `prod.env`, `id_ed25519_sk`, `cert.PEM` (folded only where `FOLD_CASE`) are.
-- A symlink inside the root to `.env` is detected via the resolved form.
+  `.env.production`, `prod.env`, `id_ed25519_sk`, `cert.PEM`, `.ENV` and `PROD.ENV` (always case-folded) are.
+- A symlink inside the root to `.env` is detected via the resolved form (`#[cfg(unix)]`, canonicalized `tempfile::tempdir()` root).
 
 Integration tests in `rust/fontaine-core/tests/permissions.rs`, driving the pipeline across modes
 (these pin the exact audit tiers):
@@ -149,7 +167,8 @@ Integration tests in `rust/fontaine-core/tests/permissions.rs`, driving the pipe
   `manual` and `acceptEdits` prompt, `dontAsk` denies, `plan` and `auto` reach the guardian.
 - `cat README.md` and `cat .env.example` (and `read` of both) still take `tier05`/`read_only_fast_path`.
 - With a user-scope `allow = ["read(.env)"]`, `read .env` and `cat .env` are allowed (`allow_rule`).
-- A deny rule still wins over the allow; a project-scope allow is rejected as before.
+- A deny rule still wins over the allow.
+- `cat .env README.md` under `allow = ["read(README.md)"]` is not restored.
 - Shell `cwd` handling: `cat .env` with `cwd = sub` where `sub/.env` exists is caught.
 
 ## Open Questions
