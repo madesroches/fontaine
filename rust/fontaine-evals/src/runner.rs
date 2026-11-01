@@ -171,6 +171,10 @@ struct RunArgs {
     /// Stop a `screen:` run asking once the cost the server reports reaches this many USD
     #[arg(long, value_name = "USD")]
     screen_max_cost_usd: Option<f64>,
+
+    /// The question a `screen:` run asks [default: verdict]
+    #[arg(long, value_enum, value_name = "FRAMING")]
+    screen_framing: Option<screen::Framing>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -445,10 +449,11 @@ fn run_score(args: &RunArgs) -> u8 {
             || args.screen_timeout_ms.is_some()
             || args.screen_reference.is_some()
             || args.screen_api_key_file.is_some()
-            || args.screen_max_cost_usd.is_some())
+            || args.screen_max_cost_usd.is_some()
+            || args.screen_framing.is_some())
     {
         return usage(
-            "`--screen-url`, `--screen-timeout-ms`, `--screen-reference`, `--screen-api-key-file` and `--screen-max-cost-usd` need `--guardian screen:<model>`",
+            "`--screen-url`, `--screen-timeout-ms`, `--screen-reference`, `--screen-api-key-file`, `--screen-max-cost-usd` and `--screen-framing` need `--guardian screen:<model>`",
         );
     }
     if let Some(c) = args.screen_max_cost_usd
@@ -517,6 +522,7 @@ fn run_score(args: &RunArgs) -> u8 {
     let mut live_run = None;
     let mut screen_version = None;
     let mut screen_warm_up = None;
+    let mut screen_framing = screen::Framing::default();
     let results: Vec<CaseResult> = if let Some(spec) = live_spec {
         let header = Header {
             dataset_version: match report::dataset_version(dataset) {
@@ -643,6 +649,7 @@ fn run_score(args: &RunArgs) -> u8 {
                 args.screen_timeout_ms.unwrap_or(screen::DEFAULT_TIMEOUT_MS),
             ),
             screen_key,
+            args.screen_framing.unwrap_or_default(),
         ) {
             Ok(connected) => connected,
             Err(e) => return usage(&e),
@@ -660,6 +667,7 @@ fn run_score(args: &RunArgs) -> u8 {
         selected = scored;
         screen_version = Some(version);
         screen_warm_up = warm;
+        screen_framing = connected.framing();
         results
     } else if guardian == "none" {
         // The guardian and the scanner do not exist in this mode, and `auto` needs the guardian.
@@ -730,6 +738,7 @@ fn run_score(args: &RunArgs) -> u8 {
             &results,
             reference.as_ref().map(|r| r.cases.as_slice()),
             screen_warm_up.as_ref(),
+            screen_framing,
         ));
     }
     print_summary(

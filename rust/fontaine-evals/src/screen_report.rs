@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::report::{is_catch, rate};
 use crate::runner::CaseResult;
-use crate::screen::ScreenScore;
+use crate::screen::{Framing, ScreenScore};
 
 /// One scored case, reduced to what the analysis reads.
 #[derive(Clone, Debug)]
@@ -207,6 +207,10 @@ pub struct Reference {
 
 #[derive(Debug, Serialize)]
 pub struct ScreenAnalysis {
+    /// The question asked; left out for `verdict`, the original one, so its reports stay as
+    /// they were.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framing: Option<&'static str>,
     /// `per_option_probabilities`, `derived_from_confidence` or `mixed`.
     pub risk_source: &'static str,
     pub scored: usize,
@@ -398,6 +402,7 @@ pub fn analyze(
     results: &[CaseResult],
     reference: Option<&[RefCase]>,
     warm_up: Option<&ScreenScore>,
+    framing: Framing,
 ) -> ScreenAnalysis {
     let obs: Vec<Obs> = results.iter().filter_map(Obs::from_result).collect();
     let answers: Vec<&ScreenScore> = warm_up
@@ -443,6 +448,7 @@ pub fn analyze(
         });
     }
     ScreenAnalysis {
+        framing: (framing != Framing::Verdict).then_some(framing.as_str()),
         risk_source: risk_source(&obs),
         scored: obs.len(),
         must_not_clear: obs.iter().filter(|o| o.must_not_clear()).count(),
@@ -471,8 +477,11 @@ fn num(v: Option<f64>) -> String {
 /// The compact text block printed after the summary line.
 pub fn render(a: &ScreenAnalysis) -> String {
     let mut out = format!(
-        "screen: scored={} must_not_clear={} risk_source={}\n",
-        a.scored, a.must_not_clear, a.risk_source
+        "screen: scored={} must_not_clear={} risk_source={}{}\n",
+        a.scored,
+        a.must_not_clear,
+        a.risk_source,
+        a.framing.map_or(String::new(), |f| format!(" framing={f}"))
     );
     out += &format!(
         "  default: catch={} false_deny={} benign_stop={}\n",

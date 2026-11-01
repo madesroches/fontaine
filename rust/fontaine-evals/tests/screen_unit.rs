@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use fontaine_evals::CaseResult;
-use fontaine_evals::screen::{ScreenScore, parse};
+use fontaine_evals::screen::{Framing, ScreenScore, parse, parse_employee};
 use fontaine_evals::screen_report::{
     Obs, RefCase, Rule, analyze, calibration, option1, option2, rates_at, reference_diff,
 };
@@ -158,7 +158,7 @@ fn reliability_puts_a_risk_of_one_in_the_last_bin_and_computes_ece() {
 
 #[test]
 fn empty_inputs_give_none_without_nan() {
-    let a = analyze(&[], None, None);
+    let a = analyze(&[], None, None, Framing::Verdict);
     assert_eq!(a.scored, 0);
     assert!(a.default.rates.catch_rate.is_none());
     assert!(a.option2.t_allow.is_none());
@@ -296,10 +296,10 @@ fn analysis_sums_the_warm_up_and_cases_and_lists_models_sorted() {
     let mut b = result("b", "benign", "allow", "allow", true);
     b.screen = Some(score(None, "a"));
     let warm = score(Some(0.25), "z");
-    let analysis = analyze(&[a, b], None, Some(&warm));
+    let analysis = analyze(&[a, b], None, Some(&warm), Framing::Verdict);
     assert_eq!(analysis.cost_usd, Some(0.75));
     assert_eq!(analysis.model_resolved, vec!["a", "z"]);
-    assert_eq!(analyze(&[], None, None).cost_usd, None);
+    assert_eq!(analyze(&[], None, None, Framing::Verdict).cost_usd, None);
 }
 
 #[test]
@@ -311,4 +311,43 @@ fn an_invalid_key_error_does_not_echo_the_key() {
     assert!(!error.contains("sk-secret"), "{error}");
     std::fs::write(&path, "sk-secret\n").unwrap();
     assert!(fontaine_evals::screen::read_key_file(&path).is_ok());
+}
+
+#[test]
+fn an_employee_answer_reads_yes_as_allow() {
+    let body = json!({"model": "jev", "answers": {"q": {"type": "noul", "noul": 0.3}},
+        "usage": {"input_tokens": 10, "cost": 0.00002}});
+    let score = parse_employee(body.to_string().as_bytes()).unwrap();
+    assert_eq!(score.choice, "deny");
+    assert!((score.confidence - 0.7).abs() < 1e-9);
+    assert_eq!(score.probabilities["allow"], Some(0.3));
+    assert!((score.probabilities["deny"].unwrap() - 0.7).abs() < 1e-9);
+    assert_eq!(score.probabilities["escalate"], None);
+    assert_eq!(score.cost_usd, Some(0.00002));
+    let yes = json!({"answers": {"q": {"noul": 0.5}}});
+    assert_eq!(
+        parse_employee(yes.to_string().as_bytes()).unwrap().choice,
+        "allow"
+    );
+}
+
+#[test]
+fn an_employee_answer_without_a_probability_is_unparseable() {
+    for body in [
+        r#"{"answers": {"verdict": {"choice": "allow", "confidence": 0.9}}}"#,
+        r#"{"answers": {"q": {"noul": "yes"}}}"#,
+        r#"{"answers": {"q": {"noul": 1.5}}}"#,
+        "not json",
+    ] {
+        let failure = parse_employee(body.as_bytes()).unwrap_err();
+        assert_eq!(failure.reason, "unparseable", "{body}");
+    }
+}
+
+#[test]
+fn only_a_non_default_framing_is_recorded() {
+    let verdict = serde_json::to_value(analyze(&[], None, None, Framing::Verdict)).unwrap();
+    assert!(verdict.get("framing").is_none());
+    let employee = serde_json::to_value(analyze(&[], None, None, Framing::Employee)).unwrap();
+    assert_eq!(employee["framing"], "employee");
 }
