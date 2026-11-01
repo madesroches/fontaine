@@ -32,7 +32,7 @@ type SharedLlm = Shared<BoxFuture<'static, Arc<Adjudication>>>;
 struct Slot {
     name: String,
     done: SharedRead,
-    abort: AbortHandle,
+    abort: Option<AbortHandle>,
 }
 
 pub(crate) struct EvalCtx {
@@ -41,7 +41,14 @@ pub(crate) struct EvalCtx {
     started: Instant,
     llm: SharedLlm,
     llm_started: Arc<AtomicBool>,
-    reads: Mutex<Vec<Slot>>,
+    reads: Mutex<ReadTable>,
+}
+
+#[derive(Default)]
+struct ReadTable {
+    slots: Vec<Slot>,
+    // Set under the table's lock so a read the script starts after the abort never spawns.
+    aborted: bool,
 }
 
 impl EvalCtx {
@@ -96,9 +103,25 @@ impl EvalCtx {
         let Some(read) = self.composition.read(name) else {
             return Err(format!("`{name}` is not a declared read"));
         };
-        let mut slots = self.reads.lock().expect("the read table is not poisoned");
-        if let Some(slot) = slots.iter().find(|slot| slot.name == name) {
+        let mut table = self.reads.lock().expect("the read table is not poisoned");
+        if let Some(slot) = table.slots.iter().find(|slot| slot.name == name) {
             return Ok(slot.done.clone());
+        }
+        if table.aborted {
+            let record = Arc::new(ReadRecord {
+                name: name.to_owned(),
+                model: read.model.clone(),
+                result: Err("the read was cancelled".to_owned()),
+                latency_ms: 0,
+                finished_ms: 0,
+            });
+            let done = futures::future::ready(record).boxed().shared();
+            table.slots.push(Slot {
+                name: name.to_owned(),
+                done: done.clone(),
+                abort: None,
+            });
+            return Ok(done);
         }
         let reader = self.composition.reader(&read.model);
         let request = self.request.clone();
@@ -145,10 +168,10 @@ impl EvalCtx {
         }
         .boxed()
         .shared();
-        slots.push(Slot {
+        table.slots.push(Slot {
             name: name.to_owned(),
             done: done.clone(),
-            abort,
+            abort: Some(abort),
         });
         Ok(done)
     }
@@ -167,6 +190,7 @@ impl EvalCtx {
             .reads
             .lock()
             .expect("the read table is not poisoned")
+            .slots
             .iter()
             .map(|slot| slot.done.clone())
             .collect();
@@ -179,13 +203,10 @@ impl EvalCtx {
 
     /// Cancels every read still running.
     pub(crate) fn abort_reads(&self) {
-        for slot in self
-            .reads
-            .lock()
-            .expect("the read table is not poisoned")
-            .iter()
-        {
-            slot.abort.abort();
+        let mut table = self.reads.lock().expect("the read table is not poisoned");
+        table.aborted = true;
+        for abort in table.slots.iter().filter_map(|slot| slot.abort.as_ref()) {
+            abort.abort();
         }
     }
 }

@@ -224,7 +224,11 @@ pub fn build_composition(
             ))
         })
         .collect::<Result<Vec<_>, RuntimeError>>()?;
-    let label = models.into_iter().collect::<Vec<_>>().join(",");
+    let label = if models.is_empty() {
+        "script".to_owned()
+    } else {
+        models.into_iter().collect::<Vec<_>>().join(",")
+    };
     let shadow = spec.shadow;
     let compiled = Composition::compile(spec, readers)
         .map_err(|e| RuntimeError::caused("the guardian composition is not valid", e))?;

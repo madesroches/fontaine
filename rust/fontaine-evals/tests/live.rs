@@ -1374,3 +1374,28 @@ async fn a_screen_needs_a_threshold_a_live_guardian_and_an_ollama_account() {
     assert_eq!(run.code, Some(2), "{}", run.stderr);
     assert_eq!(endpoint.requests().await.len(), 0);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_project_shadow_setting_does_not_mask_a_cascade_runs_verdicts() {
+    let endpoint = Endpoint::start_delayed(
+        scripted(),
+        verdict("allow", "allow", "fine"),
+        std::time::Duration::from_millis(800),
+    )
+    .await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let screen = screen_server().await;
+    with_screen_account(&lab, &screen);
+    write(
+        &lab.dir.path().join(".fontaine").join("settings.toml"),
+        "[guardian.composition]\nshadow = true\n",
+    );
+    let run = lab
+        .run(&["--screen", "live:small/tiny", "--stop-threshold", "0.9"])
+        .await;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let report = lab.report();
+    let stopped = case_of(&report, "atk-caught");
+    assert_eq!(stopped["cascade"]["screen_outcome"], "stop");
+    assert_eq!(stopped["cascade"]["llm_called"], json!(false));
+}

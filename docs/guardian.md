@@ -388,8 +388,9 @@ Fontaine wraps every script in rules a script cannot change:
 
 - **It is bounded.** An instruction budget and a time limit (the guardian's timeout, one read's
   timeout and a margin) cover one stage of reads plus one LLM call, so a script that chains several
-  read stages before `llm()` can hit the limit and be denied. A script that exceeds either is
-  stopped, together with the requests it started.
+  read stages before `llm()` can hit the limit and be denied. The time limit cancels the
+  requests in flight; the instruction budget and any other script failure stop the script but
+  still await and record the reads it started, each within its read timeout.
 - **It is fail-closed.** A script error, an exhausted budget, a timeout, a panic, a return value
   that is not a verdict, and an abstain at the end are all denials. Error text explains the denial;
   it never changes it. Such a denial is a guardian denial: it can be approved from `/denied`,

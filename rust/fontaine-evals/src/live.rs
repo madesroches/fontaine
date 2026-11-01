@@ -224,6 +224,8 @@ pub fn add_composition(
         }
     };
     config.guardian.composition = Some(composition);
+    // An eval run is an explicit measurement; a project's `shadow = true` must not mask the verdicts.
+    config.guardian.composition_shadow_forced = false;
     let user_path = live.config_dir.join("config.toml");
     config::check_composition(&mut config, &user_path, &live.config_dir)
         .map_err(|e| e.to_string())?;
