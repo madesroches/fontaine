@@ -125,6 +125,42 @@ fn is_absent(path: &str) -> bool {
     )
 }
 
+/// Whether the paths `touched_paths` joined to the call's working directory are the ones the
+/// command will hit. A shell command that changes directory itself, or names another tree with
+/// `-C`/`--git-dir`/`--work-tree`, resolves its relative paths elsewhere, and a mark computed
+/// for the wrong file would tell the guardian an overwrite is safe.
+fn cwd_is_certain(tool: &str, args: &Value) -> bool {
+    if !fontaine_tools::descriptor::is_shell_class(tool) {
+        return true;
+    }
+    let Some(command) = args.get("command").and_then(Value::as_str) else {
+        return true;
+    };
+    let analysis = fontaine_tools::preclassify::analyze(command);
+    if !analysis.parsed || analysis.unanalyzed || analysis.nested_chain {
+        return false;
+    }
+    const DIR_FLAGS: [&str; 5] = ["-C", "--directory", "--chdir", "--git-dir", "--work-tree"];
+    const DIR_PREFIXES: [&str; 4] = ["--directory=", "--chdir=", "--git-dir=", "--work-tree="];
+    analysis.commands.iter().all(|simple| {
+        let changes_dir = match simple.words.first().map(|w| w.literal.as_deref()) {
+            Some(Some(program)) => matches!(
+                fontaine_tools::preclassify::program_name(program).as_ref(),
+                "cd" | "pushd" | "popd"
+            ),
+            Some(None) => true,
+            None => false,
+        };
+        !changes_dir
+            && simple.words.iter().all(|word| {
+                word.literal.as_deref().is_none_or(|literal| {
+                    !DIR_FLAGS.contains(&literal)
+                        && !DIR_PREFIXES.iter().any(|p| literal.starts_with(p))
+                })
+            })
+    })
+}
+
 fn facts(
     view: &LedgerView,
     scope: &Scope,
@@ -152,14 +188,19 @@ fn facts(
         scratch.map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
     let paths = touched_paths(tool, args, scope);
     let resolved: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
-    let tracked = trust::tracked_files(scope.primary(), &resolved);
+    let certain = cwd_is_certain(tool, args);
+    let tracked = if certain {
+        trust::tracked_files(scope.primary(), &resolved)
+    } else {
+        vec![false; resolved.len()]
+    };
     let touched_paths = paths
         .into_iter()
         .zip(tracked)
         .map(|(path, git_tracked)| TouchedPath {
             status: status(view.existence(&path)),
             in_scratch: in_scratch(&path, scratch.as_deref()),
-            absent: is_absent(&path),
+            absent: certain && is_absent(&path),
             git_tracked,
             path,
         })
@@ -319,6 +360,31 @@ mod tests {
         assert!(by_name("missing.txt").absent && !by_name("missing.txt").git_tracked);
         #[cfg(unix)]
         assert!(!by_name("dangling").absent);
+    }
+
+    #[test]
+    fn marks_need_a_certain_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(work.join("README.md"), "a").unwrap();
+        let scope = Scope::new(work, []);
+        let view = LedgerView::default();
+        let marks = |command: &str| {
+            let got = facts(
+                &view,
+                &scope,
+                None,
+                None,
+                "shell",
+                &serde_json::json!({ "command": command }),
+            );
+            got.touched_paths.iter().any(|t| t.absent || t.git_tracked)
+        };
+        assert!(marks("mv a.txt ./b.txt"));
+        assert!(!marks("cd /x && mv a.txt ./b.txt"));
+        assert!(!marks("pushd /x && cp a README.md"));
+        assert!(!marks("git -C /x mv a README.md"));
+        assert!(!marks("git --work-tree=/x mv a ./b"));
     }
 
     #[cfg(unix)]
