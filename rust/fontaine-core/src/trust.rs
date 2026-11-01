@@ -396,6 +396,9 @@ fn index_relative(workdir: &Path, resolved: &Path) -> Option<BString> {
 /// extracting into one can overwrite files git does not hold. Opens the repository and its index
 /// once for all of them. `false` wherever [`tracking`] would say `Unknown`.
 pub fn tracked_files(root: &Path, paths: &[PathBuf]) -> Vec<bool> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
     let none = || vec![false; paths.len()];
     let Ok((repo, workdir)) = discover(root) else {
         return none();

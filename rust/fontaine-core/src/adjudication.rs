@@ -117,18 +117,28 @@ fn in_scratch(path: &str, scratch: Option<&std::path::Path>) -> bool {
     })
 }
 
-/// Nothing is at `path` as the request is built. A dangling symlink is something.
+/// Nothing is at `path` as the request is built. A dangling symlink is something. A path that
+/// went through a lossy conversion (U+FFFD) names a different file than the one on disk.
 fn is_absent(path: &str) -> bool {
-    matches!(
-        std::fs::symlink_metadata(path),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound
-    )
+    !path.contains('\u{FFFD}')
+        && matches!(
+            std::fs::symlink_metadata(path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound
+        )
 }
 
+/// Programs that neither change the working directory nor take an option that names another one.
+/// An allowlist: anything that can run or wrap another command, or move the shell, is absent.
+const CWD_SAFE_PROGRAMS: [&str; 19] = [
+    "mv", "cp", "rm", "rmdir", "mkdir", "touch", "ln", "cat", "echo", "printf", "ls", "head",
+    "tail", "wc", "rg", "grep", "true", "test", "git",
+];
+
 /// Whether the paths `touched_paths` joined to the call's working directory are the ones the
-/// command will hit. A shell command that changes directory itself, or names another tree with
-/// `-C`/`--git-dir`/`--work-tree`, resolves its relative paths elsewhere, and a mark computed
-/// for the wrong file would tell the guardian an overwrite is safe.
+/// command will hit. A shell command that moves the shell, runs another command that might,
+/// assigns `GIT_WORK_TREE` and the like, or names another tree with `-C`/`--git-dir`/
+/// `--work-tree`, resolves its relative paths elsewhere, and a mark computed for the wrong file
+/// would tell the guardian an overwrite is safe. So only a short list of programs is trusted.
 fn cwd_is_certain(tool: &str, args: &Value) -> bool {
     if !fontaine_tools::descriptor::is_shell_class(tool) {
         return true;
@@ -137,27 +147,38 @@ fn cwd_is_certain(tool: &str, args: &Value) -> bool {
         return true;
     };
     let analysis = fontaine_tools::preclassify::analyze(command);
-    if !analysis.parsed || analysis.unanalyzed || analysis.nested_chain {
+    if !analysis.parsed || analysis.unanalyzed || analysis.nested_chain || analysis.assignments {
         return false;
     }
     const DIR_FLAGS: [&str; 5] = ["-C", "--directory", "--chdir", "--git-dir", "--work-tree"];
     const DIR_PREFIXES: [&str; 4] = ["--directory=", "--chdir=", "--git-dir=", "--work-tree="];
     analysis.commands.iter().all(|simple| {
-        let changes_dir = match simple.words.first().map(|w| w.literal.as_deref()) {
-            Some(Some(program)) => matches!(
-                fontaine_tools::preclassify::program_name(program).as_ref(),
-                "cd" | "pushd" | "popd"
-            ),
-            Some(None) => true,
-            None => false,
+        let Some(first) = simple.words.first() else {
+            return true;
         };
-        !changes_dir
-            && simple.words.iter().all(|word| {
-                word.literal.as_deref().is_none_or(|literal| {
-                    !DIR_FLAGS.contains(&literal)
-                        && !DIR_PREFIXES.iter().any(|p| literal.starts_with(p))
-                })
+        let Some(program) = first.literal.as_deref() else {
+            return false;
+        };
+        let program = fontaine_tools::preclassify::program_name(program);
+        if !CWD_SAFE_PROGRAMS.contains(&program.as_ref()) {
+            return false;
+        }
+        // Git options before the subcommand (`-C`, `-c`, `--namespace`, ...) can all redirect it.
+        if program == "git"
+            && !simple
+                .words
+                .get(1)
+                .is_none_or(|w| w.literal.as_deref().is_some_and(|l| !l.starts_with('-')))
+        {
+            return false;
+        }
+        simple.words.iter().all(|word| {
+            word.literal.as_deref().is_none_or(|literal| {
+                !DIR_FLAGS.contains(&literal)
+                    && !literal.starts_with("-C")
+                    && !DIR_PREFIXES.iter().any(|p| literal.starts_with(p))
             })
+        })
     })
 }
 
@@ -367,7 +388,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let work = std::fs::canonicalize(dir.path()).unwrap();
         std::fs::write(work.join("README.md"), "a").unwrap();
-        let scope = Scope::new(work, []);
+        let scope = Scope::new(work.clone(), []);
         let view = LedgerView::default();
         let marks = |command: &str| {
             let got = facts(
@@ -385,6 +406,24 @@ mod tests {
         assert!(!marks("pushd /x && cp a README.md"));
         assert!(!marks("git -C /x mv a README.md"));
         assert!(!marks("git --work-tree=/x mv a ./b"));
+        for probe in [
+            "builtin cd /x && mv a ./b",
+            "command cd /x && mv a ./b",
+            "eval cd /x; mv a ./b",
+            "GIT_WORK_TREE=/x git mv a ./b",
+            "export GIT_WORK_TREE=/x; git mv a ./b",
+            "env -C/x mv a ./b",
+            "sudo -D /x mv a ./b",
+            "find . -execdir mv {} ./b \\;",
+            "source ./x.sh; mv a ./b",
+        ] {
+            assert!(!marks(probe), "{probe}");
+        }
+        std::fs::create_dir(work.join("tasks")).unwrap();
+        std::fs::create_dir(work.join("tasks/completed")).unwrap();
+        assert!(marks(
+            "git mv tasks/x_plan.md tasks/completed/x_plan.md && git add -u"
+        ));
     }
 
     #[cfg(unix)]
