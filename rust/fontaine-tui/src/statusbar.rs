@@ -1,6 +1,8 @@
 //! The status bar and the labels the modes show under. This is the one place that names
 //! them: `manual`, `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on`, `dontAsk`.
 
+use std::path::Path;
+
 use fontaine_core::config::PermissionMode;
 use fontaine_core::goal;
 use ratatui::Frame;
@@ -47,6 +49,41 @@ fn mode_style(mode: PermissionMode, theme: &Theme) -> Style {
         PermissionMode::Auto => theme.mode_auto,
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
+}
+
+/// Longest directory the bar shows, in columns, and longest branch.
+const DIR_COLUMNS: usize = 40;
+const BRANCH_COLUMNS: usize = 24;
+
+/// `cwd` with `home` written `~`, cut from the left with `…` to `DIR_COLUMNS`.
+fn dir_label(cwd: &Path, home: Option<&Path>) -> String {
+    let shown = match home.and_then(|home| cwd.strip_prefix(home).ok()) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => cwd.display().to_string(),
+    };
+    let shown = shown.strip_prefix(r"\\?\").unwrap_or(&shown);
+    let chars: Vec<char> = shown.chars().collect();
+    if chars.len() <= DIR_COLUMNS {
+        return shown.to_string();
+    }
+    let kept: String = chars[chars.len() - (DIR_COLUMNS - 1)..].iter().collect();
+    format!("…{kept}")
+}
+
+/// ` · <dir> (<branch>)`, or nothing before the first draw has set a directory.
+fn location(app: &App) -> String {
+    if app.cwd.as_os_str().is_empty() {
+        return String::new();
+    }
+    let dir = dir_label(&app.cwd, app.home.as_deref());
+    match &app.branch {
+        Some(branch) => format!(
+            "· {dir} ({}) ",
+            crate::transcript::truncate(branch, BRANCH_COLUMNS)
+        ),
+        None => format!("· {dir} "),
+    }
 }
 
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
@@ -101,7 +138,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         ));
     }
     spans.push(Span::styled(
-        format!("· {}{agents}{scheduled}{goal} · {hint}", app.model),
+        format!(
+            "{}· {}{agents}{scheduled}{goal} · {hint}",
+            location(app),
+            app.model
+        ),
         dim,
     ));
     let line = Line::from(spans);
@@ -110,6 +151,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -126,6 +169,82 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+
+    fn located(cwd: &str, branch: Option<&str>) -> App {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.cwd = PathBuf::from(cwd);
+        app.branch = branch.map(str::to_string);
+        app
+    }
+
+    #[test]
+    fn the_directory_and_branch_sit_between_the_mode_and_the_model() {
+        let text = bar(&located("/work/proj", Some("main")));
+        assert!(
+            text.contains("manual · /work/proj (main) · m · shift+tab"),
+            "{text}"
+        );
+        let text = bar(&located("/work/proj", None));
+        assert!(text.contains("· /work/proj · m ·"), "{text}");
+        let text = bar(&located("/work/proj", Some("0123456")));
+        assert!(text.contains("(0123456)"), "{text}");
+        let text = bar(&App::new(PermissionMode::Manual, "m".into()));
+        assert!(text.contains("manual · m ·"), "{text}");
+    }
+
+    #[test]
+    fn a_long_directory_is_cut_from_the_left_and_home_is_a_tilde() {
+        let mut app = located(
+            "/home/u/some/deeply/nested/project/directory/with/a/long/path",
+            None,
+        );
+        app.home = Some(PathBuf::from("/elsewhere"));
+        let text = bar(&app);
+        let shown = text.split("· ").nth(1).unwrap();
+        assert!(shown.starts_with('…'), "{text}");
+        assert!(shown.contains("long/path"), "{text}");
+        assert!(shown.trim_end().chars().count() >= DIR_COLUMNS, "{text}");
+
+        let mut app = located("/home/u/proj", Some("main"));
+        app.home = Some(PathBuf::from("/home/u"));
+        assert!(bar(&app).contains("· ~/proj (main) ·"));
+        app.cwd = PathBuf::from("/home/u");
+        assert!(bar(&app).contains("· ~ (main) ·"));
+    }
+
+    #[test]
+    fn a_long_branch_is_cut_and_the_hint_still_comes_last() {
+        let branch = "feature/a-very-long-branch-name-that-goes-on";
+        let text = bar(&located("/w", Some(branch)));
+        assert!(text.contains("(feature/a-very-long-bra…)"), "{text}");
+        assert!(text.trim_end().ends_with("/exit"), "{text}");
+    }
+
+    #[test]
+    fn viewing_a_subagent_keeps_the_main_directory() {
+        let mut app = located("/w", Some("main"));
+        app.viewing = Some("explore-1".into());
+        assert!(bar(&app).contains("· /w (main) ·"));
+    }
+
+    #[test]
+    fn the_branch_is_read_again_at_every_draw() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(dir.join(".git/objects")).unwrap();
+        std::fs::create_dir_all(dir.join(".git/refs")).unwrap();
+        let head = dir.join(".git/HEAD");
+        std::fs::write(&head, "ref: refs/heads/main\n").unwrap();
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.set_cwd(&dir);
+        assert_eq!(app.branch.as_deref(), Some("main"));
+        std::fs::write(&head, "ref: refs/heads/scratch\n").unwrap();
+        app.set_cwd(&dir);
+        assert_eq!(app.branch.as_deref(), Some("scratch"));
+        std::fs::remove_dir_all(dir.join(".git")).unwrap();
+        app.set_cwd(&dir);
+        assert_eq!(app.branch, None);
     }
 
     #[test]

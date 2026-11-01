@@ -307,6 +307,9 @@ fn output_styles_load_from_both_scopes_with_the_project_overriding() {
 struct Skills {
     rig: Rig,
     runtime: SkillRuntime,
+    #[cfg_attr(not(unix), allow(dead_code))]
+    shell_cwd: fontaine_tools::shell_cwd::ShellCwd,
+    _scratch: tempfile::TempDir,
 }
 
 fn skills(w_setup: impl FnOnce(&World)) -> Skills {
@@ -314,6 +317,8 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
     w_setup(&rig.world);
     let ext = Arc::new(load_for(&rig.world, &[]).unwrap());
     let runtime = SkillRuntime::new(ext, rig.state.clone(), true);
+    let shell_cwd = fontaine_tools::shell_cwd::ShellCwd::default();
+    let scratch = tempfile::tempdir().unwrap();
     let tools = registry(RegistryParams {
         gate: rig.pipeline.clone(),
         scope: rig.state.scope(),
@@ -328,6 +333,8 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
         websearch: None,
         searxng: Default::default(),
         jobs: Default::default(),
+        shell_cwd: shell_cwd.clone(),
+        scratch: Some(scratch.path().to_path_buf()),
         agent_waits: None,
         wait_wake: None,
         network: Default::default(),
@@ -338,7 +345,12 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
     .unwrap();
     let shell = tools.into_iter().find(|t| t.name == "shell").unwrap();
     runtime.set_shell(shell.tool);
-    Skills { rig, runtime }
+    Skills {
+        rig,
+        runtime,
+        shell_cwd,
+        _scratch: scratch,
+    }
 }
 
 #[tokio::test]
@@ -370,6 +382,27 @@ async fn a_skills_command_runs_through_the_pipeline_as_a_shell_call() {
         .unwrap();
     assert_eq!(record.tier, Tier::Mode);
     assert_eq!(record.agent_id, ROOT_AGENT);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_skills_cd_does_not_move_the_shell_directory() {
+    let s = skills(|w| {
+        std::fs::create_dir_all(w.work.join("sub")).unwrap();
+        user_skill(
+            w,
+            "status",
+            "---\ndescription: s\n---\nIn: !`cd sub && pwd`\n",
+        )
+    });
+    s.rig.approver.answer(Answer::AllowOnce);
+    let text = s
+        .runtime
+        .expand("status", "", ROOT_AGENT, false)
+        .await
+        .unwrap();
+    assert!(text.trim_end().ends_with("/sub"), "{text}");
+    assert_eq!(s.shell_cwd.tracked(ROOT_AGENT), None);
 }
 
 #[tokio::test]

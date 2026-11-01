@@ -186,6 +186,8 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         websearch,
         searxng: p.setup.searxng.clone(),
         jobs: p.setup.jobs.clone(),
+        shell_cwd: p.setup.shell_cwd.clone(),
+        scratch: p.state.scratch.clone(),
         agent_waits: Some(p.state.agents().clone()),
         wait_wake: Some(Arc::new(CoreWake {
             tree: p.state.agents().clone(),

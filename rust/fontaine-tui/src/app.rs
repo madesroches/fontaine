@@ -220,6 +220,16 @@ pub struct App {
     pub scheduled: usize,
     /// The active goal's age and whether it waits for the user, for the status bar.
     pub goal: Option<(std::time::Duration, bool)>,
+    /// Where the main agent's next shell call starts, for the status bar. Empty until the
+    /// first draw.
+    pub cwd: PathBuf,
+    /// The git branch (or the short commit of a detached `HEAD`) checked out at `cwd`.
+    pub branch: Option<String>,
+    /// The home directory, which the status bar writes as `~`.
+    pub home: Option<PathBuf>,
+    /// The `HEAD` file found for a directory, so a redraw reads it again without a new walk. A
+    /// directory with no repository is searched again at every draw, so a `git init` shows.
+    head_cache: Option<(PathBuf, Option<PathBuf>)>,
     /// A self-paced loop has its next iteration pending, which Esc at the idle prompt cancels.
     pub wakeup_pending: bool,
     /// `/denied` while it is open.
@@ -352,6 +362,10 @@ impl App {
             running_agents: 0,
             scheduled: 0,
             goal: None,
+            cwd: PathBuf::new(),
+            branch: None,
+            home: None,
+            head_cache: None,
             wakeup_pending: false,
             denied: None,
             unavailable: None,
@@ -474,6 +488,28 @@ impl App {
     /// Whether the input is a `!` shell command.
     pub fn shell_mode(&self) -> bool {
         self.input.first_char() == Some('!')
+    }
+
+    /// Sets the directory the status bar shows and reads the branch checked out there. The
+    /// `HEAD` file is found once per directory; its content is read on every call, so a
+    /// `git switch` from another terminal shows at the next redraw.
+    pub fn set_cwd(&mut self, cwd: &std::path::Path) {
+        let known = self
+            .head_cache
+            .as_ref()
+            .is_some_and(|(dir, head)| dir == cwd && head.is_some());
+        if !known {
+            self.head_cache = Some((cwd.to_path_buf(), fontaine_core::git_head::discover(cwd)));
+        }
+        if self.cwd != cwd {
+            self.cwd = cwd.to_path_buf();
+        }
+        let head = self
+            .head_cache
+            .as_ref()
+            .and_then(|(_, head)| head.as_deref())
+            .and_then(fontaine_core::git_head::parse);
+        self.branch = head.map(|head| head.label().to_string());
     }
 
     pub fn set_files(&mut self, files: Arc<Vec<String>>) {

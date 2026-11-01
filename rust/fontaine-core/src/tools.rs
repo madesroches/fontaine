@@ -14,6 +14,7 @@ use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, ToolSource, registered_risk};
 use fontaine_tools::scope::Scope;
+use fontaine_tools::shell_cwd::ShellCwd;
 use fontaine_tools::tls::LoadedNetwork;
 use fontaine_tools::webfetch::WebfetchConfig;
 use fontaine_tools::websearch::{SearxngChild, WebsearchConfig};
@@ -102,6 +103,10 @@ pub struct RegistryParams {
     pub searxng: Arc<SearxngChild>,
     /// The session's jobs, owned by the runtime so a rebuild keeps the running ones.
     pub jobs: Arc<Jobs>,
+    /// Each agent's shell directory, owned by the runtime so a rebuild keeps where they are.
+    pub shell_cwd: ShellCwd,
+    /// The session scratch directory; with none, the shell directory never moves.
+    pub scratch: Option<std::path::PathBuf>,
     /// How `job_output` waits on a subagent; `None` refuses agent ids.
     pub agent_waits: Option<Arc<dyn AgentWaits>>,
     /// What ends a `job_output` wait early.
@@ -154,6 +159,8 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         jobs: params.jobs,
         agent_waits: params.agent_waits,
         wait_wake: params.wait_wake,
+        shell_cwd: params.shell_cwd,
+        scratch: params.scratch,
     })
     .map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     if let Some(extension) = params.extension {

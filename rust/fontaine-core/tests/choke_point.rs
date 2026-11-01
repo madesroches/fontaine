@@ -158,6 +158,8 @@ fn params(rig: &Rig) -> RegistryParams {
         websearch: None,
         searxng: Default::default(),
         jobs: Default::default(),
+        shell_cwd: Default::default(),
+        scratch: None,
         agent_waits: None,
         wait_wake: None,
         network: Default::default(),

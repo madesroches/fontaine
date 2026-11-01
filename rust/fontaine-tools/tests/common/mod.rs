@@ -114,6 +114,8 @@ pub fn env_with(scope: Arc<Scope>, gate: Arc<dyn ToolGate>) -> BuiltinEnv {
         jobs: Default::default(),
         agent_waits: None,
         wait_wake: None,
+        shell_cwd: Default::default(),
+        scratch: None,
     }
 }
 

@@ -381,6 +381,12 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-30 AFK: Keep the dedicated "Concurrency (acceptance 1)" integration test rather than folding it into `children_run_at_once_up_to_max_parallel_and_the_next_spawn_is_refused`; reason: that test's children are single-request routes, so a "B's first request before A's last" assertion would mean reworking its routes, and keeping the cap test and the order test separate leaves the settled acceptance coverage unchanged (#326).
 - 2026-10-31: A `job_output` wait on a shell job returns only when the job ends, the wait expires, or a message arrives, never on new output, so a chatty job cannot cut a long wait short; line-by-line delivery stays with `monitor`. Matches Claude Code's `TaskOutput` `block: true` (#336).
 - 2026-10-31: A killed subagent persists its partial transcript: graceful settle (KillHook at rig's `on_completion_call`/`on_dispatch` boundaries) plus a bounded `KILL_GRACE` with the instantaneous drive-drop kept only as the grace-expiry backstop, a kill-select at the `gated` choke point (`KillSwitches` in `fontaine-tools`) for in-flight tool calls and permission waits, and the exit path's `tree.settled` waits raised to `KILL_GRACE` + 5 s; always on, no config gate (#348).
+- 2026-11-01: A subagent's shell starts at the primary root and never inherits the parent's tracked
+  directory; its own `cd` is tracked per agent id and persists across its own calls, never moving the
+  parent's (#26). Claude Code starts a subagent in the main conversation's current directory and does
+  not persist its `cd`. Starting at the primary root keeps the child's start independent of the
+  parent's mutable state; a `fork` subagent follows the same rule, so its inherited history may show
+  a parent `cd` that does not apply to it.
 
 ### Build and release
 
@@ -530,6 +536,8 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   cloning (`git ls-remote`, or the catalog sha with no network), and a held pin equal to the
   remote is neither re-cloned nor re-announced. Reason: nothing executable changes under a running
   session, and the pass holds the registry lock only to record, never through git network work.
+- 2026-11-01: A hook payload's `cwd` stays the workspace root (`docs/hooks.md`) where Claude Code's
+  follows the shell's `cd`; the tracked directory is visible to hooks as `tool_input.cwd` (#26).
 
 ### Guardian
 
@@ -799,6 +807,16 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   fontaine-tools cannot depend on fontaine-core.
 - 2026-10-30: Late diagnostics drain only on real tool calls; the synthetic screening calls set
   `CallView.synthetic` and are skipped — their text becomes a user-role turn prompt.
+- 2026-11-01: The shell's working directory persists between an agent's foreground calls (#26): the
+  directory a command ends in is kept, and one outside the workspace roots resets to the *primary
+  root* with a note in the result, where Claude Code resets to the project directory. It is kept per
+  agent, a missing entry meaning the primary root, and is reset by `/clear` and by a conversation
+  `/rewind` because the model forgets its `cd`. Background jobs, `monitor`, `!` commands and a skill's
+  `!` lines do not move it; `monitor` and `!` start in the primary root. With no session scratch
+  directory tracking is off. No `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR` equivalent is added now;
+  it can come later as a user-scope config key. The shell approval summary shows the effective `cwd`.
+  A write-class call in a tracked `sub/` loads `sub/AGENTS.md` on demand, and a retry grant keyed on
+  the arguments digest stops matching once the directory moves (it fails safe).
 
 ### TUI
 
@@ -864,6 +882,11 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-01: No working spinner in screen-reader (linear) mode; it is animation with nothing to announce, and settled-only output is the rule there as for `thinking:` (#355).
 - 2026-11-01: The working spinner uses a breathing-dot glyph (`·∙•●•∙`, ASCII `.oO0Oo`) with a drifting hue instead of Claude Code's star glyphs; `⬤` is excluded because terminals draw it wider than the other frames (#355).
 - 2026-11-01: The spinner label is the fixed `Working…`, not Claude Code's rotating verb list; the issue asks for an activity indicator, not verb variety (#355).
+- 2026-11-01: `!` commands run in the primary root, a deliberate choice with no Claude Code parity
+  claim (not observable with `claude -p`) (#26).
+- 2026-11-01: The status bar shows the shell's directory and the git branch (or the short commit of a
+  detached `HEAD`) after the mode, read from `HEAD` without spawning `git` — a Fontaine addition,
+  requested with #26. Claude Code's status line shows them only through a user script.
 
 ## Open Questions
 

@@ -88,6 +88,9 @@ pub struct World {
     runs: Cell<usize>,
     /// The time the session's scheduler sees, which a test moves itself.
     pub clock: Arc<ManualClock>,
+    /// The session has a scratch directory, which is also a root. Without one the shell's
+    /// directory never moves.
+    scratch: bool,
 }
 
 /// The instant the scheduler's clock starts at in a test world: 2026-01-15 12:00 UTC.
@@ -148,9 +151,16 @@ impl World {
             settings_file: None,
             runs: Cell::new(0),
             clock: Arc::new(ManualClock::new(CLOCK_START_MS)),
+            scratch: false,
         };
         world.mock = MockCompletionModel::from_stream_turns(turns(&world));
         world
+    }
+
+    /// Gives the session a scratch directory, as the binary does.
+    pub fn with_scratch(mut self) -> World {
+        self.scratch = true;
+        self
     }
 
     /// Starts the session in `mode`.
@@ -347,6 +357,11 @@ impl World {
                 warnings: &mut Vec::new(),
             })
             .unwrap();
+        let scratch = self.scratch.then(|| {
+            let dir = self.work.with_file_name("scratch");
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        });
         AgentSetup {
             config,
             config_dir: self.config_dir.clone(),
@@ -365,8 +380,10 @@ impl World {
             session: Session::create(&self.data, &session_id(self.runs.get()))
                 .unwrap()
                 .with_clock(self.clock.clone()),
-            roots: vec![self.work.clone()],
-            scratch: None,
+            roots: std::iter::once(self.work.clone())
+                .chain(scratch.clone())
+                .collect(),
+            scratch,
             memory_root: None,
             mode: self.mode,
             scrub_env: vec![],

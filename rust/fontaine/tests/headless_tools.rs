@@ -565,3 +565,58 @@ async fn configured_env_reaches_the_shell_tool_and_only_its_names_reach_the_ledg
     let raw = serde_json::to_string(&records).unwrap();
     assert!(!raw.contains("probe-value-7431"), "{raw}");
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cd_carries_over_between_shell_calls_until_it_leaves_the_workspace() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("c1", "shell", json!({"command": "cd sub"})),
+            Turn::tool("c2", "shell", json!({"command": "pwd"})),
+            Turn::tool("c3", "shell", json!({"command": "cd /"})),
+            Turn::tool("c4", "shell", json!({"command": "pwd"})),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    std::fs::create_dir_all(s.work.join("sub")).unwrap();
+    let settings = s.work.parent().unwrap().join("cwd-settings.toml");
+    common::write(
+        &settings,
+        "[permissions]\nallow = [\"shell(cd *)\", \"shell(pwd)\"]\n",
+    );
+    let out = s
+        .headless(&[
+            "--settings",
+            settings.to_str().unwrap(),
+            "--output-format",
+            "stream-json",
+            "walk around",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = tool_results(&lines);
+    let root = std::fs::canonicalize(&s.work).unwrap();
+    let shown = |n: usize| results[n]["text"].as_str().unwrap().to_string();
+    assert!(
+        shown(1).starts_with(&format!("{}\n", root.join("sub").display())),
+        "{}",
+        results[1]
+    );
+    assert!(
+        shown(2).contains(&format!(
+            "[shell working directory reset to {}: / is outside the workspace]",
+            root.display()
+        )),
+        "{}",
+        results[2]
+    );
+    assert!(
+        shown(3).starts_with(&format!("{}\n", root.display())),
+        "{}",
+        results[3]
+    );
+}

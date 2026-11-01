@@ -236,10 +236,23 @@ are resolved.
 
 ## Shell
 
-`shell` runs `sh -c` in the root that holds its `cwd` (the primary root when none is given).
+`shell` runs `sh -c` in the root that holds its `cwd`, or where the last call left off when none is
+given (the primary root at the start).
 
-- **Confinement.** The `cwd` is resolved like any other path, and one outside every root is
-  refused. What the command itself does is not confined: it can `cd` anywhere, which is why
+- **The directory persists.** Only the working directory carries from one foreground call to the
+  next, per agent; variables, functions and exports do not, and each call is a fresh `sh`. `cd sub`
+  in one call means the next call starts in `sub`. Where a command ends is what is kept, so a call
+  with an explicit `cwd` also moves it. A command that `exit`s, is replaced by `exec` or fails under
+  `set -e` leaves it where it was. When the command ends outside every root, or in a directory
+  that no longer exists, the directory goes back to the primary root and the result ends with
+  `[shell working directory reset to <root>: <path> is outside the workspace]`. Background jobs, a
+  `monitor`, `!` commands and a [skill](extensions.md#skills)'s `!` lines do not move it (`monitor`
+  and `!` start in the primary root). `/clear` and a conversation `/rewind` put it back in the
+  primary root, and a subagent starts in the primary root with a directory of its own. Without a
+  session scratch directory the directory never moves.
+
+- **Confinement.** The `cwd` is resolved like any other path (a relative one against the primary
+  root), and one outside every root is refused. What the command itself does is not confined: it can `cd` anywhere, which is why
   `shell` is an arbitrary tool.
 - **Timeout.** A call may ask for a `timeout_secs`; a longer request is cut to
   `[shell] max_timeout_secs` ([default 600 seconds](configuration.md#shell)), and no argument lifts
@@ -247,8 +260,7 @@ are resolved.
   counts as having reached it. What happens then depends on who called: the main
   conversation's command is not stopped but [moved to a background job](#background-jobs), and the
   result says so; a subagent's command is stopped, as is any command a [skill](extensions.md#skills)
-  runs for its text. A command that prints more than 64 MB is killed in the main conversation, and
-  more than 10 MB in a subagent.
+  runs for its text. A command that prints more than 64 MB is killed.
   `run_in_background` starts the command as a job without waiting.
 - **Output.** Past 2,000 lines or 50 KB the result keeps the first and last lines and the lines
   with errors or failures from between.
@@ -275,8 +287,8 @@ overrides the search; a path that is not a file means there is no interpreter. F
 an error: the tool is simply not offered to the model, and on Linux and macOS it never is.
 
 - **Same call, same limits.** It takes `shell`'s arguments and follows its confinement, timeout
-  cap, output cut, [background jobs](#background-jobs) and environment rules; only the output
-  that kills a command in a subagent is larger (64 MB, not 10 MB). Cancelling or timing
+  cap, output cut, [background jobs](#background-jobs), working-directory and environment rules.
+  Cancelling or timing
   out a call stops only the interpreter process, not any program it started.
 - **The command runs as written.** The interpreter starts with `-NoProfile -NonInteractive`, the
   command passed in encoded form so the Windows command line cannot re-parse it, and a short
@@ -288,7 +300,10 @@ an error: the tool is simply not offered to the model, and on Linux and macOS it
   native program's own code, and a failure earlier in the command does not change the exit code:
   this is how PowerShell treats an encoded command. End the command with `exit $LASTEXITCODE` to
   keep a native program's code.
-- **Each call is a fresh process.** A variable or a `Set-Location` does not carry over.
+- **Each call is a fresh process.** A variable does not carry over, but the working directory does,
+  as for `shell`: where the command ends (`Set-Location`) is where the next call starts, until it
+  leaves the workspace and resets to the primary root with a note in the result. A location in a
+  provider other than the file system counts as leaving.
 - **No command analysis.** Nothing reads a PowerShell command as safe in advance, so every call
   is [judged](permissions.md#powershell). Hooks, `!` commands and skill `!` lines keep running
   through Git Bash.

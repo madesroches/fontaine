@@ -19,7 +19,7 @@ use serde_json::json;
 
 use crate::error_chain::chain;
 use crate::gate::{AgentId, ROOT_AGENT};
-use crate::git_bash::{GitBash, sh_command};
+use crate::git_bash::{COMMAND_VAR, CWD_FILE_VAR, GitBash, RUN_TRACKED_SCRIPT, sh_command};
 use crate::guarded::{Guard, GuardedTool};
 use crate::jobs::tools::{JobCancelTool, JobOutputTool, MonitorTool, job_error};
 use crate::jobs::{
@@ -30,6 +30,7 @@ use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, ReadView};
 use crate::powershell::{self, PowerShellSettings};
 use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
+use crate::shell_cwd::{CwdFile, ShellCwd, TRACKED_SCRIPT};
 use crate::tls::LoadedNetwork;
 use crate::webfetch::{Webfetch, WebfetchConfig};
 use crate::websearch::{SearxngChild, Websearch, WebsearchConfig};
@@ -277,6 +278,23 @@ impl ShellCall {
     }
 }
 
+/// What a shell tool needs to carry the working directory from one call to the next.
+#[derive(Clone, Debug)]
+pub struct Tracking {
+    pub cwd: ShellCwd,
+    pub scope: Arc<Scope>,
+    /// Where each call's final directory is written. With none, tracking is off.
+    pub scratch: Option<PathBuf>,
+}
+
+impl Tracking {
+    /// The pre-gate step that makes a call's starting directory explicit.
+    fn start_in(&self) -> crate::guarded::PreGate {
+        let this = self.clone();
+        Arc::new(move |agent, args| this.cwd.start_in(agent, &this.scope, args))
+    }
+}
+
 /// rig's `shell`, with the command kept off the Windows command line when it runs through
 /// Git Bash. For the main agent a call is a job: one that outlives its timeout moves to the
 /// background instead of being stopped.
@@ -286,6 +304,9 @@ pub struct ShellTool {
     pub through_env: bool,
     /// Where the main agent's calls run as jobs; without it `shell` is rig's, unchanged.
     pub jobs: Option<Arc<Jobs>>,
+    /// Where a foreground call's final directory is kept; `None` leaves every call in the
+    /// directory it names or the primary root.
+    pub track: Option<Tracking>,
 }
 
 impl ShellTool {
@@ -317,6 +338,28 @@ impl ShellTool {
         let (shell, args) = self.prepared(args);
         let line = [OsString::from("-c"), OsString::from(&args.command)];
         launch_in(&shell, &args, OsStr::new("sh"), &line)
+    }
+
+    /// `launch` for a foreground call: the command runs under a wrapper that writes the
+    /// directory it ended in to `file`.
+    fn launch_tracked(&self, args: ShellArgs, file: &Path) -> Result<Process, ToolExecutionError> {
+        if self.through_env {
+            let mut shell = self.shell.clone();
+            shell.launcher = shell
+                .launcher
+                .with_env(COMMAND_VAR, &args.command)
+                .with_env(CWD_FILE_VAR, file);
+            let line = [OsString::from("-c"), OsString::from(RUN_TRACKED_SCRIPT)];
+            return launch_in(&shell, &args, OsStr::new("sh"), &line);
+        }
+        let line = [
+            OsString::from("-c"),
+            OsString::from(TRACKED_SCRIPT),
+            OsString::from("sh"),
+            OsString::from(&args.command),
+            file.as_os_str().to_owned(),
+        ];
+        launch_in(&self.shell, &args, OsStr::new("sh"), &line)
     }
 }
 
@@ -355,13 +398,18 @@ fn launch_in(
 /// Runs `call` as a job in `jobs` and waits for it, as `shell` and `powershell` both do: one
 /// that outlives its timeout moves to the background when `promotable`, and is stopped
 /// otherwise.
+///
+/// A foreground call that ends moves `agent`'s tracked directory to where its command ended,
+/// when `track` is set and the call is not a harness call whose output is spliced elsewhere.
+/// `launch` gets the file the final directory goes to when the call is tracked.
 async fn run_job(
     shell: &Shell,
     jobs: &Jobs,
     context: &mut ToolContext,
-    call: ShellCall,
+    (call, agent): (ShellCall, &str),
     promotable: bool,
-    launch: impl FnOnce(ShellArgs) -> Result<Process, ToolExecutionError>,
+    track: Option<&Tracking>,
+    launch: impl FnOnce(ShellArgs, Option<&Path>) -> Result<Process, ToolExecutionError>,
 ) -> Result<String, ToolExecutionError> {
     let max = shell.max_timeout.max(1);
     let timeout = Duration::from_secs(
@@ -374,13 +422,19 @@ async fn run_job(
     if background && !jobs.has_room() {
         return Err(job_error(&JobError::TooMany));
     }
-    let no_promote = !promotable
-        || context
-            .get::<NoPromote>()
-            .ok()
-            .flatten()
-            .is_some_and(|flag| flag.0);
-    let process = launch(call.shell_args())?;
+    let harness_call = context
+        .get::<NoPromote>()
+        .ok()
+        .flatten()
+        .is_some_and(|flag| flag.0);
+    let no_promote = !promotable || harness_call;
+    // Dropped when the call returns, which also removes the file of a call that moved to the
+    // background.
+    let cwd_file = track
+        .filter(|_| !background && !harness_call)
+        .and_then(|track| track.scratch.as_deref())
+        .map(CwdFile::new);
+    let process = launch(call.shell_args(), cwd_file.as_ref().map(CwdFile::path))?;
     let id = jobs
         .start(
             Start {
@@ -441,6 +495,13 @@ async fn run_job(
                 }
             };
             text.push_str(&line);
+            if let (End::Exited(_), Some(file), Some(track)) = (&info.end, &cwd_file, track)
+                && let Some(reported) = file.reported()
+                && let Some(reset) = track.cwd.observe(agent, &reported, &track.scope)
+            {
+                text.push('\n');
+                text.push_str(&reset.notice(track.scope.primary()));
+            }
             Some(status)
         }
     };
@@ -459,6 +520,19 @@ fn with_background(mut schema: serde_json::Value) -> serde_json::Value {
         .get_mut("properties")
         .and_then(serde_json::Value::as_object_mut)
     {
+        if let Some(cwd) = properties
+            .get_mut("cwd")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            cwd.insert(
+                "description".to_owned(),
+                json!(
+                    "Directory to start in, inside the workspace. A relative path is relative \
+                     to the primary workspace root. Omit it to start in the current directory, \
+                     where the last call left off."
+                ),
+            );
+        }
         properties.insert(
             "run_in_background".to_owned(),
             json!({
@@ -470,9 +544,6 @@ fn with_background(mut schema: serde_json::Value) -> serde_json::Value {
     }
     schema
 }
-
-/// The output a subagent's shell call may print before rig kills it.
-const SUBAGENT_OUTPUT_MB: u64 = 10;
 
 impl Tool for ShellTool {
     const NAME: &'static str = Shell::NAME;
@@ -501,15 +572,14 @@ impl Tool for ShellTool {
              (`npm start`, not `npm start &`). Do not poll with `sleep`: use job_output with \
              wait_secs. Background jobs are for the main agent only: a subagent's command is \
              stopped at its timeout and run_in_background is refused. A command that prints \
-             more than {} MB is killed ({} MB in a subagent). Use it to build, test, \
-             run programs and use git. Each call starts a fresh `sh`: a `cd` or a variable does \
-             not carry over to the next call. Do not start programs that wait for input, such \
+             more than {} MB is killed. Use it to build, test, run programs and use git. Each \
+             call starts a fresh `sh`; only the working directory carries over to the next call \
+             (a `cd` stays unless it leaves the workspace), not variables or exports. Do not start programs that wait for input, such \
              as editors or pagers. Do not assume a git repository: a failed `git` command ends \
              a `&&` chain. Check formatting only of files you changed.",
             DEFAULT_TIMEOUT.min(self.shell.max_timeout).max(1),
             QUIET_LIMIT.as_secs(),
             OUTPUT_CAP / 1024 / 1024,
-            SUBAGENT_OUTPUT_MB,
         )
     }
 
@@ -531,12 +601,43 @@ impl Tool for ShellTool {
             .ok()
             .flatten()
             .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0);
+        let launch = |a: ShellArgs, file: Option<&Path>| match file {
+            Some(file) => self.launch_tracked(a, file),
+            None => self.launch(a),
+        };
         match (&self.jobs, agent == ROOT_AGENT) {
             (Some(jobs), true) => {
                 let jobs = jobs.clone();
-                run_job(&self.shell, &jobs, context, args, true, |a| self.launch(a)).await
+                let track = self.track.as_ref();
+                run_job(
+                    &self.shell,
+                    &jobs,
+                    context,
+                    (args, &agent),
+                    true,
+                    track,
+                    launch,
+                )
+                .await
             }
-            _ => {
+            (Some(_), false) => {
+                if args.run_in_background == Some(true) {
+                    return Err(job_error(&JobError::NotRoot));
+                }
+                let local = Jobs::new();
+                let track = self.track.as_ref();
+                run_job(
+                    &self.shell,
+                    &local,
+                    context,
+                    (args, &agent),
+                    false,
+                    track,
+                    launch,
+                )
+                .await
+            }
+            (None, _) => {
                 if args.run_in_background == Some(true) {
                     return Err(job_error(&JobError::NotRoot));
                 }
@@ -557,12 +658,23 @@ pub struct PowerShellTool {
     pub interpreter: PathBuf,
     /// Where the main agent's calls run as jobs; a subagent's call waits in a registry of its own.
     pub jobs: Option<Arc<Jobs>>,
+    /// As for `shell`.
+    pub track: Option<Tracking>,
 }
 
 impl PowerShellTool {
     fn launch(&self, args: ShellArgs) -> Result<Process, ToolExecutionError> {
         let argv = powershell::launch_args(&args.command);
         launch_in(&self.shell, &args, self.interpreter.as_os_str(), &argv)
+    }
+
+    /// `launch` for a foreground call: the command is followed by a trailer that writes the
+    /// directory it ended in to `file`.
+    fn launch_tracked(&self, args: ShellArgs, file: &Path) -> Result<Process, ToolExecutionError> {
+        let argv = powershell::launch_args_tracked(&args.command);
+        let mut shell = self.shell.clone();
+        shell.launcher = shell.launcher.with_env(powershell::CWD_FILE_VAR, file);
+        launch_in(&shell, &args, self.interpreter.as_os_str(), &argv)
     }
 
     fn edition(&self) -> &'static str {
@@ -605,8 +717,9 @@ impl Tool for PowerShellTool {
                 wait for. Do not poll with `Start-Sleep`: use job_output with wait_secs. Background \
                 jobs are for the main agent only: a subagent's command is stopped at its timeout \
                 and run_in_background is refused. A command that prints more than {} MB is killed. \
-                Each call starts a fresh process: a `cd` or a variable does not carry over to the \
-                next call. Do not start programs that wait for input. Use the dedicated file \
+                Each call starts a fresh process; only the working directory carries over to the \
+                next call (a `Set-Location` stays unless it leaves the workspace), not variables \
+                or environment changes. Do not start programs that wait for input. Use the dedicated file \
                 tools to read, search and edit files, not `Get-Content` or `Select-String`.",
             self.edition(),
             DEFAULT_TIMEOUT.min(self.shell.max_timeout).max(1),
@@ -633,19 +746,39 @@ impl Tool for PowerShellTool {
             .ok()
             .flatten()
             .map_or_else(|| ROOT_AGENT.to_string(), |id| id.0);
+        let launch = |a: ShellArgs, file: Option<&Path>| match file {
+            Some(file) => self.launch_tracked(a, file),
+            None => self.launch(a),
+        };
+        let track = self.track.as_ref();
         match (&self.jobs, agent == ROOT_AGENT) {
             (Some(jobs), true) => {
                 let jobs = jobs.clone();
-                run_job(&self.shell, &jobs, context, args, true, |a| self.launch(a)).await
+                run_job(
+                    &self.shell,
+                    &jobs,
+                    context,
+                    (args, &agent),
+                    true,
+                    track,
+                    launch,
+                )
+                .await
             }
             _ => {
                 if args.run_in_background == Some(true) {
                     return Err(job_error(&JobError::NotRoot));
                 }
                 let local = Jobs::new();
-                run_job(&self.shell, &local, context, args, false, |a| {
-                    self.launch(a)
-                })
+                run_job(
+                    &self.shell,
+                    &local,
+                    context,
+                    (args, &agent),
+                    false,
+                    track,
+                    launch,
+                )
                 .await
             }
         }
@@ -781,6 +914,7 @@ pub fn shell_for(root: &Path, settings: &ShellSettings) -> ShellTool {
         },
         through_env: settings.git_bash.is_some(),
         jobs: None,
+        track: None,
     }
 }
 
@@ -806,6 +940,7 @@ pub fn powershell_for(
         },
         interpreter: interpreter.path.clone(),
         jobs: None,
+        track: None,
     }
 }
 
@@ -830,6 +965,12 @@ pub struct BuiltinEnv {
     pub agent_waits: Option<Arc<dyn AgentWaits>>,
     /// What ends a `job_output` wait early.
     pub wait_wake: Option<Arc<dyn WaitWake>>,
+    /// Each agent's shell directory. Passing the same one again when the registry is rebuilt
+    /// keeps where the agents are.
+    pub shell_cwd: ShellCwd,
+    /// The session scratch directory, where a call's final directory is written. With none,
+    /// the shell directory never moves.
+    pub scratch: Option<PathBuf>,
 }
 
 pub struct Registered {
@@ -860,6 +1001,11 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
     let scope = &env.scope;
     let guard = &env.guard;
     let seen = env.seen.clone();
+    let tracking = Tracking {
+        cwd: env.shell_cwd.clone(),
+        scope: env.scope.clone(),
+        scratch: env.scratch.clone(),
+    };
     let mut tools = vec![
         register(GuardedTool::per_root_with_fallback(
             scope.clone(),
@@ -927,15 +1073,19 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             guard.clone(),
             |root| notebook_edit_for(root, &seen),
         )),
-        register(GuardedTool::per_root(
-            scope.clone(),
-            risk_of(ShellTool::NAME),
-            guard.clone(),
-            |root| ShellTool {
-                jobs: Some(env.jobs.clone()),
-                ..shell_for(root, &env.shell)
-            },
-        )),
+        register(
+            GuardedTool::per_root(
+                scope.clone(),
+                risk_of(ShellTool::NAME),
+                guard.clone(),
+                |root| ShellTool {
+                    jobs: Some(env.jobs.clone()),
+                    track: Some(tracking.clone()),
+                    ..shell_for(root, &env.shell)
+                },
+            )
+            .with_pre_gate(tracking.start_in()),
+        ),
         register(GuardedTool::single(
             JobOutputTool {
                 jobs: env.jobs.clone(),
@@ -974,15 +1124,19 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
         )),
     ];
     if let Some(interpreter) = &env.shell.powershell {
-        tools.push(register(GuardedTool::per_root(
-            scope.clone(),
-            risk_of(PowerShellTool::NAME),
-            guard.clone(),
-            |root| PowerShellTool {
-                jobs: Some(env.jobs.clone()),
-                ..powershell_for(root, &env.shell, interpreter)
-            },
-        )));
+        tools.push(register(
+            GuardedTool::per_root(
+                scope.clone(),
+                risk_of(PowerShellTool::NAME),
+                guard.clone(),
+                |root| PowerShellTool {
+                    jobs: Some(env.jobs.clone()),
+                    track: Some(tracking.clone()),
+                    ..powershell_for(root, &env.shell, interpreter)
+                },
+            )
+            .with_pre_gate(tracking.start_in()),
+        ));
     }
     if let Some(config) = &env.websearch {
         let tool = Websearch::new(config.clone(), &env.network, env.searxng.clone()).map_err(
@@ -1040,6 +1194,7 @@ mod tests {
             },
             interpreter: PathBuf::from("pwsh.exe"),
             jobs: None,
+            track: None,
         };
         assert!(tool.description().contains("the lines with errors"));
         let uncut = PowerShellTool {

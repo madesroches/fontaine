@@ -21,6 +21,7 @@ pub mod floor;
 pub mod fork_context;
 pub mod frontmatter;
 pub mod gate;
+pub mod git_head;
 pub mod goal;
 pub mod instructions;
 pub mod ledger;

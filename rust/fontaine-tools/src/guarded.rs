@@ -54,11 +54,16 @@ pub struct Guard {
     pub kills: Option<Arc<KillSwitches>>,
 }
 
+/// Rewrites a call's arguments for the agent making it, before the gate sees them, and may
+/// return a note to append to the result.
+pub type PreGate = Arc<dyn Fn(&str, Value) -> (Value, Option<String>) + Send + Sync>;
+
 pub struct GuardedTool<T: Tool> {
     instances: Vec<T>,
     routing: Routing,
     risk: RiskClass,
     guard: Guard,
+    pre_gate: Option<PreGate>,
 }
 
 impl<T: Tool> GuardedTool<T> {
@@ -69,6 +74,7 @@ impl<T: Tool> GuardedTool<T> {
             routing: Routing::One,
             risk,
             guard,
+            pre_gate: None,
         }
     }
 
@@ -85,6 +91,7 @@ impl<T: Tool> GuardedTool<T> {
             routing: Routing::PerRoot(scope),
             risk,
             guard,
+            pre_gate: None,
         }
     }
 
@@ -107,7 +114,16 @@ impl<T: Tool> GuardedTool<T> {
             routing: Routing::PerRootWithFallback(scope),
             risk,
             guard,
+            pre_gate: None,
         }
+    }
+
+    /// Runs `prepare` on every call's arguments before the gate, so the gate, the hooks and
+    /// the tool all see the same ones. It must derive its result from harness state, never from
+    /// what the model wrote.
+    pub fn with_pre_gate(mut self, prepare: PreGate) -> Self {
+        self.pre_gate = Some(prepare);
+        self
     }
 
     pub fn risk(&self) -> RiskClass {
@@ -389,7 +405,14 @@ impl<T: Tool> Tool for GuardedTool<T> {
     }
 
     async fn call(&self, context: &mut ToolContext, args: Value) -> ToolOutcome {
-        gated(
+        let mut note = None;
+        let mut args = args;
+        if let Some(prepare) = &self.pre_gate
+            && let Ok(agent) = agent_of(context)
+        {
+            (args, note) = prepare(&agent, normalize(args));
+        }
+        let outcome = gated(
             &self.guard,
             Meta {
                 name: T::NAME,
@@ -402,7 +425,11 @@ impl<T: Tool> Tool for GuardedTool<T> {
             args,
             |context, allowed| self.run(context, allowed),
         )
-        .await
+        .await;
+        match note {
+            Some(note) => crate::result_pipeline::append_note(outcome, &note),
+            None => outcome,
+        }
     }
 }
 
