@@ -41,9 +41,9 @@ pub struct Candidate { pub account: String, pub benchmark: &'static Benchmark } 
 pub enum Posture { Safe, Fast }
 pub struct Offer { pub account: String, pub benchmark: &'static Benchmark, pub posture: Posture }
 
-pub fn detect(config: &Config, listings: &[AccountListing]) -> Vec<Candidate>;   // production: Switcher::listings
+pub fn detect(listings: &[AccountListing]) -> Vec<Candidate>;                     // production: Switcher::listings
 pub fn existing(config: &Config) -> bool;                                          // a composition is already configured
-pub fn write(user_settings: &Path, offer: &Offer) -> io::Result<()>;              // set_value calls, user file only
+pub fn write(user_settings: &Path, config: &Config, offer: &Offer) -> io::Result<()>; // one edit of the whole table, user file only
 pub fn calibration_note(offer: &Offer) -> Vec<String>;                             // the follow-up text
 ```
 
@@ -64,42 +64,49 @@ Flow, after the environment step, in both surfaces:
    The two postures are the screen preset's two existing shapes, with no new preset or script:
    - **safe** — `stop_threshold` only. The screen can only escalate or deny (a headless escalation is a denial); it
      never allows, so the LLM guardian reviews every call the screen did not stop and double-checks each allow.
-   - **fast** — `allow_threshold` only. The screen allows what it is confident about; every other call goes to the
-     LLM guardian, which decides it and so double-checks what would be escalated or denied. The screen never stops
-     or escalates on its own in this posture.
+   - **fast** — `allow_threshold` only. The screen allows what it is confident about; every call the screen does not
+     clear goes to the LLM guardian, which decides it. The screen never escalates or denies in this posture.
 3. `write` stores `[guardian.composition] preset = "screen"`, `model = "<account>/<model>"`, `shadow = false` and
    `[guardian.composition.params]` with the benchmark's `stop_threshold` (safe) or `allow_threshold` (fast),
-   in the user settings file. It is validated through the same `check_composition` path before writing, so a
-   section that would fail to load is refused.
+   in the user settings file. `write` builds the whole `[guardian.composition]` table and writes it in one edit (an
+   inline-table value or a small `user_config` helper), since `set_value` only runs `validate_settings` and several
+   one-key calls could leave a partial section. Before writing it runs `check_composition` on a `Config` built with the
+   section applied, so a section that would fail to load is refused.
 4. Print the calibration note: the value is a fit on a small dataset and is not zero-miss on every live run (the
    fast threshold let a call through live that the dataset expects denied or escalated), so score it on your own traffic with
    `fontaine-evals --screen live:<account>/<model>` / the recorded `screen_risk` (safe) or `screen_allow_risk` (fast) audit
-   values, and set `shadow = true` to log scores without acting while you tune.
+   values, and set `shadow = true` to log scores without acting while you tune. Safe may also stop some calls that would otherwise
+   be allowed.
 
-Non-interactive CLI runs (no TTY, `--format json`) never prompt and never write; the JSON report gains a
-`composition` object (`status`: `skipped`/`offered_unanswered`, `candidates`) so scripts can see what was detected.
-`--no-model` does not affect this step (it concerns the scan); a new `--no-composition` flag skips it.
+Non-interactive CLI runs (`stdin().is_terminal()` false, as the scan gates; `--format json` only picks the output
+encoding) list candidates but never prompt and never write; the JSON report gains a `composition` object (`status`:
+`skipped`/`offered_unanswered`, `candidates`) so scripts can see what was detected. `--no-model` does not affect this
+step (it concerns the scan); a new `--no-composition` flag skips it entirely, including `Switcher::listings`.
 
-The TUI adds a prompt to the existing `setup_prompt.rs`, modelled on `SetupReviewPrompt` (posture select + confirm), and applies nothing to
-the running session: a composition takes effect at the next session start, and the report says so.
+The TUI adds a prompt to the existing `setup_prompt.rs`, modelled on `SetupReviewPrompt` (posture select + account
+select + confirm), which needs a new `Action` variant and `App` fields in `rust/fontaine-tui/src/app.rs`
+(`Action::SetupReview(bool)`, `setup_review`, `begin_setup_review` are the pattern). It skips with a message when
+`Ui.user_config` is `None`, and applies nothing to the running session: a composition takes effect at the next session start, and the report says so.
 
 ## Implementation Steps
 
 1. `composition_offer.rs` in `fontaine-core` with `detect`, `existing`, `write`, `calibration_note`, plus a
-   `detect` taking `&[AccountListing]` so tests feed fake listings; the production callers use `Switcher::listings`.
+   `detect(&[AccountListing])` so tests feed fake listings; the production callers use `Switcher::listings`.
 2. CLI: call the step in `setup_run` (`rust/fontaine/src/auto_mode.rs`) before `setup_report` (~line 376) is built, so
    the JSON `composition` object is filled; add a composition report struct and a numbered-choice prompt helper (the
    CLI has only the y/N `confirm()`); `--no-composition` in `cli.rs`.
-3. TUI: add the prompt to the existing `setup_prompt.rs`, wired from `auto_mode_setup.rs`.
-4. Append dated lines for this plan's Decisions to `tasks/fontaine_harness_plan.md` `## Decisions`, at the end of the
-   guardian composition subsection.
+3. TUI: add the prompt to the existing `setup_prompt.rs`, wired from `auto_mode_setup.rs`; add the `Action` variant
+   and `App` fields in `app.rs`.
+4. Append dated lines for this plan's Decisions to `tasks/fontaine_harness_plan.md` `## Decisions`, at the end of `### Guardian`
+   (after the `--composition-script` entry, before `### Headless`).
 5. Docs and changelog.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/{composition_offer.rs (new),lib.rs}`
-- `rust/fontaine/src/{auto_mode.rs,cli.rs}`
-- `rust/fontaine-tui/src/ui/commands/auto_mode_setup.rs`, `rust/fontaine-tui/src/setup_prompt.rs`
+- `rust/fontaine/src/{auto_mode.rs (incl. module doc, lines 1-2),cli.rs}`
+- `rust/fontaine-tui/src/ui/commands/auto_mode_setup.rs`, `rust/fontaine-tui/src/setup_prompt.rs`,
+  `rust/fontaine-tui/src/app.rs`
 - `docs/{guardian.md,tui.md,headless.md,configuration.md}`, `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (`## Decisions`)
 
@@ -119,13 +126,16 @@ the running session: a composition takes effect at the next session start, and t
   one. This ships a threshold in code, paired with the exact model it was fitted on, which overrides the composition
   plan's "no threshold ships" for that pairing only.
 - 2026-11-01 (user): Setup offers one basic choice, safe or fast. Safe = the screen can only escalate or deny and the
-  LLM guardian double-checks allows (`stop_threshold`); fast = the screen allows and the LLM guardian decides the
-  rest (`allow_threshold`). No other knobs (question, steering veto, concurrency) are offered.
+  LLM guardian double-checks allows (`stop_threshold`); fast = the screen allows and the LLM guardian decides every
+  call the screen does not clear (`allow_threshold`). Fast writes an `allow_threshold` (AGENTS.md fast-path exception)
+  only after explicit confirmation. No other knobs (question, steering veto, concurrency) are offered.
 
 ## Documentation
 
 - `docs/guardian.md`: describe the setup step, what it writes and the calibration pointer; update the setup synopsis
-  (~628) and the related lines (~639, ~665).
+  (~628) and the related lines (~639, ~665); fix the statements that become false: "changes no setting" (~600-602),
+  `/auto-mode-setup` "applies its result to the running session at once" (~700; a composition applies at the next
+  session) and "no model or threshold ships" (~269).
 - `docs/headless.md` (~24): the `setup [--no-model]` synopsis gains `--no-composition`.
 - `docs/configuration.md` (~33, ~741-742): setup now also writes settings.
 - `docs/tui.md`: `/auto-mode-setup` row mentions the offer and that it applies from the next session.
@@ -136,7 +146,7 @@ the running session: a composition takes effect at the next session start, and t
 - Unit (`composition_offer`): `detect` with fake listings (none, one, several, an unreachable account, a near tag such
   as another quantization that must not match); `existing`; every `BENCHMARKS` threshold is valid for the preset;
   `write` produces a section that loads and validates for each posture (only the posture's threshold param set),
-  preserves unrelated settings and never writes to a project file; `shadow = false` and the benchmark's threshold are
+  loads through the real `Config` load path, preserves unrelated settings and never writes to a project file; `shadow = false` and the benchmark's threshold are
   what lands in the file.
 - Integration (`rust/fontaine/tests/auto_mode_setup.rs`): headless/non-TTY run never writes settings and reports
   detection in JSON; `--no-composition` skips; an existing composition is left untouched.
