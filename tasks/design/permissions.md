@@ -119,7 +119,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
          Escalate ──▶ human prompt (with guardian's explanation shown)
 
  (the `agent` tool call that spawns a subagent is an ordinary `Arbitrary`-class pipeline request —
-  gated at steps 6–9 like any other, except that a spawn whose child can only read takes step 4;
+  gated at steps 6–9 like any other, except that a spawn whose child can only read takes step 4 and any other spawn skips the guardian (`auto`/`plan` allow at tier `spawn`, `manual`/`acceptEdits` ask, `dontAsk` denies);
   every tool call the subagent then makes re-enters this same
   pipeline)
 
@@ -166,7 +166,7 @@ second record with `tier = human`.
 **Tier enum** (defined once, on `DecisionRecord.tier`; the audit log, the `tool_decision` telemetry
 event, the headless `gate_decision` event and the eval `expected_tier` all carry exactly these values,
 with no projection or renaming): `deny_rule` | `ask_rule` | `critical_path` | `protected_path` (the
-floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tracked_edit` and `scratch_write` (`auto` only, after the floor and hooks, before the guardian) | `tier05` (step 5) | `allow_rule`
+floor, in check order) | `hook` | `read_only_fast_path` (step 4) | `tracked_edit` and `scratch_write` (`auto` only, after the floor and hooks, before the guardian) | `tier05` (step 5) | `spawn` (an `agent` spawn after the floor, hooks and rules, never guardian-judged: `auto`/`plan` allow it) | `allow_rule`
 (step 5a) | `mode` (step 6: manual/acceptEdits prompt, acceptEdits edit auto-allow) | `guardian` (steps 7, 9) |
 `screen` (step 7/9: the screen stage's stop or allow) | `dont_ask` (step 8) | `plan_block` (step 9 edit block) | `human`. Two outcomes map explicitly: a prompt (or headless Deny) caused by the loop-breaker pause carries `guardian`; the pre-Phase-4 plan-mode step-9 fall-through prompt (and its headless Deny) carries `mode`. A protected-path call routed to the guardian in `auto` records `tier = guardian`; in manual/acceptEdits/dontAsk/headless it records `protected_path`.
 
@@ -226,7 +226,7 @@ ships is: bare `shell`; bare `agent`; and `shell(<entry>)` or `shell(<entry> *)`
 words (`shell(npm test)`, `shell(python script.py)`) is narrow and stays. The list is a constant in
 `permission_rules.rs`, checked against `claude -p` baselines. Suspended rules are listed on entering
 `auto` (TUI notice, headless `init` event). An allow rule is a **user grant**: the containment fast path (step 4) and
-Tier 0.5 (step 5) remain the only guardian skips earned without one, apart from the opt-in
+Tier 0.5 (step 5) remain the only guardian skips earned without one, apart from the `agent` spawn (never guardian-judged, #360) and the opt-in
 user-scope screen allow (step 7, a verdict of the composed guardian), and no tool label or server
 declaration ever creates an allow rule.
 

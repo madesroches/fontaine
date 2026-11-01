@@ -117,7 +117,7 @@ is the live guardian, so it is scored with a live run, repeated a few times beca
 denials were intermittent. The minimal profile gets neither the scratch nor the spawn fact, so a
 `--profile minimal` run poses those cases without them. `evals/dataset/spawn.jsonl` also holds the
 pipeline half: a read-only `explore` spawn takes the `read_only_fast_path` tier in `manual` and in
-`auto`, and a `worker` spawn in `auto` still reaches the guardian.
+`auto`, and a `worker` spawn in `auto` is allowed at the `spawn` tier without reaching the guardian.
 
 ## The external-read slice
 

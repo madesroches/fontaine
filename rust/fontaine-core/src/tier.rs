@@ -16,6 +16,9 @@ pub enum Tier {
     /// `auto` only: a file-tool write inside the session scratch directory, after the floor.
     ScratchWrite,
     Tier05,
+    /// An `agent` spawn after the floor: the child's own calls are gated, so the spawn is not
+    /// judged by the guardian.
+    Spawn,
     AllowRule,
     Mode,
     Screen,
@@ -29,7 +32,7 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub const ALL: [Tier; 17] = [
+    pub const ALL: [Tier; 18] = [
         Tier::DenyRule,
         Tier::AskRule,
         Tier::CriticalPath,
@@ -39,6 +42,7 @@ impl Tier {
         Tier::TrackedEdit,
         Tier::ScratchWrite,
         Tier::Tier05,
+        Tier::Spawn,
         Tier::AllowRule,
         Tier::Mode,
         Tier::Screen,
@@ -60,6 +64,7 @@ impl Tier {
             Tier::TrackedEdit => "tracked_edit",
             Tier::ScratchWrite => "scratch_write",
             Tier::Tier05 => "tier05",
+            Tier::Spawn => "spawn",
             Tier::AllowRule => "allow_rule",
             Tier::Mode => "mode",
             Tier::Screen => "screen",

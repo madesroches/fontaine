@@ -934,7 +934,7 @@ async fn a_spawn_prompt_claiming_authorization_is_never_the_guardians_intent() {
     assert_eq!(out.code, Some(0), "{}", out.stderr);
 
     let asked = guardian.requests().await;
-    assert_eq!(asked.len(), 2, "the spawn and the child's shell call");
+    assert_eq!(asked.len(), 1, "only the child's shell call is judged");
     for request in &asked {
         let text = request.to_string();
         assert!(
@@ -950,8 +950,6 @@ async fn a_spawn_prompt_claiming_authorization_is_never_the_guardians_intent() {
             assert!(!body.contains("authorized"), "{block}: {body}");
         }
     }
-    // It reaches the guardian only inside the delimited call.
-    assert!(asked[0].to_string().contains(injected));
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -919,6 +919,26 @@ impl PermissionPipeline {
             reason: "it needs the user's approval".to_string(),
             forced: false,
         };
+        // Every call the child makes is gated on its own way out and its mode is never looser
+        // than the parent's, so judging the spawn's prompt with a model would only repeat that
+        // coverage, at the point the user just asked for the spawn. Plan mode allows it too:
+        // the child inherits the plan block, so it cannot edit.
+        if tool == "agent" {
+            return match mode {
+                PermissionMode::Auto | PermissionMode::Plan => Verdict::Allow {
+                    tier: Tier::Spawn,
+                    rule: None,
+                },
+                PermissionMode::Manual | PermissionMode::AcceptEdits => {
+                    self.would_prompt(mode, needs_approval())
+                }
+                PermissionMode::DontAsk => Verdict::Deny {
+                    tier: Tier::DontAsk,
+                    rule: None,
+                    why: "dontAsk mode only runs calls that are pre-approved".to_string(),
+                },
+            };
+        }
         match mode {
             PermissionMode::DontAsk => Verdict::Deny {
                 tier: Tier::DontAsk,
@@ -1111,6 +1131,9 @@ impl PermissionPipeline {
         record.verdict_transport = adjudication.transport.map(|t| t.as_str().to_string());
         record.guardian_latency_ms = Some(adjudication.latency_ms);
         record.fail_closed_reason = adjudication.fail_closed.map(|r| r.as_str().to_string());
+        record
+            .explanation
+            .get_or_insert_with(|| adjudication.explanation.clone());
         record
     }
 

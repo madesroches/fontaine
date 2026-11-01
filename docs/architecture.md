@@ -144,6 +144,8 @@ decision before anything else sees it:
  5. allow rules (user trust scopes, session grants, always-allow rules) -> allow
  6. `auto` only: scratch write (file tool inside the session scratch directory) -> allow, then
     tracked edit (file tool on a tracked, new or session-created file in the primary root) -> allow
+ 6b. any other `agent` spawn (never guardian-judged): auto / plan allow (`spawn`), manual / acceptEdits
+    ask, dontAsk denies
  7. the mode: manual / acceptEdits / plan ask, dontAsk denies, auto asks the guardian
     |
     v

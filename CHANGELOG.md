@@ -686,6 +686,11 @@ All notable changes are recorded here. The format follows
   remain denied. `grep` and `glob` approval prompts now show the search path as well as the
   pattern. The eval dataset gains the external-read slice; its version changes, so existing
   scorecards are re-baselined by the next live run.
+- An `agent` spawn is no longer judged by the guardian: in `auto` and `plan` the gate allows it at
+  the new `spawn` tier after the deterministic floor and hooks, so a benign worker prompt can no
+  longer escalate an unattended run to a human (#360). Every call the child makes is still gated,
+  `manual`/`acceptEdits` still prompt and `dontAsk` still denies. The audit record's `explanation`
+  is now also kept for guardian allows and escalations.
 
 #### Tools
 
