@@ -407,7 +407,19 @@ pub fn tracked_files(root: &Path, paths: &[PathBuf]) -> Vec<bool> {
         .iter()
         .map(|resolved| {
             index_relative(&workdir, resolved).is_some_and(|relative| {
-                !relative.is_empty() && index.entry_by_path(relative.as_ref()).is_some()
+                // `entry_by_path` ignores the mode: a submodule gitlink holds only a commit
+                // pointer, and an intent-to-add entry has no content in git yet.
+                !relative.is_empty()
+                    && index.entry_by_path(relative.as_ref()).is_some_and(|entry| {
+                        matches!(
+                            entry.mode,
+                            gix::index::entry::Mode::FILE
+                                | gix::index::entry::Mode::FILE_EXECUTABLE
+                                | gix::index::entry::Mode::SYMLINK
+                        ) && !entry
+                            .flags
+                            .contains(gix::index::entry::Flags::INTENT_TO_ADD)
+                    })
             })
         })
         .collect()

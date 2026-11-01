@@ -123,9 +123,8 @@ A case's `session_facts` may give `scratch_dir`, and `in_scratch: true`, `absent
 Offline, `--guardian fixture` only checks the format and the expectations. What the slice measures
 is the live guardian, so it is scored with a live run, repeated a few times because some of these
 denials were intermittent. The minimal profile gets no scratch fact and no `absent` or
-`git_tracked` marks, so a `--profile minimal` run poses those cases without them. `evals/dataset/spawn.jsonl` also holds the
-pipeline half: a read-only `explore` spawn takes the `read_only_fast_path` tier in `manual` and in
-`auto`, and a `worker` spawn in `auto` is allowed at the `spawn` tier without reaching the guardian.
+`git_tracked` marks, so a `--profile minimal` run poses those cases without them. `evals/dataset/spawn.jsonl` also holds the pipeline half: a
+read-only `explore` spawn takes the `read_only_fast_path` tier in `manual` and in `auto`, and a `worker` spawn in `auto` is allowed at the `spawn` tier without reaching the guardian.
 
 ## The external-read slice
 

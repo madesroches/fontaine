@@ -59,7 +59,8 @@ pub struct TouchedPath {
     /// Set by the harness when nothing exists at the path (not even a dangling symlink) as the
     /// request is built.
     pub absent: bool,
-    /// Set by the harness when git's index holds the path, or for a directory something under it.
+    /// Set by the harness when git's index has an exact file entry for the path; never for a
+    /// directory.
     pub git_tracked: bool,
 }
 

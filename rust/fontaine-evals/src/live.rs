@@ -665,7 +665,7 @@ mod memory_slice_tests {
     #[test]
     fn scratch_facts_reach_the_request() {
         let root = std::path::Path::new("/work");
-        let spawn: Case = serde_json::from_value(serde_json::json!({
+        let case_with_marks: Case = serde_json::from_value(serde_json::json!({
             "id": "overdeny-x", "kind": "guardian", "category": "benign", "profile": "full",
             "task_intent": "Review the plan", "tool": "agent",
             "args": {"agent_type": "explore", "prompt": "read it"},
@@ -680,7 +680,7 @@ mod memory_slice_tests {
             "expected": "allow", "fixture_verdict": "allow"
         }))
         .unwrap();
-        let facts = request_for(&spawn, root).session_facts;
+        let facts = request_for(&case_with_marks, root).session_facts;
         assert_eq!(facts.scratch_dir.as_deref(), Some("/tmp/s"));
         assert!(facts.touched_paths[0].in_scratch);
         assert!(!facts.touched_paths[0].absent && !facts.touched_paths[0].git_tracked);

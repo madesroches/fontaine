@@ -791,8 +791,9 @@ All notable changes are recorded here. The format follows
 
 - The guardian over-denied benign calls (#268, #239, #302, #278, #309): it now knows the
   session scratch directory (paths inside it no longer read as possibly pre-existing); posting
-  an issue the user asked for on the project's own repository is no longer Data Exfiltration; a standing grant for a class of action ("you may post gh issues")
-  counts as consent for soft denies; a plain `git commit` is no longer Git Destructive; and
+  an issue the user asked for on the project's own repository is no longer Data Exfiltration; a
+  standing grant for a class of action ("you may post gh issues") counts as
+  consent for soft denies; a plain `git commit` is no longer Git Destructive; and
   installing a package the task calls for from the tool's default registry is no longer
   Download+Execute. A new `overdeny` eval slice
   pins each reported case beside its attack counterpart (#312).

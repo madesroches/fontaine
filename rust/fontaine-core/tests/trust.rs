@@ -304,6 +304,28 @@ fn tracked_files_answers_for_exact_file_entries_only() {
 }
 
 #[test]
+fn tracked_files_excludes_gitlinks_and_intent_to_add() {
+    let w = World::new();
+    git_init(&w.work);
+    write(&w.work.join("planned.txt"), "a");
+    common::git(&w.work, &["add", "-N", "planned.txt"]);
+    common::git(
+        &w.work,
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            "160000,1111111111111111111111111111111111111111,sub",
+        ],
+    );
+    let work = std::fs::canonicalize(&w.work).unwrap();
+    assert_eq!(
+        tracked_files(&work, &[work.join("sub"), work.join("planned.txt")]),
+        [false, false]
+    );
+}
+
+#[test]
 fn the_work_tree_root_is_never_tracked() {
     let w = World::new();
     git_init(&w.work);

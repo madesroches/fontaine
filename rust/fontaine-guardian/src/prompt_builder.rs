@@ -267,8 +267,8 @@ pub fn bare_state(request: &AdjudicationRequest) -> String {
 
 /// The untrusted blocks of the request, each followed by a blank line. The screen leaves out the
 /// digest line, which tells a small model nothing, and its calibration predates the
-/// `source="user"` mark, the scratch facts and the `session_scratch` status, so it
-/// asks for none of them: `guardian_view` is false for its input, which stays byte-identical.
+/// `source="user"` mark, the scratch facts, the `session_scratch` and `absent` statuses, the
+/// `git_tracked` mark and the `prior_denials` note, so it asks for none of them: `guardian_view` is false for its input, which stays byte-identical.
 pub(crate) fn blocks(
     request: &AdjudicationRequest,
     with_digest: bool,

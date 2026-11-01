@@ -98,12 +98,11 @@ stay byte-identical.
   - `absent`: `std::fs::symlink_metadata(path)` returns `NotFound`. A dangling symlink is not
     absent.
   - `git_tracked`: the path is inside the primary root's work tree, and git's index has an exact
-    entry for it or, for a directory, at least one entry under it. Add
-    `trust::tracked_or_holds_tracked(root, &[PathBuf]) -> Vec<bool>` next to `trust::tracking`. It
+    file entry for it (regular, executable or symlink; not a gitlink or intent-to-add). Add
+    `trust::tracked_files(root, &[PathBuf]) -> Vec<bool>` next to `trust::tracking`. It
     reuses the same discovery and canonicalisation, answers `false` on `Unknown`, and opens the
-    repository and index once per request (touched paths are capped at 16). The directory case is a
-    prefix scan over index entries (`<rel>/`); the work-tree root itself holds tracked entries when
-    the index is non-empty.
+    repository and index once per request (touched paths are capped at 16). A directory and the
+    work-tree root are always `false`.
 - `prompt_builder.rs`, guardian view only: the status token is `session_scratch` when
   `in_scratch`, else `absent` when `absent`, else the ledger's status. `, git_tracked` is appended
   when `git_tracked`, for example `- /w/tasks/x_plan.md [pre_existing, git_tracked]`. The screen
@@ -284,9 +283,9 @@ Unit tests:
   "rig-core-0.45.0" | head -1); echo "$RIG_DIR"; rg -n "enum ContentPart" -A 40 "$RIG_DIR/src"
   2>/dev/null | head -80`), `touched_paths` lists no `/dev/null`; for `rg -n x src 2>/dev/null |
   head -80`, `derive` is `false`. `echo x > /dev/stderr` still derives `true`.
-- `rust/fontaine-core/tests/trust.rs`: `tracked_or_holds_tracked` is true for a tracked file and for a directory holding
-  one, and false for an untracked file, an empty or untracked-only directory, an absent path and
-  a path outside the work tree, and the work-tree root is true only with a non-empty index. Use a
+- `rust/fontaine-core/tests/trust.rs`: `tracked_files` is true for a tracked file, and false for an untracked file, a
+  directory (even one holding tracked files), a gitlink, an intent-to-add entry, an absent path, a
+  path outside the work tree and the work-tree root. Use a
   temporary git repository, as the `tracking` tests do.
 - `adjudication.rs`: `absent` is set for a missing path and not for a dangling symlink.
   `git_tracked` is set for a tracked file in the primary root.
