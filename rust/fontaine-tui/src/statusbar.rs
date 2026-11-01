@@ -208,7 +208,8 @@ mod tests {
 
         let mut app = located("/home/u/proj", Some("main"));
         app.home = Some(PathBuf::from("/home/u"));
-        assert!(bar(&app).contains("· ~/proj (main) ·"));
+        let tilde_proj = format!("· ~{}proj (main) ·", std::path::MAIN_SEPARATOR);
+        assert!(bar(&app).contains(&tilde_proj), "{}", bar(&app));
         app.cwd = PathBuf::from("/home/u");
         assert!(bar(&app).contains("· ~ (main) ·"));
     }

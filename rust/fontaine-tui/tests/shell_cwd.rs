@@ -28,16 +28,17 @@ async fn a_cd_shows_in_the_status_bar_and_clear_resets_it() {
         text_turn("moved"),
     ]);
     std::fs::create_dir_all(w.work.join("sub")).unwrap();
+    let sub = format!("work{}sub", std::path::MAIN_SEPARATOR);
     w.run(|ui| async move {
         idle(&ui).await;
         assert!(ui.screen().contains("work ·"), "{}", ui.screen());
         ui.send("go to sub");
         ui.wait_for("moved").await;
-        ui.wait_until("the bar to name the directory", |s| s.contains("work/sub"))
+        ui.wait_until("the bar to name the directory", |s| s.contains(&sub))
             .await;
         ui.send("/clear");
         ui.wait_until("the bar to name the root again", |s| {
-            s.contains("work ·") && !s.contains("work/sub ·")
+            s.contains("work ·") && !s.contains(&format!("{sub} ·"))
         })
         .await;
     })
@@ -52,13 +53,14 @@ async fn a_cd_out_of_the_workspace_leaves_the_bar_on_the_root() {
         text_turn("moved"),
     ]);
     std::fs::create_dir_all(w.work.join("sub")).unwrap();
+    let sub = format!("work{}sub ·", std::path::MAIN_SEPARATOR);
     w.run(|ui| async move {
         ui.send("go");
         ui.wait_for("moved").await;
         idle(&ui).await;
         let screen = ui.screen();
         assert!(screen.contains("shell working directory reset"), "{screen}");
-        assert!(!screen.contains("work/sub ·"), "{screen}");
+        assert!(!screen.contains(&sub), "{screen}");
     })
     .await;
 }
