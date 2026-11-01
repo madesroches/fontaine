@@ -111,20 +111,34 @@ pub(crate) enum SkillRun {
 fn into_attachment(pending: PendingAttachment) -> Result<Attachment, String> {
     use crate::input::PendingMedia;
 
+    // Stat before opening: metadata does not block on a FIFO or device, but
+    // reading one would, and the recorded size cannot be trusted for the cap.
+    let metadata = std::fs::metadata(&pending.path).map_err(|e| {
+        format!(
+            "{} could not be read and was not sent: {e}",
+            pending.path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "{} is not a regular file and was not sent",
+            pending.path.display()
+        ));
+    }
+    if metadata.len() > MAX_ATTACHMENT_BYTES {
+        return Err(format!(
+            "{} is {} and was not sent: attachments are capped at {}",
+            pending.label,
+            fontaine_tools::notebook::human_size(metadata.len()),
+            fontaine_tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
+        ));
+    }
     let bytes = std::fs::read(&pending.path).map_err(|e| {
         format!(
             "{} could not be read and was not sent: {e}",
             pending.path.display()
         )
     })?;
-    if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
-        return Err(format!(
-            "{} is {} and was not sent: attachments are capped at {}",
-            pending.label,
-            fontaine_tools::notebook::human_size(bytes.len() as u64),
-            fontaine_tools::notebook::human_size(MAX_ATTACHMENT_BYTES),
-        ));
-    }
     let media = match pending.media {
         PendingMedia::Image(media) => AttachmentMedia::Image(media),
         PendingMedia::Pdf => AttachmentMedia::Pdf,
@@ -934,6 +948,36 @@ mod tests {
             size: MAX_ATTACHMENT_BYTES + 1,
         };
         let err = into_attachment(pending).expect_err("an oversized attachment is refused");
+        assert!(err.contains("capped at 5.0 MB"), "{err}");
+    }
+
+    #[test]
+    fn a_non_regular_attachment_is_refused_at_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = PendingAttachment {
+            label: "adir".into(),
+            path: dir.path().join("adir"),
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 3,
+        };
+        std::fs::create_dir(&pending.path).unwrap();
+        let err = into_attachment(pending).expect_err("a directory is refused");
+        assert!(err.contains("not a regular file"), "{err}");
+    }
+
+    #[test]
+    fn an_attachment_that_grew_past_the_cap_is_refused_at_send() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("grown.png");
+        std::fs::write(&path, vec![0u8; (MAX_ATTACHMENT_BYTES + 1) as usize]).unwrap();
+        let pending = PendingAttachment {
+            label: "grown.png".into(),
+            path,
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 3,
+        };
+        let err =
+            into_attachment(pending).expect_err("an attachment grown past the cap is refused");
         assert!(err.contains("capped at 5.0 MB"), "{err}");
     }
 

@@ -268,6 +268,12 @@ fn dropped_pdf(text: &str) -> Option<PendingAttachment> {
         return None;
     }
     let path = PathBuf::from(trimmed.trim_matches(['"', '\'']));
+    // Stat before opening: metadata does not block on a FIFO or device, but
+    // opening and reading one on the UI thread would.
+    let metadata = std::fs::metadata(&path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
     let mut head = [0u8; 5];
     std::fs::File::open(&path)
         .ok()?
@@ -276,7 +282,7 @@ fn dropped_pdf(text: &str) -> Option<PendingAttachment> {
     if &head != b"%PDF-" {
         return None;
     }
-    let size = std::fs::metadata(&path).ok()?.len();
+    let size = metadata.len();
     let label = path.file_name()?.to_string_lossy().into_owned();
     Some(PendingAttachment {
         label,
@@ -2373,6 +2379,18 @@ mod tests {
         app.handle_input(Input::Paste(text.to_string_lossy().into_owned()));
         assert_eq!(app.input.text(), text.to_string_lossy());
         assert_eq!(app.input.attachments().len(), 1);
+    }
+
+    #[test]
+    fn a_dropped_non_regular_path_stays_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let not_a_file = dir.path().join("dir");
+        std::fs::create_dir(&not_a_file).unwrap();
+
+        let mut app = app();
+        app.handle_input(Input::Paste(not_a_file.to_string_lossy().into_owned()));
+        assert_eq!(app.input.text(), not_a_file.to_string_lossy());
+        assert!(!app.input.has_attachments());
     }
 
     #[test]
