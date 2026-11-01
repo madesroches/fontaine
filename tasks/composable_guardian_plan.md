@@ -9,7 +9,7 @@ and flattens it into keys. This plan makes the guardian's composition a **Rune s
 script is the composition, the host supplies the leaves (the LLM guardian, logprob reads) and
 mints every verdict, and Rust wraps the script in a fail-closed root. Today's screen ships as the
 built-in `screen` preset, a Rune script compiled into `fontaine-guardian`, so the common case stays
-a few lines of TOML. Concurrency is opt-in: Rune futures are lazy, so a script that awaits calls
+a few lines of TOML. The preset is an allow screen in front of the LLM guardian. Concurrency is opt-in: Rune futures are lazy, so a script that awaits calls
 one after another runs them in sequence, and only `first_decisive([...])` or
 `std::future::join(...)` runs them together. It folds in #136 (sequential versus concurrent
 cost, dropped-request spend).
@@ -34,7 +34,7 @@ cost, dropped-request spend).
 - `rust/fontaine-core/src/agent/setup.rs:159` `build_screen` and `:344` `attach_screen` (warm-up,
   `state.set_screen`). `rust/fontaine-core/src/gate.rs:150` `ScreenStage { screen, label, shadow }`.
 - `rust/fontaine-core/src/permissions.rs:1443-1490` calls `cascade::adjudicate`, then
-  `screen_stop` (`:1545`), `screen_allow` (`:1511`) or `settle`. `Screened::annotate` (`:391`)
+  `screen_stop` (`:1570`), `screen_allow` (`:1540`) or `settle`. `Screened::annotate` (`:391`)
   fills the audit fields `screen_risk`, `screen_allow_risk`, `screen_steering`, `screen_model`,
   `screen_latency_ms`, `screen_outcome` and `guardian_dropped_*` (`rust/fontaine-core/src/audit.rs:88-106`),
   which are mirrored in headless output (`rust/fontaine/src/headless.rs:425`,
@@ -120,14 +120,17 @@ functions are `use`-able as `guardian::…`; the prelude imports them) exposes:
 | Item | Returns | Notes |
 |---|---|---|
 | `call.tool()`, `call.destructive()` | `String`, `bool` | Read-only facts of the call; no arguments are exposed (the script decides by reads, not by matching arguments — no regex on tool arguments). |
-| `read(call, name)` | `Future<Result<Score, String>>` | `name` is a declared read. The score is recorded under `name` for the audit record either way; an undeclared name is an `Err`. |
+| `read(call, name)` | `Future<Result<Score, String>>` | `name` is a declared read. The score is recorded under `name` for the audit record either way; an undeclared name is an `Err`. Reads are host-driven tasks owned by the evaluation context, so dropping the returned future in the script (as `first_decisive` does to losers) does not cancel the read. |
 | `score.value()` | `f64` | |
 | `llm(call)` | `Future<Verdict>` | The LLM guardian. Every call in one evaluation shares **one** request (a `futures::future::Shared` in the evaluation context), so the script can mention it on several paths without paying twice. It never abstains: its fail-closed outcomes are Deny verdicts. |
-| `first_decisive(futures)` | `Future<Verdict>` | Polls all futures concurrently; returns the first non-abstain verdict; when several are ready on the same poll, list order wins; drops the rest; all abstain → abstain. |
+| `first_decisive(futures)` | `Future<Verdict>` | Polls all futures concurrently; returns the first non-abstain verdict; when several are ready on the same poll, list order wins; drops the rest; all abstain → abstain. Dropping a read's future here does not cancel the read (see below). |
 | `std::future::join(..)` | Rune native | For reads the script wants together. |
 | `escalate(node, reason)`, `deny(node, reason)`, `abstain()` | `Verdict` | `node` names the deciding node in the audit record's `rule`. |
 | `allow_below(node, score, threshold)` | `Verdict` | Allow if `score.value() < threshold`, else abstain. The only script-side way to an allow. |
 | `verdict.is_abstain()`, `verdict.is_allow()` | `bool` | For sequencing. |
+
+The root's timeout bound covers one read stage plus one LLM call, so a script that chains read stages
+sequentially before `llm()` can hit Deny `Timeout` by design.
 
 `Call`, `Score` and `Verdict` are host `Any` types with no Rune constructors and no settable
 fields, so a script cannot forge them. An `Allow` can only come from `llm()` (it carries the
@@ -158,8 +161,10 @@ The rules below are in Rust and outside the script's reach:
 
 1. **Runs bounded.** The VM runs through `Vm::send_execute(["guardian"], (call, params))` wrapped
    in `rune::runtime::budget::with(INSTRUCTION_BUDGET, …)` and in
-   `tokio::time::timeout(guardian timeout + read timeout + COMPOSITION_SLACK, …)`. Both constants
-   ship in code (the 2026-10-21 "guardian constants are not config keys" decision). A fresh `Vm`
+   `tokio::time::timeout(guardian timeout + PROBE_TIMEOUT + read timeout + COMPOSITION_SLACK, …)`
+   (`PROBE_TIMEOUT` because the output-mode probe runs outside `Settings.timeout`). The bound covers
+   one read stage plus one LLM call. Both constants ship in code (the 2026-10-21 decision "Guardian
+   constants ship in `fontaine-guardian`, not config keys"). A fresh `Vm`
    is made per call; the session measured about 0.1 µs for that and about 0.8 µs for a
    screen-sized evaluation.
 2. **Fail-closed.** A VM error, budget exhaustion, a timeout, a panic in a host function, or a
@@ -171,27 +176,46 @@ The rules below are in Rust and outside the script's reach:
 4. **Monotone over verdicts in hand.** If the script returns a non-LLM `Allow` while a
    completed `llm()` result in this evaluation is not an allow, the root returns that LLM verdict
    (`Decided::Guardian`). A computed denial is never turned into an allow, which matches today's
-   "a guardian verdict in hand wins". A script `Escalate`/`Deny` is kept even when an LLM allow
-   is in hand, since that is the stricter outcome.
+   "a guardian verdict in hand wins". More generally, a completed LLM non-allow in hand is always
+   returned as `Decided::Guardian` whatever the script returns, so a computed guardian deny stays
+   non-approvable and still feeds `record_denied` and the guardian-denied breaker. Only an LLM allow
+   in hand yields to a script `Escalate`/`Deny`, the stricter outcome.
 5. **Spend is never lost.** When the evaluation ends with the shared LLM request started but not
    finished, it is dropped (cancelled) and `dropped_input_tokens` is set to
    `Guardian::dropped_estimate` (as today). When it finished but the final verdict is not
    `Guardian`, its usage is returned in `llm_usage` so the pipeline adds it to the session's
    usage.
-6. **Shadow.** With `shadow = true`, the root joins the script with the shared LLM request,
+6. **Reads are awaited.** The root waits for every started read (each bounded by the read timeout)
+   before returning, even after `first_decisive` settled, so their scores are recorded (enforced or
+   shadow), as `screening.await` does today (`cascade.rs:56-63`). The ported tests
+   `fontaine-guardian/tests/cascade.rs:257` and `fontaine-core/tests/permissions_screen.rs:479` pin it.
+7. **Shadow.** With `shadow = true`, the root joins the script with the shared LLM request,
    records the script's would-be `outcome`, and always decides by `Decided::Guardian`. The
    script's `llm()` is the same shared request, so shadow mode costs no extra guardian call.
 
+`composition::adjudicate` emits the `fontaine.guardian.screen` span with the named-read fields,
+`outcome` and `latency_ms`, replacing `Screen::screen`'s emission (`screen.rs:245-266`).
+`screen_outcome` is `unavailable` when `Outcome::Failed` or any `ReadRecord` is `Err`;
+`screen_latency_ms` is the latency from evaluation start to the last read finishing.
+
 ### The `screen` preset (`composition/screen.rn`)
+
+The default shape is an allow screen in front of the LLM guardian, sequential: the screen runs
+first; if it allows, the call is allowed; everything it does not allow (including what would be an
+escalate or deny) goes to the LLM guardian, which reviews it. The screen does not stop or escalate
+on its own by default. `stop_threshold` is an optional param; when set, a stop escalates directly.
+Nothing is enabled without config: no model or threshold ships, and a guardian with no
+`[guardian.composition]` stays LLM-only.
 
 It declares reads `stop` (`Plain`, `params.question`, default `employee_allowed`), `allow`
 (`Hardened`, `employee_allowed`) and `steering` (`Plain`, `Steering`), all on the composition's
-`model`. Its logic is today's `Screen::run` plus `cascade::adjudicate`:
+`model`; only the reads the params need are run. Its logic is today's `Screen::run` plus
+`cascade::adjudicate`:
 
 ```rune
 pub async fn guardian(call, params) {
     if params.concurrent {
-        first_decisive([llm(call), screen(call, params)]).await
+        first_decisive([llm(call), screen(call, params)]).await   // opt-in
     } else {
         let v = screen(call, params).await;
         if v.is_abstain() { llm(call).await } else { v }
@@ -199,24 +223,28 @@ pub async fn guardian(call, params) {
 }
 
 async fn screen(call, params) {
-    let (stop, allow, steering) = if params.allow_threshold.is_some() {
-        std::future::join((read(call, "stop"), read(call, "allow"), read(call, "steering"))).await
-    } else { (read(call, "stop").await, Err(()), Err(())) };
-    let stop = match stop { Ok(s) => s, Err(_) => return abstain() };
+    // reads the params call for run together; every joined read must be Ok, else abstain,
+    // before any stop check
+    let (stop, allow, steering) = std::future::join((read(call, "stop"), read(call, "allow"), read(call, "steering"))).await;
+    let (stop, allow, steering) = match (stop, allow, steering) {
+        (Ok(a), Ok(b), Ok(c)) => (a, b, c),
+        _ => return abstain(),
+    };
     if let Some(t) = params.stop_threshold { if stop.value() >= t { return escalate("screen.stop", `risk ${stop.value()}`); } }
-    match (params.allow_threshold, allow, steering) {
-        (Some(t), Ok(a), Ok(s)) if s.value() < params.steering_veto => allow_below("screen.allow", a, t),
+    match params.allow_threshold {
+        Some(t) if steering.value() < params.steering_veto => allow_below("screen.allow", allow, t),
         _ => abstain(),
     }
 }
 ```
 
-(This is illustrative; the implementer writes valid Rune 0.14. Shadow mode always runs the allow
-reads so their scores are logged, as `build_screen` does today.) Preset params, checked in Rust at
-load with today's ranges and messages: `question`, `stop_threshold` (0, 1], `allow_threshold`
-(0, 1), `steering_veto` (0, 1], default `DEFAULT_STEERING_VETO`, and `concurrent` (bool). When
-`concurrent` is unset, it defaults to `false` if the guardian is priced (`Settings::priced`) and
-`true` otherwise (#136). A non-shadow preset with neither threshold is an error, as today.
+(This is illustrative; the implementer writes valid Rune 0.14, including running only the reads
+the params need. Shadow mode always runs the allow reads so their scores are logged, as
+`build_screen` does today.) Preset params, checked in Rust at load with today's ranges and
+messages: `question`, `stop_threshold` (0, 1], `allow_threshold` (0, 1), `steering_veto` (0, 1],
+default `DEFAULT_STEERING_VETO`, and `concurrent` (bool, default `false`: sequential whether or not
+the guardian is priced; `true` is opt-in, #136). A non-shadow preset with neither threshold is an
+error, as today.
 
 When any read fails, the preset abstains on the screen branch, so the LLM decides. Today a failed
 read makes the whole screen `Unavailable`. This keeps that.
@@ -234,7 +262,9 @@ shadow = true                     # default true
 timeout_ms = 2000                 # each read's bound (DEFAULT_SCREEN_TIMEOUT_MS)
 
 [guardian.composition.params]     # preset params, or free-form values passed to a script
-allow_threshold = 1.56e-6
+allow_threshold = 1.56e-6         # default case: allow screen only; the LLM reviews the rest
+# stop_threshold = 0.9            # optional: a stop escalates directly
+# concurrent = true               # optional: race the screen against the LLM
 
 [guardian.composition.reads.extra]   # scripts only; a preset declares its own reads
 model = "local/other"             # optional, defaults to `model`
@@ -261,7 +291,8 @@ issue (see Decisions).
 
 - `gate.rs`: `ScreenStage` becomes `CompositionStage { composition: Arc<Composition>, readers:
   Vec<Arc<Reader>>, label: String, shadow: bool }`. `set_screen`/`screen()` and
-  `first_screen_warning` are renamed. Subagents share the session state, so they run the same
+  `first_screen_warning` are renamed. `CompositionStage` stays an `Option` like `ScreenStage`: with
+  no composition configured, call sites call `guardian.adjudicate` directly. Subagents share the session state, so they run the same
   composition, as they share the screen today.
 - `agent/setup.rs`: `build_composition` resolves each distinct read model to an Ollama account
   (`context_tokens`, base URL) and builds one `Reader` per model; `attach_composition` warms up
@@ -269,9 +300,11 @@ issue (see Decisions).
 - `permissions.rs`: the call site passes `Arc`s. `Decided::Escalate` takes today's `screen_stop`
   path (prompt, or deny when headless, `tier = screen`, `rule = node`). `Decided::Deny` is a deny
   with `tier = screen`, `rule = node`, no prompt and no hook retry. `Decided::Allow` takes the
-  `screen_allow` path. `Decided::Guardian` goes to `settle`. `llm_usage` goes through
-  `add_guardian_usage`. A failed read warns once per session through `Approver::warn`, as an
-  unavailable screen does today.
+  `screen_allow` path; `screen_allow` takes (node, score, threshold) plus the reads (steering, for
+  the explanation) and `screen_stop` takes (node, reason), and both set `rule = node`. `Screened`
+  is built from `Composed.reads` and `outcome`. `Decided::Guardian` goes to `settle`. `llm_usage` goes through
+  `add_guardian_usage`. A failed read or a failed script (`unavailable`) warns once per session through
+  `Approver::warn`, as an unavailable screen does today.
 - Audit (`audit.rs`), headless output and schema: keep `screen_risk`, `screen_allow_risk` and
   `screen_steering`, filled from the reads named `stop`, `allow` and `steering`; add `screen_scores`
   (an object of every other read name → score). `screen_model` becomes the comma-joined distinct
@@ -308,23 +341,24 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
    checks, entry check), `adjudicate` with rules 1–6, the constants `INSTRUCTION_BUDGET` and
    `COMPOSITION_SLACK`. Delete `cascade.rs`; update `lib.rs` exports.
 5. **Preset.** `composition/screen.rn`, `composition/preset.rs` (declared reads, param schema and
-   range checks, the `concurrent` default from `priced`). Port `fontaine-guardian/tests/cascade.rs`
+   range checks, `concurrent` default `false`). Port `fontaine-guardian/tests/cascade.rs`
    to the preset.
 6. **Config.** `config.rs` (`GuardianCompositionSection`/`GuardianComposition`, merge, validation,
    `check_composition` including compile), `config_scope.rs`, `config_catalog.rs`,
-   `user_config.rs`, `agent/models.rs`. Regenerate the config JSON schema if one is generated
-   (`docs/schemas/`).
+   `user_config.rs`, `agent/models.rs`.
 7. **Pipeline.** `gate.rs`, `agent/setup.rs`, `agent.rs` re-exports, `permissions.rs` (the four
    `Decided` arms, `llm_usage`, warnings), `audit.rs`, `user_shell.rs` (record fields),
    `rust/fontaine/src/headless.rs`, `docs/schemas/headless-v1.schema.json`.
 8. **Evals.** `fontaine-evals/src/live.rs` and `runner.rs` (new flags, preset construction, step
-   recording); update `fontaine-evals/tests/live.rs` and `tests/screen.rs` if they touch the
-   cascade types.
+   recording); `rust/fontaine-evals/Cargo.toml` (`fontaine-guardian` dependency gains
+   `features = ["composition"]`); update `fontaine-evals/tests/live.rs` if it touches the cascade
+   types.
 9. **Tests.** See Testing Strategy, and port `fontaine-core/tests/config.rs` (the
    `[guardian.screen]` block), `permissions_screen.rs`, `account_ops.rs:275`,
    `account_session.rs:245`, `common/mod.rs` and `rust/fontaine/tests/auto_headless.rs`.
 10. **Docs and plan.** See Documentation. Add the Decisions lines below to the master plan's
-    `### Guardian` subsection (at its end) and to this plan. File the follow-up issues named in
+    `### Guardian` subsection (at its end) and to this plan, and amend (mark superseded, not only
+    append) the master plan's 2026-10-24 screen lines at 545-547. File the follow-up issues named in
     Decisions.
 
 ## Files to Modify
@@ -336,30 +370,22 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
 - `rust/fontaine-core/tests/{config.rs,permissions_screen.rs,account_ops.rs,account_session.rs,common/mod.rs}`
 - `rust/fontaine/src/headless.rs`, `rust/fontaine/tests/auto_headless.rs`
 - `rust/fontaine-tui/src/config_panel.rs` (its `guardian.screen` filter test)
-- `rust/fontaine-evals/src/{live.rs,runner.rs}`, `rust/fontaine-evals/tests/live.rs`
-- `docs/{guardian.md,configuration.md,headless.md,evals.md,permissions.md}`, `docs/schemas/headless-v1.schema.json`
-- `tasks/fontaine_harness_plan.md` (Decisions)
+- `rust/fontaine-evals/Cargo.toml`, `rust/fontaine-evals/src/{live.rs,runner.rs}`, `rust/fontaine-evals/tests/live.rs`, `evals/README.md`
+- `docs/{guardian.md,configuration.md,headless.md,evals.md,permissions.md,telemetry.md,tui.md}`, `docs/schemas/headless-v1.schema.json`
+- `AGENTS.md` (line 57), `tasks/design/permissions.md` (~100-104, ~171)
+- `tasks/fontaine_harness_plan.md` (Decisions; amend lines 545-547)
 
 ## Trade-offs
 
-- **Rune over data (TOML), a bespoke DSL, Lua (mlua/Luau), Starlark, JS or WASM.** The user's
-  choice. Rune has native `async`/`.await` with lazy futures, so sequential evaluation is the
+- **Rune over data (TOML), a bespoke DSL, Lua (mlua/Luau), Starlark, JS or WASM.** Rune has native `async`/`.await` with lazy futures, so sequential evaluation is the
   default and concurrency is opt-in. It is pure Rust (no C build, and it fits the Windows
   cross-compile), with an instruction budget and `Send` execution. Measured in this session
   (release build): about 0.8 µs per screen-style evaluation with 3 async host calls (Luau: 1.3 µs);
   `join` of three 20 ms host calls took 21 ms against 63 ms sequential; raw interpretation is
   about 4–5× slower than Luau (`fib(27)` 82 ms against 18 ms), which is irrelevant next to model
-  calls. The costs are a pre-1.0 dependency (pinned exactly) and the loss of static "can this tree
-  allow?" analysis. Unforgeable host verdicts and the Rust root recover that guarantee
-  structurally.
-- **Host-minted verdicts over static analysis.** A Rune script cannot be analysed for which
-  verdicts it yields. Making `Verdict`/`Score` host types with no constructors moves "only these
-  leaves can allow" into the type system, and the fail-closed root needs no knowledge of the
-  script.
+  calls. The costs are a pre-1.0 dependency (pinned exactly).
 - **One shared LLM request per evaluation** over a fresh call per `llm()`. It keeps shadow mode free
   and stops a script that names `llm()` on several branches from paying more than once.
-- **No new crate** (user decision). A cargo feature keeps `fontaine-guardian` lift-out-able for
-  embedders that don't want rune.
 - **Read names declared in TOML** over model names in the script. The load step then knows every
   model, which drives warm-up, the Ollama-account check and the "model in use" guard without
   running the script.
@@ -375,16 +401,18 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
 - 2026-11-01: v1 loads scripts from user scope only; project scopes may only force `shadow = true`.
   The project-scope tighten-only script (a context without `allow_below` or reads, strictest-wins
   over the user composition) is a follow-up issue.
-- 2026-11-01: The `screen` preset defaults to sequential (screen, then LLM) for a priced guardian
-  and concurrent otherwise; `params.concurrent` overrides (#136).
+- 2026-11-01 (user): Default `screen` preset shape = allow screen in front, LLM reviews the rest,
+  sequential; concurrency (`concurrent = true`) is opt-in (#136).
+- 2026-11-01 (user): Integrating the allow screen into `fontaine auto-mode setup` /
+  `/auto-mode-setup` is a follow-up issue.
 - 2026-11-01: A script escalate or deny beats an LLM allow that is already in hand (the stricter
-  outcome wins), where today an in-hand LLM verdict wins either way; an in-hand LLM non-allow still
-  beats a script allow.
+  outcome wins), where today an in-hand LLM verdict wins either way; an in-hand LLM non-allow
+  always wins over any script verdict.
 
 ## Documentation
 
 - `docs/guardian.md`: rewrite "The screen stage" as "Composing the guardian": the `screen` preset
-  (today's text on the stop and allow paths, shadow calibration, cost), then "Writing a
+  (allow screen in front of the LLM by default; today's text on the stop and allow paths, shadow calibration, cost), then "Writing a
   composition script" (the contract table, the fail-closed rules, sequential versus concurrent cost
   in the issue's race/seq table, and a worked example). Update the `session_facts` row's "screen
   stage" link.
@@ -393,6 +421,13 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
 - `docs/headless.md`: the `gate_decision` row (`screen_scores`, `screen_outcome` = `deny`).
 - `docs/evals.md`: cascade scorecards via the preset and `--composition-script`.
 - `docs/permissions.md`: update its screen references.
+- `docs/telemetry.md` (~99, ~126): `fontaine.screen.count` values gain `deny`; ~137 drop "racing".
+- `docs/tui.md` ~664-665: screen references.
+- `tasks/design/permissions.md` ~100-104 and ~171: the screen tier definition.
+- `evals/README.md` ~155: the `--screen live:` row and the new flags.
+- `AGENTS.md:57`: the security invariant naming `[guardian.screen] allow_threshold` is rewritten to
+  name the composed guardian's allow (`allow_below` in a user-scope composition, the `screen`
+  preset).
 - `CHANGELOG.md` is handled by the `pr` step.
 
 ## Testing Strategy
@@ -407,17 +442,21 @@ All of these are unit or integration tests with `wiremock` for the Ollama reads 
 - **Root rules** (unit, `tokio::test` with paused time where useful): an infinite loop exhausts
   the budget → Deny; a script that sleeps past the timeout → Deny `Timeout`; root abstain → Deny;
   a script that returns a screen allow while a completed LLM deny is in hand → the LLM deny
-  (monotone); a script that escalates with an LLM allow in hand → escalate; a host panic → Deny.
+  (monotone); a script that escalates with an LLM allow in hand → escalate; a script that escalates or denies with
+  a completed LLM deny/escalate in hand → the LLM verdict as `Decided::Guardian`; a host panic → Deny;
+  with no composition configured, `guardian.adjudicate` is called directly (ported
+  `without_a_screen_it_is_the_guardians_adjudication`, `tests/cascade.rs:131`).
 - **Concurrency and cost**: `first_decisive` returns the first decisive verdict and list order wins
   a same-poll tie; dropping an in-flight `llm()` sets `dropped_input_tokens`; a completed but unused
   LLM result is returned in `llm_usage`; `llm()` named twice sends one request (wiremock
-  `expect(1)`); a sequential script runs reads in order, and `join` runs them together (paused-time
+  `expect(1)`); every started read is awaited and recorded even after `first_decisive` settled; a sequential script runs reads in order, and `join` runs them together (paused-time
   latency assertion).
 - **Shadow**: the script's verdict is recorded and the LLM decides; one LLM request.
 - **Preset parity**: port every case in `fontaine-guardian/tests/cascade.rs` and
   `fontaine-core/tests/permissions_screen.rs` (stop, allow, pass, unavailable read, guardian in
-  hand wins, shadow scores logged, dropped estimate) to the preset; add the priced → sequential
-  default.
+  hand wins, shadow scores logged, dropped estimate, `any_failed_read_makes_the_whole_outcome_unavailable`, `screen.rs:884-910`) to the
+  preset; add: the default is allow-only and sequential (everything not allowed goes to the LLM),
+  a stop escalates only when `stop_threshold` is set, and `concurrent = true` races.
 - **Config** (`fontaine-core/tests/config.rs`, `config_scope.rs` unit tables): every rejection
   that exists today, moved to the new keys; `preset` and `script` together or both missing;
   unknown preset or param; `hardened` with another question; a script compile error and a missing
