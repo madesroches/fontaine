@@ -119,8 +119,9 @@ string, so a decision can never be made against one directory and run in another
 parallel tool calls: the value is pinned per call). With this, no consumer in the pipeline changes:
 they already resolve against a call's `cwd`. The preparer also checks `is_dir()` on the tracked directory: if it was deleted between calls
 (`launch_in` would fail ENOENT before `observe` runs; `Scope::find` checks containment, not
-existence), it resets the tracker to the primary root and attaches the reset notice to the result:
-`GuardedTool::call` receives the outcome from `gated()` and appends the notice there.
+existence), it resets the tracker to the primary root and records the reset notice; `GuardedTool::call`
+appends it to the outcome `gated()` returns with `result_pipeline::append_note(outcome, note)`
+(`result_pipeline.rs:109-128`).
 The tool itself never reads the tracker when starting a
 call (a missing `cwd` still means `launcher.cwd`). The rewrite is a pure function of the tracker,
 never of model input. An explicit relative `cwd` still resolves against the primary root, as today
@@ -149,7 +150,7 @@ the deterministic floor is unchanged.
 
 ## Implementation Steps
 
-1. `fontaine-tools/src/shell_cwd.rs`: `ShellCwd`, `Observation`, `observe`; export it.
+1. `fontaine-tools/src/shell_cwd.rs`: `ShellCwd`, `Reset`, `observe`; export it.
 2. `fontaine-tools/src/builtins.rs`: wrapper launch for foreground `shell`/`powershell` calls
    (including subagent calls, routed through `run_job`), temp file handling, `run_job` calls
    `observe` and appends the reset notice; override the `cwd` property description in `with_background` (shell and powershell; rig's
@@ -181,11 +182,16 @@ the deterministic floor is unchanged.
 
 - `rust/fontaine-tools/src/shell_cwd.rs` (new), `rust/fontaine-tools/src/builtins.rs`,
   `rust/fontaine-tools/src/lib.rs`
-- `rust/fontaine-core/src/agent.rs`, `rust/fontaine-core/src/tools.rs`,
-  `rust/fontaine-tools/src/guarded.rs`
+- `rust/fontaine-core/src/agent.rs`, `rust/fontaine-core/src/agent/build.rs`,
+  `rust/fontaine-core/src/tools.rs`, `rust/fontaine-tools/src/guarded.rs`
+- `rust/fontaine-tools/src/git_bash.rs` (foreground script + reparse test),
+  `rust/fontaine-tools/src/powershell.rs` (trailer in `launch_args`)
+- `evals/dataset/*.jsonl`
+- Tests: `rust/fontaine-tools/tests/guarded.rs`, `rust/fontaine/tests/headless_tools.rs`,
+  `rust/fontaine-tui/tests/common/mod.rs` and the new tui test
 - `rust/fontaine-core/src/git_head.rs` (new), `rust/fontaine-core/src/lib.rs`
 - `rust/fontaine-tui/src/statusbar.rs`, `app.rs`, `ui/mod.rs`
-- `docs/` shell/permissions/TUI pages, `tasks/design/permissions.md`, `CHANGELOG.md`,
+- `docs/tools.md`, `docs/permissions.md`, `docs/guardian.md`, `docs/tui.md`, `tasks/design/permissions.md`, `CHANGELOG.md`,
   `tasks/fontaine_harness_plan.md` (Decisions), `research/research-claude-code-parity.md`
 
 ## Trade-offs
@@ -197,9 +203,6 @@ the deterministic floor is unchanged.
 - **Reading `.git/HEAD` vs. spawning `git branch --show-current`.** Reading the file needs no
   process, no `git` on `PATH`, and cannot be fooled by a repo-local `core.fsmonitor`/hook config
   executing on every redraw (a spawned `git` in an untrusted repo can run configured helpers).
-- **Materialising `cwd` into args vs. teaching each consumer about the tracker.** One rewrite
-  point keeps decision and execution on the same value and leaves the open/closed shape of the
-  pipeline intact.
 
 ## Decisions
 
@@ -227,7 +230,7 @@ the deterministic floor is unchanged.
   `cwd` (argument, else the tracked directory)".
 - `CHANGELOG.md` entry. Plan Decisions in `tasks/fontaine_harness_plan.md`: deviation lines under
   `### Tools` (Fontaine resets to the *primary root*, Claude Code resets to the project directory),
-  under `### Agents` (or `### Tools`) a dated line for the subagent deviation (a subagent that cds
+  under `### Agents` a dated line for the subagent deviation (a subagent that cds
   keeps its position across its own calls; starting at the primary root keeps the child's start
   independent of the parent's mutable state), under `### Extensibility` a dated line that hook
   payload `cwd` stays the workspace root (`docs/hooks.md:52`) where Claude Code's follows `cd`
@@ -242,8 +245,7 @@ the deterministic floor is unchanged.
 Unit tests (no live APIs):
 
 - `shell_cwd`: `observe` accepts a subdirectory, rejects a path outside every root (`Reset`),
-  rejects a symlink pointing outside, handles a removed directory, and a call after the tracked directory is deleted between calls resets
-  to the primary root with the notice instead of failing ENOENT, and returns `None` on an
+  rejects a symlink pointing outside, handles a removed directory, and returns `None` on an
   identical path.
 - Wrapper: with no scratch directory the wrapper is not used and the directory never moves; exit code preserved; `exit 3` and `exec` leave the directory unchanged; a command with
   quotes, newlines and a heredoc runs intact; a missing temp file leaves the directory unchanged; background jobs
@@ -263,7 +265,9 @@ Unit tests (no live APIs):
   the secret-file read rule and the floor, exactly as an explicit `cwd="sub"` does today; a
   tracker value never reaches the gate unresolved.
 - `git_head` cache: rewrite HEAD in a temp repo; the next read sees it.
-- Preparer: `"cwd": null` is rewritten to the tracked directory like an absent `cwd`.
+- Preparer: `"cwd": null` is rewritten to the tracked directory like an absent `cwd`; a call after
+  the tracked directory is deleted between calls resets to the primary root with the notice instead
+  of failing ENOENT.
 - `git_head`: normal repo, detached HEAD, worktree `gitdir:` file, nested directory walk-up, no
   repo, unreadable HEAD.
 - Path truncation reuses an existing clip/truncate helper (`transcript.rs`, `config_panel.rs`,
@@ -271,13 +275,19 @@ Unit tests (no live APIs):
 - Status bar via `TestBackend`: segment present with branch, without branch, detached form, long
   path truncated with `…`, home shown as `~`, hint still last, subagent view keeps the main segment.
 - Integration through `fontaine-tui` (`rust/fontaine-tui/tests/common/mod.rs`: `World`, `tool_turn`,
-  `TestBackend` run; status-bar assertions as in `tests/extensions.rs`): a `cd sub` shell tool turn,
-  then the status bar contains `work/sub` (World's root is `canonicalize(tempdir)/work`, `tests/common/mod.rs:119-128`, so neither `~` nor a bare `…/sub` applies); run the turn in a mode where the shell call is allowed (the default `DenyAll` approver at `:377` would refuse it in manual mode). Covers the tracker, `AgentRuntime`, `draw`, `App.cwd` wiring.
+  `TestBackend` run): a `cd sub` shell tool turn, then the status bar contains `work/sub`
+  (World's root is `canonicalize(tempdir)/work`, `tests/common/mod.rs:119-128`, so neither `~` nor a
+  bare `…/sub` applies). World hard-codes `scratch: None` (`:369`), and without scratch the wrapper
+  is not used, so the harness gains a builder option that gives World a session scratch directory
+  (sets `AgentSetup.scratch` and appends it to the roots). Run the turn in `PermissionMode::Auto`
+  with a guardian allow verdict as `tests/tui.rs:325-326` does (the default approver at `:380` is
+  `DenyAll`). Covers the tracker, `AgentRuntime`, `draw`, `App.cwd` wiring.
 - Integration through headless `fontaine -p` (`rust/fontaine/tests/common/mod.rs`
   `Endpoint`/`Turn::tool`/`Sandbox`, in `rust/fontaine/tests/headless_tools.rs`) with a deterministic
-  completion model: call 1
-  `cd sub`, call 2 `pwd` prints `<root>/sub`; call 3 `cd /` then call 4 `pwd` shows the reset
-  notice and the primary root.
+  completion model and config allow rules `shell(cd *)` and `shell(pwd)` (pattern at
+  `headless_tools.rs:539`): call 1 `cd sub`, call 2 `pwd` prints `<root>/sub`; call 3 `cd /` returns
+  a result carrying the reset notice (`run_job` observes after the job ends and appends to that
+  same result); call 4 `pwd` prints the primary root.
 
 ## Manual Verification
 
