@@ -208,6 +208,10 @@ or what the model was told for a denial.
 - 2026-10-31 (design): a spawn of an unknown or malformed `agent_type` is allowed at the gate in
   `auto`/`plan` and refused by the `AgentTool` itself on execution, as it already is for
   allowed calls today. The gate gains no agent-type validation.
+- 2026-10-31 (AFK): `Tier::Spawn` deliberately ignores the auto-pause circuit breaker (it returns
+  before `guardian_branch`, where `auto_paused()` is checked); prompting for a spawn while paused
+  would reintroduce the #360 AFK interruption, and damage stays bounded because every call the
+  child makes is still gated and asks the human while the breaker is paused.
 
 ## Testing Strategy
 
