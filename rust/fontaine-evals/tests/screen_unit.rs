@@ -50,6 +50,8 @@ fn result(id: &str, category: &str, expected: &str, choice: &str, pass: bool) ->
             probabilities: BTreeMap::new(),
             input_tokens: None,
             truncated: None,
+            cost_usd: None,
+            model: None,
         }),
     }
 }
@@ -156,7 +158,7 @@ fn reliability_puts_a_risk_of_one_in_the_last_bin_and_computes_ece() {
 
 #[test]
 fn empty_inputs_give_none_without_nan() {
-    let a = analyze(&[], None);
+    let a = analyze(&[], None, None);
     assert_eq!(a.scored, 0);
     assert!(a.default.rates.catch_rate.is_none());
     assert!(a.option2.t_allow.is_none());
@@ -248,4 +250,65 @@ fn malformed_answers_are_unparseable() {
         let failure = parse(body.as_bytes()).unwrap_err();
         assert_eq!(failure.reason, "unparseable", "{body}");
     }
+}
+
+#[test]
+fn usage_cost_and_the_resolved_model_are_read() {
+    let body = json!({
+        "model": "typesafe/jev-1.14-20261014",
+        "answers": {"verdict": {"choice": "deny", "confidence": 1,
+            "probabilities": {"allow": 0, "deny": 1, "escalate": 0}}},
+        "usage": {"input_tokens": 335, "cost": 0.00001407}
+    });
+    let score = parse(body.to_string().as_bytes()).unwrap();
+    assert_eq!(score.cost_usd, Some(0.00001407));
+    assert_eq!(score.model.as_deref(), Some("typesafe/jev-1.14-20261014"));
+
+    let bare = json!({"answers": {"verdict": {"choice": "allow", "confidence": 0.9}}});
+    let score = parse(bare.to_string().as_bytes()).unwrap();
+    assert_eq!(score.cost_usd, None);
+    assert_eq!(score.model, None);
+}
+
+#[test]
+fn an_old_report_round_trips_without_the_cost_fields() {
+    let old = json!({"choice": "allow", "confidence": 0.9, "probabilities": {"allow": 0.9},
+        "input_tokens": 12});
+    let score: ScreenScore = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(score.cost_usd, None);
+    let again = serde_json::to_value(&score).unwrap();
+    assert!(again.get("cost_usd").is_none() && again.get("model").is_none());
+}
+
+#[test]
+fn analysis_sums_the_warm_up_and_cases_and_lists_models_sorted() {
+    let score = |cost: Option<f64>, model: &str| ScreenScore {
+        choice: "allow".into(),
+        confidence: 0.9,
+        probabilities: BTreeMap::new(),
+        input_tokens: None,
+        truncated: None,
+        cost_usd: cost,
+        model: Some(model.into()),
+    };
+    let mut a = result("a", "benign", "allow", "allow", true);
+    a.screen = Some(score(Some(0.5), "z"));
+    let mut b = result("b", "benign", "allow", "allow", true);
+    b.screen = Some(score(None, "a"));
+    let warm = score(Some(0.25), "z");
+    let analysis = analyze(&[a, b], None, Some(&warm));
+    assert_eq!(analysis.cost_usd, Some(0.75));
+    assert_eq!(analysis.model_resolved, vec!["a", "z"]);
+    assert_eq!(analyze(&[], None, None).cost_usd, None);
+}
+
+#[test]
+fn an_invalid_key_error_does_not_echo_the_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("k");
+    std::fs::write(&path, "sk-secret two\n").unwrap();
+    let error = fontaine_evals::screen::read_key_file(&path).unwrap_err();
+    assert!(!error.contains("sk-secret"), "{error}");
+    std::fs::write(&path, "sk-secret\n").unwrap();
+    assert!(fontaine_evals::screen::read_key_file(&path).is_ok());
 }

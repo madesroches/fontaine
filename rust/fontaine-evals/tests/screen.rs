@@ -13,6 +13,8 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 /// everything else an allow.
 struct Systemone {
     seen: Mutex<Vec<Value>>,
+    /// The `usage.cost` every answer reports, when scripted.
+    cost: Option<f64>,
 }
 
 impl Respond for Systemone {
@@ -34,11 +36,15 @@ impl Respond for Systemone {
                 json!({"allow": 0.9, "deny": 0.05, "escalate": 0.05}),
             )
         };
+        let mut usage = json!({"input_tokens": 321});
+        if let Some(cost) = self.cost {
+            usage["cost"] = json!(cost);
+        }
         ResponseTemplate::new(200).set_body_json(json!({
             "model": "scripted",
             "answers": {"verdict": {"type": "choice", "choice": choice,
                 "confidence": 0.9, "probabilities": probabilities}},
-            "usage": {"input_tokens": 321}
+            "usage": usage
         }))
     }
 }
@@ -76,10 +82,15 @@ fn dataset(cases: &[Value]) -> TempDir {
 }
 
 async fn server() -> MockServer {
+    server_costing(None).await
+}
+
+async fn server_costing(cost: Option<f64>) -> MockServer {
     let server = MockServer::builder().start().await;
     Mock::given(any())
         .respond_with(Systemone {
             seen: Mutex::new(Vec::new()),
+            cost,
         })
         .mount(&server)
         .await;
@@ -259,7 +270,62 @@ async fn usage_errors_exit_two() {
     std::fs::write(&notjson, "nope").unwrap();
     let nocases = data.path().join("nocases.json");
     std::fs::write(&nocases, "{}").unwrap();
+    let empty_key = data.path().join("empty.key");
+    std::fs::write(&empty_key, "  \n").unwrap();
+    let spaced_key = data.path().join("spaced.key");
+    std::fs::write(&spaced_key, "sk-secret part two\n").unwrap();
     let cases: Vec<(Vec<&str>, &str)> = vec![
+        (
+            vec!["--guardian", "fixture", "--screen-api-key-file", "k"],
+            "need",
+        ),
+        (
+            vec!["--guardian", "fixture", "--screen-max-cost-usd", "1"],
+            "need",
+        ),
+        (
+            vec!["--guardian", "screen:m", "--screen-max-cost-usd", "0"],
+            "positive",
+        ),
+        (
+            vec!["--guardian", "screen:m", "--screen-max-cost-usd=-1"],
+            "positive",
+        ),
+        (
+            vec!["--guardian", "screen:m", "--screen-max-cost-usd", "inf"],
+            "positive",
+        ),
+        (
+            vec!["--guardian", "screen:m", "--screen-max-cost-usd", "NaN"],
+            "positive",
+        ),
+        (
+            vec![
+                "--guardian",
+                "screen:m",
+                "--screen-api-key-file",
+                "/nonexistent/key",
+            ],
+            "cannot read --screen-api-key-file",
+        ),
+        (
+            vec![
+                "--guardian",
+                "screen:m",
+                "--screen-api-key-file",
+                empty_key.to_str().unwrap(),
+            ],
+            "is empty",
+        ),
+        (
+            vec![
+                "--guardian",
+                "screen:m",
+                "--screen-api-key-file",
+                spaced_key.to_str().unwrap(),
+            ],
+            "whitespace or control",
+        ),
         (
             vec!["--guardian", "screen:m", "--profile", "minimal"],
             "no profile",
@@ -324,4 +390,213 @@ async fn usage_errors_exit_two() {
         assert_eq!(result.status.code(), Some(2), "{args:?}: {stderr}");
         assert!(stderr.contains(needle), "{args:?}: {stderr}");
     }
+}
+
+fn key_file(dir: &TempDir, key: &str) -> String {
+    let path = dir.path().join("api.key");
+    std::fs::write(&path, format!("{key}\n")).unwrap();
+    path.to_str().unwrap().to_string()
+}
+
+fn authorizations(requests: &[Request]) -> Vec<Option<String>> {
+    requests
+        .iter()
+        .map(|r| {
+            r.headers
+                .get("authorization")
+                .map(|v| v.to_str().unwrap().to_string())
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_key_file_becomes_a_bearer_header_and_never_reaches_the_report() {
+    let server = server().await;
+    let data = dataset(&[guardian_case("ok", "benign", "allow", "ls")]);
+    let key = key_file(&data, "sk-or-very-secret");
+    let out = data.path().join("out.json");
+    let result = run(
+        data.path(),
+        Some(&server.uri()),
+        &[
+            "--guardian",
+            "screen:m",
+            "--screen-api-key-file",
+            &key,
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    )
+    .await;
+    assert_eq!(result.status.code(), Some(0));
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        authorizations(&requests)
+            .iter()
+            .all(|a| a.as_deref() == Some("Bearer sk-or-very-secret"))
+    );
+    for text in [
+        String::from_utf8_lossy(&result.stdout).into_owned(),
+        String::from_utf8_lossy(&result.stderr).into_owned(),
+        std::fs::read_to_string(&out).unwrap(),
+    ] {
+        assert!(!text.contains("sk-or-very-secret"));
+    }
+}
+
+#[tokio::test]
+async fn without_a_key_file_no_authorization_header_is_sent() {
+    let server = server().await;
+    let data = dataset(&[guardian_case("ok", "benign", "allow", "ls")]);
+    run(
+        data.path(),
+        Some(&server.uri()),
+        &["--guardian", "screen:m"],
+    )
+    .await;
+    let requests = server.received_requests().await.unwrap();
+    assert!(authorizations(&requests).iter().all(Option::is_none));
+}
+
+#[tokio::test]
+async fn a_key_is_sent_only_over_https_or_to_loopback() {
+    let data = dataset(&[guardian_case("ok", "benign", "allow", "ls")]);
+    let key = key_file(&data, "sk-or-very-secret");
+    let refused = run(
+        data.path(),
+        Some("http://example.com"),
+        &["--guardian", "screen:m", "--screen-api-key-file", &key],
+    )
+    .await;
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert_eq!(refused.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("only over https"), "{stderr}");
+    assert!(!stderr.contains("sk-or-very-secret"));
+
+    // Loopback hosts pass the check; nothing listens, so the cases fail closed instead of exit 2.
+    for url in [
+        "http://127.0.0.1:1",
+        "http://[::1]:1",
+        "http://localhost:1",
+        "http://LocalHost:1",
+    ] {
+        let accepted = run(
+            data.path(),
+            Some(url),
+            &["--guardian", "screen:m", "--screen-api-key-file", &key],
+        )
+        .await;
+        assert_eq!(accepted.status.code(), Some(1), "{url}");
+    }
+}
+
+fn five_benign() -> Vec<Value> {
+    (0..5)
+        .map(|n| guardian_case(&format!("ok{n}"), "benign", "allow", "ls"))
+        .collect()
+}
+
+#[tokio::test]
+async fn the_cost_cap_stops_after_the_call_that_reaches_it() {
+    let server = server_costing(Some(0.01)).await;
+    let data = dataset(&five_benign());
+    let out = data.path().join("out.json");
+    let result = run(
+        data.path(),
+        Some(&server.uri()),
+        &[
+            "--guardian",
+            "screen:m",
+            "--screen-max-cost-usd",
+            "0.025",
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    )
+    .await;
+    assert_eq!(result.status.code(), Some(0));
+    let report = report(&out);
+    // The warm-up and the first case cost 0.02; the second case reaches 0.03 and stops the run.
+    assert_eq!(report["summary"]["scored"], 2);
+    let skipped = report["summary"]["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 3);
+    assert!(skipped.iter().all(|s| s["reason"] == "cost cap reached"));
+    let analysis = &report["summary"]["screen"];
+    assert!((analysis["cost_usd"].as_f64().unwrap() - 0.03).abs() < 1e-9);
+    assert_eq!(analysis["model_resolved"], json!(["scripted"]));
+    assert_eq!(server.received_requests().await.unwrap().len(), 3);
+    assert!(String::from_utf8_lossy(&result.stdout).contains("cost_usd=0.030000"));
+}
+
+#[tokio::test]
+async fn a_capped_run_stops_when_a_response_reports_no_cost() {
+    let server = server().await;
+    let data = dataset(&five_benign());
+    let out = data.path().join("out.json");
+    run(
+        data.path(),
+        Some(&server.uri()),
+        &[
+            "--guardian",
+            "screen:m",
+            "--screen-max-cost-usd",
+            "1",
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    )
+    .await;
+    let report = report(&out);
+    // The warm-up already lacked a cost, so no case is asked.
+    assert_eq!(report["summary"]["scored"], 0);
+    let skipped = report["summary"]["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 5);
+    assert!(skipped.iter().all(|s| s["reason"] == "cost not reported"));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn without_the_cap_a_missing_cost_scores_every_case() {
+    let server = server().await;
+    let data = dataset(&five_benign());
+    let out = data.path().join("out.json");
+    run(
+        data.path(),
+        Some(&server.uri()),
+        &["--guardian", "screen:m", "--out", out.to_str().unwrap()],
+    )
+    .await;
+    let report = report(&out);
+    assert_eq!(report["summary"]["scored"], 5);
+    assert!(report["summary"]["screen"].get("cost_usd").is_none());
+}
+
+#[tokio::test]
+async fn a_failed_call_does_not_stop_a_capped_run_or_add_cost() {
+    let server = server_costing(Some(0.01)).await;
+    let data = dataset(&[
+        guardian_case("a", "benign", "allow", "ls"),
+        guardian_case("broken", "benign", "allow", "echo boom"),
+        guardian_case("b", "benign", "allow", "ls"),
+    ]);
+    let out = data.path().join("out.json");
+    run(
+        data.path(),
+        Some(&server.uri()),
+        &[
+            "--guardian",
+            "screen:m",
+            "--screen-max-cost-usd",
+            "1",
+            "--out",
+            out.to_str().unwrap(),
+        ],
+    )
+    .await;
+    let report = report(&out);
+    assert_eq!(case_of(&report, "broken")["fail_closed"], "error");
+    assert_eq!(report["summary"]["screen"]["scored"], 2);
+    // The warm-up and two answered cases.
+    assert!((report["summary"]["screen"]["cost_usd"].as_f64().unwrap() - 0.03).abs() < 1e-9);
 }

@@ -39,6 +39,11 @@ impl ApiKey {
     pub fn new(key: impl Into<String>) -> Self {
         ApiKey(key.into())
     }
+
+    /// The secret itself, for the one place that puts it on the wire.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
 }
 
 impl std::fmt::Debug for ApiKey {

@@ -123,6 +123,9 @@ All notable changes are recorded here. The format follows
   `--screen-timeout-ms` and `--screen-reference`. It reports catch and benign-stop rates at
   recalibrated thresholds, the zero-miss allow threshold, a reliability table and the
   disagreement with another scorecard. Eval-only (#98).
+- `fontaine-evals --screen-api-key-file` sends a bearer key (https or loopback only) and
+  `--screen-max-cost-usd` caps the spend the server reports, so a `screen:` run can score Jev
+  through OpenRouter; the report carries `cost_usd` and `model_resolved` (#127).
 - Laya scored on the golden set, and the spike's experiments recorded with their scripts and a
   400-case synthetic training corpus. Experiments: question framings, ensembles, embedding probes,
   public corpora, head fine-tuning, question framings that ask whether the action fits the task,

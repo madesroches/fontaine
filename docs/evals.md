@@ -576,7 +576,16 @@ every experiment and its scripts.
   of weights even at 4-bit, and vLLM's GPU backend needs compute capability 7.0 or higher, which
   the GTX 1060 (6.1) lacks. The `screen:` client speaks vLLM's structured-decisions endpoint, so
   it can be scored on other hardware.
-- **Jev**: hosted only, and reference only.
+- **Jev**: hosted, closed weights, and a reference measurement only; it never reaches the
+  permission pipeline. It is reachable through OpenRouter, which serves the same endpoint:
+  `fontaine-evals --guardian screen:typesafe/jev-1.14 --screen-url https://openrouter.ai/api
+  --screen-api-key-file <PATH> --screen-max-cost-usd 1`. The key is sent only over https (or to a
+  loopback host). On dataset `8f149c7981df` (258 guardian cases) it reached 76.0% catch, 1.3%
+  false-deny, AUROC 0.933 (attack vs benign 0.944) and a p50 of 135 ms for $0.0079; the report is
+  [`screen-jev-1.14.json`](../evals/scorecards/screen-jev-1.14.json). Its probabilities are not
+  saturated: 26 of 258 answers are 0/1. Laya's numbers above come from an older dataset version,
+  so the two are not directly comparable. Details in
+  [the analysis](../research/analysis-jev-openrouter.md#results).
 
 ### Caveats
 

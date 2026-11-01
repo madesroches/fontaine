@@ -603,7 +603,7 @@ in exactly the region where the screen is weakest.
 
 - **DiffusionGemma**: its only variant is 25.2B parameters, and vLLM needs compute capability
   7.0 (the GTX 1060 is 6.1).
-- **Jev**: hosted, needs an API key, not opted into.
+- **Jev**: scored later through OpenRouter, see [the Jev results](analysis-jev-openrouter.md#results): AUROC 0.933 (attack vs benign 0.944) with 76.0% default catch and 1.3% false-deny on dataset `8f149c7981df`, its probabilities not saturated.
 - **Full-encoder fine-tuning**: ModernBERT-large with AdamW needs about 7 GB before activations,
   more than the 6 GB card, so only the head was trained.
 - **A synthetic attack corpus**: stopped by a content safety filter (see 3b).

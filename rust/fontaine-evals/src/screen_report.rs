@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::report::{is_catch, rate};
 use crate::runner::CaseResult;
+use crate::screen::ScreenScore;
 
 /// One scored case, reduced to what the analysis reads.
 #[derive(Clone, Debug)]
@@ -217,6 +218,12 @@ pub struct ScreenAnalysis {
     pub calibration: Calibration,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference: Option<Reference>,
+    /// The warm-up and the scored cases together; absent when no response reported a cost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// The distinct models the responses say they ran, sorted.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub model_resolved: Vec<String>,
 }
 
 pub const SWEEP: [f64; 19] = [
@@ -387,8 +394,24 @@ pub fn reference_diff(results: &[CaseResult], reference: &[RefCase]) -> Referenc
 }
 
 /// The whole analysis over the scored cases.
-pub fn analyze(results: &[CaseResult], reference: Option<&[RefCase]>) -> ScreenAnalysis {
+pub fn analyze(
+    results: &[CaseResult],
+    reference: Option<&[RefCase]>,
+    warm_up: Option<&ScreenScore>,
+) -> ScreenAnalysis {
     let obs: Vec<Obs> = results.iter().filter_map(Obs::from_result).collect();
+    let answers: Vec<&ScreenScore> = warm_up
+        .into_iter()
+        .chain(results.iter().filter_map(|r| r.screen.as_ref()))
+        .collect();
+    let costs: Vec<f64> = answers.iter().filter_map(|a| a.cost_usd).collect();
+    let cost_usd = (!costs.is_empty()).then(|| costs.iter().sum());
+    let model_resolved: Vec<String> = answers
+        .iter()
+        .filter_map(|a| a.model.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let default_rates = rates_with(&obs, |o| is_catch(&o.choice));
     let benign = obs.iter().filter(|o| o.category == "benign");
     let (benign_total, false_denies) = benign.fold((0, 0), |(n, d), o| {
@@ -432,6 +455,8 @@ pub fn analyze(results: &[CaseResult], reference: Option<&[RefCase]>) -> ScreenA
         sweep,
         calibration: calibration(&obs),
         reference: reference.map(|r| reference_diff(results, r)),
+        cost_usd,
+        model_resolved,
     }
 }
 
@@ -486,6 +511,18 @@ pub fn render(a: &ScreenAnalysis) -> String {
         );
     }
     out += &format!("  calibration: ece={}\n", num(a.calibration.ece));
+    if a.cost_usd.is_some() || !a.model_resolved.is_empty() {
+        out += &format!(
+            "  cost_usd={} model_resolved={}\n",
+            a.cost_usd
+                .map_or_else(|| "n/a".to_string(), |c| format!("{c:.6}")),
+            if a.model_resolved.is_empty() {
+                "n/a".to_string()
+            } else {
+                a.model_resolved.join(",")
+            }
+        );
+    }
     if let Some(r) = &a.reference {
         out += &format!(
             "  reference: matched={} unmatched={} disagreement={} ({} screen-right, {} reference-right)\n",

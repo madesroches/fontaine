@@ -1,12 +1,13 @@
-//! `--guardian screen:<model>`: a typed-decision model (Laya, DiffusionGemma) asked the question
-//! the LLM guardian answers, over the `/v1/systemone` endpoint both serve. It exists to measure
-//! whether such a model could sit in front of the guardian; nothing here reaches the permission
-//! pipeline.
+//! `--guardian screen:<model>`: a typed-decision model (Laya, DiffusionGemma, or Jev through
+//! OpenRouter with `--screen-api-key-file` against an https `--screen-url`) asked the question the
+//! LLM guardian answers, over the `/v1/systemone` endpoint they serve. It exists to measure whether
+//! such a model could sit in front of the guardian; nothing here reaches the permission pipeline.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use fontaine_guardian::prompt_builder;
+use fontaine_tools::websearch::ApiKey;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -50,6 +51,12 @@ pub struct ScreenScore {
     /// Whether the server cut the state to fit the model's context (laya-serve reports it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
+    /// What the server charged for the call, in USD (OpenRouter reports it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd: Option<f64>,
+    /// The model the server says it ran, which differs from the request for an alias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// Why a request did not end in an answer; the strings are the report's `fail_closed` values.
@@ -73,9 +80,50 @@ pub struct Screen {
     endpoint: String,
     model: String,
     timeout: Duration,
+    key: Option<ApiKey>,
 }
 
-pub fn connect(model: &str, url: &str, timeout: Duration) -> Result<Screen, String> {
+/// Reads the bearer key out of `path`: a usage error, without the key, for a file that cannot
+/// give a usable header value.
+pub fn read_key_file(path: &std::path::Path) -> Result<ApiKey, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        format!(
+            "cannot read --screen-api-key-file {}: {}",
+            path.display(),
+            fontaine_tools::error_chain::chain(&e)
+        )
+    })?;
+    let key = text.trim();
+    if key.is_empty() {
+        return Err(format!("--screen-api-key-file {} is empty", path.display()));
+    }
+    if key.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!(
+            "--screen-api-key-file {} holds whitespace or control characters inside the key",
+            path.display()
+        ));
+    }
+    Ok(ApiKey::new(key))
+}
+
+/// Whether a bearer key may travel to `parsed` without encryption.
+fn loopback(parsed: &reqwest::Url) -> bool {
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    match bare.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => host.eq_ignore_ascii_case("localhost"),
+    }
+}
+
+pub fn connect(
+    model: &str,
+    url: &str,
+    timeout: Duration,
+    key: Option<ApiKey>,
+) -> Result<Screen, String> {
     if model.is_empty() {
         return Err("`screen:` must be `screen:<model>`".into());
     }
@@ -90,6 +138,11 @@ pub fn connect(model: &str, url: &str, timeout: Duration) -> Result<Screen, Stri
             "invalid --screen-url `{url}`: expected http:// or https:// with a host"
         ));
     }
+    if key.is_some() && parsed.scheme() != "https" && !loopback(&parsed) {
+        return Err(format!(
+            "--screen-api-key-file sends the key only over https:// or to a loopback host; `{url}` is neither"
+        ));
+    }
     let client = reqwest::Client::builder().build().map_err(|e| {
         format!(
             "cannot build the HTTP client: {}",
@@ -101,6 +154,7 @@ pub fn connect(model: &str, url: &str, timeout: Duration) -> Result<Screen, Stri
         endpoint: format!("{}/v1/systemone", url.trim_end_matches('/')),
         model: model.to_string(),
         timeout,
+        key,
     })
 }
 
@@ -125,15 +179,16 @@ impl Screen {
 
     async fn ask(&self, state: &str) -> Result<ScreenScore, Failure> {
         let body = serde_json::to_vec(&self.request_body(state)).expect("the request serializes");
-        let response = self
+        let mut request = self
             .client
             .post(&self.endpoint)
             .header("content-type", "application/json")
             .timeout(self.timeout)
-            .body(body)
-            .send()
-            .await
-            .map_err(transport)?;
+            .body(body);
+        if let Some(key) = &self.key {
+            request = request.bearer_auth(key.expose());
+        }
+        let response = request.send().await.map_err(transport)?;
         let status = response.status();
         let bytes = response.bytes().await.map_err(transport)?;
         if !status.is_success() {
@@ -211,6 +266,11 @@ pub fn parse(body: &[u8]) -> Result<ScreenScore, Failure> {
         probabilities,
         input_tokens: value.pointer("/usage/input_tokens").and_then(Value::as_u64),
         truncated: value.pointer("/usage/truncated").and_then(Value::as_bool),
+        cost_usd: value.pointer("/usage/cost").and_then(Value::as_f64),
+        model: value
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     })
 }
 
@@ -268,17 +328,24 @@ fn base(case: &Case, latency_ms: u64) -> CaseResult {
     }
 }
 
-/// One untimed request, so the model load does not land in the first case's latency.
-pub async fn warm_up(case: &Case, screen: &Screen) {
+/// One untimed request, so the model load does not land in the first case's latency. It is a
+/// billed call, so its answer is returned for the cost tally.
+pub async fn warm_up(case: &Case, screen: &Screen) -> Option<ScreenScore> {
     let state = match live::pose(case) {
         Ok(Pose::Ready(posed)) => prompt_builder::user_message(&posed.request),
-        Ok(Pose::Skipped(_)) | Err(_) => return,
+        Ok(Pose::Skipped(_)) | Err(_) => return None,
     };
     match screen.ask(&state).await {
-        Ok(_) => eprintln!("fontaine-evals: warm-up request answered"),
-        Err(failure) => eprintln!(
-            "fontaine-evals: warm-up request failed ({}): {}",
-            failure.reason, failure.detail
-        ),
+        Ok(score) => {
+            eprintln!("fontaine-evals: warm-up request answered");
+            Some(score)
+        }
+        Err(failure) => {
+            eprintln!(
+                "fontaine-evals: warm-up request failed ({}): {}",
+                failure.reason, failure.detail
+            );
+            None
+        }
     }
 }
