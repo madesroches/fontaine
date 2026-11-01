@@ -23,7 +23,10 @@ Four divergent formatters:
 
 - `fontaine-agents/src/budget.rs:55,61` `Exhausted::describe()` prints raw `({spent} of {cap})`;
   it reaches the agent tree via `fontaine-tui/src/ui/mod.rs:114` and `agents_panel.rs:264-265`,
-  under the compacted spend line.
+  under the compacted spend line. `describe()` is not display-only: it also feeds the
+  audit/ledger denial reason (`fontaine-core/src/permissions.rs:~1897`), headless JSON
+  `gate_decision.explanation` and model-facing tool results/refusals (`child_runner.rs:758`,
+  `tree.rs`, `spawn.rs`), so it stays exact.
 
 Not display-only, left alone: `fontaine-core/src/project_env.rs:592` `usage_line` (shown to humans
 in the TUI transcript and setup/critique reports, but the same string is the machine-readable
@@ -49,7 +52,9 @@ Rules (integer math, no float rounding surprises):
 Call sites switched to it:
 - `spend_text`: `{compact(tokens)} / {compact(cap)} tok` (the cost half is unchanged).
 - `writing_text`: `writing {compact(chars)} chars`.
-- `Exhausted::describe()`: `({compact(spent)} of {compact(cap)})`.
+- `Exhausted`: `describe()` stays exact; it delegates to a new `describe_with(count: impl Fn(u64) -> String)`
+  (default `|n| n.to_string()`), and `ui/mod.rs:114` calls `why.describe_with(compact_count)` so only
+  the TUI `stopped_because` text is compact (cost figures unchanged).
 - delete `reports::tokens` and call `compact_count` directly in
   `reports.rs` and `context.rs`; `window_label` uses `compact_count` too (`200000` → `200.0k`,
   `1_000_000` → `1.0M`).
@@ -58,13 +63,14 @@ Call sites switched to it:
 ## Implementation Steps
 1. Add `compact_count` + unit tests to `fontaine-tools/src/display.rs`.
 2. Replace `spend_text`, `writing_text` internals in `fontaine-tui/src/agents_panel.rs`, and
-   route `Exhausted::describe()` in `fontaine-agents/src/budget.rs` through `compact_count`.
+   add `Exhausted::describe_with` in `fontaine-agents/src/budget.rs` (`describe()` unchanged in
+   output) and use it with `compact_count` at `fontaine-tui/src/ui/mod.rs:114`.
 3. Delete `reports::tokens`, update `reports.rs`, `ui/commands/context.rs`, `window_label`.
 4. Delete `goal::tokens_text`, update `goal.rs` call sites and any tests asserting old output.
 5. Update existing test expectations to the compact forms: `agent_list.rs:416,474`;
    `agents_panel.rs:346-396`; `reports.rs:941,953`; `rust/fontaine-tui/tests/agents.rs:66,71`;
    `rust/fontaine-core/tests/instructions.rs:400` (`"41000 characters"` -> `"41.0k characters"`);
-   plus any `budget.rs` test asserting `describe()` output.
+   `budget.rs` `describe()` tests stay exact; add one `describe_with` test.
 6. Route the remaining display sites through `compact_count`:
    `fontaine-tui/src/ui/commands/reports.rs:91-93` (`copied reply {n} ({} characters)`) and
    `fontaine-core/src/instructions/mod.rs:177` (`{path} ({size} characters)` startup
@@ -79,7 +85,7 @@ Call sites switched to it:
 - `rust/fontaine-tools/src/display.rs`
 - `rust/fontaine-tui/src/agents_panel.rs`, `agent_list.rs` (tests), `reports.rs`,
   `ui/commands/context.rs`, `rust/fontaine-tui/tests/agents.rs`, `rust/fontaine-core/tests/instructions.rs` (test expectations)
-- `rust/fontaine-agents/src/budget.rs`
+- `rust/fontaine-agents/src/budget.rs`, `rust/fontaine-tui/src/ui/mod.rs`
 - `rust/fontaine-tui/src/ui/commands/reports.rs`
 - `rust/fontaine-core/src/goal.rs`, `rust/fontaine-core/src/instructions/mod.rs`
 - `docs/tui.md`, `CHANGELOG.md`
@@ -94,6 +100,9 @@ Call sites switched to it:
 ## Decisions
 - 2026-11-01: `usage_line` (`project_env.rs`) keeps exact counts — the same string is the
   machine-readable JSON field `scan.usage`.
+
+- AFK: 2026-11-01: `Exhausted::describe()` stays exact (it feeds the audit/ledger reason, headless JSON and model-facing
+  results); only the TUI `stopped_because` text is compacted, via `describe_with(compact_count)`.
 
 ## Documentation
 `docs/tui.md` lines ~795, 856-861 (and the `182k tokens` example at 752 → `182.0k`; the
