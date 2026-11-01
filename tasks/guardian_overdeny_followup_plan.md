@@ -112,8 +112,8 @@ stay byte-identical.
 - The screen's byte-identity test (`screen.rs`) gains the two marks.
 - `guardian_prompt.md` Trust boundary, in the touched-paths paragraph (~line 72): `absent` means
   nothing is at that path now, so writing, moving or copying onto it overwrites nothing.
-  `git_tracked` means the file's committed content is recoverable from git. That makes an
-  overwrite, move or edit of it reversible. Deleting it still loses any uncommitted changes. Add
+  `git_tracked` means git holds a copy of the file (it is in the index), so an overwrite, move or
+  edit can be undone from git; any uncommitted changes to it are still lost. Add
   `absent` to that paragraph's status list, and reword its closing sentence to match C: "Deleting
   or truncating a pre-existing or unindexed path, or writing, editing, moving or copying onto one
   that is not `git_tracked`, without the user naming it, is Destroy Pre-existing Files. Moving
@@ -257,7 +257,9 @@ fixture test meaningful.
 - `docs/guardian.md`: "What the guardian sees" (`session_facts` row): the `absent` status and the
   `git_tracked` mark, guardian view only. "How history and your words are weighed": agent-written
   issue text, and earlier denials about another subject. "Known limits": `absent` is checked
-  before the call runs.
+  before the call runs. The destructive-derivation passage (~line 213) and the `session_facts`
+  row (~line 66): a redirect to `/dev/null` writes no file, so `rg x 2>/dev/null` is not
+  destructive and lists no `/dev/null` path.
 - `docs/evals.md`, "The over-deny slice": the new cases, and `absent` and `git_tracked` added to
   the list of per-case `session_facts` fields.
 - `evals/README.md`: the `absent` and `git_tracked` touched-path fields.
