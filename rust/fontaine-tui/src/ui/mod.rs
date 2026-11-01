@@ -271,9 +271,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             // Elapsed times in the agent list, and the end of an ended row's 30 seconds there,
             // are shown without anything else happening.
+            self.draw(runtime);
             let list_tick = self.app.agent_list.counts_time().then_some(LIST_TICK);
             let tick = soonest_tick(&self.app, &[tick, list_tick]);
-            self.draw(runtime);
             let action = tokio::select! {
                 input = self.input.recv() => match input {
                     Some(input) => self.app.handle_input(input),

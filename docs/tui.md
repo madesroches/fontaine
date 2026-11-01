@@ -12,11 +12,12 @@ the shell's earlier output scrolls into the terminal's history. The transcript r
 the input box and status bar on the bottom rows, and this holds across resizes: a resize erases the
 scrollback and prints the transcript again at the new size. A live area down to the bottom row holds
 the input box, the status bar, any open prompt, the working spinner row while a turn runs and the
-part of the transcript that still fits above the input. A short transcript, typically just the startup warnings, sits on the rows directly
-above the input box with empty space above it. Once the transcript no longer fits, the oldest
-entries move into the terminal's normal scrollback, and leaving the UI (or `/clear`) writes
-whatever was still held back there too, so the conversation stays in the terminal. Scroll back with
-the terminal or with tmux copy mode, and select text with the mouse as in any shell program.
+part of the transcript that still fits above the input. A short transcript, typically just the
+startup warnings, sits on the rows directly above the input box with empty space above it. Once the
+transcript no longer fits, the oldest entries move into the terminal's normal scrollback, and
+leaving the UI (or `/clear`) writes whatever was still held back there too, so the conversation
+stays in the terminal. Scroll back with the terminal or with tmux copy mode, and select text with
+the mouse as in any shell program.
 Showing a [subagent's transcript](#the-agent-list-and-the-agent-view) erases the terminal's
 scrollback and writes that transcript in its place, and going back to the main conversation does
 the same, so whatever the terminal held from before the session started, and the
@@ -124,9 +125,9 @@ elapsed time. It is hidden while an approval, a question or the guardian-unavail
 for you, and it never takes input: Esc works as before. With `FONTAINE_ASCII_GLYPHS=1` the glyph is
 `.oO0Oo`. The default 16-colour themes cannot blend colours, so there the highlight steps between
 dim, normal and bold and the glyph cycles the theme's accent colours; the RGB themes
-(`dark`, `light` and the daltonized pair) shift smoothly. Screen-reader mode shows no spinner. When any subagent is
-running or recently ended, the [agent list](#the-agent-list-and-the-agent-view) sits on the rows
-below the bar.
+(`dark`, `light` and the daltonized pair) shift smoothly. Screen-reader mode shows no spinner. When
+any subagent is running or recently ended, the [agent list](#the-agent-list-and-the-agent-view)
+sits on the rows below the bar.
 
 ## Keys
 
