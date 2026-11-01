@@ -37,7 +37,7 @@ tests set them directly and no test depends on a clock.
 
 **New module `rust/fontaine-tui/src/spinner.rs`** (pure, unit-tested):
 - `lines(app, width) -> Vec<Line>`: empty unless the spinner is active, else one row:
-  `<glyph> <label> (<elapsed> · ↓ <tokens> tokens)`, truncated to `width`. The parentheses and separator show only the clauses present (elapsed omitted when `turn_started` is None; tokens omitted while 0 and in agent view), and the parentheses are dropped when neither is.
+  `<glyph> Working… (<elapsed> · ↓ <tokens> tokens)`, truncated to `width`. The label is the fixed string `Working…`. The parentheses and separator show only the clauses present (elapsed omitted when `turn_started` is None; tokens omitted while 0 and in agent view), and the parentheses are dropped when neither is.
 - Active when (`active`): `!app.linear && running && app.approval.is_none() && app.questions.is_empty() && app.unavailable.is_none()`, reading `App` fields directly like `App::covered` (`app.rs:755-769`) and never calling `overlay()` (`body_rows` runs inside `overlay()` and calls `spinner::lines`). The shown conversation is working and none of the overlays waiting on the human
   is open: approval, questions, unavailable (the prompts that block a turn). A waiting prompt is not "working"; the spinner stays
   visible for every other overlay (`server`, which is only opened at startup before any turn, pickers, agents panel, history search, completion, `/` menu). Main view: `app.running`;
@@ -113,7 +113,7 @@ Open in a browser (animated):
 5. `statusbar.rs`: drop `working` from the running hint; `rust/fontaine-tui/tests/goal.rs:240` waits for `esc to interrupt` instead of `working · esc to interrupt`.
 6. `lib.rs`, `ui/mod.rs` and `ui/turn.rs`: add a fixed `Instant` field to `struct Ui` (`lib.rs:224`, built at `lib.rs:313` and `ui/tests.rs:37`); set `spinner_frame` and the turn's elapsed `Duration` in `Ui::draw`; feed `app.turn_tokens` from `Ui::on_event` (`ui/turn.rs:~855`); `TICK` via the shared fold helper in the idle loop, turn loop and `serve_while`.
 7. `examples/live_area.rs`: a mode that sets `running`, steps `spinner_frame` across a long tool call, resizes, then clears `running`.
-8. Docs, CHANGELOG, master-plan Decisions lines.
+8. Docs, CHANGELOG, master-plan Decisions lines (four, see Documentation).
 
 ## Files to Modify
 - `rust/fontaine-tui/src/theme.rs`, `spinner.rs` (new), `lib.rs`, `app.rs`, `view.rs`, `statusbar.rs`
@@ -134,6 +134,7 @@ Open in a browser (animated):
   lose it whenever the row is hidden for a waiting prompt.
 - 2026-11-01 (user): the glyph is the breathing dot (`·∙•●•∙`) with a drifting hue; `⬤` is excluded because terminals draw it wider than the other frames.
 - 2026-11-01: No spinner in screen-reader/linear mode; settled-only output, as for `thinking:`.
+- AFK: 2026-11-01: the label is the fixed `Working…`, not Claude Code's rotating verb list; smallest design surface, and #355 asks for an activity indicator, not verb variety.
 
 ## Documentation
 - `docs/tui.md` "Status bar" (l.106-116): hint text and the new spinner row (elapsed time and `↓` output tokens, estimated while streaming), hidden while a prompt waits, ASCII fallback
@@ -141,7 +142,7 @@ Open in a browser (animated):
 - `docs/tui.md` live-area list (l.12-16): add the spinner row.
 - `docs/terminal.md` "ASCII glyphs" list (l.138-143): add the `.oO0Oo` spinner fallback.
 - `docs/terminal.md` limitation (l.197) unchanged; `CHANGELOG.md` entry.
-- Master plan `## Decisions` → TUI, dated lines appended at the end of the subsection: `esc to interrupt` stays in the status bar; no spinner in screen-reader mode; breathing-dot glyph instead of Claude Code's star glyphs.
+- Master plan `## Decisions` → TUI, dated lines appended at the end of the subsection: `esc to interrupt` stays in the status bar; no spinner in screen-reader mode; breathing-dot glyph instead of Claude Code's star glyphs; fixed `Working…` label instead of Claude Code's rotating verbs.
 
 ## Testing Strategy
 Unit tests (all pure):
@@ -171,4 +172,4 @@ which is a layout-bug class; reproduce a run through a long tool call in tmux wi
    check no stale live rows reach scrollback.
 
 ## Open Questions
-- Label wording: `Working…` (mockup) vs. a rotating verb list like Claude Code's. Plan assumes the fixed `Working…`.
+None.
