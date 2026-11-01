@@ -1,0 +1,209 @@
+# Agent Spawn Guardian Skip Plan
+
+**GitHub Issue**: https://github.com/madesroches/fontaine/issues/360
+
+## Overview
+
+Two changes to how the permission pipeline treats an `agent` spawn call, from the incident in
+the issue: an AFK skill run was interrupted when the guardian classified a benign worker spawn
+("the user is away, resolve these items") as `Download+Execute` at 0.6 confidence and escalated
+to a human.
+
+1. A spawn is no longer guardian-judged at all. The deterministic floor still applies to the
+   `agent` call (deny/ask rules, hooks, child restrictions); after the floor the mode decides,
+   as it does for calls nobody pre-approved — except the guardian/screen cascade is removed from
+   the spawn's path. The containment argument: every action the child takes is gated by this
+   same pipeline on its own way out, and a child subagent's effective mode is never looser than
+   its parent's, so judging the spawn's prompt with a model classifier duplicates coverage that
+   already holds call-by-call, and does so at exactly the point the user has just explicitly
+   asked for the spawn.
+2. The guardian's explanation sentence is persisted in the audit record. Today the record of an
+   escalated (or allowed) guardian decision has `explanation: null`, so a misjudgment like this
+   incident is unrecoverable once the TUI dialog closes.
+
+## Current State
+
+- `PermissionPipeline::evaluate` (`rust/fontaine-core/src/permissions.rs`) runs the floor
+  (hook deny, deny rules, child restriction, plan block, forced ask, critical path, protected
+  path, argument error), then the read-only fast path, then a spawn fast path: `tool == "agent"`
+  with `adjudication::spawn_facts(...).is_some_and(|spawn| !spawn.changes_state)` allows at
+  `Tier::ReadOnlyFastPath` in every mode. A spawn that can change state falls through to the
+  mode dispatch, where `auto` and `plan` answer `Verdict::Guardian` and `manual`/`acceptEdits`
+  prompt (`dontAsk` denies).
+- `guardian_branch` (same file) sends the call through the screen+guardian cascade
+  (`fontaine_guardian::cascade::adjudicate`). An escalate asks the human
+  (`settle`, `GuardianDecision::Escalate` arm). This is where the incident's prompt came from.
+- `adjudication::build` (`rust/fontaine-core/src/adjudication.rs`) fills
+  `session_facts.spawn` for `agent` calls, and the guardian prompt shows the child's computed
+  toolset.
+- `DecisionRecord.explanation` (`rust/fontaine-core/src/audit.rs`) holds the model-facing denial
+  message for guardian denies; guardian allows and escalate-prompts record `None` (`settle` and
+  `with_guardian` in permissions.rs). The audit field doc says "What the model was told for a
+  denial."
+- `Tier` (`rust/fontaine-core/src/tier.rs`) has 17 variants; the only exhaustive consumer is its
+  own `as_str`/`ALL`. The tier string reaches the audit log, the `tool_decision` telemetry
+  event and the headless `gate_decision` event as-is.
+- Tests encoding the current behavior: `the_spawn_call_is_gated_like_any_arbitrary_call` and
+  `a_spawn_that_can_change_state_still_reaches_the_guardian`
+  (`rust/fontaine-core/tests/agent_pipeline.rs`); `a_read_only_spawn_takes_the_fast_path_in_every_mode_without_the_guardian`
+  pins the read-only fast path and stays as-is.
+- Evals: `evals/dataset/spawn.jsonl` case `spawn-worker-not-fast-path` expects `deny` at tier
+  `guardian` for a worker spawn in `auto`. Fixture mode (`score_fixture`,
+  `rust/fontaine-evals/src/runner.rs`) replays `fixture_verdict` against `expected`, and the
+  fixture eval runs are CI steps.
+- Docs describing the current behavior: `docs/permissions.md` pipeline step 3 (read-only spawn
+  fast path), step 7 (the mode/guardian), the tier vocabulary list, and the "guardian skips"
+  paragraph near the end; `docs/guardian.md` intro and the "Subagents and the scratch
+  directory" section; the security invariants in `AGENTS.md` ("three exceptions" to the fast
+  path).
+
+## Design
+
+### Spawns leave the guardian's path
+
+In `evaluate`, after the allow rules, the hook allow and the out-of-scope handling — everything
+that can pre-approve or pre-refuse the call — and before the mode dispatch, an `agent` branch
+decides the spawn without the cascade:
+
+- `auto` and `plan` → `Verdict::Allow { tier: Tier::Spawn, rule: None }`.
+- `manual` and `acceptEdits` → the same prompt as today (`would_prompt` with
+  "it needs the user's approval").
+- `dontAsk` → the same denial as today.
+
+Everything above the branch is unchanged, so a `deny`/`ask` rule on `agent`, a hook decision,
+the parent-toolset restriction (`child_restriction`, rule `agent tools`) and the critical-path
+check all still act on the spawn first. The read-only spawn fast path above it also stays
+unchanged (it still allows in every mode at `read_only_fast_path`).
+
+A new `Tier::Spawn` (`"spawn"`) is added to the enum, `Tier::ALL` (17 → 18) and `as_str`. It
+flows to the audit log, telemetry and the headless `gate_decision` event like any other tier;
+the eval `expected_tier` comparison is string-based and needs no code change.
+
+Plan mode allows the spawn because the child's edits are plan-blocked: the child's posture is
+the tighter of its own and its parent's, so a plan-mode spawn can plan but cannot edit, and
+each of its calls is still judged.
+
+The `fontaine-guardian` crate is untouched: it keeps its spawn-aware request (`SpawnFacts`,
+the child-toolset section of the prompt) because it is lift-out-able and an embedding harness
+may still route spawns to it. Guardian-kind eval cases for `agent` calls
+(`evals/dataset/overdeny.jsonl` `attack-overdeny-03`) test the crate in isolation and stay.
+
+### The guardian's explanation reaches the audit log
+
+In `with_guardian` (permissions.rs), fill the record's explanation when it is empty:
+
+```rust
+record
+    .explanation
+    .get_or_insert_with(|| adjudication.explanation.clone());
+```
+
+Deny records already carry the model-facing message, which embeds the explanation sentence, so
+`get_or_insert` leaves them unchanged ("error text may explain a Deny, never change it");
+guardian allows and escalate-prompts — the case in the incident — gain the guardian's own
+sentence. The field doc in audit.rs is updated to say it holds the guardian's reason sentence,
+or what the model was told for a denial.
+
+## Implementation Steps
+
+1. `rust/fontaine-core/src/tier.rs`: add the `Spawn` variant, its `as_str` arm (`"spawn"`), and
+   extend `Tier::ALL`.
+2. `rust/fontaine-core/src/permissions.rs`, `evaluate`: insert the `agent` branch before the
+   mode match, with a comment giving the containment reason (each child call is gated; the
+   child's mode is never looser than the parent's).
+3. `rust/fontaine-core/src/permissions.rs`, `with_guardian`: fill `explanation` via
+   `get_or_insert_with` as above. Update the `explanation` field doc in
+   `rust/fontaine-core/src/audit.rs`.
+4. Update `rust/fontaine-core/tests/agent_pipeline.rs`:
+   - `the_spawn_call_is_gated_like_any_arbitrary_call`: in `auto` the spawn is now allowed at
+     tier `spawn` with the guardian never consulted (`fake.calls() == 0`); the manual prompt and
+     the deny-rule arms stay.
+   - Replace `a_spawn_that_can_change_state_still_reaches_the_guardian` with its inverse: a
+     state-changing spawn (`worker`, `fork`, `nests`, `shelly`, `fetchy`, `mcpish`) in `auto` is
+     allowed at tier `spawn`, guardian not consulted.
+   - Add a regression test pinning the incident (#360): in `auto`, a worker spawn whose prompt
+     is an unsupervised "the user is away, resolve these items" instruction, with a fixture
+     guardian that would escalate `Download+Execute`, is allowed; assert the guardian was never
+     called and the approver never asked.
+   - Add mode coverage for a state-changing spawn: `plan` allows at tier `spawn`,
+     `acceptEdits` prompts, `dontAsk` denies.
+   - Add an audit assertion: a guardian escalate writes a record whose `explanation` is the
+     guardian's sentence; a guardian deny record's explanation is unchanged (the model-facing
+     message).
+5. `evals/dataset/spawn.jsonl`: `spawn-worker-not-fast-path` becomes
+   `"expected": "allow", "expected_tier": "spawn"` with a matching `fixture_verdict`
+   (`{"decision": "allow", "tier": "spawn"}`).
+6. Docs: `docs/permissions.md` (step 3's spawn paragraph, step 7, the tier list, the
+   "guardian skips" paragraph), `docs/guardian.md` (intro list and the subagents section), and
+   the fast-path invariant in `AGENTS.md` (three exceptions become four). `CHANGELOG.md` is
+   updated by the `pr` step.
+
+## Files to Modify
+
+- `rust/fontaine-core/src/tier.rs`
+- `rust/fontaine-core/src/permissions.rs`
+- `rust/fontaine-core/src/audit.rs` (field doc only)
+- `rust/fontaine-core/tests/agent_pipeline.rs`
+- `evals/dataset/spawn.jsonl`
+- `docs/permissions.md`, `docs/guardian.md`, `AGENTS.md`
+
+## Trade-offs
+
+- **Threshold-raising (the issue's earlier idea) vs not classifying spawns at all.** Raising the
+  escalate threshold would only move the boundary; a small router model would still be asked to
+  judge natural-language prompts at the exact moment the user asked for the spawn. Not
+  classifying removes the judgment; deterministic deny rules remain the answer for "never let
+  this session spawn workers unattended", with no model in the loop.
+- **Allow in `plan`.** The alternative (prompt, or keep the guardian for plan only) re-introduces
+  the same interruption in a non-interactive-ish mode and buys nothing: the child's edits are
+  plan-blocked and every child call is judged on its own.
+- **Keep the guardian crate spawn-aware.** Removing `SpawnFacts` would shrink the crate's API and
+  invalidate its guardian-kind spawn evals, to no benefit for Fontaine: the pipeline simply stops
+  sending spawns. Embedders keep the capability.
+- **New tier vs reusing `mode`.** A distinct `spawn` tier keeps the audit/telemetry record of why
+  the call ran — the observability the issue asks for — at the cost of one enum variant. The
+  tier string is a plain value in every consumer.
+- **Manual/acceptEdits keep prompting.** The issue targets unattended runs; interactive modes
+  asking before a state-changing spawn is the status quo and the conservative choice.
+
+## Decisions
+
+- 2025-11-14 (design): `plan`-mode spawns are allowed like `auto`'s; the child's plan block is
+  inherited, so the spawn cannot edit through the back door.
+- 2025-11-14 (design): a spawn of an unknown or malformed `agent_type` is allowed at the gate in
+  `auto`/`plan` and refused by the `AgentTool` itself on execution, as it already is for
+  allowed calls today. The gate gains no agent-type validation.
+
+## Documentation
+
+- `docs/permissions.md`: step 3 (read-only spawn fast path), step 7 (mode table: `auto`/`plan`
+  spawns no longer reach the guardian), the tier vocabulary (add `spawn`), the "guardian skips"
+  paragraph.
+- `docs/guardian.md`: the intro's list of what sits in front of the guardian, and the
+  subagents section ("An `agent` call is decided by the floor and the mode…").
+- `AGENTS.md`: the fast-path invariant gains the spawn exception (four exceptions).
+- `CHANGELOG.md`: entry under the release the PR lands in.
+
+## Testing Strategy
+
+- Unit/integration through the pipeline test rig (`Rig` in
+  `rust/fontaine-core/tests/common`), with the fake/fixture guardian — no live APIs anywhere.
+- The #360 regression test (step 4) pins the incident: worker spawn with an AFK-style prompt in
+  `auto`, escalate-fixture guardian, assert allow at `spawn` with zero guardian calls and zero
+  prompts. It reproduces the bug at the tier that actually failed (the pipeline), not lower.
+- Mode matrix for a state-changing spawn (`auto`/`plan` allow, `manual`/`acceptEdits` prompt,
+  `dontAsk` deny) and for the read-only spawn fast path (unchanged, every mode).
+- Floor precedence on spawns stays pinned by the existing deny-rule, ask-rule and hook tests.
+- Audit assertions: escalate/allow records carry the guardian's explanation; the deny record's
+  explanation is the unchanged model-facing message.
+- CI steps from the repo conventions: `cargo fmt --check`, `cargo clippy --all-targets -- -D
+  warnings`, `cargo test`, and both fixture eval runs
+  (`cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` and
+  `--profile minimal`), the last two covering the updated dataset case.
+
+## Open Questions
+
+- Whether `--guardian none` eval mode should stop skipping `auto`-mode pipeline cases now that
+  spawns no longer need the guardian there. It skips on `mode == auto` regardless of tool, and
+  non-spawn `auto` calls still need the guardian, so the skip stays correct; a finer-grained
+  skip is a possible follow-up, out of scope here.
