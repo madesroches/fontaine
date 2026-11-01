@@ -1,6 +1,7 @@
-//! The prompts of `/auto-mode-setup`. The review before it saves what the repository scan proposed. The proposals
-//! come from a model reading the repository, and some of them relax the guardian, so nothing is
-//! saved until the user has read them and answered.
+//! The prompts of `/auto-mode-setup`. The review comes before it saves what the repository scan
+//! proposed. The proposals come from a model reading the repository, and some of them relax the
+//! guardian, so nothing is saved until the user has read them and answered. The composition offer
+//! prompt asks whether to write a detected local screen model into the guardian composition.
 
 use std::time::Instant;
 

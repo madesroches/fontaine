@@ -56,9 +56,16 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
 
     /// Offers the composition when nothing configured it yet. Declining any prompt writes nothing.
     async fn composition_step(&mut self, runtime: &mut AgentRuntime) -> ControlFlow<()> {
-        if composition_offer::existing(&runtime.config)
-            || runtime.guardian_profile() == fontaine_guardian::Profile::Minimal
-        {
+        if composition_offer::existing(&runtime.config) {
+            self.app
+                .transcript
+                .notice("guardian composition: skipped (a composition is already configured)");
+            return ControlFlow::Continue(());
+        }
+        if runtime.guardian_profile() == fontaine_guardian::Profile::Minimal {
+            self.app
+                .transcript
+                .notice("guardian composition: skipped (the minimal profile)");
             return ControlFlow::Continue(());
         }
         let Some(file) = self.user_config.clone() else {

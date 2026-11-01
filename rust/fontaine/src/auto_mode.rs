@@ -589,7 +589,6 @@ fn setup_run(cli: &Cli, args: &SetupArgs, config: &Config, dirs: &Dirs, host: &H
         let found = discover::discover(&SystemGh, root, &remotes, audit::now_rfc3339()).await;
         let step = scan_step(cli, args, (config, dirs, host), &found).await;
         let record = step.apply_to(found.record, &dirs.data, root);
-        let composition = composition_step(cli, args, (config, dirs, host)).await;
         let saved = match project_env::store(&dirs.data, root, &record) {
             Ok(saved) => saved,
             Err(e) => {
@@ -599,6 +598,7 @@ fn setup_run(cli: &Cli, args: &SetupArgs, config: &Config, dirs: &Dirs, host: &H
                 );
             }
         };
+        let composition = composition_step(cli, args, (config, dirs, host)).await;
         emit(&setup_report(
             &record,
             &saved,

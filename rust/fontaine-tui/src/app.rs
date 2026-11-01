@@ -714,7 +714,6 @@ impl App {
                     || self.guardian_off_prompt.is_some()
                     || self.setup_review.is_some()
                     || self.setup_composition.is_some()
-                    || self.setup_composition.is_some()
                     || self.models.is_some()
                     || self.resume.is_some()
                     || self.rewind.is_some()
