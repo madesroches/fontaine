@@ -1321,7 +1321,9 @@ impl App {
             self.input.insert('\n');
             return Action::None;
         }
-        if text.trim().is_empty() {
+        // Chips alone still submit: the text is allowed to be empty when the message
+        // carries attachments.
+        if text.trim().is_empty() && !self.input.has_attachments() {
             return Action::None;
         }
         if let Some(id) = self.viewing.clone() {
@@ -2451,6 +2453,28 @@ mod tests {
             "{:?}",
             mid.refusal
         );
+    }
+
+    #[test]
+    fn enter_with_only_chips_submits_an_empty_prompt() {
+        let mut only = app();
+        only.input.attach(crate::input::PendingAttachment {
+            label: "shot.png".into(),
+            path: std::path::PathBuf::from("/scratch/shot.png"),
+            media: PendingMedia::Image(rig_core::message::ImageMediaType::PNG),
+            size: 1024,
+        });
+        let action = press(&mut only, KeyCode::Enter);
+        let Action::Submit(text, attachments) = action else {
+            panic!("a submit, got {action:?}");
+        };
+        assert_eq!(text, "");
+        assert_eq!(attachments.len(), 1);
+        assert!(!only.input.has_attachments());
+
+        // No text and no chips is still a no-op.
+        let mut bare = app();
+        assert_eq!(press(&mut bare, KeyCode::Enter), Action::None);
     }
 
     #[test]
