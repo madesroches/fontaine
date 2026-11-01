@@ -449,7 +449,7 @@ mod tests {
             )
             .touched_paths
             .iter()
-            .any(|t| t.path.ends_with("/t") && t.absent)
+            .any(|t| std::path::Path::new(&t.path).ends_with("t") && t.absent)
         };
         assert!(absent("mv notes.txt ./t"));
         assert!(marks("mv a ./b"));
@@ -465,7 +465,7 @@ mod tests {
             )
             .touched_paths
             .iter()
-            .any(|t| t.path.ends_with("completed/x_plan.md") && t.absent)
+            .any(|t| std::path::Path::new(&t.path).ends_with("completed/x_plan.md") && t.absent)
         );
     }
 
