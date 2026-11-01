@@ -154,11 +154,16 @@ or what the model was told for a denial.
    at `schema_version` 1, so adding an enum value stays at v1). `headless_contract.rs`
    validates real `fontaine -p` output against it.
 7. Docs: `docs/permissions.md` (step 3's spawn paragraph, step 7, the tier list, the
-   "guardian skips" paragraph), `docs/guardian.md` (intro list and the subagents section),
+   "guardian skips" paragraph, and the suspended-rule text near lines 259-262 that says the
+   rule "goes to the guardian instead", untrue for a bare `agent` rule now that
+   `is_broad_code_execution` has `("agent", None)`), `docs/guardian.md` (intro list and the subagents section),
    `docs/agents.md` (spawn paragraph: `auto`/`plan` allow at the `spawn` tier,
-   `manual`/`acceptEdits` ask), `docs/evals.md` (`spawn-worker-auto-gate` sentence: a
+   `manual`/`acceptEdits` ask; the passage "A bare `agent` allow rule is one of the broad rules
+   `auto` sets aside"; and lines ~136-139, "auto has the guardian judge the task, toolset and
+   model together"), `docs/evals.md` (`spawn-worker-auto-gate` sentence: a
    `worker` spawn in `auto` is allowed at tier `spawn`), `docs/headless.md` (add `spawn` to
-   the `gate_decision` tier list), and the fast-path invariant in `AGENTS.md` (three
+   the `gate_decision` tier list), `evals/README.md` (the `tier`/`expected_tier` name list
+   near lines 60-61 ends at `human`; add `spawn`), and the fast-path invariant in `AGENTS.md` (three
    exceptions become four); `docs/architecture.md` (the numbered pipeline diagram:
    show the new branch — a `Tier::Spawn` allow for `auto`/`plan`, a prompt for
    `manual`/`acceptEdits`, a deny for `dontAsk` — between the fast paths and the mode
@@ -168,8 +173,9 @@ or what the model was told for a denial.
    without a grant), and `README.md` (the "Auto mode" list: a spawn of a
    subagent — read-only or state-changing — no longer reads as
    guardian-reachable). Add a dated line to `## Decisions` in
-   `tasks/fontaine_harness_plan.md` recording that spawns are no longer guardian-judged at
-   all, with the containment reason and the issue reference (#360). `CHANGELOG.md` is
+   `tasks/fontaine_harness_plan.md`, at the end of `### Permissions` (after the existing
+   read-only-spawn lines, which it extends from read-only spawns to all spawns), recording that
+   spawns are no longer guardian-judged at all, with the containment reason and the issue reference (#360). `CHANGELOG.md` is
    updated by the `pr` step.
 
 ## Files to Modify
@@ -181,6 +187,7 @@ or what the model was told for a denial.
 - `rust/fontaine-core/tests/permissions_auto.rs`
 - `rust/fontaine/tests/parallel_agents.rs`
 - `evals/dataset/spawn.jsonl`
+- `evals/README.md`
 - `docs/schemas/headless-v1.schema.json`
 - `docs/permissions.md`, `docs/guardian.md`, `docs/agents.md`, `docs/evals.md`,
   `docs/headless.md`, `docs/architecture.md`, `README.md`, `AGENTS.md`,
@@ -188,22 +195,17 @@ or what the model was told for a denial.
 
 ## Trade-offs
 
-- **Threshold-raising (the issue's earlier idea) vs not classifying spawns at all.** Raising the
-  escalate threshold would only move the boundary; a small router model would still be asked to
-  judge natural-language prompts at the exact moment the user asked for the spawn. Not
-  classifying removes the judgment; deterministic deny rules remain the answer for "never let
-  this session spawn workers unattended", with no model in the loop.
 - **New tier vs reusing `mode`.** A distinct `spawn` tier keeps the audit/telemetry record of why
   the call ran — the observability the issue asks for — at the cost of one enum variant. The
   tier string is a plain value in every consumer.
-- **Manual/acceptEdits keep prompting.** The issue targets unattended runs; interactive modes
-  asking before a state-changing spawn is the status quo and the conservative choice.
 
 ## Decisions
 
-- 2026-11-14 (design): `plan`-mode spawns are allowed like `auto`'s; the child's plan block is
+- 2026-10-31 (design): `plan`-mode spawns are allowed like `auto`'s; the child's plan block is
   inherited, so the spawn cannot edit through the back door.
-- 2026-11-14 (design): a spawn of an unknown or malformed `agent_type` is allowed at the gate in
+- 2026-10-31 (design): `Tier::Spawn` is excluded from `guardian_allowed()`, like the other
+  fast-path tiers; `allow()` calls it only for `TrackedEdit`/`ScratchWrite`.
+- 2026-10-31 (design): a spawn of an unknown or malformed `agent_type` is allowed at the gate in
   `auto`/`plan` and refused by the `AgentTool` itself on execution, as it already is for
   allowed calls today. The gate gains no agent-type validation.
 
@@ -211,9 +213,6 @@ or what the model was told for a denial.
 
 - Unit/integration through the pipeline test rig (`Rig` in
   `rust/fontaine-core/tests/common`), with the fake/fixture guardian — no live APIs anywhere.
-- Floor precedence on spawns stays pinned by the existing deny-rule, ask-rule and hook tests.
-- Audit assertions: escalate/allow records carry the guardian's explanation; the deny record's
-  explanation is the unchanged model-facing message.
 - CI steps from the repo conventions: `cargo fmt --check`, `cargo clippy --all-targets -- -D
   warnings`, `cargo test`, and both fixture eval runs
   (`cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` and
