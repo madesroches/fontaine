@@ -120,7 +120,7 @@ functions are `use`-able as `guardian::…`; the prelude imports them) exposes:
 | Item | Returns | Notes |
 |---|---|---|
 | `call.tool()`, `call.destructive()` | `String`, `bool` | Read-only facts of the call; no arguments are exposed (the script decides by reads, not by matching arguments — no regex on tool arguments). |
-| `read(call, name)` | `Future<Result<Score, String>>` | `name` is a declared read. The score is recorded under `name` for the audit record either way; an undeclared name is an `Err`. Reads are host-driven tasks owned by the evaluation context, so dropping the returned future in the script (as `first_decisive` does to losers) does not cancel the read. |
+| `read(call, name)` | `Future<Result<Score, String>>` | `name` is a declared read. The score is recorded under `name` for the audit record either way; an undeclared name is an `Err`. Reads are host-driven tasks owned by the evaluation context, so dropping the returned future in the script (as `first_decisive` does to losers) does not cancel the read. Each name is read at most once per evaluation: a later `read` of the same name (or of a read the root already started in shadow mode) shares that request. |
 | `score.value()` | `f64` | |
 | `llm(call)` | `Future<Verdict>` | The LLM guardian. Every call in one evaluation shares **one** request (a `futures::future::Shared` in the evaluation context), so the script can mention it on several paths without paying twice. It never abstains: its fail-closed outcomes are Deny verdicts. |
 | `first_decisive(futures)` | `Future<Verdict>` | Polls all futures concurrently; returns the first non-abstain verdict; when several are ready on the same poll, list order wins; drops the rest; all abstain → abstain. Dropping a read's future here does not cancel the read (see below). |
@@ -133,7 +133,8 @@ The root's timeout bound covers one read stage plus one LLM call, so a script th
 sequentially before `llm()` can hit Deny `Timeout` by design.
 
 `Call`, `Score` and `Verdict` are host `Any` types with no Rune constructors and no settable
-fields, so a script cannot forge them. An `Allow` can only come from `llm()` (it carries the
+fields, so a script cannot forge them. A `Verdict` carries its origin (`llm()` or the named node
+that minted it), which the root uses to map the outcome. An `Allow` can only come from `llm()` (it carries the
 `Adjudication`) or from `allow_below` applied to a `Score` that a declared read produced. This
 replaces a static "can this tree allow?" analysis with a structural guarantee.
 
@@ -163,8 +164,10 @@ The rules below are in Rust and outside the script's reach:
 
 1. **Runs bounded.** The VM runs through `Vm::send_execute(["guardian"], (call, params))` wrapped
    in `rune::runtime::budget::with(INSTRUCTION_BUDGET, …)` and in
-   `tokio::time::timeout(guardian timeout + PROBE_TIMEOUT + read timeout + COMPOSITION_SLACK, …)`
-   (`PROBE_TIMEOUT` because the output-mode probe runs outside `Settings.timeout`). The bound covers
+   `tokio::time::timeout(guardian timeout + read timeout + COMPOSITION_SLACK, …)`. The timer starts
+   only after the root has awaited `Guardian::resolve_mode()`, because the output-mode probe runs
+   outside `Settings.timeout` and concurrent callers (subagents) wait for it serially while it goes
+   unanswered; an `Err` there is left to `llm()`'s own fail-closed Deny. The bound covers
    one read stage plus one LLM call. Both constants ship in code (the 2026-10-21 decision "Guardian
    constants ship in `fontaine-guardian`, not config keys"). A fresh `Vm`
    is made per call. On timeout the root aborts the evaluation task (`JoinHandle::abort`; the
@@ -193,12 +196,22 @@ The rules below are in Rust and outside the script's reach:
    before returning, even after `first_decisive` settled, so their scores are recorded (enforced or
    shadow), as `screening.await` does today (`cascade.rs:56-63`). The ported tests
    `fontaine-guardian/tests/cascade.rs:257` and `fontaine-core/tests/permissions_screen.rs:479` pin it.
-7. **Shadow.** With `shadow = true`, the root joins the script with the shared LLM request,
-   records the script's would-be `outcome`, and always decides by `Decided::Guardian`. The
-   script's `llm()` is the same shared request, so shadow mode costs no extra guardian call.
+7. **Shadow.** With `shadow = true`, the root starts every declared read itself at evaluation
+   start (so every score is logged, as `build_screen` enables all reads in shadow today), joins the
+   script with the shared LLM request, records the script's would-be `outcome`, and always decides
+   by `Decided::Guardian`. The script is not told it is in shadow mode, so what it would have
+   decided is what it decides when enforced; its `read()`s and `llm()` share the root's requests,
+   so shadow mode costs no extra read or guardian call.
 
 `composition::adjudicate` emits the `fontaine.guardian.screen` span with the named-read fields,
 `outcome` and `latency_ms`, replacing `Screen::screen`'s emission (`screen.rs:245-266`).
+`outcome` is mapped from the verdict the script returned, by its origin: a node's `escalate` →
+`Stop`, a node's `deny` → `Deny`, an `allow_below` allow → `Allow`, a verdict from `llm()` →
+`Pass` (including a screen branch that abstained and fell through to the LLM), and a VM error,
+budget, timeout, panic, non-verdict or root abstain → `Failed`. When `llm()` wins
+`first_decisive` in concurrent mode, the screen branch's would-be verdict was never computed and
+the outcome is `Pass`; shadow mode records the same, since it records what the script returned.
+Its reads are still awaited and recorded (rule 6).
 `screen_outcome` is `unavailable` when `Outcome::Failed` or any `ReadRecord` is `Err`;
 `screen_latency_ms` is the latency from evaluation start to the last read finishing.
 
@@ -229,7 +242,7 @@ pub async fn guardian(call, params) {
 }
 
 async fn screen(call, params) {
-    // `stop` always; `allow` and `steering` only when allow_threshold is set (or in shadow).
+    // `stop` always; `allow` and `steering` only when allow_threshold is set.
     // Every joined read must be Ok, else abstain, before any stop check
     let (stop, allow, steering) = std::future::join((read(call, "stop"), read(call, "allow"), read(call, "steering"))).await;
     let (stop, allow, steering) = match (stop, allow, steering) {
@@ -245,8 +258,9 @@ async fn screen(call, params) {
 ```
 
 (This is illustrative; the implementer writes valid Rune 0.14, including always running `stop` and
-running `allow`/`steering` only when `allow_threshold` is set. Shadow mode always runs the allow reads so their scores are logged, as
-`build_screen` does today.) Preset params, checked in Rust at load with today's ranges and
+running `allow`/`steering` only when `allow_threshold` is set. In shadow mode the root starts
+every declared read (rule 7), so the allow reads' scores are logged as `build_screen` does today
+without the preset knowing it is in shadow.) Preset params, checked in Rust at load with today's ranges and
 messages: `question`, `stop_threshold` (0, 1], `allow_threshold` (0, 1), `steering_veto` (0, 1],
 default `DEFAULT_STEERING_VETO`, and `concurrent` (bool, default `false`: sequential whether or not
 the guardian is priced; `true` is opt-in, #136). A non-shadow preset with neither threshold is an
@@ -343,6 +357,17 @@ LLM-decided cases is screen + LLM; `docs/evals.md` notes that older cascade scor
 concurrent=true` reproduces the race. Scorecard JSON keys stay the same; the preset's `stop`/`allow`/`steering` map
 to the existing `screen_risk`/`allow_risk`/`steering` fields.
 
+A `--composition-script` run adds no read flags: its reads and `timeout_ms` come from the eval's
+loaded config's `[guardian.composition.reads]` (none when absent), its default read `model` from
+`--screen live:<account>/<model>` when given, else from that config's `[guardian.composition]
+model`. With `--composition-script`, `--screen` only supplies that model, and `--stop-threshold`,
+`--allow-threshold` and `--steering-veto` are usage errors (script params go through
+`--composition-param`); without it, `--screen` still needs a threshold, as today, and
+`--composition-param` adds preset params (a key also set by a threshold flag is a usage error).
+Either way the eval builds a `GuardianComposition` (`shadow = false`) and validates it with
+`check_composition`, so the ollama-account check runs there, as for a session, replacing
+`add_screen`'s inline check.
+
 ## Implementation Steps
 
 1. **Spike-check, then the dependency.** Add `rune = "=0.14.2"` to `rust/Cargo.toml` workspace
@@ -426,6 +451,20 @@ to the existing `screen_risk`/`allow_risk`/`steering` fields.
 - 2026-11-01: A script escalate or deny beats an LLM allow that is already in hand (the stricter
   outcome wins), where today an in-hand LLM verdict wins either way; an in-hand LLM non-allow
   always wins over any script verdict.
+- AFK: 2026-11-01: Shadow mode is invisible to the script: the root itself starts every declared
+  read in shadow (one request per read name, shared with the script's `read()`), so shadow logs every
+  score as `build_screen` does today and measures exactly what enforcement would decide.
+- AFK: 2026-11-01: The root timeout starts after the root awaits `Guardian::resolve_mode()` and no
+  longer includes `PROBE_TIMEOUT`, so serialized probe waits of concurrent callers cannot turn a real
+  LLM verdict into Deny `Timeout`; the whole evaluation stays under one hard bound once it starts.
+- AFK: 2026-11-01: A `--composition-script` eval adds no read flags: reads come from the loaded
+  config's `[guardian.composition.reads]`, the default model from `--screen live:` (else the config),
+  threshold flags are rejected with a script, and the ollama-account check runs in the shared
+  `check_composition`.
+- AFK: 2026-11-01: `Composed.outcome` is mapped from the returned verdict's origin (escalate → Stop,
+  deny → Deny, `allow_below` → Allow, `llm()` → Pass, root failure → Failed); when `llm()` wins a
+  concurrent race the outcome is `Pass` (the screen's would-be verdict was never computed), unlike
+  today's cascade, which records the screen's own Stop/Allow; shadow records the same.
 
 ## Documentation
 
@@ -474,7 +513,10 @@ All of these are unit or integration tests with `wiremock` for the Ollama reads 
   `expect(1)`); every started read is awaited and recorded even after `first_decisive` settled; a sequential script runs reads in order, and `join` runs them together (real-time
   assertion with generous bounds, as `tests/cascade.rs:148-190`: three reads each delayed 300 ms via
   wiremock `set_delay` finish under ~600 ms joined and take ≥900 ms sequential).
-- **Shadow**: the script's verdict is recorded and the LLM decides; one LLM request.
+- **Shadow**: the script's verdict is recorded and the LLM decides; one LLM request; every
+  declared read runs once (wiremock `expect(1)`) even when the script reads only some of them.
+- **Outcome**: each origin maps as rule-listed (an LLM allow returned by the sequential preset is
+  `Pass`, not `Allow`); an LLM that wins `first_decisive` records `Pass`.
 - **Preset parity**: port every case in `fontaine-guardian/tests/cascade.rs` and
   `fontaine-core/tests/permissions_screen.rs` (stop, allow, pass, unavailable read, guardian in
   hand wins, shadow scores logged, dropped estimate, `any_failed_read_makes_the_whole_outcome_unavailable`, `screen.rs:884-910`) to the
