@@ -67,25 +67,22 @@ Rules:
 `ScreenScore` gains `cost_usd: Option<f64>` and `model: Option<String>`, read from `usage.cost`
 and `/model` in `parse` (absent from vLLM/Laya, so `None`; both take `#[serde(default,
 skip_serializing_if = "Option::is_none")]` like `truncated`, keeping old reports byte-identical). The
-screen summary gains `cost_usd` (sum over scored cases, omitted when no case reported one) and
-`model_resolved: Vec<String>` (the distinct `model` values of the responses, sorted, omitted when
-empty, so `~typesafe/jev-latest` runs are reproducible).
+`ScreenAnalysis` (`screen_report.rs`) gains `cost_usd` (the warm-up plus the scored cases, omitted
+when no response reported one) and `model_resolved: Vec<String>` (the distinct `model` values of
+the warm-up and scored responses, sorted, omitted when empty, so `~typesafe/jev-latest` runs are
+reproducible). `render` prints them on a `cost_usd=... model_resolved=...` line.
 
 New `--screen-max-cost-usd <USD>`, validated as `!(c > 0.0 && c.is_finite())` → usage error, in the
-style of the other numeric flags. `warm_up` is a billed call, so it returns its `ScreenScore` and its
-cost seeds the running total and the summary `cost_usd`. `score_screen` adds each case's cost to the total and,
+style of the other numeric flags. `warm_up` is a billed call, so it returns
+`Option<ScreenScore>` (`None` when it returns early or fails). Its cost seeds the running total, and
+`score_screen` (`runner.rs`) returns it alongside `(results, scored, skipped)` so that
+`screen_report::analyze` takes it as an extra parameter and folds it into `cost_usd` and
+`model_resolved`. `score_screen` adds each case's cost to the total and,
 once the total reaches the cap, stops asking and records every remaining case as skipped with
 reason `cost cap reached`. The cap is checked after each call, so the overshoot is at most one
 call. Both cost flags need `--guardian screen:<model>`, like the other `--screen-*` flags.
 
 ### Invocation
-
-```
-fontaine-evals --dataset ../evals/dataset --guardian screen:typesafe/jev-1.14 \
-  --screen-url https://openrouter.ai/api \
-  --screen-api-key-file /home/mad/open_router_key \
-  --screen-max-cost-usd 1 --out jev.json
-```
 
 `~typesafe/jev-latest` is the floating alias. `--screen-url` is the base without `/v1/systemone`, so `https://openrouter.ai/api` composes to
 OpenRouter's path with no change to `endpoint` construction. Per-call latency over the internet
@@ -100,13 +97,15 @@ exceeds the 10 s default timeout only on stalls; leave the default.
    - Thread `Option<ApiKey>` through `connect` and add the bearer header in `Screen::ask` with `.bearer_auth(key.expose())`, the repo's convention
      (`websearch.rs`, `ollama.rs`).
    - Add `cost_usd` and `model` to `ScreenScore`; parse `usage.cost` and `/model`; have `warm_up`
-     return its `ScreenScore`.
+     return `Option<ScreenScore>`.
 2. `rust/fontaine-evals/src/runner.rs`
    - Add `--screen-api-key-file` and `--screen-max-cost-usd`; extend the "need `--guardian
      screen:<model>`" check (line 435) and its message; validate `--screen-max-cost-usd`.
-   - In `score_screen`, keep the running cost and skip the remainder at the cap.
-3. `rust/fontaine-evals/src/screen_report.rs`: add `cost_usd` and `model_resolved` to the screen
-   summary.
+   - In `score_screen`, keep the running cost and skip the remainder at the cap; return the
+     warm-up's `Option<ScreenScore>` alongside `(results, scored, skipped)`.
+3. `rust/fontaine-evals/src/screen_report.rs`: add `cost_usd` and `model_resolved` to
+   `ScreenAnalysis`, take the warm-up `Option<ScreenScore>` as an extra parameter of `analyze`, and
+   print both in `render`.
 4. Docs and changelog (below).
 5. Live run: score the dataset with Jev and save `--out` (see Manual Verification).
 6. Record the results in md files:
@@ -148,7 +147,7 @@ exceeds the 10 s default timeout only on stalls; leave the default.
 ## Documentation
 
 - `docs/evals.md`: replace "**Jev**: hosted only, and reference only" under "Not measured" with
-  how to run it (command above), the measured numbers once the live run exists, and the
+  how to run it (the Manual Verification command), the measured numbers once the live run exists, and the
   saturated-probability caveat if it holds. Note that Jev is a reference measurement and that the
   key is sent only over https.
 - `evals/README.md`: add the two new flags to the `--screen-*` rows under "Running the runner", the
@@ -174,7 +173,7 @@ and never touch OpenRouter.
   is absent from the `--out` report and from stdout/stderr.
 - `screen.rs`: with a scripted per-call cost and `--screen-max-cost-usd`, the run stops after the
   call that reaches the cap, the remaining cases are skipped with `cost cap reached`, and the
-  summary `cost_usd` equals the sum of the warm-up and the scored cases.
+  `ScreenAnalysis` `cost_usd` equals the sum of the warm-up and the scored cases.
 - Flag validation: both new flags are rejected without `--guardian screen:<model>`, and a
   non-positive or non-finite `--screen-max-cost-usd` is a usage error, extending the
   `usage_errors_exit_two` table at the end of `tests/screen.rs`.
@@ -187,5 +186,5 @@ because tests must never touch live APIs.
 
 1. From `rust/`, run:
    `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian screen:typesafe/jev-1.14 --screen-url https://openrouter.ai/api --screen-api-key-file /home/mad/open_router_key --screen-max-cost-usd 1 --out ../evals/scorecards/screen-jev-1.14.json`
-   Expected: every guardian case is scored, none fail closed with `error`, and the summary shows
+   Expected: every guardian case is scored, none fail closed with `error`, and the printed analysis shows
    `cost_usd` well under $0.10 and `model_resolved` `typesafe/jev-1.14-20261014`.
