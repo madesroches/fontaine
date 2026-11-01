@@ -741,6 +741,10 @@ All notable changes are recorded here. The format follows
   input or after whitespace; accepting a match replaces only that word. Tab first extends the
   name to the longest prefix all matches share, then completes the selected row. Mid-prompt,
   Enter sends the message as typed (#294).
+- Counts shown in the TUI use one compact form (`999`, `1.0k`, `90.9k`, `1.2M`): agent spend
+  (`90.9k tok`), the budget-exhausted reason, `/context`, the goal summary, the `writing` count and
+  the character counts in the copy notice and instruction-file warnings (#365). The ledger, audit
+  log and JSON output keep exact values.
 
 ### Fixed
 

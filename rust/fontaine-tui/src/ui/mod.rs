@@ -30,6 +30,7 @@ use fontaine_core::ledger::Record;
 use fontaine_core::notice::Notice;
 use fontaine_core::prompt;
 use fontaine_core::session;
+use fontaine_tools::display::compact_count;
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::read_recovering;
 use std::time::Duration;
@@ -111,7 +112,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 cost_partial: row.spend.is_partial_cost(),
                 depth: row.depth,
                 writing: row.writing,
-                stopped_because: row.exhausted.map(|why| why.describe()),
+                stopped_because: row.exhausted.map(|why| why.describe_with(compact_count)),
             })
             .collect();
         let job_rows: Vec<JobRow> = runtime

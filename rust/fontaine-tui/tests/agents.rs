@@ -63,12 +63,12 @@ async fn a_killed_subagents_row_shows_killed_and_its_spend_against_its_budget() 
         ui.wait_for("waiting-on-permission").await;
         let screen = ui.screen();
         assert!(screen.contains("agent-1 worker"), "{screen}");
-        assert!(screen.contains("1500 / 200000 tok"), "{screen}");
+        assert!(screen.contains("1.5k / 200.0k tok"), "{screen}");
         // Kill it: the row says so and keeps what it spent.
         ui.press(KeyCode::Char('x'));
         ui.wait_for("killed").await;
         let screen = ui.screen();
-        assert!(screen.contains("1500 / 200000 tok"), "{screen}");
+        assert!(screen.contains("1.5k / 200.0k tok"), "{screen}");
         // Closing the panel, the cancelled approval does not come back.
         ui.press(KeyCode::Esc);
         ui.wait_until("the approval is gone", |s| !s.contains("Allow shell"))

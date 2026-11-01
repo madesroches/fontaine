@@ -14,6 +14,7 @@ use fontaine_core::gate::Rules;
 use fontaine_core::instructions::{MemoryEntry, MemoryKind};
 use fontaine_core::permission_rules::SourcedRule;
 use fontaine_core::plugins::Registry;
+use fontaine_tools::display::compact_count;
 
 use crate::commands::{BUILTINS, MenuEntry, is_builtin};
 use crate::statusbar::mode_label;
@@ -395,21 +396,8 @@ pub fn memory(entries: &[MemoryEntry], auto: &AutoMemory<'_>) -> String {
     out
 }
 
-/// A token count as the reports show it: `842`, `35.7k`.
-pub fn tokens(n: u64) -> String {
-    if n < 1000 {
-        n.to_string()
-    } else {
-        format!("{:.1}k", n as f64 / 1000.0)
-    }
-}
-
 fn window_label(window: u32) -> String {
-    if window >= 1000 && window.is_multiple_of(1000) {
-        format!("{}k", window / 1000)
-    } else {
-        tokens(u64::from(window))
-    }
+    compact_count(u64::from(window))
 }
 
 /// One row of the `/context` report, with the items an `all` report lists under it.
@@ -427,13 +415,13 @@ pub fn context(usage: &ContextUsage, all: bool) -> String {
     let mut out = match usage.window {
         Some(window) => format!(
             "context ~{} of {} tokens ({}%), estimated",
-            tokens(total),
+            compact_count(total),
             window_label(window),
             total.saturating_mul(100) / u64::from(window).max(1),
         ),
         None => format!(
             "context ~{} tokens, estimated (window unknown)",
-            tokens(total)
+            compact_count(total)
         ),
     };
     let _ = write!(out, " · {}", usage.model);
@@ -477,12 +465,17 @@ pub fn context(usage: &ContextUsage, all: bool) -> String {
         .map(|window| u64::from(window).saturating_sub(total));
     let width = rows
         .iter()
-        .map(|row| tokens(row.tokens).len())
-        .chain(free.map(|n| tokens(n).len()))
+        .map(|row| compact_count(row.tokens).len())
+        .chain(free.map(|n| compact_count(n).len()))
         .max()
         .unwrap_or(1);
     for row in &rows {
-        let _ = write!(out, "\n  {:<14}{:>width$}", row.label, tokens(row.tokens));
+        let _ = write!(
+            out,
+            "\n  {:<14}{:>width$}",
+            row.label,
+            compact_count(row.tokens)
+        );
         if let Some(count) = row.count {
             let _ = write!(out, "  ({count})");
         }
@@ -490,12 +483,12 @@ pub fn context(usage: &ContextUsage, all: bool) -> String {
             let mut items: Vec<&(String, u64)> = row.items.iter().collect();
             items.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             for (name, n) in items {
-                let _ = write!(out, "\n    {name}  {}", tokens(*n));
+                let _ = write!(out, "\n    {name}  {}", compact_count(*n));
             }
         }
     }
     if let Some(free) = free {
-        let _ = write!(out, "\n  {:<14}{:>width$}", "free", tokens(free));
+        let _ = write!(out, "\n  {:<14}{:>width$}", "free", compact_count(free));
     }
 
     let reserved = usage
@@ -507,11 +500,19 @@ pub fn context(usage: &ContextUsage, all: bool) -> String {
         (true, None) => out.push_str("no automatic compaction: the model's window is unknown"),
         (true, Some(at)) => {
             let configured = usage.configured == Some(at) && reserved.is_none_or(|r| at <= r);
-            let _ = write!(out, "auto-compacts when messages pass ~{} (", tokens(at));
+            let _ = write!(
+                out,
+                "auto-compacts when messages pass ~{} (",
+                compact_count(at)
+            );
             if configured {
                 out.push_str("[context] autocompact_window)");
             } else {
-                let _ = write!(out, "window minus a {} reserve)", tokens(usage.reserve));
+                let _ = write!(
+                    out,
+                    "window minus a {} reserve)",
+                    compact_count(usage.reserve)
+                );
             }
         }
     }
@@ -521,7 +522,7 @@ pub fn context(usage: &ContextUsage, all: bool) -> String {
         let _ = write!(
             out,
             "\nover the window by ~{} tokens: /compact or /clear frees space",
-            tokens(total - u64::from(window))
+            compact_count(total - u64::from(window))
         );
     }
     out
@@ -938,7 +939,7 @@ mod tests {
         let text = context(&usage(), false);
         assert_eq!(
             text,
-            "context ~43.6k of 200k tokens (21%), estimated · anthropic/claude-sonnet-5-5\n  system prompt   2.1k\n  instructions    1.3k\n  skills           400\n  tools           1.2k  (2)\n  MCP tools       2.9k  (1)\n  messages       35.7k\n  free          156.4k\nauto-compacts when messages pass ~183.6k (window minus a 16.4k reserve)"
+            "context ~43.6k of 200.0k tokens (21%), estimated · anthropic/claude-sonnet-5-5\n  system prompt   2.1k\n  instructions    1.3k\n  skills           400\n  tools           1.2k  (2)\n  MCP tools       2.9k  (1)\n  messages       35.7k\n  free          156.4k\nauto-compacts when messages pass ~183.6k (window minus a 16.4k reserve)"
         );
     }
 
@@ -950,7 +951,7 @@ mod tests {
         let text = context(&u, false);
         assert!(text.contains("\n  memory           600"), "{text}");
         assert_eq!(u.total(), usage().total() + 600);
-        assert!(text.starts_with("context ~44.2k of 200k"), "{text}");
+        assert!(text.starts_with("context ~44.2k of 200.0k"), "{text}");
     }
 
     #[test]

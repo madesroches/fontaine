@@ -413,7 +413,7 @@ mod tests {
             unpriced_tokens: 4_850_000,
         };
         let rows = rows(&[worker], None, &HashSet::new(), now, 0);
-        assert_eq!(rows[1].spend, "4863024 tok · $0.0519 + unpriced");
+        assert_eq!(rows[1].spend, "4.9M tok · $0.0519 + unpriced");
     }
 
     #[test]
@@ -471,7 +471,7 @@ mod tests {
             [None, Some("agent-1"), Some("agent-3"), Some("agent-2")]
         );
         assert_eq!(listed[2].depth, 2);
-        assert_eq!(listed[1].spend, "1200 tok");
+        assert_eq!(listed[1].spend, "1.2k tok");
     }
 
     #[test]

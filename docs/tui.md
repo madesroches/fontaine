@@ -749,7 +749,7 @@ condition and the conversation and answers *met*, *not met* or *impossible* with
 
 - *Not met* starts another turn. The transcript shows `goal: not met — <reason>` and the next turn
   is told the reason.
-- *Met* ends the goal: `Goal achieved: <condition> (3 evaluations, 4m, 182k tokens)`.
+- *Met* ends the goal: `Goal achieved: <condition> (3 evaluations, 4m, 182.0k tokens)`.
 - *Impossible* ends it too, with the reason: `Goal impossible: <reason>`.
 
 The condition is at most 4,000 characters and states something the transcript can show, such as "the
@@ -792,7 +792,7 @@ their reports. Headless runs accept `-p "/goal <condition>"`; see
 
 While a [subagent](agents.md) runs, a list of agents shows below the status bar: `main` first, then
 one row per subagent with its id, type, status, how long this run has gone on and what it has used,
-for example `◯ agent-3 worker running 1m02s 1500 tok`. A nested agent is indented under its
+for example `◯ agent-3 worker running 1m02s 1.5k tok`. A nested agent is indented under its
 parent. The row on screen is marked `●` and the others `◯`. The list shows every running agent, the
 agent on screen, and an agent that failed, was killed or ran out of budget for 30 seconds after it
 ended or until you hide it with `x`. An agent that finished normally leaves at once. With nothing
@@ -800,7 +800,7 @@ to list, the list is not drawn. The spend uses the same format as the
 [agents panel](#the-agents-panel), including the `+ unpriced` marker.
 
 While an agent's model is writing a reply, its reasoning or a tool call's arguments, its row ends in
-`· writing 4.2k chars` (the count is plain below 1000, then in thousands), so a long model step
+`· writing 4.2k chars` (counts are plain below 1000, then in thousands `4.2k` or millions `1.2M`), so a long model step
 does not look like a stall. `main` shows its own count the same way, while the list is shown.
 Usage and cost still update only when the model call ends; the count is characters, not tokens,
 and clears when the step ends, fails or is interrupted. A paused model leaves the last count until
@@ -853,13 +853,14 @@ not printed yet.
 `/agents` (or `/tasks`) or Ctrl-T opens the full overview: one row per [subagent](agents.md), ended
 ones included, and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its id and type, its
 model, its status (`running`, `waiting-on-permission`, `done`, `killed`, `budget-exhausted` or
-`failed`) and what it has used, such as `1500 tok · $0.0021`; each `/ <cap>` form
-(`1500 / 200000 tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`
+`failed`) and what it has used, such as `1.5k tok · $0.0021`; each `/ <cap>` form
+(`1.5k / 200.0k tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`
 shows in place of the spend when a cost budget is set but no priced call has been counted yet,
 as for a model with no known price. A dollar figure that leaves out some of the agent's calls
 (an unpriced account's main model next to its priced guardian calls) ends in `+ unpriced`, as in
-`4863024 tok · $0.0519 + unpriced`: the figure is a lower bound, and a cost budget still counts
-only the priced spend. Up and Down select a row; Enter on an agent closes the panel
+`4.9M tok · $0.0519 + unpriced`: the figure is a lower bound, and a cost budget still counts
+only the priced spend. Displayed counts are compact (`999`, `1.0k`, `1.2M`); the ledger, the audit
+log and JSON output keep exact values. Up and Down select a row; Enter on an agent closes the panel
 and shows that agent's transcript, which is how you reach an agent that has left the
 [agent list](#the-agent-list-and-the-agent-view). A running agent's spend line also ends in
 `· writing 4.2k chars` while its model is mid-step, as in the list; it clears when the step ends.
