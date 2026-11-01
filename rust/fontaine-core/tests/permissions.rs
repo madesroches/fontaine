@@ -124,6 +124,26 @@ async fn the_mode_and_risk_class_matrix() {
             ],
         ),
         (
+            "grep",
+            json!({"pattern": "K", "path": ".env"}),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "lsp",
+            json!({"operation": "hover", "path": ".env", "line": 1, "character": 1}),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
+        ),
+        (
             "shell",
             shell("cat .env"),
             [

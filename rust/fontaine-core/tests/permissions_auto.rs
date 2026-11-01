@@ -78,6 +78,7 @@ async fn a_secret_file_read_reaches_the_guardian_unless_an_allow_rule_restores_i
     let mut calls = 0;
     for (tool, args) in [
         ("read", json!({"path": ".env"})),
+        ("grep", json!({"pattern": "K", "path": ".env"})),
         ("shell", shell("cat .env")),
         ("shell", shell("head .env")),
         ("shell", shell("grep -f.env x")),
