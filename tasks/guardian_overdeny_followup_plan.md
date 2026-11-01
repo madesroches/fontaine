@@ -253,6 +253,7 @@ fixture test meaningful.
 - 2026-11-01: Editing #312's checklist is left to the maintainer. The PR body lists the issues it
   closes.
 - 2026-11-01: The guardian-side `spawned_agent` fact, the guardian prompt's Subagents section and the guardian-kind spawn cases `overdeny-04` and `attack-overdeny-03` are removed because no `agent` call reaches the guardian (maintainer's call); `adjudication::spawn_facts` stays for the read-only fast path.
+- 2026-11-01: `git_tracked` marks exact file entries only; a directory or the work-tree root never gets it, because writing or extracting into one can overwrite untracked files. A directory move onto an `absent` destination clears through `absent`.
 
 ## Documentation
 

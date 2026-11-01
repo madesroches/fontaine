@@ -152,7 +152,7 @@ fn facts(
         scratch.map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
     let paths = touched_paths(tool, args, scope);
     let resolved: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
-    let tracked = trust::tracked_or_holds_tracked(scope.primary(), &resolved);
+    let tracked = trust::tracked_files(scope.primary(), &resolved);
     let touched_paths = paths
         .into_iter()
         .zip(tracked)

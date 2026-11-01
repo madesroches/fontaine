@@ -3,8 +3,8 @@ mod common;
 use common::{World, git_init, write};
 use fontaine_core::config::ConfigError;
 use fontaine_core::trust::{
-    self, LocalClassification, ProjectDemotion, Tracking, classify_project_local,
-    tracked_or_holds_tracked, tracking,
+    self, LocalClassification, ProjectDemotion, Tracking, classify_project_local, tracked_files,
+    tracking,
 };
 
 #[test]
@@ -275,7 +275,7 @@ fn tracking_outside_any_repo_is_unknown() {
 }
 
 #[test]
-fn tracked_or_holds_tracked_answers_for_files_and_directories() {
+fn tracked_files_answers_for_exact_file_entries_only() {
     let w = World::new();
     git_init(&w.work);
     write(&w.work.join("kept.txt"), "a");
@@ -298,29 +298,28 @@ fn tracked_or_holds_tracked_answers_for_files_and_directories() {
         work.clone(),
     ];
     assert_eq!(
-        tracked_or_holds_tracked(&work, &paths),
-        [true, true, false, false, false, false, false, false, true]
+        tracked_files(&work, &paths),
+        [true, false, false, false, false, false, false, false, false]
     );
 }
 
 #[test]
-fn the_work_tree_root_holds_tracked_files_only_with_a_non_empty_index() {
+fn the_work_tree_root_is_never_tracked() {
     let w = World::new();
     git_init(&w.work);
+    write(&w.work.join("kept.txt"), "a");
+    common::git(&w.work, &["add", "kept.txt"]);
     let work = std::fs::canonicalize(&w.work).unwrap();
-    assert_eq!(
-        tracked_or_holds_tracked(&work, std::slice::from_ref(&work)),
-        [false]
-    );
+    assert_eq!(tracked_files(&work, std::slice::from_ref(&work)), [false]);
 }
 
 #[test]
-fn tracked_or_holds_tracked_outside_any_repo_is_false() {
+fn tracked_files_outside_any_repo_is_false() {
     let w = World::new();
     std::fs::create_dir_all(w.root.join("plain")).unwrap();
     let plain = std::fs::canonicalize(w.root.join("plain")).unwrap();
     assert_eq!(
-        tracked_or_holds_tracked(&plain, &[plain.join("a.txt"), plain.clone()]),
+        tracked_files(&plain, &[plain.join("a.txt"), plain.clone()]),
         [false, false]
     );
 }
