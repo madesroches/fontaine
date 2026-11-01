@@ -22,8 +22,9 @@ the user answers yes.
   `resolve` rejects `shadow = false` with neither `allow_threshold` nor `stop_threshold` ("there is no default").
 - Writing settings: `fontaine_core::user_config::set_value(path, key_path, value)` edits the user file with `toml_edit`
   and refuses an edit that would leave the file unloadable.
-- Ollama accounts: `Account` with `kind = "ollama"`; a live model listing exists (`/api/tags`, used by the guardian
-  picker) and should be reused.
+- Ollama accounts: `Account` with `kind = "ollama"`; `Switcher::listings(main, only)`
+  (`rust/fontaine-core/src/models.rs`) returns `Vec<AccountListing{account, kind, models: Result}>`, already fail-soft
+  per account with a timeout, and is reused.
 - Scope: `[guardian.composition]` is user-scope only; other scopes may only force `shadow = true`.
 - Docs: `docs/guardian.md` ("Composing the guardian", "Project environment"), `docs/tui.md` (`/auto-mode-setup`).
 
@@ -40,7 +41,7 @@ pub struct Candidate { pub account: String, pub benchmark: &'static Benchmark } 
 pub enum Posture { Safe, Fast }
 pub struct Offer { pub account: String, pub benchmark: &'static Benchmark, pub posture: Posture }
 
-pub fn detect(config: &Config, listing: &dyn ModelListing) -> Vec<Candidate>;     // fail-soft per account
+pub fn detect(config: &Config, listings: &[AccountListing]) -> Vec<Candidate>;   // production: Switcher::listings
 pub fn existing(config: &Config) -> bool;                                          // a composition is already configured
 pub fn write(user_settings: &Path, offer: &Offer) -> io::Result<()>;              // set_value calls, user file only
 pub fn calibration_note(offer: &Offer) -> Vec<String>;                             // the follow-up text
@@ -56,7 +57,8 @@ Flow, after the environment step, in both surfaces:
 
 1. Skip silently when a composition is already configured (`existing`), when the guardian profile is `minimal`, or
    when `detect` finds no reachable Ollama account holding a benchmarked model. In the last case print one line saying
-   why, naming the benchmarked tag to pull (`ollama pull qwen3:4b-instruct-2507-q4_K_M`).
+   why, naming the benchmarked tag to pull (`ollama pull qwen3:4b-instruct-2507-q4_K_M`). The guardian model's own
+   provider does not matter: the composition's `model` is checked, not the guardian's.
 2. Otherwise ask one basic choice, **safe or fast**, then the account (when more than one qualifies), then confirm the
    proposed threshold with its benchmark evidence. The user types no number; declining any prompt writes nothing.
    The two postures are the screen preset's two existing shapes, with no new preset or script:
@@ -71,31 +73,35 @@ Flow, after the environment step, in both surfaces:
    section that would fail to load is refused.
 4. Print the calibration note: the value is a fit on a small dataset and is not zero-miss on every live run (the
    fast threshold let a call through live that the dataset expects denied or escalated), so score it on your own traffic with
-   `fontaine-evals --screen live:<model>` / the recorded `screen_risk` (safe) or `screen_allow_risk` (fast) audit
+   `fontaine-evals --screen live:<account>/<model>` / the recorded `screen_risk` (safe) or `screen_allow_risk` (fast) audit
    values, and set `shadow = true` to log scores without acting while you tune.
 
 Non-interactive CLI runs (no TTY, `--format json`) never prompt and never write; the JSON report gains a
 `composition` object (`status`: `skipped`/`offered_unanswered`, `candidates`) so scripts can see what was detected.
 `--no-model` does not affect this step (it concerns the scan); a new `--no-composition` flag skips it.
 
-The TUI uses a small prompt component modelled on `SetupReviewPrompt` (posture select + confirm) and applies nothing to
+The TUI adds a prompt to the existing `setup_prompt.rs`, modelled on `SetupReviewPrompt` (posture select + confirm), and applies nothing to
 the running session: a composition takes effect at the next session start, and the report says so.
 
 ## Implementation Steps
 
 1. `composition_offer.rs` in `fontaine-core` with `detect`, `existing`, `write`, `calibration_note`, plus a
-   `ModelListing` trait so tests feed a fake listing (reuse the picker's real implementation in production).
-2. CLI: call the step at the end of `setup_run` (`rust/fontaine/src/auto_mode.rs`), `--no-composition` in `cli.rs`,
-   JSON report field.
-3. TUI: prompt component in `fontaine-tui`, wired from `auto_mode_setup.rs`.
-4. Docs and changelog.
+   `detect` taking `&[AccountListing]` so tests feed fake listings; the production callers use `Switcher::listings`.
+2. CLI: call the step in `setup_run` (`rust/fontaine/src/auto_mode.rs`) before `setup_report` (~line 376) is built, so
+   the JSON `composition` object is filled; add a composition report struct and a numbered-choice prompt helper (the
+   CLI has only the y/N `confirm()`); `--no-composition` in `cli.rs`.
+3. TUI: add the prompt to the existing `setup_prompt.rs`, wired from `auto_mode_setup.rs`.
+4. Append dated lines for this plan's Decisions to `tasks/fontaine_harness_plan.md` `## Decisions`, at the end of the
+   guardian composition subsection.
+5. Docs and changelog.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/{composition_offer.rs (new),lib.rs}`
 - `rust/fontaine/src/{auto_mode.rs,cli.rs}`
 - `rust/fontaine-tui/src/ui/commands/auto_mode_setup.rs`, `rust/fontaine-tui/src/setup_prompt.rs`
-- `docs/{guardian.md,tui.md}`, `CHANGELOG.md`
+- `docs/{guardian.md,tui.md,headless.md,configuration.md}`, `CHANGELOG.md`
+- `tasks/fontaine_harness_plan.md` (`## Decisions`)
 
 ## Trade-offs
 
@@ -118,7 +124,10 @@ the running session: a composition takes effect at the next session start, and t
 
 ## Documentation
 
-- `docs/guardian.md`: describe the setup step, what it writes and the calibration pointer.
+- `docs/guardian.md`: describe the setup step, what it writes and the calibration pointer; update the setup synopsis
+  (~628) and the related lines (~639, ~665).
+- `docs/headless.md` (~24): the `setup [--no-model]` synopsis gains `--no-composition`.
+- `docs/configuration.md` (~33, ~741-742): setup now also writes settings.
 - `docs/tui.md`: `/auto-mode-setup` row mentions the offer and that it applies from the next session.
 - `CHANGELOG.md`: entry.
 
@@ -132,8 +141,3 @@ the running session: a composition takes effect at the next session start, and t
 - Integration (`rust/fontaine/tests/auto_mode_setup.rs`): headless/non-TTY run never writes settings and reports
   detection in JSON; `--no-composition` skips; an existing composition is left untouched.
 - TUI: prompt state-machine tests like `SetupReviewPrompt`'s (decline writes nothing).
-
-## Open Questions
-
-- Should the step also be offered when the guardian model itself is not on an Ollama account? Assumed no: the
-  composition's reads require an Ollama account, so the step is skipped with a note.
