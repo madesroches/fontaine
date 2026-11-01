@@ -272,7 +272,8 @@ fn remove_refuses_an_account_a_user_file_model_names() {
     for key in [
         "[model]\nmodel",
         "[guardian]\nmodel",
-        "[guardian.screen]\nmodel",
+        "[guardian.composition]\nmodel",
+        "[guardian.composition.reads.extra]\nmodel",
     ] {
         let w = World::new();
         w.user_file(&format!(

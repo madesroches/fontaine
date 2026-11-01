@@ -11,7 +11,8 @@ use fontaine_agents::budget::Spend;
 use fontaine_agents::mode::{Ladder, RootMode};
 use fontaine_agents::registry::AgentTypes;
 use fontaine_agents::tree::AgentTree;
-use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Screen, Settings};
+use fontaine_guardian::composition::Composition;
+use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Settings};
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::{lock, lock_recovering, read, write};
 use fontaine_tools::scope::Scope;
@@ -147,11 +148,11 @@ pub struct AutoContext {
     pub project_instructions: Option<String>,
 }
 
-/// The screen stage as a session runs it.
+/// The guardian's composition as a session runs it.
 #[derive(Clone)]
-pub struct ScreenStage {
-    pub screen: Arc<Screen>,
-    /// `<account>/<model>`.
+pub struct CompositionStage {
+    pub composition: Arc<Composition>,
+    /// The `<account>/<model>` of every read, comma-joined.
     pub label: String,
     /// Score and record every call, but never stop or allow one.
     pub shadow: bool,
@@ -323,8 +324,8 @@ pub struct SessionState {
     waiting: Mutex<HashMap<String, usize>>,
     agent_sink: Mutex<Option<AgentEventSink>>,
     guardian: RwLock<Arc<Guardian>>,
-    screen: RwLock<Option<ScreenStage>>,
-    screen_warned: AtomicBool,
+    composition: RwLock<Option<CompositionStage>>,
+    composition_warned: AtomicBool,
     pub auto: AutoContext,
     breaker: Mutex<LoopBreaker>,
     denied: Mutex<Vec<DeniedCall>>,
@@ -378,8 +379,8 @@ impl SessionState {
                 allow: params.allow,
             }),
             guardian: RwLock::new(params.guardian),
-            screen: RwLock::new(None),
-            screen_warned: AtomicBool::new(false),
+            composition: RwLock::new(None),
+            composition_warned: AtomicBool::new(false),
             auto: params.auto,
             breaker: Mutex::default(),
             denied: Mutex::default(),
@@ -503,6 +504,7 @@ impl SessionState {
                 screen_risk: None,
                 screen_allow_risk: None,
                 screen_steering: None,
+                screen_scores: None,
                 screen_model: None,
                 screen_latency_ms: None,
                 screen_outcome: None,
@@ -525,18 +527,18 @@ impl SessionState {
         read(&self.guardian, "guardian").clone()
     }
 
-    /// The screen stage in front of the guardian, when one is configured.
-    pub fn screen(&self) -> Option<ScreenStage> {
-        read(&self.screen, "screen").clone()
+    /// The composition that replaces a bare guardian call, when one is configured.
+    pub fn composition(&self) -> Option<CompositionStage> {
+        read(&self.composition, "composition").clone()
     }
 
-    pub fn set_screen(&self, stage: Option<ScreenStage>) {
-        *write(&self.screen, "screen") = stage;
+    pub fn set_composition(&self, stage: Option<CompositionStage>) {
+        *write(&self.composition, "composition") = stage;
     }
 
-    /// True the first time it is asked, so a broken screen is reported once per session.
-    pub fn first_screen_warning(&self) -> bool {
-        !self.screen_warned.swap(true, Ordering::Relaxed)
+    /// True the first time it is asked, so a broken composition is reported once per session.
+    pub fn first_composition_warning(&self) -> bool {
+        !self.composition_warned.swap(true, Ordering::Relaxed)
     }
 
     /// Replaces the guardian for the next adjudication; its verdict cache starts empty.

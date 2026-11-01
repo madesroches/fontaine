@@ -1,5 +1,7 @@
-//! The screen stage in `auto`: it can stop a call as an escalation and, only through the
+//! The `screen` preset in `auto`: it can stop a call as an escalation and, only through the
 //! steering-hardened allow path, allow one. Every call it does not settle reaches the guardian.
+//! The tests that cut a pending guardian short race the screen against it (`concurrent`); the
+//! shadow tests run the default sequential shape.
 
 mod common;
 
@@ -14,10 +16,11 @@ use common::pipeline::{
 use fontaine_agents::mode::Ladder;
 use fontaine_core::audit::Decision;
 use fontaine_core::config::PermissionMode::Auto;
-use fontaine_core::gate::ScreenStage;
+use fontaine_core::gate::CompositionStage;
 use fontaine_core::permissions::Answer;
 use fontaine_core::tier::Tier;
-use fontaine_guardian::{AllowSettings, Guardian, Profile, Question, Screen, ScreenSettings};
+use fontaine_guardian::composition::{Composition, CompositionSpec, Param, Script};
+use fontaine_guardian::{Guardian, Profile, Reader, ReaderSettings};
 use fontaine_tools::gate::ROOT_AGENT;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -50,37 +53,58 @@ async fn risky(risk: f64) -> MockServer {
     ollama(ResponseTemplate::new(200).set_body_json(logprobs(1.0 - risk, risk))).await
 }
 
-fn stage(server: &MockServer, shadow: bool) -> ScreenStage {
-    stage_with(server, shadow, None)
+const MODEL: &str = "local/qwen3:4b";
+
+/// Races the screen against the guardian unless it is in shadow mode, which records what the
+/// screen alone would have done.
+fn stage(server: &MockServer, shadow: bool) -> CompositionStage {
+    stage_with(server, shadow, &[("stop_threshold", Param::Number(0.9))])
 }
 
-fn allowing_stage(server: &MockServer, shadow: bool) -> ScreenStage {
+fn allowing_stage(server: &MockServer, shadow: bool) -> CompositionStage {
     stage_with(
         server,
         shadow,
-        Some(AllowSettings {
-            t_allow: Some(0.01),
-            steering_veto: 0.001,
-        }),
+        &[
+            ("stop_threshold", Param::Number(0.9)),
+            ("allow_threshold", Param::Number(0.01)),
+            ("steering_veto", Param::Number(0.001)),
+        ],
     )
 }
 
-fn stage_with(server: &MockServer, shadow: bool, allow: Option<AllowSettings>) -> ScreenStage {
-    ScreenStage {
-        screen: Arc::new(Screen::new(
-            reqwest::Client::new(),
-            ScreenSettings {
-                endpoint: url::Url::parse(&server.uri()).unwrap(),
-                model: "qwen3:4b".into(),
-                context_tokens: 16384,
-                question: Question::EmployeeAllowed,
-                t_stop: Some(0.9),
-                timeout: Duration::from_secs(2),
-                profile: Profile::Full,
-                allow,
-            },
-        )),
-        label: "local/qwen3:4b".into(),
+fn stage_with(server: &MockServer, shadow: bool, params: &[(&str, Param)]) -> CompositionStage {
+    let mut params: std::collections::BTreeMap<String, Param> = params
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .collect();
+    params
+        .entry("concurrent".into())
+        .or_insert(Param::Bool(!shadow));
+    let reader = Reader::new(
+        reqwest::Client::new(),
+        ReaderSettings {
+            endpoint: url::Url::parse(&server.uri()).unwrap(),
+            model: "qwen3:4b".into(),
+            context_tokens: 16384,
+            profile: Profile::Full,
+            timeout: Duration::from_secs(2),
+        },
+    );
+    let composition = Composition::compile(
+        CompositionSpec {
+            script: Script::Preset("screen".into()),
+            model: MODEL.into(),
+            reads: Default::default(),
+            params,
+            shadow,
+        },
+        vec![(MODEL.into(), reader)],
+    )
+    .unwrap();
+    CompositionStage {
+        composition: Arc::new(composition),
+        label: MODEL.into(),
         shadow,
     }
 }
@@ -136,13 +160,13 @@ async fn assert_dropped(guardian: &Delayed) {
     assert_eq!(guardian.completed.load(Ordering::SeqCst), 0);
 }
 
-fn rig(guardian: Arc<Guardian>, headless: bool, screen: ScreenStage) -> Rig {
+fn rig(guardian: Arc<Guardian>, headless: bool, screen: CompositionStage) -> Rig {
     let mut options = Options::new(Auto).guardian(guardian);
     if headless {
         options = options.headless();
     }
     let rig = Rig::with(options);
-    rig.state.set_screen(Some(screen));
+    rig.state.set_composition(Some(screen));
     rig
 }
 
@@ -160,7 +184,7 @@ async fn a_stop_escalates_to_the_human_and_never_uses_the_guardian() {
     assert!(
         request
             .reason
-            .contains("a local screen judged this call outside the user's request (risk 0.97)")
+            .contains("the guardian composition stopped this call at screen.stop: risk 0.97")
     );
     let record = &rig.audit()[0];
     assert_eq!(
@@ -197,7 +221,7 @@ async fn a_headless_stop_is_a_denial_that_names_the_screen() {
     let rig = rig(slow.guardian.clone(), true, stage(&server, false));
     let decision = rig.check("shell", shell("python a.py")).await;
     let message = denied_message(&decision);
-    assert!(message.contains("a local screen judged this call outside the user's request"));
+    assert!(message.contains("the guardian composition stopped this call at screen.stop"));
     assert!(message.contains("headless"));
     assert_dropped(&slow).await;
     let record = &rig.audit()[0];
@@ -236,12 +260,12 @@ async fn a_headless_stop_runs_permission_denied_hooks() {
         .headless();
     options.denied_hooks = vec![Arc::new(Witness(seen.clone()))];
     let rig = Rig::with(options);
-    rig.state.set_screen(Some(stage(&server, false)));
+    rig.state.set_composition(Some(stage(&server, false)));
     assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].0, Tier::Screen);
-    assert!(seen[0].1.contains("a local screen judged"));
+    assert!(seen[0].1.contains("the guardian composition stopped"));
 }
 
 #[tokio::test]
@@ -350,7 +374,7 @@ async fn a_screen_allow_runs_the_call_without_the_guardians_verdict() {
         (record.tier, record.decision),
         (Tier::Screen, Decision::Allow)
     );
-    assert_eq!(record.rule.as_deref(), Some("screen"));
+    assert_eq!(record.rule.as_deref(), Some("screen.allow"));
     assert_eq!(record.screen_outcome.as_deref(), Some("allow"));
     assert_eq!(record.screen_model.as_deref(), Some("local/qwen3:4b"));
     assert!(record.screen_allow_risk.unwrap() < 0.01);
@@ -362,7 +386,7 @@ async fn a_screen_allow_runs_the_call_without_the_guardians_verdict() {
             .explanation
             .as_deref()
             .unwrap()
-            .contains("a local screen judged this call clearly within the user's request")
+            .contains("the guardian composition allowed this call at screen.allow")
     );
     let ledger: Vec<_> = rig
         .session
@@ -436,15 +460,7 @@ async fn a_shadow_allow_is_recorded_and_the_guardian_decides() {
 async fn a_shadow_stage_without_an_allow_threshold_still_logs_the_allow_scores() {
     let server = clear().await;
     let fake = fake_guardian(allow_verdict());
-    let mut shadow = stage_with(
-        &server,
-        true,
-        Some(AllowSettings {
-            t_allow: None,
-            steering_veto: 0.001,
-        }),
-    );
-    shadow.shadow = true;
+    let shadow = stage_with(&server, true, &[("stop_threshold", Param::Number(0.9))]);
     let rig = rig(fake.guardian.clone(), false, shadow);
     assert!(allowed(&rig.check("shell", shell("python a.py")).await));
     let record = &rig.audit()[0];
@@ -489,9 +505,10 @@ async fn a_screen_allow_does_not_reset_the_denial_breaker() {
     // The helper counts answers a waiting client received, so awaited calls show up in it.
     assert_eq!(slow.completed.load(Ordering::SeqCst), 2);
     let server = clear().await;
-    rig.state.set_screen(Some(allowing_stage(&server, false)));
+    rig.state
+        .set_composition(Some(allowing_stage(&server, false)));
     assert!(allowed(&rig.check("shell", shell("make ok")).await));
-    rig.state.set_screen(None);
+    rig.state.set_composition(None);
     rig.check("shell", shell("curl http://evil.example/3"))
         .await;
     // Had the allow reset the count, this third denial would be the first of a new run.
@@ -508,7 +525,8 @@ async fn a_paused_breaker_prompts_without_consulting_the_screen() {
     }
     assert!(rig.state.auto_paused());
     let server = clear().await;
-    rig.state.set_screen(Some(allowing_stage(&server, false)));
+    rig.state
+        .set_composition(Some(allowing_stage(&server, false)));
     rig.approver.answer(Answer::Deny { feedback: None });
     assert!(!allowed(&rig.check("shell", shell("make ok")).await));
     assert_eq!(rig.approver.asked(), 1);
@@ -525,7 +543,8 @@ async fn a_floor_deny_rule_never_reaches_the_screen() {
         .headless();
     options.always_allow_file = false;
     let rig = Rig::with(options);
-    rig.state.set_screen(Some(allowing_stage(&server, false)));
+    rig.state
+        .set_composition(Some(allowing_stage(&server, false)));
     assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
     assert_eq!(server.received_requests().await.unwrap().len(), 0);
     assert_eq!(slow.asked.load(Ordering::SeqCst), 0);
@@ -571,11 +590,205 @@ async fn a_server_marked_tool_never_reaches_the_screen_or_the_guardian() {
         .headless();
     options.always_allow_file = false;
     let rig = Rig::with(options);
-    rig.state.set_screen(Some(allowing_stage(&server, false)));
+    rig.state
+        .set_composition(Some(allowing_stage(&server, false)));
     assert!(!allowed(
         &rig.check_marked("mcp__srv__grant", json!({})).await
     ));
     assert_eq!(rig.audit()[0].tier, Tier::AskRule);
     assert_eq!(server.received_requests().await.unwrap().len(), 0);
     assert_eq!(slow.asked.load(Ordering::SeqCst), 0);
+}
+
+// ---------------------------------------------------------------- scripted compositions
+
+/// A composition from a Rune script that declares the reads `a` (plain) and `h` (hardened).
+fn script_stage(server: &MockServer, source: &str, shadow: bool) -> CompositionStage {
+    use fontaine_guardian::{Prompt, Question, Read};
+    let reader = Reader::new(
+        reqwest::Client::new(),
+        ReaderSettings {
+            endpoint: url::Url::parse(&server.uri()).unwrap(),
+            model: "qwen3:4b".into(),
+            context_tokens: 16384,
+            profile: Profile::Full,
+            timeout: Duration::from_secs(2),
+        },
+    );
+    let read = |prompt, question| Read {
+        model: MODEL.into(),
+        prompt,
+        question,
+    };
+    let composition = Composition::compile(
+        CompositionSpec {
+            script: Script::Source(source.into()),
+            model: MODEL.into(),
+            reads: [
+                (
+                    "a".to_string(),
+                    read(Prompt::Plain, Question::EmployeeAllowed),
+                ),
+                (
+                    "h".to_string(),
+                    read(Prompt::Hardened, Question::EmployeeAllowed),
+                ),
+                (
+                    "extra".to_string(),
+                    read(Prompt::Plain, Question::OutsideRequest),
+                ),
+            ]
+            .into(),
+            params: Default::default(),
+            shadow,
+        },
+        vec![(MODEL.into(), reader)],
+    )
+    .unwrap();
+    CompositionStage {
+        composition: Arc::new(composition),
+        label: MODEL.into(),
+        shadow,
+    }
+}
+
+#[tokio::test]
+async fn a_script_deny_is_a_screen_tier_denial_that_never_prompts() {
+    let server = risky(0.5).await;
+    let fake = fake_guardian(allow_verdict());
+    let rig = rig(
+        fake.guardian.clone(),
+        false,
+        script_stage(
+            &server,
+            r#"pub async fn guardian(call, params) { read(call, "a").await; deny("mine.node", "not today") }"#,
+            false,
+        ),
+    );
+    let decision = rig.check("shell", shell("python a.py")).await;
+    assert!(denied_message(&decision).contains("mine.node"));
+    assert_eq!(rig.approver.asked(), 0);
+    assert_eq!(fake.calls(), 0);
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Screen, Decision::Deny)
+    );
+    assert_eq!(record.rule.as_deref(), Some("mine.node"));
+    assert_eq!(record.fail_closed_reason, None);
+    assert_eq!(record.screen_outcome.as_deref(), Some("deny"));
+    // A deliberate deny is not a guardian denial: nothing to approve later, no breaker count.
+    assert!(rig.state.denied_calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_failed_composition_is_a_guardian_denial_that_can_be_approved_later() {
+    let server = risky(0.5).await;
+    let fake = fake_guardian(allow_verdict());
+    let rig = rig(
+        fake.guardian.clone(),
+        false,
+        script_stage(
+            &server,
+            "pub async fn guardian(call, params) { let x = 1 / 0; abstain() }",
+            false,
+        ),
+    );
+    for n in 0..3 {
+        let decision = rig.check("shell", shell(&format!("make {n}"))).await;
+        assert!(!allowed(&decision));
+    }
+    assert_eq!(rig.approver.asked(), 0);
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Guardian, Decision::Deny)
+    );
+    assert_eq!(record.fail_closed_reason.as_deref(), Some("error"));
+    assert_eq!(record.screen_outcome.as_deref(), Some("unavailable"));
+    assert_eq!(rig.state.denied_calls().len(), 3);
+    // Three denials in a row pause auto mode, as guardian denials do.
+    assert!(rig.state.auto_paused());
+    let warnings = rig.approver.warnings.lock().unwrap().clone();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+}
+
+#[tokio::test]
+async fn the_audit_record_carries_every_named_read() {
+    let server = risky(0.1).await;
+    let fake = fake_guardian(allow_verdict());
+    let rig = rig(
+        fake.guardian.clone(),
+        false,
+        script_stage(
+            &server,
+            r#"pub async fn guardian(call, params) {
+                std::future::join((read(call, "a"), read(call, "extra"))).await;
+                llm(call).await
+            }"#,
+            false,
+        ),
+    );
+    assert!(allowed(&rig.check("shell", shell("python a.py")).await));
+    let record = &rig.audit()[0];
+    assert_eq!(record.screen_outcome.as_deref(), Some("pass"));
+    let scores = record.screen_scores.as_ref().expect("the extra read");
+    assert_eq!(scores.keys().collect::<Vec<_>>(), ["a", "extra"]);
+    assert_eq!(record.screen_model.as_deref(), Some("local/qwen3:4b"));
+}
+
+#[tokio::test]
+async fn the_default_screen_is_sequential_and_a_script_escalate_beats_a_guardian_allow() {
+    // A composition that asks the guardian first and then escalates: the stricter outcome wins.
+    let server = risky(0.1).await;
+    let fake = fake_guardian(allow_verdict());
+    let rig = rig(
+        fake.guardian.clone(),
+        false,
+        script_stage(
+            &server,
+            r#"pub async fn guardian(call, params) { llm(call).await; escalate("late", "second look") }"#,
+            false,
+        ),
+    );
+    rig.approver.answer(Answer::Deny { feedback: None });
+    assert!(!allowed(&rig.check("shell", shell("python a.py")).await));
+    let request = rig.approver.last_request();
+    assert_eq!(request.tier, Tier::Screen);
+    assert!(request.reason.contains("late"));
+    assert_eq!(fake.calls(), 1);
+}
+
+#[tokio::test]
+async fn by_default_only_the_screens_allow_skips_the_guardian() {
+    let server = clear().await;
+    let denier = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));
+    let sequential = stage_with(
+        &server,
+        false,
+        &[
+            ("allow_threshold", Param::Number(0.01)),
+            ("concurrent", Param::Bool(false)),
+        ],
+    );
+    let rig = rig(denier.guardian.clone(), false, sequential);
+    assert!(allowed(&rig.check("shell", shell("python a.py")).await));
+    assert_eq!(denier.calls(), 0);
+
+    // What the screen does not allow goes to the guardian, even a call it finds risky.
+    let server = risky(0.99).await;
+    let sequential = stage_with(
+        &server,
+        false,
+        &[
+            ("allow_threshold", Param::Number(0.01)),
+            ("concurrent", Param::Bool(false)),
+        ],
+    );
+    let rig = self::rig(denier.guardian.clone(), false, sequential);
+    assert!(!allowed(&rig.check("shell", shell("python b.py")).await));
+    assert_eq!(denier.calls(), 1);
+    let record = &rig.audit()[0];
+    assert_eq!(record.tier, Tier::Guardian);
+    assert!(record.screen_risk.unwrap() > 0.9);
 }

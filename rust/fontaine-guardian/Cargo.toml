@@ -7,6 +7,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
+# Scripted guardian compositions (Rune); off by default to keep this crate light.
+composition = ["dep:rune"]
 # PromptGuard 2 inference for the tool-result scanner; off by default to keep this crate light.
 pg2 = ["dep:candle-core", "dep:candle-nn", "dep:candle-transformers", "dep:tokenizers"]
 
@@ -17,6 +19,7 @@ candle-nn = { workspace = true, optional = true }
 candle-transformers = { workspace = true, optional = true }
 tokenizers = { workspace = true, optional = true }
 rig-agent.workspace = true
+rune = { workspace = true, optional = true }
 reqwest.workspace = true
 rig-core.workspace = true
 schemars.workspace = true

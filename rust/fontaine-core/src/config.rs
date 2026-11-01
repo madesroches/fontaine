@@ -438,32 +438,47 @@ pub struct GuardianSection {
     pub scanner_command: Option<String>,
     pub scanner_model_path: Option<String>,
     pub scanner_hf_token_env: Option<String>,
-    pub screen: Option<GuardianScreenSection>,
+    pub composition: Option<GuardianCompositionSection>,
 }
 
-/// `[guardian.screen]`: the fast typed-decision stage in front of the guardian.
+/// `[guardian.composition]`: how the guardian is composed from the LLM guardian and the local
+/// logprob reads, as a built-in preset or a Rune script.
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct GuardianScreenSection {
-    /// `<account>/<model>`, an account of kind `ollama`.
+pub struct GuardianCompositionSection {
+    /// A built-in preset; exactly one of `preset` and `script`.
+    pub preset: Option<String>,
+    /// A Rune file; a relative path resolves against the user config directory.
+    pub script: Option<String>,
+    /// `<account>/<model>`, an account of kind `ollama`: the default model of every read.
     pub model: Option<String>,
-    pub question: Option<fontaine_guardian::Question>,
-    pub stop_threshold: Option<f64>,
-    pub allow_threshold: Option<f64>,
-    pub steering_veto: Option<f64>,
-    pub timeout_ms: Option<u64>,
     pub shadow: Option<bool>,
+    /// Bounds each read.
+    pub timeout_ms: Option<u64>,
+    /// Preset parameters, or the values passed to a script.
+    pub params: Option<BTreeMap<String, serde_json::Value>>,
+    /// The reads a script declares; a preset declares its own.
+    pub reads: Option<BTreeMap<String, CompositionReadSection>>,
 }
 
-impl GuardianScreenSection {
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CompositionReadSection {
+    /// `<account>/<model>`; defaults to the composition's `model`.
+    pub model: Option<String>,
+    pub prompt: Option<fontaine_guardian::Prompt>,
+    pub question: Option<fontaine_guardian::Question>,
+}
+
+impl GuardianCompositionSection {
     /// Whether the section does anything beyond asking for shadow mode, which can only tighten.
     fn loosens(&self) -> bool {
-        self.model.is_some()
-            || self.question.is_some()
-            || self.stop_threshold.is_some()
-            || self.allow_threshold.is_some()
-            || self.steering_veto.is_some()
+        self.preset.is_some()
+            || self.script.is_some()
+            || self.model.is_some()
             || self.timeout_ms.is_some()
+            || self.params.is_some()
+            || self.reads.is_some()
             || self.shadow == Some(false)
     }
 }
@@ -1131,38 +1146,38 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         {
             return bad("guardian.confidence_threshold", "must be between 0 and 1");
         }
-        if let Some(screen) = &g.screen {
-            if let Some(model) = screen.model.as_deref()
+        if let Some(composition) = &g.composition {
+            if let Some(model) = composition.model.as_deref()
                 && !model_ref_ok(model)
             {
-                return bad("guardian.screen.model", "expected `<account>/<model>`");
+                return bad("guardian.composition.model", "expected `<account>/<model>`");
             }
-            if let Some(t) = screen.stop_threshold
-                && !(t > 0.0 && t <= 1.0)
-            {
+            if composition.timeout_ms == Some(0) {
                 return bad(
-                    "guardian.screen.stop_threshold",
-                    "must be greater than 0 and at most 1",
+                    "guardian.composition.timeout_ms",
+                    "must be greater than zero",
                 );
             }
-            if let Some(t) = screen.allow_threshold
-                && !(t > 0.0 && t < 1.0)
-            {
-                return bad(
-                    "guardian.screen.allow_threshold",
-                    "must be greater than 0 and less than 1",
-                );
+            if let (Some(name), Some(params)) = (&composition.preset, &composition.params) {
+                let params = match composition_params(params) {
+                    Ok(params) => params,
+                    Err(e) => return bad(&e.key, &e.message),
+                };
+                if let Err(e) = fontaine_guardian::composition::check_preset_params(name, &params)
+                    && let Some(key) = &e.key
+                {
+                    return bad(&format!("guardian.composition.params.{key}"), &e.message);
+                }
             }
-            if let Some(v) = screen.steering_veto
-                && !(v > 0.0 && v <= 1.0)
-            {
-                return bad(
-                    "guardian.screen.steering_veto",
-                    "must be greater than 0 and at most 1",
-                );
-            }
-            if screen.timeout_ms == Some(0) {
-                return bad("guardian.screen.timeout_ms", "must be greater than zero");
+            for (name, read) in composition.reads.iter().flatten() {
+                if let Some(model) = read.model.as_deref()
+                    && !model_ref_ok(model)
+                {
+                    return bad(
+                        &format!("guardian.composition.reads.{name}.model"),
+                        "expected `<account>/<model>`",
+                    );
+                }
             }
         }
     }
@@ -1415,28 +1430,135 @@ pub struct Guardian {
     /// The variable holding the Hugging Face token. Always set, so the shell and hook
     /// environments are scrubbed of it whatever `scanner` is.
     pub scanner_hf_token_env: String,
-    /// Set only by the user file; see [`GuardianScreen`].
-    pub screen: Option<GuardianScreen>,
+    /// Set only by the user file; see [`GuardianComposition`].
+    pub composition: Option<GuardianComposition>,
     /// A shared project file asked for shadow mode, which no other scope can undo.
-    pub screen_shadow_forced: bool,
+    pub composition_shadow_forced: bool,
 }
 
-/// The merged `[guardian.screen]` stage.
+/// The merged `[guardian.composition]`.
 #[derive(Clone, Debug, PartialEq)]
-pub struct GuardianScreen {
-    /// `<account>/<model>`.
-    pub model: String,
-    pub question: fontaine_guardian::Question,
-    /// Absent only in shadow mode, where the raw score is all that is recorded.
-    pub stop_threshold: Option<f64>,
-    /// Unset: the screen never allows a call. In shadow mode the allow scores are still logged.
-    pub allow_threshold: Option<f64>,
-    pub steering_veto: f64,
-    pub timeout_ms: u64,
+pub struct GuardianComposition {
+    pub preset: Option<String>,
+    /// The script path as written.
+    pub script: Option<String>,
+    /// The script's text, read when the configuration is checked.
+    pub script_source: Option<String>,
+    /// `<account>/<model>`: the default model of every read.
+    pub model: Option<String>,
     pub shadow: bool,
+    pub timeout_ms: u64,
+    pub params: BTreeMap<String, serde_json::Value>,
+    pub reads: BTreeMap<String, CompositionRead>,
 }
 
-/// The screen's default time limit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CompositionRead {
+    pub model: Option<String>,
+    pub prompt: fontaine_guardian::Prompt,
+    pub question: fontaine_guardian::Question,
+}
+
+impl GuardianComposition {
+    /// The model label a read uses: its own, else the composition's.
+    pub fn read_model<'a>(&'a self, read: &'a CompositionRead) -> Option<&'a str> {
+        read.model.as_deref().or(self.model.as_deref())
+    }
+
+    /// Every distinct `<account>/<model>` the composition reads with, sorted.
+    pub fn models(&self) -> Vec<String> {
+        let mut models: std::collections::BTreeSet<String> = self
+            .reads
+            .values()
+            .filter_map(|read| self.read_model(read))
+            .map(str::to_owned)
+            .collect();
+        if self.preset.is_some() {
+            models.extend(self.model.clone());
+        }
+        models.into_iter().collect()
+    }
+
+    /// The spec the composition compiles from.
+    pub fn spec(&self) -> Result<fontaine_guardian::composition::CompositionSpec, ConfigSpecError> {
+        use fontaine_guardian::composition::{CompositionSpec, Script};
+        let script = match (&self.preset, &self.script_source) {
+            (Some(name), _) => Script::Preset(name.clone()),
+            (None, Some(source)) => Script::Source(source.clone()),
+            (None, None) => {
+                return Err(ConfigSpecError {
+                    key: "guardian.composition.script".into(),
+                    message: "the script was not loaded".into(),
+                });
+            }
+        };
+        let params = composition_params(&self.params)?;
+        let mut reads = BTreeMap::new();
+        for (name, read) in &self.reads {
+            let Some(model) = self.read_model(read) else {
+                return Err(ConfigSpecError {
+                    key: format!("guardian.composition.reads.{name}.model"),
+                    message: "requires `model`, here or on `[guardian.composition]`".into(),
+                });
+            };
+            reads.insert(
+                name.clone(),
+                fontaine_guardian::Read {
+                    model: model.to_owned(),
+                    prompt: read.prompt,
+                    question: read.question,
+                },
+            );
+        }
+        Ok(CompositionSpec {
+            script,
+            model: self.model.clone().unwrap_or_default(),
+            reads,
+            params,
+            shadow: self.shadow,
+        })
+    }
+}
+
+/// The values a script or preset receives as `params`.
+fn composition_params(
+    params: &BTreeMap<String, serde_json::Value>,
+) -> Result<BTreeMap<String, fontaine_guardian::composition::Param>, ConfigSpecError> {
+    use fontaine_guardian::composition::Param;
+    let mut out = BTreeMap::new();
+    for (key, value) in params {
+        let param = match value {
+            serde_json::Value::Number(n) => Param::Number(n.as_f64().unwrap_or(f64::NAN)),
+            serde_json::Value::String(text) => Param::Str(text.clone()),
+            serde_json::Value::Bool(b) => Param::Bool(*b),
+            _ => {
+                return Err(ConfigSpecError {
+                    key: format!("guardian.composition.params.{key}"),
+                    message: "must be a number, a string or a boolean".into(),
+                });
+            }
+        };
+        out.insert(key.clone(), param);
+    }
+    Ok(out)
+}
+
+/// A composition key that cannot be turned into a spec.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigSpecError {
+    pub key: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for ConfigSpecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.key, self.message)
+    }
+}
+
+impl std::error::Error for ConfigSpecError {}
+
+/// Each read's default time limit.
 pub const DEFAULT_SCREEN_TIMEOUT_MS: u64 = 2_000;
 
 /// The variable `scanner_hf_token_env` names when the user sets none.
@@ -1801,8 +1923,8 @@ impl Config {
                 scanner_command: None,
                 scanner_model_path: None,
                 scanner_hf_token_env: DEFAULT_HF_TOKEN_ENV.to_string(),
-                screen: None,
-                screen_shadow_forced: false,
+                composition: None,
+                composition_shadow_forced: false,
             },
             permissions: Permissions {
                 default_mode: None,
@@ -1936,40 +2058,53 @@ impl Config {
             if let Some(v) = &g.scanner_hf_token_env {
                 t.scanner_hf_token_env = v.clone();
             }
-            if let Some(screen) = &g.screen {
-                if column != Column::User && screen.shadow == Some(true) {
-                    t.screen_shadow_forced = true;
+            if let Some(composition) = &g.composition {
+                if column != Column::User && composition.shadow == Some(true) {
+                    t.composition_shadow_forced = true;
                 }
-                if screen.loosens() {
-                    let merged = t.screen.get_or_insert_with(|| GuardianScreen {
-                        model: String::new(),
-                        question: fontaine_guardian::Question::default(),
-                        stop_threshold: None,
-                        allow_threshold: None,
-                        steering_veto: fontaine_guardian::DEFAULT_STEERING_VETO,
-                        timeout_ms: DEFAULT_SCREEN_TIMEOUT_MS,
+                if composition.loosens() {
+                    let merged = t.composition.get_or_insert_with(|| GuardianComposition {
+                        preset: None,
+                        script: None,
+                        script_source: None,
+                        model: None,
                         shadow: true,
+                        timeout_ms: DEFAULT_SCREEN_TIMEOUT_MS,
+                        params: BTreeMap::new(),
+                        reads: BTreeMap::new(),
                     });
-                    if let Some(v) = &screen.model {
-                        merged.model = v.clone();
+                    if let Some(v) = &composition.preset {
+                        merged.preset = Some(v.clone());
                     }
-                    if let Some(v) = screen.question {
-                        merged.question = v;
+                    if let Some(v) = &composition.script {
+                        merged.script = Some(v.clone());
                     }
-                    if let Some(v) = screen.stop_threshold {
-                        merged.stop_threshold = Some(v);
+                    if let Some(v) = &composition.model {
+                        merged.model = Some(v.clone());
                     }
-                    if let Some(v) = screen.allow_threshold {
-                        merged.allow_threshold = Some(v);
-                    }
-                    if let Some(v) = screen.steering_veto {
-                        merged.steering_veto = v;
-                    }
-                    if let Some(v) = screen.timeout_ms {
+                    if let Some(v) = composition.timeout_ms {
                         merged.timeout_ms = v;
                     }
-                    if let Some(v) = screen.shadow {
+                    if let Some(v) = composition.shadow {
                         merged.shadow = v;
+                    }
+                    if let Some(v) = &composition.params {
+                        merged.params = v.clone();
+                    }
+                    if let Some(v) = &composition.reads {
+                        merged.reads = v
+                            .iter()
+                            .map(|(name, read)| {
+                                (
+                                    name.clone(),
+                                    CompositionRead {
+                                        model: read.model.clone(),
+                                        prompt: read.prompt.unwrap_or_default(),
+                                        question: read.question.unwrap_or_default(),
+                                    },
+                                )
+                            })
+                            .collect();
                     }
                 }
             }
@@ -2431,7 +2566,7 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
 
     check_network(&config)?;
     check_scanner(&config.guardian, &user_path)?;
-    check_screen(&mut config, &user_path)?;
+    check_composition(&mut config, &user_path, params.config_dir)?;
     resolve_telemetry(&config.telemetry, params)?;
     check_websearch(&config.websearch)?;
     config.websearch_config(params.env, params.data_dir)?;
@@ -2494,55 +2629,116 @@ fn check_scanner(guardian: &Guardian, user_path: &Path) -> Result<(), ConfigErro
     }
 }
 
-/// The screen settings come only from the user file, so that is where an incomplete stage is
-/// reported. It must name a model on an Ollama account, and it stops calls only with a threshold
-/// the user chose.
-fn check_screen(config: &mut Config, user_path: &Path) -> Result<(), ConfigError> {
-    let forced = config.guardian.screen_shadow_forced;
-    let Some(screen) = &mut config.guardian.screen else {
+/// The composition comes only from the user file, so that is where an invalid one is reported. It
+/// must name exactly one of a preset and a script, read with models on Ollama accounts, and
+/// compile; a configured composition that cannot be built stops startup rather than vanishing.
+/// `user_path` names the file in errors, and a relative script path resolves against `config_dir`.
+pub fn check_composition(
+    config: &mut Config,
+    user_path: &Path,
+    config_dir: &Path,
+) -> Result<(), ConfigError> {
+    let forced = config.guardian.composition_shadow_forced;
+    let Some(composition) = &mut config.guardian.composition else {
         return Ok(());
     };
     let bad = |key: &str, message: &str| Err(ConfigError::invalid(user_path, key, message));
-    if screen.model.is_empty() {
-        return bad("guardian.screen.model", "the screen stage requires `model`");
-    }
-    let account = screen.model.split_once('/').map_or("", |(a, _)| a);
-    match config.accounts.get(account) {
-        Some(a) if a.kind.as_str() == "ollama" => {
-            if let Some(base) = a.base_url.as_deref().filter(|u| !u.is_empty()) {
-                let usable = url::Url::parse(base)
-                    .is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.has_host());
-                if !usable {
-                    return bad(
-                        &format!("accounts.{account}.base_url"),
-                        "the screen stage requires an http or https URL with a host",
-                    );
-                }
-            }
-        }
-        Some(_) => {
+    match (&composition.preset, &composition.script) {
+        (Some(_), Some(_)) => {
             return bad(
-                "guardian.screen.model",
-                &format!("account `{account}` is not of kind = \"ollama\""),
+                "guardian.composition.script",
+                "set exactly one of `preset` and `script`",
             );
         }
-        None => {
+        (None, None) => {
             return bad(
-                "guardian.screen.model",
-                &format!("account `{account}` is not configured"),
+                "guardian.composition.preset",
+                "set one of `preset` and `script`",
             );
         }
+        _ => {}
     }
-    if forced {
-        screen.shadow = true;
-    }
-    if !screen.shadow && screen.stop_threshold.is_none() && screen.allow_threshold.is_none() {
+    if composition.preset.is_some() && composition.model.is_none() {
         return bad(
-            "guardian.screen.stop_threshold",
-            "there is no default; set `stop_threshold` and/or `allow_threshold`, or keep `shadow = true` to log scores first",
+            "guardian.composition.model",
+            "the composition requires `model`",
         );
     }
+    if forced {
+        composition.shadow = true;
+    }
+    if let Some(script) = &composition.script {
+        let file = config_dir.join(script);
+        let text = std::fs::read_to_string(&file).map_err(|e| {
+            ConfigError::invalid(
+                user_path,
+                "guardian.composition.script",
+                format!(
+                    "cannot read {}: {}",
+                    file.display(),
+                    fontaine_tools::error_chain::chain(&e)
+                ),
+            )
+        })?;
+        composition.script_source = Some(text);
+    }
+    let spec = composition
+        .spec()
+        .map_err(|e| ConfigError::invalid(user_path, &e.key, &e.message))?;
+    let models = spec.read_models().map_err(|e| {
+        ConfigError::invalid(user_path, composition_key(composition, &e), &e.message)
+    })?;
+    for model in models {
+        let key = composition
+            .reads
+            .iter()
+            .find(|(_, read)| read.model.as_deref() == Some(model.as_str()))
+            .map_or_else(
+                || "guardian.composition.model".to_owned(),
+                |(name, _)| format!("guardian.composition.reads.{name}.model"),
+            );
+        let account = model.split_once('/').map_or("", |(a, _)| a);
+        match config.accounts.get(account) {
+            Some(a) if a.kind.as_str() == "ollama" => {
+                if let Some(base) = a.base_url.as_deref().filter(|u| !u.is_empty()) {
+                    let usable = url::Url::parse(base)
+                        .is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.has_host());
+                    if !usable {
+                        return bad(
+                            &format!("accounts.{account}.base_url"),
+                            "the guardian composition requires an http or https URL with a host",
+                        );
+                    }
+                }
+            }
+            Some(_) => {
+                return bad(
+                    &key,
+                    &format!("account `{account}` is not of kind = \"ollama\""),
+                );
+            }
+            None => {
+                return bad(&key, &format!("account `{account}` is not configured"));
+            }
+        }
+    }
+    fontaine_guardian::composition::Composition::compile(spec, Vec::new()).map_err(|e| {
+        ConfigError::invalid(user_path, composition_key(composition, &e), &e.message)
+    })?;
     Ok(())
+}
+
+/// The settings key a composition build error points at.
+fn composition_key(
+    composition: &GuardianComposition,
+    error: &fontaine_guardian::composition::CompositionError,
+) -> String {
+    match (&error.key, composition.preset.is_some()) {
+        (Some(key), true) => format!("guardian.composition.params.{key}"),
+        (Some(key), false) => format!("guardian.composition.reads.{key}"),
+        (None, true) => "guardian.composition.preset".to_owned(),
+        (None, false) => "guardian.composition.script".to_owned(),
+    }
 }
 
 fn resolve_telemetry(t: &Telemetry, params: &LoadParams<'_>) -> Result<(), ConfigError> {

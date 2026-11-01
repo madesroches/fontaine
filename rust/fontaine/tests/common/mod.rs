@@ -632,6 +632,11 @@ impl Sandbox {
         write(&self.config.join("config.toml"), text);
     }
 
+    /// A file next to the user's settings, such as a composition script.
+    pub fn add_config_file(&self, name: &str, text: &str) {
+        write(&self.config.join(name), text);
+    }
+
     pub fn set_env(&mut self, name: &str, value: &str) {
         self.env.push((name.to_string(), value.to_string()));
     }

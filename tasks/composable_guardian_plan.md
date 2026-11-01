@@ -443,11 +443,11 @@ Either way the eval builds a `GuardianComposition` (`shadow = false`) and valida
   `fontaine-guardian` `composition` feature (user).
 - 2026-11-01: v1 loads scripts from user scope only; project scopes may only force `shadow = true`.
   The project-scope tighten-only script (a context without `allow_below` or reads, strictest-wins
-  over the user composition) is a follow-up issue.
+  over the user composition) is #373.
 - 2026-11-01 (user): Default `screen` preset shape = allow screen in front, LLM reviews the rest,
   sequential; concurrency (`concurrent = true`) is opt-in (#136).
 - 2026-11-01 (user): Integrating the allow screen into `fontaine auto-mode setup` /
-  `/auto-mode-setup` is a follow-up issue.
+  `/auto-mode-setup` is #372.
 - 2026-11-01: A script escalate or deny beats an LLM allow that is already in hand (the stricter
   outcome wins), where today an in-hand LLM verdict wins either way; an in-hand LLM non-allow
   always wins over any script verdict.
@@ -461,6 +461,12 @@ Either way the eval builds a `GuardianComposition` (`shadow = false`) and valida
   config's `[guardian.composition.reads]`, the default model from `--screen live:` (else the config),
   threshold flags are rejected with a script, and the ollama-account check runs in the shared
   `check_composition`.
+- 2026-11-01: Spike result (step 1): a host `async fn` taking Rune futures (`first_decisive`) keeps
+  `VmSendExecution` `Send` under `tokio::spawn`, so the evaluation runs in a plain spawned task and the
+  `LocalSet` fallback is not used.
+- 2026-11-01: The host functions are in the script's global namespace (`read(..)`, `llm(..)`), not under
+  a `guardian::` module with a prelude: Rune has no extensible prelude, and a `guardian` module would
+  collide with the script's own `guardian` entry point.
 - AFK: 2026-11-01: `Composed.outcome` is mapped from the returned verdict's origin (escalate → Stop,
   deny → Deny, `allow_below` → Allow, `llm()` → Pass, root failure → Failed); when `llm()` wins a
   concurrent race the outcome is `Pass` (the screen's would-be verdict was never computed), unlike

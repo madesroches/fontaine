@@ -114,7 +114,7 @@ const LSP: &str = "a language server is a program Fontaine starts on every edit,
 const TUI: &str = "terminal preferences come only from the user file or --settings";
 const ENV: &str = "environment overrides come only from user-trust scopes";
 const SCANNER: &str = "scanner settings come only from the user file";
-const SCREEN: &str = "the screen stage is configured only in the user file; other scopes may only set `shadow = true`";
+const COMPOSITION: &str = "the guardian composition is configured only in the user file; other scopes may only set `shadow = true`";
 const DEFAULT_MODE: &str = "only `manual` and `dontAsk` are accepted here";
 const SCHEDULE: &str = "scheduled prompts run without the user typing them, so only the user file or --settings turns them on or off";
 const MEMORY: &str = "auto memory persists text into later sessions, so only the user file or --settings turns it on";
@@ -163,13 +163,13 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_only("guardian.scanner_command", SCANNER),
     Rule::user_only("guardian.scanner_model_path", SCANNER),
     Rule::user_only("guardian.scanner_hf_token_env", SCANNER),
-    Rule::user_only("guardian.screen.model", SCREEN),
-    Rule::user_only("guardian.screen.question", SCREEN),
-    Rule::user_only("guardian.screen.stop_threshold", SCREEN),
-    Rule::user_only("guardian.screen.allow_threshold", SCREEN),
-    Rule::user_only("guardian.screen.steering_veto", SCREEN),
-    Rule::user_only("guardian.screen.timeout_ms", SCREEN),
-    Rule::shadow_true("guardian.screen.shadow", SCREEN),
+    Rule::user_only("guardian.composition.preset", COMPOSITION),
+    Rule::user_only("guardian.composition.script", COMPOSITION),
+    Rule::user_only("guardian.composition.model", COMPOSITION),
+    Rule::user_only("guardian.composition.timeout_ms", COMPOSITION),
+    Rule::user_only("guardian.composition.params", COMPOSITION),
+    Rule::user_only("guardian.composition.reads", COMPOSITION),
+    Rule::shadow_true("guardian.composition.shadow", COMPOSITION),
     Rule::if_project_local("permissions.default_mode", is_tightening_mode, DEFAULT_MODE),
     Rule::any("permissions.deny"),
     Rule::any("permissions.ask"),
@@ -429,39 +429,39 @@ mod tests {
             None,
         ),
         (
-            "guardian.screen.model",
-            "[guardian.screen]\nmodel = \"a/b\"\n",
+            "guardian.composition.preset",
+            "[guardian.composition]\npreset = \"screen\"\n",
             None,
         ),
         (
-            "guardian.screen.question",
-            "[guardian.screen]\nquestion = \"outside_request\"\n",
+            "guardian.composition.script",
+            "[guardian.composition]\nscript = \"guardian.rn\"\n",
             None,
         ),
         (
-            "guardian.screen.stop_threshold",
-            "[guardian.screen]\nstop_threshold = 0.9\n",
+            "guardian.composition.model",
+            "[guardian.composition]\nmodel = \"a/b\"\n",
             None,
         ),
         (
-            "guardian.screen.allow_threshold",
-            "[guardian.screen]\nallow_threshold = 0.1\n",
+            "guardian.composition.timeout_ms",
+            "[guardian.composition]\ntimeout_ms = 500\n",
             None,
         ),
         (
-            "guardian.screen.steering_veto",
-            "[guardian.screen]\nsteering_veto = 0.5\n",
+            "guardian.composition.params",
+            "[guardian.composition.params]\nallow_threshold = 0.1\n",
             None,
         ),
         (
-            "guardian.screen.timeout_ms",
-            "[guardian.screen]\ntimeout_ms = 500\n",
+            "guardian.composition.reads",
+            "[guardian.composition.reads.extra]\nmodel = \"a/b\"\n",
             None,
         ),
         (
-            "guardian.screen.shadow",
-            "[guardian.screen]\nshadow = true\n",
-            Some("[guardian.screen]\nshadow = false\n"),
+            "guardian.composition.shadow",
+            "[guardian.composition]\nshadow = true\n",
+            Some("[guardian.composition]\nshadow = false\n"),
         ),
         (
             "permissions.default_mode",

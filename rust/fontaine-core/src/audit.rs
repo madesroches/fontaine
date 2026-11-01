@@ -85,25 +85,29 @@ pub struct DecisionRecord {
     /// failed closed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fail_closed_reason: Option<String>,
-    /// The screen stage's risk score, when it scored the call.
+    /// The risk score of the read named `stop`, when the composition scored the call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_risk: Option<f64>,
-    /// The screen's hardened allow read, when the allow reads ran.
+    /// The score of the read named `allow`, when it ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_allow_risk: Option<f64>,
-    /// The screen's steering detector score, when the allow reads ran.
+    /// The score of the read named `steering`, when it ran.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_steering: Option<f64>,
-    /// `<account>/<model>` of the screen that scored, or tried to score, the call.
+    /// The score of every other read of the composition, by read name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_scores: Option<std::collections::BTreeMap<String, f64>>,
+    /// The distinct `<account>/<model>` of the reads that scored, or tried to score, the call,
+    /// comma-joined.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_latency_ms: Option<u64>,
-    /// `stop`, `allow`, `pass` or `unavailable`. In shadow mode `stop` and `allow` are what the
-    /// screen would have done.
+    /// `stop`, `allow`, `deny`, `pass` or `unavailable`. In shadow mode `stop`, `allow` and `deny`
+    /// are what the composition would have done.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_outcome: Option<String>,
-    /// An estimate of the input tokens of the guardian request a screen that settled the call
+    /// An estimate of the input tokens of the guardian request a composition that settled the call
     /// cut short; the request had usually been sent and billed already.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_dropped_input_tokens: Option<u64>,

@@ -70,7 +70,7 @@ pub use mcp::{McpOutcome, McpServerPlan};
 pub use messaging::{Delivered, MessageRefusal};
 pub use models::{CredentialEffect, Switched};
 pub use rewind::{RewindError, RewindOutcome};
-pub use setup::{build_agent_types, build_guardian, build_guardian_telling, build_screen};
+pub use setup::{build_agent_types, build_composition, build_guardian, build_guardian_telling};
 
 pub type EnvLookup = Arc<dyn Fn(&str) -> Option<OsString> + Send + Sync>;
 
@@ -248,7 +248,7 @@ impl AgentRuntime {
         let tree = setup::agent_tree(&setup);
         let agent_types = Arc::new(build_agent_types(&setup.config, &setup.extensions));
         let state = setup::session_state(&setup, &tree, &agent_types);
-        setup::attach_screen(&state, &setup);
+        setup::attach_composition(&state, &setup);
         let setup::Gates {
             pipeline,
             retained,

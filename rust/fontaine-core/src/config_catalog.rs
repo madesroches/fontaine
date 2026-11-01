@@ -186,15 +186,30 @@ fn theme_choices() -> Vec<ChoiceValue> {
         .collect()
 }
 
-fn screen_field(
+fn composition_field(
     config: &Config,
-    field: impl Fn(&crate::config::GuardianScreen) -> String,
+    field: impl Fn(&crate::config::GuardianComposition) -> String,
 ) -> String {
     config
         .guardian
-        .screen
+        .composition
         .as_ref()
         .map_or_else(|| "unset".to_string(), field)
+}
+
+/// `name = value, ...` for a map's effective value, or `unset`.
+fn composition_map(
+    config: &Config,
+    entries: impl Fn(&crate::config::GuardianComposition) -> Vec<String>,
+) -> String {
+    composition_field(config, |c| {
+        let entries = entries(c);
+        if entries.is_empty() {
+            "none".to_string()
+        } else {
+            entries.join(", ")
+        }
+    })
 }
 
 macro_rules! row {
@@ -338,31 +353,41 @@ pub const KEYS: &[KeyRow] = &[
         .guardian
         .scanner_hf_token_env
         .clone()),
-    row!("guardian.screen.model", Scalar, |c, _| screen_field(
-        c,
-        |s| { s.model.clone() }
-    )),
-    row!("guardian.screen.question", Scalar, |c, _| screen_field(
-        c,
-        |s| s.question.as_str().to_string()
-    )),
-    row!("guardian.screen.stop_threshold", Scalar, |c, _| {
-        screen_field(c, |s| opt(s.stop_threshold))
+    row!("guardian.composition.preset", Scalar, |c, _| {
+        composition_field(c, |s| s.preset.clone().unwrap_or_else(|| "unset".into()))
     }),
-    row!("guardian.screen.allow_threshold", Scalar, |c, _| {
-        screen_field(c, |s| opt(s.allow_threshold))
+    row!("guardian.composition.script", Scalar, |c, _| {
+        composition_field(c, |s| s.script.clone().unwrap_or_else(|| "unset".into()))
     }),
-    row!("guardian.screen.steering_veto", Scalar, |c, _| {
-        screen_field(c, |s| s.steering_veto.to_string())
+    row!("guardian.composition.model", Scalar, |c, _| {
+        composition_field(c, |s| s.model.clone().unwrap_or_else(|| "unset".into()))
     }),
-    row!("guardian.screen.timeout_ms", Scalar, |c, _| screen_field(
-        c,
-        |s| s.timeout_ms.to_string()
-    )),
-    row!("guardian.screen.shadow", Scalar, |c, _| screen_field(
-        c,
-        |s| { s.shadow.to_string() }
-    )),
+    row!("guardian.composition.timeout_ms", Scalar, |c, _| {
+        composition_field(c, |s| s.timeout_ms.to_string())
+    }),
+    row!("guardian.composition.shadow", Scalar, |c, _| {
+        composition_field(c, |s| s.shadow.to_string())
+    }),
+    row!("guardian.composition.params", Map, |c, _| {
+        composition_map(c, |s| {
+            s.params.iter().map(|(k, v)| format!("{k} = {v}")).collect()
+        })
+    }),
+    row!("guardian.composition.reads", Map, |c, _| {
+        composition_map(c, |s| {
+            s.reads
+                .iter()
+                .map(|(name, read)| {
+                    format!(
+                        "{name} = {} {}/{}",
+                        s.read_model(read).unwrap_or("unset"),
+                        read.prompt.as_str(),
+                        read.question.as_str()
+                    )
+                })
+                .collect()
+        })
+    }),
     row!("permissions.default_mode", Scalar, |c, _| unset_or(
         c.permissions.default_mode.map(|m| m.as_str()),
         "unset (interactive: auto, headless: manual)"
@@ -626,7 +651,7 @@ mod tests {
         assert_eq!(effective("agents.subagent_cost_budget_usd", &c), "unset");
         assert_eq!(effective("guardian.profile", &c), "full");
         assert_eq!(effective("guardian.scanner", &c), "off");
-        assert_eq!(effective("guardian.screen.model", &c), "unset");
+        assert_eq!(effective("guardian.composition.model", &c), "unset");
         assert_eq!(effective("permissions.deny", &c), "0 entries");
         assert_eq!(effective("accounts", &c), "none");
         assert_eq!(

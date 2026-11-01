@@ -179,24 +179,40 @@ entry earned on the other.
 
 ### Cascade scorecards
 
-With a screen stage beside the guardian, `--screen live:<account>/<model>` (an Ollama account)
-and `--stop-threshold <risk>`, `--allow-threshold <risk>` or both score the cascade from one run:
-each guardian case meets the screen and the guardian together. A case the screen stops counts as an
-`escalate`, and one it allows counts as an `allow`, with the guardian's answer dropped; any other
-case takes the guardian's verdict. `--steering-veto <p>` (default `0.001`) goes with
-`--allow-threshold`. The summary adds a `cascade` object with:
+With the [`screen` preset](guardian.md#the-screen-preset) in front of the guardian, `--screen
+live:<account>/<model>` (an Ollama account) and `--stop-threshold <risk>`, `--allow-threshold
+<risk>` or both score the composition from one run: each guardian case meets the screen first and
+the guardian only if the screen does not settle it. A case the screen stops counts as an `escalate`,
+and one it allows counts as an `allow`, with no guardian call; any other case takes the guardian's
+verdict. `--steering-veto <p>` (default `0.001`) goes with `--allow-threshold`.
+`--composition-param key=value` (repeatable; the value is read as TOML and is a string when it is
+not valid TOML) sets any other preset parameter, such as `concurrent=true`, and conflicts with a
+threshold flag that sets the same key.
+
+`--composition-script <file>` scores any composition instead of the preset. The script's reads and
+their time limit come from `[guardian.composition.reads]` and `timeout_ms` in your configuration
+(none when absent), and its default read model from `--screen live:<account>/<model>` when given,
+else from `[guardian.composition] model`. With a script, `--screen` only names that model, the
+threshold flags are usage errors, and the script's parameters go through `--composition-param`.
+Either way the run builds the composition the way a session does, including the check that every
+read model is on an `ollama` account. The summary adds a `cascade` object with:
 
 - `llm_call_rate`: the share of cases whose verdict came from the guardian model.
 - `allowed_latency_ms` (`p50` and `mean`): the latency over the should-allow cases the cascade
   allowed. This is the set a guardian-alone run's allowed-call latency is read over.
 - `should_allow_stopped`: the should-allow cases the cascade did not allow.
-- `screen_allowed` and `must_not_clear_screen_allowed`: the cases the screen allowed, and those
-  whose expected answer is not `allow`. The second is the allow path's failure count.
+- `screen_allowed` and `must_not_clear_screen_allowed`: the cases the composition allowed, and
+  those whose expected answer is not `allow`. The second is the allow path's failure count.
 - `allowed_escalated_rate`: the share of benign cases that were escalated.
 
 `catch_rate` and `false_deny_rate` are the cascade's. A cascade run is its own measurement and never
-updates the guardian models file; its label records the screen and every threshold, so `--resume`
-only continues a run with the same ones.
+updates the guardian models file; its label records the screen, every threshold, the script and
+every parameter, so `--resume` only continues a run with the same ones.
+
+The preset now runs sequentially, so the allowed-call latency of a case the guardian decided is the
+screen plus the guardian. The older cascade scorecards (`evals/scorecards/cascade-*.json`) were
+measured with the screen and the guardian racing, where it was about the guardian's alone;
+`--composition-param concurrent=true` reproduces the race.
 
 ```
 cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:kimi/kimi-for-coding --screen live:local/qwen3:4b-instruct-2507-q4_K_M --stop-threshold 0.0000599 --out ../evals/scorecards/cascade-qwen3-4b-instruct-kimi.json

@@ -572,12 +572,12 @@ mod tests {
     #[test]
     fn typing_filters_by_path_including_spaces() {
         let mut p = panel();
-        type_text(&mut p, "guardian.screen");
+        type_text(&mut p, "guardian.composition");
         assert!(p.visible().len() >= 5);
         assert!(
             p.visible()
                 .iter()
-                .all(|&i| p.rows[i].key.path.contains("guardian.screen"))
+                .all(|&i| p.rows[i].key.path.contains("guardian.composition"))
         );
         type_text(&mut p, " x");
         assert!(p.visible().is_empty());

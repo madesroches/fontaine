@@ -71,6 +71,7 @@ opentelemetry-proto = { version = "=0.33.1", default-features = false, features 
 tracing-opentelemetry = "=0.34.0"
 jsonschema = "=0.59.0"
 wiremock = "=0.6.5"
+rune = { version = "=0.14.2", default-features = false, features = ["std", "emit"] }
 vt100 = "=0.18.1"
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "pem", "aws_lc_rs"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["aws-lc-rs"] }

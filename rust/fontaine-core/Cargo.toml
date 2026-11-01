@@ -13,7 +13,7 @@ pg2 = ["fontaine-guardian/pg2"]
 base64.workspace = true
 chrono.workspace = true
 fontaine-agents.workspace = true
-fontaine-guardian.workspace = true
+fontaine-guardian = { workspace = true, features = ["composition"] }
 fontaine-mcp.workspace = true
 fontaine-tools.workspace = true
 futures.workspace = true

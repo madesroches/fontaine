@@ -79,6 +79,11 @@ impl World {
         write(&self.config.join("config.toml"), text);
     }
 
+    /// A file next to the user's settings, such as a composition script.
+    pub fn config_file(&self, name: &str, text: &str) {
+        write(&self.config.join(name), text);
+    }
+
     pub fn project_file(&self, text: &str) {
         write(&self.work.join(".fontaine/settings.toml"), text);
     }
@@ -126,6 +131,7 @@ pub fn audit_record(session_id: &str) -> fontaine_core::audit::DecisionRecord {
         screen_risk: None,
         screen_allow_risk: None,
         screen_steering: None,
+        screen_scores: None,
         screen_model: None,
         screen_latency_ms: None,
         screen_outcome: None,
