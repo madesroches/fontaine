@@ -37,7 +37,7 @@ tests set them directly and no test depends on a clock.
 
 **New module `rust/fontaine-tui/src/spinner.rs`** (pure, unit-tested):
 - `lines(app, width) -> Vec<Line>`: empty unless the spinner is active, else one row:
-  `<glyph> <label> (<elapsed> · ↓ <tokens> tok)`, truncated to `width`.
+  `<glyph> <label> (<elapsed> · ↓ <tokens> tokens)`, truncated to `width`.
 - Active when: the shown conversation is working and none of the overlays waiting on the human
   is open: approval, questions, unavailable, server (`app.rs:176-221`). A waiting prompt is not "working"; the spinner stays
   visible for every other overlay (pickers, agents panel, history search, completion, `/` menu). Main view: `app.running`;
@@ -46,16 +46,17 @@ tests set them directly and no test depends on a clock.
 - `glyph(frame, glyphs)`: breathing-dot frames `·∙•●•∙` (the mockup's style #6); ASCII `.oO0Oo`. New `Glyphs.spinner: &'static [&'static str]` (data only, so other styles can be added later) so the ASCII
   set stays the one place that names fallbacks.
 - `glyph_style(theme, frame) -> Style`: the glyph's own colour animation. RGB theme colour: the hue drifts one full turn over
-  ~4 s (saturation and lightness taken from the HSL of `theme.spinner`, only the hue rotates, converted to `Color::Rgb`). Named ANSI colour: cycle the six base ANSI hues, one step
-  per ~0.7 s, since a gradient is not portable there.
+  ~4 s (saturation and lightness taken from the HSL of `theme.spinner`, only the hue rotates, converted to `Color::Rgb`). Named ANSI colour: cycle through the preset's own accent fields (`user`, `success`, `heading`, `mode_plan`, `shell`;
+  duplicates dropped, so `dark-ansi` gets four hues and `light-ansi` three), one step per ~0.7 s, since a gradient is not portable there.
+  Every colour comes from the theme, so hues a preset leaves out never appear.
 - `shimmer_style(theme, frame, index, len) -> Style`: a highlight sweeps left to right across the label
   and wraps, with a gap before it repeats.
-  - RGB theme colour: interpolate between a dimmed and a lightened shade of `theme.spinner`
-    (linear blend, distance from the sweep centre).
+  - RGB theme colour: interpolate (linear blend, distance from the sweep centre) from `theme.spinner` at the peak
+    to the preset's `mode_manual` grey at the far end; no lightening toward white, which loses contrast on light presets.
   - Named ANSI colour (the default): no interpolation is portable across 16-colour palettes, so step through modifiers
     around the base colour: `DIM` → normal → `BOLD`. Same sweep, stepped.
-- Elapsed text from the turn start, then `↓ <tokens> tok` (`fontaine_tools::display::compact_count` of `TurnTokens::shown()`,
-  below), the token clause omitted while 0 so a first-call wait shows no `↓ 0 tok`. Elapsed uses `fontaine_tools::jobs::format_age` (`NmSSs`, as the agent list does) rather than a new formatter; `App` gains `turn_started: Option<Instant>`,
+- Elapsed text from the turn start, then `↓ <tokens> tokens` (`fontaine_tools::display::compact_count` of `TurnTokens::shown()`,
+  below), the token clause omitted while 0 so a first-call wait shows no `↓ 0 tokens`. Elapsed uses `fontaine_tools::jobs::format_age` (`NmSSs`, as the agent list does) rather than a new formatter; `App` gains `turn_started: Option<Instant>`,
   set where `running` becomes true. Every `running = true` site goes through one `App` setter that also sets/clears
   `turn_started`: the turn (`Ui::turn`, `ui/turn.rs:726`), goal evaluation (`ui/goal.rs:37`), `/compact`
   (`ui/commands/context.rs:66`), the `!` shell (`ui/commands/workspace.rs:37`) and skill expansion (`ui/turn.rs:444`).
@@ -104,18 +105,18 @@ Open in a browser (animated):
 
 ## Implementation Steps
 1. `theme.rs`: `Glyphs.spinner` frames (Unicode and ASCII); `Theme.spinner` on every preset.
-2. `spinner.rs` (new, register in `lib.rs`): `active`, `lines`, `glyph`, `shimmer_style`, elapsed text.
-3. `app.rs`: `spinner_frame`, turn elapsed, `turn_started`; one setter for `running` that sets/clears `turn_started`, used at every site
+2. `spinner.rs` (new, register in `lib.rs`): `active`, `lines`, `glyph`, `glyph_style`, `shimmer_style`, `TurnTokens`, elapsed text.
+3. `app.rs`: `spinner_frame`, turn elapsed, `turn_started`, `turn_tokens`; one setter for `running` that sets/clears `turn_started` and resets `turn_tokens`, used at every site
    (`ui/turn.rs`, `ui/goal.rs`, `ui/commands/context.rs`, `ui/commands/workspace.rs`).
 4. `view.rs`: spinner row in `draw` and `chrome`, and its count in `agent_list_lines`, `todo_lines`, `body_rows`, `approval_height`.
 5. `statusbar.rs`: drop `working` from the running hint.
-6. `ui/mod.rs` and `ui/turn.rs`: set `spinner_frame` and the turn's elapsed `Duration` in `Ui::draw`; `TICK` via the shared fold helper in the idle loop, turn loop and `serve_while`.
+6. `lib.rs`, `ui/mod.rs` and `ui/turn.rs`: add a fixed `Instant` field to `struct Ui` (`lib.rs:224`, built at `lib.rs:313` and `ui/tests.rs:37`); set `spinner_frame` and the turn's elapsed `Duration` in `Ui::draw`; feed `app.turn_tokens` from `Ui::on_event` (`ui/turn.rs:~855`); `TICK` via the shared fold helper in the idle loop, turn loop and `serve_while`.
 7. `examples/live_area.rs`: a mode that sets `running`, steps `spinner_frame` across a long tool call, resizes, then clears `running`.
-8. Docs, CHANGELOG, Decisions line.
+8. Docs, CHANGELOG, master-plan Decisions lines.
 
 ## Files to Modify
 - `rust/fontaine-tui/src/theme.rs`, `spinner.rs` (new), `lib.rs`, `app.rs`, `view.rs`, `statusbar.rs`
-- `rust/fontaine-tui/src/ui/mod.rs`, `ui/turn.rs`, `ui/goal.rs`, `ui/commands/context.rs`, `ui/commands/workspace.rs`
+- `rust/fontaine-tui/src/ui/mod.rs`, `ui/turn.rs`, `ui/goal.rs`, `ui/commands/context.rs`, `ui/commands/workspace.rs`, `ui/tests.rs`
 - `rust/fontaine-tui/examples/live_area.rs`
 - `docs/tui.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions → TUI)
 
@@ -137,15 +138,15 @@ Open in a browser (animated):
 - `docs/tui.md` "Status bar" (l.106-116): hint text and the new spinner row (elapsed time and `↓` output tokens, estimated while streaming), hidden while a prompt waits, ASCII fallback
   via `FONTAINE_ASCII_GLYPHS`, 16-colour theme gets a stepped rather than gradient shimmer.
 - `docs/terminal.md` limitation (l.197) unchanged; `CHANGELOG.md` entry.
-- Master plan `## Decisions` → TUI: one line recording the spinner's 16-colour stepped fallback.
+- Master plan `## Decisions` → TUI, dated lines appended at the end of the subsection: `esc to interrupt` stays in the status bar; no spinner in screen-reader mode; breathing-dot glyph instead of Claude Code's star glyphs.
 
 ## Testing Strategy
 Unit tests (all pure):
-- `shimmer_style`: RGB sweep peaks at the centre index and is the dim shade at the far end; wraps; named colour yields
+- `shimmer_style`: RGB sweep is `theme.spinner` at the centre index and `mode_manual` at the far end; wraps; named colour yields
   DIM/normal/BOLD steps; zero-length label does not panic.
 - `TurnTokens`: the estimate grows with deltas (chars/4, rounds down); `Usage` replaces it with the reported `output_tokens`;
   a missing report keeps the estimate; sums across several calls in one turn; reset on a new turn; the row hides the clause at 0.
-- `glyph_style`: the RGB hue advances with the frame and wraps after a full turn; named-colour mode cycles the six ANSI hues.
+- `glyph_style`: the RGB hue advances with the frame and wraps after a full turn; named-colour mode cycles the deduped accent fields of `dark-ansi` and `light-ansi` and wraps.
 - `glyph`: every frame of every set is exactly one terminal column wide (ratatui's `Line::width()`, already a dependency, so the label never shifts); cycles through every frame and wraps; ASCII set used under `FONTAINE_ASCII_GLYPHS`.
 - `active`/`lines`: running → one row; idle → none; hidden while an approval, questions, unavailable or server overlay is open and shown with a picker open; agent view follows
   the row's status; width truncation.
