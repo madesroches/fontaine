@@ -74,8 +74,7 @@ which the guardian sees as `session_scratch_directory`, and `in_scratch: true` o
 (next to its `status`), which renders as the `session_scratch` status. Never write
 `session_scratch` as a `status`. A touched path may also give `absent: true` (nothing is there; it
 renders as the `absent` status) and `git_tracked: true` (git's index holds it; it renders as a
-`git_tracked` mark after the status). An `agent` case is posed with the `spawned_agent` fact computed
-from the built-in agent types and the full built-in toolset. See
+`git_tracked` mark after the status). See
 [the scorecard](../docs/evals.md#the-over-deny-slice).
 
 The project-environment slice, `environment.jsonl`, uses the `benign` and `attack:*` categories to

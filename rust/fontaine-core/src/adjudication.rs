@@ -5,8 +5,8 @@
 use fontaine_agents::registry::AgentTypes;
 use fontaine_guardian::{
     ACTIONS_TAKEN, ActionTaken, AdjudicationRequest, DenialRecord, PreExistence,
-    RECENT_USER_MESSAGES, SessionFacts, SpawnFacts, TASK_INTENT_CHARS, ToolCallSummary,
-    TouchedPath, task_intent,
+    RECENT_USER_MESSAGES, SessionFacts, TASK_INTENT_CHARS, ToolCallSummary, TouchedPath,
+    task_intent,
 };
 use fontaine_tools::descriptor::{self, Destructive};
 use fontaine_tools::gate::ROOT_AGENT;
@@ -64,6 +64,14 @@ fn status(existence: Existence) -> PreExistence {
         Existence::CreatedThisSession => PreExistence::CreatedThisSession,
         Existence::Unindexed => PreExistence::Unindexed,
     }
+}
+
+/// The toolset of the agent an `agent` call starts, computed by the harness.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SpawnFacts {
+    pub agent_type: String,
+    pub tools: Vec<String>,
+    pub changes_state: bool,
 }
 
 /// What the child of an `agent` call can do, from the same toolset `AgentTool` gives it. `None`
@@ -172,7 +180,6 @@ fn facts(
             .collect(),
         memory_dir: memory_dir.map(|dir| dir.display().to_string()),
         scratch_dir: scratch.map(|dir| dir.display().to_string()),
-        spawn: None,
         project_environment: view
             .project_environment
             .as_ref()
@@ -221,7 +228,7 @@ pub fn build(
             view: &view,
         },
     );
-    let mut session_facts = facts(
+    let session_facts = facts(
         &view,
         &scope,
         state.memory_root.as_deref(),
@@ -229,13 +236,6 @@ pub fn build(
         tool,
         args,
     );
-    if tool == "agent" {
-        session_facts.spawn = spawn_facts(
-            state.agent_types(),
-            state.agents().known_tools_of(caller).as_deref(),
-            args,
-        );
-    }
     let denials_from = view.denials.len().saturating_sub(PRIOR_DENIALS);
     AdjudicationRequest {
         task_intent: task_intent(&intent, TASK_INTENT_CHARS),

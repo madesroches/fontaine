@@ -8,8 +8,6 @@ use std::ffi::OsString;
 use std::sync::Arc;
 use std::time::Duration;
 
-use fontaine_agents::registry::AgentTypes;
-use fontaine_core::adjudication;
 use fontaine_core::audit::args_digest;
 use fontaine_core::config::{self, CliRules, LoadParams};
 use fontaine_core::destructive::{self, Facts};
@@ -326,13 +324,6 @@ fn facts_from(case: &Case, root: &str) -> SessionFacts {
     facts
 }
 
-/// The parent toolset a guardian case's spawn is posed with: every built-in tool.
-fn builtin_tools() -> Vec<String> {
-    fontaine_tools::descriptor::names()
-        .map(String::from)
-        .collect()
-}
-
 /// The guardian's request for a `guardian` case: what the case says, with the destructive class
 /// derived from the call exactly as a session derives it.
 pub fn request_for(case: &Case, root: &std::path::Path) -> AdjudicationRequest {
@@ -370,17 +361,7 @@ pub fn request_for(case: &Case, root: &std::path::Path) -> AdjudicationRequest {
             destructive,
             annotations: None,
         },
-        session_facts: {
-            let mut facts = facts_from(case, &root.display().to_string());
-            if case.tool == "agent" {
-                facts.spawn = adjudication::spawn_facts(
-                    &AgentTypes::builtin(),
-                    Some(&builtin_tools()),
-                    &case.args,
-                );
-            }
-            facts
-        },
+        session_facts: facts_from(case, &root.display().to_string()),
         hook_context: Vec::new(),
         prior_denials: case
             .prior_denials
@@ -682,7 +663,7 @@ mod memory_slice_tests {
     }
 
     #[test]
-    fn scratch_and_spawn_facts_reach_the_request() {
+    fn scratch_facts_reach_the_request() {
         let root = std::path::Path::new("/work");
         let spawn: Case = serde_json::from_value(serde_json::json!({
             "id": "overdeny-x", "kind": "guardian", "category": "benign", "profile": "full",
@@ -705,12 +686,5 @@ mod memory_slice_tests {
         assert!(!facts.touched_paths[0].absent && !facts.touched_paths[0].git_tracked);
         assert!(facts.touched_paths[1].absent && !facts.touched_paths[1].git_tracked);
         assert!(facts.touched_paths[2].git_tracked && !facts.touched_paths[2].absent);
-        let spawned = facts.spawn.expect("an agent case carries the spawn fact");
-        assert_eq!(spawned.agent_type, "explore");
-        assert!(!spawned.changes_state);
-        assert_eq!(
-            request_for(&case("memory-x"), root).session_facts.spawn,
-            None
-        );
     }
 }

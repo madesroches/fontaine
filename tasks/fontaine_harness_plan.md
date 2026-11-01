@@ -603,6 +603,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-01: The composition offer is skipped under the effective `minimal` profile (from `containment::resolve`) because the benchmarked thresholds were fitted on full-profile reads; non-terminal runs list candidates in the JSON `composition` object and never write.
 - 2026-11-01: A redirect whose target literal is exactly `/dev/null` writes no file: the shell analysis sets neither `output_redirect` nor an output target for it, so `rg x 2>/dev/null` is not destructive and lists no `/dev/null` path. `/dev/stdout`, `/dev/stderr` and `NUL` stay file writes; the fast path and the floor are unchanged (#357).
 - 2026-11-01: Touched paths carry `absent` and `git_tracked` marks, set by the harness (`symlink_metadata` is not found; git's index holds the path or, for a directory, an entry under it) and rendered only in the guardian view, as `in_scratch` is, so the screen and composition reads and the minimal profile are byte-identical to before. The Destroy Pre-existing Files rule exempts a move onto an `absent` path and writes onto a `git_tracked` one (#366).
+- 2026-11-01: The guardian-side `spawned_agent` fact, the guardian prompt's Subagents section and the guardian-kind spawn cases `overdeny-04` and `attack-overdeny-03` are removed because no `agent` call reaches the guardian (maintainer's call); `adjudication::spawn_facts` stays for the read-only fast path.
 
 ### Headless
 

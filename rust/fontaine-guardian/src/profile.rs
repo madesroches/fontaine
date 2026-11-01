@@ -72,7 +72,6 @@ impl Profile {
                         actions_taken: Vec::new(),
                         memory_dir: request.session_facts.memory_dir.clone(),
                         scratch_dir: None,
-                        spawn: None,
                         project_environment: request.session_facts.project_environment.clone(),
                     },
                     hook_context: Vec::new(),
@@ -86,7 +85,7 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::request::{PreExistence, SpawnFacts, ToolCallSummary};
+    use crate::request::{PreExistence, ToolCallSummary};
     use crate::rules::EnvironmentConfig;
 
     #[test]
@@ -119,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn the_minimal_shape_drops_the_scratch_and_spawn_facts() {
+    fn the_minimal_shape_drops_the_scratch_facts() {
         let mut request = AdjudicationRequest {
             task_intent: String::new(),
             recent_user_messages: Vec::new(),
@@ -138,11 +137,6 @@ mod tests {
             prior_denials: Vec::new(),
         };
         request.session_facts.scratch_dir = Some("/s".into());
-        request.session_facts.spawn = Some(SpawnFacts {
-            agent_type: "explore".into(),
-            tools: vec!["read".into()],
-            changes_state: false,
-        });
         request.session_facts.touched_paths.push(TouchedPath {
             path: "/s/a".into(),
             status: PreExistence::CreatedThisSession,
@@ -152,7 +146,6 @@ mod tests {
         });
         let shaped = Profile::Minimal.shape(&request).session_facts;
         assert_eq!(shaped.scratch_dir, None);
-        assert_eq!(shaped.spawn, None);
         assert_eq!(shaped.touched_paths.len(), 1);
         assert!(!shaped.touched_paths[0].in_scratch);
         assert!(!shaped.touched_paths[0].absent);

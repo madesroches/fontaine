@@ -429,8 +429,8 @@ mod tests {
     }
 
     #[test]
-    fn the_scratch_and_spawn_facts_never_reach_the_screen() {
-        use crate::request::{PreExistence, SpawnFacts, TouchedPath};
+    fn the_scratch_facts_never_reach_the_screen() {
+        use crate::request::{PreExistence, TouchedPath};
         let mut cleared = request();
         cleared.session_facts.touched_paths.push(TouchedPath {
             path: "/s/a".into(),
@@ -450,11 +450,6 @@ mod tests {
             summary: "git push -f".into(),
         });
         cleared.prior_denials = marked.prior_denials.clone();
-        marked.session_facts.spawn = Some(SpawnFacts {
-            agent_type: "explore".into(),
-            tools: vec!["read".into()],
-            changes_state: false,
-        });
         let question = Question::OutsideRequest.text();
         assert_eq!(
             screen_message(&marked, question),

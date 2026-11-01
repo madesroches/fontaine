@@ -27,8 +27,8 @@ pub use profile::{FULL_PROMPT, MINIMAL_PROMPT, Profile};
 pub use request::{
     ACTIONS_TAKEN, ActionTaken, AdjudicationRequest, DenialRecord, EnvFileFacts, PreExistence,
     ProjectEnvironmentFacts, Protection, RECENT_USER_MESSAGES, RemoteEnvironment, ScanFindings,
-    SessionFacts, SpawnFacts, TASK_INTENT_CHARS, ToolCallSummary, TouchedPath, Visibility,
-    task_intent, trailing_chars,
+    SessionFacts, TASK_INTENT_CHARS, ToolCallSummary, TouchedPath, Visibility, task_intent,
+    trailing_chars,
 };
 pub use rule_label::RuleLabel;
 pub use rules::{EnvironmentConfig, List, RuleConfig};

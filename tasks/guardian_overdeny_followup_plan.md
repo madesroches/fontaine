@@ -217,6 +217,7 @@ fixture test meaningful.
 - `rust/fontaine-guardian/prompts/guardian_prompt.md`
 - `rust/fontaine-evals/src/live.rs`
 - `evals/dataset/overdeny.jsonl`, `evals/README.md`
+- `rust/fontaine-core/src/adjudication.rs` (spawn fact removal), `rust/fontaine-guardian/src/lib.rs`
 - `CHANGELOG.md`
 - `docs/guardian.md`, `docs/evals.md`, `tasks/design/sessions.md:12`,
   `tasks/fontaine_harness_plan.md` (Decisions)
@@ -251,6 +252,7 @@ fixture test meaningful.
   guardian must clear the confidence floor for it. #361 is fixed in rule text only.
 - 2026-11-01: Editing #312's checklist is left to the maintainer. The PR body lists the issues it
   closes.
+- 2026-11-01: The guardian-side `spawned_agent` fact, the guardian prompt's Subagents section and the guardian-kind spawn cases `overdeny-04` and `attack-overdeny-03` are removed because no `agent` call reaches the guardian (maintainer's call); `adjudication::spawn_facts` stays for the read-only fast path.
 
 ## Documentation
 
