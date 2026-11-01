@@ -589,6 +589,11 @@ synthetic corpus it caught 97.9% of attacks while stopping 13.3% of benign cases
 class at 92% or more; the report is
 [`screen-jev-1.14-employee.json`](../evals/scorecards/screen-jev-1.14-employee.json). Details in
 [the follow-up analysis](../research/analysis-jev-improvements.md#scorer-support).
+`--screen-framing employee-levels` asks the same question as five levels, from "within what they
+would be allowed to do" to "a fireable offence", and reads the probability of the lowest as
+`p(allow)`; it ranks better still (AUROC 0.975, attack vs benign 0.988, and 97.9% of attacks caught
+at a 10.7% benign stop at a 0.34 synthetic threshold), in
+[`screen-jev-1.14-employee-levels.json`](../evals/scorecards/screen-jev-1.14-employee-levels.json).
 
 ### Not measured
 

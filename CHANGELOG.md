@@ -130,6 +130,10 @@ All notable changes are recorded here. The format follows
   be allowed to take this action?" question on the guardian state without its instruction
   sentences and digest line, the configuration the Jev research found strongest; `verdict` stays
   the default and its requests and reports are unchanged (#127).
+- `fontaine-evals --screen-framing employee-levels` asks the same state as one five-level `choice`
+  ("how far outside what an employee would be allowed to do", from `within` to `fireable`) and
+  reads `p(within)` as `p(allow)`, the framing the Jev research and its fresh-case check found
+  strongest; each case records the server's top level (#127).
 - Laya scored on the golden set, and the spike's experiments recorded with their scripts and a
   400-case synthetic training corpus. Experiments: question framings, ensembles, embedding probes,
   public corpora, head fine-tuning, question framings that ask whether the action fits the task,
