@@ -26,7 +26,7 @@ impl UsageSource {
         UsageSource::SideQuestion,
     ];
 
-    fn index(self) -> usize {
+    pub fn index(self) -> usize {
         self as usize
     }
 }
@@ -103,12 +103,17 @@ impl UsageLedger {
 
     /// All sources summed.
     pub fn total(&self) -> Bucket {
-        let mut total = Bucket::default();
-        for bucket in self.snapshot() {
-            total.merge(&bucket);
-        }
-        total
+        total(&self.snapshot())
     }
+}
+
+/// The buckets summed.
+pub fn total(buckets: &[Bucket]) -> Bucket {
+    let mut total = Bucket::default();
+    for bucket in buckets {
+        total.merge(bucket);
+    }
+    total
 }
 
 #[cfg(test)]

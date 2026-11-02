@@ -513,7 +513,7 @@ pub struct UsageReport {
 
 /// `/cost`: tokens, cache tokens and dollars per source, then the total.
 pub fn cost(report: &UsageReport) -> String {
-    let bucket = |source| report.by_source[source as usize];
+    let bucket = |source: UsageSource| report.by_source[source.index()];
     let shown = [
         ("main", UsageSource::Main),
         ("guardian", UsageSource::Guardian),
@@ -522,17 +522,14 @@ pub fn cost(report: &UsageReport) -> String {
         ("compaction", UsageSource::Compaction),
         ("side questions", UsageSource::SideQuestion),
     ];
-    let mut total = Bucket::default();
-    for bucket in &report.by_source {
-        total.merge(bucket);
-    }
+    let total = fontaine_core::usage_ledger::total(&report.by_source);
     let cache = total.cache_read_input_tokens > 0 || total.cache_creation_input_tokens > 0;
-    let cost_cell = |b: &Bucket, with_unpriced: bool| {
+    let cost_cell = |b: &Bucket| {
         let mut cell = match b.cost_usd {
             Some(cost) => format!("${cost:.4}"),
             None => return "n/a".to_string(),
         };
-        if with_unpriced && b.unpriced_tokens > 0 {
+        if b.unpriced_tokens > 0 {
             let _ = write!(cell, " · {} unpriced tok", compact_count(b.unpriced_tokens));
         }
         cell
@@ -548,7 +545,7 @@ pub fn cost(report: &UsageReport) -> String {
             row.push(compact_count(b.cache_read_input_tokens));
             row.push(compact_count(b.cache_creation_input_tokens));
         }
-        row.push(cost_cell(b, true));
+        row.push(cost_cell(b));
         row
     };
     let mut head = vec!["source", "calls", "input", "output"];
@@ -596,7 +593,7 @@ pub fn cost(report: &UsageReport) -> String {
         }
     }
     out.push_str(
-        "\nExcludes the guardian estimate for requests a composition dropped and the auto-mode setup scan.",
+        "\nExcludes the guardian estimate for requests a composition dropped, the tool-result scanner and local screen calls, and the auto-mode setup scan.",
     );
     if let Some((spent, cap)) = report.budget {
         let _ = write!(out, "\nSession cost budget: ${spent:.4} / ${cap:.2}");
@@ -1211,7 +1208,7 @@ mod tests {
     fn usage_report(rows: &[(UsageSource, Bucket)]) -> UsageReport {
         let mut by_source = [Bucket::default(); 6];
         for (source, bucket) in rows {
-            by_source[*source as usize] = *bucket;
+            by_source[source.index()] = *bucket;
         }
         UsageReport {
             by_source,

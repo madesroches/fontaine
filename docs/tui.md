@@ -579,7 +579,8 @@ bound and ends with ` · N unpriced tok`, the input and output tokens of those c
 cost budget set under `[agents]` adds a last line with the spend against it.
 
 The report does not count the estimate for a guardian request a composition dropped before its
-answer came back, the repository scan of `/auto-mode-setup`, or calls made outside a session such
+answer came back, the LLM tool-result scanner's calls, the local screen calls of a guardian
+composition, the repository scan of `/auto-mode-setup`, or calls made outside a session such
 as `fontaine auto-mode critique`. It reports the current process's session: `/clear` keeps
 counting, while `/resume`, `/branch` and `--resume` start from zero, because the figures are not
 saved with the session.
