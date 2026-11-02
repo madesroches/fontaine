@@ -416,6 +416,10 @@ All notable changes are recorded here. The format follows
 - A pinned Claude guardian whose model caches nothing below a length its prompt does not reach
   (Haiku 4.5, Opus 4.5 and 4.6, and others, under the `minimal` profile, on `anthropic` and
   `openrouter` accounts) gets a start-up notice instead of a silent no-op (#331).
+- An `openai-compatible` account can set `quota = "kimi"` to show Kimi for Coding's subscription
+  quota in the status bar (`kimi 16% · 29d left`, with the 5h window added once it passes 70%).
+  It reads `<base_url>/usages` with the account's own key every minute, never blocks a turn, and
+  hides the segment when the fetch fails (#353).
 
 #### Research
 
