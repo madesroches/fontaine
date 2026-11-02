@@ -59,9 +59,7 @@ its 3,600 s ceiling.
   is done with it, because nothing stops it otherwise. The schema's `timeout_secs` description
   becomes "Seconds before the monitor is stopped. Omit to run until the command ends."
 - `MonitorArgs` and the JSON schema keep `timeout_secs` optional, `minimum: 1`,
-  `maximum: MAX_MONITOR_SECS`. The cap on explicit values stays, which keeps the change to what
-  the issue asks: an explicit timeout is a bound the model chose, and the existing clamp
-  semantics for it are unchanged.
+  `maximum: MAX_MONITOR_SECS`.
 
 ## Implementation Steps
 
@@ -73,7 +71,7 @@ its 3,600 s ceiling.
    Existing callers pass `Some(..)`.
 4. Tests (see Testing Strategy).
 5. `docs/tools.md`: tools-table row and `## Monitor` section.
-6. `tasks/fontaine_harness_plan.md`: add a dated line at the end of `### Decisions` → `### Tools`
+6. `tasks/fontaine_harness_plan.md`: add a dated line at the end of `## Decisions` → `### Tools`
    recording the deviation from Claude Code.
 7. `CHANGELOG.md` is updated by the PR step.
 
@@ -95,8 +93,6 @@ its 3,600 s ceiling.
   monitor. No default is what the issue's title and its "runs until its command ends" describe.
 - **Keep Claude Code's 5-minute default and re-arm pattern.** Rejected: re-arming costs a turn
   per expiry, leaves gaps in coverage, and is the behavior that misled the user in the issue.
-- **Lift the 3,600 s cap on explicit values.** Not needed: anyone who wants longer omits the
-  argument.
 
 ## Decisions
 
@@ -117,7 +113,8 @@ its 3,600 s ceiling.
 Unit and registry tests, no live services:
 
 - `jobs/tests.rs`: start `monitor(&jobs, "sleep 30", None)` and assert the job's
-  `control.deadline.is_none()` (read as in `tests.rs:661-675`; the only path to
+  `control.deadline.is_none()` (read through `lock(&jobs.shared.inner, "job registry")` and `inner.find(&id)` as in
+  `tests.rs:315-316` in `rust/fontaine-tools/src/jobs/tests.rs`; the only path to
   `Kill::MonitorTimeout` is a `Some` deadline). Check that a `Some(..)` monitor gets a deadline,
   then cancel.
 - `tests/jobs.rs` (through the registry): a `monitor` call without `timeout_secs` returns a start
