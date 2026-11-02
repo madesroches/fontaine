@@ -30,7 +30,8 @@ their price, followed by a separate `N unpriced tok` segment, joined to the age 
 ## Design
 
 `SpendView` and `PanelRow` replace `cost_partial: bool` with `unpriced_tokens: u64`. Both call
-sites copy `row.spend.unpriced_tokens`.
+sites copy it: `agent_list.rs:90` and `ui/mod.rs:131` copy `row.spend.unpriced_tokens`, and the
+panel call site at `agents_panel.rs:247` copies `row.unpriced_tokens` (a `PanelRow` has no `.spend`).
 
 `spend_text` builds segments joined by ` · `:
 
@@ -47,8 +48,7 @@ fully unpriced with a token budget and a cost budget `4.9M / 5M tok · cost n/a 
 fully priced unchanged.
 
 Token counts in these segments trim a trailing `.0` (`110k`, not `110.0k`), to match the issue's
-examples. `compact_count` is shared with other output whose documented form is `1.0k`, so the trim
-is a small local helper in `agents_panel.rs` over `compact_count`, applied to the spend segments
+examples. The trim is a small local helper in `agents_panel.rs` over `compact_count`, applied to the spend segments
 (including the token-budget cap), to `writing_text`, and to the `stopped_because` text built in
 `ui/mod.rs:134` (which would otherwise show untrimmed counts under a trimmed spend line).
 
@@ -69,12 +69,15 @@ first.
    `unpriced_tokens`; pass the trim helper to `describe_with` for `stopped_because` in `ui/mod.rs`;
    set `unpriced` in the test-only `ListRow` literals (`spinner.rs:418`, `view.rs:779`,
    `app.rs:1637`, `app.rs:1651`; `ListRow` has no `Default`).
+   `rust/fontaine-tui/tests/agents.rs`: change the two `1.5k / 200.0k tok` assertions (lines 66
+   and 71) to `1.5k / 200k tok`.
 4. `docs/tui.md`: update the agent-list and agents-panel sections and examples.
 5. `CHANGELOG.md` entry is handled by the `pr` step.
 
 ## Files to Modify
 
 - `rust/fontaine-tui/src/agents_panel.rs`, `agent_list.rs`, `ui/mod.rs`, `screen.rs`, `app.rs`, `spinner.rs`, `view.rs`
+- `rust/fontaine-tui/tests/agents.rs`
 - `docs/tui.md`
 
 ## Decisions
@@ -83,7 +86,8 @@ first.
 
 ## Documentation
 
-`docs/tui.md`: agent-list paragraph (age is followed by ` · `, drop "`+ unpriced` marker", describe
+`docs/tui.md` (line 842: change the list example to `1m02s · 1.5k tok`; line 850: writing counts
+drop a trailing `.0`): agent-list paragraph (age is followed by ` · `, drop "`+ unpriced` marker", describe
 the `N unpriced tok` segment) and agents-panel paragraph (replace the `4863024 tok · $0.0519 +
 unpriced` example, state that a token budget keeps the total, that a fully unpriced agent reads
 `4.9M unpriced tok`, and that counts drop a trailing `.0`; fix the `1.5k / 200.0k tok` examples), and line ~909 "Displayed counts are compact (`999`,
@@ -98,3 +102,5 @@ Unit tests (all reachable by constructed inputs):
   segment (head cut with `…`), drops `writing` first; an ordinary narrow row is still cut at the
   end.
 - Panel rendering test updated for the new format.
+- Integration test `rust/fontaine-tui/tests/agents.rs` (`a_killed_subagents_row_shows_killed_and_its_spend_against_its_budget`)
+  asserts `1.5k / 200k tok`.
