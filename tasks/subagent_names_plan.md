@@ -49,15 +49,24 @@ address that resolves to an id.
 - `agent` tool gains an optional `name` argument: 1–32 chars, `[a-z0-9-]`, starting with a
   letter, e.g. `survey-tech-debt`. The description tells the model to give a short role-describing
   name when it starts several agents.
-- Fallback when omitted: `<agent_type>-<k>`, where `k` is the first of 1, 2, … not in the taken set
-  (`explore-1`, `explore-2`, `worker-1`). Deterministic, so it needs no model call.
+- Fallback when omitted: `<slug>-<k>`, where `<slug>` is the agent type slugged (lowercased, every
+  char outside `[a-z0-9]` becomes `-`, prefixed with `a-` when it does not start with a letter,
+  truncated so `-<k>` fits in 32 chars) and `k` is the first of 1, 2, … for which the candidate
+  passes the same reserved-name checks as a model-supplied name and is not in the taken set
+  (`explore-1`, `explore-2`, `worker-1`; a plugin type `Plug:Review_Bot` gives `plug-review-bot-1`;
+  a type `agent` or `job` never yields `agent-1` / `job-1` because those fail the reserved checks,
+  so the probe moves on). Deterministic, so it needs no model call.
 - Uniqueness is per session, across the whole tree and across ended agents (a name is never
   reused, so a late message cannot reach the wrong agent). A model-supplied name that is taken,
   is `main` or `root` (the root's `ROOT_AGENT` id), starts with `job-` (job ids share
   `job_output`'s id space), or matches `agent-<digits>` is refused as invalid args with the reason, so the model
   fixes it; it is never silently renamed. Validation and the fallback probe live in
   `AgentTree::reserve`, under the tree lock, so racing spawns cannot collide. The taken-names set
-  lives on `Inner`, separate from `nodes`, and `release` does not free them.
+  lives on `Inner`, separate from `nodes`. `release` of a reservation that never started (spawn
+  failure, `ReleaseOnDrop`; both run before `AgentEvent::Spawned`) frees that reservation's name,
+  since nothing could have messaged an agent that never ran; this matches the ledger-seeded rule,
+  where a never-started agent's name is absent from the ledger and so free after restart. Names of
+  agents that did start are never freed. Fallback probing makes consumed numbers irrelevant.
 - `reserve` returns the id as today; callers read the name from the node. The `agent` tool result
   becomes `{"agent_id": "agent-3", "name": "survey-tech-debt"}`.
 - **Addressing:** `AgentTree::resolve_target` (now taking `&Inner` and returning an owned id,
@@ -73,9 +82,11 @@ address that resolves to an id.
   placeholder, status bar) shows `{name}` where it showed the id, with the id dimmed after it
   (`survey-tech-debt (agent-3)`) so `/agents`-style references and logs still match; internal
   keys stay ids. The row is built and truncated as spans (not one flat string); at narrow width the
-  dimmed id gives way before status and age. `Notification` gains the sender's name, filled in
-  `deliver` / `push` from the sender node (the root node is named `main`, so main-to-child messages
-  read `main`); `render` leads with it and carries the id:
+  dimmed id gives way before status and age. `Notification` gains a separate `from_name` field for the sender's name, filled in
+  `deliver` / `push` from the sender node under the tree lock (the root node is named `main`, so
+  main-to-child messages read `main`); `from` stays the id, since `push` dedups Job notes by `from`
+  and `agent_state` matches reports by `note.from == id`. `render` leads with `from_name` and
+  carries the id:
   `Report from agent survey-tech-debt (agent-3)`. Other surfaces that showed a bare id show the
   name too: the approval prompt `Allow {tool} ({agent})?` and its outcome notice (the name rides on
   `ApprovalRequest`), kill/resume notices (tree lookup by id), `MessageRefusal::notice` and the
@@ -140,7 +151,9 @@ display. `docs/headless.md` and `docs/schemas/headless-v1.schema.json`: `agent_n
 
 ## Testing Strategy
 Unit tests (`tree.rs`): name validation (charset, length, `main`, `root`, `job-*`, `agent-<n>` rejected); fallback
-numbering per type; duplicate refused; `resolve_target`
+numbering per type; fallback for a plugin-namespaced/uppercase type (`Plug:Review_Bot`) is slugged and
+fits 32 chars, and types `agent` and `job` skip the reserved `agent-1` / `job-1`; a released
+(never started) reservation's name is free again while a started agent's name stays taken; duplicate refused; `resolve_target`
 by id and name; a name does not widen `deliver` reachability (non-sibling by name is
 `NotReachable`); an ended agent's name stays taken. `spawn.rs`: schema and result contain `name`;
 `Refusal::Name` becomes `invalid_args`. Ledger: a legacy spawn event without `name` loads with the
@@ -151,3 +164,8 @@ truncation case. `job_output`: `job-` ids still reach `read_job`, names and `age
 agent waits. Notification render includes name and id.
 `rust/fontaine-agents/tests/seam.rs` spawns two named agents, sends by name and asserts the
 rendered notification.
+
+## Decisions
+- AFK: Fallback name is `<slug>-<k>` with the type slugged (lowercase, non-`[a-z0-9]` to `-`, `a-` prefix if not letter-first, truncated so `-k` fits in 32), run through the same reserved-name checks, probing k=1,2,… against the taken set; unit tests cover a plugin-namespaced/uppercase type and types `agent`/`job`.
+- AFK: `Notification` gets a separate `from_name` field filled in `deliver`/`push` from the sender node under the lock; `from` stays the id (push dedups Job notes by `from`, `agent_state` matches `note.from == id`).
+- AFK: `release` frees the released reservation's name (it runs before `AgentEvent::Spawned`, so the agent never ran), consistent with ledger seeding; names of agents that started are never reused; a test asserts a released name is free again.
