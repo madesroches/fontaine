@@ -846,6 +846,9 @@ impl AgentRuntime {
             return Err(ClearError::IdleTeammates);
         }
         self.session.clear().await?;
+        // The conversation is gone, so the agents it spawned leave the list; persisted
+        // per-agent logs and the spend tally stay.
+        self.state.agents().clear_ended();
         self.end_jobs().await;
         self.reset_shell_cwd();
         self.state.append(Record::ContextCleared {});

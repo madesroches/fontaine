@@ -553,6 +553,54 @@ async fn a_subagent_is_viewed_messaged_resumed_and_the_main_chat_comes_back_whol
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn clear_prunes_an_ended_subagent_from_the_agent_list_at_once() {
+    // A killed agent stays listed for 30 seconds; /clear must drop it immediately.
+    let server = start(vec![
+        Route::new(
+            "root task",
+            vec![
+                Turn::tool("c1", "agent", spawn("worker", "child-A: wait for the user")),
+                Turn::text("launched"),
+            ],
+        ),
+        Route::new(
+            "child-A",
+            vec![Turn::tool("k1", "shell", json!({"command": "echo hi"}))],
+        ),
+    ])
+    .await;
+    let w = World::routed(&server.uri(), ALLOW_AGENT);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("root task");
+        ui.wait_for("launched").await;
+        ui.wait_for("worker-1 (agent-1)").await;
+        ui.wait_for_prompt("Allow shell (worker-1, agent-1)?").await;
+        ctrl_t(&ui);
+        ui.wait_for("waiting-on-permission").await;
+        ui.press(KeyCode::Char('x'));
+        ui.wait_for("killed").await;
+        ui.press(KeyCode::Esc);
+        ui.wait_until("the approval is gone", |s| !s.contains("Allow shell"))
+            .await;
+        // The killed row is still in the list below the status bar.
+        assert!(
+            ui.screen().contains("worker-1 (agent-1)"),
+            "{}",
+            ui.screen()
+        );
+        ui.send("/clear");
+        ui.wait_for("cleared the conversation").await;
+        // The list below the status bar is gone: no subagent row, and not even `main`.
+        // (The lines the cleared conversation wrote stay in scrollback, as they should.)
+        let screen = ui.screen();
+        assert!(!screen.contains("(agent-1) worker"), "{screen}");
+        assert!(!screen.contains("● main"), "{screen}");
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn typing_to_a_killed_agent_is_refused_and_the_text_stays() {
     let server = start(vec![
         Route::new(

@@ -342,7 +342,7 @@ In the terminal UI, a list below the status bar shows `main` and every running s
 what you type there goes to that agent: see [the agent list and the agent
 view](tui.md#the-agent-list-and-the-agent-view). `Ctrl+T` (or `/agents`, or `/tasks`) opens the
 [agents panel](tui.md#the-agents-panel), the full overview with one row per subagent, ended ones
-included, its status (a teammate waiting for work shows `idle`, not `done`), spend against budget, a key to kill it, and the team's task board. A subagent's approval
+included until a `/clear` prunes them, its status (a teammate waiting for work shows `idle`, not `done`), spend against budget, a key to kill it, and the team's task board. A subagent's approval
 prompts appear like any other, labelled with its id, whichever transcript is on screen, so none
 hides behind another. While a subagent's model is mid-step, its row shows how many characters it
 has written so far (`· writing 4.2k chars`), since its usage only updates when the call ends.
