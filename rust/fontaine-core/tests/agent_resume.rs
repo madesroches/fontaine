@@ -270,6 +270,34 @@ async fn a_message_for_a_running_child_is_queued_not_resumed() {
 }
 
 #[tokio::test]
+async fn clear_conversation_prunes_ended_children_from_the_tree() {
+    let w = world("");
+    let OneChild { built, .. } = with_one_child(&w, vec![]).await;
+    let tree = built.runtime.state.agents().clone();
+    assert_eq!(tree.status_of("agent-1"), Some(ChildStatus::Done));
+    assert_eq!(tree.rows().len(), 1);
+
+    // Its report is still waiting, so the clear is refused and nothing is pruned.
+    assert!(matches!(
+        built.runtime.clear_conversation().await,
+        Err(fontaine_core::session::ClearError::SubagentsRunning)
+    ));
+    assert_eq!(tree.rows().len(), 1);
+
+    // Once the report is read, the clear empties the conversation and the tree with it.
+    tree.take_notifications(ROOT_AGENT);
+    built.runtime.clear_conversation().await.unwrap();
+    assert!(tree.rows().is_empty());
+    // The id counter and the taken names were not reset: nothing the cleared
+    // session used is minted again.
+    let id = tree
+        .reserve(ROOT_AGENT, "worker", "m", vec![], Ladder::Manual)
+        .unwrap();
+    assert_eq!(id, "agent-2");
+    assert_eq!(tree.name_of(&id), "worker-2");
+}
+
+#[tokio::test]
 async fn a_childs_prompt_and_events_reach_the_sink_under_its_id() {
     let w = world("");
     let (sink, mut seen) = tokio::sync::mpsc::unbounded_channel();

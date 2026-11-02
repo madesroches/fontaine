@@ -949,6 +949,33 @@ impl AgentTree {
         }
     }
 
+    /// Drops every ended subagent node, such as when the conversation is cleared: the session
+    /// starts over with an empty agent list. Nodes still running are kept, so a racing spawn
+    /// never has its node yanked from under it, and so are the id counter, the taken names and
+    /// the session spend tally, which a cleared session must not reset.
+    pub fn clear_ended(&self) {
+        let mut inner = self.lock();
+        let running: Vec<String> = inner
+            .order
+            .iter()
+            .filter(|id| {
+                inner
+                    .nodes
+                    .get(*id)
+                    .is_some_and(|n| n.info.parent.is_some() && n.status.is_running())
+            })
+            .cloned()
+            .collect();
+        inner
+            .nodes
+            .retain(|id, node| id.as_str() == ROOT_AGENT || node.status.is_running());
+        inner.order.clear();
+        inner.order.push(ROOT_AGENT.to_string());
+        inner.order.extend(running);
+        drop(inner);
+        self.changed.notify_waiters();
+    }
+
     /// Waits, for at most `limit`, until every killed child has concluded, which is when its
     /// `finished` record is in the ledger. Killing only flags the child; its end is recorded when
     /// its report arrives, so a run that exits straight after `kill_all` would lose the record.
@@ -1047,6 +1074,12 @@ impl AgentTree {
             total.add(&node.spend);
         }
         total
+    }
+
+    /// Everything spent in the session, including agents `/clear` has removed; the tally the
+    /// session spend cap is enforced against.
+    pub fn session_spend(&self) -> Spend {
+        self.lock().session_spend
     }
 
     pub fn exhausted_of(&self, agent: &str) -> Option<Exhausted> {
@@ -1460,6 +1493,60 @@ mod tests {
             },
         );
         assert!(reserve(&tree, ROOT_AGENT).is_ok());
+    }
+
+    #[test]
+    fn clear_ended_empties_the_list_but_keeps_the_root_the_counters_and_the_spend() {
+        let tree = tree(8);
+        let a = named(&tree, ROOT_AGENT, "worker", "scout").unwrap();
+        let b = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.finish(&a, done("x"));
+        tree.kill(&b);
+        tree.debit(
+            &a,
+            &Spend {
+                input_tokens: 30,
+                ..Spend::default()
+            },
+        );
+        assert_eq!(tree.rows().len(), 2);
+
+        tree.clear_ended();
+
+        assert!(tree.rows().is_empty());
+        assert!(tree.is_running(ROOT_AGENT));
+        assert!(tree.lineage_intact(ROOT_AGENT));
+        assert_eq!(tree.subagent_spend().tokens(), 0);
+        // The session tally survives, so a clear cannot reset the session budget.
+        assert_eq!(tree.lock().session_spend.tokens(), 30);
+        // The id counter and the taken names survive: nothing the cleared session used
+        // is minted again.
+        let c = reserve(&tree, ROOT_AGENT).unwrap();
+        assert_eq!(c, "agent-3");
+        assert!(matches!(
+            named(&tree, ROOT_AGENT, "worker", "scout"),
+            Err(Refusal::Name(_))
+        ));
+    }
+
+    #[test]
+    fn clear_ended_keeps_a_running_node_present_and_in_order() {
+        let tree = tree(8);
+        let running = reserve(&tree, ROOT_AGENT).unwrap();
+        let ended = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.finish(&ended, done("x"));
+
+        tree.clear_ended();
+
+        let rows = tree.rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, running);
+        assert_eq!(rows[0].status, ChildStatus::Running);
+        // Still iterable via `order`, visible to `kill_all` and to the clear refusal check.
+        assert_eq!(tree.running_ids(), vec![running.clone()]);
+        assert!(tree.any_running());
+        tree.kill_all();
+        assert!(!tree.is_running(&running));
     }
 
     #[test]

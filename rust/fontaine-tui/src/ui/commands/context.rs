@@ -22,6 +22,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app.todos.set_items(runtime.session.todos().root());
                 // They described the conversation that is gone.
                 self.app.pending_notices.clear();
+                // So do the cached per-agent transcripts, and a view onto a pruned agent
+                // would route input to a dead agent. Only an on-screen view needs the switch
+                // back: a plain clear must not reprint, or the rows just retired to
+                // scrollback are dropped with the erased screen.
+                self.app.agent_views.clear();
+                if self.app.viewing.is_some() {
+                    self.app.view(None);
+                }
                 self.app.transcript.notice(
                     "cleared the conversation; the session, its permissions and its mode carry on",
                 );

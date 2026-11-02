@@ -457,7 +457,7 @@ error: an export never overwrites.
 | Command | Action |
 |---|---|
 | `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool *write* outside the roots is denied with a hint naming this command and the session's scratch directory, which is always a root; the read-only tools (`read`, `ls`, `glob`, `grep`) instead ask or go to the guardian like any unapproved call. Only between turns. |
-| `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel): every subagent, ended ones included, and the background jobs. |
+| `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel): every subagent, ended ones included until a `/clear` prunes them, and the background jobs. |
 | `/auto-mode-setup` | Collects this project's [environment facts](guardian.md#project-environment) (GitHub API through `gh`, repository files and, in a trusted workspace, a scan by the guardian's model) while the screen stays live; Esc cancels. The scan's proposals are shown in the transcript and in a review prompt (`y` saves them, `n` discards them), entries that relax the guardian first. The facts are stored as `fontaine auto-mode setup` stores them and apply to this session from the next guardian call; the report ends with `applied to this session`. A last prompt offers the guardian's [allow screen](guardian.md#setting-up-the-composition): the hosted screen on an `openrouter` account whose key resolves (one confirmation that states guardian state is sent to OpenRouter and Typesafe), or a local one (safe or fast, then a confirmation); it writes the user settings file and applies from the next session. The startup warning in `auto` points here. |
 | `/branch [<name>]`, `/fork` | Copies the session under a new id and carries on in the copy; the original is left as it was. Only between turns, and refused while a subagent runs. See [Sessions](#sessions). |
 | `/btw <question>` | Asks a side question about the conversation without adding to it; see [Side questions](#side-questions-and-recaps). |
@@ -516,7 +516,11 @@ from the next message you send; the files, actions and denials it knows about ar
 [`/rewind`](checkpoints.md) trims the guardian's view the same way for the prompts it takes back. The old
 conversation cannot be resumed: `--resume` reopens the empty one. `/clear` is refused while a
 subagent is running or its report is waiting to be delivered, since the subagent's calls are judged against what you asked; wait for it
-or kill it from the [agents panel](#the-agents-panel). It is refused while a teammate is idle, too: the teammate keeps its own history for a later wake.
+or kill it from the [agents panel](#the-agents-panel). It is refused while a teammate is idle,
+too: the teammate keeps its own history for a later wake. The subagents the cleared
+conversation spawned leave the [agent list](#the-agent-list-and-the-agent-view) and the
+[agents panel](#the-agents-panel); their persisted transcripts stay on disk, so `/export` still
+renders them.
 
 `/compact [<focus>]` asks the main model to summarize the conversation, keeping only the newest
 reply as it is, and replaces the older part with the summary. It shows
@@ -895,7 +899,8 @@ parent. The row on screen is marked `●` and the others `◯`. The list shows e
 agent on screen, and an agent that failed, was killed or ran out of budget for 30 seconds after it
 ended or until you hide it with `x`. An agent that finished normally leaves at once, except a teammate that is
 [idle](agents.md#agent-teams), which stays listed as `idle` until it is killed. With nothing
-to list, the list is not drawn. The spend uses the same format as the
+to list, the list is not drawn. `/clear` empties the list at once: an agent that ended before it
+is pruned with the conversation instead of staying listed. The spend uses the same format as the
 [agents panel](#the-agents-panel), including the `N unpriced tok` segment: on a narrow terminal the
 leading columns are cut before it, so the unpriced figure stays visible.
 
@@ -932,7 +937,8 @@ conversation:
   conversation, with the same tools, mode and budget, and the main conversation shows
   `you resumed agent-3`. The new run's report reaches the agent that started it, or the main
   conversation when that agent has ended, like any other report. A message that a run ended
-  without reading resumes the agent the same way once it ends.
+  without reading resumes the agent the same way once it ends. Resuming holds only until a
+  `/clear` prunes the agent, along with its place in the list and the panel.
 - An agent that was killed or whose budget is spent cannot be resumed; the view says so and the text
   stays in the input. A resume that would exceed the parallel-agent limit or the session's agent
   budget is refused the same way.
@@ -951,7 +957,7 @@ not printed yet.
 ## The agents panel
 
 `/agents` (or `/tasks`) or Ctrl-T opens the full overview: one row per [subagent](agents.md), ended
-ones included, and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its name with its id dimmed after it (`survey-tech-debt (agent-3)`), its type, its
+ones included until a `/clear` prunes them, and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its name with its id dimmed after it (`survey-tech-debt (agent-3)`), its type, its
 model, its status (`running`, `waiting-on-permission`, `idle`, `done`, `killed`, `budget-exhausted` or
 `failed`; `idle` is a [teammate](agents.md#agent-teams) that finished its turn and waits for work) and what it has used, such as `1.5k tok · $0.0021`; each `/ <cap>` form
 (`1.5k / 200k tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`

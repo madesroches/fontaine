@@ -835,6 +835,11 @@ All notable changes are recorded here. The format follows
 
 #### Agents
 
+- `/clear` now prunes ended subagents from the agent list and the agents panel: a cleared
+  session starts with an empty agent list, instead of keeping agents that failed, were killed
+  or ran out of budget in the last 30 seconds listed. The id counter, the taken names and the
+  session spend tally are kept, and the agents' persisted transcripts stay on disk for
+  `/export` (#297).
 - A killed subagent keeps the transcript it produced up to the kill: the run settles at the next
   boundary of the in-flight model call or tool (with a bounded grace, then the hard drop as
   backstop), and the committed messages are saved to its `logs/agent-<n>.jsonl`, so `/export`

@@ -34,13 +34,17 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// `/cost` (`/usage`): the session's token usage and spend by source; no argument.
     pub(crate) fn cost(&mut self, runtime: &AgentRuntime) {
-        let budget = runtime
-            .state
-            .agents()
-            .limits()
-            .session
-            .cost_usd
-            .map(|cap| (runtime.tree_spend().cost_usd.unwrap_or(0.0), cap));
+        let budget = runtime.state.agents().limits().session.cost_usd.map(|cap| {
+            (
+                runtime
+                    .state
+                    .agents()
+                    .session_spend()
+                    .cost_usd
+                    .unwrap_or(0.0),
+                cap,
+            )
+        });
         let text = reports::cost(&reports::UsageReport {
             by_source: runtime.state.usage_ledger().snapshot(),
             budget,

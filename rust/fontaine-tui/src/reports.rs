@@ -513,7 +513,7 @@ pub fn recap(input: &RecapInput) -> String {
 pub struct UsageReport {
     /// In `UsageSource::ALL` order.
     pub by_source: [Bucket; 6],
-    /// The `[agents]` session cost cap and what the tree has spent against it.
+    /// The `[agents]` session cost cap and what the session has spent against it.
     pub budget: Option<(f64, f64)>,
 }
 
