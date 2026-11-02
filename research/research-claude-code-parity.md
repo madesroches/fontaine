@@ -383,7 +383,7 @@ only, the file format becomes a second, competing definition path.
 | Customizable keybindings (`keybindings.json`, chords), vim mode | [keybindings](https://code.claude.com/docs/en/keybindings) | missing | backlog | Issue: "Configurable keybindings and vim input mode". |
 | Themes, fullscreen/alt-screen, accessibility (screen reader), terminal setup | [terminal-config](https://code.claude.com/docs/en/terminal-config) | partial | shipped (#50) | Themes (six presets, `/theme`), screen-reader mode and `docs/terminal.md` (terminal setup as docs, no `/terminal-setup` command); fullscreen/alt-screen not done. |
 | Notifications when input/approval is needed (bell/desktop) | [terminal-config](https://code.claude.com/docs/en/terminal-config) | missing | backlog | Issue: "Notify when an approval or input is pending". |
-| Side questions `/btw`, `/recap`, prompt suggestions | [commands](https://code.claude.com/docs/en/commands) | missing | backlog | Issue: "Session conveniences: /btw side questions, /recap". |
+| Side questions `/btw`, `/recap`, prompt suggestions | [commands](https://code.claude.com/docs/en/commands) | partial | shipped (#52) | `/btw` and `/recap` ship (`/recap` is a model-free ledger report); prompt suggestions are still missing. |
 | Background-agents panel / `/tasks` | [interactive-mode](https://code.claude.com/docs/en/interactive-mode) | planned | — | Phase 5 agents panel. |
 | Voice dictation | [voice-dictation](https://code.claude.com/docs/en/voice-dictation) | missing | skip | Out of scope for a terminal harness; OS dictation works in any terminal. |
 

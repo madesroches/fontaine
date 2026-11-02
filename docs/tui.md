@@ -445,6 +445,7 @@ error: an export never overwrites.
 | `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel): every subagent, ended ones included, and the background jobs. |
 | `/auto-mode-setup` | Collects this project's [environment facts](guardian.md#project-environment) (GitHub API through `gh`, repository files and, in a trusted workspace, a scan by the guardian's model) while the screen stays live; Esc cancels. The scan's proposals are shown in the transcript and in a review prompt (`y` saves them, `n` discards them), entries that relax the guardian first. The facts are stored as `fontaine auto-mode setup` stores them and apply to this session from the next guardian call; the report ends with `applied to this session`. A last prompt offers the guardian's [allow screen](guardian.md#setting-up-the-composition) (safe or fast, then a confirmation); it writes the user settings file and applies from the next session. The startup warning in `auto` points here. |
 | `/branch [<name>]`, `/fork` | Copies the session under a new id and carries on in the copy; the original is left as it was. Only between turns, and refused while a subagent runs. See [Sessions](#sessions). |
+| `/btw <question>` | Asks a side question about the conversation without adding to it; see [Side questions](#side-questions-and-recaps). |
 | `/clear`, `/reset`, `/new` | Starts over with an empty context. See [Context](#context). It takes no name for the old conversation; `/rename` names a session, and `/resume` returns to one later. |
 | `/compact [<focus>]` | Summarizes the conversation so far to free context; the optional focus tells the summary what to keep above all. See [Context](#context). |
 | `/config`, `/settings` | Opens the [settings panel](#settings-panel): every settings key with its effective value and the scope that supplied it, and a few preferences you can change. |
@@ -470,6 +471,7 @@ error: an export never overwrites.
 | `/permissions` | Shows the permission mode and the `deny`, `ask` and `allow` rules in force, each with the scope that contributed it (session and always grants included), the workspace roots and the settings file where rules are edited. It is read-only; see [Permissions](permissions.md). While the guardian is off it adds that these rules are not being enforced. |
 | `/plan [<description>]` | Switches to plan mode, as Shift+Tab does. With a description it also sends it as your next message, so `/plan fix the auth bug` plans the fix. |
 | `/plugins` | Lists the installed [plugins](plugins.md): name, marketplace, pinned short sha, enabled or disabled, and their loaded component counts. Installs and marketplace changes stay on the CLI; the only background change is the [auto-update](plugins.md#auto-update) pass, whose held revisions `fontaine plugin list` marks. |
+| `/recap` | Reports what the session has done so far, from the ledger and without calling a model; see [Side questions](#side-questions-and-recaps). Runs immediately, turn or no turn. |
 | `/rename [<name>]` | Names the session. Without a name, draws one from the first line of your first message. See [Sessions](#sessions). |
 | `/resume [<name-or-id>]` | Switches to another session started in this folder: the picker without an argument, that session with one. Sessions where nothing was said and that have no name are not listed. Only between turns. See [Sessions](#sessions). |
 | `/rewind`, `/checkpoint` | Opens a list of this conversation's prompts to restore the code, the conversation or both to the start of one. Esc twice does the same. See [Checkpoints and /rewind](checkpoints.md). Refused while a subagent runs. |
@@ -516,6 +518,37 @@ provider's tokenizer, and they count the same way the compaction trigger does. W
 not in the catalog there is no `free` row and it never compacts automatically; a catalogued model
 whose window is not known has no `free` row either and compacts automatically only when
 `autocompact_window` is set. When the total is over the window it says so.
+
+## Side questions and recaps
+
+`/btw <question>` asks the main model one question about the conversation so far and prints the
+answer as a transcript notice, `btw: <question>` followed by the answer. The model sees the
+conversation rendered as text, newest part kept if it is long, has no tools and cannot act. Neither
+the question nor the answer is saved: the next request does not carry them, the ledger does not
+record them as something you said, and the guardian's view of what you have asked is unchanged.
+`/clear` removes the notice with the rest of the screen. Each question stands alone; a later one
+does not see an earlier one. It costs tokens on the main model, counted in the session's spend, and
+waits 60 seconds at most for an answer, which is cut at 4,096 tokens. Like `/compact` it waits
+behind a running turn, because the conversation is being written then; Esc interrupts it, and text
+typed meanwhile is put back in the input box. A bare `/btw` is a usage error, and a subagent's view
+refuses it with `switch back to main to run this`.
+
+`/recap` is a report built from the session ledger, so it costs nothing and works when no model is
+reachable. Each line is left out when it has nothing to say:
+
+- what you asked since the last `/clear` or `/rewind`: the count, the first message and the latest
+  few, each cut to one line;
+- the active goal;
+- the files the session was allowed to write or edit, counted, with the first few named. These are
+  the files of allowed `write`, `edit` and `notebook_edit` calls over the whole session, whether or
+  not the call then succeeded and whether or not a `/rewind` reverted it;
+- the tool calls by tool, most used first;
+- the calls denied, with the latest one's tool, rule and summary;
+- the subagents spawned, and how many are running now;
+- the permission mode.
+
+Everything except the first line covers the whole session, earlier runs of a resumed session
+included.
 
 ## Choosing a model
 
@@ -852,8 +885,8 @@ conversation:
   budget is refused the same way.
 
 Built-in commands that only show or set something run as usual against the main conversation, and
-their notices appear in the view. Commands that change the main conversation (`/clear`, `/compact`,
-`/rewind`, `/branch`, `/resume`, `/model`, `/goal`, `/loop`, `/init`, `/output-style` and `/plan`
+their notices appear in the view. Commands that act on or change the main conversation (`/btw`,
+`/clear`, `/compact`, `/rewind`, `/branch`, `/resume`, `/model`, `/goal`, `/loop`, `/init`, `/output-style` and `/plan`
 with an argument), skills and `!` lines are refused there with `switch back to main to run this`,
 and the text stays in the input. `/expand` and `/copy` act on the transcript on screen. Ctrl-C
 interrupts the main turn, which keeps running while you look at an agent; Esc does not.

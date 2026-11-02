@@ -9,6 +9,10 @@ pub enum Command {
     Agents,
     /// `/todos`: shows or hides the expanded task list.
     Todos,
+    /// `/btw <question>`: a side question answered without entering the conversation.
+    Btw(String),
+    /// `/recap`: a report of the session from the ledger; takes no argument.
+    Recap,
     /// `/clear` (`/reset`, `/new`); a name for the old conversation is refused.
     Clear(String),
     /// `/compact [focus]`.
@@ -80,11 +84,12 @@ pub struct Builtin {
 }
 
 impl Command {
-    /// Whether the command changes the main conversation, which a subagent's view cannot show:
-    /// there it is refused instead of run.
+    /// Whether the command acts on or changes the main conversation, which a subagent's view
+    /// cannot show: there it is refused instead of run.
     pub fn main_only(&self) -> bool {
         match self {
             Command::Clear(_)
+            | Command::Btw(_)
             | Command::Compact(_)
             | Command::Rewind(_)
             | Command::Branch(_)
@@ -99,9 +104,10 @@ impl Command {
     }
 
     /// Whether the command runs immediately, even while a turn works: its handler is
-    /// synchronous and touches only UI state — never the turn, the conversation, the ledger
-    /// or a blocking wait. Every other built-in queues like a message and executes once the
-    /// turn ends; `/loop` and unknown names stay refused mid-turn.
+    /// synchronous and touches only UI state — never the turn, the conversation or a blocking
+    /// wait, and the ledger only through one brief read of its view. Every other built-in queues
+    /// like a message and executes once the turn ends; `/loop` and unknown names stay refused
+    /// mid-turn.
     pub fn runs_mid_turn(&self) -> bool {
         matches!(
             self,
@@ -118,6 +124,7 @@ impl Command {
                 | Command::Mcp(_)
                 | Command::Expand(_)
                 | Command::Config
+                | Command::Recap
         )
     }
 }
@@ -157,6 +164,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: Some("[name]"),
         description: "carry on in a copy of this session",
         command: Command::Branch,
+    },
+    Builtin {
+        name: "btw",
+        aliases: &[],
+        hint: Some("<question>"),
+        description: "ask a side question without adding to the context",
+        command: Command::Btw,
     },
     Builtin {
         name: "clear",
@@ -332,6 +346,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "the installed plugins",
         command: |_| Command::Plugins,
+    },
+    Builtin {
+        name: "recap",
+        aliases: &[],
+        hint: None,
+        description: "what this session has done so far, from the ledger",
+        command: |_| Command::Recap,
     },
     Builtin {
         name: "rename",
@@ -882,6 +903,22 @@ mod tests {
     }
 
     #[test]
+    fn btw_and_recap_parse_with_their_argument() {
+        assert_eq!(
+            parse_command("/btw  why is it slow? "),
+            Some(Command::Btw("why is it slow?".into()))
+        );
+        assert_eq!(parse_command("/btw"), Some(Command::Btw(String::new())));
+        assert_eq!(parse_command("/recap"), Some(Command::Recap));
+        assert_eq!(parse_command("/recap foo"), Some(Command::Recap));
+        assert!(Command::Btw("x".into()).main_only());
+        assert!(!Command::Recap.main_only());
+        let menu = builtin_menu();
+        let btw = menu.iter().find(|e| e.name == "btw").expect("a btw row");
+        assert!(btw.requires_argument());
+    }
+
+    #[test]
     fn runs_mid_turn_marks_the_immediate_ui_set_and_nothing_else() {
         for immediate in [
             "/help",
@@ -897,12 +934,14 @@ mod tests {
             "/mcp",
             "/expand 2",
             "/config",
+            "/recap",
         ] {
             let command = parse_command(immediate).expect("a command");
             assert!(command.runs_mid_turn(), "{immediate}");
         }
         for queued in [
             "/compact",
+            "/btw why",
             "/model",
             "/model a/b",
             "/copy",

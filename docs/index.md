@@ -34,7 +34,7 @@ describe what the current build does; each page covers one topic.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
   `/denied`, `/login`, `/model`, `/guardian-model`, `/guardian-disable`, `/guardian-enable`, `/auto-mode-setup`, `/add-dir`, `/output-style`, `/help`,
   `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/plan`, `/copy`, `/expand`, `/memory`, `/init`,
-  `/clear`, `/compact`,
+  `/clear`, `/compact`, `/btw` (side questions), `/recap` (session report),
   `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,
   `/rename`, `/export` and `/rewind`, the agents panel and the workspace trust prompt.
 - [Checkpoints and /rewind](checkpoints.md): what `write` and `edit` save before they change a

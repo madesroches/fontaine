@@ -2103,3 +2103,101 @@ async fn the_setup_warning_shows_on_an_auto_start_and_on_the_first_switch_into_a
     })
     .await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn btw_answers_without_entering_the_conversation_or_the_ledger() {
+    let server = start(vec![Route::new(
+        "btw-marker",
+        vec![
+            Turn::text("reply 1"),
+            Turn::text("SIDE-ANSWER about the first message"),
+            Turn::text("reply 2"),
+        ],
+    )])
+    .await;
+    let w = World::routed_known(&server.uri(), "");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("btw-marker first message");
+        ui.wait_for("reply 1").await;
+        idle(&ui).await;
+
+        ui.send("/btw what was SIDE-QUESTION about?");
+        ui.wait_for("SIDE-ANSWER about the first message").await;
+        let screen = ui.screen();
+        assert!(
+            screen.contains("btw: what was SIDE-QUESTION about?"),
+            "{screen}"
+        );
+        idle(&ui).await;
+
+        ui.send("btw-marker second message");
+        ui.wait_for("reply 2").await;
+        idle(&ui).await;
+    })
+    .await;
+    let requests = bodies(&server).await;
+    assert_eq!(requests.len(), 3, "{requests:?}");
+    assert!(
+        requests[1].contains("SIDE-QUESTION") && requests[1].contains("reply 1"),
+        "{}",
+        requests[1]
+    );
+    assert!(!requests[1].contains("\"tools\""), "{}", requests[1]);
+    assert!(
+        !requests[2].contains("SIDE-QUESTION") && !requests[2].contains("SIDE-ANSWER"),
+        "the side question reached the conversation: {}",
+        requests[2]
+    );
+    let ledger = w.ledger_text();
+    assert!(!ledger.contains("SIDE-QUESTION"), "{ledger}");
+    assert!(ledger.contains("first message") && ledger.contains("second message"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn btw_without_a_question_is_a_usage_error() {
+    let server = start(vec![]).await;
+    let w = World::routed_known(&server.uri(), "");
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/btw ");
+        ui.wait_for("usage: /btw <question>").await;
+        idle(&ui).await;
+    })
+    .await;
+    assert!(bodies(&server).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recap_after_a_turn_lists_the_message_and_the_allowed_write() {
+    let w = World::new(vec![
+        tool_turn(
+            "c1",
+            "write",
+            json!({"path": "notes.txt", "content": "hello"}),
+        ),
+        text_turn("all done"),
+    ]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("make a note");
+        ui.wait_for_prompt("Allow write?").await;
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for("all done").await;
+        idle(&ui).await;
+
+        ui.send("/recap");
+        ui.wait_for("Session recap").await;
+        let screen = ui.screen();
+        assert!(screen.contains("first: make a note"), "{screen}");
+        assert!(
+            screen.contains("files allowed to be written or edited: 1:")
+                && screen.contains("notes.txt"),
+            "{screen}"
+        );
+        assert!(screen.contains("tool calls: write 1"), "{screen}");
+    })
+    .await;
+    // A model-free report: it made no request of its own.
+    assert_eq!(w.requests().len(), 2);
+}

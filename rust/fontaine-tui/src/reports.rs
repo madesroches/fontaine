@@ -12,12 +12,14 @@ use fontaine_core::context::ContextUsage;
 use fontaine_core::extensions::{Extensions, Scope, Skill};
 use fontaine_core::gate::Rules;
 use fontaine_core::instructions::{MemoryEntry, MemoryKind};
+use fontaine_core::ledger::LedgerRecap;
 use fontaine_core::permission_rules::SourcedRule;
 use fontaine_core::plugins::Registry;
 use fontaine_tools::display::compact_count;
 
 use crate::commands::{BUILTINS, MenuEntry, is_builtin};
 use crate::statusbar::mode_label;
+use crate::transcript::truncate;
 
 /// What became of an MCP server at start-up.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -408,6 +410,98 @@ struct Row<'a> {
     items: &'a [(String, u64)],
 }
 
+/// What `/recap` reports, gathered by the handler.
+pub struct RecapInput<'a> {
+    pub recap: &'a LedgerRecap,
+    /// The active goal's condition.
+    pub goal: Option<&'a str>,
+    /// Subagents running now, from the live tree: the ledger cannot tell a running agent from
+    /// one cut off with its process.
+    pub subagents_running: usize,
+    pub mode: PermissionMode,
+}
+
+const RECAP_RECENT: usize = 3;
+const RECAP_FILES: usize = 5;
+const RECAP_TOOLS: usize = 5;
+const RECAP_LINE: usize = 100;
+
+fn one_line(text: &str) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or("");
+    truncate(line, RECAP_LINE)
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// The `/recap` report: the ledger's figures, each line left out when it has nothing to say.
+pub fn recap(input: &RecapInput) -> String {
+    let recap = input.recap;
+    let mut lines: Vec<String> = Vec::new();
+    if let Some((first, rest)) = recap.user_messages.split_first() {
+        lines.push(format!(
+            "you asked: {} since the last /clear or /rewind",
+            plural(recap.user_messages.len(), "message", "messages")
+        ));
+        lines.push(format!("  first: {}", one_line(first)));
+        let from = rest.len().saturating_sub(RECAP_RECENT);
+        for message in &rest[from..] {
+            lines.push(format!("  then: {}", one_line(message)));
+        }
+    }
+    if let Some(goal) = input.goal {
+        lines.push(format!("goal: {}", one_line(goal)));
+    }
+    if !recap.written.is_empty() {
+        let named: Vec<String> = recap.written.iter().take(RECAP_FILES).cloned().collect();
+        let more = recap.written.len().saturating_sub(RECAP_FILES);
+        let mut line = format!(
+            "files allowed to be written or edited: {}: {}",
+            recap.written.len(),
+            named.join(", ")
+        );
+        if more > 0 {
+            let _ = write!(line, " and {more} more");
+        }
+        lines.push(line);
+    }
+    if !recap.tools.is_empty() {
+        let top: Vec<String> = recap
+            .tools
+            .iter()
+            .take(RECAP_TOOLS)
+            .map(|(tool, n)| format!("{tool} {n}"))
+            .collect();
+        lines.push(format!("tool calls: {}", top.join(", ")));
+    }
+    if let Some(last) = &recap.last_denial {
+        let mut line = format!(
+            "denials: {}, latest {} ({})",
+            recap.denials, last.tool, last.rule
+        );
+        if !last.summary.is_empty() {
+            let _ = write!(line, ": {}", one_line(&last.summary));
+        }
+        lines.push(line);
+    }
+    if recap.agents_spawned > 0 {
+        lines.push(format!(
+            "subagents: {} spawned, {} running now",
+            recap.agents_spawned, input.subagents_running
+        ));
+    }
+    if lines.is_empty() {
+        lines.push("nothing has happened in this session yet".to_string());
+    }
+    lines.push(format!("mode: {}", mode_label(input.mode)));
+    format!("Session recap\n{}", lines.join("\n"))
+}
+
 /// `/context`: what fills the window, estimated. With `all`, each instruction file and tool
 /// gets a line of its own under its row.
 pub fn context(usage: &ContextUsage, all: bool) -> String {
@@ -533,6 +627,73 @@ mod tests {
     use super::*;
     use fontaine_core::config::{Origin, Slot};
     use fontaine_core::permission_rules::{RuleSource, parse_rule};
+
+    fn recap_input(recap: &LedgerRecap) -> RecapInput<'_> {
+        RecapInput {
+            recap,
+            goal: None,
+            subagents_running: 0,
+            mode: PermissionMode::Manual,
+        }
+    }
+
+    #[test]
+    fn an_empty_recap_says_so_and_still_names_the_mode() {
+        let recap = LedgerRecap::default();
+        let text = super::recap(&recap_input(&recap));
+        assert_eq!(
+            text,
+            "Session recap\nnothing has happened in this session yet\nmode: manual"
+        );
+    }
+
+    #[test]
+    fn a_recap_lists_what_the_ledger_holds_and_leaves_out_what_is_empty() {
+        use fontaine_core::ledger::DenialEntry;
+        let recap = LedgerRecap {
+            user_messages: ["one", "two", "three", "four", "five", "six\nsecond line"]
+                .map(String::from)
+                .to_vec(),
+            written: (0..7).map(|i| format!("/w/f{i}.rs")).collect(),
+            tools: vec![("shell".into(), 4), ("write".into(), 1)],
+            denials: 2,
+            last_denial: Some(DenialEntry {
+                tool: "shell".into(),
+                rule: "deny(shell)".into(),
+                summary: "rm -rf x".into(),
+            }),
+            agents_spawned: 3,
+        };
+        let text = super::recap(&RecapInput {
+            goal: Some("tests pass"),
+            subagents_running: 1,
+            ..recap_input(&recap)
+        });
+        assert!(text.contains("you asked: 6 messages since the last /clear or /rewind"));
+        assert!(text.contains("  first: one\n  then: four\n  then: five\n  then: six\n"));
+        assert!(!text.contains("two") && !text.contains("three") && !text.contains("second line"));
+        assert!(text.contains("goal: tests pass"));
+        assert!(text.contains(
+            "files allowed to be written or edited: 7: /w/f0.rs, /w/f1.rs, /w/f2.rs, /w/f3.rs, /w/f4.rs and 2 more"
+        ));
+        assert!(text.contains("tool calls: shell 4, write 1"));
+        assert!(text.contains("denials: 2, latest shell (deny(shell)): rm -rf x"));
+        assert!(text.contains("subagents: 3 spawned, 1 running now"));
+        assert!(text.ends_with("mode: manual"));
+    }
+
+    #[test]
+    fn a_recap_cuts_a_long_message_to_one_line() {
+        let recap = LedgerRecap {
+            user_messages: vec!["x".repeat(500)],
+            ..LedgerRecap::default()
+        };
+        let text = super::recap(&recap_input(&recap));
+        assert!(
+            text.contains(&format!("first: {}…", "x".repeat(99))),
+            "{text}"
+        );
+    }
 
     fn rule(text: &str, source: RuleSource) -> SourcedRule {
         SourcedRule::new(parse_rule(text).unwrap(), source)

@@ -32,6 +32,31 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.transcript.notice(text);
     }
 
+    /// `/recap`: the ledger's account of the session; it takes no argument.
+    pub(crate) fn recap(&mut self, runtime: &AgentRuntime) {
+        let recap = runtime.session.ledger.view().recap();
+        let goal = runtime
+            .session
+            .goal()
+            .status(runtime.tree_spend())
+            .active
+            .map(|active| active.condition);
+        let subagents_running = runtime
+            .state
+            .agents()
+            .rows()
+            .iter()
+            .filter(|row| row.status.is_running())
+            .count();
+        let text = reports::recap(&reports::RecapInput {
+            recap: &recap,
+            goal: goal.as_deref(),
+            subagents_running,
+            mode: runtime.state.mode(),
+        });
+        self.app.transcript.notice(text);
+    }
+
     pub(crate) fn permissions(&mut self, runtime: &AgentRuntime) {
         let mut text = reports::permissions(
             runtime.state.mode(),

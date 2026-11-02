@@ -63,26 +63,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
         focus: String,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
-        self.app.set_running(true);
-        let mut closed = false;
-        let result = {
-            let mut run = Box::pin(runtime.compact_with(CompactReason::Asked { focus }));
-            match self.serve_while(runtime, &mut run, Serve::Queueing).await {
-                Ok(result) => Some(result),
-                Err(end) => {
-                    closed = matches!(end, TurnEnd::InputClosed);
-                    None
-                }
-            }
-        };
-        let queued = runtime.steering.retract();
-        if !queued.is_empty() {
-            let raws: Vec<&str> = queued.iter().map(|entry| entry.raw()).collect();
-            self.app.restore_to_input(&raws.join("\n\n"));
-        }
-        self.app.set_running(false);
-        self.app.deny_pending();
-        self.drain_prompts();
+        let (result, closed) = self
+            .serve_queued(
+                runtime,
+                Box::pin(runtime.compact_with(CompactReason::Asked { focus })),
+            )
+            .await;
         match result {
             Some(CompactResult::Compacted { before, after, .. }) => {
                 self.app.transcript.notice(format!(
@@ -97,5 +83,62 @@ impl<R: FnMut(&mut App)> Ui<R> {
             None => self.app.transcript.notice("interrupted"),
         }
         if closed { Break(()) } else { Continue(()) }
+    }
+
+    /// `/btw`: a side question on the main model, over the conversation as text. Served like
+    /// `/compact`, so Esc drops the call and text typed meanwhile comes back to the input. The
+    /// answer is a transcript notice only; nothing reaches the conversation or the ledger.
+    pub(crate) async fn btw(
+        &mut self,
+        runtime: &AgentRuntime,
+        question: String,
+    ) -> std::ops::ControlFlow<()> {
+        use std::ops::ControlFlow::{Break, Continue};
+        if question.is_empty() {
+            self.app.transcript.error("usage: /btw <question>");
+            return Continue(());
+        }
+        let (result, closed) = self
+            .serve_queued(runtime, Box::pin(runtime.ask_side_question(&question)))
+            .await;
+        match result {
+            Some(Ok(answer)) => self
+                .app
+                .transcript
+                .notice(format!("btw: {question}\n{}", answer.text)),
+            Some(Err(e)) => self.app.transcript.error(format!(
+                "the side question was not answered: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )),
+            None => self.app.transcript.notice("interrupted"),
+        }
+        if closed { Break(()) } else { Continue(()) }
+    }
+
+    /// Runs `run` while serving keys, queueing typed text; the text is handed back to the input
+    /// afterwards. Returns the output (`None` if interrupted) and whether the input closed.
+    async fn serve_queued<F: std::future::Future + Unpin>(
+        &mut self,
+        runtime: &AgentRuntime,
+        mut run: F,
+    ) -> (Option<F::Output>, bool) {
+        self.app.set_running(true);
+        let mut closed = false;
+        let result = match self.serve_while(runtime, &mut run, Serve::Queueing).await {
+            Ok(result) => Some(result),
+            Err(end) => {
+                closed = matches!(end, TurnEnd::InputClosed);
+                None
+            }
+        };
+        let queued = runtime.steering.retract();
+        if !queued.is_empty() {
+            let raws: Vec<&str> = queued.iter().map(|entry| entry.raw()).collect();
+            self.app.restore_to_input(&raws.join("\n\n"));
+        }
+        self.app.set_running(false);
+        self.app.deny_pending();
+        self.drain_prompts();
+        (result, closed)
     }
 }
