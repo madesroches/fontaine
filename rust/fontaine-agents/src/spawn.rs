@@ -130,6 +130,25 @@ fn conclude(
     subagent_event(event, id, &name, agent_type);
 }
 
+/// Kills an agent from outside its run. An idle teammate has no watcher to conclude it, so its
+/// end, its released tasks and the telemetry are recorded here.
+pub fn kill_agent(tree: &AgentTree, ledger: &dyn RootLedger, id: &str) -> bool {
+    let was_idle = tree.is_idle(id);
+    if !tree.kill(id) {
+        return false;
+    }
+    if was_idle {
+        ledger.append_event(AgentEvent::Finished {
+            agent: id.to_string(),
+            status: ChildStatus::Killed.as_str().to_string(),
+        });
+        release_tasks(tree, ledger, id);
+        let type_name = tree.type_of(id).unwrap_or_default();
+        subagent_event("killed", id, &tree.name_of(id), &type_name);
+    }
+    true
+}
+
 /// Waits for the child's current run to end, hands its report to the parent, and concludes the
 /// run. The report goes to the parent's inbox, or to the root's when the parent has ended, so an
 /// idle root still gets a turn for it. Then messages the human left for the child unread resume
@@ -334,18 +353,6 @@ pub fn resume_child(
     text: String,
 ) -> Result<(), Refusal> {
     resume_inner(tree, ledger, id, handle, text, true)
-}
-
-/// Starts another run on text that is not the human's: a peer's message, a hand-off note or a
-/// hook's reason. It is never recorded as something the user said.
-pub fn resume_child_with_data(
-    tree: &Arc<AgentTree>,
-    ledger: &Arc<dyn RootLedger>,
-    id: &str,
-    handle: &Arc<dyn ChildHandle>,
-    text: String,
-) -> Result<(), Refusal> {
-    resume_inner(tree, ledger, id, handle, text, false)
 }
 
 fn resume_inner(

@@ -822,8 +822,9 @@ impl AgentTree {
         self.lock().nodes.get(id).and_then(|n| n.report.clone())
     }
 
-    /// Stops a running child and every running descendant, or ends an idle teammate for good,
-    /// returning the tasks it owned to the board. Returns whether it was running or idle.
+    /// Stops a running child and every running descendant, or ends an idle teammate for good.
+    /// Returns whether it was running or idle. An idle kill leaves its tasks and the ledger to
+    /// `spawn::kill_agent`, which a caller that holds the ledger must use.
     pub fn kill(&self, id: &str) -> bool {
         let handles = {
             let mut inner = self.lock();
@@ -834,14 +835,13 @@ impl AgentTree {
                 return false;
             }
             if node.idle {
-                // Nothing runs: no watcher will conclude it, so the end is recorded here, and
-                // no report is queued for a kill.
+                // Nothing runs: no watcher will conclude it, and no report is queued for a kill.
+                // `spawn::kill_agent` records the end and returns its tasks.
                 let node = inner.nodes.get_mut(id).expect("checked above");
                 node.status = ChildStatus::Killed;
                 node.idle = false;
                 node.ended = Some(Instant::now());
                 drop(inner);
-                self.release_killed_idle(id);
                 self.changed.notify_waiters();
                 return true;
             }
@@ -865,16 +865,6 @@ impl AgentTree {
         }
         self.changed.notify_waiters();
         true
-    }
-
-    fn release_killed_idle(&self, id: &str) {
-        let Some(teams) = self.teams() else {
-            return;
-        };
-        let name = self.name_of(id);
-        for task in teams.board.release_owned_by(id) {
-            crate::spawn::task_event("released", id, &name, &task);
-        }
     }
 
     /// Kills every running child below the root.

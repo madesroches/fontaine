@@ -410,7 +410,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// The notice lands where the human is looking: an agent's view, or the main chat.
     fn kill_agent(&mut self, runtime: &AgentRuntime, id: &str) {
         let label = agent_label(runtime, id);
-        if runtime.state.agents().kill(id) {
+        if runtime.kill_agent(id) {
             self.app.shown_mut().notice(format!("killed {label}"));
         }
     }

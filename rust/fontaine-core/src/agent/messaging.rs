@@ -91,6 +91,15 @@ fn after_queue(
 }
 
 impl AgentRuntime {
+    /// Kills a child, recording an idle teammate's end in the ledger.
+    pub fn kill_agent(&self, id: &str) -> bool {
+        fontaine_agents::spawn::kill_agent(
+            self.state.agents(),
+            &LedgerWindow(self.state.clone()),
+            id,
+        )
+    }
+
     /// Delivers what the human typed in `id`'s view. Nothing is written to the ledger here: the
     /// words become intent for that agent only when its model reads them.
     pub fn message_agent(&self, id: &str, text: String) -> Result<Delivered, MessageRefusal> {
