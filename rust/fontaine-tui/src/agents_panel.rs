@@ -28,8 +28,8 @@ pub struct PanelRow {
     pub token_budget: Option<u64>,
     pub cost_usd: Option<f64>,
     pub cost_budget: Option<f64>,
-    /// `cost_usd` leaves out calls that carried no price.
-    pub cost_partial: bool,
+    /// Tokens of `tokens` that carried no price; `cost_usd` leaves them out.
+    pub unpriced_tokens: u64,
     pub depth: usize,
     /// Characters the model has written in its current step.
     pub writing: u64,
@@ -77,6 +77,17 @@ pub fn status_label(status: ChildStatus) -> &'static str {
     }
 }
 
+/// `compact_count` without a trailing `.0` (`110k`, not `110.0k`).
+pub(crate) fn trimmed_count(n: u64) -> String {
+    let text = compact_count(n);
+    match text.strip_suffix('k').or_else(|| text.strip_suffix('M')) {
+        Some(digits) if digits.ends_with(".0") => {
+            format!("{}{}", &digits[..digits.len() - 2], &text[text.len() - 1..])
+        }
+        _ => text,
+    }
+}
+
 /// The figures `spend_text` renders.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SpendView {
@@ -84,41 +95,50 @@ pub(crate) struct SpendView {
     pub token_budget: Option<u64>,
     pub cost_usd: Option<f64>,
     pub cost_budget: Option<f64>,
-    pub cost_partial: bool,
+    /// Tokens of `tokens` that carried no price, so `cost_usd` leaves them out.
+    pub unpriced_tokens: u64,
 }
 
-/// What an agent has spent, against its budget when it has one.
+/// What an agent has spent, against its budget when it has one: the priced tokens next to their
+/// price, then the unpriced tokens on their own.
 pub(crate) fn spend_text(view: &SpendView) -> String {
     let SpendView {
         tokens,
         token_budget,
         cost_usd,
         cost_budget,
-        cost_partial,
+        unpriced_tokens,
     } = *view;
-    let tokens = match token_budget {
-        Some(cap) => format!("{} / {} tok", compact_count(tokens), compact_count(cap)),
-        None => format!("{} tok", compact_count(tokens)),
-    };
-    let mut cost = match (cost_usd, cost_budget) {
-        (Some(spent), Some(cap)) => format!("${spent:.4} / ${cap:.2}"),
-        (Some(spent), None) => format!("${spent:.4}"),
-        (None, Some(_)) => "cost n/a".to_string(),
-        (None, None) => String::new(),
-    };
-    if cost_partial && cost_usd.is_some() {
-        cost.push_str(" + unpriced");
+    let mut parts = Vec::new();
+    match token_budget {
+        // The cap binds on the total, so the budgeted figure is the total.
+        Some(cap) => parts.push(format!(
+            "{} / {} tok",
+            trimmed_count(tokens),
+            trimmed_count(cap)
+        )),
+        None => {
+            let priced = tokens.saturating_sub(unpriced_tokens);
+            if priced > 0 || unpriced_tokens == 0 {
+                parts.push(format!("{} tok", trimmed_count(priced)));
+            }
+        }
     }
-    if cost.is_empty() {
-        tokens
-    } else {
-        format!("{tokens} · {cost}")
+    match (cost_usd, cost_budget) {
+        (Some(spent), Some(cap)) => parts.push(format!("${spent:.4} / ${cap:.2}")),
+        (Some(spent), None) => parts.push(format!("${spent:.4}")),
+        (None, Some(_)) => parts.push("cost n/a".to_string()),
+        (None, None) => {}
     }
+    if unpriced_tokens > 0 {
+        parts.push(format!("{} unpriced tok", trimmed_count(unpriced_tokens)));
+    }
+    parts.join(" · ")
 }
 
 /// `writing 4.2k chars`: the model's progress through a step that has not reported usage yet.
 pub(crate) fn writing_text(chars: u64) -> String {
-    format!("writing {} chars", compact_count(chars))
+    format!("writing {} chars", trimmed_count(chars))
 }
 
 impl AgentsPanel {
@@ -249,7 +269,7 @@ impl AgentsPanel {
                 token_budget: row.token_budget,
                 cost_usd: row.cost_usd,
                 cost_budget: row.cost_budget,
-                cost_partial: row.cost_partial,
+                unpriced_tokens: row.unpriced_tokens,
             });
             let spend = if row.status.is_running() && row.writing > 0 {
                 format!("{spend} · {}", writing_text(row.writing))
@@ -320,7 +340,7 @@ mod tests {
             token_budget: Some(200_000),
             cost_usd: Some(0.0042),
             cost_budget: Some(2.0),
-            cost_partial: false,
+            unpriced_tokens: 0,
             depth: 1,
             writing: 0,
             stopped_because: None,
@@ -342,41 +362,85 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("killed"), "{text}");
-        assert!(text.contains("1.2k / 200.0k tok"), "{text}");
+        assert!(text.contains("1.2k / 200k tok"), "{text}");
         assert!(text.contains("$0.0042 / $2.00"), "{text}");
     }
 
-    fn view(cost_budget: Option<f64>, cost_partial: bool) -> SpendView {
+    fn view(cost_budget: Option<f64>, unpriced_tokens: u64) -> SpendView {
         SpendView {
-            tokens: 4_863_024,
+            tokens: 238_000,
             token_budget: None,
-            cost_usd: Some(0.0519),
+            cost_usd: Some(0.0066),
             cost_budget,
-            cost_partial,
+            unpriced_tokens,
         }
     }
 
     #[test]
-    fn a_partial_cost_is_marked_with_and_without_a_cost_budget() {
+    fn priced_tokens_sit_next_to_their_price_and_unpriced_ones_follow() {
         assert_eq!(
-            spend_text(&view(None, true)),
-            "4.9M tok · $0.0519 + unpriced"
+            spend_text(&view(None, 128_000)),
+            "110k tok · $0.0066 · 128k unpriced tok"
         );
         assert_eq!(
-            spend_text(&view(Some(2.0), true)),
-            "4.9M tok · $0.0519 / $2.00 + unpriced"
+            spend_text(&view(Some(2.0), 128_000)),
+            "110k tok · $0.0066 / $2.00 · 128k unpriced tok"
         );
     }
 
     #[test]
-    fn a_complete_cost_is_not_marked() {
-        assert_eq!(spend_text(&view(None, false)), "4.9M tok · $0.0519");
+    fn a_token_budget_keeps_the_total() {
+        let capped = SpendView {
+            token_budget: Some(500_000),
+            ..view(None, 128_000)
+        };
+        assert_eq!(
+            spend_text(&capped),
+            "238k / 500k tok · $0.0066 · 128k unpriced tok"
+        );
+    }
+
+    #[test]
+    fn a_fully_unpriced_agent_shows_only_unpriced_tokens() {
+        let none = SpendView {
+            tokens: 4_863_024,
+            cost_usd: None,
+            ..view(None, 4_863_024)
+        };
+        assert_eq!(spend_text(&none), "4.9M unpriced tok");
+        let budgeted = SpendView {
+            cost_budget: Some(2.0),
+            ..none
+        };
+        assert_eq!(spend_text(&budgeted), "cost n/a · 4.9M unpriced tok");
+        let both = SpendView {
+            token_budget: Some(5_000_000),
+            ..budgeted
+        };
+        assert_eq!(
+            spend_text(&both),
+            "4.9M / 5M tok · cost n/a · 4.9M unpriced tok"
+        );
+    }
+
+    #[test]
+    fn a_fully_priced_agent_has_no_unpriced_segment() {
+        assert_eq!(spend_text(&view(None, 0)), "238k tok · $0.0066");
         let no_price = SpendView {
             cost_usd: None,
-            cost_budget: Some(2.0),
-            ..view(None, true)
+            ..view(Some(2.0), 0)
         };
-        assert_eq!(spend_text(&no_price), "4.9M tok · cost n/a");
+        assert_eq!(spend_text(&no_price), "238k tok · cost n/a");
+    }
+
+    #[test]
+    fn counts_drop_a_trailing_zero_decimal() {
+        assert_eq!(trimmed_count(999), "999");
+        assert_eq!(trimmed_count(1_000), "1k");
+        assert_eq!(trimmed_count(1_050), "1.1k");
+        assert_eq!(trimmed_count(200_000), "200k");
+        assert_eq!(trimmed_count(4_900_000), "4.9M");
+        assert_eq!(trimmed_count(5_000_000), "5M");
     }
 
     #[test]
@@ -472,7 +536,7 @@ mod tests {
     #[test]
     fn writing_is_counted_in_chars_then_thousands() {
         assert_eq!(writing_text(999), "writing 999 chars");
-        assert_eq!(writing_text(1000), "writing 1.0k chars");
+        assert_eq!(writing_text(1000), "writing 1k chars");
         assert_eq!(writing_text(12_345), "writing 12.3k chars");
     }
 

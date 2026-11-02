@@ -1642,6 +1642,7 @@ mod tests {
             status: Some(fontaine_agents::runner::ChildStatus::Running),
             elapsed: std::time::Duration::from_secs(3),
             spend: "10 tok".into(),
+            unpriced: false,
             writing: 0,
         }
     }
@@ -1656,6 +1657,7 @@ mod tests {
             status: None,
             elapsed: std::time::Duration::ZERO,
             spend: String::new(),
+            unpriced: false,
             writing: 0,
         };
         app.agent_list.set_rows(vec![main, running_row("agent-1")]);
@@ -1881,7 +1883,7 @@ mod tests {
             token_budget: None,
             cost_usd: None,
             cost_budget: None,
-            cost_partial: false,
+            unpriced_tokens: 0,
             depth: 1,
             writing: 0,
             stopped_because: None,

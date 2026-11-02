@@ -838,16 +838,17 @@ their reports. Headless runs accept `-p "/goal <condition>"`; see
 ## The agent list and the agent view
 
 While a [subagent](agents.md) runs, a list of agents shows below the status bar: `main` first, then
-one row per subagent with its [name](agents.md#naming-a-subagent) and its id dimmed after it, type, status, how long this run has gone on and what it has used,
-for example `◯ survey-tech-debt (agent-3) worker running 1m02s 1.5k tok`. On a narrow terminal the id is cut before the status and the age. A nested agent is indented under its
+one row per subagent with its [name](agents.md#naming-a-subagent) and its id dimmed after it, type, status, how long this run has gone on (followed by ` · `) and what it has used,
+for example `◯ survey-tech-debt (agent-3) worker running 1m02s · 1.5k tok`. On a narrow terminal the id is cut before the status and the age. A nested agent is indented under its
 parent. The row on screen is marked `●` and the others `◯`. The list shows every running agent, the
 agent on screen, and an agent that failed, was killed or ran out of budget for 30 seconds after it
 ended or until you hide it with `x`. An agent that finished normally leaves at once. With nothing
 to list, the list is not drawn. The spend uses the same format as the
-[agents panel](#the-agents-panel), including the `+ unpriced` marker.
+[agents panel](#the-agents-panel), including the `N unpriced tok` segment: on a narrow terminal the
+leading columns are cut before it, so the unpriced figure stays visible.
 
 While an agent's model is writing a reply, its reasoning or a tool call's arguments, its row ends in
-`· writing 4.2k chars` (counts are plain below 1000, then in thousands `4.2k` or millions `1.2M`), so a long model step
+`· writing 4.2k chars` (counts are plain below 1000, then in thousands `4.2k` or millions `1.2M`, without a trailing `.0`), so a long model step
 does not look like a stall. `main` shows its own count the same way, while the list is shown.
 Usage and cost still update only when the model call ends; the count is characters, not tokens,
 and clears when the step ends, fails or is interrupted. A paused model leaves the last count until
@@ -901,12 +902,16 @@ not printed yet.
 ones included, and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its name with its id dimmed after it (`survey-tech-debt (agent-3)`), its type, its
 model, its status (`running`, `waiting-on-permission`, `done`, `killed`, `budget-exhausted` or
 `failed`) and what it has used, such as `1.5k tok · $0.0021`; each `/ <cap>` form
-(`1.5k / 200.0k tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`
+(`1.5k / 200k tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`
 shows in place of the spend when a cost budget is set but no priced call has been counted yet,
-as for a model with no known price. A dollar figure that leaves out some of the agent's calls
-(an unpriced account's main model next to its priced guardian calls) ends in `+ unpriced`, as in
-`4.9M tok · $0.0519 + unpriced`: the figure is a lower bound, and a cost budget still counts
-only the priced spend. Displayed counts are compact (`999`, `1.0k`, `1.2M`); the ledger, the audit
+as for a model with no known price. Tokens that carried no price (an unpriced account's main model next to its priced guardian
+calls) are split out: the priced tokens sit next to their price and the rest follow as
+`N unpriced tok`, as in `110k tok · $0.0066 · 128k unpriced tok`. The dollar figure is a lower
+bound, and a cost budget still counts only the priced spend. With a token budget the first figure
+stays the total, since the cap binds on it (`238k / 500k tok · $0.0066 · 128k unpriced tok`). An
+agent with no priced call reads `4.9M unpriced tok`, or `cost n/a · 4.9M unpriced tok` under a cost
+budget. Displayed counts are compact (`999`, `1.2k`, `1.2M`), and agent spend and writing counts
+drop a trailing `.0` (`200k`, not `200.0k`); the ledger, the audit
 log and JSON output keep exact values. Up and Down select a row; Enter on an agent closes the panel
 and shows that agent's transcript, which is how you reach an agent that has left the
 [agent list](#the-agent-list-and-the-agent-view). A running agent's spend line also ends in
