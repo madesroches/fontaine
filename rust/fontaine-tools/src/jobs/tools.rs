@@ -22,7 +22,6 @@ use crate::gate::{AgentId, ROOT_AGENT};
 
 /// How often a parked wait looks for news that should end it.
 pub const WAKE_POLL: Duration = Duration::from_millis(250);
-const DEFAULT_MONITOR_SECS: u64 = 300;
 const MAX_MONITOR_SECS: u64 = 3600;
 /// How much of a command a job list shows.
 const LISTED_COMMAND: usize = 80;
@@ -412,8 +411,9 @@ impl Tool for MonitorTool {
     fn description(&self) -> String {
         format!(
             "Run a shell command in the background and be told about each line it prints, as \
-             notifications between your turns, until it ends or `timeout_secs` (default \
-             {DEFAULT_MONITOR_SECS}, at most {MAX_MONITOR_SECS}) passes. Use it to watch a log, \
+             notifications between your turns, until it ends, or until `timeout_secs` (at most \
+             {MAX_MONITOR_SECS}) passes if you set one. A command that never ends (`tail -f`) \
+             runs until you `job_cancel` it, so cancel it once you are done with it. Use it to watch a log, \
              a build or a poll loop that prints a line when something changes; print only what \
              matters, since every line you are sent costs context. Always starts in the \
              primary workspace root, not where `shell` last left off, and never moves that \
@@ -429,7 +429,7 @@ impl Tool for MonitorTool {
             "properties": {
                 "command": { "type": "string", "description": "The command line to run with `sh -c`." },
                 "description": { "type": "string", "description": "A few words saying what is watched, shown with each notification." },
-                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_MONITOR_SECS, "description": "Seconds before the monitor is stopped." },
+                "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_MONITOR_SECS, "description": "Seconds before the monitor is stopped. Omit to run until the command ends." },
             },
             "required": ["command", "description"],
             "additionalProperties": false,
@@ -452,11 +452,9 @@ impl Tool for MonitorTool {
         if !jobs.has_room() {
             return Err(job_error(&JobError::TooMany));
         }
-        let timeout = Duration::from_secs(
-            args.timeout_secs
-                .unwrap_or(DEFAULT_MONITOR_SECS)
-                .clamp(1, MAX_MONITOR_SECS),
-        );
+        let timeout = args
+            .timeout_secs
+            .map(|secs| Duration::from_secs(secs.clamp(1, MAX_MONITOR_SECS)));
         let process = self
             .shell
             .launch(rig_tools::ShellArgs::new(args.command.clone()))?;
@@ -473,11 +471,16 @@ impl Tool for MonitorTool {
                 process,
             )
             .map_err(|e| job_error(&e))?;
+        let ends = match timeout {
+            Some(timeout) => format!(
+                "it ends when the command ends or after {}s",
+                timeout.as_secs()
+            ),
+            None => "it ends when the command ends; it has no timeout".to_owned(),
+        };
         Ok(format!(
-            "[monitor started as {id}. Its lines arrive as notifications; it ends when the \
-             command ends or after {}s. job_cancel stops it. At most {MAX_RUNNING} jobs run at \
-             once.]",
-            timeout.as_secs()
+            "[monitor started as {id}. Its lines arrive as notifications; {ends}. job_cancel \
+             stops it. At most {MAX_RUNNING} jobs run at once.]"
         ))
     }
 }

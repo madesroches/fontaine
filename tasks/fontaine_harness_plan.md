@@ -817,6 +817,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   it can come later as a user-scope config key. The shell approval summary shows the effective `cwd`.
   A write-class call in a tracked `sub/` loads `sub/AGENTS.md` on demand, and a retry grant keyed on
   the arguments digest stops matching once the directory moves (it fails safe).
+- 2026-11-01: `monitor` has no default timeout (an omitted `timeout_secs` means no deadline; an explicit one keeps its 3,600 s cap), unlike Claude Code's 5-minute default and re-arm pattern, because a CI watch outlives 5 minutes and the "reached its timeout" notice reads as a failure of the watched command (#363).
 
 ### TUI
 
