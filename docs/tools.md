@@ -363,9 +363,9 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
 instead of being read. It is for something that prints a line when something changes: a log, a
 build, a poll loop. Arguments: `command`, `description` (shown with each notification) and
 `timeout_secs` (optional, at most 3,600, no default). It runs in the primary root with the same
-environment and confinement as `shell`, and is judged by the same command analysis (the floor, the guardian,
-`shell` deny and ask rules), but the read-only pre-classifier never lets it through on its own:
-allow it with a `monitor(...)` rule or leave it to the guardian.
+environment and confinement as `shell`, and is judged by the same command analysis (the floor, the
+guardian, `shell` deny and ask rules), but the read-only pre-classifier never lets it through on its
+own: allow it with a `monitor(...)` rule or leave it to the guardian.
 
 - Lines are batched for half a second, at most one notification is posted per second, each carries
   at most 200 lines, and a monitor that has sent 1,000 notifications is terminated with a final
@@ -373,9 +373,10 @@ allow it with a `monitor(...)` rule or leave it to the guardian.
 - Without `timeout_secs` it ends when its command ends, or when `job_cancel` or the end of the
   session stops it; a command that never ends, like `tail -f`, should be cancelled when it is no
   longer needed. With one it also ends at that timeout. It posts a final notice when it ends on
-  its own; `job_cancel` stops it early and posts nothing. `job_output` on a monitor never returns output — it waits
-  (for `wait_secs`, and until a message arrives) and reports whether a notification was posted, the monitor ended, or
-  it still runs; its lines and its final notice always arrive as notifications.
+  its own; `job_cancel` stops it early and posts nothing. `job_output` on a monitor never returns
+  output — it waits (for `wait_secs`, and until a message arrives) and reports whether a
+  notification was posted, the monitor ended, or it still runs; its lines and its final notice
+  always arrive as notifications.
 - Like `job_cancel` it is for the main conversation only, and it counts against the limit
   of 8 running jobs.
 
