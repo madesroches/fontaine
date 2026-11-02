@@ -319,7 +319,8 @@ the same target. Do not tell the model external writes are unconditionally allow
 - `docs/architecture.md` (the "Write tools and `shell` have no fallback and stay confined" passage)
 - `docs/configuration.md` (the "Workspace roots" section's write-confinement sentence)
 - `docs/evals.md` (extend "The external-read slice" with the external-write rows)
-- `docs/tui.md` (only where it repeats the write-denial wording)
+- `docs/tui.md` (only where it repeats the write-denial wording or the no-diff-for-external-paths sentence)
+- `docs/checkpoints.md` (the "checked again" restore-check passage)
 - `tasks/design/permissions.md`
 - `tasks/fontaine_harness_plan.md`
 - `research/research-claude-code-parity.md`
@@ -384,7 +385,12 @@ No configuration schema, headless event schema, tool descriptor, risk-class tabl
   adjudicate paths outside every root through the normal pipeline.
 - `docs/evals.md`: extend "The external-read slice" section with the new external-write rows in
   `benign.jsonl`, `attacks-a.jsonl` and `floor.jsonl`.
-- `docs/tui.md`: narrow any `/add-dir` write-denial wording to the tools that still deny.
+- `docs/tui.md`: narrow any `/add-dir` write-denial wording to the tools that still deny, and
+  update the sentence saying no diff appears for a path outside the workspace roots — an
+  approved external write now shows the resolved target's real diff.
+- `docs/checkpoints.md`: update the "checked again" passage — a captured external pre-image
+  resolves via its recorded resolved path and restores there, instead of being refused as
+  out of scope.
 - `tasks/design/permissions.md`: update step 5b to the narrowed deny and the external-write
   pipeline position.
 - `research/research-claude-code-parity.md`: update the write row — Claude Code prompts for
