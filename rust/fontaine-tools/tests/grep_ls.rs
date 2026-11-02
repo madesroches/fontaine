@@ -42,6 +42,11 @@ async fn ls(root: &Path, args: Value) -> String {
     ls_in(root, args).await.unwrap().0
 }
 
+/// Expected output spells paths with the platform separator.
+fn native(expected: &str) -> String {
+    expected.replace('/', std::path::MAIN_SEPARATOR_STR)
+}
+
 fn read_paths(context: &ToolContext) -> Vec<String> {
     let read = context.result::<FilesRead>().unwrap().unwrap_or_default();
     read.0.into_iter().map(|file| file.path).collect()
@@ -157,7 +162,7 @@ async fn head_limit_cuts_matches_and_keeps_trailing_context() {
 async fn count_omits_files_without_a_match() {
     let (_d, root) = fixture();
     let out = grep(&root, json!({"pattern": "o", "output_mode": "count"})).await;
-    assert_eq!(out, "a.rs:3\nb.py:2\nsub/c.rs:1");
+    assert_eq!(out, native("a.rs:3\nb.py:2\nsub/c.rs:1"));
     let none = grep(&root, json!({"pattern": "zzz", "output_mode": "count"})).await;
     assert_eq!(none, "No matches.");
 }
@@ -180,7 +185,7 @@ async fn head_limit_stop_lines_per_mode() {
         "a.rs:3\nb.py:2\n[stopped at 2 files; narrow the search with path or glob]"
     );
     let exact = grep(&root, json!({"pattern": "o", "head_limit": 3})).await;
-    assert_eq!(exact, "a.rs\nb.py\nsub/c.rs");
+    assert_eq!(exact, native("a.rs\nb.py\nsub/c.rs"));
 }
 
 #[tokio::test]
@@ -208,13 +213,13 @@ async fn head_limit_is_clamped_and_zero_is_unlimited() {
 async fn type_filters_and_combines_with_glob() {
     let (_d, root) = fixture();
     let rust = grep(&root, json!({"pattern": "o", "type": "rust"})).await;
-    assert_eq!(rust, "a.rs\nsub/c.rs");
+    assert_eq!(rust, native("a.rs\nsub/c.rs"));
     let both = grep(
         &root,
         json!({"pattern": "o", "type": "rust", "glob": "sub/*"}),
     )
     .await;
-    assert_eq!(both, "sub/c.rs");
+    assert_eq!(both, native("sub/c.rs"));
     let disjoint = grep(&root, json!({"pattern": "o", "type": "py", "glob": "*.rs"})).await;
     assert_eq!(disjoint, "No matches.");
     let unknown = grep_in(&root, json!({"pattern": "o", "type": "nosuchtype"})).await;
@@ -227,7 +232,7 @@ async fn hidden_files_need_the_flag() {
     write(&root, ".github/ci.yml", "two\n");
     assert_eq!(grep(&root, json!({"pattern": "two"})).await, "b.py");
     let hidden = grep(&root, json!({"pattern": "two", "hidden": true})).await;
-    assert_eq!(hidden, ".github/ci.yml\nb.py");
+    assert_eq!(hidden, native(".github/ci.yml\nb.py"));
 }
 
 #[tokio::test]
@@ -266,18 +271,18 @@ async fn displayed_paths_are_below_the_root_in_every_mode() {
         )
         .await;
         assert!(
-            out.starts_with("c.rs") || out.starts_with("sub/c.rs"),
+            out.starts_with("c.rs") || out.starts_with(&native("sub/c.rs")),
             "{out}"
         );
     }
     let from_root = grep(&root, json!({"pattern": "match", "output_mode": "count"})).await;
-    assert_eq!(from_root, "sub/c.rs:1");
+    assert_eq!(from_root, native("sub/c.rs:1"));
     let absolute = grep(
         &root,
         json!({"pattern": "match", "path": root.join("sub").to_str().unwrap()}),
     )
     .await;
-    assert_eq!(absolute, root.join("sub/c.rs").to_str().unwrap());
+    assert_eq!(absolute, root.join("sub").join("c.rs").to_str().unwrap());
 }
 
 #[tokio::test]
@@ -303,7 +308,7 @@ async fn files_read_is_published_for_every_matching_file() {
 async fn an_empty_pattern_lists_files_and_reads_none() {
     let (_d, root) = fixture();
     let (listing, context) = grep_in(&root, json!({"pattern": ""})).await.unwrap();
-    assert_eq!(listing, "a.rs\nb.py\nsub/c.rs");
+    assert_eq!(listing, native("a.rs\nb.py\nsub/c.rs"));
     assert!(read_paths(&context).is_empty());
     let legacy = grep(&root, json!({"pattern": "", "files": true, "type": "py"})).await;
     assert_eq!(legacy, "b.py");
@@ -327,7 +332,7 @@ async fn output_mode_wins_over_the_files_alias() {
         json!({"pattern": "match", "files": true, "output_mode": "content"}),
     )
     .await;
-    assert_eq!(out, "sub/c.rs:2: match");
+    assert_eq!(out, native("sub/c.rs:2: match"));
 }
 
 fn ls_fixture() -> (Dirs, std::path::PathBuf) {
@@ -356,7 +361,7 @@ async fn ls_ignore_matches_files_directories_and_ancestors() {
         json!({"ignore": ["*.log", "node_modules", "src/gen"]}),
     )
     .await;
-    assert_eq!(out, "a.rs\npkg/lib.rs\nsrc/main.rs\n");
+    assert_eq!(out, native("a.rs\npkg/lib.rs\nsrc/main.rs\n"));
     let dir_glob = ls(&root, json!({"ignore": ["src/"]})).await;
     assert!(!dir_glob.contains("src/"), "{dir_glob}");
     assert!(dir_glob.contains("run.log"));
@@ -368,7 +373,7 @@ async fn ls_ignore_combines_with_depth_glob_and_hidden() {
     let depth = ls(&root, json!({"ignore": ["node_modules"], "depth": 1})).await;
     assert_eq!(depth, "a.rs\npkg/\nrun.log\nsrc/\n");
     let glob = ls(&root, json!({"ignore": ["src/gen"], "glob": "*.rs"})).await;
-    assert_eq!(glob, "a.rs\npkg/lib.rs\nsrc/main.rs\n");
+    assert_eq!(glob, native("a.rs\npkg/lib.rs\nsrc/main.rs\n"));
     let hidden = ls(
         &root,
         json!({"ignore": ["h.rs"], "hidden": true, "glob": "*.rs"}),
@@ -376,7 +381,7 @@ async fn ls_ignore_combines_with_depth_glob_and_hidden() {
     .await;
     assert!(!hidden.contains(".hidden"), "{hidden}");
     let hidden_kept = ls(&root, json!({"hidden": true, "glob": "*.rs"})).await;
-    assert!(hidden_kept.contains(".hidden/h.rs"));
+    assert!(hidden_kept.contains(&native(".hidden/h.rs")));
 }
 
 #[tokio::test]
