@@ -37,13 +37,13 @@ New `fontaine-core/src/quota.rs`, dependency-light:
 ```text
 pub struct QuotaWindow { pub label: String, pub used_ratio: f64 /* 0.0..=1.0+ */, pub reset_at: Option<SystemTime> }
 pub struct Quota { pub windows: Vec<QuotaWindow> }          // ordered: longest-period "headline" first
-pub trait QuotaSource: Send + Sync {
+pub trait QuotaSource: Send + Sync + std::fmt::Debug {
     fn name(&self) -> &str;                                  // short label for the bar, e.g. "kimi"
-    fn fetch(&self) -> BoxFuture<'_, Result<Quota, QuotaError>>;
+    fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>>;
 }
 ```
 
-`QuotaError` is a plain context-chain error (nothing dispatches on its kind: failure always means
+Failures use the existing `RuntimeError` (nothing dispatches on kind: failure always means
 "keep the last good value, or hide").
 
 `AccountClient` gains `fn quota_source(&self) -> Option<Arc<dyn QuotaSource>> { None }`
@@ -52,7 +52,7 @@ filled in `guardian_from_client` next to `thinking_off`/`output_probe`; `ModelHa
 
 ### Opt-in: explicit config key
 
-`Account` gains `quota: Option<QuotaKind>` (enum, serde `kebab-case`, currently only `kimi`),
+`Account` gains `quota: Option<QuotaKind>` (enum, serde `kebab-case`, deriving `JsonSchema` alongside its serde derives as `Account` does; currently only `kimi`),
 `openai-compatible` only (`Provider::accepts_quota()`, validated like `accepts_prompt_caching`;
 other kinds reject it with the same error shape). Example:
 
@@ -66,10 +66,8 @@ quota = "kimi"
 
 Explicit opt-in rather than probe-and-remember: no request goes to an endpoint the user did not
 name. The probe URL is the account's own `base_url` plus `/usages`, so it sends the account's key
-to the account's own endpoint — the same trust as a model call. The key is user-scope only
-(like `prompt_caching`) because it causes extra network requests carrying the credential;
-project scope cannot set it. `docs/schemas` and the config catalog (`config_catalog.rs`) are
-updated per the existing pattern for a new account key.
+to the account's own endpoint — the same trust as a model call. `quota` inherits the `accounts`
+table's user/CLI-only scope.
 
 ### Kimi source
 
@@ -81,7 +79,7 @@ Parser is a pure function `parse_usages(&str) -> Result<Quota, _>`:
   `limit_month_code` → `code`; unknown `limit_*` keys ignored.
 - `used_ratio` accepts number or numeric string; non-finite or negative → entry dropped.
 - `reset_time` parsed as RFC 3339 into `SystemTime`; unparseable → `reset_at = None`.
-- All entries optional; `boosterWallet` ignored (out of scope). Empty result → `QuotaError`
+- All entries optional; `boosterWallet` ignored (out of scope). Empty result → `RuntimeError`
   (so the segment hides rather than shows nothing useful).
 
 ### Poller
@@ -89,13 +87,16 @@ Parser is a pure function `parse_usages(&str) -> Result<Quota, _>`:
 A small `QuotaPoller` in `fontaine-core` (so headless/other hosts could reuse it; TUI consumes it):
 holds the source, `last_good: Option<(Quota, Instant)>`, and a `watch`-style shared slot. Rules:
 
-- Fetch on start, then at most once per 60 s, and when the model (hence account) changes.
-  A "between turns" refresh triggers only if the cache is older than the interval — no
-  extra requests during a burst of turns.
-- A fetch runs on a spawned task; never awaited by the turn loop or the draw path.
+- The poller task itself loops: fetch on start, then sleep 60 s and refetch, so idle sessions
+  refresh; it also refetches when re-pointed. The TUI adds the poller's watch receiver
+  `changed()` to the idle `select!` (`fontaine-tui/src/ui/mod.rs`) so a finished fetch wakes it.
+- Re-pointed when `runtime.models.main.quota` changes by `Arc::ptr_eq` (or None-ness), not on
+  `ModelRef`, so credential rebuilds that keep the same model (`main_rebuilt`) are covered.
+- A fetch runs on the poller's spawned task; never awaited by the turn loop or the draw path.
 - Failure keeps `last_good` until it is older than 10 minutes, then the slot clears (segment
-  hidden). One `Approver::warn` on the first failure per account per session (user-visible, not
-  repeated), per the error-handling rule; message uses `error_chain::chain`.
+  hidden). The poller publishes its first failure per account per session as an error in its
+  slot; the TUI reports it once through `runtime.approver().warn(...)` with
+  `error_chain::chain`.
 - Source `None` (account has no quota, or model switched to one that doesn't) clears the slot.
 
 ### Status bar
@@ -109,39 +110,38 @@ no I/O). `statusbar.rs` gets a pure `quota_segment(&QuotaView, now) -> String`:
   `kimi 16% · 29d left · 5h 82%`); the threshold is a constant, not config.
 - Ratios ≥ 1.0 render `100%`; the segment is styled with the theme `warning` colour at ≥ 0.90
   on any shown window.
-- Placed after the model (`· <model> · <quota> · effort …`), dropped when `None`. Because the bar
-  is a single line that already can overflow on narrow terminals, the segment is the first thing
-  dropped when width is short (the bar renderer already truncates on the right; the quota sits
-  before the hint so it survives longer than the hint, and on very narrow widths the existing
-  truncation applies — no new layout machinery).
+- Placed after the model (`· <model> · <quota> · effort …`), dropped when `None`. The existing
+  right-truncation cuts the hint, goal, scheduled and agents segments before the quota; no new
+  layout machinery.
 
 ## Implementation Steps
 
-1. `fontaine-core/src/quota.rs`: `Quota`, `QuotaWindow`, `QuotaSource`, `QuotaError`,
+1. `fontaine-core/src/quota.rs`: `Quota`, `QuotaWindow`, `QuotaSource`,
    `QuotaPoller` (+ unit tests with a fake source and `tokio::time::pause`). Export from `lib.rs`.
-2. `config.rs`: `QuotaKind`, `Account.quota`, validation via `Provider::accepts_quota`; user-scope
-   gating next to `prompt_caching`; `config_catalog.rs` and the JSON schema regeneration.
+2. `config.rs`: `QuotaKind`, `Account.quota`, validation via `Provider::accepts_quota`; `quota`
+   inherits the `accounts` table's user/CLI-only scope.
 3. `providers/mod.rs`: `Provider::accepts_quota` (default false); `AccountClient::quota_source`
    (default `None`). `openai_compatible.rs`: accept `quota`; its client returns `KimiQuota` when
-   `quota = "kimi"` (needs `ConnectContext` to pass the account's quota kind, key, base URL,
-   network into the client — extend `Connected` or wrap it).
+   `quota = "kimi"` (`ConnectContext` needs no change: `openai_compatible.rs` gets its own private
+   `Connected { client, quota: Option<Arc<KimiQuota>> }` built from `ctx.account.quota`,
+   `ctx.api_key()`, `ctx.base_url()`, `ctx.network`, following `openrouter.rs`).
 4. `providers/kimi_quota.rs`: parser + fetcher.
 5. `models.rs`: `ModelHandle.quota` populated in `guardian_from_client`.
-6. TUI: `App.quota`, `Ui` owns the poller (re-pointed when `runtime.models.main` changes),
-   `statusbar.rs` segment + warning style; `Approver::warn` for the first failure.
+6. TUI: `App.quota`, `Ui` owns the poller (re-pointed when `runtime.models.main.quota` changes by `Arc::ptr_eq`),
+   adds its watch receiver `changed()` to the idle `select!`; `statusbar.rs` segment + warning
+   style; the TUI calls `runtime.approver().warn(...)` with `error_chain::chain` for the poller's
+   first failure.
 7. Docs and changelog (below).
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/{quota.rs (new), lib.rs, config.rs, config_catalog.rs, models.rs}`
-- `rust/fontaine-core/src/providers/{mod.rs, openai_compatible.rs, openai.rs (Connected), kimi_quota.rs (new)}`
+- `rust/fontaine-core/src/{quota.rs (new), lib.rs, config.rs, models.rs}`
+- `rust/fontaine-core/src/providers/{mod.rs, openai_compatible.rs, kimi_quota.rs (new)}`
 - `rust/fontaine-tui/src/{app.rs, statusbar.rs, ui/mod.rs}`
-- `docs/{configuration.md, tui.md}`, `docs/schemas` if the schema covers accounts, `CHANGELOG.md`
+- `docs/{configuration.md, tui.md}`, `CHANGELOG.md`
 
 ## Trade-offs
 
-- **Opt-in key vs probe-once-and-remember:** probing configured base URLs uninvited sends the
-  key to a path the user never named; a key costs one line of config.
 - **Trait on `AccountClient` vs a separate registry keyed by kind:** the client already holds the
   credential, endpoint and network settings, and `list()` sets the precedent for an optional
   provider-side query.
@@ -153,7 +153,7 @@ no I/O). `statusbar.rs` gets a pure `quota_segment(&QuotaView, now) -> String`:
 ## Decisions
 
 - Advisory display only: no guardian, floor or permission involvement; errors hide the segment.
-- Quota is user-scope config because it adds network requests carrying the credential.
+- Quota is opt-in, user/CLI-scope config: it causes extra network requests carrying the credential, so none go to an endpoint the user did not name.
 
 ## Documentation
 
@@ -167,12 +167,12 @@ no I/O). `statusbar.rs` gets a pure `quota_segment(&QuotaView, now) -> String`:
 - Unit: `parse_usages` (full response, numeric-string ratios, missing windows, unknown keys,
   bad timestamps, empty → error, `boosterWallet` present); `quota_segment` formatting (rounding,
   `Nd/Nh/Nm left`, hot-window threshold edge at 0.70, ≥1.0, unknown reset); config validation
-  (kind rejection, project-scope refusal, schema/catalog tests the repo already runs).
+  (kind rejection).
 - Poller with a fake source and paused time: first fetch, 60 s throttle, failure keeps last good,
   10-minute expiry, model switch to a no-quota account clears, warn once.
 - `wiremock`: `KimiQuota` sends `Authorization: Bearer`, hits `<base>/usages`, honours timeout,
   surfaces non-2xx as an error without the key in the message.
-- TUI: `TestBackend` status-bar render with and without a quota; headless surface unaffected.
+- TUI: `TestBackend` status-bar render with and without a quota.
   No live API in tests.
 
 ## Manual Verification
