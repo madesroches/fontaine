@@ -390,22 +390,12 @@ async fn composition_step(
         .listings(None, Some(&ollama))
         .await
     };
-    let mut notes = Vec::new();
-    let mut found =
-        match composition_offer::detect_hosted(config, &*crate::shared_env(host), &dirs.data) {
-            Ok(hosted) => hosted,
-            Err(e) => {
-                notes.push(format!(
-                    "guardian composition: the hosted screen was not checked: {}",
-                    chain(&e)
-                ));
-                Vec::new()
-            }
-        };
-    if found.is_empty() {
-        notes.push(composition_offer::hosted_hint());
-    }
-    found.extend(composition_offer::detect(&listings));
+    let (found, notes) = composition_offer::offer_candidates(
+        config,
+        &*crate::shared_env(host),
+        &dirs.data,
+        &listings,
+    );
     let with_notes = |mut lines: Vec<String>| {
         lines.extend(notes.clone());
         lines

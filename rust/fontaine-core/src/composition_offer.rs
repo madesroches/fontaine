@@ -289,6 +289,34 @@ pub fn detect_hosted(
         .collect())
 }
 
+/// Everything setup can offer, plus the notes to show alongside: a hosted screen that could not
+/// be checked, or the hint to add an OpenRouter account when detection found none.
+pub fn offer_candidates(
+    config: &Config,
+    env: EnvLookup<'_>,
+    data_dir: &Path,
+    listings: &[AccountListing],
+) -> (Vec<Candidate>, Vec<String>) {
+    let mut notes = Vec::new();
+    let mut found = match detect_hosted(config, env, data_dir) {
+        Ok(hosted) => {
+            if hosted.is_empty() {
+                notes.push(hosted_hint());
+            }
+            hosted
+        }
+        Err(e) => {
+            notes.push(format!(
+                "guardian composition: the hosted screen was not checked: {}",
+                fontaine_tools::error_chain::chain(&e)
+            ));
+            Vec::new()
+        }
+    };
+    found.extend(detect(listings));
+    (found, notes)
+}
+
 /// Whether a composition is already configured; setup never replaces one.
 pub fn existing(config: &Config) -> bool {
     config.guardian.composition.is_some()

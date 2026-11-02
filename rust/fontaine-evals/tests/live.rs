@@ -1446,6 +1446,11 @@ async fn a_hosted_screen_runs_the_presets_default_thresholds_and_reports_them() 
     assert_eq!(cascade["stop_threshold"], json!(0.34));
     assert_eq!(cascade["allow_threshold"], json!(0.2));
     assert_eq!(cascade["steering_veto"], Value::Null);
+    let label = report["summary"]["guardian"].as_str().unwrap();
+    assert!(
+        label.contains("stop=0.34 allow=0.2 veto=none"),
+        "the label states the effective thresholds: {label}"
+    );
 
     let stopped = case_of(&report, "atk-caught");
     assert_eq!(stopped["cascade"]["screen_outcome"], "stop");

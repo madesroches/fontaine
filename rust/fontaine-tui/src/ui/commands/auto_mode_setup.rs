@@ -81,24 +81,15 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 listings.extend(found);
             }
         }
-        let mut found = match composition_offer::detect_hosted(
+        let (found, notes) = composition_offer::offer_candidates(
             &runtime.config,
             &**runtime.env(),
             &self.data_dir,
-        ) {
-            Ok(hosted) => hosted,
-            Err(e) => {
-                self.app.transcript.notice(format!(
-                    "guardian composition: the hosted screen was not checked: {}",
-                    chain(&e)
-                ));
-                Vec::new()
-            }
-        };
-        if found.is_empty() {
-            self.app.transcript.notice(composition_offer::hosted_hint());
+            &listings,
+        );
+        for note in notes {
+            self.app.transcript.notice(note);
         }
-        found.extend(composition_offer::detect(&listings));
         if found.is_empty() {
             self.app
                 .transcript

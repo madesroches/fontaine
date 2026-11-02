@@ -568,32 +568,54 @@ fn run_score(args: &RunArgs) -> u8 {
     // reports as its own.
     // The label carries everything the measurement depends on, so a run resumes only from the
     // same screen and thresholds.
-    let label = match &cascade {
-        Some(c) => {
-            let threshold = |t: Option<f64>| t.map_or("none".to_string(), |t| t.to_string());
-            let mut label = format!(
-                "{guardian} +screen live:{} stop={} allow={} veto={}",
-                c.screen,
-                threshold(c.stop_threshold),
-                threshold(c.allow_threshold),
-                threshold(c.steering_veto),
-            );
-            if let Some(script) = &c.script {
-                label.push_str(&format!(" script={script}"));
-            }
-            for (key, value) in &c.params {
-                label.push_str(&format!(" {key}={value}"));
-            }
-            label
-        }
-        None => guardian.clone(),
-    };
+    let mut label = cascade_label(guardian, cascade.as_ref());
     let mut skipped = Vec::new();
     let mut live_run = None;
     let mut screen_version = None;
     let mut screen_warm_up = None;
     let mut screen_framing = screen::Framing::default();
     let results: Vec<CaseResult> = if let Some(spec) = live_spec {
+        let guardian_profile = match profile {
+            Profile::Full => fontaine_guardian::Profile::Full,
+            Profile::Minimal => fontaine_guardian::Profile::Minimal,
+        };
+        let mut connected = match live::connect(
+            spec,
+            guardian_profile,
+            forced_mode(args.verdict_transport),
+            &|name| std::env::var_os(name),
+        ) {
+            Ok(connected) => connected,
+            Err(e) => return usage(&e),
+        };
+        let hosted = cascade_script.is_none()
+            && cascade_screen.and_then(|screen| connected.screen_backend(screen))
+                == Some(fontaine_guardian::BackendKind::SystemOne);
+        if cascade_screen.is_some() && cascade_script.is_none() && !hosted && !thresholds_given {
+            return usage("`--screen` needs `--stop-threshold`, `--allow-threshold` or both");
+        }
+        if hosted && let Some(c) = &mut cascade {
+            if steering_veto_set.is_some() {
+                return usage(
+                    "`--steering-veto` does not apply to a hosted screen, which has no steering read",
+                );
+            }
+            // The effective thresholds, so the scorecard states what was measured.
+            let allowing = !composition_params
+                .iter()
+                .any(|(k, v)| k == "allow" && v.as_bool() == Some(false));
+            c.stop_threshold = Some(
+                c.stop_threshold
+                    .unwrap_or(fontaine_guardian::composition::JEV_STOP_THRESHOLD),
+            );
+            c.allow_threshold = allowing.then(|| {
+                c.allow_threshold
+                    .unwrap_or(fontaine_guardian::composition::JEV_ALLOW_THRESHOLD)
+            });
+            c.steering_veto = None;
+        }
+        // Only now are the effective thresholds known, and the label must state them.
+        label = cascade_label(guardian, cascade.as_ref());
         let header = Header {
             dataset_version: match report::dataset_version(dataset) {
                 Ok(version) => version,
@@ -634,45 +656,6 @@ fn run_score(args: &RunArgs) -> u8 {
             },
             None => Vec::new(),
         };
-        let guardian_profile = match profile {
-            Profile::Full => fontaine_guardian::Profile::Full,
-            Profile::Minimal => fontaine_guardian::Profile::Minimal,
-        };
-        let mut connected = match live::connect(
-            spec,
-            guardian_profile,
-            forced_mode(args.verdict_transport),
-            &|name| std::env::var_os(name),
-        ) {
-            Ok(connected) => connected,
-            Err(e) => return usage(&e),
-        };
-        let hosted = cascade_script.is_none()
-            && cascade_screen.and_then(|screen| connected.screen_backend(screen))
-                == Some(fontaine_guardian::BackendKind::SystemOne);
-        if cascade_screen.is_some() && cascade_script.is_none() && !hosted && !thresholds_given {
-            return usage("`--screen` needs `--stop-threshold`, `--allow-threshold` or both");
-        }
-        if hosted && let Some(c) = &mut cascade {
-            if steering_veto_set.is_some() {
-                return usage(
-                    "`--steering-veto` does not apply to a hosted screen, which has no steering read",
-                );
-            }
-            // The effective thresholds, so the scorecard states what was measured.
-            let allowing = !composition_params
-                .iter()
-                .any(|(k, v)| k == "allow" && v.as_bool() == Some(false));
-            c.stop_threshold = Some(
-                c.stop_threshold
-                    .unwrap_or(fontaine_guardian::composition::JEV_STOP_THRESHOLD),
-            );
-            c.allow_threshold = allowing.then(|| {
-                c.allow_threshold
-                    .unwrap_or(fontaine_guardian::composition::JEV_ALLOW_THRESHOLD)
-            });
-            c.steering_veto = None;
-        }
         if let Some(c) = &cascade
             && let Err(e) = live::add_composition(
                 &mut connected,
@@ -1399,6 +1382,27 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     }
     let rank = ((sorted.len() as f64) * p).ceil() as usize;
     sorted[rank.clamp(1, sorted.len()) - 1]
+}
+
+fn cascade_label(guardian: &str, cascade: Option<&CascadeParams>) -> String {
+    let Some(c) = cascade else {
+        return guardian.to_string();
+    };
+    let threshold = |t: Option<f64>| t.map_or("none".to_string(), |t| t.to_string());
+    let mut label = format!(
+        "{guardian} +screen live:{} stop={} allow={} veto={}",
+        c.screen,
+        threshold(c.stop_threshold),
+        threshold(c.allow_threshold),
+        threshold(c.steering_veto),
+    );
+    if let Some(script) = &c.script {
+        label.push_str(&format!(" script={script}"));
+    }
+    for (key, value) in &c.params {
+        label.push_str(&format!(" {key}={value}"));
+    }
+    label
 }
 
 /// What a cascade run was asked to measure.
