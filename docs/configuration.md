@@ -803,7 +803,7 @@ hard_deny = ["$defaults", "Never send repo contents to third-party code-review A
 | `subagent_cost_budget_usd` | Opt-in per-subagent spend cap. Inactive, with a one-time notice, on a model with no known price; a token cap, if set, still binds. Unset means uncapped. | unset |
 | `session_token_budget` | A token ceiling that every agent in the tree debits, when set. | unset |
 | `session_cost_budget_usd` | The same in dollars, when set. | unset |
-| `teams` | Turns on [agent teams](agents.md#agent-teams): named teammates that go idle between pieces of work, the shared task board and its `board_show` and `board_update` tools. Off, `teammate` is refused and the board tools are not registered. Like the other `[agents]` keys it cannot be set from the repository's shared settings. | `false` |
+| `teams` | Turns on [agent teams](agents.md#agent-teams): named teammates that go idle between pieces of work, the shared task board and its `board_show` and `board_update` tools. Set to `false`, `teammate` is refused and the board tools are not registered. Like the other `[agents]` keys it cannot be set from the repository's shared settings. | `true` |
 
 `[agents.types.<name>]` defines an agent type with `model` (`$main`, `$guardian_default` or
 `<account>/<model>`), `tools` (built-in or `mcp__` tool names), `effort` (`off`, `low`, `medium`,

@@ -196,12 +196,12 @@ other and are held to quality gates by hooks. They are built on the subagents ab
 agent loop and no new permission path: a teammate is an ordinary subagent with an idle state, and
 every board change and every message is an ordinary gated request.
 
-Teams are off by default. Turn them on in your user config or with `--settings`; a repository's
-shared settings cannot:
+Teams are on by default. Turn them off in your user config or with `--settings`; a repository's
+shared settings cannot change the key either way:
 
 ```toml
 [agents]
-teams = true
+teams = false
 ```
 
 With teams off, the `teammate` argument is not offered and a call that passes it is refused,
@@ -260,7 +260,9 @@ The board is the shared list the team claims work from. It is separate from the 
   guardian, and a `deny` or `ask` rule on `board_update` applies first. It has no fast path.
   The built-in `worker` type gets both tools and `explore` gets `board_show` when teams are on; a
   type of yours has them only if its `tools` names them (or names none), and `fork` inherits what
-  its parent has.
+  its parent has. An `explore` teammate therefore cannot claim or complete tasks; the `agent` result
+  says so when a type without `board_update` starts as a teammate, and a team that should claim its own work uses
+  `worker`.
 
 ### The idle hand-off
 

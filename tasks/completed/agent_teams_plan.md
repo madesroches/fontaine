@@ -299,6 +299,7 @@ needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskComp
 - AFK: idle hand-off and `teammate_idle` hook-block resumes are capped at `MAX_IDLE_RESUMES = 3` consecutive resumes per teammate with no board change (a constant, not a config key, so no `teams_auto_claim`); project-scope `teammate_idle` hooks are ignored with a warning; reason: these loops are self-sustaining and project scope may only tighten.
 - AFK: tools are `board_show` (read) and `board_update`, since `task_list` fails the choke-point name rule (precedent `cron_jobs`); the choke-point exception, `extras`, `extension()` and `rows_are_pinned` are updated and tier assertions live in `permissions_auto.rs`.
 - AFK: the shared list is called the "board" in the plan, docs and UI (panel section "Board") to avoid the `todo_write` list and the `/tasks` alias of `/agents`, which is left untouched.
+- 2026-11-02: Teams are on by default (`[agents] teams` defaults to true; `false` turns them off, user/CLI scope only); reason: the maintainer wants the feature available without setup. This replaces the first line of this section.
 - AFK: the hook plumbing (`trust_summary`, plugins, config resolve/merge/matcher rejection, catalog, scope rules, ledger `append_event`, headless wait, `AgentRow` consumers) is in Files to Modify and the steps; project `task_completed` hooks count in the workspace-trust summary.
 
 ## Documentation

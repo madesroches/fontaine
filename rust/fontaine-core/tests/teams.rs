@@ -288,7 +288,7 @@ async fn clear_and_rewind_are_refused_while_a_teammate_is_idle() {
 #[tokio::test]
 async fn the_board_tools_exist_only_with_teams_on() {
     let off = World::new();
-    off.user_file("[permissions]\nallow = [\"agent\"]\n");
+    off.user_file("[permissions]\nallow = [\"agent\"]\n[agents]\nteams = false\n");
     let (built, _) = build_keyed(&off, Manual, "x", vec![], vec![]);
     let names = built.runtime.tool_names();
     assert!(!names.iter().any(|n| n.starts_with("board_")), "{names:?}");

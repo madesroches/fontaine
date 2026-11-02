@@ -2236,19 +2236,19 @@ fn the_shell_timeout_cap_is_validated() {
 }
 
 #[test]
-fn teams_are_off_by_default_on_from_the_user_file_and_never_from_shared_project_settings() {
+fn teams_are_on_by_default_off_from_the_user_file_and_never_set_by_shared_project_settings() {
     let w = World::new();
-    assert!(!w.load().unwrap().agents.teams);
-    w.user_file("[agents]\nteams = true\n");
     assert!(w.load().unwrap().agents.teams);
+    w.user_file("[agents]\nteams = false\n");
+    assert!(!w.load().unwrap().agents.teams);
 
     let w = World::new();
     w.project_file("[agents]\nteams = true\n");
     assert_scope_error(w.load(), "project: agents.teams");
 
     let w = World::new();
-    let cli = w.cli_file("[agents]\nteams = true\n");
-    assert!(w.load_with_settings(&cli).unwrap().agents.teams);
+    let cli = w.cli_file("[agents]\nteams = false\n");
+    assert!(!w.load_with_settings(&cli).unwrap().agents.teams);
 }
 
 #[test]

@@ -132,8 +132,8 @@ Every subagent tool call runs the same hooks.
 
 ## Teams: `task_completed` and `teammate_idle`
 
-These two events are quality gates for [agent teams](agents.md#agent-teams) and exist only with
-`[agents] teams = true`. They are configured like the others, without a `matcher`, which is
+These two events are quality gates for [agent teams](agents.md#agent-teams) and exist only while
+`[agents] teams` is on (the default). They are configured like the others, without a `matcher`, which is
 rejected at load because the events have no tool name:
 
 ```toml

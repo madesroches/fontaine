@@ -241,13 +241,6 @@ async fn continue_teammate(
                 )
             }
         };
-        if !teams.allow_idle_resume(id) {
-            teams.gate.warn(&format!(
-                "teammate {name} was resumed {} times in a row with no change on the board; leaving it idle",
-                crate::tasks::MAX_IDLE_RESUMES
-            ));
-            return false;
-        }
         Some(text)
     };
     if let Some(why) = tree.continue_blocker(id) {
@@ -256,6 +249,14 @@ async fn continue_teammate(
                 .gate
                 .warn(&format!("teammate {name} stays idle: {why}"));
         }
+        return false;
+    }
+    // Counted only once the resume can happen, so a full `max_parallel` does not use up the streak.
+    if text.is_some() && !teams.allow_idle_resume(id) {
+        teams.gate.warn(&format!(
+            "teammate {name} was resumed {} times in a row with no change on the board; leaving it idle",
+            crate::tasks::MAX_IDLE_RESUMES
+        ));
         return false;
     }
     let text = match text {
@@ -417,6 +418,7 @@ pub fn describe(refusal: &Refusal) -> String {
         Refusal::Depth(max) => format!("subagents nest only {max} layers deep"),
         Refusal::SessionBudget(why) => format!("the session's agent budget is spent: {why}"),
         Refusal::AlreadyRunning => "it is already running".to_string(),
+        Refusal::Killed => "it was killed".to_string(),
         Refusal::Name(why) => why.clone(),
     }
 }
@@ -493,7 +495,7 @@ impl Tool for AgentTool {
                 "teammate".to_string(),
                 json!({
                     "type": "boolean",
-                    "description": "Start a teammate: when its turn ends it goes idle instead of done and keeps its name, so `send_message` wakes it for more work, and it can claim tasks from the board with `board_show` and `board_update`. Only the main conversation can start one.",
+                    "description": "Start a teammate: when its turn ends it goes idle instead of done and keeps its name, so `send_message` wakes it for more work, and it can claim tasks from the board with `board_show` and `board_update`, if its type has them: `worker` has both, `explore` can only read the board. Only the main conversation can start one.",
                 }),
             );
         }
@@ -529,7 +531,7 @@ impl Tool for AgentTool {
         if teammate {
             if self.tree.teams().is_none() {
                 return Err(ToolExecutionError::refused(
-                    "teammates are off: `[agents] teams = true` in the user config turns them on",
+                    "teammates are off: `[agents] teams = false` is set; remove it from the user config to turn them on",
                 ));
             }
             if caller != ROOT_AGENT {
@@ -580,7 +582,7 @@ impl Tool for AgentTool {
                 )),
                 Refusal::Name(why) => ToolExecutionError::invalid_args(why),
                 // Only a resume can find a node already running; a reservation is always new.
-                Refusal::AlreadyRunning => {
+                Refusal::AlreadyRunning | Refusal::Killed => {
                     ToolExecutionError::other("the subagent slot is already taken")
                 }
             })?;
@@ -594,6 +596,7 @@ impl Tool for AgentTool {
             id: id.clone(),
             armed: true,
         };
+        let board_tools_held = tools.iter().any(|tool| tool == "board_update");
         let request = SpawnRequest {
             id: id.clone(),
             parent: caller.clone(),
@@ -633,7 +636,14 @@ impl Tool for AgentTool {
             agent_type.name.clone(),
             handle,
         );
-        Ok(ToolOutput::json(json!({ "agent_id": id, "name": name })))
+        let mut out = json!({ "agent_id": id, "name": name });
+        if teammate && !board_tools_held {
+            out["note"] = json!(format!(
+                "{} has no `board_update`, so it cannot claim or complete tasks: put its work in the prompt, or start a `worker`.",
+                agent_type.name
+            ));
+        }
+        Ok(ToolOutput::json(out))
     }
 }
 

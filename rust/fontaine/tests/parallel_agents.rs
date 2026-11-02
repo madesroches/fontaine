@@ -1326,7 +1326,7 @@ async fn a_teammate_is_refused_while_teams_are_off() {
         )],
     )
     .await;
-    let s = sandbox(&endpoint, "");
+    let s = sandbox(&endpoint, "[agents]\nteams = false\n");
     let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();

@@ -32,8 +32,8 @@ result passes one post-call step before the model sees it.
 | `cron_delete` | read-only | Cancels a scheduled task. Argument: `id`. Main conversation only. |
 | `schedule_wakeup` | read-only | Paces a self-paced `/loop` you started: `delay_seconds` (60 to 3,600) and `reason` pick when the loop's own prompt runs next, or `stop: true` ends the loop. It carries no prompt, so it can re-time text you wrote and never add new text. It fails when no such loop runs. Main conversation only. |
 | `send_message` | arbitrary | Sends a queued message to another agent or to the main conversation; see [Subagents](agents.md#messages-between-agents). It wakes an idle [teammate](agents.md#agent-teams). |
-| `board_show` | read-only | Lists the [agent team's task board](agents.md#the-task-board), or shows one task by `id`: status, owner, blockers and text. Task text is agent-written data, shown fenced and labelled with its author. Registered only with `[agents] teams = true`. |
-| `board_update` | arbitrary | Changes the team's task board: `create` (`title`, `description`, `blocked_by`), `claim`, `complete` and `release` (`id`). Gated like `send_message`. Registered only with `[agents] teams = true`. |
+| `board_show` | read-only | Lists the [agent team's task board](agents.md#the-task-board), or shows one task by `id`: status, owner, blockers and text. Task text is agent-written data, shown fenced and labelled with its author. Registered unless `[agents] teams = false`. |
+| `board_update` | arbitrary | Changes the team's task board: `create` (`title`, `description`, `blocked_by`), `claim`, `complete` and `release` (`id`). Gated like `send_message`. Registered unless `[agents] teams = false`. |
 
 `read`, `write`, `edit` and `shell` are the file and process tools of the rig runtime, configured
 rather than modified. `ls`, `glob` and `grep` are Fontaine's own front ends over rig's directory

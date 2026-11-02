@@ -158,6 +158,8 @@ pub enum Refusal {
     SessionBudget(String),
     /// A resume found the agent running, or not ended: another resume won.
     AlreadyRunning,
+    /// A kill ended the agent for good; a wake that checked before the kill must not undo it.
+    Killed,
     /// The requested name is malformed, reserved or taken; the text says why.
     Name(String),
 }
@@ -797,6 +799,9 @@ impl AgentTree {
         };
         if node.status.is_running() {
             return Err(Refusal::AlreadyRunning);
+        }
+        if node.status == ChildStatus::Killed {
+            return Err(Refusal::Killed);
         }
         if let Some(why) = self.limits.session.exhausted(&inner.session_spend, true) {
             return Err(Refusal::SessionBudget(why.describe()));

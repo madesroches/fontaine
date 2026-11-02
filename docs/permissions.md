@@ -177,7 +177,7 @@ allows a `monitor` by itself, so allow one with `monitor(tail *)` or let the gua
 
 ## Agent teams
 
-With `[agents] teams = true` the [task board](agents.md#the-task-board) adds two tools and no new
+With `[agents] teams` on (the default) the [task board](agents.md#the-task-board) adds two tools and no new
 tier. `board_show` is read-only and names no path, so it takes the read-only fast path in every
 mode. `board_update` is an `arbitrary` tool, and always a destructive call for the guardian like
 `send_message` (so a low-confidence allow is denied): `manual` and `acceptEdits` ask, `auto` and

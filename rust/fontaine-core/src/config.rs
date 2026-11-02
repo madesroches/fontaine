@@ -2058,7 +2058,7 @@ impl Config {
                 subagent_cost_budget_usd: None,
                 session_token_budget: None,
                 session_cost_budget_usd: None,
-                teams: false,
+                teams: true,
                 types: BTreeMap::new(),
             },
             context: Context::default(),

@@ -1261,6 +1261,24 @@ fn team_rig() -> TeamRig {
     })
 }
 
+#[tokio::test]
+async fn a_type_that_cannot_update_the_board_is_told_so_when_it_starts() {
+    let team = team_rig();
+    let reader = AgentArgs {
+        teammate: Some(true),
+        ..args("explore", "read it")
+    };
+    let out = spawn(&team.rig, reader).await.unwrap();
+    assert!(out.contains("no `board_update`"), "{out}");
+    let out = spawn(&team.rig, teammate("worker-1")).await.unwrap();
+    assert!(!out.contains("board_update"), "{out}");
+    let out = spawn(&team.rig, args("explore", "read it")).await.unwrap();
+    assert!(
+        !out.contains("board_update"),
+        "a plain subagent is not nagged: {out}"
+    );
+}
+
 fn teammate(name: &str) -> AgentArgs {
     AgentArgs {
         name: Some(name.to_string()),
@@ -1315,7 +1333,7 @@ async fn idle_teammate(team: &TeamRig, name: &str) -> (String, Arc<FakeChild>) {
 async fn a_teammate_is_refused_when_teams_are_off_or_the_caller_is_a_subagent() {
     let rig = rig();
     let error = spawn(&rig, teammate("helper")).await.unwrap_err();
-    assert!(error.contains("teams = true"), "{error}");
+    assert!(error.contains("teams = false"), "{error}");
     assert!(rig.runner.spawned().is_empty());
 
     let team = team_rig();
