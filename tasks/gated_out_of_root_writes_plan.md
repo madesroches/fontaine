@@ -12,17 +12,21 @@ the user did not ask for is denied: the user's own typed messages are the only u
 the guardian trusts, and they are the verdict-changing input that can allow it. After any approval
 the call executes once, on an unconfined write fallback instance, at the resolved absolute target.
 The containment-earned fast paths never widen: `tracked_edit` and `scratch_write` stay in-root only,
-the deterministic floor still runs first, and `shell`, `powershell` and `lsp` keep their hard
-containment denial. The read-only half of #269 already shipped as #284; this plan is the write
-half.
+the deterministic floor still runs first, and `lsp` keeps its hard containment denial — an
+out-of-root `shell`/`powershell` cwd never hit that deny (they are `RiskClass::Arbitrary`) and
+keeps falling through to the mode: prompt in `manual`/`acceptEdits`, guardian in `auto`. The
+read-only half of #269 already shipped as #284; this plan is the write half.
 
 ## Current State
 
 - The step-5b containment hard deny lives in `PermissionPipeline::evaluate`
   (`rust/fontaine-core/src/permissions.rs:963-1000`): a call whose path `scope.locate` cannot place
   is denied with the scratch/`/add-dir` hint, unless the tool is one of the four read-only externals
-  (`is_external_read`). Today that branch fires for `write`/`edit`/`notebook_edit` and also for a
-  `shell`/`powershell` working directory outside every root. The read-side carve-out shipped in
+  (`is_external_read`). Today that branch fires for `write`/`edit`/`notebook_edit` and for `lsp`
+  only: `shell`/`powershell` are `RiskClass::Arbitrary`, so the branch's risk guard skips them and
+  an out-of-root `shell`/`powershell` cwd instead follows the mode — prompt in
+  `manual`/`acceptEdits`, guardian in `auto` (`rust/fontaine-core/tests/permissions.rs:318`); rig's
+  execution-time `confine` refusal still errors after an allow. The read-side carve-out shipped in
   #284 (`f0efba7`…`fb4e5a8`); the write tools still die there even when an allow rule or hook
   allowed the call (the branch runs after allow rules and hook allows, evaluate steps 5a then 5b),
   and in `dontAsk` the mode's blanket deny fires first.
@@ -93,7 +97,8 @@ hooks and deterministic floor (unchanged, always first)
   -> strict in-root read-only fast path (unchanged)
   -> shell pre-classifier (unchanged)
   -> allow rules / hook allows (unchanged)
-  -> containment hard deny: now only shell/powershell cwd and lsp (unchanged for them)
+  -> containment hard deny: now only lsp (shell/powershell cwd never reached it —
+     Arbitrary risk skips the branch — and keeps falling to the mode)
   -> mode:
        manual / acceptEdits  -> human prompt
        auto / (plan: edits are plan-blocked earlier) -> guardian
@@ -101,8 +106,9 @@ hooks and deterministic floor (unchanged, always first)
 ```
 
 - The deny branch's condition becomes "not a read-only external, not a write external": introduce
-  `is_external_write(tool)` beside `is_external_read` in `scope.rs` and use both at the deny site,
-  so `shell`/`powershell` cwd and `lsp` keep their current hard refusal and message.
+  `is_external_write(tool)` beside `is_external_read` in `scope.rs` and use both at the deny site.
+  `lsp` keeps its current hard refusal and message; `shell`/`powershell` cwd never hit the branch
+  (`RiskClass::Arbitrary`) and keep falling through to the mode, unchanged.
 - Headless behavior mirrors reads: a would-prompt external write is denied; an `auto` guardian
   allow or an applicable user allow rule can still run it.
 - Existing absolute-path allow rules and hook allows become effective for external writes, audited
@@ -203,8 +209,9 @@ the same target. Do not tell the model external writes are unconditionally allow
 2. In `rust/fontaine-core/src/permissions.rs`: normalize a valid external write after hooks into
    `CallCtx.args` (written form kept for deny/ask matching); apply the same normalization in the
    `GuardianOff` branch; narrow the step-5b deny to exclude the write tools while keeping it for
-   shell/powershell cwd and `lsp`; in the floor's protected-path branch, return `Verdict::Guardian`
-   for external writes in `auto` (in-root behavior unchanged, asking modes unchanged); leave the
+   `lsp` (shell/powershell cwd never reached it — `RiskClass::Arbitrary` — and keeps following
+   the mode, unchanged); in the floor's protected-path branch, return `Verdict::Guardian` for
+   external writes in `auto` (in-root behavior unchanged, asking modes unchanged); leave the
    mode branches, `unjudged_edit` and the arg-error handling intact.
    Update the mode-matrix tests in `rust/fontaine-core/tests/permissions.rs` and
    `permissions_auto.rs`, the hook-allow revalidation coverage in `hook_slot.rs`, the
@@ -243,8 +250,9 @@ the same target. Do not tell the model external writes are unconditionally allow
      scripted guardian under the new rule;
    - `dontAsk` denies; an external write to a protected location (`$HOME/.bashrc`-shaped)
      prompts in `manual` and is guardian-judged in `auto`;
-   - the in-root `tracked_edit`/`scratch_write` cases and the shell-cwd and `lsp` containment
-     denials stay unchanged.
+   - the in-root `tracked_edit`/`scratch_write` cases stay unchanged; `lsp` keeps
+     its containment denial; a shell cwd out of the roots keeps its current outcomes — prompt in
+     `manual`, guardian-judged in `auto`, deny in `dontAsk`.
    Use the scripted-agent/scripted-guardian pattern in `rust/fontaine/tests/auto_headless.rs`.
 9. Add golden cases (the dataset hash changes; live scorecards re-base on the next full live
    run, not by hand):
@@ -335,14 +343,16 @@ No configuration schema, headless event schema, tool descriptor, risk-class tabl
   and it shows the resolved target plus diff. Denying in the asking modes would make the feature
   usable only through config, which is the friction this issue exists to remove.
 - **Write slice only (chosen) vs. also relaxing shell working directories.** A `shell` with a
-  cwd outside the roots is arbitrary code execution with an external anchor; it stays
-  containment-denied, and the model guidance tells the model not to route around a denied write
-  through shell. `lsp` stays confined for the reasons #284 recorded.
+  cwd outside the roots is arbitrary code execution with an external anchor; it is prompted in
+  the asking modes and guardian-judged in `auto`, as today, and the model guidance tells the
+  model not to route around a denied write through shell. `lsp` stays confined for the reasons
+  #284 recorded.
 
 ## Decisions
 
 - 2026-11-06 (issue #269): The write half follows the read half's adjudication pattern; the
-  containment hard deny survives only for `shell`/`powershell` cwd and `lsp`.
+  containment hard deny survives only for `lsp` — an out-of-root `shell`/`powershell` cwd already
+  fell through to the mode today and keeps doing so.
 - 2026-11-06 (maintainer review): How "asked by the user" is established for an external write is settled — only the user's own typed messages count, carried to the guardian in the `task_intent` and `recent_user_messages` blocks; the approval at the ask prompt is the establishment in the asking modes; no deterministic prose parse is introduced.
 - 2026-11-06 (maintainer review): Directory listing outside the roots is not gated more strictly than single-file reads; all four read-only tools adjudicate alike, with no stricter tier for listing (#284).
 - 2026-11-06 (maintainer review): An out-of-root read is served on an unconfined read-only fallback instance, resolved once after the hooks; this plan mirrors that mechanism for writes rather than re-opening it (#284).
@@ -353,7 +363,8 @@ No configuration schema, headless event schema, tool descriptor, risk-class tabl
 
 - `docs/tools.md`: external write behavior next to the external read paragraph — the ask/guardian
   mode matrix, the resolved-target execution, the write fallbacks, and the unchanged
-  scratch/`/add-dir` guidance now narrowed to shell and `lsp`.
+  scratch/`/add-dir` guidance now narrowed to `lsp` (a `shell` cwd outside the roots follows the
+  mode, as today).
 - `docs/permissions.md`: replace step 3's external-write denial sentence with the per-mode
   behavior; note the protected-path branch now reaches the guardian in `auto` for external
   writes as it already does for in-root ones.
