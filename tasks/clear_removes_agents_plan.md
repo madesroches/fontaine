@@ -94,7 +94,9 @@ the panel re-derive from the tree on the next refresh, and stale ids in
    agent list and the agent view" — one clause that `/clear` empties the list; qualify the
    "one row per subagent, ended ones included" phrasing in `docs/tui.md`'s agents-panel section
    and in `docs/agents.md` (e.g. "until a `/clear`") so it stays true for agents that ended
-   before a clear.
+   before a clear. In the same "The agent list and the agent view" section, qualify the
+   typing-to-resume bullets ("you resumed agent-3") so resuming an ended agent holds only
+   until a `/clear` prunes it.
 5. `CHANGELOG.md`: add a `### Fixed` entry under `## [Unreleased]` describing that `/clear`
    prunes ended subagents from the agent list and agents panel.
 
@@ -123,6 +125,10 @@ the panel re-derive from the tree on the next refresh, and stale ids in
 
 - 2026-11-02: Keep `names`, `next` and `session_spend` across the prune; only subagent nodes go.
 - 2026-11-02: Conversation `/rewind` does not prune the tree; the issue covers `/clear` only.
+- 2026-11-02: Pruning deliberately ends resumability of pre-clear subagents: ended agents no
+  longer appear in the agents panel, cannot be resumed by typing in their view, and are gone
+  from `AgentTree::resume`/`resume_child`; their `logs/agent-<n>.jsonl` transcripts stay on
+  disk for `/export`.
 
 ## Documentation
 
