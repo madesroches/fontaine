@@ -683,10 +683,12 @@ Roots grant file access, not configuration: settings, hooks, MCP servers and ext
 from the primary root only. A `.fontaine/settings.toml` in an added root is not read. See
 [Tools](tools.md#workspace-roots).
 
-### `[[hooks.pre_tool_use]]`, `[[hooks.post_tool_use]]`, `[[hooks.permission_denied]]`
+### `[[hooks.pre_tool_use]]`, `[[hooks.post_tool_use]]`, `[[hooks.permission_denied]]`, `[[hooks.task_completed]]`, `[[hooks.teammate_idle]]`
 
 [User hooks](hooks.md): programs that look at a tool call before it runs, after it ran and when it
-was denied.
+was denied, and, with [agent teams](agents.md#agent-teams) on, before a task is completed
+(`task_completed`) and when a teammate's turn ends (`teammate_idle`). The two team events take no
+`matcher`: one that sets it is a config error.
 
 | Key | Meaning | Default |
 |---|---|---|
@@ -702,7 +704,7 @@ timeout_secs = 10
 ```
 
 Hooks the repository defines start only after [workspace trust](#workspace-trust) in the terminal
-UI, and their `allow` is ignored. See [User hooks](hooks.md#hooks-a-repository-defines).
+UI, and their `allow` is ignored. A repository's `teammate_idle` hook is never run. See [User hooks](hooks.md#hooks-a-repository-defines).
 
 ### `[mcp.servers.<name>]`
 
@@ -801,6 +803,7 @@ hard_deny = ["$defaults", "Never send repo contents to third-party code-review A
 | `subagent_cost_budget_usd` | Opt-in per-subagent spend cap. Inactive, with a one-time notice, on a model with no known price; a token cap, if set, still binds. Unset means uncapped. | unset |
 | `session_token_budget` | A token ceiling that every agent in the tree debits, when set. | unset |
 | `session_cost_budget_usd` | The same in dollars, when set. | unset |
+| `teams` | Turns on [agent teams](agents.md#agent-teams): named teammates that go idle between pieces of work, the shared task board and its `board_show` and `board_update` tools. Off, `teammate` is refused and the board tools are not registered. Like the other `[agents]` keys it cannot be set from the repository's shared settings. | `false` |
 
 `[agents.types.<name>]` defines an agent type with `model` (`$main`, `$guardian_default` or
 `<account>/<model>`), `tools` (built-in or `mcp__` tool names), `effort` (`off`, `low`, `medium`,

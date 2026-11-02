@@ -566,6 +566,8 @@ pub struct HooksSection {
     pub pre_tool_use: Option<Vec<Hook>>,
     pub post_tool_use: Option<Vec<Hook>>,
     pub permission_denied: Option<Vec<Hook>>,
+    pub task_completed: Option<Vec<Hook>>,
+    pub teammate_idle: Option<Vec<Hook>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
@@ -690,6 +692,7 @@ pub struct AgentsSection {
     pub subagent_cost_budget_usd: Option<f64>,
     pub session_token_budget: Option<u64>,
     pub session_cost_budget_usd: Option<f64>,
+    pub teams: Option<bool>,
     pub types: Option<BTreeMap<String, AgentType>>,
 }
 
@@ -1229,10 +1232,18 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
             ("pre_tool_use", &h.pre_tool_use),
             ("post_tool_use", &h.post_tool_use),
             ("permission_denied", &h.permission_denied),
+            ("task_completed", &h.task_completed),
+            ("teammate_idle", &h.teammate_idle),
         ] {
             for hook in hooks.iter().flatten() {
                 let key = format!("hooks.{event}");
                 if let Some(matcher) = &hook.matcher {
+                    if matches!(event, "task_completed" | "teammate_idle") {
+                        return bad(
+                            &key,
+                            "this event carries no tool name, so it takes no `matcher`",
+                        );
+                    }
                     parse_rule(matcher).map_err(|e| rule_error(path, &key, e))?;
                 }
                 if hook.command.is_empty() {
@@ -1676,6 +1687,8 @@ pub struct Hooks {
     pub pre_tool_use: Vec<Hook>,
     pub post_tool_use: Vec<Hook>,
     pub permission_denied: Vec<Hook>,
+    pub task_completed: Vec<Hook>,
+    pub teammate_idle: Vec<Hook>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1707,6 +1720,8 @@ pub struct Agents {
     pub subagent_cost_budget_usd: Option<f64>,
     pub session_token_budget: Option<u64>,
     pub session_cost_budget_usd: Option<f64>,
+    /// Named teammates and the shared task board.
+    pub teams: bool,
     pub types: BTreeMap<String, AgentType>,
 }
 
@@ -2043,6 +2058,7 @@ impl Config {
                 subagent_cost_budget_usd: None,
                 session_token_budget: None,
                 session_cost_budget_usd: None,
+                teams: false,
                 types: BTreeMap::new(),
             },
             context: Context::default(),
@@ -2242,6 +2258,16 @@ impl Config {
                 h.permission_denied.as_deref(),
                 origin,
             );
+            union_hooks(
+                &mut self.hooks.task_completed,
+                h.task_completed.as_deref(),
+                origin,
+            );
+            union_hooks(
+                &mut self.hooks.teammate_idle,
+                h.teammate_idle.as_deref(),
+                origin,
+            );
         }
         for (name, server) in s.mcp.iter().flat_map(|m| m.servers.iter().flatten()) {
             self.mcp_servers.insert(name.clone(), server.clone());
@@ -2276,6 +2302,9 @@ impl Config {
             }
             if let Some(v) = a.session_cost_budget_usd {
                 t.session_cost_budget_usd = Some(v);
+            }
+            if let Some(v) = a.teams {
+                t.teams = v;
             }
             for (name, ty) in a.types.iter().flatten() {
                 t.types.insert(name.clone(), ty.clone());

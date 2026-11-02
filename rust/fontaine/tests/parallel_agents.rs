@@ -1174,3 +1174,167 @@ async fn a_spawn_result_and_the_notification_for_its_report_pass_through_the_res
         bodies[0]
     );
 }
+
+fn board(action: &str, id: Option<&str>) -> Value {
+    json!({"action": action, "id": id})
+}
+
+fn teammate_args(prompt: &str, name: &str) -> Value {
+    json!({"agent_type": "worker", "prompt": prompt, "teammate": true, "name": name})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn teammates_share_a_board_go_idle_wake_on_a_message_and_never_hold_the_run_open() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![
+            Route::new(
+                "root task",
+                vec![
+                    Turn::tool(
+                        "c1",
+                        "board_update",
+                        json!({"action": "create", "title": "write the parser"}),
+                    ),
+                    Turn::tool(
+                        "c2",
+                        "board_update",
+                        json!({"action": "create", "title": "write the printer"}),
+                    ),
+                    Turn::tool(
+                        "c3",
+                        "agent",
+                        teammate_args("mate-A: take board work", "mate-a"),
+                    ),
+                    Turn::tool("c4", "job_output", json!({"id": "mate-a"})),
+                    Turn::tool("c5", "agent", teammate_args("mate-B: stand by", "mate-b")),
+                    Turn::tool("c6", "job_output", json!({"id": "mate-b"})),
+                    Turn::tool(
+                        "c7",
+                        "send_message",
+                        json!({"to": "mate-b", "message": "wake up and report"}),
+                    ),
+                    Turn::tool("c8", "job_output", json!({"id": "mate-b"})),
+                    Turn::text("lead finished"),
+                ],
+            ),
+            // The first task is claimed by the teammate itself; the second arrives as the
+            // idle hand-off, after its first turn ended with work still on the board.
+            Route::new(
+                "mate-A",
+                vec![
+                    Turn::tool("a1", "board_update", board("claim", Some("t1"))),
+                    Turn::tool("a2", "board_update", board("complete", Some("t1"))),
+                    Turn::text("A finished t1"),
+                    Turn::tool("a3", "board_update", board("claim", Some("t2"))),
+                    Turn::tool("a4", "board_update", board("complete", Some("t2"))),
+                    Turn::text("A finished t2"),
+                ],
+            ),
+            Route::new(
+                "mate-B",
+                vec![
+                    Turn::tool("b1", "board_show", json!({})),
+                    Turn::text("B is standing by"),
+                    Turn::text("B woke up"),
+                ],
+            ),
+        ],
+    )
+    .await;
+    let s = sandbox(&endpoint, "[agents]\nteams = true\n");
+    let out = run(
+        &s,
+        &[
+            "--allowed-tools",
+            "agent",
+            "--allowed-tools",
+            "board_update",
+            "--allowed-tools",
+            "send_message",
+        ],
+        "root task",
+    )
+    .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+
+    let done = of_type(&lines, "result");
+    assert_eq!(done.len(), 1);
+    assert_eq!(done[0]["result"], "lead finished");
+
+    // The hand-off told A about the second task, as harness text and not as the user.
+    let handoff = requests_with(&endpoint, "task t2 is available").await;
+    assert!(!handoff.is_empty());
+    assert!(
+        handoff[0].contains("not the user's words"),
+        "{}",
+        handoff[0]
+    );
+    // B read the message sender-marked and untrusted.
+    let woken = requests_with(&endpoint, "wake up and report").await;
+    assert!(!woken.is_empty());
+    assert!(woken[0].contains("untrusted"), "{}", woken[0]);
+
+    let session = lines[0]["session_id"].as_str().unwrap().to_string();
+    let records = ledger(&s, &session);
+    let count = |event: &str| {
+        records
+            .iter()
+            .filter(|r| r["kind"] == "agent" && r["event"] == event)
+            .count()
+    };
+    assert_eq!(count("task_created"), 2);
+    assert_eq!(count("task_claimed"), 2, "no task is claimed twice");
+    assert_eq!(count("task_completed"), 2);
+    assert_eq!(count("task_released"), 0);
+    // Nobody typed the hand-off note or the message: the one user message is the task.
+    let typed: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "user_message")
+        .collect();
+    assert_eq!(typed.len(), 1, "{typed:?}");
+
+    // Each board change was a gated request of the agent that made it.
+    let gated = audit(&s, &lines);
+    let claims: Vec<&Value> = gated
+        .iter()
+        .filter(|r| r["tool"] == "board_update" && r["agent_id"] == "agent-1")
+        .collect();
+    assert!(claims.len() >= 4, "{claims:?}");
+
+    let saved: Value = serde_json::from_str(
+        &std::fs::read_to_string(s.data.join("sessions").join(&session).join("tasks.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let tasks = saved["tasks"].as_array().unwrap();
+    assert!(tasks.iter().all(|t| t["status"] == "completed"), "{saved}");
+    assert_eq!(saved["next"], 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_teammate_is_refused_while_teams_are_off() {
+    let endpoint = Endpoint::start_routed(
+        Wire::Chat,
+        vec![Route::new(
+            "root task",
+            vec![
+                Turn::tool("c1", "agent", teammate_args("mate-A: work", "mate-a")),
+                Turn::text("could not start it"),
+            ],
+        )],
+    )
+    .await;
+    let s = sandbox(&endpoint, "");
+    let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    // The argument is not even offered, so the call is rejected as malformed.
+    assert_eq!(agent_result(&lines, 0)["success"], json!(false));
+    assert!(
+        of_type(&lines, "tool_result")
+            .iter()
+            .all(|r| r["tool"] != "board_update")
+    );
+}

@@ -2234,3 +2234,45 @@ fn the_shell_timeout_cap_is_validated() {
     .unwrap();
     assert!(parse_settings("[shell]\ntimeout = 5\n", Path::new("u.toml"), Column::User).is_err());
 }
+
+#[test]
+fn teams_are_off_by_default_on_from_the_user_file_and_never_from_shared_project_settings() {
+    let w = World::new();
+    assert!(!w.load().unwrap().agents.teams);
+    w.user_file("[agents]\nteams = true\n");
+    assert!(w.load().unwrap().agents.teams);
+
+    let w = World::new();
+    w.project_file("[agents]\nteams = true\n");
+    assert_scope_error(w.load(), "project: agents.teams");
+
+    let w = World::new();
+    let cli = w.cli_file("[agents]\nteams = true\n");
+    assert!(w.load_with_settings(&cli).unwrap().agents.teams);
+}
+
+#[test]
+fn a_matcher_on_a_team_hook_is_rejected_at_load() {
+    for event in ["task_completed", "teammate_idle"] {
+        let w = World::new();
+        w.user_file(&format!(
+            "[[hooks.{event}]]\nmatcher = \"shell\"\ncommand = \"gate.sh\"\n"
+        ));
+        let err = w.load().unwrap_err();
+        assert!(err.to_string().contains("no `matcher`"), "{event}: {err}");
+    }
+}
+
+#[test]
+fn team_hooks_union_across_scopes_and_a_project_one_may_be_declared() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[[hooks.task_completed]]\ncommand = \"a.sh\"\n");
+    w.project_file(
+        "[[hooks.task_completed]]\ncommand = \"b.sh\"\n[[hooks.teammate_idle]]\ncommand = \"c.sh\"\n",
+    );
+    let c = w.load().unwrap();
+    assert_eq!(c.hooks.task_completed.len(), 2);
+    assert_eq!(c.hooks.teammate_idle.len(), 1);
+    assert!(c.hooks.teammate_idle[0].origin.is_project());
+}

@@ -224,6 +224,22 @@ pub static TOOLS: &[ToolDescriptor] = &[
         &["SendMessage"],
     ),
     row(
+        "board_show",
+        RiskClass::ReadOnly,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &["TaskList", "TaskGet"],
+    ),
+    row(
+        "board_update",
+        RiskClass::Arbitrary,
+        false,
+        Destructive::Always,
+        Specifier::None,
+        &["TaskCreate", "TaskUpdate"],
+    ),
+    row(
         "ask_user_question",
         RiskClass::ReadOnly,
         true,
@@ -377,7 +393,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 24] = [
+        let expected: [Pinned; 26] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             (
                 "job_output",
@@ -478,6 +494,22 @@ mod tests {
                 D::Always,
                 S::None,
                 &["SendMessage"],
+            ),
+            (
+                "board_show",
+                R::ReadOnly,
+                true,
+                D::Never,
+                S::None,
+                &["TaskList", "TaskGet"],
+            ),
+            (
+                "board_update",
+                R::Arbitrary,
+                false,
+                D::Always,
+                S::None,
+                &["TaskCreate", "TaskUpdate"],
             ),
             (
                 "ask_user_question",

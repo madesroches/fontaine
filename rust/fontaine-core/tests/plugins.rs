@@ -445,6 +445,36 @@ fn a_hook_runs_only_at_the_event_its_entry_names() {
 }
 
 #[test]
+fn plugin_task_completed_and_teammate_idle_hooks_parse_without_a_matcher_and_merge() {
+    let w = World::new();
+    plugins::write_registry(&w.config, &registry("team", "p", true)).unwrap();
+    let root = checkout(&w, "team", "p");
+    manifest(&root, "p", "");
+    write(
+        &root.join("hooks/hooks.json"),
+        r#"{"hooks": {
+            "TaskCompleted": [{"matcher": "ignored", "hooks": [{"type": "command", "command": "gate"}]}],
+            "TeammateIdle": [{"hooks": [{"type": "command", "command": "idle"}]}]
+        }}"#,
+    );
+    let contributions = load_installed(&w.config, &context(&w.work)).unwrap();
+    assert_eq!(contributions.hooks.len(), 2);
+    let mut config = w.load().unwrap();
+    config.apply_plugins(&contributions).unwrap();
+    assert_eq!(config.hooks.task_completed.len(), 1);
+    assert_eq!(config.hooks.task_completed[0].command, "gate");
+    assert_eq!(config.hooks.task_completed[0].matcher, None);
+    assert_eq!(config.hooks.teammate_idle.len(), 1);
+    assert_eq!(config.hooks.teammate_idle[0].command, "idle");
+    assert!(config.hooks.pre_tool_use.is_empty());
+
+    // Re-applying replaces the plugin's hooks rather than stacking them.
+    config.apply_plugins(&contributions).unwrap();
+    assert_eq!(config.hooks.task_completed.len(), 1);
+    assert_eq!(config.hooks.teammate_idle.len(), 1);
+}
+
+#[test]
 fn a_dotted_plugin_name_is_refused_so_composed_mcp_names_stay_valid() {
     let w = World::new();
     let root = checkout(&w, "team", "a.b");
@@ -533,6 +563,8 @@ fn an_identical_plugin_hook_merges_by_attribution_only() {
             }],
             post_tool_use: Vec::new(),
             permission_denied: Vec::new(),
+            task_completed: Vec::new(),
+            teammate_idle: Vec::new(),
         },
         servers: Default::default(),
         lsp_servers: Vec::new(),
@@ -748,6 +780,8 @@ fn apply_plugins_replaces_the_previous_plugins_contributions() {
             }],
             post_tool_use: Vec::new(),
             permission_denied: Vec::new(),
+            task_completed: Vec::new(),
+            teammate_idle: Vec::new(),
         },
         servers: [(
             "plugin_p_s".to_string(),

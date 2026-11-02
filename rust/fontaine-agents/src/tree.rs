@@ -16,6 +16,7 @@ use tokio::sync::Notify;
 use crate::budget::{Budget, Exhausted, Spend};
 use crate::mode::{Ladder, Posture, RootMode};
 use crate::runner::{ChildHandle, ChildReport, ChildStatus};
+use crate::tasks::Teams;
 
 /// Minimum gap between tree wakeups caused by `note_writing`.
 const WRITING_WAKE_INTERVAL: Duration = Duration::from_millis(250);
@@ -165,6 +166,9 @@ pub enum Refusal {
 pub enum DeliverError {
     /// The target ended, was killed, or never existed.
     NotRunning,
+    /// The target is a teammate waiting for work: reachable, but a message needs to wake it. It
+    /// carries the teammate's id.
+    Idle(String),
     /// The target is not the sender's parent, child or sibling, and is not `main`.
     NotReachable,
 }
@@ -194,6 +198,10 @@ struct Node {
     started: Instant,
     ended: Option<Instant>,
     writing: u64,
+    /// Spawned as a teammate: its finished turn leaves it idle instead of done.
+    teammate: bool,
+    /// A teammate whose turn ended `Done` and that a message or the human can wake.
+    idle: bool,
 }
 
 impl Node {
@@ -296,6 +304,8 @@ pub struct AgentRow {
     pub ended: Option<Instant>,
     /// Characters the model wrote in its current step; display state, cleared when the step ends.
     pub writing: u64,
+    /// A teammate waiting for work: its turn ended and a message can wake it.
+    pub idle: bool,
 }
 
 type RootModeSource = Arc<dyn Fn() -> RootMode + Send + Sync>;
@@ -312,6 +322,9 @@ pub struct AgentTree {
     display: Notify,
     next: AtomicU64,
     unpriced_noticed: AtomicBool,
+    /// Set when the session starts ending, after which no agent is woken.
+    shutdown: AtomicBool,
+    teams: RwLock<Option<Arc<Teams>>>,
 }
 
 impl AgentTree {
@@ -339,6 +352,8 @@ impl AgentTree {
             started: Instant::now(),
             ended: None,
             writing: 0,
+            teammate: false,
+            idle: false,
         };
         AgentTree {
             limits,
@@ -355,7 +370,45 @@ impl AgentTree {
             display: Notify::new(),
             next: AtomicU64::new(next_agent),
             unpriced_noticed: AtomicBool::new(false),
+            shutdown: AtomicBool::new(false),
+            teams: RwLock::new(None),
         }
+    }
+
+    /// Turns teams on for the session: the board and the quality gates. Without it `teammate`
+    /// spawns are refused and the watcher never idles an agent.
+    pub fn set_teams(&self, teams: Arc<Teams>) {
+        *write(&self.teams, "teams") = Some(teams);
+    }
+
+    pub fn teams(&self) -> Option<Arc<Teams>> {
+        read(&self.teams, "teams").clone()
+    }
+
+    /// Marks a freshly reserved agent as a teammate.
+    pub fn set_teammate(&self, id: &str) {
+        if let Some(node) = self.lock().nodes.get_mut(id) {
+            node.teammate = true;
+        }
+    }
+
+    pub fn is_teammate(&self, id: &str) -> bool {
+        self.lock().nodes.get(id).is_some_and(|n| n.teammate)
+    }
+
+    /// Whether `id` is a teammate waiting for work.
+    pub fn is_idle(&self, id: &str) -> bool {
+        self.lock().nodes.get(id).is_some_and(|n| n.idle)
+    }
+
+    /// Whether any teammate is idle. Its conversation holds history a later wake needs, so a
+    /// surface that discards conversations refuses while one is.
+    pub fn any_idle(&self) -> bool {
+        self.lock().nodes.values().any(|n| n.idle)
+    }
+
+    pub fn shutting_down(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -567,6 +620,8 @@ impl AgentTree {
                 started: Instant::now(),
                 ended: None,
                 writing: 0,
+                teammate: false,
+                idle: false,
             },
         );
         drop(inner);
@@ -672,6 +727,7 @@ impl AgentTree {
             if node.status.is_running() {
                 node.status = report.status;
             }
+            node.idle = node.teammate && node.status == ChildStatus::Done;
             node.ended = Some(Instant::now());
             node.report = Some(report);
         }
@@ -695,6 +751,29 @@ impl AgentTree {
             ChildStatus::BudgetExhausted => Some("its budget is spent".to_string()),
             _ => None,
         }
+    }
+
+    /// Why `id` cannot be woken to take a message or a task hand-off: the session is ending, or
+    /// its end is final (see [`resume_blocker`](Self::resume_blocker)).
+    pub fn wake_blocker(&self, id: &str) -> Option<String> {
+        if self.shutting_down() {
+            return Some("the session is ending".to_string());
+        }
+        self.resume_blocker(id)
+    }
+
+    /// Why a teammate whose run just ended `Done` cannot take another run in the same
+    /// conversation: the session is ending or the session's agent budget is spent. The node still
+    /// counts as running, so no parallel slot is needed.
+    pub fn continue_blocker(&self, id: &str) -> Option<String> {
+        if let Some(why) = self.wake_blocker(id) {
+            return Some(why);
+        }
+        let inner = self.lock();
+        self.limits
+            .session
+            .exhausted(&inner.session_spend, true)
+            .map(|why| format!("the session's agent budget is spent: {}", why.describe()))
     }
 
     /// Where `id` stands now, a prompt wait included.
@@ -730,6 +809,7 @@ impl AgentTree {
             .get_mut(id)
             .expect("the node was found under this same lock");
         node.status = ChildStatus::Running;
+        node.idle = false;
         node.report = None;
         node.ended = None;
         node.started = Instant::now();
@@ -773,6 +853,8 @@ impl AgentTree {
 
     /// Kills every running child below the root.
     pub fn kill_all(&self) {
+        // Called only as the session ends; from here on nothing may be woken.
+        self.shutdown.store(true, Ordering::SeqCst);
         let ids: Vec<String> = {
             let inner = self.lock();
             inner
@@ -913,9 +995,6 @@ impl AgentTree {
         let Some(target) = inner.nodes.get(to) else {
             return Err(DeliverError::NotRunning);
         };
-        if to != ROOT_AGENT && !target.status.is_running() {
-            return Err(DeliverError::NotRunning);
-        }
         let sender_parent = inner.nodes.get(from).and_then(|n| n.info.parent.clone());
         let target_parent = target.info.parent.clone();
         let reachable = to != from
@@ -923,6 +1002,15 @@ impl AgentTree {
                 || sender_parent.as_deref() == Some(to)
                 || target_parent.as_deref() == Some(from)
                 || (sender_parent.is_some() && sender_parent == target_parent));
+        if to != ROOT_AGENT && !target.status.is_running() {
+            // An idle teammate is told apart only to a sender that may reach it: others learn
+            // nothing about it.
+            return Err(if target.idle && reachable {
+                DeliverError::Idle(to.to_string())
+            } else {
+                DeliverError::NotRunning
+            });
+        }
         if !reachable {
             return Err(DeliverError::NotReachable);
         }
@@ -1075,6 +1163,17 @@ impl AgentTree {
             .unwrap_or_default()
     }
 
+    /// Puts notifications taken for `agent` back at the front of its inbox, in their order, when
+    /// they could not be delivered after all.
+    pub fn requeue(&self, agent: &str, notes: Vec<Notification>) {
+        if let Some(node) = self.lock().nodes.get_mut(agent) {
+            for note in notes.into_iter().rev() {
+                node.inbox.push_front(note);
+            }
+        }
+        self.changed.notify_waiters();
+    }
+
     pub fn has_notifications(&self, agent: &str) -> bool {
         self.lock()
             .nodes
@@ -1146,6 +1245,7 @@ impl AgentTree {
                 started: n.started,
                 ended: n.ended,
                 writing: n.writing,
+                idle: n.idle,
             })
             .collect()
     }
@@ -2011,5 +2111,126 @@ mod tests {
         tree.note_writing(&a, 1);
         tree.reset_writing(&a);
         assert!(notified.now_or_never().is_none());
+    }
+
+    fn teammate(tree: &AgentTree) -> String {
+        let id = reserve(tree, ROOT_AGENT).unwrap();
+        tree.set_teammate(&id);
+        id
+    }
+
+    #[test]
+    fn a_teammates_done_finish_is_idle_and_any_other_end_is_not() {
+        let tree = tree(8);
+        let done = teammate(&tree);
+        tree.finish(&done, report(ChildStatus::Done));
+        assert!(tree.is_idle(&done));
+        assert!(tree.any_idle());
+        assert!(tree.rows()[0].idle);
+        assert!(!tree.any_running());
+        for status in [
+            ChildStatus::Failed,
+            ChildStatus::BudgetExhausted,
+            ChildStatus::Killed,
+        ] {
+            let id = teammate(&tree);
+            tree.finish(&id, report(status));
+            assert!(!tree.is_idle(&id), "{status:?}");
+        }
+        let killed = teammate(&tree);
+        tree.kill(&killed);
+        tree.finish(&killed, report(ChildStatus::Done));
+        assert!(!tree.is_idle(&killed), "a kill that came first stays final");
+        let plain = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.finish(&plain, report(ChildStatus::Done));
+        assert!(!tree.is_idle(&plain));
+    }
+
+    #[test]
+    fn deliver_to_an_idle_teammate_says_idle_and_to_a_plain_finished_agent_not_running() {
+        let tree = tree(8);
+        let idle = teammate(&tree);
+        let plain = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.finish(&idle, report(ChildStatus::Done));
+        tree.finish(&plain, report(ChildStatus::Done));
+        assert_eq!(
+            tree.deliver(ROOT_AGENT, &idle, "hi".into()),
+            Err(DeliverError::Idle(idle.clone()))
+        );
+        assert_eq!(
+            tree.deliver(ROOT_AGENT, &plain, "hi".into()),
+            Err(DeliverError::NotRunning)
+        );
+        assert!(!tree.has_notifications(&idle));
+    }
+
+    #[test]
+    fn an_idle_teammate_is_not_revealed_to_a_sender_that_cannot_reach_it() {
+        let tree = tree(8);
+        let idle = teammate(&tree);
+        let stranger = reserve(&tree, ROOT_AGENT).unwrap();
+        let nested = reserve(&tree, &stranger).unwrap();
+        tree.finish(&idle, report(ChildStatus::Done));
+        // A sibling can reach it; a child of the sibling cannot.
+        assert_eq!(
+            tree.deliver(&stranger, &idle, "hi".into()),
+            Err(DeliverError::Idle(idle.clone()))
+        );
+        assert_eq!(
+            tree.deliver(&nested, &idle, "hi".into()),
+            Err(DeliverError::NotRunning)
+        );
+    }
+
+    #[test]
+    fn resuming_a_teammate_clears_idle() {
+        let tree = tree(8);
+        let id = teammate(&tree);
+        tree.finish(&id, report(ChildStatus::Done));
+        tree.resume(&id).unwrap();
+        assert!(!tree.is_idle(&id));
+        assert!(tree.is_running(&id));
+        assert!(tree.deliver(ROOT_AGENT, &id, "hi".into()).is_ok());
+    }
+
+    #[test]
+    fn a_wake_is_refused_once_the_session_starts_ending() {
+        let tree = tree(8);
+        let id = teammate(&tree);
+        tree.finish(&id, report(ChildStatus::Done));
+        assert_eq!(tree.wake_blocker(&id), None);
+        tree.kill_all();
+        assert!(tree.wake_blocker(&id).unwrap().contains("ending"));
+        assert!(tree.shutting_down());
+    }
+
+    #[test]
+    fn requeued_notes_return_to_the_front_in_order() {
+        let tree = tree(8);
+        let id = teammate(&tree);
+        tree.deliver(ROOT_AGENT, &id, "later".into()).unwrap();
+        tree.requeue(
+            &id,
+            vec![
+                Notification {
+                    from: "a".into(),
+                    from_name: "a".into(),
+                    kind: NotificationKind::Message,
+                    text: "first".into(),
+                },
+                Notification {
+                    from: "a".into(),
+                    from_name: "a".into(),
+                    kind: NotificationKind::Message,
+                    text: "second".into(),
+                },
+            ],
+        );
+        let texts: Vec<_> = tree
+            .take_notifications(&id)
+            .into_iter()
+            .map(|n| n.text)
+            .collect();
+        assert_eq!(texts, ["first", "second", "later"]);
     }
 }

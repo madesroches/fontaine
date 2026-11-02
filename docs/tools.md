@@ -31,7 +31,9 @@ result passes one post-call step before the model sees it.
 | `cron_jobs` | read-only | Lists the scheduled tasks: id, cadence, who set it, next run and the start of the prompt. Main conversation only. |
 | `cron_delete` | read-only | Cancels a scheduled task. Argument: `id`. Main conversation only. |
 | `schedule_wakeup` | read-only | Paces a self-paced `/loop` you started: `delay_seconds` (60 to 3,600) and `reason` pick when the loop's own prompt runs next, or `stop: true` ends the loop. It carries no prompt, so it can re-time text you wrote and never add new text. It fails when no such loop runs. Main conversation only. |
-| `send_message` | arbitrary | Sends a queued message to another agent or to the main conversation; see [Subagents](agents.md#messages-between-agents). |
+| `send_message` | arbitrary | Sends a queued message to another agent or to the main conversation; see [Subagents](agents.md#messages-between-agents). It wakes an idle [teammate](agents.md#agent-teams). |
+| `board_show` | read-only | Lists the [agent team's task board](agents.md#the-task-board), or shows one task by `id`: status, owner, blockers and text. Task text is agent-written data, shown fenced and labelled with its author. Registered only with `[agents] teams = true`. |
+| `board_update` | arbitrary | Changes the team's task board: `create` (`title`, `description`, `blocked_by`), `claim`, `complete` and `release` (`id`). Gated like `send_message`. Registered only with `[agents] teams = true`. |
 
 `read`, `write`, `edit` and `shell` are the file and process tools of the rig runtime, configured
 rather than modified. `ls`, `glob` and `grep` are Fontaine's own front ends over rig's directory
@@ -43,7 +45,7 @@ The system prompt steers the model toward `ls`, `read`, `glob` and `grep` and aw
 `find` and `grep` inside a shell.
 
 Tools of MCP servers join these at run time, always as arbitrary tools named
-`mcp__<server>__<tool>`; see [MCP servers](mcp.md). `agent` and `send_message` are described in
+`mcp__<server>__<tool>`; see [MCP servers](mcp.md). `agent`, `send_message`, `board_show` and `board_update` are described in
 [Subagents](agents.md), and `skill` in [Skills](extensions.md#skills).
 
 ## Risk classes
@@ -105,11 +107,11 @@ matches it. Its answers carry locations and the server's own text, never file co
 read, so a location outside the roots is a pointer the model must follow with the gated `read`.
 The server it asks is a program you defined, and a read-only label from it earns nothing.
 
-The `skill`, `ask_user_question`, `todo_write`, `cron_jobs`, `cron_delete`, `schedule_wakeup` and `job_output` tools are the read-only tools that name no path. `skill` takes
+The `skill`, `ask_user_question`, `todo_write`, `board_show`, `cron_jobs`, `cron_delete`, `schedule_wakeup` and `job_output` tools are the read-only tools that name no path. `skill` takes
 only a skill name, resolved against the skills loaded at startup, so all it can do is put that
 skill's text in the conversation. `ask_user_question` can only show you text and collect your
 choice, and its answer comes from you alone, never from a permission mode. `todo_write` takes only
-the task list, which it keeps in the session. `job_output` takes the id of a job this session started and returns only what that job printed; the command that made the job was judged when it was called. On a monitor id it returns only a wait status, never output lines: those arrive as notifications. On a subagent id, which must be one the caller started, it returns only that subagent's status and age; its report arrives as a notification. The three scheduling tools only list, cancel or re-time
+the task list, which it keeps in the session. `board_show` only reads the team's task board, whose text is shown as untrusted data. `job_output` takes the id of a job this session started and returns only what that job printed; the command that made the job was judged when it was called. On a monitor id it returns only a wait status, never output lines: those arrive as notifications. On a subagent id, which must be one the caller started, it returns only that subagent's status and age; its report arrives as a notification. The three scheduling tools only list, cancel or re-time
 scheduled text; `cron_create` is [arbitrary](permissions.md#scheduled-prompts) because it plants model-written text that
 later runs as a turn without you typing anything. None needs a scope check. The deterministic floor
 still runs first, so a deny or ask rule or a `pre_tool_use` hook can block any of them. An MCP tool

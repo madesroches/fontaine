@@ -992,6 +992,8 @@ fn summary_lines(entry: &CatalogPlugin, build: &plugins::PluginBuild, root: &Pat
                 ("PreToolUse", &shown.hooks.pre_tool_use),
                 ("PostToolUse", &shown.hooks.post_tool_use),
                 ("PermissionDenied", &shown.hooks.permission_denied),
+                ("TaskCompleted", &shown.hooks.task_completed),
+                ("TeammateIdle", &shown.hooks.teammate_idle),
             ] {
                 for hook in hooks {
                     let matcher = hook

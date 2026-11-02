@@ -1659,6 +1659,7 @@ mod tests {
             spend: "10 tok".into(),
             unpriced: false,
             writing: 0,
+            idle: false,
         }
     }
 
@@ -1674,6 +1675,7 @@ mod tests {
             spend: String::new(),
             unpriced: false,
             writing: 0,
+            idle: false,
         };
         app.agent_list.set_rows(vec![main, running_row("agent-1")]);
         app
@@ -1901,6 +1903,7 @@ mod tests {
             unpriced_tokens: 0,
             depth: 1,
             writing: 0,
+            idle: false,
             stopped_because: None,
         }]);
         app.agents = Some(panel);

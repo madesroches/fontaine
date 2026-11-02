@@ -5,13 +5,15 @@ Fontaine denied it. Hooks are how you add your own checks, rewrite arguments and
 without changing Fontaine. They follow Claude Code's hooks: the event arrives as JSON on standard
 input, the answer is JSON on standard output, and exit code 2 blocks.
 
-There are three events:
+There are five events, three around tool calls and two for [agent teams](agents.md#agent-teams):
 
 | Event | When | What it can do |
 |---|---|---|
 | `pre_tool_use` | At the start of the [pipeline](permissions.md#the-pipeline), before the floor. | Deny, ask or allow the call, rewrite its arguments, add a note for the guardian. |
 | `post_tool_use` | After the tool ran, in the result pipeline. | Add a note to the result the agent reads. |
 | `permission_denied` | When the pipeline denied the call. | Say the agent may retry a call the guardian denied. |
+| `task_completed` | Before `board_update` completes a task. | Block, keeping the task open. |
+| `teammate_idle` | When a teammate's turn ends. | Block, keeping the teammate working. |
 
 In the terminal UI, `/hooks` lists the configured hooks by event with their scope.
 
@@ -50,7 +52,7 @@ One JSON object on standard input:
 |---|---|
 | `session_id` | The session id. |
 | `cwd` | The primary workspace root. |
-| `hook_event_name` | `PreToolUse`, `PostToolUse` or `PermissionDenied`. |
+| `hook_event_name` | `PreToolUse`, `PostToolUse`, `PermissionDenied`, `TaskCompleted` or `TeammateIdle`. |
 | `tool_name` | Fontaine's tool name (`shell`, `read`, `mcp__github__create_issue`, ...). |
 | `tool_input` | The call's arguments. |
 | `tool_use_id` | The model's id for the call, when there is one. |
@@ -59,6 +61,10 @@ One JSON object on standard input:
 | `workspace_roots` | Every workspace root, including the session's [scratch directory](tools.md#the-scratch-directory), which comes after the startup roots and before any `/add-dir` root. |
 | `tool_response` | `post_tool_use` only: `{"is_error": false, "output": "..."}`. |
 | `reason`, `tier` | `permission_denied` only: why, and which part of the pipeline denied it. |
+
+The two team events send only `session_id`, `cwd`, `hook_event_name` and `agent_id`, plus their own
+field (see [below](#teams-task_completed-and-teammate_idle)): they carry no tool, so they take no
+`matcher`.
 
 There is no `transcript_path`: Fontaine keeps no transcript file. The environment variable
 `FONTAINE_PROJECT_DIR` holds the primary root.
@@ -123,6 +129,42 @@ pipeline.
   hear about it.
 
 Every subagent tool call runs the same hooks.
+
+## Teams: `task_completed` and `teammate_idle`
+
+These two events are quality gates for [agent teams](agents.md#agent-teams) and exist only with
+`[agents] teams = true`. They are configured like the others, without a `matcher`, which is
+rejected at load because the events have no tool name:
+
+```toml
+[[hooks.task_completed]]
+command = "/home/me/.config/fontaine/hooks/tests-green.sh"
+
+[[hooks.teammate_idle]]
+command = "/home/me/.config/fontaine/hooks/anything-left.sh"
+timeout_secs = 20
+```
+
+| Event | Fires | Extra input | A block |
+|---|---|---|---|
+| `task_completed` | Before `board_update complete` takes effect, with no board lock held. | `task`: the task object (`id`, `title`, `description`, `status`, `owner`, `blocked_by`, `created_by`). | The task stays in progress and the reason is the error the owner reads. |
+| `teammate_idle` | After a teammate's turn ends, before it is marked idle and before its report is delivered. | `teammate_name`. | The teammate is resumed with the reason as feedback instead of going idle. |
+
+The answer is Claude Code's: exit code 2 blocks and standard error is the reason. A hook has no
+`allow` answer; nothing it says can loosen anything, it can only add work, and a JSON answer of
+`allow` is ignored. Several hooks run in configured order and the first to block decides.
+
+- **A failing gate does not block.** A hook that cannot start, exits with another code, or runs
+  past its timeout warns you once and blocks nothing: these are quality gates, not security gates,
+  and one that failed closed forever would wedge the team.
+- **A gate that always blocks is bounded.** A `teammate_idle` block shares the
+  [hand-off's cap](agents.md#the-idle-hand-off): a teammate is resumed at most three times in a row
+  without the board changing, then goes idle with a warning.
+- **Where they may come from.** Your user config, `--settings` and plugins can define both. A
+  repository's `task_completed` hook loads like its other hooks (after workspace trust, and it
+  counts in the trust prompt) and can only keep a task open. A repository's `teammate_idle` hook is
+  ignored with a warning, because forcing more model calls is spend, not tightening. A plugin's
+  `hooks.json` names the events `TaskCompleted` and `TeammateIdle`; a matcher on them is ignored.
 
 ## Failure never loosens
 

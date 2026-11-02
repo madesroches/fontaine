@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use fontaine_agents::registry::AgentTypes;
 use fontaine_agents::spawn::{AgentTool, SendMessageTool};
+use fontaine_agents::tools::{BoardShowTool, BoardUpdateTool};
 use fontaine_tools::ask_user::AskUserTool;
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
@@ -223,7 +224,7 @@ fn extension_tools(
         }),
         ExtensionTool::new(SendMessageTool {
             tree: p.state.agents().clone(),
-            ledger: ledger_window,
+            ledger: ledger_window.clone(),
         }),
         ExtensionTool::new(AskUserTool {
             source: Arc::new(HumanQuestions::new(p.approver.clone(), p.state.clone())),
@@ -235,6 +236,15 @@ fn extension_tools(
             }),
         }),
     ];
+    if p.config.agents.teams {
+        tools.push(ExtensionTool::new(BoardShowTool {
+            tree: p.state.agents().clone(),
+        }));
+        tools.push(ExtensionTool::new(BoardUpdateTool {
+            tree: p.state.agents().clone(),
+            ledger: ledger_window,
+        }));
+    }
     if p.setup.lsp.is_active() {
         tools.push(ExtensionTool::new(LspTool {
             servers: p.setup.lsp.clone(),

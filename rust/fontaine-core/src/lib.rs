@@ -51,6 +51,7 @@ pub mod session;
 pub mod side_question;
 pub mod skills;
 pub mod steering;
+pub mod tasks;
 pub mod tier;
 pub mod todos;
 pub mod tools;

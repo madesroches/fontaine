@@ -607,7 +607,14 @@ pub fn propose(call: &CallContext<'_>) -> Option<Rule> {
         }
         Some(Specifier::Name) => Some(string_arg(call.args, name_arg_key(call.tool))?.to_string()),
         Some(Specifier::Path) => Some(path_pattern(&path_args(call)?.resolved)),
-        _ if is_mcp(call.tool) || matches!(call.tool, "send_message" | "ask_user_question") => None,
+        _ if is_mcp(call.tool)
+            || matches!(
+                call.tool,
+                "send_message" | "board_update" | "ask_user_question"
+            ) =>
+        {
+            None
+        }
         _ => return None,
     };
     let rule = Rule {

@@ -428,6 +428,12 @@ pub const KEYS: &[KeyRow] = &[
     row!("hooks.permission_denied", List, |c, _| entries(
         c.hooks.permission_denied.len()
     )),
+    row!("hooks.task_completed", List, |c, _| entries(
+        c.hooks.task_completed.len()
+    )),
+    row!("hooks.teammate_idle", List, |c, _| entries(
+        c.hooks.teammate_idle.len()
+    )),
     row!("mcp.servers", Map, |c, _| names(c.mcp_servers.keys())),
     row!("lsp.servers", Map, |c, _| names(
         c.lsp_table().servers.iter().map(|(name, _)| name)
@@ -464,6 +470,7 @@ pub const KEYS: &[KeyRow] = &[
     row!("agents.session_cost_budget_usd", Scalar, |c, _| opt(c
         .agents
         .session_cost_budget_usd)),
+    row!("agents.teams", Scalar, |c, _| c.agents.teams.to_string()),
     row!("agents.types", Map, |c, _| names(c.agents.types.keys())),
     row!("goal.max_turns", Scalar, |c, _| c
         .goal
