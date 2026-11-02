@@ -444,6 +444,18 @@ mod tests {
     }
 
     #[test]
+    fn a_stopped_row_formats_its_token_budget_with_trimmed_counts() {
+        let why = fontaine_agents::budget::Exhausted::Tokens {
+            spent: 200_000,
+            cap: 500_000,
+        };
+        assert_eq!(
+            why.describe_with(trimmed_count),
+            "its token budget is spent (200k of 500k)"
+        );
+    }
+
+    #[test]
     fn an_uncapped_row_shows_only_what_it_spent() {
         let mut panel = AgentsPanel::new();
         let mut uncapped = row("agent-1", ChildStatus::Running);
