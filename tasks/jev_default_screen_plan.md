@@ -53,15 +53,15 @@ the machine.
 - `Reader` becomes backend-aware: `ReaderSettings` stays the Ollama settings; a sibling
   `SystemOneSettings { endpoint, model, api_key, profile, timeout }` and
   `enum Backend { Ollama(ReaderSettings), SystemOne(SystemOneSettings) }` inside `Reader`
-  (constructor `Reader::systemone`; `Reader::new(ReaderSettings)` stays the Ollama constructor).
+  (constructor `Reader::systemone(client, SystemOneSettings)`; `Reader::new(client, ReaderSettings)` stays the Ollama constructor).
   `read()` dispatches on backend. `warm_up` is a no-op for SystemOne. `Reader::timeout()` works
   for both backends and replaces `reader.settings().timeout` in `Composition::read_timeout`
   (`composition/mod.rs:252`). The key is held in `rig_core::wire::Secret` (redacts in `Debug`, has
   `expose()`) and sent as a bearer token only over https or to loopback (same rule as the scorer).
 - New `Question::Level5Employee`. `yes_is_risky`/`text()` are Ollama concepts, so `Question` gains
   `fn backend(self) -> BackendKind` (`Ollama` for the three yes/no questions, `SystemOne` for
-  `Level5Employee`). Risk is `1 − p(within)`. `Read` gets `backend: BackendKind`; core passes the
-  account kind into `declared_reads`. `compile` checks `question.backend()` against `Read.backend`
+  `Level5Employee`). Risk is `1 − p(within)`. `Read` gets `backend: BackendKind`, set from the account kind that `CompositionSpec` carries (see
+  3). `compile` checks `question.backend()` against `Read.backend`
   (this also runs in `check_composition`, which compiles with no readers), and `Prompt::Hardened`
   stays valid only with `employee_allowed`. A mismatch is a `CompositionError` naming the read.
 - The state is `screen_message`'s state (wrapper sentences and digest line removed), sent as
@@ -91,8 +91,9 @@ the machine.
   account kind: an `openrouter` model declares `stop` and `allow` only; an `ollama` model keeps the
   three existing reads, unchanged. A second script `screen_jev.rn` is selected by backend; the
   Ollama script stays byte-identical.
-- Backend selection: `declared_reads(name, model, backend, params)` takes the account kind from
-  core and sets `Read.backend`.
+- Backend selection: `CompositionSpec` (`composition/mod.rs`) gains `kinds: BTreeMap<account,
+  BackendKind>`, one entry per read model's account, filled by core; `declared_reads()` and
+  `check_preset_params` read the kind from it and set `Read.backend`.
 - Params per backend (the preset's KNOWN params gain `allow`):
   - Jev: `question` rejected (unknown-param error), `steering_veto` rejected, `concurrent`
     accepted, `allow` accepted, `stop_threshold`/`allow_threshold` accepted.
@@ -102,8 +103,9 @@ the machine.
   0.10 margin for nondeterminism:
   - `allow_threshold = 0.20` (synthetic zero-miss skip 0.30 − 0.10). It is on by default.
   - `stop_threshold = 0.34`: the "stop@5%" value in `research/analysis-jev-improvements.md`
-    (~line 790, "skip 0.30, stop@5% 0.34"), derived with `jev_synth.transfer` over the committed
-    `results/jev/synthetic/level5_employee.json`. A stop default is safe by construction (it only
+    (~line 790, "skip 0.30, stop@5% 0.34"), derived with `transfer` in
+    `research/typed-decision-screen/scripts/jev_synth.py` over the committed
+    `research/typed-decision-screen/results/jev/synthetic/level5_employee.json`. A stop default is safe by construction (it only
     escalates), but off-domain it stopped 28–88% of allowed calls on synthetic thresholds, so
     the offer's wording recommends `shadow = true` first (below).
   - `allow = false` param: an explicit off value for the allow path (bool, default true on a Jev
@@ -127,22 +129,38 @@ the machine.
   `base_url` (default `https://openrouter.ai/api/v1`, the same base URL that serves chat) must be
   http(s) with a host; the SystemOne endpoint is derived by joining `systemone` onto that
   `/api/v1` base URL, so one `base_url` serves chat and the screen. The credential
-  must resolve now (`models::credential` → `Found`), else exit code 2 naming
+  must resolve now (`models::credential` → `Found`), checked as a separate step in `load` after
+  `check_composition` (which lacks env and stored credentials), using `params.env` and
+  `params.data_dir` as `resolve_telemetry` does; else exit code 2 naming
   `guardian.composition.model` and the account ("no OpenRouter key; set `api_key_env` or run
   `/login`"). No silent fallback.
+- `GuardianComposition::spec()` takes the configured accounts to fill `CompositionSpec.kinds`;
+  `check_composition` looks up each read model's account (and its kind) before calling
+  `spec.read_models()`. All `spec()` callers pass the accounts: `check_composition`,
+  `agent/setup.rs`, `fontaine/src/headless.rs`.
 - `model` stays required for any preset, as today (`config.rs:2692`); there is no default model
   resolution. The offer writes it.
 - `build_reader` becomes `build_readers`-by-kind: Ollama as today; OpenRouter builds
   `Reader::systemone` with the account's network settings client and resolved credential.
 - Audit: `screen_model` records the pinned resolved id. The SystemOne read returns the resolved id
   (`typesafe/jev-1.14-20261014`), stored in `ReadRecord.model`, so `composed.models()` feeds
-  `screen_model` (`permissions.rs`) per call. The tracing span stays on the label.
+  `screen_model` (`permissions.rs`) per call. The tracing span stays on the label. Update the doc
+  comments on `screen_model` (`audit.rs`: the resolved id has no account prefix) and
+  `ReadRecord.model` (`eval.rs`). The allow explanation (`permissions.rs`) leaves out its "steering
+  n/a" clause when there is no steering read. `screen_jev.rn` uses the node names `screen.allow` /
+  `screen.stop`.
+- Cost: the shared read carries its `usage.cost` (on `ReadRecord` or a `Composed` total), and
+  `permissions.rs` records it once per shared request through the existing `add_guardian_usage`
+  path, so `/cost` and `/usage` include it.
 
 ### 4. Setup offer
 
 `composition_offer.rs`: add a Jev offer next to the Ollama benchmarks.
-- `detect` is extended to find reachable `openrouter` accounts with a resolving credential from
-  the account listings (today it takes only Ollama listings). The Jev offer is made only when one
+- `ollama_accounts` filters `kind == "ollama"` and both callers (`fontaine/src/auto_mode.rs`,
+  `fontaine-tui/src/ui/commands/auto_mode_setup.rs`) use it to restrict listing, so Jev detection
+  selects `openrouter` accounts separately, by credential alone (the `account_has` / `candidates`
+  pattern in `models.rs`), with no listing call (an OpenRouter listing is a network call this
+  check does not need). The Jev offer is made only when one
   exists. With none, setup does not offer it and prints a one-line hint to add an OpenRouter
   account via `/login` / `api_key_env` and re-run. The offer text says guardian state
   (task intent, recent user messages, tool name and arguments, project facts) is sent to
@@ -154,6 +172,9 @@ the machine.
   reaches users with no config rewrite. The posture choice (safe/fast) stays for Ollama; for Jev
   the single offer is the preset with defaults, and the proposal lists how to turn the allow path off
   (`allow = false`) and shadow first (`shadow = true`).
+- `Offer` becomes an enum over Ollama (benchmark + posture + one threshold) and Jev (no posture,
+  no threshold): `threshold()`, `proposal()`, `calibration_note()` and `nothing_to_offer()` handle
+  both, and `write()` writes no threshold key for Jev.
 - The existing flows for an Ollama offer are unchanged.
 
 ### 5. Evals
@@ -186,7 +207,9 @@ the machine.
 - `tasks/fontaine_harness_plan.md` Decisions: new dated lines (append to the end of the relevant
   subsections) that supersede, by reference, the 2026-11-01 offer line (L624, "no threshold
   ships"), the 2026-10-21 "screeners deferred", the 2026-10-23 "nothing ships", and the 2026-10-24
-  "off by default" (L567, which already has a supersession parenthetical: add the note to it) lines.
+  "off by default" (L567, which already has a supersession parenthetical: add the note to it) lines. The L575
+  (2026-10-21) supersession note also marks its "thresholds are always recalibrated on Fontaine's
+  golden set" clause superseded for the default fit (synthetic-only with a 0.10 margin).
   Add the supersession note in each old line's existing parenthetical style. Record as a new
   Decision, not a supersession, that the composition model must be an Ollama account (it lives
   only in code and `docs/configuration.md:527`). Also record: allow path default-on with the leak
@@ -204,26 +227,35 @@ the machine.
 2. Guardian: `Backend` in `Reader`, `Reader::systemone`, `Question::Level5Employee`,
    `BackendKind`, compile-time pairing, `read_detailed`; unit tests with wiremock.
 3. Guardian: share the request future for equal reads in `composition` (key by model, prompt,
-   question), keeping one slot and `ReadRecord` per declared name; cost counted once.
+   question), keeping one slot and `ReadRecord` per declared name; cost counted once and recorded
+   in the usage ledger via `add_guardian_usage` (test: one shared request adds its cost once).
 4. Guardian: preset changes (backend-aware reads, `screen_jev.rn`, defaults, `allow` param,
    threshold-required rule only for Ollama models). `check_preset_params`
    (`composition/mod.rs:100-104`) gains a backend argument (derived from the model's account kind
    where known); update both callers (`config.rs:1185`, `composition_offer.rs:308-315`) so
-   `params.allow` is accepted for a Jev backend and rejected as unknown for an Ollama one.
+   `params.allow` is accepted for a Jev backend and rejected as unknown for an Ollama one. Add
+   `kinds` to `CompositionSpec`, update the `Read` struct literals (`config.rs`, `preset.rs`,
+   `screen.rs`, `tests/composition.rs`) and the `spec()` callers.
 5. Core: `check_composition` by backend, credential check, `build_reader` by account kind,
    `screen_model` pin, `Config` docs; add new composition keys (e.g. `allow`) to the
    `config_catalog.rs` KEYS rows and `config_scope.rs` rules (the catalog tests enforce it);
    `/config` read-only display unchanged.
-6. Core: Jev offer in `composition_offer.rs` + CLI/TUI wording, tests.
+6. Core: Jev offer in `composition_offer.rs` (the `Offer` enum) + `fontaine/src/auto_mode.rs`,
+   `fontaine-tui/src/ui/commands/auto_mode_setup.rs` (posture match), `fontaine-tui/src/setup_prompt.rs`
+   (posture stage) and `fontaine-tui/src/app.rs` if needed, wording, tests.
 7. Evals: switch to the shared parser, Jev preset runner support, scorecard placeholders; update
    `runner.rs:114-120` (`--stop-threshold`/`--allow-threshold` "There is no default" help) and
-   the `live.rs:158-159` comment (every read model is on an ollama account).
+   the `live.rs:158-159` comment (every read model is on an ollama account). In `runner.rs`, relax
+   the threshold-required check for an openrouter screen model, record the effective default
+   thresholds in `CascadeParams`, leave `steering_veto` unset for Jev and reject `--steering-veto`
+   there.
 8. Docs, Decisions, CHANGELOG, AGENTS.md wording.
 
 ## Files to Modify
 
 - `rust/fontaine-guardian/src/{lib.rs, screen.rs, systemone.rs (new), composition/{mod.rs,preset.rs,eval.rs,host.rs,screen_jev.rn (new)}}`
-- `rust/fontaine-core/src/{config.rs, config_scope.rs (tests), config_catalog.rs, agent/setup.rs, composition_offer.rs, permissions.rs, models.rs (visibility)}`
+- `rust/fontaine-core/src/{config.rs, config_scope.rs (tests), config_catalog.rs, agent/setup.rs, composition_offer.rs, permissions.rs}`
+- `rust/fontaine/src/{auto_mode.rs, headless.rs}`, `rust/fontaine-tui/src/{app.rs, setup_prompt.rs, ui/commands/auto_mode_setup.rs}`
 - `rust/fontaine-evals/src/{screen.rs, live.rs, runner.rs}`, tests under `rust/*/tests/`
 - `docs/{guardian.md, configuration.md, evals.md, tui.md, permissions.md}`, `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`, `AGENTS.md`
 
@@ -287,15 +319,9 @@ Unit/integration tests only, no live APIs (wiremock for `/v1/systemone`):
 
 ## Manual Verification
 
-1. With a real OpenRouter key: `cargo run -p fontaine-evals -- --dataset ../evals/dataset
-   --guardian screen:typesafe/jev-1.14 --screen-url https://openrouter.ai/api
-   --screen-api-key-file <key> --screen-framing employee-levels` (the scorer's `--screen-url`
-   keeps its current form; the endpoint it posts to, `/api/v1/systemone`, is the same). Expect the same catch/benign
-   figures as `evals/scorecards/screen-jev-1.14-employee-levels.json` (within nondeterminism).
-   Not automated: needs a paid external service and is nondeterministic.
-2. Run the cascade eval with the Jev preset on the golden, fresh and public sets and commit the
+1. Run the cascade eval with the Jev preset on the golden, fresh and public sets and commit the
    scorecards; confirm the leak cases cited in docs. Same reason.
-3. `fontaine auto-mode setup` in a scratch config dir with an OpenRouter account; accept; start
+2. `fontaine auto-mode setup` in a scratch config dir with an OpenRouter account; accept; start
    `fontaine` and run a benign shell call; the audit log shows `tier = screen`, `rule =
    screen.allow` and `screen_model = typesafe/jev-1.14-20261014`. Wiring a TUI cannot be unit-tested.
 
