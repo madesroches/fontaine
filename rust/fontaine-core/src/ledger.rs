@@ -250,6 +250,28 @@ pub struct LedgerView {
     pub actions: Vec<ActionEntry>,
     pub denials: Vec<DenialEntry>,
     touched: HashSet<String>,
+    /// Distinct resolved paths of allowed `write`, `edit` and `notebook_edit` calls, in the order
+    /// first seen. Whether the call then succeeded, or a rewind reverted it, is not known here.
+    written: Vec<String>,
+    written_keys: HashSet<String>,
+}
+
+/// The tools whose allowed calls name files the session was permitted to change.
+const WRITING_TOOLS: [&str; 3] = ["write", "edit", "notebook_edit"];
+
+/// What a session's ledger adds up to for `/recap`: counts and path sets, not text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LedgerRecap {
+    /// The human's messages since the last `/clear` or `/rewind`.
+    pub user_messages: Vec<String>,
+    /// Files allowed to be written or edited over the whole session, first seen first.
+    pub written: Vec<String>,
+    /// Allowed calls per tool over the whole session, most used first, ties by name.
+    pub tools: Vec<(String, usize)>,
+    pub denials: usize,
+    pub last_denial: Option<DenialEntry>,
+    /// Subagents spawned over the whole session.
+    pub agents_spawned: usize,
 }
 
 impl Default for LedgerView {
@@ -270,6 +292,8 @@ impl Default for LedgerView {
             actions: Vec::new(),
             denials: Vec::new(),
             touched: HashSet::new(),
+            written: Vec::new(),
+            written_keys: HashSet::new(),
         }
     }
 }
@@ -334,6 +358,27 @@ impl LedgerView {
         merged
     }
 
+    /// The figures `/recap` reports. Only the human's messages honor `/clear` and `/rewind`;
+    /// everything else covers the whole session, earlier processes of a resumed one included.
+    pub fn recap(&self) -> LedgerRecap {
+        let mut counts: Vec<(String, usize)> = Vec::new();
+        for action in &self.actions {
+            match counts.iter_mut().find(|(tool, _)| *tool == action.tool) {
+                Some((_, n)) => *n += 1,
+                None => counts.push((action.tool.clone(), 1)),
+            }
+        }
+        counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        LedgerRecap {
+            user_messages: self.user_messages.clone(),
+            written: self.written.clone(),
+            tools: counts,
+            denials: self.denials.len(),
+            last_denial: self.denials.last().cloned(),
+            agents_spawned: self.agents.len(),
+        }
+    }
+
     pub fn existence(&self, path: &str) -> Existence {
         let key = path_key(path);
         if self.index.contains(&key) {
@@ -388,11 +433,18 @@ impl LedgerView {
             Record::Action {
                 tool,
                 agent,
+                paths,
                 created,
                 summary,
-                ..
             } => {
                 self.touched.extend(created.iter().map(|p| path_key(p)));
+                if WRITING_TOOLS.contains(&tool.as_str()) {
+                    for path in paths {
+                        if self.written_keys.insert(path_key(path)) {
+                            self.written.push(path.clone());
+                        }
+                    }
+                }
                 self.actions.push(ActionEntry {
                     tool: tool.clone(),
                     agent: agent.clone(),
@@ -928,6 +980,82 @@ mod tests {
             })
             .unwrap();
         assert!(ledger.view().user_messages.is_empty());
+    }
+
+    fn act(ledger: &Ledger, tool: &str, paths: &[&str]) {
+        ledger
+            .append(Record::Action {
+                tool: tool.into(),
+                agent: "main".into(),
+                paths: paths.iter().map(|p| p.to_string()).collect(),
+                created: Vec::new(),
+                summary: String::new(),
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn a_recap_counts_the_whole_session_but_the_messages_since_a_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        assert_eq!(ledger.view().recap(), LedgerRecap::default());
+        say(&ledger, "one");
+        act(&ledger, "write", &["/w/a.rs"]);
+        act(&ledger, "edit", &["/w/a.rs", "/w/b.rs"]);
+        act(&ledger, "read", &["/w/c.rs"]);
+        act(&ledger, "notebook_edit", &["/w/n.ipynb"]);
+        act(&ledger, "shell", &[]);
+        act(&ledger, "shell", &[]);
+        ledger
+            .append(Record::Agent {
+                event: "spawned".into(),
+                agent: "agent-1".into(),
+                parent: None,
+                detail: Some("general".into()),
+                name: None,
+            })
+            .unwrap();
+        ledger
+            .append(Record::Denial {
+                tool: "shell".into(),
+                agent: "main".into(),
+                reason: "r".into(),
+                rule: Some("deny(shell)".into()),
+                summary: "rm".into(),
+            })
+            .unwrap();
+        let check = |ledger: &Ledger, messages: &[&str]| {
+            let recap = ledger.view().recap();
+            assert_eq!(recap.user_messages, messages);
+            assert_eq!(recap.written, ["/w/a.rs", "/w/b.rs", "/w/n.ipynb"]);
+            assert_eq!(
+                recap.tools,
+                [
+                    ("shell".to_string(), 2),
+                    ("edit".to_string(), 1),
+                    ("notebook_edit".to_string(), 1),
+                    ("read".to_string(), 1),
+                    ("write".to_string(), 1),
+                ]
+            );
+            assert_eq!(recap.denials, 1);
+            assert_eq!(recap.last_denial.unwrap().rule, "deny(shell)");
+            assert_eq!(recap.agents_spawned, 1);
+        };
+        check(&ledger, &["one"]);
+        say(&ledger, "two");
+        ledger
+            .append(Record::Rewound {
+                turn: 2,
+                what: RewindWhat::Both,
+                dropped_user_messages: 1,
+            })
+            .unwrap();
+        check(&ledger, &["one"]);
+        ledger.append(Record::ContextCleared {}).unwrap();
+        check(&ledger, &[]);
+        drop(ledger);
+        check(&Ledger::open(dir.path()).unwrap(), &[]);
     }
 
     fn said(ledger: &Ledger, text: &str, agent: Option<&str>) {

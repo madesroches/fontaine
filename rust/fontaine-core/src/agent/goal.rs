@@ -14,6 +14,7 @@ use crate::goal::{
 };
 use crate::ledger::{GoalEvent, Record};
 use crate::session::{CONVERSATION_LOG, CompactReason, CompactResult};
+use crate::side_question::{Answer, SideQuestion, SideQuestionError};
 use crate::turn::TurnOutcome;
 
 impl AgentRuntime {
@@ -49,6 +50,28 @@ impl AgentRuntime {
             self.state.agents().debit(ROOT_AGENT, &spend_of(usage));
         }
         result
+    }
+
+    /// `/btw`: answers `question` from the saved conversation on the main model, debited to the
+    /// root like a compaction, on success and on a billed answer that was unusable. Neither the
+    /// question nor the answer is saved or recorded, so the conversation and the guardian's view
+    /// of what the human asked are unchanged.
+    pub async fn ask_side_question(&self, question: &str) -> Result<Answer, SideQuestionError> {
+        let conversation = load_async(&self.session.store(), CONVERSATION_LOG)
+            .await
+            .map_err(|e| SideQuestionError::caused_by("the conversation could not be read", e))?;
+        let main = &self.models.main;
+        let asked = SideQuestion::new(main.completion.clone(), main.catalog_billed())
+            .ask(question, &transcript_of(&conversation))
+            .await;
+        let usage = match &asked {
+            Ok(answer) => Some(&answer.usage),
+            Err(e) => e.usage(),
+        };
+        if let Some(usage) = usage {
+            self.state.agents().debit(ROOT_AGENT, &spend_of(usage));
+        }
+        asked
     }
 
     fn forward_goal_warning(&self) {

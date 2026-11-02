@@ -546,6 +546,12 @@ All notable changes are recorded here. The format follows
 
 #### TUI
 
+- `/btw <question>` asks a side question about the conversation on the main model and prints the
+  answer as a transcript notice. The model gets the conversation as text with no tools, and
+  neither the question nor the answer is saved or recorded in the ledger, so the conversation and
+  the guardian's view of what you asked are unchanged. `/recap` reports the session from the
+  ledger without calling a model: your messages since the last `/clear` or `/rewind`, the goal,
+  the files allowed to be written or edited, tool calls, denials, subagents and the mode (#52).
 - The status bar shows the shell's current directory and the git branch checked out there, such
   as `· ~/work/app (main)`, read from `HEAD` without running `git` (#26).
 - The model's reasoning shows in the transcript as a dim `thinking` card that streams its last five

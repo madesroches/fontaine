@@ -900,6 +900,13 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-01: The status bar shows the shell's directory and the git branch (or the short commit of a
   detached `HEAD`) after the mode, read from `HEAD` without spawning `git` — a Fontaine addition,
   requested with #26. Claude Code's status line shows them only through a user script.
+- 2026-11-01: `/btw` runs on the main model, not the guardian model, because the question is about the main conversation and the user chose that model (#52).
+- 2026-11-01: `/btw` waits for the turn to end rather than running mid-turn (Claude Code allows it mid-turn), because the conversation log is being written then; revisit if mid-turn use matters (#52).
+- 2026-11-01: `/recap` is a model-free multi-line report from the ledger, not Claude Code's model-written single line of at most 400 characters, because it then costs nothing and works with no reachable model (#52).
+- 2026-11-01: The `/btw` answer is a transcript notice, not Claude Code's dismissible overlay, because the TUI has one notice path and the text stays in scrollback (#52).
+- 2026-11-01: A bare `/btw` is a usage error, not Claude Code's reopening of the last answer, because answers are not stored (#52).
+- 2026-11-01: Side questions are stateless, where Claude Code gives later ones the newest 20 exchanges, because nothing from them is saved and each answers from the conversation alone (#52).
+- 2026-11-01: AFK: `/btw` uses fixed constants, a 60 s timeout (`EVALUATOR_TIMEOUT`) and `SIDE_QUESTION_MAX_TOKENS = 4_096`, with a test-only `with_timeout`, not config keys, because the review loop found them unspecified and 1_024 tokens is too tight for a free-text answer (#52).
 
 ## Open Questions
 

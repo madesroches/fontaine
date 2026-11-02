@@ -738,6 +738,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Break(()) => Break(()),
                 Continue(()) => Continue(CommandOutcome::Done),
             },
+            Command::Btw(question) => match self.btw(runtime, question).await {
+                Break(()) => Break(()),
+                Continue(()) => Continue(CommandOutcome::Done),
+            },
             Command::Context(argument) => {
                 self.context(runtime, &argument).await;
                 Continue(CommandOutcome::Done)
@@ -813,6 +817,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Command::Mcp(argument) => self.mcp(runtime, argument),
             Command::Expand(argument) => self.expand(argument),
             Command::Config => self.open_config(runtime),
+            Command::Recap => self.recap(runtime),
             _ => {}
         }
     }
