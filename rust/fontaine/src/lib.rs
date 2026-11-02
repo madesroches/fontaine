@@ -169,7 +169,6 @@ fn trust_summary(config: &Config) -> fontaine_tui::trust_prompt::Summary {
         .chain(&config.hooks.post_tool_use)
         .chain(&config.hooks.permission_denied)
         .chain(&config.hooks.task_completed)
-        .chain(&config.hooks.teammate_idle)
         .filter(|hook| hook.origin.is_project())
         .count();
     let servers = config
@@ -1137,6 +1136,6 @@ mod trust_tests {
             env: &env,
         })
         .unwrap();
-        assert_eq!(trust_summary(&config).hooks, 3);
+        assert_eq!(trust_summary(&config).hooks, 2);
     }
 }

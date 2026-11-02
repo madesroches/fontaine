@@ -366,8 +366,12 @@ impl TaskBoard {
 /// [`warn`](Self::warn) and answers `None`, because a gate that failed closed forever would wedge
 /// the team.
 pub trait QualityGate: Send + Sync {
-    /// Runs the `task_completed` hooks before `task` is completed; `Some(reason)` blocks.
-    fn task_completed<'a>(&'a self, task: &'a Task) -> BoxFuture<'a, Option<String>>;
+    /// Runs the `task_completed` hooks before `agent` completes `task`; `Some(reason)` blocks.
+    fn task_completed<'a>(
+        &'a self,
+        agent: &'a str,
+        task: &'a Task,
+    ) -> BoxFuture<'a, Option<String>>;
 
     /// Runs the `teammate_idle` hooks when `name` ended a turn; `Some(reason)` resumes it with
     /// the reason as feedback.
@@ -618,7 +622,7 @@ mod tests {
 
     struct NoGate;
     impl QualityGate for NoGate {
-        fn task_completed<'a>(&'a self, _: &'a Task) -> BoxFuture<'a, Option<String>> {
+        fn task_completed<'a>(&'a self, _: &'a str, _: &'a Task) -> BoxFuture<'a, Option<String>> {
             Box::pin(async { None })
         }
         fn teammate_idle<'a>(&'a self, _: &'a str, _: &'a str) -> BoxFuture<'a, Option<String>> {

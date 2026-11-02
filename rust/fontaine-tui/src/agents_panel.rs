@@ -248,7 +248,7 @@ impl AgentsPanel {
                 match self.selected.checked_sub(self.rows.len()) {
                     None => {
                         let row = &self.rows[self.selected];
-                        if row.status.is_running() {
+                        if row.status.is_running() || row.idle {
                             return PanelKey::Kill(row.id.clone());
                         }
                     }
@@ -546,6 +546,18 @@ mod tests {
             row("agent-2", ChildStatus::Running),
         ]);
         assert_eq!(panel.selected_id().as_deref(), Some("agent-2"));
+    }
+
+    #[test]
+    fn an_idle_teammate_can_be_killed() {
+        let mut panel = AgentsPanel::new();
+        let mut idle = row("agent-1", ChildStatus::Done);
+        idle.idle = true;
+        panel.set_rows(vec![idle]);
+        assert_eq!(
+            panel.handle_key(key(KeyCode::Char('x'))),
+            PanelKey::Kill("agent-1".into())
+        );
     }
 
     fn job(id: &str, running: bool) -> JobRow {

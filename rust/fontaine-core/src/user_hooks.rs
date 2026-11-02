@@ -573,11 +573,15 @@ impl TeamGate {
 }
 
 impl QualityGate for TeamGate {
-    fn task_completed<'a>(&'a self, task: &'a Task) -> BoxFuture<'a, Option<String>> {
+    fn task_completed<'a>(
+        &'a self,
+        agent: &'a str,
+        task: &'a Task,
+    ) -> BoxFuture<'a, Option<String>> {
         Box::pin(self.run(
             &self.task_completed,
             wire::TASK_COMPLETED,
-            task.owner.as_deref().unwrap_or_default(),
+            agent,
             TeamEvent::TaskCompleted(task),
         ))
     }

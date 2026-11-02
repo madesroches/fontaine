@@ -321,7 +321,7 @@ impl AgentList {
                         return ListKey::Blur { typed: true };
                     }
                     Some(id) => {
-                        if row.status.is_some_and(ChildStatus::is_running) {
+                        if row.idle || row.status.is_some_and(ChildStatus::is_running) {
                             return ListKey::Kill(id);
                         }
                         self.dismissed.insert(id);

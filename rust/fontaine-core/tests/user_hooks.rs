@@ -784,13 +784,16 @@ async fn a_task_completed_hook_that_exits_2_blocks_with_its_stderr_and_sees_the_
         user(),
     );
     let gate = gate(&rig, &[blocking], &[]);
-    let reason = gate.task_completed(&task()).await;
+    let reason = gate.task_completed("root", &task()).await;
     assert_eq!(reason.as_deref(), Some("tests are red"));
     let event: Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
     assert_eq!(event["hook_event_name"], "TaskCompleted");
     assert_eq!(event["task"]["id"], "t1");
     assert_eq!(event["task"]["title"], "ship it");
-    assert_eq!(event["agent_id"], "agent-1");
+    assert_eq!(
+        event["agent_id"], "root",
+        "the agent completing it, not the owner"
+    );
     assert!(event["session_id"].is_string());
     assert!(event["cwd"].is_string());
     assert!(
@@ -833,7 +836,7 @@ async fn a_gate_hook_that_fails_or_times_out_warns_and_blocks_nothing() {
     slow.timeout_secs = Some(1);
     let missing = hook(None, "definitely-not-a-command-xyz".to_string(), user());
     let gate = gate(&rig, &[crashes, slow, missing], &[]);
-    assert_eq!(gate.task_completed(&task()).await, None);
+    assert_eq!(gate.task_completed("agent-1", &task()).await, None);
     assert_eq!(rig.approver.warnings.lock().unwrap().len(), 3);
 }
 
@@ -846,7 +849,7 @@ async fn a_gate_hook_answer_of_allow_changes_nothing() {
         std::slice::from_ref(&allows),
         std::slice::from_ref(&allows),
     );
-    assert_eq!(gate.task_completed(&task()).await, None);
+    assert_eq!(gate.task_completed("agent-1", &task()).await, None);
     assert_eq!(gate.teammate_idle("agent-1", "a").await, None);
     assert!(rig.approver.warnings.lock().unwrap().is_empty());
 }
@@ -863,6 +866,9 @@ async fn the_first_blocking_gate_hook_wins_and_later_ones_do_not_run() {
         user(),
     );
     let gate = gate(&rig, &[first, after], &[]);
-    assert_eq!(gate.task_completed(&task()).await.as_deref(), Some("first"));
+    assert_eq!(
+        gate.task_completed("agent-1", &task()).await.as_deref(),
+        Some("first")
+    );
     assert!(!second.exists());
 }

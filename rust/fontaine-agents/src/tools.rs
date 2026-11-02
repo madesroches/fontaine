@@ -212,7 +212,7 @@ impl Tool for BoardUpdateTool {
                 let id = need(&args.id, "id", "complete")?;
                 let task = board.check_complete(&agent, id).map_err(board_error)?;
                 // Outside the board's lock: a hook is a process.
-                if let Some(reason) = teams.gate.task_completed(&task).await {
+                if let Some(reason) = teams.gate.task_completed(&agent, &task).await {
                     return Err(ToolExecutionError::refused(format!(
                         "a task_completed hook blocked completing {id}, which stays in progress: {reason}"
                     )));

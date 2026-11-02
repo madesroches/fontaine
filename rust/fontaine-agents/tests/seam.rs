@@ -1194,7 +1194,7 @@ struct FakeGate {
 }
 
 impl QualityGate for FakeGate {
-    fn task_completed<'a>(&'a self, task: &'a Task) -> BoxFuture<'a, Option<String>> {
+    fn task_completed<'a>(&'a self, _: &'a str, task: &'a Task) -> BoxFuture<'a, Option<String>> {
         self.completed_seen.lock().unwrap().push(task.clone());
         Box::pin(async { self.block_completed.lock().unwrap().clone() })
     }
@@ -1552,6 +1552,25 @@ async fn a_wake_refused_by_budget_shutdown_or_the_cap_says_why_and_releases_the_
     assert!(error.contains("max_parallel = 1"), "{error}");
     assert_eq!(team.board.get("t1").unwrap().status, TaskStatus::Pending);
     assert!(team.rig.tree.is_idle(&id), "it stays idle");
+}
+
+#[tokio::test]
+async fn killing_an_idle_teammate_ends_it_and_releases_its_tasks_without_a_report() {
+    let team = team_rig();
+    let (id, _) = idle_teammate(&team, "one").await;
+    board_call(&team, ROOT_AGENT, create("a")).await.unwrap();
+    team.board.claim(&id, "t1").unwrap();
+    team.rig.tree.take_notifications(ROOT_AGENT);
+    assert!(team.rig.tree.kill(&id));
+    assert!(!team.rig.tree.is_idle(&id));
+    assert!(!team.rig.tree.any_idle());
+    assert!(team.rig.tree.was_killed(&id));
+    assert_eq!(team.board.get("t1").unwrap().status, TaskStatus::Pending);
+    assert!(team.rig.tree.take_notifications(ROOT_AGENT).is_empty());
+    assert!(
+        !team.rig.tree.kill(&id),
+        "a second kill finds nothing to stop"
+    );
 }
 
 #[tokio::test]

@@ -115,7 +115,8 @@ fn conclude(
         status: report.status.as_str().to_string(),
     });
     // A teammate that finished its turn keeps its tasks: it is idle, not gone.
-    let keeps_tasks = report.status == ChildStatus::Done && tree.is_teammate(id);
+    let keeps_tasks =
+        report.status == ChildStatus::Done && tree.is_teammate(id) && !tree.was_killed(id);
     tree.finish(id, report.clone());
     if !keeps_tasks {
         release_tasks(tree, ledger, id);
