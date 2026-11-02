@@ -231,6 +231,7 @@ pub fn build(new: &NewAccount, config: &Config) -> Result<Account, RuntimeError>
         context_tokens: None,
         prompt_caching: None,
         cache_ttl: None,
+        quota: None,
         think: None,
         https_proxy: None,
         http_proxy: None,

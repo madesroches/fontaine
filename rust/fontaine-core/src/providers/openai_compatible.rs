@@ -3,9 +3,17 @@ use std::sync::Arc;
 use rig_core::providers::openai::OpenAIConfig;
 use rig_core::providers::openai::wire::{Auth, Dialect};
 
-use super::openai::Connected;
+use futures::FutureExt;
+use futures::future::BoxFuture;
+use rig_core::DynModel;
+use rig_core::error::ProviderError;
+use rig_core::operation::Completion;
+use rig_core::providers::openai::OpenAI as Client;
+
+use super::kimi_quota::KimiQuota;
 use super::{AccountClient, ConnectContext, CredentialPolicy, Provider};
-use crate::config::Account;
+use crate::config::{Account, QuotaKind};
+use crate::quota::QuotaSource;
 use crate::transport::caused_client;
 use fontaine_tools::error_chain::chain;
 
@@ -28,6 +36,10 @@ impl Provider for OpenAiCompatible {
         CredentialPolicy::Optional
     }
 
+    fn accepts_quota(&self) -> bool {
+        true
+    }
+
     fn validate(&self, account: &Account) -> Result<(), (&'static str, String)> {
         if account.base_url.as_deref().is_none_or(str::is_empty) {
             return Err((
@@ -44,8 +56,38 @@ impl Provider for OpenAiCompatible {
         if let Some(url) = ctx.base_url() {
             config = config.with_base_url(url);
         }
-        Ok(Arc::new(Connected(config.connect(
-            caused_client(ctx.network).map_err(|e| chain(&e))?,
-        ))))
+        let client = config.connect(caused_client(ctx.network).map_err(|e| chain(&e))?);
+        let quota = match (ctx.account.quota, ctx.base_url()) {
+            (Some(QuotaKind::Kimi), Some(url)) => Some(Arc::new(
+                KimiQuota::new(ctx.network, url, ctx.api_key()).map_err(|e| chain(&e))?,
+            )),
+            _ => None,
+        };
+        Ok(Arc::new(Connected { client, quota }))
+    }
+}
+
+struct Connected {
+    client: Client,
+    quota: Option<Arc<KimiQuota>>,
+}
+
+impl AccountClient for Connected {
+    fn completion(&self, model: &str) -> DynModel<Completion> {
+        self.client.completion(model).erase()
+    }
+
+    fn quota_source(&self) -> Option<Arc<dyn QuotaSource>> {
+        self.quota
+            .clone()
+            .map(|quota| quota as Arc<dyn QuotaSource>)
+    }
+
+    fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {
+        async move {
+            let list = self.client.list_models().await.map_err(Box::new)?;
+            Ok(list.data.into_iter().map(|m| m.id).collect())
+        }
+        .boxed()
     }
 }

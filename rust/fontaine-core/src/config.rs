@@ -338,6 +338,13 @@ pub enum TelemetryBackend {
     Otlp,
 }
 
+/// The quota endpoint shape an account's provider speaks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum QuotaKind {
+    Kimi,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Account {
@@ -357,6 +364,9 @@ pub struct Account {
     /// `anthropic`, `openrouter` and `opencode-go` only: the lifetime of a cached prefix; `"5m"`
     /// when unset.
     pub cache_ttl: Option<CacheTtl>,
+    /// `openai-compatible` only: where to read the provider's own subscription quota for the
+    /// status bar. Sends the account's key to `<base_url>/usages`.
+    pub quota: Option<QuotaKind>,
     /// Each network key replaces the `[network]` value for this account only. Declared here
     /// rather than flattened from `NetworkSection`, since `deny_unknown_fields` and `flatten`
     /// do not combine.
@@ -1025,6 +1035,12 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
                 format!("not used by kind = \"{}\"", provider.name()),
             ));
         }
+    }
+    if account.quota.is_some() && !provider.accepts_quota() {
+        return Err((
+            format!("accounts.{name}.quota"),
+            format!("not used by kind = \"{}\"", provider.name()),
+        ));
     }
     for (key, set) in [
         ("context_tokens", account.context_tokens.is_some()),

@@ -37,8 +37,7 @@ impl Provider for OpenAi {
     }
 }
 
-/// Shared with the other kinds that speak the OpenAI wire.
-pub(super) struct Connected(pub(super) Client);
+struct Connected(Client);
 
 impl AccountClient for Connected {
     fn completion(&self, model: &str) -> DynModel<Completion> {

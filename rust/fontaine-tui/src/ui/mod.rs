@@ -30,6 +30,7 @@ use fontaine_core::ledger::Record;
 use fontaine_core::notice::Notice;
 use fontaine_core::prompt;
 use fontaine_core::session;
+use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::read_recovering;
 use std::time::Duration;
@@ -62,6 +63,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .completion
             .spec()
             .is_some_and(|spec| spec.input.image);
+        self.sync_quota(runtime);
         self.app.prune_closed();
         self.app.home = runtime.home().map(Path::to_path_buf);
         self.app.set_cwd(&runtime.shell_cwd());
@@ -92,6 +94,34 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let files = read_recovering(&runtime.files).clone();
         self.app.set_files(files);
         (self.render)(&mut self.app);
+    }
+
+    /// Points the poller at the main model's quota source and takes its last snapshot.
+    fn sync_quota(&mut self, runtime: &AgentRuntime) {
+        let source = runtime.models.main.quota.as_ref();
+        self.quota.point(source);
+        let snapshot = self.quota_rx.borrow_and_update().clone();
+        if source.is_none() {
+            self.app.quota = None;
+            return;
+        }
+        if let Some(error) = &snapshot.error
+            && warn_once(
+                &mut self.quota_warned,
+                &runtime.models.main.reference.account,
+            )
+        {
+            runtime.approver().warn(&format!(
+                "could not read the {} quota: {}",
+                snapshot.name,
+                chain(error.as_ref())
+            ));
+        }
+        self.app.quota = snapshot.quota.map(|quota| crate::app::QuotaView {
+            name: snapshot.name,
+            quota,
+            as_of: SystemTime::now(),
+        });
     }
 
     /// The list below the status line, from the tree as it stands now.
@@ -292,6 +322,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 _ = &mut changed => Action::None,
                 _ = &mut display => Action::None,
+                Ok(()) = self.quota_rx.changed() => Action::None,
                 () = async {
                     match tick {
                         Some(wait) => tokio::time::sleep(wait).await,
@@ -886,4 +917,9 @@ fn agent_label(runtime: &AgentRuntime, id: &str) -> String {
     } else {
         format!("{name} ({id})")
     }
+}
+
+/// A failing quota is reported once per account, not on every redraw or re-point.
+fn warn_once(warned: &mut std::collections::HashSet<String>, account: &str) -> bool {
+    warned.insert(account.to_string())
 }

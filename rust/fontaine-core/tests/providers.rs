@@ -184,6 +184,38 @@ fn model_options_belong_to_ollama_only() {
 }
 
 #[test]
+fn quota_belongs_to_openai_compatible_only() {
+    let ok = parse(
+        "[accounts.k]\nkind = \"openai-compatible\"\nbase_url = \"http://localhost:1\"\nquota = \"kimi\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        ok.accounts.unwrap()["k"].quota,
+        Some(fontaine_core::config::QuotaKind::Kimi)
+    );
+    for kind in [
+        "anthropic",
+        "openai",
+        "gemini",
+        "ollama",
+        "opencode-go",
+        "openrouter",
+    ] {
+        let err = parse(&format!(
+            "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\nquota = \"kimi\"\n"
+        ))
+        .unwrap_err();
+        assert!(err.contains("accounts.x.quota"), "{kind}: {err}");
+        assert!(err.contains("not used by kind"), "{kind}: {err}");
+    }
+    let err = parse(
+        "[accounts.k]\nkind = \"openai-compatible\"\nbase_url = \"http://localhost:1\"\nquota = \"other\"\n",
+    )
+    .unwrap_err();
+    assert!(err.contains("quota") || err.contains("other"), "{err}");
+}
+
+#[test]
 fn a_tiny_context_window_is_refused() {
     let err = parse("[accounts.l]\nkind = \"ollama\"\ncontext_tokens = 512\n").unwrap_err();
     assert!(err.contains("accounts.l.context_tokens"), "{err}");

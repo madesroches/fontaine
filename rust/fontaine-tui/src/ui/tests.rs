@@ -52,6 +52,7 @@ fn the_spinner_tick_wins_only_while_it_shows() {
 }
 
 fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
+    let quota = fontaine_core::quota::QuotaPoller::new();
     Ui {
         app: App::new(PermissionMode::Manual, "m".into()),
         input: unbounded_channel().1,
@@ -73,6 +74,9 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         suspend: crate::no_suspend(),
         launcher: crate::ui::Launcher::Sh,
         switch: None,
+        quota_rx: quota.subscribe(),
+        quota,
+        quota_warned: Default::default(),
     }
 }
 
@@ -441,4 +445,12 @@ fn a_message_handed_to_a_resume_is_not_restored_to_the_input() {
         Err(MessageRefusal::Ended(ChildStatus::Done)),
     );
     assert_eq!(ui.app.input.text(), "hello");
+}
+
+#[test]
+fn a_failing_quota_warns_once_per_account() {
+    let mut warned = Default::default();
+    assert!(super::warn_once(&mut warned, "kimi"));
+    assert!(!super::warn_once(&mut warned, "kimi"));
+    assert!(super::warn_once(&mut warned, "other"));
 }

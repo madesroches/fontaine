@@ -256,6 +256,11 @@ struct Ui<R> {
     launcher: ui::Launcher,
     /// Set by `/resume` and `/branch`: the session the caller starts once this one has ended.
     switch: Option<SessionTarget>,
+    quota: fontaine_core::quota::QuotaPoller,
+    quota_rx: tokio::sync::watch::Receiver<fontaine_core::quota::QuotaSnapshot>,
+    /// Accounts whose quota failure was already reported, so a poller re-pointed by a credential
+    /// rebuild does not repeat it.
+    quota_warned: std::collections::HashSet<String>,
 }
 
 /// Runs the interface until the user quits or `input` closes. `render` is called with the
@@ -313,6 +318,7 @@ pub async fn drive(
         })
     });
     let theme = Theme::preset(runtime.config.tui.theme);
+    let quota = fontaine_core::quota::QuotaPoller::new();
     let mut ui = Ui {
         app: App::new(mode, model),
         input,
@@ -334,6 +340,9 @@ pub async fn drive(
         suspend,
         launcher,
         switch: None,
+        quota_rx: quota.subscribe(),
+        quota,
+        quota_warned: Default::default(),
     };
     ui.app.theme = theme;
     ui.app.transcript.glyphs = theme::Glyphs::from_env(

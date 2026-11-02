@@ -15,6 +15,7 @@ use rig_core::providers::anthropic::completion::CacheTtl as RigTtl;
 
 use crate::config::{Account, CacheTtl};
 use crate::credentials::StoredCredential;
+use crate::quota::QuotaSource;
 use fontaine_tools::tls::LoadedNetwork;
 
 pub mod anthropic;
@@ -22,6 +23,7 @@ pub mod cache_minimum;
 mod cache_wire;
 pub mod device_flow;
 pub mod gemini;
+pub mod kimi_quota;
 pub mod ollama;
 pub mod openai;
 pub mod openai_compatible;
@@ -100,6 +102,11 @@ pub trait Provider: Send + Sync + 'static {
 
     /// Whether the account may set `prompt_caching` and `cache_ttl`.
     fn accepts_prompt_caching(&self) -> bool {
+        false
+    }
+
+    /// Whether the account may set `quota`.
+    fn accepts_quota(&self) -> bool {
         false
     }
 
@@ -193,6 +200,11 @@ pub trait AccountClient: Send + Sync {
     /// How to learn which transport the guardian and scanner can use to get a typed answer
     /// from `model`. `None` when the kind's models all take a forced tool call.
     fn output_probe(&self, _model: &str) -> Option<Arc<dyn OutputProbe>> {
+        None
+    }
+    /// Where the provider's own subscription quota can be read; `None` when the account did not
+    /// opt in or its kind has none.
+    fn quota_source(&self) -> Option<Arc<dyn QuotaSource>> {
         None
     }
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>>;
