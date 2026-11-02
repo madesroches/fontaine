@@ -26,9 +26,9 @@ issue expects.
   budget-exhausted agents listed for 30 s) and the full agents panel. After a clear, those rows are
   the stale ones the issue reports.
 - The tree holds more than display rows, which a prune must not destroy:
-  - `next` (AtomicU64, line 336) — the id counter, seeded at session load from the ledger "so ids
+  - `next` (AtomicU64, line 313) — the id counter, seeded at session load from the ledger "so ids
     never collide with persisted per-agent logs" (`rust/fontaine-core/src/agent/setup.rs:338`).
-  - `names` (HashSet) — taken agent names, never reused (`generated_name`, tree.rs:235).
+  - `names` (HashSet) — taken agent names, never reused (`generated_name`, tree.rs:267).
   - `session_spend` (tree.rs:215) — the session-wide spend tally the session budget cap is
     checked against (`debit`, tree.rs:819).
 - Root state that legitimately survives a clear today: the session id, ledger, audit log, grants
@@ -63,11 +63,13 @@ running/notifications pre-check stays as the user-facing refusal.
 
 ### UI (`rust/fontaine-tui/src/ui/commands/context.rs`)
 
-On success, also clear `app.agent_views`: the cached per-agent transcripts belong to the
-conversation that is gone, like `pending_notices` already cleared there. No other UI state needs
-it — the list rows and the panel re-derive from the tree on the next refresh, `viewing` is
-always `None` here because `/clear` is `main_only`
-(`Command::main_only`, `rust/fontaine-tui/src/commands.rs:94`), and stale ids in
+On success, also clear `app.agent_views` and switch back to the main view
+(`self.app.view(None)`): the cached per-agent transcripts belong to the conversation that is
+gone, like `pending_notices` already cleared there. A `/clear` queued mid-turn can run while
+an agent view is on screen (`main_only` is enforced only for commands typed while viewing),
+and leaving `viewing` set to a pruned id would route input to the dead agent and let
+`shown_mut()` recreate an empty view for it. No other UI state needs it — the list rows and
+the panel re-derive from the tree on the next refresh, and stale ids in
 `agent_list.dismissed` can never match a row again.
 
 ### What is deliberately not touched
@@ -85,19 +87,23 @@ always `None` here because `/clear` is `main_only`
 
 1. `rust/fontaine-agents/src/tree.rs`: add `AgentTree::clear_ended` with unit tests (below).
 2. `rust/fontaine-core/src/agent.rs`: call it in `clear_conversation` after the session clear.
-3. `rust/fontaine-tui/src/ui/commands/context.rs`: clear `app.agent_views` on success.
+3. `rust/fontaine-tui/src/ui/commands/context.rs`: clear `app.agent_views` and switch to the
+   main view (`app.view(None)`) on success.
 4. Docs: `docs/tui.md` Context section — note that past subagents leave the agent list and the
    agents panel (their persisted transcripts stay on disk for `/export`); `docs/tui.md` "The
    agent list and the agent view" — one clause that `/clear` empties the list; qualify the
    "one row per subagent, ended ones included" phrasing in `docs/tui.md`'s agents-panel section
    and in `docs/agents.md` (e.g. "until a `/clear`") so it stays true for agents that ended
    before a clear.
+5. `CHANGELOG.md`: add a `### Fixed` entry under `## [Unreleased]` describing that `/clear`
+   prunes ended subagents from the agent list and agents panel.
 
 ## Files to Modify
 
 - `rust/fontaine-agents/src/tree.rs`
 - `rust/fontaine-core/src/agent.rs`
 - `rust/fontaine-tui/src/ui/commands/context.rs`
+- `CHANGELOG.md`
 - `docs/tui.md`
 - `docs/agents.md`
 
@@ -134,8 +140,8 @@ section) and `docs/agents.md` per Implementation Step 4.
   so a racing spawn never has its node yanked from under it.
 - Integration test in `rust/fontaine-core` driving `AgentRuntime`: run a child subagent to an
   ended state, `clear_conversation()`, then assert `rows()` is empty. The existing refusal
-  coverage (`rust/fontaine-core/tests/scanner.rs:365`, clear refused while a subagent runs)
-  keeps passing unchanged.
+  coverage (`rust/fontaine-core/tests/scanner.rs:365`, clear refused while a report waits to
+  be delivered) keeps passing unchanged.
 - Regression test at the UI tier in `rust/fontaine-tui/tests/agents.rs`: start an agent, end it
   unsuccessfully (so the 30 s `ENDED_LISTED` window would keep it listed), run `/clear`, and
   assert the agent list shows no rows. This is the bug from the issue, which actually happened
