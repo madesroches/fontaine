@@ -2,6 +2,7 @@
 //! them: `manual`, `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on`, `dontAsk`.
 
 use std::path::Path;
+use std::time::SystemTime;
 
 use fontaine_core::config::PermissionMode;
 use fontaine_core::goal;
@@ -12,7 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::agents_panel::status_label;
-use crate::app::App;
+use crate::app::{App, QuotaView};
 use crate::theme::Theme;
 
 pub fn mode_label(mode: PermissionMode) -> &'static str {
@@ -86,6 +87,51 @@ fn location(app: &App) -> String {
     }
 }
 
+/// A non-headline window shows once it is this used.
+const HOT_RATIO: f64 = 0.70;
+
+/// The status colour changes once any shown window is this used.
+const WARN_RATIO: f64 = 0.90;
+
+fn percent(ratio: f64) -> u32 {
+    (ratio.min(1.0) * 100.0).round() as u32
+}
+
+fn left_text(until: std::time::Duration) -> String {
+    let secs = until.as_secs();
+    match secs {
+        s if s >= 86_400 => format!("{}d left", s / 86_400),
+        s if s >= 3_600 => format!("{}h left", s / 3_600),
+        s => format!("{}m left", (s / 60).max(1)),
+    }
+}
+
+/// `<name> <pct>% · <Nd|Nh|Nm> left`, then any other window that is running hot as
+/// `<label> <pct>%`; and whether any shown window is past the warning level. `None` when the
+/// quota has no window.
+fn quota_segment(view: &QuotaView, now: SystemTime) -> Option<(String, bool)> {
+    let (headline, rest) = view.quota.windows.split_first()?;
+    let mut text = format!("{} {}%", view.name, percent(headline.used_ratio));
+    let left = headline
+        .reset_at
+        .and_then(|reset| reset.duration_since(now).ok())
+        .filter(|until| !until.is_zero());
+    if let Some(until) = left {
+        text.push_str(" · ");
+        text.push_str(&left_text(until));
+    }
+    let mut warn = headline.used_ratio >= WARN_RATIO;
+    for window in rest.iter().filter(|w| w.used_ratio >= HOT_RATIO) {
+        text.push_str(&format!(
+            " · {} {}%",
+            window.label,
+            percent(window.used_ratio)
+        ));
+        warn |= window.used_ratio >= WARN_RATIO;
+    }
+    Some((text, warn))
+}
+
 pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let dim = Style::default().add_modifier(Modifier::DIM);
     // In an agent's view the state is the agent's: the main turn is out of sight, and Esc does
@@ -145,11 +191,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .effort
         .map_or_else(String::new, |level| format!(" · effort {level}"));
     spans.push(Span::styled(
-        format!(
-            "{}· {}{effort}{agents}{scheduled}{goal} · {hint}",
-            location(app),
-            app.model
-        ),
+        format!("{}· {}", location(app), app.model),
+        dim,
+    ));
+    if let Some((text, warn)) = app
+        .quota
+        .as_ref()
+        .and_then(|view| quota_segment(view, view.as_of))
+    {
+        let style = if warn {
+            Style::default().fg(app.theme.warning)
+        } else {
+            dim
+        };
+        spans.push(Span::styled(format!(" · {text}"), style));
+    }
+    spans.push(Span::styled(
+        format!("{effort}{agents}{scheduled}{goal} · {hint}"),
         dim,
     ));
     let line = Line::from(spans);
@@ -159,6 +217,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::time::Duration;
+
+    use fontaine_core::quota::{Quota, QuotaWindow};
 
     use super::*;
     use ratatui::Terminal;
@@ -299,6 +360,115 @@ mod tests {
         let text = bar(&app);
         assert!(text.contains("a turn is running"), "{text}");
         assert!(!text.contains("no image on the clipboard"), "{text}");
+    }
+
+    fn window(label: &str, used_ratio: f64, reset_in: Option<u64>, now: SystemTime) -> QuotaWindow {
+        QuotaWindow {
+            label: label.into(),
+            used_ratio,
+            reset_at: reset_in.map(|s| now + Duration::from_secs(s)),
+        }
+    }
+
+    fn view(windows: Vec<QuotaWindow>, now: SystemTime) -> QuotaView {
+        QuotaView {
+            name: "kimi".into(),
+            quota: Quota { windows },
+            as_of: now,
+        }
+    }
+
+    #[test]
+    fn the_quota_headline_shows_the_rounded_percent_and_the_time_left() {
+        let now = SystemTime::now();
+        let day = 86_400;
+        let segment = |ratio, reset| {
+            quota_segment(&view(vec![window("month", ratio, reset, now)], now), now)
+                .unwrap()
+                .0
+        };
+        assert_eq!(segment(0.164, Some(29 * day + 5)), "kimi 16% · 29d left");
+        assert_eq!(
+            segment(0.165, Some(3 * 3_600 + 59 * 60)),
+            "kimi 17% · 3h left"
+        );
+        assert_eq!(segment(0.5, Some(5 * 60 + 30)), "kimi 50% · 5m left");
+        assert_eq!(segment(0.5, Some(10)), "kimi 50% · 1m left");
+        assert_eq!(segment(0.5, None), "kimi 50%");
+        assert_eq!(segment(0.5, Some(0)), "kimi 50%");
+        assert_eq!(segment(1.3, Some(day)), "kimi 100% · 1d left");
+    }
+
+    #[test]
+    fn a_reset_in_the_past_shows_no_time_left() {
+        let now = SystemTime::now();
+        let mut v = view(vec![window("month", 0.2, None, now)], now);
+        v.quota.windows[0].reset_at = Some(now - Duration::from_secs(60));
+        assert_eq!(quota_segment(&v, now).unwrap().0, "kimi 20%");
+    }
+
+    #[test]
+    fn another_window_shows_only_from_seventy_percent() {
+        let now = SystemTime::now();
+        let shown = |ratio| {
+            quota_segment(
+                &view(
+                    vec![
+                        window("month", 0.16, Some(86_400), now),
+                        window("5h", ratio, None, now),
+                    ],
+                    now,
+                ),
+                now,
+            )
+            .unwrap()
+            .0
+        };
+        assert_eq!(shown(0.69), "kimi 16% · 1d left");
+        assert_eq!(shown(0.70), "kimi 16% · 1d left · 5h 70%");
+        assert_eq!(shown(0.82), "kimi 16% · 1d left · 5h 82%");
+    }
+
+    #[test]
+    fn the_quota_warns_from_ninety_percent_on_any_shown_window() {
+        let now = SystemTime::now();
+        let warns = |month, hot| {
+            quota_segment(
+                &view(
+                    vec![
+                        window("month", month, None, now),
+                        window("5h", hot, None, now),
+                    ],
+                    now,
+                ),
+                now,
+            )
+            .unwrap()
+            .1
+        };
+        assert!(!warns(0.89, 0.5));
+        assert!(warns(0.90, 0.5));
+        assert!(warns(0.1, 0.95));
+        assert!(!warns(0.1, 0.89));
+    }
+
+    #[test]
+    fn the_quota_sits_after_the_model_and_before_the_effort() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.effort = Some(fontaine_core::effort::Effort::High);
+        assert!(!bar(&app).contains("kimi"), "{}", bar(&app));
+        let now = SystemTime::now();
+        app.quota = Some(view(
+            vec![window("month", 0.16, Some(29 * 86_400 + 5), now)],
+            now,
+        ));
+        let text = bar(&app);
+        assert!(
+            text.contains("· m · kimi 16% · 29d left · effort high ·"),
+            "{text}"
+        );
+        app.quota = Some(view(vec![], now));
+        assert!(!bar(&app).contains("kimi"), "{}", bar(&app));
     }
 
     #[test]

@@ -40,6 +40,7 @@ pub mod project_env;
 pub mod prompt;
 pub mod providers;
 pub mod questions;
+pub mod quota;
 pub mod runtime_error;
 #[cfg(feature = "pg2")]
 pub mod scanner_model;

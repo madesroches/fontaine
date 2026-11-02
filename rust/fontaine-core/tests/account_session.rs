@@ -200,6 +200,7 @@ fn late_account() -> Account {
         think: None,
         prompt_caching: None,
         cache_ttl: None,
+        quota: None,
         https_proxy: None,
         http_proxy: None,
         no_proxy: None,

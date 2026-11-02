@@ -52,6 +52,7 @@ fn the_spinner_tick_wins_only_while_it_shows() {
 }
 
 fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
+    let quota = fontaine_core::quota::QuotaPoller::new();
     Ui {
         app: App::new(PermissionMode::Manual, "m".into()),
         input: unbounded_channel().1,
@@ -73,6 +74,9 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         suspend: crate::no_suspend(),
         launcher: crate::ui::Launcher::Sh,
         switch: None,
+        quota_rx: quota.subscribe(),
+        quota,
+        quota_warned: Default::default(),
     }
 }
 

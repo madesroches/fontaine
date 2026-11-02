@@ -106,8 +106,23 @@ tools are checked like any `arbitrary` tool. A headless run does not ask and loa
 
 ## Status bar
 
-The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key hint. The mode labels are `manual`,
+The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by the account's [subscription quota](#subscription-quota) when it has one, then `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key hint. The mode labels are `manual`,
 `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`.
+
+### Subscription quota
+
+An account with [`quota = "kimi"`](configuration.md#accountsname) adds the provider's own quota to
+the bar, such as `kimi 16% · 29d left`: the monthly window's used share, rounded to the nearest
+percent (`100%` from the limit up), and the time until it resets in days, hours or minutes
+(left out when the provider gives no reset time or it has passed). The shorter windows stay out of
+sight until one is at 70% or more, then it is appended, as in `kimi 16% · 29d left · 5h 82%`. From
+90% on any shown window, the segment takes the theme's warning colour.
+
+The figures are refreshed every minute in the background, and never block a turn or a redraw. If a
+refresh fails the last figures stay for ten minutes and are then hidden; the first failure of a
+session is reported once as a warning. The segment is also hidden when the main model is on an
+account without `quota`, and on a narrow terminal it is kept in preference to the key hint, goal,
+scheduled and agent counts.
 
 While a [subagent's transcript](#the-agent-list-and-the-agent-view) is on screen the bar's key hint
 is about that agent: `viewing agent-3 · working · ↓ then Enter on main to go back · shift+tab mode`,

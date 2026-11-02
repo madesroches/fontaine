@@ -16,6 +16,7 @@ use crate::credentials::{Credentials, StoredCredential};
 use crate::effort::Effort;
 use crate::gate::SessionState;
 use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy};
+use crate::quota::QuotaSource;
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
 use fontaine_guardian::{OutputProbe, WireIds};
 use fontaine_tools::tls::LoadedNetwork;
@@ -118,6 +119,8 @@ pub struct ModelHandle {
     /// How to learn whether the model takes a forced tool call for the guardian's typed answer;
     /// `None` when it always does.
     pub output_probe: Option<Arc<dyn OutputProbe>>,
+    /// Where the account's own subscription quota is read, when it opted in.
+    pub quota: Option<Arc<dyn QuotaSource>>,
     /// The same model's completions with conversation-wide and static-prefix-only caching, when
     /// it was built from a client.
     scopes: Option<Scopes>,
@@ -137,6 +140,7 @@ impl ModelHandle {
             completion,
             thinking_off: None,
             output_probe: None,
+            quota: None,
             scopes: None,
         }
     }
@@ -180,6 +184,7 @@ impl ModelHandle {
         let guardian = client.guardian_completion(&reference.model);
         let thinking_off = client.thinking_off(&reference.model);
         let output_probe = client.output_probe(&reference.model);
+        let quota = client.quota_source();
         let conversation = client.completion(&reference.model);
         ModelHandle {
             reference,
@@ -187,6 +192,7 @@ impl ModelHandle {
             completion: guardian.clone(),
             thinking_off,
             output_probe,
+            quota,
             scopes: Some(Scopes {
                 conversation,
                 guardian,

@@ -141,6 +141,15 @@ pub struct AgentView {
 /// What a view that cannot run a command tells the human.
 pub const MAIN_ONLY: &str = "switch back to main to run this (↓ then Enter on main)";
 
+/// What the status bar shows of the quota: a snapshot read at draw time, so rendering does no
+/// I/O and reads no clock.
+#[derive(Clone, Debug)]
+pub struct QuotaView {
+    pub name: String,
+    pub quota: fontaine_core::quota::Quota,
+    pub as_of: std::time::SystemTime,
+}
+
 pub struct App {
     /// The main conversation.
     pub transcript: Transcript,
@@ -200,6 +209,8 @@ pub struct App {
     pub setup_review: Option<SetupReviewPrompt>,
     /// The `/auto-mode-setup` offer of the guardian composition while it is open.
     pub setup_composition: Option<CompositionPrompt>,
+    /// The account's subscription quota, from the poller's last snapshot.
+    pub quota: Option<QuotaView>,
     /// The escape hatch is on; the status bar says so for as long as it stays on.
     pub guardian_off: bool,
     /// The `/model` or `/guardian-model` picker while it is open.
@@ -354,6 +365,7 @@ impl App {
             guardian_off_prompt: None,
             setup_review: None,
             setup_composition: None,
+            quota: None,
             guardian_off: false,
             models: None,
             resume: None,
