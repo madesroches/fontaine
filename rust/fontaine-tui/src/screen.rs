@@ -1962,7 +1962,7 @@ mod tests {
             token_budget: None,
             cost_usd: None,
             cost_budget: None,
-            cost_partial: false,
+            unpriced_tokens: 0,
             depth: 1,
             writing: 0,
             stopped_because: None,

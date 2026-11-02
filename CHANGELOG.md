@@ -799,6 +799,11 @@ All notable changes are recorded here. The format follows
   (`90.9k tok`), the budget-exhausted reason, `/context`, the goal summary, the `writing` count and
   the character counts in the copy notice and instruction-file warnings (#365). The ledger, audit
   log and JSON output keep exact values.
+- An agent's spend in the agent list and `/agents` panel shows the priced tokens with their price,
+  then the unpriced token count: `110k tok · $0.0066 · 128k unpriced tok` replaces
+  `238157 tok · $0.0066 + unpriced`, and a fully unpriced agent reads `4.9M unpriced tok`. A token
+  budget keeps the total (`238k / 500k tok`). The age is followed by ` · `, and agent counts drop a
+  trailing `.0` (`200k`, not `200.0k`) (#350).
 
 ### Fixed
 

@@ -423,6 +423,7 @@ mod tests {
             status,
             elapsed: Duration::from_secs(elapsed),
             spend: String::new(),
+            unpriced: false,
             writing: 0,
         }
     }

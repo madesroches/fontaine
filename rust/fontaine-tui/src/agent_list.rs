@@ -29,6 +29,8 @@ pub struct ListRow {
     pub status: Option<ChildStatus>,
     pub elapsed: Duration,
     pub spend: String,
+    /// The spend ends in an unpriced-tokens segment.
+    pub unpriced: bool,
     /// Characters the model has written in its current step; shown while the agent runs.
     pub writing: u64,
 }
@@ -43,6 +45,7 @@ impl ListRow {
             status: None,
             elapsed: Duration::ZERO,
             spend: String::new(),
+            unpriced: false,
             writing: 0,
         }
     }
@@ -92,8 +95,9 @@ pub fn rows(
                     token_budget: row.budget.tokens,
                     cost_usd: row.spend.cost_usd,
                     cost_budget: row.budget.cost_usd,
-                    cost_partial: row.spend.is_partial_cost(),
+                    unpriced_tokens: row.spend.unpriced_tokens,
                 }),
+                unpriced: row.spend.unpriced_tokens > 0,
                 writing: row.writing,
             });
         }
@@ -358,7 +362,7 @@ impl AgentList {
                         status_label(status),
                         format_age(row.elapsed)
                     );
-                    let spend = format!(" {}", row.spend);
+                    let spend = format!(" · {}", row.spend);
                     // The id gives way before the status, the age and the spend.
                     let whole = lead.chars().count()
                         + tag.chars().count()
@@ -377,7 +381,7 @@ impl AgentList {
             } else {
                 String::new()
             };
-            // The suffix is a nicety: it never costs the row its columns or its unpriced marker.
+            // The suffix is a nicety: it never costs the row its columns or its unpriced figure.
             let (head, spend) = if head.chars().count()
                 + spend.chars().count()
                 + writing.chars().count()
@@ -390,15 +394,15 @@ impl AgentList {
             let spend_len = spend.chars().count();
             let shown: String = if head.chars().count() + spend_len <= width {
                 head + &spend
-            } else if spend.ends_with(" + unpriced") && spend_len < width {
-                // Cutting the tail would show a partial cost as complete, so the leading
-                // columns give way instead.
+            } else if row.unpriced && spend_len < width {
+                // Cutting the tail would hide the unpriced figure, so the leading columns
+                // give way instead.
                 let keep = width - spend_len;
                 let mut cut: String = head.chars().take(keep.saturating_sub(1)).collect();
                 cut.push('…');
                 cut + &spend
             } else {
-                // An ordinary row, or a partial one whose spend alone fills the width: cut the end.
+                // An ordinary row, or an unpriced one whose spend alone fills the width: cut the end.
                 (head + &spend).chars().take(width).collect()
             };
             let style = if self.focused && at == self.selected {
@@ -472,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn a_mostly_unpriced_agent_marks_its_dollar_figure_as_partial() {
+    fn a_mostly_unpriced_agent_lists_its_priced_tokens_then_the_unpriced_ones() {
         let now = Instant::now();
         let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
         worker.spend = Spend {
@@ -482,11 +486,19 @@ mod tests {
             unpriced_tokens: 4_850_000,
         };
         let rows = rows(&[worker], None, &HashSet::new(), now, 0);
-        assert_eq!(rows[1].spend, "4.9M tok · $0.0519 + unpriced");
+        assert_eq!(rows[1].spend, "13k tok · $0.0519 · 4.9M unpriced tok");
+        assert!(rows[1].unpriced);
+        let mut list = AgentList::default();
+        list.set_rows(rows);
+        assert!(
+            line_text(&list, 120, 1).ends_with("0s · 13k tok · $0.0519 · 4.9M unpriced tok"),
+            "{}",
+            line_text(&list, 120, 1)
+        );
     }
 
     #[test]
-    fn a_narrow_row_keeps_the_partial_cost_marker() {
+    fn a_narrow_row_keeps_the_unpriced_segment() {
         let now = Instant::now();
         let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
         worker.spend = Spend {
@@ -503,7 +515,11 @@ mod tests {
         let lines = list.lines(None, 80, 5);
         let text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.chars().count() <= 80, "{text}");
-        assert!(text.ends_with("$0.0519 + unpriced"), "{text}");
+        assert!(
+            text.ends_with(" · 13k tok · $0.0519 · 4.9M unpriced tok"),
+            "{text}"
+        );
+        assert!(text.contains('…'), "{text}");
     }
 
     #[test]
@@ -776,7 +792,7 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_row_drops_writing_before_the_unpriced_marker() {
+    fn a_narrow_row_drops_writing_before_the_unpriced_segment() {
         let now = Instant::now();
         let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
         worker.spend.cost_usd = Some(0.01);
@@ -785,7 +801,7 @@ mod tests {
         let mut list = AgentList::default();
         list.set_rows(rows(&[worker], None, &HashSet::new(), now, 0));
         let text = line_text(&list, 60, 1);
-        assert!(text.ends_with(" + unpriced"), "{text}");
+        assert!(text.ends_with(" · 5 unpriced tok"), "{text}");
         assert!(!text.contains("writing"), "{text}");
     }
 

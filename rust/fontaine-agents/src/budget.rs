@@ -25,11 +25,6 @@ impl Spend {
             *self.cost_usd.get_or_insert(0.0) += cost;
         }
     }
-
-    /// Whether `cost_usd` is a lower bound: some calls were priced and some were not.
-    pub fn is_partial_cost(&self) -> bool {
-        self.cost_usd.is_some() && self.unpriced_tokens > 0
-    }
 }
 
 /// A cap on one agent, or on the whole tree.
@@ -190,22 +185,12 @@ mod tests {
     }
 
     #[test]
-    fn unpriced_tokens_add_up_and_mark_a_priced_total_as_partial() {
+    fn unpriced_tokens_add_up() {
         let mut total = Spend::default();
         total.add(&unpriced(10));
         assert_eq!(total.unpriced_tokens, 10);
-        assert!(!total.is_partial_cost(), "no price at all is not partial");
         total.add(&unpriced(5));
         total.add(&spend(3, 4, Some(0.25)));
         assert_eq!(total.unpriced_tokens, 15);
-        assert!(total.is_partial_cost());
-    }
-
-    #[test]
-    fn an_all_priced_spend_is_not_partial() {
-        let mut total = Spend::default();
-        total.add(&spend(3, 4, Some(0.25)));
-        total.add(&spend(1, 1, Some(0.1)));
-        assert!(!total.is_partial_cost());
     }
 }

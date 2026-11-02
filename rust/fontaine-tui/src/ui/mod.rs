@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use crate::agent_list;
-use crate::agents_panel::{AgentsPanel, JobRow, PanelRow};
+use crate::agents_panel::{AgentsPanel, JobRow, PanelRow, trimmed_count};
 use crate::config_panel::ConfigKey;
 use crate::denials::{DeniedList, UnavailablePrompt};
 use crate::input::{MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia};
@@ -30,7 +30,6 @@ use fontaine_core::ledger::Record;
 use fontaine_core::notice::Notice;
 use fontaine_core::prompt;
 use fontaine_core::session;
-use fontaine_tools::display::compact_count;
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::read_recovering;
 use std::time::Duration;
@@ -129,10 +128,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 token_budget: row.budget.tokens,
                 cost_usd: row.spend.cost_usd,
                 cost_budget: row.budget.cost_usd,
-                cost_partial: row.spend.is_partial_cost(),
+                unpriced_tokens: row.spend.unpriced_tokens,
                 depth: row.depth,
                 writing: row.writing,
-                stopped_because: row.exhausted.map(|why| why.describe_with(compact_count)),
+                stopped_because: row.exhausted.map(|why| why.describe_with(trimmed_count)),
             })
             .collect();
         let job_rows: Vec<JobRow> = runtime
