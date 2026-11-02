@@ -19,9 +19,9 @@ this sits alongside it (complements #350, supersedes the subscription half of #3
 - Each kind is a `Provider` (`providers/mod.rs`); `Provider::connect` builds an
   `Arc<dyn AccountClient>` (completion, `list`, …) from a `ConnectContext` that holds the
   resolved credential, `base_url()` and the `LoadedNetwork`. `ModelHandle::guardian_from_client`
-  (`models.rs:176`) copies what it needs out of the client into the handle; the TUI reads
+  (`models.rs:175`) copies what it needs out of the client into the handle; the TUI reads
   `runtime.models.main` every draw (`fontaine-tui/src/ui/mod.rs:57`).
-- Unpriced tokens are tallied via `spend_of` (`gate.rs:901`) and shown by `/cost`, `/usage` and
+- Unpriced tokens are tallied via `spend_of` (`gate.rs:896`) and shown by `/cost`, `/usage` and
   the agent list. Nothing fetches provider-side quota.
 - The status bar (`fontaine-tui/src/statusbar.rs`, `render`) is one dim line:
   `<mode> · <dir> (<branch>) · <model> · effort · agents · scheduled · goal · <hint>`, fed from
@@ -71,8 +71,12 @@ table's user/CLI-only scope.
 
 ### Kimi source
 
-`fontaine-core/src/providers/kimi_quota.rs`: `KimiQuota { client: reqwest::Client, url, key }`
-using `reqwest_client(network)` (shares proxy/CA settings), short timeout (10 s), bearer auth.
+`fontaine-core/src/providers/kimi_quota.rs`: `KimiQuota { client: reqwest::Client, url, key: Option<String>, timeout: Duration }`
+using `reqwest_client(network)` (shares proxy/CA settings). The `openai-compatible` credential is
+optional, so the bearer header is sent only when `key` is present (as `Auth::OptionalBearer` does on
+the completion path); a non-2xx reply surfaces via the first-failure warning. `timeout` defaults to
+a 10 s const and is applied with `.timeout()` on the request (`reqwest_client` cannot be
+customised); a test-only override follows `providers/device_flow.rs` `with_request_timeout`.
 Parser is a pure function `parse_usages(&str) -> Result<Quota, _>`:
 
 - `usages.limit_5h` → label `5h`; `limit_7d` → `7d`; `limit_month_total` → `month` (headline);
@@ -96,7 +100,9 @@ holds the source, `last_good: Option<(Quota, Instant)>`, and a `watch`-style sha
 - Failure keeps `last_good` until it is older than 10 minutes, then the slot clears (segment
   hidden). The poller publishes its first failure per account per session as an error in its
   slot; the TUI reports it once through `runtime.approver().warn(...)` with
-  `error_chain::chain`.
+  `error_chain::chain`. `Ui` keeps the warned-once set keyed by `runtime.models.main.reference.account`
+  and checks it before `approver().warn`, so a credential rebuild that re-points the poller does not
+  repeat the warning.
 - Source `None` (account has no quota, or model switched to one that doesn't) clears the slot.
 
 ### Status bar
@@ -119,7 +125,9 @@ no I/O). `statusbar.rs` gets a pure `quota_segment(&QuotaView, now) -> String`:
 1. `fontaine-core/src/quota.rs`: `Quota`, `QuotaWindow`, `QuotaSource`,
    `QuotaPoller` (+ unit tests with a fake source and `tokio::time::pause`). Export from `lib.rs`.
 2. `config.rs`: `QuotaKind`, `Account.quota`, validation via `Provider::accepts_quota`; `quota`
-   inherits the `accounts` table's user/CLI-only scope.
+   inherits the `accounts` table's user/CLI-only scope. Add `quota: None` to the three `Account`
+   struct literals (no `Default`): `accounts.rs:225` (`build()`), `user_config.rs:483` (test helper),
+   `tests/account_session.rs:193`.
 3. `providers/mod.rs`: `Provider::accepts_quota` (default false); `AccountClient::quota_source`
    (default `None`). `openai_compatible.rs`: accept `quota`; its client returns `KimiQuota` when
    `quota = "kimi"` (`ConnectContext` needs no change: `openai_compatible.rs` gets its own private
@@ -127,7 +135,7 @@ no I/O). `statusbar.rs` gets a pure `quota_segment(&QuotaView, now) -> String`:
    `ctx.api_key()`, `ctx.base_url()`, `ctx.network`, following `openrouter.rs`).
 4. `providers/kimi_quota.rs`: parser + fetcher.
 5. `models.rs`: `ModelHandle.quota` populated in `guardian_from_client`.
-6. TUI: `App.quota`, `Ui` owns the poller (re-pointed when `runtime.models.main.quota` changes by `Arc::ptr_eq`),
+6. TUI: `App.quota`, `Ui` owns the poller and the warned-once set (re-pointed when `runtime.models.main.quota` changes by `Arc::ptr_eq`),
    adds its watch receiver `changed()` to the idle `select!`; `statusbar.rs` segment + warning
    style; the TUI calls `runtime.approver().warn(...)` with `error_chain::chain` for the poller's
    first failure.
@@ -135,7 +143,8 @@ no I/O). `statusbar.rs` gets a pure `quota_segment(&QuotaView, now) -> String`:
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/{quota.rs (new), lib.rs, config.rs, models.rs}`
+- `rust/fontaine-core/src/{quota.rs (new), lib.rs, config.rs, models.rs, accounts.rs, user_config.rs}`
+- `rust/fontaine-core/tests/account_session.rs`
 - `rust/fontaine-core/src/providers/{mod.rs, openai_compatible.rs, kimi_quota.rs (new)}`
 - `rust/fontaine-tui/src/{app.rs, statusbar.rs, ui/mod.rs}`
 - `docs/{configuration.md, tui.md}`, `CHANGELOG.md`
@@ -168,9 +177,9 @@ no I/O). `statusbar.rs` gets a pure `quota_segment(&QuotaView, now) -> String`:
   bad timestamps, empty → error, `boosterWallet` present); `quota_segment` formatting (rounding,
   `Nd/Nh/Nm left`, hot-window threshold edge at 0.70, ≥1.0, unknown reset); config validation
   (kind rejection).
-- Poller with a fake source and paused time: first fetch, 60 s throttle, failure keeps last good,
+- Poller with a fake source and paused time: first fetch, refetch every 60 s while idle, and on re-point, failure keeps last good,
   10-minute expiry, model switch to a no-quota account clears, warn once.
-- `wiremock`: `KimiQuota` sends `Authorization: Bearer`, hits `<base>/usages`, honours timeout,
+- `wiremock`: `KimiQuota` sends `Authorization: Bearer`, hits `<base>/usages`, honours timeout (override ~200 ms against a delay of a few seconds), omits the header without a key,
   surfaces non-2xx as an error without the key in the message.
 - TUI: `TestBackend` status-bar render with and without a quota.
   No live API in tests.
