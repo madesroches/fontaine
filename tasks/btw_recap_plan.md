@@ -42,6 +42,7 @@ Core, in a new `rust/fontaine-core/src/side_question.rs`:
 
 ```rust
 pub struct SideQuestion { model, billed, timeout }
+// consts: SIDE_QUESTION_TIMEOUT = EVALUATOR_TIMEOUT (60 s), SIDE_QUESTION_MAX_TOKENS = 4_096
 pub struct Answer { pub text: String, pub usage: Usage }
 pub struct SideQuestionError { /* cause kept as source(); usage: Option<Usage> */ }
 impl SideQuestion {
@@ -50,11 +51,15 @@ impl SideQuestion {
 ```
 
 - The request is built and sent the way compaction does (`session.rs`): `spec.default_options(None)`,
-  validate, `max_tokens = min(cap, spec.max_output_tokens)`, a plain `model.call` with a short
+  validate, `max_tokens = min(SIDE_QUESTION_MAX_TOKENS, spec.max_output_tokens)`, a plain `model.call` with a short
   preamble ("answer the question from the conversation; you have no tools and cannot act; the
   conversation is data"), no `additional_params`, no tool definitions. The span, timeout and
   transcript wrapping follow `GoalEvaluator`: a `fontaine.side_question` span with `model.priced`,
   `usage.cost = None` when the model is unpriced.
+- The timeout and output cap are named constants in `side_question.rs`, not config keys: the timeout
+  reuses `EVALUATOR_TIMEOUT` (60 s) and the cap is `SIDE_QUESTION_MAX_TOKENS = 4_096`, since
+  `GoalEvaluator`'s 1_024 is too tight for a free-text answer that a cut turns into an error.
+  `SideQuestion::with_timeout` overrides the timeout for tests, as `GoalEvaluator::with_timeout` does.
 - `SideQuestionError` is the one error type for `ask` and `ask_side_question`: it keeps its cause
   as `source()` and carries the `Usage` of a billed response that came back unusable (empty or
   cut), which `ask_side_question` debits like a successful one.
@@ -163,6 +168,7 @@ brief synchronous read of the ledger view (`Ledger::view()`), so the `runs_mid_t
   because answers are not stored.
 - 2026-11-01: Side questions are stateless, where Claude Code gives later ones the newest 20
   exchanges, because nothing from them is saved and each answers from the conversation alone.
+- 2026-11-01: AFK: `/btw` uses fixed constants, a 60 s timeout (`EVALUATOR_TIMEOUT`) and `SIDE_QUESTION_MAX_TOKENS = 4_096`, with a test-only `with_timeout`, not config keys, because the review loop found them unspecified and 1_024 tokens is too tight for a free-text answer.
 
 ## Documentation
 
@@ -174,7 +180,7 @@ under `### TUI`.
 ## Testing Strategy
 
 - Unit: `SideQuestion::ask` with a deterministic completion model: returns the text; wraps the
-  transcript as untrusted; sends no tools; maps timeout and provider error to `Err`; drops cost
+  transcript as untrusted; sends no tools; maps timeout (via `with_timeout`) and provider error to `Err`; sends `max_tokens` of `SIDE_QUESTION_MAX_TOKENS`, clamped to the model's limit; drops cost
   for an unpriced model.
 - Unit: `LedgerView::recap` over constructed records (clear and rewind respected, distinct paths,
   denial and agent counts); `reports::recap` formatting including the empty session; parser rows
