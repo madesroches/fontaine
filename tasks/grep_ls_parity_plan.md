@@ -38,11 +38,11 @@ gitignore handling, hidden-file rules, confinement (`place`) and reading stay ri
 | `pattern` | Rust regex (required) |
 | `path`, `glob`, `hidden` | as today |
 | `output_mode` | `content` \| `files_with_matches` \| `count`; default `files_with_matches` (Claude Code's) |
-| `-i` | case-insensitive (compile with `RegexBuilder::case_insensitive`, not by editing the pattern) |
-| `-n` | line numbers in `content` mode; default true |
-| `-A`, `-B`, `-C` | context lines after/before/both (`content` only; `-C` sets both unless `-A`/`-B` given) |
-| `type` | ripgrep file type (`rust`, `py`, ...), resolved with the `ignore` crate's built-in `TypesBuilder::add_defaults()`, applied to the walked file list; unknown type is an invalid-arguments error listing nothing guessed |
-| `head_limit` | max output entries (lines in `content`, files in `files_with_matches`, files in `count`); clamped to the existing hard caps (200 matches, 1000 files); `0` means unlimited, still bounded by the hard caps |
+| `-i` | case-insensitive; named in the description (compile with `RegexBuilder::case_insensitive`, not by editing the pattern) |
+| `-n` | line numbers in `content` mode; default true; off, context lines render `path- text` |
+| `-A`, `-B`, `-C` | context lines after/before/both (`content` only; unsigned integers; an explicit `-A`/`-B` overrides `-C` for its side) |
+| `type` | ripgrep file type (`rust`, `py`, ...), resolved with the `ignore` crate's built-in `TypesBuilder::add_defaults()`, applied to the walked file list, so `type` and `glob` combine as AND; unknown type is an invalid-arguments error listing nothing guessed |
+| `head_limit` | max output entries (matching lines in `content`, files in `files_with_matches` and `count`); clamped to the hard caps (200 matches, 1000 files); `0` means unlimited, still bounded by them. Only the output is capped: the walk and scan are not |
 | `files` | deprecated alias: `files: true` is `output_mode: files_with_matches`; when `output_mode` is also given, `output_mode` wins |
 
 An empty `pattern` lists the files `Workspace::files` returns without reading them and publishes no
@@ -51,24 +51,32 @@ is an invalid-arguments error.
 
 Output: `content` renders `path:line: text` for matches and `path-line- text` for context lines with
 `--` between non-adjacent groups (ripgrep/Claude Code form; without `-n`, `path: text`); `count`
-renders `path:N` per file; `files_with_matches` one path per line. Text is clipped at 300 chars as
-now, the stop line says `[stopped at N ...]` when `head_limit` or the hard cap cut the result.
-Context lines never count toward `head_limit`, matches do.
+renders `path:N` per file, N the number of matching lines, files with none omitted;
+`files_with_matches` one path per line. Text is clipped at `MAX_LINE` (300; private in rig, so the
+module redefines it). When `head_limit` or a hard cap cut the result, the last line is rig's:
+`[stopped at N matches]` for `content`, `[stopped at N files; narrow the search with path or glob]`
+for `files_with_matches` and `count`, N the effective limit. Context lines never count toward
+`head_limit`, matches do; context stays within its file and the last counted match's
+trailing context is still emitted.
 
 Search internals reuse rig's approach: files from `Workspace::files(root, glob, listing)`, read
 via `read_files(.., MAX_FILE_BYTES)`, UTF-8 only. The whole-text prefilter in rig's `find` is an
-optimization and is dropped; per-line matching is enough. The tool publishes `FilesRead` for files
-with a match exactly as rig's `Search::call` does (same `FileRead::new(canonical, content_hash)`),
-so the read-before-edit tracking is unchanged. Relative path display below `base` follows rig's
-(the module re-bases displayed paths itself), and the module re-implements the `fs::listed` error
-mapping: invalid glob is invalid-args, missing root is not-found, and a stat when the file list is
+optimization and is dropped; per-line matching is enough. The tool publishes `FilesRead` for every
+file with a match in all three modes, including files whose output `head_limit` cut, as rig does
+(same `FileRead::new(canonical, content_hash)`), so the read-before-edit tracking is unchanged; the
+empty-pattern file listing publishes none. Files over `MAX_FILE_BYTES` are skipped. Relative path display below `base` follows rig's
+(the module re-bases displayed paths itself, in all three modes and for the `FilesRead` canonical
+paths), and the module re-implements the `fs::listed` error
+mapping: invalid glob is invalid-args, a bad pattern is invalid-args, missing root is not-found, and a stat when the file list is
 empty. `Grep` and `Ls` override `footprint`, returning `Touches::Reads` from `path` as rig's
 `Search`/`List` do.
 
 ### `ls` arguments (`LsArgs`)
 `path`, `depth`, `glob`, `hidden` as today plus `ignore: Option<Vec<String>>` (Claude Code's glob
 list). After `Workspace::files`, drop files whose path below the listed root, or any ancestor
-directory of it, matches an ignore glob (`globset`, already a workspace dependency). Rendering,
+directory of it, matches an ignore glob (`globset`, already a workspace dependency): `node_modules` matches the
+directory at any depth, an invalid ignore glob is invalid-args, and `hidden` still governs which
+files the walk returns. A file root behaves as in rig's `list`. Rendering,
 `depth` folding, `MAX_LINES`/`MAX_BYTES` cut and the published `FilesListed`/`OutputCut` follow rig's
 `list`; since `list()` there is private, the module re-implements that short fold (about 40 lines)
 over the filtered file list rather than patching rig.
@@ -110,6 +118,9 @@ over the filtered file list rather than patching rig.
   today's `content` default; callers that relied on the old `content` default now get paths. The
   `files` argument stays as an alias, with `output_mode` taking precedence.
 - 2026-11-01: `head_limit` is clamped to the existing hard caps rather than replacing them.
+- 2026-11-01: An empty `pattern` lists files in `files_with_matches` mode (and under `files: true`)
+  and is an invalid-arguments error in `content` and `count`, unlike rig (a valid regex returning up
+  to 200 arbitrary lines) and Claude Code.
 - 2026-11-01: Offset/pagination and `multiline` are out of scope (not in the issue).
 
 ## Documentation
@@ -118,13 +129,18 @@ behavior only, no plan citations.
 
 ## Testing Strategy
 All unit/tool-level, no live APIs, temp-dir fixtures:
-- `GrepArgs` parsing: each new key (`-i`, `-A`, `-n`), defaults, unknown key rejected, `files` alias.
+- `GrepArgs` parsing: each new key (`-i`, `-A`, `-n`), defaults, unknown key rejected, `files` alias,
+  negative or non-integer `-A/-B/-C` rejected.
 - `content` mode with `-n` on/off, `-A`/`-B`/`-C` including overlapping and adjacent groups and `--`
-  separators, file start/end boundaries.
-- `count` and `files_with_matches` output; `head_limit` below and above the hard cap and the stop line.
+  separators, file start/end boundaries, explicit `-A`/`-B` overriding `-C`, context at the
+  `head_limit` cut, `-n` off with context lines.
+- `count` (matching lines, zero-match files omitted) and `files_with_matches` output; `head_limit`
+  below and above the hard cap in all three modes, with each mode's exact stop line.
 - `-i` matches case-insensitively and a pattern beginning with its own `(?-i)` flag still works.
-- `type`: `rust` keeps `.rs` only; unknown type errors.
-- `hidden` includes hidden files; non-UTF-8 skipped; out-of-root `path` refused by the confined instance.
-- `FilesRead` is still published for files with a match (regression guard for read-before-edit); an
-  empty `pattern` publishes none; `head_limit: 0`; `output_mode` over `files`.
-- `ls` `ignore`: file glob, directory glob, ancestor match, combined with `depth` and `glob`.
+- `type`: `rust` keeps `.rs` only, combined with `glob` as AND; unknown type errors.
+- `hidden` includes hidden files; non-UTF-8 and over-`MAX_FILE_BYTES` files skipped; out-of-root `path` refused by the confined
+  instance; bad pattern, bad glob and missing path errors; displayed paths re-based in every mode.
+- `FilesRead` is published for every file with a match in each mode, including `content` with
+  `head_limit` (regression guard for read-before-edit); an empty `pattern` publishes none; `head_limit: 0`; `output_mode` over `files`.
+- `ls` `ignore`: file glob, directory glob, ancestor match, combined with `depth`, `glob` and `hidden`; `node_modules` at any depth; invalid ignore glob errors;
+  a file as root.
