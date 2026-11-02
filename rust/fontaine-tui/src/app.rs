@@ -1317,10 +1317,19 @@ impl App {
             } => format!("denied: {why}"),
         };
         let tool = approval.request.tool.clone();
-        let agent = approval.request.agent.clone();
+        let agent = if approval.request.agent_name.is_empty() {
+            approval.request.agent.clone()
+        } else {
+            format!(
+                "{} ({})",
+                approval.request.agent_name, approval.request.agent
+            )
+        };
+        let is_root = approval.request.agent.is_empty()
+            || approval.request.agent == fontaine_tools::gate::ROOT_AGENT;
         approval.reply(answer);
         self.approval = self.queued_approvals.pop_front();
-        if agent.is_empty() || agent == fontaine_tools::gate::ROOT_AGENT {
+        if is_root {
             self.transcript.notice(format!("{tool} {note}"));
         } else {
             self.transcript.notice(format!("{agent}: {tool} {note}"));
@@ -1627,6 +1636,7 @@ mod tests {
     fn running_row(id: &str) -> ListRow {
         ListRow {
             id: Some(id.into()),
+            name: "worker-1".into(),
             depth: 1,
             agent_type: "worker".into(),
             status: Some(fontaine_agents::runner::ChildStatus::Running),
@@ -1640,6 +1650,7 @@ mod tests {
         let mut app = app();
         let main = ListRow {
             id: None,
+            name: "main".into(),
             depth: 0,
             agent_type: String::new(),
             status: None,
@@ -1862,6 +1873,7 @@ mod tests {
         let mut panel = AgentsPanel::new();
         panel.set_rows(vec![crate::agents_panel::PanelRow {
             id: "agent-1".into(),
+            name: "worker-1".into(),
             agent_type: "worker".into(),
             model: "m".into(),
             status: fontaine_agents::runner::ChildStatus::Done,
@@ -1936,6 +1948,7 @@ mod tests {
         let request = ApprovalRequest {
             tool: "shell".into(),
             agent: "main".into(),
+            agent_name: String::new(),
             tool_use_id: None,
             args: serde_json::json!({}),
             summary: "ls".into(),

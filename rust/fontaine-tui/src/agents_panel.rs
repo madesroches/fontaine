@@ -12,6 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
+use crate::agent_list::wrapped_dimming_id;
 use crate::input::wrap;
 use crate::theme::Theme;
 
@@ -19,6 +20,7 @@ use crate::theme::Theme;
 #[derive(Clone, Debug, PartialEq)]
 pub struct PanelRow {
     pub id: String,
+    pub name: String,
     pub agent_type: String,
     pub model: String,
     pub status: ChildStatus,
@@ -229,7 +231,8 @@ impl AgentsPanel {
             let marker = if i == self.selected { ">" } else { " " };
             let indent = "  ".repeat(row.depth.saturating_sub(1));
             let head = format!(
-                "{marker} {indent}{} {} {} {}",
+                "{marker} {indent}{} ({}) {} {} {}",
+                row.name,
                 row.id,
                 row.agent_type,
                 row.model,
@@ -240,9 +243,7 @@ impl AgentsPanel {
             } else {
                 Style::default()
             };
-            for piece in wrap(&head, width) {
-                out.push(Line::styled(piece, style));
-            }
+            out.extend(wrapped_dimming_id(&head, &row.id, width, style));
             let spend = spend_text(&SpendView {
                 tokens: row.tokens,
                 token_budget: row.token_budget,
@@ -311,6 +312,7 @@ mod tests {
     fn row(id: &str, status: ChildStatus) -> PanelRow {
         PanelRow {
             id: id.into(),
+            name: id.into(),
             agent_type: "worker".into(),
             model: "m/x".into(),
             status,

@@ -387,6 +387,18 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   not persist its `cd`. Starting at the primary root keeps the child's start independent of the
   parent's mutable state; a `fork` subagent follows the same rule, so its inherited history may show
   a parent `cd` that does not apply to it.
+- 2026-11-01: Deviation from Claude Code (#290) — a taken subagent name is refused and names are never
+  reused in a session; Claude Code lets the latest holder win. Reason: a late message cannot reach the
+  wrong agent.
+- 2026-11-01: Deviation from Claude Code (#290) — the `agent` tool takes an optional `name`; Claude
+  Code's Agent tool has none. Reason: the model gets addressable roles without a naming step in the
+  harness.
+- 2026-11-01: Deviation from Claude Code (#290) — an unnamed subagent gets a generated `<type>-<k>`
+  name; Claude Code addresses unnamed agents only by id. Reason: every agent is readable and
+  addressable.
+- 2026-11-01: Deviation from Claude Code (#290) — a name is 1-32 characters of `[a-z0-9-]`, starting
+  with a letter, and is not `main`, `root`, `job-*` or `agent-<n>`. Reason: safe to embed as untrusted
+  text and free of collisions with agent ids and job ids.
 
 ### Build and release
 

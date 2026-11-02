@@ -611,6 +611,7 @@ mod tests {
         ApprovalRequest {
             tool: "shell".into(),
             agent: "main".into(),
+            agent_name: String::new(),
             tool_use_id: None,
             args: serde_json::json!({ "command": command }),
             summary: command.into(),
@@ -1953,6 +1954,7 @@ mod tests {
     fn panel_row(n: usize) -> crate::agents_panel::PanelRow {
         crate::agents_panel::PanelRow {
             id: format!("agent-{n}"),
+            name: format!("worker-{n}"),
             agent_type: "worker".into(),
             model: "m/x".into(),
             status: fontaine_agents::runner::ChildStatus::Done,

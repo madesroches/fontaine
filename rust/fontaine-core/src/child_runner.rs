@@ -219,6 +219,7 @@ impl RootLedger for LedgerWindow {
         let record = match event {
             AgentEvent::Spawned {
                 agent,
+                name,
                 parent,
                 agent_type,
             } => Record::Agent {
@@ -226,24 +227,28 @@ impl RootLedger for LedgerWindow {
                 agent,
                 parent: Some(parent),
                 detail: Some(agent_type),
+                name: Some(name),
             },
             AgentEvent::Finished { agent, status } => Record::Agent {
                 event: "finished".into(),
                 agent,
                 parent: None,
                 detail: Some(status),
+                name: None,
             },
             AgentEvent::Message { from, to } => Record::Agent {
                 event: "message".into(),
                 agent: from,
                 parent: None,
                 detail: Some(to),
+                name: None,
             },
             AgentEvent::Resumed { agent } => Record::Agent {
                 event: "resumed".into(),
                 agent,
                 parent: None,
                 detail: None,
+                name: None,
             },
         };
         self.0.append(record);

@@ -296,13 +296,14 @@ pub(super) fn agent_limits(config: &Config) -> Limits {
     }
 }
 
-/// The session's agent tree. The ledger of a resumed session anchors the id counter, so
-/// new ids never collide with the per-agent logs a previous process persisted.
+/// The session's agent tree. The ledger of a resumed session anchors the id counter, so new ids
+/// never collide with the per-agent logs a previous process persisted, and the taken names, so a
+/// name is never reused.
 pub(super) fn agent_tree(setup: &AgentSetup) -> Arc<AgentTree> {
-    Arc::new(AgentTree::new(
-        agent_limits(&setup.config),
-        setup.session.ledger.view().next_agent,
-    ))
+    let view = setup.session.ledger.view();
+    let tree = AgentTree::new(agent_limits(&setup.config), view.next_agent);
+    tree.seed_names(view.agents.iter().map(|agent| agent.name.clone()));
+    Arc::new(tree)
 }
 
 /// The permission state of a new session: its scope, rules, guardian and the agent tree.

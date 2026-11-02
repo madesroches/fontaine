@@ -81,6 +81,7 @@ fn ask() -> (Prompt, oneshot::Receiver<Answer>) {
     let request = ApprovalRequest {
         tool: "shell".into(),
         agent: ROOT_AGENT.into(),
+        agent_name: String::new(),
         tool_use_id: None,
         args: serde_json::json!({}),
         summary: "ls".into(),

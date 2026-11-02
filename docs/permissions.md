@@ -134,7 +134,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    in a session, pause `auto` and prompting resumes until you approve a call.
 
 Every decision is appended to the audit log (`<data dir>/audit/<session id>.jsonl`, readable by the
-current user only) before anything else sees it: the time, session, agent and tool-call ids, the
+current user only) before anything else sees it: the time, session, agent id and, for a subagent, its `agent_name`, the tool-call id, the
 tool, a SHA-256 digest of the arguments (never the arguments), the `tier` that decided, the
 `decision` (`allow`, `deny` or `prompt`), the rule and its source, and the latency. A human's answer
 to a prompt adds a second record with `tier = human`. The same record is projected to the

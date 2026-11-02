@@ -186,7 +186,7 @@ async fn a_subagent_gets_no_jobs_and_keeps_kill_at_timeout() {
         .await
         .unwrap_err();
     assert!(
-        refused.contains("only with the id of a subagent it started"),
+        refused.contains("only with the id or name of a subagent it started"),
         "{refused}"
     );
     for (name, args) in [
@@ -469,10 +469,37 @@ async fn an_agent_id_reaches_the_agent_seam_from_a_subagent_and_other_ids_do_not
     for args in [json!({"id": "job-0000"}), json!({})] {
         let refused = run_as_child(&tools, "job_output", args).await.unwrap_err();
         assert!(
-            refused.contains("only with the id of a subagent it started"),
+            refused.contains("only with the id or name of a subagent it started"),
             "{refused}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_name_reaches_the_agent_seam_and_a_job_id_still_reaches_the_job_registry() {
+    let (_d, tools, asked) = waiting_session(None, Duration::ZERO);
+    run_as_child(
+        &tools,
+        "job_output",
+        json!({"id": "survey-tech-debt", "wait_secs": 0}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        asked.lock().unwrap().clone(),
+        vec![(
+            "child-1".into(),
+            "survey-tech-debt".into(),
+            Some(Duration::ZERO)
+        )]
+    );
+    let err = call(&tools, "job_output", json!({"id": "job-0000"}))
+        .await
+        .unwrap_err()
+        .model_output()
+        .render();
+    assert!(err.contains("job-0000"), "{err}");
+    assert!(asked.lock().unwrap().len() == 1);
 }
 
 #[tokio::test]

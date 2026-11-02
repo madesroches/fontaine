@@ -21,6 +21,14 @@ All notable changes are recorded here. The format follows
 
 #### Agents
 
+- Subagents have a stable, human-readable name besides their `agent-N` id (#290). The `agent` tool
+  takes an optional `name` (1 to 32 characters of `a-z`, `0-9` and `-`, starting with a letter) and
+  returns it with the id; without one the subagent is called `<type>-<k>`, such as `explore-1`.
+  Names are unique for the session and never reused; a taken or reserved name is refused as invalid
+  arguments. `send_message` and `job_output` accept a name in place of an id, the agents panel and
+  list, the approval prompt and the notifications between agents show `name (id)`, and the ledger,
+  the audit log, the `gate_decision` event (`agent_name`) and the `subagent` telemetry events
+  record it. Ids stay the key everywhere else.
 - The agent list and the agents panel show `· writing 4.2k chars` for an agent whose model is
   mid-step, reasoning and tool-call arguments included, and `main` shows its own count in the
   list, so a long model step no longer looks like a stall (#343). Model requests log their start and

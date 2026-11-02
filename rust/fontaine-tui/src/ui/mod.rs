@@ -120,6 +120,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .iter()
             .map(|row| PanelRow {
                 id: row.id.clone(),
+                name: row.name.clone(),
                 agent_type: row.agent_type.clone(),
                 model: row.model.clone(),
                 status: row.status,
@@ -360,8 +361,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// The notice lands where the human is looking: an agent's view, or the main chat.
     fn kill_agent(&mut self, runtime: &AgentRuntime, id: &str) {
+        let label = agent_label(runtime, id);
         if runtime.state.agents().kill(id) {
-            self.app.shown_mut().notice(format!("killed {id}"));
+            self.app.shown_mut().notice(format!("killed {label}"));
         }
     }
 
@@ -369,24 +371,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// tool result, which the view shows dimmed until then; an ended one starts another run.
     pub(crate) fn message_agent(&mut self, runtime: &AgentRuntime, id: String, text: String) {
         let outcome = runtime.message_agent(&id, text.clone());
-        self.delivered(&id, &text, outcome);
+        self.delivered(&agent_label(runtime, &id), &text, outcome);
     }
 
-    fn delivered(&mut self, id: &str, text: &str, outcome: Result<Delivered, MessageRefusal>) {
+    fn delivered(&mut self, label: &str, text: &str, outcome: Result<Delivered, MessageRefusal>) {
         match outcome {
             Ok(Delivered::Queued) => self.remember(text),
             Ok(Delivered::Resumed) => {
                 self.remember(text);
-                self.app.transcript.notice(format!("you resumed {id}"));
+                self.app.transcript.notice(format!("you resumed {label}"));
             }
             Ok(Delivered::HandedToResume) => {
                 self.remember(text);
                 self.app.shown_mut().notice(format!(
-                    "{id} ended as your message arrived; it was handed to its resume (a warning follows if that resume was refused)"
+                    "{label} ended as your message arrived; it was handed to its resume (a warning follows if that resume was refused)"
                 ));
             }
             Err(refusal) => {
-                self.app.shown_mut().notice(refusal.notice(id));
+                self.app.shown_mut().notice(refusal.notice(label));
                 self.app.restore_to_input(text);
             }
         }
@@ -863,5 +865,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let raws: Vec<&str> = entries.iter().map(|entry| entry.raw()).collect();
             self.app.restore_to_input(&raws.join("\n\n"));
         }
+    }
+}
+
+/// `name (id)` for an agent in a notice, or just the id when it has no other name.
+fn agent_label(runtime: &AgentRuntime, id: &str) -> String {
+    let name = runtime.state.agents().name_of(id);
+    if name == id {
+        id.to_string()
+    } else {
+        format!("{name} ({id})")
     }
 }

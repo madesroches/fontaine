@@ -12,8 +12,9 @@ and asynchronous tasks, with stricter permission rules.
 | `agent_type` | One of the [agent types](#agent-types). Required. |
 | `prompt` | The task. A subagent cannot see the conversation, so it needs everything in `prompt`; a [`fork`](#forking-the-conversation) already has the conversation and needs only a short task. Required. |
 | `model` | Optional: `$main`, `$guardian_default` or `<account>/<model>`. |
+| `name` | Optional [name](#naming-a-subagent) for the subagent. |
 
-The call returns `{"agent_id": "agent-1"}` at once and the subagent runs alongside its parent and
+The call returns `{"agent_id": "agent-1", "name": "explore-1"}` at once and the subagent runs alongside its parent and
 its siblings; spawn several in a row and they all run concurrently, up to `max_parallel`. When one
 ends, its report is delivered to the conversation that started it as a notification, in the next
 tool result that conversation reads or, if it is idle, as the prompt of a turn of its own. The
@@ -31,9 +32,29 @@ The model used is the call's `model`, else the agent type's `model`, else the se
 invalid value is an error result, and so is a `model` on a type defined by a project file (see
 [agent files](#agent-files)).
 
+### Naming a subagent
+
+Every subagent has a name besides its `agent-N` id. The id stays the identity: the ledger, the
+audit log, telemetry and budgets key on it. The name is the label you and the other agents read
+(`survey-tech-debt (agent-3)` in the panel, `Report from agent survey-tech-debt (agent-3)` in a
+notification) and an address that `send_message` and `job_output` accept in place of the id.
+
+- **Choosing one.** The model may pass `name`: 1 to 32 characters of `a-z`, `0-9` and `-`,
+  starting with a letter, such as `survey-tech-debt`. Its tool description asks for a short role
+  name when it starts several agents.
+- **Fallback.** Without a `name` the subagent is called `<type>-<k>`, the agent type in that
+  character set and the first free number: `explore-1`, `explore-2`, `worker-1`.
+- **Unique for the session.** A name is never reused, not even after its agent ended, so a late
+  message cannot reach the wrong agent. A name that is taken, is `main` or `root`, starts with
+  `job-` or has the form `agent-<number>` is refused as invalid arguments, with the reason, and
+  the model picks another; nothing is renamed silently. A new process of a resumed session still
+  refuses the names of the agents the earlier process started.
+- **Reach.** A name resolves to its id before the usual rules apply, so it reaches exactly the
+  agents the id would: a parent, its children, siblings and `main`.
+
 ### Waiting for a subagent
 
-`job_output` with the `agent_id` blocks until that subagent ends, or for `wait_secs` if given.
+`job_output` with the `agent_id` or the name blocks until that subagent ends, or for `wait_secs` if given.
 It reports only status; the report itself is delivered as a notification attached to that same
 result, and never a second time.
 
@@ -152,9 +173,9 @@ the guardian only inside its delimited, untrusted blocks, never as the task inte
 
 ## Messages between agents
 
-`send_message` takes `to` (an agent id, or `main` for the main conversation) and `message`. An agent
+`send_message` takes `to` (an agent name or id, or `main` for the main conversation) and `message`. An agent
 can message its parent, its subagents, its siblings and `main`. The message is queued and the
-recipient reads it at its next turn marked with the sender's id and as untrusted data, never as an
+recipient reads it at its next turn marked with the sender's name and id and as untrusted data, never as an
 instruction from you. The sender gets `{"status": "queued"}`, or the error `agent not running` for a
 target that has finished or was killed. `send_message` is `arbitrary` like `agent`, so it is gated
 the same way.
@@ -258,13 +279,13 @@ A headless run has no panel. If subagents are still running when the main conver
 gives its final answer, the run waits for them and gives the main conversation a further turn for
 each batch of reports, then emits `result`. `--max-turns` and `--max-budget-usd` count those turns
 and the subagents' spend; a run stopped by either kills the running subagents and drops their
-reports. Each `gate_decision` event carries the `agent_id` that made the call, and
+reports. Each `gate_decision` event carries the `agent_id` that made the call, with its `agent_name`, and
 `result.usage.subagents` holds their model usage.
 
 ## Telemetry and audit
 
 Every gate decision is written to the [audit log](permissions.md#the-pipeline) with the id of the
-agent that made it. Telemetry carries `fontaine.subagent` spans, parented to the `agent` call that
-started them; `subagent` events (`spawn`, `complete`, `killed`, `budget_exhausted`); and the
+agent that made it, and its name. Telemetry carries `fontaine.subagent` spans, parented to the `agent` call that
+started them; `subagent` events (`spawn`, `complete`, `killed`, `budget_exhausted`), which carry `agent.id`, `agent.name` and `agent.type`; and the
 `agent.id` and `agent.type` attributes on each `tool_decision`. Model calls made by subagents count
 as `query_source` `subagent`. See [Telemetry](telemetry.md).

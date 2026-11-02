@@ -51,6 +51,9 @@ pub struct DecisionRecord {
     pub ts: String,
     pub session_id: String,
     pub agent_id: String,
+    /// The subagent's name; absent for the root and the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
     /// The model's id for the call; absent when the call did not come through an agent run.
     pub tool_use_id: Option<String>,
     pub tool: String,
