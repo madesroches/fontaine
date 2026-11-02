@@ -29,8 +29,10 @@ a dollar figure as partial when some calls had no price.
 - `turn.rs:555-563` is the single place a turn's `CompletionCall` usage enters: it clears
   `usage.cost` for unpriced accounts, debits the tree, and tallies subagent calls.
 - Headless `result` already reports `usage.{main,guardian,subagents,goal}` and `total_cost_usd`
-  (`docs/schemas/headless-v1.schema.json`, `headless.rs:300-340`). Compaction and `/btw` spend is
-  in `total` tree spend but in none of those buckets.
+  (`docs/schemas/headless-v1.schema.json`, `headless.rs:300-340`). Headless already folds compaction
+  usage into `main`, `num_turns`, `total_cost_usd` and the `--max-budget-usd` check
+  (`stop_before_call` calls `totals.add` on compaction usage). In the TUI, compaction and `/btw`
+  spend is in `total` tree spend but in no bucket.
 - `docs/telemetry.md` already says "the session's `/cost` and budgets do not count the estimate"
   for dropped guardian requests; the command it names does not exist.
 - Slash commands are `Builtin` entries in `fontaine-tui/src/commands.rs` (aliases supported);
@@ -53,22 +55,26 @@ struct Bucket {            // replaces GuardianUsage (same fields, plus the two 
     unpriced_tokens: u64,  // tokens of calls with no price: cost_usd is a lower bound when > 0
 }
 
-struct UsageLedger { by_source: Mutex<BTreeMap<UsageSource, Bucket>> }
+struct UsageLedger { by_source: Mutex<[Bucket; 6]> }   // indexed by UsageSource
 ```
 
 `SessionState::record_usage(source, agent, &Usage)` is the single entry point: it adds to the
-ledger bucket and debits the agent tree (`spend_of`). The existing `add_guardian_usage`,
-`add_goal_usage` and `add_subagent_usage` become thin wrappers (or are replaced), and the four
-direct `debit` call sites (`turn.rs:560`, `agent/goal.rs:50,72`, and the goal/guardian methods) go
-through it. This keeps the budget semantics identical (every call is still debited to the same
+ledger bucket (locked with `fontaine_tools::lock::lock`, which panics on poison) and debits the
+agent tree (`spend_of`). The existing `add_guardian_usage`,
+`add_goal_usage` and `add_subagent_usage` become thin wrappers (or are replaced), and the five
+direct `debit` call sites (`turn.rs:560`, `agent/goal.rs:50`, `agent/goal.rs:72`, `gate.rs:661`,
+`gate.rs:681`) go through it; `add_guardian_usage` stays as a wrapper so `permissions.rs` need not
+change. This keeps the budget semantics identical (every call is still debited to the same
 agent) and makes "forgot to record a source" structurally harder.
 
 - Main-model turns: `turn.rs` records `Main` when `agent_id == ROOT_AGENT`, else `Subagent`.
 - `GuardianUsage` is renamed/replaced by `Bucket`; the per-agent guardian map keeps its own
   `Bucket` values. Headless keeps the same JSON keys (`cache_*`, `cost_usd`), so
   `headless-v1.schema.json` does not change.
-- Headless `Totals`/`Others` read from the ledger (`Main`, `Guardian`, `Subagent`, `Goal`) instead
-  of keeping a private main tally. `model_calls` becomes `Main.calls`. Output is unchanged.
+- Headless `Totals`/`Others` read from the ledger (`Main`, `Compaction`, `Guardian`, `Subagent`,
+  `Goal`) instead of keeping a private main tally. Compaction stays inside `main` (v1 schema
+  unchanged); `SideQuestion` is always zero in headless, since `/btw` never runs there. Output is
+  unchanged.
 - Pricing follows the existing rule: `turn.rs` already clears `cost` for unpriced accounts before
   recording; the ledger treats `cost.is_none()` as unpriced.
 - Not counted, as today: the estimate for a guardian request dropped by a composition (no usage
@@ -78,7 +84,7 @@ agent) and makes "forgot to record a source" structurally harder.
 ### `/cost` command (alias `/usage`)
 
 `Builtin { name: "cost", aliases: ["usage"], description: "show this session's token usage and
-cost, by source" }`, `main_only() == false` (read-only, runs during a turn like `/recap`). Handler
+cost, by source" }`, added to `runs_mid_turn()` like `Recap` (read-only, runs during a turn; `main_only` unchanged). Handler
 `cost(&mut self, runtime)` in `ui/commands/reports.rs` snapshots the ledger and posts
 `reports::cost(&snapshot)` as a transcript notice. No arguments.
 
@@ -90,16 +96,16 @@ Session usage
   source        calls   input   output  cache read  cache write  cost
   main             12   84.2k    9.1k       61.0k       3.2k      $0.4120
   guardian         31   22.0k    1.4k        9.8k          0      $0.0150
-  subagents         8   40.1k    5.0k          0           0      $0.1900 + unpriced
-  total            51  146.3k   15.5k       70.8k       3.2k      $0.6170 + unpriced
+  subagents         8   40.1k    5.0k          0           0      $0.1900 · 5.0k unpriced tok
+  total            51  146.3k   15.5k       70.8k       3.2k      $0.6170 · 5.0k unpriced tok
 ```
 
 - A source with no priced call prints `n/a` for cost; the total prints a dollar figure when any
-  bucket is priced and appends ` + unpriced` when any bucket has `unpriced_tokens > 0` (same
-  wording as the agents panel).
+  bucket is priced and appends ` · N unpriced tok` (N summed from `Bucket.unpriced_tokens`, as the agents panel
+  prints it) when any bucket has `unpriced_tokens > 0`.
 - Rows for compaction and side questions are shown only when non-zero.
-- A footer line shows the session cost budget when `[agents]` sets one (`$spent / $cap`), using
-  the existing session limit accessors on `AgentTree`.
+- A footer line shows the session cost budget when `[agents]` sets one (`$spent / $cap`): the cap
+  from `limits().session.cost_usd`, the spent figure from `tree_spend()` (or the ledger total).
 - The cache columns are omitted entirely when every cache counter is zero, so a provider that
   reports none does not show a column of zeros.
 - Row/column formatting lives in `reports.rs` next to `context`, as a pure function of a plain
@@ -121,16 +127,23 @@ Session usage
 2. `fontaine-core/src/gate.rs`: replace `GuardianUsage` and the three standalone mutexes with the
    ledger; add `record_usage`; keep `guardian_usage_of(agent)` on a per-agent `Bucket` map; update
    `add_*_usage` wrappers.
-3. `fontaine-core/src/turn.rs` and `agent/goal.rs`: route the four debit sites through
+3. `fontaine-core/src/turn.rs`, `agent/goal.rs` and `gate.rs`: route the five debit sites through
    `record_usage` with the right `UsageSource`.
-4. `fontaine/src/headless.rs`: read main/guardian/goal/subagent buckets from the ledger; delete the
-   private `Totals` tally. Existing headless contract tests must pass unchanged.
+4. `fontaine/src/headless.rs`: read buckets from the ledger; delete the private `Totals` tally.
+   Everywhere `totals` is used today, headless reads Main + Compaction: `usage.main`,
+   `num_turns = Main.calls + Compaction.calls`, `total_cost_usd`, and `spent()`/`over_cap`
+   (`session_cost` gets main+compaction already summed). Existing headless contract tests must pass
+   unchanged, as must the unit test `cache_tokens_reach_the_result_usage`.
 5. `fontaine-tui/src/reports.rs`: `UsageReport` snapshot struct and `cost()` formatter.
 6. `fontaine-tui/src/commands.rs` + `ui/mod.rs` + `ui/commands/reports.rs`: `Command::Cost`, the
-   `cost`/`usage` builtin, dispatch, handler; include in `main_only` exemptions like `Recap`.
-7. Docs and tracking: `docs/tui.md` command table and a short "Usage and cost" section;
-   `docs/telemetry.md` already references `/cost` (verify wording still true); master plan
-   `## Decisions` line (below); `tasks/completed/core_slash_commands_plan.md` is archived and left
+   `cost`/`usage` builtin, dispatch, handler; add `Command::Cost` to `runs_mid_turn()` like `Recap`.
+7. Docs and tracking: `docs/tui.md` command table (`/cost [alias /usage]`) and a short "Usage and
+   cost" section with the sample output, the ` · N unpriced tok` meaning, and the not-counted cases
+   (dropped guardian estimate, resume); `docs/telemetry.md` already references `/cost` (verify
+   wording still true); master plan `### TUI` subsection of `## Decisions`, appended at its end:
+   a dated 2026-11-02 line that `/usage` aliases `/cost`, the ledger is in-memory, and `/cost`
+   breaks down by source (main/guardian/subagents/goal/compaction/side questions) rather than per
+   model, with no durations or code-change counts, unlike Claude Code's `/cost`; `tasks/completed/core_slash_commands_plan.md` is archived and left
    alone. CHANGELOG entry is added by the PR step.
 
 ## Files to Modify
@@ -139,7 +152,21 @@ Session usage
 - `rust/fontaine/src/headless.rs`
 - `rust/fontaine-tui/src/reports.rs`, `commands.rs`, `ui/mod.rs`, `ui/commands/reports.rs`
 - `docs/tui.md`, `docs/telemetry.md` (if needed), `tasks/fontaine_harness_plan.md` (Decisions)
-- Tests that construct `GuardianUsage` (`fontaine-core/tests/{billing,goal,agent_pipeline,...}.rs`)
+- Tests that use `GuardianUsage` or the `*_usage()` accessors (`fontaine-core/tests/{billing,goal,agent_pipeline,...}.rs`)
+
+## Decisions`, appended at its end:
+   a dated 2026-11-02 line that `/usage` aliases `/cost`, the ledger is in-memory, and `/cost`
+   breaks down by source (main/guardian/subagents/goal/compaction/side questions) rather than per
+   model, with no durations or code-change counts, unlike Claude Code's `/cost`; `tasks/completed/core_slash_commands_plan.md` is archived and left
+   alone. CHANGELOG entry is added by the PR step.
+
+## Files to Modify
+
+- `rust/fontaine-core/src/usage_ledger.rs` (new), `lib.rs`, `gate.rs`, `turn.rs`, `agent/goal.rs`
+- `rust/fontaine/src/headless.rs`
+- `rust/fontaine-tui/src/reports.rs`, `commands.rs`, `ui/mod.rs`, `ui/commands/reports.rs`
+- `docs/tui.md`, `docs/telemetry.md` (if needed), `tasks/fontaine_harness_plan.md` (Decisions)
+- Tests that use `GuardianUsage` or the `*_usage()` accessors (`fontaine-core/tests/{billing,goal,agent_pipeline,...}.rs`)
 
 ## Trade-offs
 
@@ -160,15 +187,9 @@ Session usage
   plan limits to show.
 - 2026-11-02: the ledger is in-memory and not restored on `--resume`, matching the guardian, goal
   and subagent tallies and the agent tree today.
-
-## Documentation
-
-- `docs/tui.md`: add `/cost [alias /usage]` to the command table and a "Usage and cost" section
-  with the sample output, the `+ unpriced` meaning, and the not-counted cases (dropped guardian
-  estimate, resume).
-- `docs/telemetry.md`: confirm the `/cost` sentence now points at a real command.
-- Master plan `## Decisions`: a dated line under the subject for slash commands/observability
-  that `/usage` aliases `/cost` and the ledger is in-memory.
+- 2026-11-02: `/cost` breaks down by source rather than per model and shows no durations or
+  code-change counts, unlike Claude Code's `/cost`; Fontaine's sources (guardian, goal, compaction)
+  are what the user needs to attribute spend.
 
 ## Testing Strategy
 
@@ -178,17 +199,13 @@ Session usage
 - `gate.rs` tests: `record_usage` for each source lands in the right bucket and still debits the
   right agent (a subagent call raises that agent's `Spend`, a guardian call raises the caller's);
   compaction and `/btw` appear in their own buckets (the bug this fixes: they were in no bucket).
-- `reports.rs` unit tests for `cost()`: all-priced, mixed priced/unpriced shows `+ unpriced`,
+- `reports.rs` unit tests for `cost()`: all-priced, mixed priced/unpriced shows ` · N unpriced tok`,
   no priced source shows `n/a` and no dollar total, cache columns hidden when all zero,
   empty sources omitted, budget footer present only with a configured cap.
-- `commands.rs` parse tests: `/cost`, `/usage`, with trailing text ignored, `main_only()` false.
-- TUI integration test (existing routed/wiremock harness in `fontaine-tui/tests`): run a turn that
-  triggers a guardian call, then `/cost`, and assert the transcript notice has `main` and
-  `guardian` rows. Headless contract tests (`fontaine/tests/headless_contract.rs`) must pass
+- `commands.rs` parse tests: `/cost`, `/usage`, with trailing text ignored, and a `runs_mid_turn()` assertion (extend
+  `runs_mid_turn_marks_the_immediate_ui_set_and_nothing_else`).
+- TUI integration test (`World::with_guardian` in `fontaine-tui/tests/common/mod.rs`, a scripted
+  mock): run a turn that triggers a guardian call, then `/cost`, and assert the notice has a
+  `guardian` row and the guardian call count, not non-zero guardian tokens. Headless contract tests (`fontaine/tests/headless_contract.rs`) must pass
   unchanged, which pins the refactor.
 - No live-API tests.
-
-## Open Questions
-
-- Should headless `result` also expose compaction and side-question buckets (schema bump)? This
-  plan leaves the v1 schema unchanged; their spend stays in the tree total only.
