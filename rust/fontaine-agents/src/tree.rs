@@ -1076,6 +1076,12 @@ impl AgentTree {
         total
     }
 
+    /// Everything spent in the session, including agents `/clear` has removed; the tally the
+    /// session spend cap is enforced against.
+    pub fn session_spend(&self) -> Spend {
+        self.lock().session_spend
+    }
+
     pub fn exhausted_of(&self, agent: &str) -> Option<Exhausted> {
         self.lock().nodes.get(agent).and_then(|n| n.exhausted)
     }
