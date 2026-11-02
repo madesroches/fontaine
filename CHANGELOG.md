@@ -10,6 +10,18 @@ All notable changes are recorded here. The format follows
 
 #### Guardian
 
+- The `screen` preset of `[guardian.composition]` can read on a hosted model: `typesafe/jev-1.14`
+  on an `openrouter` account, asked the five-level `level5_employee` question through
+  `/v1/systemone`, in place of a local Ollama first-token read (#375). It declares a `stop` and an
+  `allow` read that share one request (about $0.000027 and 150 ms), has no steering read, and ships
+  default thresholds fitted on the synthetic corpus with a 0.10 margin (`allow_threshold = 0.20`,
+  `stop_threshold = 0.34`) and an allow path that is on, which `allow = false` switches off. The
+  key must resolve at startup and goes only over https or to loopback; the audit log's
+  `screen_model` records the id the server resolved, and the request's cost is in `/cost`. Guardian
+  state leaves the machine for OpenRouter and Typesafe wherever it is enabled. A hand-written
+  section stays in shadow mode; setup, which now offers this screen on an `openrouter` account whose
+  key resolves (stating the egress and writing no threshold), writes `shadow = false`.
+  `fontaine-evals --screen live:<account>/typesafe/jev-1.14` scores it with the defaults.
 - `fontaine auto-mode setup` and `/auto-mode-setup` end with an optional offer of the guardian
   composition's `screen` preset: when an Ollama account holds a model Fontaine has benchmarked
   (`qwen3:4b-instruct-2507-q4_K_M`), you choose safe (the screen only stops calls) or fast (the

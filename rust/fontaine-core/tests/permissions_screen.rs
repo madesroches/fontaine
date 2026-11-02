@@ -98,6 +98,7 @@ fn stage_with(server: &MockServer, shadow: bool, params: &[(&str, Param)]) -> Co
             reads: Default::default(),
             params,
             shadow,
+            kinds: Default::default(),
         },
         vec![(MODEL.into(), reader)],
     )
@@ -619,6 +620,7 @@ fn script_stage(server: &MockServer, source: &str, shadow: bool) -> CompositionS
         model: MODEL.into(),
         prompt,
         question,
+        backend: fontaine_guardian::BackendKind::Ollama,
     };
     let composition = Composition::compile(
         CompositionSpec {
@@ -641,6 +643,7 @@ fn script_stage(server: &MockServer, source: &str, shadow: bool) -> CompositionS
             .into(),
             params: Default::default(),
             shadow,
+            kinds: Default::default(),
         },
         vec![(MODEL.into(), reader)],
     )
@@ -793,4 +796,127 @@ async fn by_default_only_the_screens_allow_skips_the_guardian() {
     let record = &rig.audit()[0];
     assert_eq!(record.tier, Tier::Guardian);
     assert!(record.screen_risk.unwrap() > 0.9);
+}
+
+// ---------------------------------------------------------------- the screen on a hosted model
+
+const HOSTED_MODEL: &str = "or/typesafe/jev-1.14";
+const PINNED: &str = "typesafe/jev-1.14-20261014";
+
+fn level_answer(within: f64) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "model": PINNED,
+        "answers": { "q": {
+            "choice": "within",
+            "probabilities": {
+                "within": within,
+                "slightly_outside": 1.0 - within,
+                "outside": 0.0,
+                "far_outside": 0.0,
+                "fireable": 0.0,
+            },
+        }},
+        "usage": { "input_tokens": 700, "cost": 0.000027 },
+    }))
+}
+
+async fn hosted(response: ResponseTemplate, base_path: &str) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("{base_path}/systemone")))
+        .respond_with(response)
+        .mount(&server)
+        .await;
+    server
+}
+
+/// The stage `[guardian.composition]` builds for a hosted model whose account serves at
+/// `server/<base_path>`, enforcing.
+fn hosted_stage(server: &MockServer, base_path: Option<&str>) -> CompositionStage {
+    let w = common::World::new();
+    let base = base_path.map_or(String::new(), |p| {
+        format!("base_url = \"{}{p}\"\n", server.uri())
+    });
+    w.user_file(&format!(
+        "[accounts.or]\nkind = \"openrouter\"\napi_key_env = \"OR_KEY\"\n{base}\n[guardian.composition]\npreset = \"screen\"\nmodel = \"{HOSTED_MODEL}\"\nshadow = false\n"
+    ));
+    let env = |name: &str| (name == "OR_KEY").then(|| "sk-or-test".into());
+    let config = w.load_from(&w.work, None, &env).unwrap();
+    fontaine_core::agent::build_composition(&config, Profile::Full, &env, &w.data)
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_hosted_screen_allow_sends_one_request_and_records_the_pinned_model_and_its_cost_once() {
+    let server = hosted(level_answer(0.97), "/api/v1").await;
+    let slow = delayed_guardian(allow_verdict(), SLOW).await;
+    let rig = rig(
+        slow.guardian.clone(),
+        false,
+        hosted_stage(&server, Some("/api/v1")),
+    );
+    assert!(allowed(&rig.check("shell", shell("cargo test")).await));
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "stop and allow share one request");
+    assert_eq!(
+        requests[0]
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok()),
+        Some("Bearer sk-or-test")
+    );
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Screen, Decision::Allow)
+    );
+    assert_eq!(record.rule.as_deref(), Some("screen.allow"));
+    assert_eq!(record.screen_model.as_deref(), Some(PINNED));
+    assert_eq!(record.screen_risk, record.screen_allow_risk);
+    assert!((record.screen_risk.unwrap() - 0.03).abs() < 1e-9);
+    assert_eq!(record.screen_steering, None);
+    assert!(
+        !record.explanation.as_deref().unwrap().contains("steering"),
+        "{record:?}"
+    );
+
+    let usage = rig.state.guardian_usage();
+    assert_eq!(usage.calls, 1);
+    assert_eq!(usage.input_tokens, 700);
+    assert_eq!(usage.cost_usd, Some(0.000027));
+}
+
+#[tokio::test]
+async fn a_hosted_screen_stops_on_the_default_stop_threshold() {
+    let server = hosted(level_answer(0.5), "/api/v1").await;
+    let slow = delayed_guardian(allow_verdict(), SLOW).await;
+    let rig = rig(
+        slow.guardian.clone(),
+        true,
+        hosted_stage(&server, Some("/api/v1")),
+    );
+    let decision = rig.check("shell", shell("python a.py")).await;
+    assert!(!allowed(&decision));
+    let record = &rig.audit()[0];
+    assert_eq!(record.tier, Tier::Screen);
+    assert_eq!(record.rule.as_deref(), Some("screen.stop"));
+}
+
+#[tokio::test]
+async fn a_failed_hosted_read_is_left_to_the_guardian_and_the_label_is_recorded() {
+    let server = hosted(ResponseTemplate::new(500), "/api/v1").await;
+    let fake = fake_guardian(allow_verdict());
+    let rig = rig(
+        fake.guardian.clone(),
+        false,
+        hosted_stage(&server, Some("/api/v1")),
+    );
+    assert!(allowed(&rig.check("shell", shell("cargo test")).await));
+    assert_eq!(fake.calls(), 1);
+    let record = &rig.audit()[0];
+    assert_ne!(record.tier, Tier::Screen);
+    assert_eq!(record.screen_outcome.as_deref(), Some("unavailable"));
+    assert_eq!(record.screen_model.as_deref(), Some(HOSTED_MODEL));
 }

@@ -1547,6 +1547,10 @@ impl PermissionPipeline {
                 if let Some(usage) = &composed.llm_usage {
                     self.state.add_guardian_usage(cx.call.agent, usage, true);
                 }
+                // Reads that share a request share its usage, which one of them carries.
+                for usage in composed.reads.iter().filter_map(|read| read.usage.as_ref()) {
+                    self.state.add_guardian_usage(cx.call.agent, usage, true);
+                }
                 (composed.decided, Some(screened))
             }
         };
@@ -1679,10 +1683,13 @@ impl PermissionPipeline {
         score: f64,
         threshold: f64,
     ) -> GateDecision {
-        let figure = |value: Option<f64>| value.map_or("n/a".to_string(), |v| format!("{v:.2e}"));
+        // A hosted screen declares no steering read.
+        let steering = screened
+            .score("steering")
+            .map(|value| format!(", steering {value:.2e}"))
+            .unwrap_or_default();
         let explanation = format!(
-            "the guardian composition allowed this call at {node} (score {score:.2e} below {threshold:.2e}, steering {})",
-            figure(screened.score("steering"))
+            "the guardian composition allowed this call at {node} (score {score:.2e} below {threshold:.2e}{steering})"
         );
         Self::note(Tier::Screen, Decision::Allow);
         let mut record = self.record(

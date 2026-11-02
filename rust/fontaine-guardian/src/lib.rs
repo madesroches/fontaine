@@ -18,6 +18,7 @@ pub mod rules;
 pub mod scanner;
 mod screen;
 pub mod structured;
+pub mod systemone;
 mod verdict;
 
 pub use breaker::{CONSECUTIVE_LIMIT, LoopBreaker, TOTAL_LIMIT};
@@ -34,7 +35,8 @@ pub use rule_label::RuleLabel;
 pub use rules::{EnvironmentConfig, List, RuleConfig};
 pub use scanner::{CommandScanner, LlmScanner, Scan, Scanner};
 pub use screen::{
-    DEFAULT_STEERING_VETO, Prompt, Question, Read, Reader, ReaderSettings, check_pairing,
+    BackendKind, DEFAULT_STEERING_VETO, Prompt, Question, Read, ReadOutcome, Reader,
+    ReaderSettings, SystemOneSettings, check_backend, check_pairing,
 };
 pub use structured::{
     FixedProbe, ModeNotice, Notifier, OutputMode, OutputProbe, PROBE_TIMEOUT, ProbeOutcome,

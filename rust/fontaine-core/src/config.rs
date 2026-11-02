@@ -462,7 +462,9 @@ pub struct GuardianCompositionSection {
     pub preset: Option<String>,
     /// A Rune file; a relative path resolves against the user config directory.
     pub script: Option<String>,
-    /// `<account>/<model>`, an account of kind `ollama`: the default model of every read.
+    /// `<account>/<model>`, an account of kind `ollama` (a local model, read from its logprobs)
+    /// or `openrouter` (a hosted `/v1/systemone` model such as `typesafe/jev-1.14`): the default
+    /// model of every read.
     pub model: Option<String>,
     pub shadow: Option<bool>,
     /// Bounds each read.
@@ -1182,7 +1184,8 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
                     Ok(params) => params,
                     Err(e) => return bad(&e.key, &e.message),
                 };
-                if let Err(e) = fontaine_guardian::composition::check_preset_params(name, &params)
+                if let Err(e) =
+                    fontaine_guardian::composition::check_preset_params(name, &params, None)
                     && let Some(key) = &e.key
                 {
                     return bad(&format!("guardian.composition.params.{key}"), &e.message);
@@ -1498,8 +1501,13 @@ impl GuardianComposition {
         models.into_iter().collect()
     }
 
-    /// The spec the composition compiles from.
-    pub fn spec(&self) -> Result<fontaine_guardian::composition::CompositionSpec, ConfigSpecError> {
+    /// The spec the composition compiles from. `accounts` say which backend each read model's
+    /// account is; an account that is not configured, or of another kind, is read over Ollama,
+    /// and [`check_composition`] is what refuses it.
+    pub fn spec(
+        &self,
+        accounts: &BTreeMap<String, Account>,
+    ) -> Result<fontaine_guardian::composition::CompositionSpec, ConfigSpecError> {
         use fontaine_guardian::composition::{CompositionSpec, Script};
         let script = match (&self.preset, &self.script_source) {
             (Some(name), _) => Script::Preset(name.clone()),
@@ -1512,6 +1520,10 @@ impl GuardianComposition {
             }
         };
         let params = composition_params(&self.params)?;
+        let kinds: BTreeMap<String, fontaine_guardian::BackendKind> = accounts
+            .iter()
+            .filter_map(|(name, account)| Some((name.clone(), backend_of(account.kind)?)))
+            .collect();
         let mut reads = BTreeMap::new();
         for (name, read) in &self.reads {
             let Some(model) = self.read_model(read) else {
@@ -1520,12 +1532,17 @@ impl GuardianComposition {
                     message: "requires `model`, here or on `[guardian.composition]`".into(),
                 });
             };
+            let account = model.split_once('/').map_or("", |(account, _)| account);
             reads.insert(
                 name.clone(),
                 fontaine_guardian::Read {
                     model: model.to_owned(),
                     prompt: read.prompt,
                     question: read.question,
+                    backend: kinds
+                        .get(account)
+                        .copied()
+                        .unwrap_or(fontaine_guardian::BackendKind::Ollama),
                 },
             );
         }
@@ -1535,7 +1552,54 @@ impl GuardianComposition {
             reads,
             params,
             shadow: self.shadow,
+            kinds,
         })
+    }
+}
+
+/// What a screen read over an account of `kind` is asked through; `None` for a kind that cannot
+/// serve one.
+pub fn backend_of(kind: AccountKind) -> Option<fontaine_guardian::BackendKind> {
+    match kind.as_str() {
+        "ollama" => Some(fontaine_guardian::BackendKind::Ollama),
+        "openrouter" => Some(fontaine_guardian::BackendKind::SystemOne),
+        _ => None,
+    }
+}
+
+/// The `/v1/systemone` URL of a hosted screen account: its `base_url`, which also serves chat,
+/// else the kind's default, with `systemone` joined on.
+pub fn systemone_endpoint(account: &Account) -> Result<url::Url, String> {
+    let base = account
+        .base_url
+        .as_deref()
+        .filter(|u| !u.is_empty())
+        .or_else(|| account.kind.provider().default_endpoint())
+        .ok_or("the account has no `base_url`")?;
+    let parsed = url::Url::parse(base).map_err(|e| format!("`base_url` is not a URL: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || !parsed.has_host() {
+        return Err("the guardian composition requires an http or https URL with a host".into());
+    }
+    url::Url::parse(&format!("{}/systemone", base.trim_end_matches('/')))
+        .map_err(|e| format!("`base_url` is not a URL: {e}"))
+}
+
+/// The key of a hosted screen account, or why none resolves. Config loading and the reader's
+/// construction both resolve through here, so they cannot disagree.
+pub(crate) fn screen_key(
+    name: &str,
+    account: &Account,
+    env: EnvLookup<'_>,
+    stored: &credentials::Credentials,
+) -> Result<String, String> {
+    use crate::credentials::StoredCredential;
+    use crate::models::{Credential, credential};
+    match credential(name, account, env, stored) {
+        Credential::Found(StoredCredential::ApiKey(key)) => Ok(key),
+        Credential::Found(_) | Credential::NoSource => Err(format!(
+            "account `{name}` has no OpenRouter key; set `api_key_env` in [accounts.{name}] or run `/login {name}`"
+        )),
+        Credential::Unresolved(why) => Err(format!("account `{name}`: {why}")),
     }
 }
 
@@ -2592,6 +2656,7 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
     check_network(&config)?;
     check_scanner(&config.guardian, &user_path)?;
     check_composition(&mut config, &user_path, params.config_dir)?;
+    check_composition_credentials(&config, &user_path, params)?;
     resolve_telemetry(&config.telemetry, params)?;
     check_websearch(&config.websearch)?;
     config.websearch_config(params.env, params.data_dir)?;
@@ -2655,7 +2720,7 @@ fn check_scanner(guardian: &Guardian, user_path: &Path) -> Result<(), ConfigErro
 }
 
 /// The composition comes only from the user file, so that is where an invalid one is reported. It
-/// must name exactly one of a preset and a script, read with models on Ollama accounts, and
+/// must name exactly one of a preset and a script, read with models on Ollama or OpenRouter accounts, and
 /// compile; a configured composition that cannot be built stops startup rather than vanishing.
 /// `user_path` names the file in errors, and a relative script path resolves against `config_dir`.
 pub fn check_composition(
@@ -2714,7 +2779,7 @@ pub fn check_composition(
         composition.script_source = Some(text);
     }
     let spec = composition
-        .spec()
+        .spec(&config.accounts)
         .map_err(|e| ConfigError::invalid(user_path, &e.key, &e.message))?;
     let models = spec.read_models().map_err(|e| {
         ConfigError::invalid(user_path, composition_key(composition, &e), &e.message)
@@ -2729,9 +2794,12 @@ pub fn check_composition(
                 |(name, _)| format!("guardian.composition.reads.{name}.model"),
             );
         let account = model.split_once('/').map_or("", |(a, _)| a);
-        match config.accounts.get(account) {
-            Some(a) if a.kind.as_str() == "ollama" => {
-                if let Some(base) = a.base_url.as_deref().filter(|u| !u.is_empty()) {
+        let Some(configured) = config.accounts.get(account) else {
+            return bad(&key, &format!("account `{account}` is not configured"));
+        };
+        match backend_of(configured.kind) {
+            Some(fontaine_guardian::BackendKind::Ollama) => {
+                if let Some(base) = configured.base_url.as_deref().filter(|u| !u.is_empty()) {
                     let usable = url::Url::parse(base)
                         .is_ok_and(|u| matches!(u.scheme(), "http" | "https") && u.has_host());
                     if !usable {
@@ -2742,20 +2810,65 @@ pub fn check_composition(
                     }
                 }
             }
-            Some(_) => {
-                return bad(
-                    &key,
-                    &format!("account `{account}` is not of kind = \"ollama\""),
-                );
+            Some(fontaine_guardian::BackendKind::SystemOne) => {
+                let endpoint = systemone_endpoint(configured).map_err(|e| {
+                    ConfigError::invalid(user_path, format!("accounts.{account}.base_url"), e)
+                })?;
+                if !fontaine_guardian::systemone::key_may_travel(&endpoint) {
+                    return bad(
+                        &format!("accounts.{account}.base_url"),
+                        "the guardian composition sends the account's key only over https or to a loopback host",
+                    );
+                }
             }
             None => {
-                return bad(&key, &format!("account `{account}` is not configured"));
+                return bad(
+                    &key,
+                    &format!("account `{account}` is not of kind = \"ollama\" or \"openrouter\""),
+                );
             }
         }
     }
     fontaine_guardian::composition::Composition::compile(spec, Vec::new()).map_err(|e| {
         ConfigError::invalid(user_path, composition_key(composition, &e), &e.message)
     })?;
+    Ok(())
+}
+
+/// A hosted screen model needs its account's key now, not at the first call: `check_composition`
+/// lacks the environment and the stored credentials, so this runs after it. A key that does not
+/// resolve stops startup rather than quietly leaving the screen unable to read.
+fn check_composition_credentials(
+    config: &Config,
+    user_path: &Path,
+    params: &LoadParams<'_>,
+) -> Result<(), ConfigError> {
+    let Some(composition) = &config.guardian.composition else {
+        return Ok(());
+    };
+    let spec = composition
+        .spec(&config.accounts)
+        .map_err(|e| ConfigError::invalid(user_path, &e.key, &e.message))?;
+    let models = spec.read_models().map_err(|e| {
+        ConfigError::invalid(user_path, composition_key(composition, &e), &e.message)
+    })?;
+    let mut stored = None;
+    for model in models {
+        let account = model.split_once('/').map_or("", |(a, _)| a);
+        let Some(configured) = config.accounts.get(account) else {
+            continue;
+        };
+        if backend_of(configured.kind) != Some(fontaine_guardian::BackendKind::SystemOne) {
+            continue;
+        }
+        if stored.is_none() {
+            stored = Some(credentials::Credentials::load(params.data_dir)?);
+        }
+        let stored = stored.as_ref().expect("the credentials were just loaded");
+        screen_key(account, configured, params.env, stored).map_err(|message| {
+            ConfigError::invalid(user_path, "guardian.composition.model", message)
+        })?;
+    }
     Ok(())
 }
 
@@ -2982,7 +3095,7 @@ fn read_optional(
 
 #[cfg(test)]
 mod tests {
-    use super::{AutoMode, case_colliding_env_name};
+    use super::{Account, AccountKind, AutoMode, case_colliding_env_name, systemone_endpoint};
     use fontaine_guardian::rules::{DEFAULT_ENVIRONMENT, DEFAULT_HARD_DENY};
 
     fn config_with(auto_mode: AutoMode) -> super::Config {
@@ -3020,5 +3133,51 @@ mod tests {
         );
         assert_eq!(case_colliding_env_name(names.into_iter(), false), None);
         assert_eq!(case_colliding_env_name(["A", "B"].into_iter(), true), None);
+    }
+
+    fn openrouter(base_url: Option<&str>) -> Account {
+        Account {
+            kind: AccountKind::named("openrouter"),
+            api_key_env: None,
+            base_url: base_url.map(str::to_owned),
+            models: None,
+            wires: None,
+            context_tokens: None,
+            think: None,
+            prompt_caching: None,
+            cache_ttl: None,
+            quota: None,
+            https_proxy: None,
+            http_proxy: None,
+            no_proxy: None,
+            ca_bundle: None,
+            client_cert: None,
+            client_key: None,
+        }
+    }
+
+    #[test]
+    fn the_systemone_endpoint_joins_onto_the_chat_base_url() {
+        for (base, expected) in [
+            (None, "https://openrouter.ai/api/v1/systemone"),
+            (
+                Some("https://openrouter.ai/api/v1"),
+                "https://openrouter.ai/api/v1/systemone",
+            ),
+            (
+                Some("https://openrouter.ai/api/v1/"),
+                "https://openrouter.ai/api/v1/systemone",
+            ),
+            (
+                Some("http://127.0.0.1:8000/api/v1"),
+                "http://127.0.0.1:8000/api/v1/systemone",
+            ),
+        ] {
+            let url = systemone_endpoint(&openrouter(base)).unwrap();
+            assert_eq!(url.as_str(), expected, "{base:?}");
+        }
+        for bad in ["not a url", "ftp://host/", "http://"] {
+            systemone_endpoint(&openrouter(Some(bad))).unwrap_err();
+        }
     }
 }

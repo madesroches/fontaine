@@ -12,7 +12,8 @@ use fontaine_guardian::composition::{
     Composed, Composition, CompositionSpec, Decided, Outcome, Param, Script, adjudicate,
 };
 use fontaine_guardian::{
-    Decision, FailClosed, Guardian, Profile, Prompt, Question, Read, Reader, ReaderSettings,
+    BackendKind, Decision, FailClosed, Guardian, Profile, Prompt, Question, Read, Reader,
+    ReaderSettings, SystemOneSettings,
 };
 use serde_json::{Value, json};
 use url::Url;
@@ -157,6 +158,7 @@ fn preset(server: &MockServer, params: &[(&'static str, Param)], shadow: bool) -
                 reads: BTreeMap::new(),
                 params: params_of(params),
                 shadow,
+                kinds: BTreeMap::new(),
             },
             vec![(MODEL.into(), reader_at(server, Duration::from_secs(5)))],
         )
@@ -169,20 +171,28 @@ fn read(prompt: Prompt, question: Question) -> Read {
         model: MODEL.into(),
         prompt,
         question,
+        backend: BackendKind::Ollama,
     }
 }
 
+/// The labels `a`..`d` read on; one server answers all of them. Reads that ask the same model the
+/// same question share one request, so each of these gets a model of its own.
+const SCRIPT_MODELS: [&str; 4] = [MODEL, "tiny-b", "tiny-c", "tiny-d"];
+
 /// A script that declares the reads `a`..`d` (the stop question) and `h` (hardened).
 fn script_spec(source: &str, shadow: bool) -> CompositionSpec {
-    let plain = || read(Prompt::Plain, Question::EmployeeAllowed);
+    let plain = |model: &str| Read {
+        model: model.into(),
+        ..read(Prompt::Plain, Question::EmployeeAllowed)
+    };
     CompositionSpec {
         script: Script::Source(source.into()),
         model: MODEL.into(),
         reads: BTreeMap::from([
-            ("a".into(), plain()),
-            ("b".into(), plain()),
-            ("c".into(), plain()),
-            ("d".into(), plain()),
+            ("a".into(), plain(SCRIPT_MODELS[0])),
+            ("b".into(), plain(SCRIPT_MODELS[1])),
+            ("c".into(), plain(SCRIPT_MODELS[2])),
+            ("d".into(), plain(SCRIPT_MODELS[3])),
             (
                 "h".into(),
                 read(Prompt::Hardened, Question::EmployeeAllowed),
@@ -190,6 +200,7 @@ fn script_spec(source: &str, shadow: bool) -> CompositionSpec {
         ]),
         params: BTreeMap::new(),
         shadow,
+        kinds: BTreeMap::new(),
     }
 }
 
@@ -206,7 +217,10 @@ fn script_timeout(
     Arc::new(
         Composition::compile(
             script_spec(source, shadow),
-            vec![(MODEL.into(), reader_at(server, timeout))],
+            SCRIPT_MODELS
+                .iter()
+                .map(|label| ((*label).to_owned(), reader_at(server, timeout)))
+                .collect(),
         )
         .unwrap_or_else(|e| panic!("the script compiles: {e}")),
     )
@@ -482,6 +496,7 @@ async fn any_failed_read_leaves_the_call_to_the_guardian() {
                             ],
                         )),
                         shadow: false,
+                        kinds: BTreeMap::new(),
                     },
                     vec![(MODEL.into(), reader_at(&server, Duration::from_millis(200)))],
                 )
@@ -1173,4 +1188,369 @@ async fn an_unavailable_guardian_denies_even_when_the_screen_would_allow() {
     let adjudication = adjudication(composed);
     assert_eq!(adjudication.decision, Decision::Deny);
     assert_eq!(adjudication.fail_closed, Some(FailClosed::Unavailable));
+}
+
+// ---------------------------------------------------------------- the screen preset on a hosted model
+
+const JEV_LABEL: &str = "or/typesafe/jev-1.14";
+const JEV_PINNED: &str = "typesafe/jev-1.14-20261014";
+
+fn level_answer(within: f64) -> Value {
+    json!({
+        "model": JEV_PINNED,
+        "answers": { "q": {
+            "choice": "within",
+            "probabilities": {
+                "within": within,
+                "slightly_outside": 1.0 - within,
+                "outside": 0.0,
+                "far_outside": 0.0,
+                "fireable": 0.0,
+            },
+        }},
+        "usage": { "input_tokens": 700, "cost": 0.000027 },
+    })
+}
+
+async fn jev_server(response: ResponseTemplate) -> MockServer {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/systemone"))
+        .respond_with(response)
+        .mount(&server)
+        .await;
+    server
+}
+
+async fn jev_server_saying(within: f64) -> MockServer {
+    jev_server(ResponseTemplate::new(200).set_body_json(level_answer(within))).await
+}
+
+fn jev_reader(server: &MockServer) -> Reader {
+    Reader::systemone(
+        reqwest::Client::new(),
+        SystemOneSettings {
+            endpoint: Url::parse(&format!("{}/api/v1/systemone", server.uri())).unwrap(),
+            model: "typesafe/jev-1.14".into(),
+            api_key: "sk-test".into(),
+            profile: Profile::Full,
+            timeout: Duration::from_secs(5),
+        },
+    )
+}
+
+fn jev_spec(params: &[(&'static str, Param)], shadow: bool) -> CompositionSpec {
+    CompositionSpec {
+        script: Script::Preset("screen".into()),
+        model: JEV_LABEL.into(),
+        reads: BTreeMap::new(),
+        params: params_of(params),
+        shadow,
+        kinds: BTreeMap::from([("or".to_owned(), BackendKind::SystemOne)]),
+    }
+}
+
+fn jev(server: &MockServer, params: &[(&'static str, Param)], shadow: bool) -> Arc<Composition> {
+    Arc::new(
+        Composition::compile(
+            jev_spec(params, shadow),
+            vec![(JEV_LABEL.into(), jev_reader(server))],
+        )
+        .expect("the preset compiles on a hosted model"),
+    )
+}
+
+#[tokio::test]
+async fn the_hosted_preset_ships_defaults_that_allow_stop_and_pass() {
+    let cases = [
+        (0.95, "allow"),
+        (0.5, "stop"),
+        (0.7, "pass"),
+        (0.79, "pass"),
+        (0.65, "stop"),
+    ];
+    for (within, expected) in cases {
+        let server = jev_server_saying(within).await;
+        let (_endpoint, guardian) = slow_guardian(allow(0.95), Duration::ZERO).await;
+        let composed = run(&jev(&server, &[], false), &guardian).await;
+        match (expected, &composed.decided) {
+            (
+                "allow",
+                Decided::Allow {
+                    node, threshold, ..
+                },
+            ) => {
+                assert_eq!(node, "screen.allow");
+                assert_eq!(*threshold, 0.20);
+            }
+            ("stop", Decided::Escalate { node, .. }) => assert_eq!(node, "screen.stop"),
+            ("pass", Decided::Guardian(_)) => {}
+            (_, other) => panic!("within {within}: expected {expected}, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn equal_reads_send_one_request_and_fill_both_records_and_count_its_cost_once() {
+    let server = jev_server_saying(0.95).await;
+    let (_endpoint, guardian) = slow_guardian(allow(0.95), Duration::from_secs(3)).await;
+    let composed = run(&jev(&server, &[], false), &guardian).await;
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert_eq!(composed.reads.len(), 2);
+    let (stop, allow) = (
+        composed.score("stop").unwrap(),
+        composed.score("allow").unwrap(),
+    );
+    assert!((stop - 0.05).abs() < 1e-9);
+    assert_eq!(stop, allow);
+    let priced: Vec<_> = composed
+        .reads
+        .iter()
+        .filter(|r| r.usage.is_some())
+        .collect();
+    assert_eq!(priced.len(), 1, "{:?}", composed.reads);
+    assert_eq!(
+        priced[0].usage.as_ref().unwrap().cost.map(|c| c.total),
+        Some(0.000027)
+    );
+    assert!(composed.reads.iter().all(|r| r.model == JEV_PINNED));
+    assert_eq!(composed.models(), JEV_PINNED);
+}
+
+#[tokio::test]
+async fn the_hosted_screen_is_in_shadow_mode_a_log_of_scores() {
+    let server = jev_server_saying(0.95).await;
+    let (_endpoint, guardian) = slow_guardian(allow(0.95), Duration::ZERO).await;
+    let composed = run(&jev(&server, &[], true), &guardian).await;
+    assert!(matches!(composed.decided, Decided::Guardian(_)));
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    assert!(composed.score("allow").is_some() && composed.score("stop").is_some());
+}
+
+#[tokio::test]
+async fn allow_false_turns_the_allow_path_off_whatever_the_threshold() {
+    let server = jev_server_saying(0.99).await;
+    for extra in [
+        vec![("allow", Param::Bool(false))],
+        vec![
+            ("allow", Param::Bool(false)),
+            ("allow_threshold", number(0.5)),
+        ],
+    ] {
+        let (_endpoint, guardian) = slow_guardian(allow(0.95), Duration::ZERO).await;
+        let composed = run(&jev(&server, &extra, false), &guardian).await;
+        assert!(
+            matches!(composed.decided, Decided::Guardian(_)),
+            "{extra:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_hosted_read_leaves_the_call_to_the_guardian() {
+    let failures = [
+        ResponseTemplate::new(500),
+        ResponseTemplate::new(401).set_body_json(json!({ "error": { "message": "no key" } })),
+        ResponseTemplate::new(200).set_body_string("not json"),
+        ResponseTemplate::new(200).set_body_json(json!({ "answers": {} })),
+        ResponseTemplate::new(200).set_body_json(level_answer(2.0)),
+        ResponseTemplate::new(200)
+            .set_body_json(level_answer(0.99))
+            .set_delay(Duration::from_millis(400)),
+    ];
+    for (i, failure) in failures.into_iter().enumerate() {
+        let server = jev_server(failure).await;
+        let (endpoint, guardian) = slow_guardian(deny("Data Exfiltration"), Duration::ZERO).await;
+        let composition = Arc::new(
+            Composition::compile(
+                jev_spec(&[], false),
+                vec![(
+                    JEV_LABEL.into(),
+                    Reader::systemone(
+                        reqwest::Client::new(),
+                        SystemOneSettings {
+                            endpoint: Url::parse(&format!("{}/api/v1/systemone", server.uri()))
+                                .unwrap(),
+                            model: "typesafe/jev-1.14".into(),
+                            api_key: "sk-test".into(),
+                            profile: Profile::Full,
+                            timeout: Duration::from_millis(200),
+                        },
+                    ),
+                )],
+            )
+            .unwrap(),
+        );
+        let composed = run(&composition, &guardian).await;
+        assert!(composed.unavailable(), "case {i}");
+        let adjudication = adjudication(composed);
+        assert_eq!(adjudication.decision, Decision::Deny, "case {i}");
+        assert_eq!(endpoint.calls().await, 1, "case {i}");
+    }
+}
+
+#[test]
+fn the_hosted_preset_takes_allow_and_refuses_the_local_only_params() {
+    use fontaine_guardian::composition::check_preset_params;
+    let check = |key: &str, value: Param, backend| {
+        check_preset_params(
+            "screen",
+            &params_of(&[(Box::leak(key.to_owned().into_boxed_str()), value)]),
+            backend,
+        )
+    };
+    assert!(check("allow", Param::Bool(false), Some(BackendKind::SystemOne)).is_ok());
+    assert!(check("allow", Param::Bool(false), None).is_ok());
+    let refused = check("allow", Param::Bool(false), Some(BackendKind::Ollama)).unwrap_err();
+    assert_eq!(refused.key.as_deref(), Some("allow"));
+    assert!(refused.message.contains("unknown parameter"));
+    for key in ["question", "steering_veto"] {
+        let value = if key == "question" {
+            Param::Str("employee_allowed".into())
+        } else {
+            number(0.01)
+        };
+        assert!(
+            check(key, value.clone(), Some(BackendKind::SystemOne)).is_err(),
+            "{key}"
+        );
+        assert!(
+            check(key, value, Some(BackendKind::Ollama)).is_ok(),
+            "{key}"
+        );
+    }
+    assert!(check("allow", number(1.0), Some(BackendKind::SystemOne)).is_err());
+    for threshold in ["stop_threshold", "allow_threshold"] {
+        assert!(check(threshold, number(0.3), Some(BackendKind::SystemOne)).is_ok());
+    }
+}
+
+#[test]
+fn an_ollama_preset_still_needs_a_threshold_when_enforced_and_a_hosted_one_does_not() {
+    let ollama = CompositionSpec {
+        kinds: BTreeMap::new(),
+        model: MODEL.into(),
+        ..jev_spec(&[], false)
+    };
+    let error = Composition::compile(ollama, vec![]).err().unwrap();
+    assert!(error.message.contains("no default"), "{error}");
+    Composition::compile(jev_spec(&[], false), vec![]).unwrap();
+}
+
+#[test]
+fn a_question_must_match_its_models_backend() {
+    let compile = |question, backend| {
+        let mut spec = script_spec("pub async fn guardian(call, params) { abstain() }", false);
+        spec.reads = BTreeMap::from([(
+            "r".to_owned(),
+            Read {
+                model: MODEL.into(),
+                prompt: Prompt::Plain,
+                question,
+                backend,
+            },
+        )]);
+        Composition::compile(spec, vec![])
+    };
+    let error = compile(Question::Level5Employee, BackendKind::Ollama)
+        .err()
+        .unwrap();
+    assert_eq!(error.key.as_deref(), Some("r"));
+    let error = compile(Question::EmployeeAllowed, BackendKind::SystemOne)
+        .err()
+        .unwrap();
+    assert_eq!(error.key.as_deref(), Some("r"));
+    compile(Question::Level5Employee, BackendKind::SystemOne).unwrap();
+    compile(Question::EmployeeAllowed, BackendKind::Ollama).unwrap();
+}
+
+#[tokio::test]
+async fn the_documented_fallback_example_prefers_the_hosted_read_and_falls_back_to_a_local_one() {
+    let source = r#"pub async fn guardian(call, params) {
+    let verdict = match read(call, "hosted").await {
+        Ok(score) => hosted_verdict(score, params),
+        Err(_) => match read(call, "local").await {
+            Ok(score) => local_verdict(score, params),
+            Err(_) => abstain(),
+        },
+    };
+    if verdict.is_abstain() { llm(call).await } else { verdict }
+}
+
+fn hosted_verdict(score, params) {
+    if score.value() >= params.stop {
+        escalate("hosted.stop", format!("risk {:.2}", score.value()))
+    } else {
+        allow_below("hosted.allow", score, params.allow)
+    }
+}
+
+fn local_verdict(score, params) {
+    if score.value() >= params.local_stop {
+        escalate("local.stop", format!("risk {:.2}", score.value()))
+    } else {
+        abstain()
+    }
+}"#;
+    let cases = [
+        (
+            ResponseTemplate::new(200).set_body_json(level_answer(0.97)),
+            0.0,
+            "allow",
+        ),
+        (
+            ResponseTemplate::new(200).set_body_json(level_answer(0.1)),
+            0.0,
+            "hosted.stop",
+        ),
+        (ResponseTemplate::new(500), 0.99, "local.stop"),
+        (ResponseTemplate::new(500), 0.1, "llm"),
+    ];
+    for (hosted_response, local_risk, expected) in cases {
+        let hosted = jev_server(hosted_response).await;
+        let local = screen_server(local_risk, 0.5, 0.5, Duration::ZERO).await;
+        let (_endpoint, guardian) = slow_guardian(allow(0.95), Duration::ZERO).await;
+        let mut spec = script_spec(source, false);
+        spec.model = JEV_LABEL.into();
+        spec.kinds = BTreeMap::from([("or".to_owned(), BackendKind::SystemOne)]);
+        spec.reads = BTreeMap::from([
+            (
+                "hosted".into(),
+                Read {
+                    model: JEV_LABEL.into(),
+                    prompt: Prompt::Plain,
+                    question: Question::Level5Employee,
+                    backend: BackendKind::SystemOne,
+                },
+            ),
+            (
+                "local".into(),
+                read(Prompt::Plain, Question::OutsideRequest),
+            ),
+        ]);
+        spec.params = params_of(&[
+            ("stop", number(0.34)),
+            ("allow", number(0.20)),
+            ("local_stop", number(0.95)),
+        ]);
+        let composition = Arc::new(
+            Composition::compile(
+                spec,
+                vec![
+                    (JEV_LABEL.into(), jev_reader(&hosted)),
+                    (MODEL.into(), reader_at(&local, Duration::from_secs(5))),
+                ],
+            )
+            .expect("the documented example compiles"),
+        );
+        let composed = run(&composition, &guardian).await;
+        match (expected, &composed.decided) {
+            ("allow", Decided::Allow { node, .. }) => assert_eq!(node, "hosted.allow"),
+            ("hosted.stop" | "local.stop", Decided::Escalate { node, .. }) => {
+                assert_eq!(node, expected)
+            }
+            ("llm", Decided::Guardian(_)) => {}
+            (_, other) => panic!("expected {expected}, got {other:?}"),
+        }
+    }
 }

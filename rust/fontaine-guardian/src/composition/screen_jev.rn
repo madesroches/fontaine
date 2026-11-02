@@ -1,0 +1,55 @@
+// A hosted screen in front of the LLM guardian. Only the screen's allow ever skips the LLM; a
+// failed read and a pass leave the call to it. The stop and the allow read the same answer.
+pub async fn guardian(call, params) {
+    if params.concurrent {
+        return first_decisive([llm(call), screen(call, params)]).await;
+    }
+    let verdict = screen(call, params).await;
+    if verdict.is_abstain() {
+        llm(call).await
+    } else {
+        verdict
+    }
+}
+
+async fn screen(call, params) {
+    match params.allow_threshold {
+        Some(threshold) => screen_allowing(call, params, threshold).await,
+        None => screen_stopping(call, params).await,
+    }
+}
+
+async fn screen_stopping(call, params) {
+    let stop = match read(call, "stop").await {
+        Ok(score) => score,
+        Err(_) => return abstain(),
+    };
+    stop_check(stop, params)
+}
+
+async fn screen_allowing(call, params, threshold) {
+    let (stop, allow) = std::future::join((read(call, "stop"), read(call, "allow"))).await;
+    let (stop, allow) = match (stop, allow) {
+        (Ok(stop), Ok(allow)) => (stop, allow),
+        _ => return abstain(),
+    };
+    let stopped = stop_check(stop, params);
+    if stopped.is_abstain() {
+        allow_below("screen.allow", allow, threshold)
+    } else {
+        stopped
+    }
+}
+
+fn stop_check(stop, params) {
+    match params.stop_threshold {
+        Some(threshold) => {
+            if stop.value() >= threshold {
+                escalate("screen.stop", format!("risk {:.2}", stop.value()))
+            } else {
+                abstain()
+            }
+        }
+        None => abstain(),
+    }
+}

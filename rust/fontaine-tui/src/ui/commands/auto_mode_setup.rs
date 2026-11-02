@@ -4,7 +4,7 @@ use crate::setup_prompt::{CompositionPrompt, SetupReviewPrompt};
 use crate::{Action, Ui};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::now_rfc3339;
-use fontaine_core::composition_offer::{self, Candidate, Offer, Posture};
+use fontaine_core::composition_offer::{self, Candidate, Offer};
 use fontaine_core::project_env::discover::{self, SystemGh};
 use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep, sample};
 use fontaine_core::trust;
@@ -81,7 +81,24 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 listings.extend(found);
             }
         }
-        let found = composition_offer::detect(&listings);
+        let mut found = match composition_offer::detect_hosted(
+            &runtime.config,
+            &**runtime.env(),
+            &self.data_dir,
+        ) {
+            Ok(hosted) => hosted,
+            Err(e) => {
+                self.app.transcript.notice(format!(
+                    "guardian composition: the hosted screen was not checked: {}",
+                    chain(&e)
+                ));
+                Vec::new()
+            }
+        };
+        if found.is_empty() {
+            self.app.transcript.notice(composition_offer::hosted_hint());
+        }
+        found.extend(composition_offer::detect(&listings));
         if found.is_empty() {
             self.app
                 .transcript
@@ -101,10 +118,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             Ok(()) => {
                 self.app.transcript.notice(format!(
                     "guardian composition: wrote the {} screen on {} to {}",
-                    match offer.posture {
-                        Posture::Safe => "safe",
-                        Posture::Fast => "fast",
-                    },
+                    offer.name(),
                     offer.model(),
                     file.display()
                 ));

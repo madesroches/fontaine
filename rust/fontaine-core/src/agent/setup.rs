@@ -8,7 +8,8 @@ use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
 use fontaine_agents::tree::{AgentTree, Limits, NotificationKind};
 use fontaine_guardian::composition::Composition;
 use fontaine_guardian::{
-    Guardian, ModeNotice, Profile, Reader, ReaderSettings, Settings as GuardianSettings,
+    BackendKind, Guardian, ModeNotice, Profile, Reader, ReaderSettings,
+    Settings as GuardianSettings, SystemOneSettings,
 };
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::jobs::{JobNote, JobSink};
@@ -159,18 +160,53 @@ pub(crate) fn warm_output_mode(guardian: &Arc<Guardian>) {
 /// The default address of a local Ollama daemon.
 const OLLAMA_URL: &str = "http://localhost:11434";
 
-/// The reader of one `<account>/<model>`: the model names an account of kind `ollama`, whose
-/// `base_url` is the daemon to ask.
-fn build_reader(
-    config: &Config,
-    reference: &str,
+/// What a reader is built from: the config and the places a hosted account's key comes from.
+struct ReaderSources<'a> {
+    config: &'a Config,
+    env: crate::config::EnvLookup<'a>,
+    data_dir: &'a std::path::Path,
     profile: Profile,
     timeout: std::time::Duration,
-) -> Result<Reader, RuntimeError> {
+}
+
+/// The reader of one `<account>/<model>`: an account of kind `ollama` is a daemon to ask by its
+/// `base_url`, one of kind `openrouter` a hosted `/v1/systemone` model asked with its key.
+fn build_reader(sources: &ReaderSources<'_>, reference: &str) -> Result<Reader, RuntimeError> {
+    let ReaderSources {
+        config,
+        env,
+        data_dir,
+        profile,
+        timeout,
+    } = sources;
     let (account, model) = reference
         .split_once('/')
         .ok_or_else(|| RuntimeError::new(format!("`{reference}` is not `<account>/<model>`")))?;
     let account_config = config.accounts.get(account);
+    let network = config.loaded_network(Some(account)).map_err(|e| {
+        RuntimeError::caused(format!("the network settings of account `{account}`"), e)
+    })?;
+    let client = crate::transport::reqwest_client(&network)?;
+    if let Some(hosted) =
+        account_config.filter(|a| crate::config::backend_of(a.kind) == Some(BackendKind::SystemOne))
+    {
+        let endpoint = crate::config::systemone_endpoint(hosted)
+            .map_err(|e| RuntimeError::new(format!("the base_url of account `{account}`: {e}")))?;
+        let stored = crate::credentials::Credentials::load(data_dir)
+            .map_err(|e| RuntimeError::caused("the stored credentials", e))?;
+        let key =
+            crate::config::screen_key(account, hosted, env, &stored).map_err(RuntimeError::new)?;
+        return Ok(Reader::systemone(
+            client,
+            SystemOneSettings {
+                endpoint,
+                model: model.to_string(),
+                api_key: key.into(),
+                profile: *profile,
+                timeout: *timeout,
+            },
+        ));
+    }
     let context_tokens = account_config.map_or(
         crate::config::DEFAULT_OLLAMA_CONTEXT_TOKENS,
         Account::ollama_context_tokens,
@@ -186,17 +222,14 @@ fn build_reader(
             e,
         )
     })?;
-    let network = config.loaded_network(Some(account)).map_err(|e| {
-        RuntimeError::caused(format!("the network settings of account `{account}`"), e)
-    })?;
     Ok(Reader::new(
-        crate::transport::reqwest_client(&network)?,
+        client,
         ReaderSettings {
             endpoint,
             model: model.to_string(),
             context_tokens,
-            profile,
-            timeout,
+            profile: *profile,
+            timeout: *timeout,
         },
     ))
 }
@@ -205,25 +238,29 @@ fn build_reader(
 pub fn build_composition(
     config: &Config,
     profile: Profile,
+    env: crate::config::EnvLookup<'_>,
+    data_dir: &std::path::Path,
 ) -> Result<Option<CompositionStage>, RuntimeError> {
     let Some(composition) = &config.guardian.composition else {
         return Ok(None);
     };
     let spec = composition
-        .spec()
+        .spec(&config.accounts)
         .map_err(|e| RuntimeError::caused("the guardian composition is not valid", e))?;
     let timeout = std::time::Duration::from_millis(composition.timeout_ms);
     let models = spec
         .read_models()
         .map_err(|e| RuntimeError::caused("the guardian composition is not valid", e))?;
+    let sources = ReaderSources {
+        config,
+        env,
+        data_dir,
+        profile,
+        timeout,
+    };
     let readers = models
         .iter()
-        .map(|model| {
-            Ok((
-                model.clone(),
-                build_reader(config, model, profile, timeout)?,
-            ))
-        })
+        .map(|model| Ok((model.clone(), build_reader(&sources, model)?)))
         .collect::<Result<Vec<_>, RuntimeError>>()?;
     let label = if models.is_empty() {
         "script".to_owned()
@@ -375,7 +412,12 @@ pub(super) fn session_state(
 /// Puts the configured composition on the state. One that cannot be built is reported and left
 /// off.
 pub(super) fn attach_composition(state: &SessionState, setup: &AgentSetup) {
-    match build_composition(&setup.config, setup.guardian_profile) {
+    match build_composition(
+        &setup.config,
+        setup.guardian_profile,
+        &*setup.env,
+        &setup.data_dir,
+    ) {
         Ok(stage) => {
             // Best-effort: a reader that never loads already reaches the user as an
             // unavailable warning on its first call.

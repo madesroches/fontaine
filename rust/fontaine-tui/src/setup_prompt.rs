@@ -97,8 +97,8 @@ enum Stage {
     Confirm,
 }
 
-/// The offer to write the guardian composition's allow screen: safe or fast, then the account
-/// when several hold the benchmarked model, then a confirmation of exactly what will be written.
+/// The offer to write the guardian composition's allow screen: the model when several are on offer,
+/// then safe or fast for a local one, then a confirmation of exactly what will be written.
 /// Anything but a yes at the end writes nothing.
 pub struct CompositionPrompt {
     pub(crate) id: u64,
@@ -111,25 +111,33 @@ pub struct CompositionPrompt {
 
 impl CompositionPrompt {
     pub fn new(candidates: Vec<Candidate>) -> CompositionPrompt {
+        let stage = if candidates.len() > 1 {
+            Stage::Account
+        } else {
+            Self::after_account(&candidates[0])
+        };
         CompositionPrompt {
             id: 0,
             opened: Instant::now(),
             candidates,
-            stage: Stage::Posture,
+            stage,
             posture: None,
             account: 0,
         }
     }
 
-    fn offer(&self) -> Offer {
-        let candidate = &self.candidates[self.account];
-        Offer {
-            account: candidate.account.clone(),
-            benchmark: candidate.benchmark,
-            posture: self
-                .posture
-                .expect("the posture is chosen before the confirmation"),
+    /// The step once the model is known: a local model asks for a posture, a hosted one has none.
+    fn after_account(candidate: &Candidate) -> Stage {
+        if candidate.asks_posture() {
+            Stage::Posture
+        } else {
+            Stage::Confirm
         }
+    }
+
+    fn offer(&self) -> Offer {
+        Offer::on(&self.candidates[self.account], self.posture)
+            .expect("the posture is chosen before the confirmation")
     }
 
     /// `None` while the prompt is open; `Some(None)` declines; `Some(Some(offer))` is the
@@ -155,18 +163,14 @@ impl CompositionPrompt {
                 } else {
                     Posture::Fast
                 });
-                self.stage = if self.candidates.len() > 1 {
-                    Stage::Account
-                } else {
-                    Stage::Confirm
-                };
+                self.stage = Stage::Confirm;
                 None
             }
             (Stage::Account, KeyCode::Char(c)) => {
                 let n = c.to_digit(10)? as usize;
                 if (1..=self.candidates.len()).contains(&n) {
                     self.account = n - 1;
-                    self.stage = Stage::Confirm;
+                    self.stage = Self::after_account(&self.candidates[self.account]);
                 }
                 None
             }
@@ -188,9 +192,9 @@ impl CompositionPrompt {
             }
             Stage::Account => {
                 for (i, c) in self.candidates.iter().enumerate() {
-                    text.push(format!("{}. {}/{}", i + 1, c.account, c.benchmark.tag));
+                    text.push(format!("{}. {}", i + 1, c.model()));
                 }
-                "Which account runs the screen?"
+                "Which model runs the screen?"
             }
             Stage::Confirm => {
                 text.push("Write to your user settings:".to_string());
@@ -255,9 +259,15 @@ mod tests {
     }
 
     fn candidate(account: &str) -> Candidate {
-        Candidate {
+        Candidate::Ollama {
             account: account.to_string(),
             benchmark: &fontaine_core::composition_offer::BENCHMARKS[0],
+        }
+    }
+
+    fn hosted(account: &str) -> Candidate {
+        Candidate::Jev {
+            account: account.to_string(),
         }
     }
 
@@ -272,20 +282,20 @@ mod tests {
         assert!(press(&mut prompt, '2').is_none());
         assert!(press(&mut prompt, 'x').is_none());
         let offer = press(&mut prompt, 'y').unwrap().unwrap();
-        assert_eq!(offer.account, "local");
-        assert_eq!(offer.posture, Posture::Fast);
+        assert_eq!(offer.account(), "local");
+        assert_eq!(offer.posture(), Some(Posture::Fast));
     }
 
     #[test]
     fn several_accounts_are_asked_which_and_a_decline_writes_nothing() {
         let mut prompt = CompositionPrompt::new(vec![candidate("a"), candidate("b")]);
-        assert!(press(&mut prompt, '1').is_none());
         assert!(press(&mut prompt, '3').is_none());
         assert!(press(&mut prompt, '2').is_none());
+        assert!(press(&mut prompt, '1').is_none());
         let offer = press(&mut prompt, 'y').unwrap().unwrap();
         assert_eq!(
-            (offer.account.as_str(), offer.posture),
-            ("b", Posture::Safe)
+            (offer.account(), offer.posture()),
+            ("b", Some(Posture::Safe))
         );
 
         for decline in ['n', '\u{1b}'] {
@@ -306,5 +316,40 @@ mod tests {
         let y = KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE);
         assert!(early.handle_key_at(y, early.opened).is_none());
         assert_eq!(early.stage, Stage::Posture);
+    }
+
+    #[test]
+    fn a_hosted_model_asks_no_posture_and_is_written_only_after_a_yes() {
+        let mut prompt = CompositionPrompt::new(vec![hosted("or")]);
+        assert_eq!(prompt.stage, Stage::Confirm);
+        assert!(press(&mut prompt, '1').is_none());
+        let body: Vec<String> = prompt
+            .body(120, &Theme::preset(Default::default()))
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert!(body.join("\n").contains("data leaves this machine"));
+        let offer = press(&mut prompt, 'y').unwrap().unwrap();
+        assert_eq!(
+            offer,
+            Offer::Jev {
+                account: "or".into()
+            }
+        );
+
+        let mut declined = CompositionPrompt::new(vec![hosted("or")]);
+        assert_eq!(press(&mut declined, 'n'), Some(None));
+    }
+
+    #[test]
+    fn the_posture_is_asked_only_of_a_local_model_among_several() {
+        let mut prompt = CompositionPrompt::new(vec![hosted("or"), candidate("local")]);
+        assert_eq!(prompt.stage, Stage::Account);
+        assert!(press(&mut prompt, '1').is_none());
+        assert_eq!(prompt.stage, Stage::Confirm);
+
+        let mut local = CompositionPrompt::new(vec![hosted("or"), candidate("local")]);
+        assert!(press(&mut local, '2').is_none());
+        assert_eq!(local.stage, Stage::Posture);
     }
 }
