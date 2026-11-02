@@ -20,7 +20,7 @@ result passes one post-call step before the model sees it.
 | `powershell` | arbitrary | Windows only: runs a [PowerShell](#powershell) command. A command still running at its timeout keeps running as a [background job](#background-jobs). Arguments: `command`, `timeout_secs`, `cwd`, `run_in_background`. Registered only when a PowerShell interpreter is found. |
 | `job_output` | read-only | Lists the [background jobs](#background-jobs) you started, or reads what one printed since it was last read, waiting for it to end if asked; on a [monitor](#monitor) it waits and reports status instead; on a subagent's id it [waits for it to end](agents.md#waiting-for-a-subagent). Arguments: `id`, `wait_secs` (no ceiling; default 0 for a job, until it ends for a subagent). Jobs and the list: main conversation only; a subagent may use it only with the id of a subagent it started. |
 | `job_cancel` | arbitrary | Stops a background job or monitor with its whole process group. Argument: `id`. Main conversation only. |
-| `monitor` | arbitrary | Runs a command in the background and delivers each line it prints as a [notification](#monitor). Arguments: `command`, `description`, `timeout_secs`. Main conversation only. |
+| `monitor` | arbitrary | Runs a command in the background and delivers each line it prints as a [notification](#monitor). Arguments: `command`, `description` and an optional `timeout_secs` (no default). Main conversation only. |
 | `webfetch` | arbitrary | Fetches one web page. |
 | `websearch` | arbitrary | Searches the web through the backend set in [`[websearch]`](configuration.md#websearch); registered when one is configured, or by default when `docker` or `podman` is installed. Arguments: `query`, `allowed_domains`, `blocked_domains`. |
 | `agent` | arbitrary | Starts a [subagent](agents.md) and returns its id at once; the report arrives later as a notification. |
@@ -362,18 +362,21 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
 `monitor` runs a command as a job whose output lines are delivered to the model as notifications
 instead of being read. It is for something that prints a line when something changes: a log, a
 build, a poll loop. Arguments: `command`, `description` (shown with each notification) and
-`timeout_secs` (default 300, at most 3,600). It runs in the primary root with the same environment
-and confinement as `shell`, and is judged by the same command analysis (the floor, the guardian,
-`shell` deny and ask rules), but the read-only pre-classifier never lets it through on its own:
-allow it with a `monitor(...)` rule or leave it to the guardian.
+`timeout_secs` (optional, at most 3,600, no default). It runs in the primary root with the same
+environment and confinement as `shell`, and is judged by the same command analysis (the floor, the
+guardian, `shell` deny and ask rules), but the read-only pre-classifier never lets it through on its
+own: allow it with a `monitor(...)` rule or leave it to the guardian.
 
 - Lines are batched for half a second, at most one notification is posted per second, each carries
   at most 200 lines, and a monitor that has sent 1,000 notifications is terminated with a final
   notice, so a chatty script cannot become an unbounded loop.
-- It ends at its timeout or when its command ends, with a final notice either way; `job_cancel`
-  stops it early and posts nothing. `job_output` on a monitor never returns output — it waits
-  (for `wait_secs`, and until a message arrives) and reports whether a notification was posted, the monitor ended, or
-  it still runs; its lines and its final notice always arrive as notifications.
+- Without `timeout_secs` it ends when its command ends, or when `job_cancel` or the end of the
+  session stops it; a command that never ends, like `tail -f`, should be cancelled when it is no
+  longer needed. With one it also ends at that timeout. It posts a final notice when it ends on
+  its own; `job_cancel` stops it early and posts nothing. `job_output` on a monitor never returns
+  output — it waits (for `wait_secs`, and until a message arrives) and reports whether a
+  notification was posted, the monitor ended, or it still runs; its lines and its final notice
+  always arrive as notifications.
 - Like `job_cancel` it is for the main conversation only, and it counts against the limit
   of 8 running jobs.
 

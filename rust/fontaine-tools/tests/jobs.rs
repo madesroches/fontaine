@@ -685,3 +685,24 @@ async fn a_zero_wait_returns_fresh_output_at_once() {
     assert!(read.starts_with("up\n"), "{read}");
     jobs.terminate_all().await;
 }
+
+#[tokio::test]
+async fn the_monitor_start_message_names_its_timeout_or_says_it_has_none() {
+    let (_d, tools, jobs, _) = session();
+    let start = |args: serde_json::Value| {
+        let tools = &tools;
+        async move { text(&call(tools, "monitor", args).await.unwrap()) }
+    };
+    let none = start(json!({"command": "sleep 30", "description": "x"})).await;
+    assert!(none.contains("it has no timeout"), "{none}");
+    assert!(!none.contains("after "), "{none}");
+    let five = start(json!({"command": "sleep 30", "description": "x", "timeout_secs": 5})).await;
+    assert!(five.contains("after 5s"), "{five}");
+    let huge =
+        start(json!({"command": "sleep 30", "description": "x", "timeout_secs": 99999})).await;
+    assert!(huge.contains("after 3600s"), "{huge}");
+
+    let description = tool(&tools, "monitor").tool.definition().description;
+    assert!(!description.contains("default 300"), "{description}");
+    jobs.terminate_all().await;
+}

@@ -702,7 +702,8 @@ pub struct Start {
 
 pub struct MonitorSpec {
     pub description: String,
-    pub timeout: Duration,
+    /// `None` runs until the command ends or the job is cancelled.
+    pub timeout: Option<Duration>,
 }
 
 /// What a foreground call found when it stopped waiting.
@@ -790,7 +791,8 @@ impl Jobs {
             deadline: spec
                 .monitor
                 .as_ref()
-                .and_then(|monitor| Instant::now().checked_add(monitor.timeout)),
+                .and_then(|monitor| monitor.timeout)
+                .and_then(|timeout| Instant::now().checked_add(timeout)),
         });
         let id = {
             let mut inner = lock(&self.shared.inner, "job registry");

@@ -47,7 +47,7 @@ fn start(jobs: &Jobs, command: &str, background: bool) -> String {
     .expect("the job starts")
 }
 
-fn monitor(jobs: &Jobs, command: &str, timeout: Duration) -> String {
+fn monitor(jobs: &Jobs, command: &str, timeout: Option<Duration>) -> String {
     jobs.start(
         Start {
             command: command.to_owned(),
@@ -396,7 +396,7 @@ async fn the_user_killing_a_job_tells_the_model_and_leaves_the_tail_readable() {
 #[tokio::test]
 async fn the_user_killing_a_monitor_says_monitor() {
     let (jobs, sink) = jobs();
-    let id = monitor(&jobs, "sleep 30", Duration::from_secs(60));
+    let id = monitor(&jobs, "sleep 30", Some(Duration::from_secs(60)));
     assert!(jobs.kill_by_user(&id));
     until("the note", || !sink.notes().is_empty()).await;
     assert!(sink.notes()[0].text.starts_with("[Monitor "));
@@ -405,7 +405,7 @@ async fn the_user_killing_a_monitor_says_monitor() {
 #[tokio::test]
 async fn a_monitor_wait_reports_status_and_never_output() {
     let (jobs, _) = jobs();
-    let id = monitor(&jobs, "sleep 30", Duration::from_secs(60));
+    let id = monitor(&jobs, "sleep 30", Some(Duration::from_secs(60)));
     let started = Instant::now();
     let (end, note_posted, already_reported) =
         as_wait(jobs.output(&id, Duration::ZERO).await.unwrap());
@@ -433,7 +433,7 @@ async fn a_monitor_wait_wakes_when_a_notification_is_posted() {
     let id = monitor(
         &jobs,
         "sleep 1; echo ping; sleep 30",
-        Duration::from_secs(60),
+        Some(Duration::from_secs(60)),
     );
     let started = Instant::now();
     let (end, note_posted, already_reported) =
@@ -452,7 +452,7 @@ async fn a_monitor_wait_wakes_when_a_notification_is_posted() {
 #[tokio::test]
 async fn a_monitor_wait_returns_promptly_at_its_end_and_the_end_note_goes_out_once() {
     let (jobs, sink) = jobs();
-    let id = monitor(&jobs, "echo done", Duration::from_secs(60));
+    let id = monitor(&jobs, "echo done", Some(Duration::from_secs(60)));
     let started = Instant::now();
     let (end, _note_posted, already_reported) =
         as_wait(jobs.output(&id, Duration::from_secs(60)).await.unwrap());
@@ -476,7 +476,7 @@ async fn a_monitor_wait_returns_promptly_at_its_end_and_the_end_note_goes_out_on
 #[tokio::test]
 async fn a_monitor_wait_times_out_and_the_later_end_note_is_still_delivered_once() {
     let (jobs, sink) = jobs();
-    let id = monitor(&jobs, "sleep 30", Duration::from_secs(2));
+    let id = monitor(&jobs, "sleep 30", Some(Duration::from_secs(2)));
     let started = Instant::now();
     let (end, note_posted, already_reported) =
         as_wait(jobs.output(&id, Duration::from_secs(1)).await.unwrap());
@@ -496,7 +496,7 @@ async fn a_monitor_wait_times_out_and_the_later_end_note_is_still_delivered_once
 #[tokio::test]
 async fn a_dropped_monitor_wait_leaves_no_spurious_note_and_hands_the_held_end_note_on() {
     let (jobs, sink) = jobs();
-    let id = monitor(&jobs, "sleep 2; echo late", Duration::from_secs(60));
+    let id = monitor(&jobs, "sleep 2; echo late", Some(Duration::from_secs(60)));
     let waiting = tokio::time::timeout(
         Duration::from_millis(300),
         jobs.output(&id, Duration::from_secs(30)),
@@ -527,7 +527,11 @@ async fn a_dropped_monitor_wait_leaves_no_spurious_note_and_hands_the_held_end_n
 #[tokio::test]
 async fn the_user_killing_a_monitored_wait_posts_one_end_note_with_the_tail() {
     let (jobs, sink) = jobs();
-    let id = monitor(&jobs, "echo before; sleep 30", Duration::from_secs(60));
+    let id = monitor(
+        &jobs,
+        "echo before; sleep 30",
+        Some(Duration::from_secs(60)),
+    );
     until("the output", || {
         lock(&jobs.shared.inner, "job registry")
             .find(&id)
@@ -563,7 +567,11 @@ async fn the_user_killing_a_monitored_wait_posts_one_end_note_with_the_tail() {
 #[tokio::test]
 async fn the_user_killing_an_unwatched_monitor_posts_the_end_note_at_once() {
     let (jobs, sink) = jobs();
-    let id = monitor(&jobs, "echo before; sleep 30", Duration::from_secs(60));
+    let id = monitor(
+        &jobs,
+        "echo before; sleep 30",
+        Some(Duration::from_secs(60)),
+    );
     until("the output", || {
         lock(&jobs.shared.inner, "job registry")
             .find(&id)
@@ -596,7 +604,7 @@ async fn a_monitor_batches_a_burst_into_one_notification_and_ends_with_a_final_n
     let id = monitor(
         &jobs,
         "echo l1; echo l2; echo l3; sleep 30",
-        Duration::from_secs(3),
+        Some(Duration::from_secs(3)),
     );
     until("the lines", || !sink.notes().is_empty()).await;
     let first = sink.notes()[0].clone();
@@ -808,7 +816,7 @@ async fn cancelling_after_the_end_note_returns_the_marker_not_the_output_again()
 #[tokio::test]
 async fn cancelling_a_monitor_does_not_return_lines_it_already_sent() {
     let (jobs, sink) = jobs();
-    let id = monitor(&jobs, "echo l1; sleep 30", Duration::from_secs(20));
+    let id = monitor(&jobs, "echo l1; sleep 30", Some(Duration::from_secs(20)));
     until("the batch", || !sink.notes().is_empty()).await;
     let read = jobs.cancel(&id).await.unwrap();
     assert!(read.chunk.is_empty(), "{}", lines(&read.chunk));
@@ -856,4 +864,18 @@ fn an_agent_id_is_not_a_job_and_the_error_says_who_can_stop_it() {
         JobError::UnknownJob("job-1".to_owned()).to_string(),
         "there is no job job-1"
     );
+}
+
+#[tokio::test]
+async fn a_monitor_without_a_timeout_has_no_deadline() {
+    let (jobs, _) = jobs();
+    let unbounded = monitor(&jobs, "sleep 30", None);
+    let bounded = monitor(&jobs, "sleep 30", Some(Duration::from_secs(60)));
+    {
+        let inner = lock(&jobs.shared.inner, "job registry");
+        let deadline = |id: &str| inner.find(id).expect("the job is listed").control.deadline;
+        assert!(deadline(&unbounded).is_none());
+        assert!(deadline(&bounded).is_some());
+    }
+    jobs.terminate_all().await;
 }
