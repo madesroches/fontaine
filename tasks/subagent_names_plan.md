@@ -25,9 +25,15 @@ canonical key for the ledger, audit log, telemetry and budgets.
 - A fresh process builds `AgentTree::new` seeded only with `ledger.view().next_agent`
   (`fontaine-core/src/agent/setup.rs`); `LedgerView.agents` is not read back. In-process
   `resume_child` keeps the node and its name.
-- Claude Code's naming and addressing semantics have not been observed yet (step 1).
+- Claude Code (observed with `claude -p`): its Agent tool has no `name` parameter (it takes
+  description, prompt, subagent_type, model, effort, run_in_background, isolation). SendMessage `to`
+  accepts a name, `main` or an agentId; names stay addressable after the agent completes; duplicate
+  names are allowed and the latest wins, with a ` [ref]` suffix to tell them apart; unnamed agents
+  are addressed only by id.
 - The agents panel draws `{marker} {indent}{id} {agent_type} {status} {age}`
-  (`fontaine-tui/src/agent_list.rs`).
+  (`fontaine-tui/src/agent_list.rs`, from `ListRow`, built in `rows`). The view header and status
+  bar read the same `ListRow` through `App::viewed_row()`; `PanelRow` (`agents_panel.rs`) feeds
+  only the panel.
 - `fontaine-core/src/ledger.rs` parses the numeric part of `agent-N`; audit, telemetry and todos
   key on the id (`headless.rs`, `todos.rs`, `audit.rs`).
 - Issue #114 (open) covers a `description` parameter and readable inline rows; #40 covers named
@@ -37,23 +43,25 @@ canonical key for the ledger, audit log, telemetry and budgets.
 **The id stays the identity; the name is a unique alias.** The name is a label plus an
 address that resolves to an id.
 
-- `NodeInfo` gains `name: String`; `AgentRow` gains `name: String`; the TUI `PanelRow` gains
-  `name: String`.
+- `NodeInfo` gains `name: String`; `AgentRow` gains `name: String`; the TUI `ListRow` (including
+  `ListRow::main()`) and `PanelRow` gain `name: String`. The status bar falls back to the id when no
+  row is viewed.
 - `agent` tool gains an optional `name` argument: 1–32 chars, `[a-z0-9-]`, starting with a
   letter, e.g. `survey-tech-debt`. The description tells the model to give a short role-describing
   name when it starts several agents.
-- Fallback when omitted: `<agent_type>-<k>`, where `k` is the next unused number for that type in
-  this session (`explore-1`, `explore-2`, `worker-1`). Deterministic, so it needs no model call.
+- Fallback when omitted: `<agent_type>-<k>`, where `k` is the first of 1, 2, … not in the taken set
+  (`explore-1`, `explore-2`, `worker-1`). Deterministic, so it needs no model call.
 - Uniqueness is per session, across the whole tree and across ended agents (a name is never
   reused, so a late message cannot reach the wrong agent). A model-supplied name that is taken,
   is `main` or `root` (the root's `ROOT_AGENT` id), starts with `job-` (job ids share
   `job_output`'s id space), or matches `agent-<digits>` is refused as invalid args with the reason, so the model
-  fixes it; it is never silently renamed. Validation and the per-type counter live in
+  fixes it; it is never silently renamed. Validation and the fallback probe live in
   `AgentTree::reserve`, under the tree lock, so racing spawns cannot collide. The taken-names set
-  and per-type counters live on `Inner`, separate from `nodes`, and `release` does not free them.
+  lives on `Inner`, separate from `nodes`, and `release` does not free them.
 - `reserve` returns the id as today; callers read the name from the node. The `agent` tool result
   becomes `{"agent_id": "agent-3", "name": "survey-tech-debt"}`.
-- **Addressing:** `AgentTree::resolve_target` resolves `main`, then an exact id, then a name, to an
+- **Addressing:** `AgentTree::resolve_target` (now taking `&Inner` and returning an owned id,
+  resolved by `deliver` under its lock) resolves `main`, then an exact id, then a name, to an
   id before the reachability check, so `deliver`'s rules (parent, children, siblings, `main`) are
   unchanged and names confer no extra reach, and the permission and guardian surface is unchanged.
   `deliver` returns the resolved id, and `AgentEvent::Message` (`spawn.rs`) records that id rather
@@ -64,15 +72,21 @@ address that resolves to an id.
 - **Rendering for people:** the panel (list, `agents_panel.rs`, view header and `Message {id}…`
   placeholder, status bar) shows `{name}` where it showed the id, with the id dimmed after it
   (`survey-tech-debt (agent-3)`) so `/agents`-style references and logs still match; internal
-  keys stay ids. `Notification::render` leads with the name and carries the id:
-  `Report from agent survey-tech-debt (agent-3)`. The `gate_decision` stream-json event gains
+  keys stay ids. The row is built and truncated as spans (not one flat string); at narrow width the
+  dimmed id gives way before status and age. `Notification` gains the sender's name, filled in
+  `deliver` / `push` from the sender node (the root node is named `main`, so main-to-child messages
+  read `main`); `render` leads with it and carries the id:
+  `Report from agent survey-tech-debt (agent-3)`. Other surfaces that showed a bare id show the
+  name too: the approval prompt `Allow {tool} ({agent})?` and its outcome notice (the name rides on
+  `ApprovalRequest`), kill/resume notices (tree lookup by id), `MessageRefusal::notice` and the
+  `watch_report` body (`Agent {id} ({type_name}) finished`; tree lookup by id). The `gate_decision` stream-json event gains
   `agent_name` beside `agent_id`.
 - **Persistence:** `Record::Agent` gains `name: Option<String>` with `#[serde(default)]`, set by
   the `AgentEvent::Spawned` mapping in `child_runner.rs` and folded into `AgentRecord.name`;
   records from before this change load with the name falling back to the id. In-process resume
-  keeps the node's name. A new process seeds the taken names and per-type fallback counters from
-  `LedgerView.agents` through `AgentTree::new`, as `next_agent` is seeded, so names stay never
-  reused. The export index shows the name. `DecisionRecord` gains `agent_name`, filled in
+  keeps the node's name. A new process seeds the taken names from `LedgerView.agents` through a
+  separate seeding call from `setup.rs` (`AgentTree::new` and its callers stay unchanged), so names
+  stay never reused. The export index shows the name. `DecisionRecord` gains `agent_name`, filled in
   `permissions.rs` like `type_of` (absent for root and `user` records). Audit and headless JSON
   add `agent_name` (snake_case) next to `agent_id`; telemetry (tracing) fields use `agent.name`
   beside `agent.id`/`agent.type` (`spawn.rs`). Ids remain the join key.
@@ -81,26 +95,44 @@ address that resolves to an id.
   text keeps the existing "untrusted data" framing.
 
 ## Implementation Steps
-1. Observe Claude Code's naming and addressing with `claude -p` and state the findings in Current
-   State and Design.
-2. `fontaine-agents/src/tree.rs`: add `name` to `NodeInfo`/`AgentRow`; name validation, the
-   per-type counter and the taken-names set (on `Inner`) inside `reserve`; a `Refusal::Name(String)`
-   variant; `resolve_target` resolving ids and names; `agent_state` resolving names;
-   `Notification::render` with the name; `AgentTree::new` seeded with taken names and counters.
-3. `fontaine-agents/src/spawn.rs`: `name` in `AgentArgs` and the schema, the tool description,
+1. `fontaine-agents/src/tree.rs`: add `name` to `NodeInfo`/`AgentRow`; name validation, the
+   fallback probe and the taken-names set (on `Inner`) inside `reserve`; a `Refusal::Name(String)`
+   variant; `resolve_target` taking `&Inner` and returning an owned id (the `deliver` callers in
+   the tests update for the new return type); `agent_state` resolving names; `name` on
+   `Notification`, filled in `deliver`/`push`, with `render` using it; a seeding call for taken
+   names (`AgentTree::new` unchanged).
+2. `fontaine-agents/src/spawn.rs`: `name` in `AgentArgs` and the schema, the tool description,
    map `Refusal::Name` to `invalid_args`, return `name` in the result, resolve names in
    `SendMessageTool` and update its `to` description; `deliver` returns the resolved id for
-   `AgentEvent::Message`; `agent.name` telemetry field.
-4. `fontaine-core/src/ledger.rs`, `root_ledger.rs`, `child_runner.rs`, `export.rs`,
+   `AgentEvent::Message`; `agent.name` telemetry field; the `watch_report` body shows the name (tree
+   lookup by id).
+3. `fontaine-core/src/ledger.rs`, `root_ledger.rs`, `child_runner.rs`, `export.rs`,
    `agent/setup.rs`, `permissions.rs`: `name` on `Record::Agent` (serde default) and
-   `AgentRecord`, set from `AgentEvent::Spawned`; seed `AgentTree::new` from `LedgerView.agents`;
-   export index shows the name; `DecisionRecord.agent_name`.
-5. `fontaine-tui/src/{agent_list,agents_panel,view,statusbar}.rs`, `ui/mod.rs`: show
-   `name (id)` with the dimmed id, `name` on `PanelRow`; keep selection and dismissal keyed on id.
-6. `fontaine/src/headless.rs`, audit emitters: add `agent_name`.
-7. `fontaine-tools/src/jobs/tools.rs`: route by the `agent-`/`job-` rule and resolve names via
-   `AgentWaits`.
-8. Append a dated line to `### Agents` in `tasks/fontaine_harness_plan.md` `## Documentation
+   `AgentRecord`, set from `AgentEvent::Spawned`; seed taken names from `LedgerView.agents`;
+   export index shows the name; `DecisionRecord.agent_name`; `MessageRefusal::notice`
+   (`agent/messaging.rs`) shows the name.
+4. `fontaine-tui/src/{agent_list,agents_panel,view,statusbar}.rs`, `ui/mod.rs`: show
+   `name (id)` with the dimmed id as spans, `name` on `ListRow` (and its test helpers) and
+   `PanelRow`; the approval prompt (`approval.rs`, name on `ApprovalRequest`), approval outcome
+   notice (`app.rs`) and kill/resume notices (`ui/mod.rs`, tree lookup by id); keep selection and
+   dismissal keyed on id.
+5. `fontaine/src/headless.rs`, audit emitters: add `agent_name`.
+6. `fontaine-tools/src/jobs/tools.rs`, `jobs.rs`: route by the `agent-`/`job-` rule and resolve
+   names via `AgentWaits`; apply the same rule to the `JobError::UnknownJob` "is a subagent, not a
+   job" hint (now only for `agent-` ids). Update the `job_output` description and `id` parameter
+   text, and in `spawn.rs` the `agent` tool description (returns `agent_id` and `name`; call
+   `job_output` with either) and the `send_message` description ("marked with your agent id"), to
+   say an id or a name is accepted.
+7. Append dated lines to `### Agents` in `tasks/fontaine_harness_plan.md` recording the deviations
+   from Claude Code: (a) a taken name is refused and names are never reused (Claude Code lets the
+   latest win; reason: a late message cannot reach the wrong agent); (b) the model picks the name
+   through a new `name` argument (Claude Code's Agent tool has none; reason: addressable roles
+   without a naming step in the harness); (c) unnamed agents get generated `<type>-<k>` names
+   (Claude Code addresses them only by id; reason: every agent is readable and addressable);
+   (d) charset, length and reserved-word rules (`[a-z0-9-]`, 1-32 chars, not `main`/`root`/`job-*`/
+   `agent-<n>`; reason: safe to embed untrusted, no collision with ids or job ids).
+
+## Documentation
 `docs/agents.md`: the `name` argument, fallback names, `send_message` / `job_output` addressing,
 the panel display. `docs/telemetry.md`: the `agent.name` field. `docs/tui.md`: the `name (id)`
 display. `docs/headless.md` and `docs/schemas/headless-v1.schema.json`: `agent_name` on
@@ -108,14 +140,14 @@ display. `docs/headless.md` and `docs/schemas/headless-v1.schema.json`: `agent_n
 
 ## Testing Strategy
 Unit tests (`tree.rs`): name validation (charset, length, `main`, `root`, `job-*`, `agent-<n>` rejected); fallback
-numbering per type; duplicate refused; names unique under racing `reserve` calls; `resolve_target`
+numbering per type; duplicate refused; `resolve_target`
 by id and name; a name does not widen `deliver` reachability (non-sibling by name is
 `NotReachable`); an ended agent's name stays taken. `spawn.rs`: schema and result contain `name`;
 `Refusal::Name` becomes `invalid_args`. Ledger: a legacy spawn event without `name` loads with the
-id as its name; a new process seeds taken names and counters from `LedgerView.agents`. TUI:
+id as its name; a new process seeds taken names from `LedgerView.agents`. TUI:
 `agent_list.rs` unit test `a_named_row_shows_the_name_and_a_dimmed_id` asserts the text
 `survey-tech-debt (agent-1)` and `Modifier::DIM` on the id span only, plus a narrow-width
 truncation case. `job_output`: `job-` ids still reach `read_job`, names and `agent-` ids reach
 agent waits. Notification render includes name and id.
 `rust/fontaine-agents/tests/seam.rs` spawns two named agents, sends by name and asserts the
-rendered notification. Validation tests cover `root` and `job-` names.
+rendered notification.
