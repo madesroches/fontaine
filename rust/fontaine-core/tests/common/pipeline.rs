@@ -269,6 +269,7 @@ impl Rig {
                     .unwrap_or_else(fontaine_agents::registry::AgentTypes::builtin),
             ),
             reveal_mcp_names: false,
+            effort: None,
             auto_edits: fontaine_core::gate::AutoEdits {
                 tracked: config.permissions.auto_tracked_edits,
                 scratch: config.permissions.auto_scratch_writes,

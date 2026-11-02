@@ -757,6 +757,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     model,
                     provider,
                     native_search: runtime.native_search_active(),
+                    generation_options: runtime.turn_generation_options(),
                 },
                 &mut on_event,
             )

@@ -515,6 +515,10 @@ impl ChildRunner for CoreChildRunner {
                 ));
             }
             let priced = model.catalog_billed();
+            // A type's own level, else the session's. Effort is not a permission, so a child
+            // may run above or below its parent.
+            let effort = request.agent_type.effort.or(context.state.effort());
+            let generation_options = model.generation_options_warned(&context.state, effort);
             let WireIds {
                 provider,
                 model: model_id,
@@ -560,6 +564,7 @@ impl ChildRunner for CoreChildRunner {
                     priced,
                     model: model_id,
                     provider,
+                    generation_options,
                     modalities: model
                         .completion
                         .spec()
@@ -593,6 +598,8 @@ struct ChildModel {
     priced: bool,
     model: String,
     provider: String,
+    /// The reasoning effort the child's turns send, validated against its model at spawn.
+    generation_options: Option<rig_core::completion::GenerationOptions>,
     /// What the child's model accepts, for the read tool's multimodal dispatch.
     modalities: rig_core::catalog::Modalities,
 }
@@ -694,6 +701,7 @@ async fn run_child(
                 model: shared.model.model.clone(),
                 provider: shared.model.provider.clone(),
                 native_search: false,
+                generation_options: shared.model.generation_options.clone(),
                 span: tracing::Span::current(),
             },
             None,
@@ -796,6 +804,7 @@ mod tests {
             disallowed: Vec::new(),
             model: None,
             mode: ModeSetting::Inherit,
+            effort: None,
             origin: TypeOrigin::Builtin,
             inherits_context: false,
         }

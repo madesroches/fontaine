@@ -150,6 +150,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         agent_types: Arc::new(fontaine_agents::registry::AgentTypes::builtin()),
         reveal_mcp_names: false,
         auto_edits: fontaine_core::gate::AutoEdits::default(),
+        effort: None,
     }));
     let pipeline = PermissionPipeline::new(PipelineParams {
         state: state.clone(),

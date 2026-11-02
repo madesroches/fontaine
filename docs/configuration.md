@@ -163,7 +163,7 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `context_tokens` | `ollama` only: the context window requested with every call (`options.num_ctx`), at least 2048. | `16384` |
 | `prompt_caching` | `anthropic`, `openrouter` and `opencode-go` only: whether requests carry cache breakpoints, so the provider reuses the unchanged prefix at a fraction of the input price. On `anthropic` they sit on the tools, the system prompt and the latest message. On `openrouter` the conversation carries one top-level marker for every model except the self-caching `openai/`, `deepseek/`, `x-ai/` and `groq/` upstreams, which are sent none, and the guardian marks its system prompt. On `opencode-go` it affects only models served on the Messages wire; the other wires cache by prefix on their own. User scope only, because it changes spend and what the provider stores. | `true` for `anthropic` and `openrouter`, `false` for `opencode-go` |
 | `cache_ttl` | `anthropic`, `openrouter` and `opencode-go` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
-| `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. | unset |
+| `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. An explicit [`effort`](#model) wins over it, and `effort = "off"` equals `think = false` for the main agent. | unset |
 | `https_proxy`, `http_proxy`, `no_proxy`, `ca_bundle`, `client_cert`, `client_key` | Override the same key of [`[network]`](#network) for this account only. | the `[network]` value |
 
 Account names are not empty and contain no `/`. Accounts can be set from the user file or from
@@ -469,6 +469,7 @@ max_results = 8
 | Key | Meaning | Default |
 |---|---|---|
 | `model` | The session model as `<account>/<model>`. `--model` overrides it. There is no default model: a run with neither is a configuration error (exit code 2) that names both. | unset |
+| `effort` | The main agent's reasoning effort: `off`, `low`, `medium`, `high` or `max`. `--effort` overrides it and `/effort` changes it for a session. Fontaine passes it through rig's portable setting, which maps it onto the provider's own parameter. Unset sends no reasoning parameter, so the model thinks at its own default. A level the model or its endpoint cannot take (a non-reasoning model, a level the catalog does not list for it, or a generic `openai-compatible` gateway, which has no known mapping) is left out of the request with a one-time warning, and the run goes on. Subagents use it too, unless their type sets its own. The guardian is not affected: it always runs with thinking off. Not settable from the shared project file. | unset |
 
 ### `[guardian]`
 
@@ -763,7 +764,9 @@ hard_deny = ["$defaults", "Never send repo contents to third-party code-review A
 | `session_cost_budget_usd` | The same in dollars, when set. | unset |
 
 `[agents.types.<name>]` defines an agent type with `model` (`$main`, `$guardian_default` or
-`<account>/<model>`), `tools` (built-in or `mcp__` tool names) and `mode`. `mode` accepts only
+`<account>/<model>`), `tools` (built-in or `mcp__` tool names), `effort` (`off`, `low`, `medium`,
+`high` or `max`; unset inherits the session's level, and a subagent may run above or below its
+parent because effort is not a permission) and `mode`. `mode` accepts only
 `inherit` (the default: the parent's mode), `manual` or `dontAsk`; any other value is an error, so
 a subagent is never looser than its parent. A type's toolset is cut down to what its parent has.
 Agent files in `agents/` define types too; see [Extensions](extensions.md#agent-files).
@@ -1077,6 +1080,7 @@ for any reason other than not existing, is a configuration error naming the path
 | `--cd <dir>`, `-C <dir>` | Starts in this directory instead of the launch directory; see [Headless runs](headless.md). A relative `--debug-file` resolves against it. |
 | `--debug-file <path>` | Writes debug-level diagnostics to the file, which is created readable by the current user only. The `config loaded` event, which carries the resolved scope stack, is written here. |
 | `--model <account>/<model>` | Overrides `[model] model`. |
+| `--effort <level>` | Overrides `[model] effort` with `off`, `low`, `medium`, `high` or `max`. Any other value is a usage error that lists these. |
 | `--permission-mode <mode>` | Overrides `[permissions] default_mode`. `auto` is accepted. |
 | `--in-container` | States that the process runs inside a container. With `[guardian] profile = "minimal"` it lets the minimal guardian load, after a runtime probe also finds a container; the flag alone is never enough. |
 | `--continue`, `--resume <id-or-name>`, `--fork-session`, `--name <name>` | Reopen the latest session of the project directory (the launch directory, or `--cd`), reopen one by id or by name, copy the one that would have been reopened under a new id, or name the session started (or, without `--fork-session`, the one reopened). See [Headless runs](headless.md#continuing-a-session). |

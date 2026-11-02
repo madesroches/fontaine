@@ -25,6 +25,7 @@ async fn first_request(built: &Built) -> String {
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            generation_options: None,
         },
         &mut seen,
     )

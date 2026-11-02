@@ -494,6 +494,7 @@ fn types_with(name: &str, tools: &[&str]) -> fontaine_agents::registry::AgentTyp
         disallowed: Vec::new(),
         model: Some(ModelSpec::Main),
         mode: ModeSetting::Inherit,
+        effort: None,
         origin: TypeOrigin::Config,
         inherits_context: false,
     });
@@ -776,6 +777,7 @@ mod persistence {
                 model: "scripted".to_string(),
                 provider: "mock".to_string(),
                 native_search: false,
+                generation_options: None,
             },
             &mut |_| Flow::Continue,
         )
@@ -1098,6 +1100,7 @@ mod killed {
                 model: "scripted".to_string(),
                 provider: "mock".to_string(),
                 native_search: false,
+                generation_options: None,
             },
             &mut |_| Flow::Continue,
         )

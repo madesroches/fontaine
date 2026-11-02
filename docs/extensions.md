@@ -42,6 +42,7 @@ does not know is ignored, so files written for Claude Code load.
 | `tools` | The tools of the type: a list or a comma-separated string. Absent means every tool the parent has. |
 | `disallowedTools` | Tools taken away from that set. |
 | `model` | `inherit` (no model: the session's), `$main`, `$guardian_default` or `<account>/<model>`. |
+| `effort` | `inherit` (the session's level), `off`, `low`, `medium`, `high` or `max`. |
 | `permissionMode` | `inherit`, `default` (that is, `manual`) or `dontAsk`. |
 
 The body is the subagent's instructions.
@@ -154,6 +155,7 @@ the rules of `[agents.types]`: `permissionMode` is `inherit`, `default` or `dont
 A file in a repository can only narrow what its parent can do:
 
 - no `model`, other than `inherit`: it runs on the session model;
+- no `effort`, other than `inherit`: it runs at the session's level;
 - `permissionMode` is `default` (the default) or `dontAsk`, never `inherit`;
 - every tool in `tools` is a tool the parent has: a built-in tool, or a tool of an MCP server that
   is configured for the session.

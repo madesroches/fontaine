@@ -56,6 +56,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.mode = runtime.state.mode();
         self.app.guardian_off = runtime.state.guardian_off();
         self.app.model = runtime.models.main.reference.to_string();
+        self.app.effort = runtime.state.effort();
         self.app.model_accepts_images = runtime
             .models
             .main
@@ -578,6 +579,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.model(runtime, &reference).await;
                     Continue(CommandOutcome::Done)
                 }
+            }
+            Command::Effort(level) => {
+                self.effort(runtime, &level);
+                Continue(CommandOutcome::Done)
             }
             Command::GuardianModel(reference) => {
                 if reference.is_empty() {

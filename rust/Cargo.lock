@@ -1675,6 +1675,7 @@ dependencies = [
  "futures",
  "rig-core",
  "rig-tools",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",

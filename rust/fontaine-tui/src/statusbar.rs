@@ -141,9 +141,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    let effort = app
+        .effort
+        .map_or_else(String::new, |level| format!(" · effort {level}"));
     spans.push(Span::styled(
         format!(
-            "{}· {}{agents}{scheduled}{goal} · {hint}",
+            "{}· {}{effort}{agents}{scheduled}{goal} · {hint}",
             location(app),
             app.model
         ),
@@ -216,6 +219,14 @@ mod tests {
         assert!(bar(&app).contains(&tilde_proj), "{}", bar(&app));
         app.cwd = PathBuf::from("/home/u");
         assert!(bar(&app).contains("· ~ (main) ·"));
+    }
+
+    #[test]
+    fn a_set_effort_follows_the_model_and_an_unset_one_shows_nothing() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        assert!(!bar(&app).contains("effort"), "{}", bar(&app));
+        app.effort = Some(fontaine_core::effort::Effort::High);
+        assert!(bar(&app).contains("· m · effort high ·"), "{}", bar(&app));
     }
 
     #[test]

@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::effort::Effort;
 use crate::mode::ModeSetting;
 
 /// The model an agent runs on.
@@ -72,6 +73,8 @@ pub struct AgentType {
     /// `None` runs on the session model.
     pub model: Option<ModelSpec>,
     pub mode: ModeSetting,
+    /// `None` inherits the level the session runs at.
+    pub effort: Option<Effort>,
     pub origin: TypeOrigin,
     /// Whether the child starts from a copy of its parent's conversation. Only the built-in
     /// `fork` has it: no agent file or config entry can set it.
@@ -172,6 +175,7 @@ impl AgentTypes {
             disallowed: Vec::new(),
             model: Some(ModelSpec::Main),
             mode: ModeSetting::Inherit,
+            effort: None,
             origin: TypeOrigin::Builtin,
             inherits_context: false,
         });
@@ -198,6 +202,7 @@ impl AgentTypes {
             disallowed: Vec::new(),
             model: Some(ModelSpec::Main),
             mode: ModeSetting::Inherit,
+            effort: None,
             origin: TypeOrigin::Builtin,
             inherits_context: false,
         });
@@ -211,6 +216,7 @@ impl AgentTypes {
             disallowed: vec!["ask_user_question".to_string()],
             model: None,
             mode: ModeSetting::Inherit,
+            effort: None,
             origin: TypeOrigin::Builtin,
             inherits_context: true,
         });

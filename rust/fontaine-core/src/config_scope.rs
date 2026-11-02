@@ -688,6 +688,19 @@ mod tests {
     }
 
     #[test]
+    fn effort_keys_refuse_the_shared_project_file() {
+        for text in [
+            "[model]\neffort = \"high\"\n",
+            "[agents.types.x]\neffort = \"max\"\n",
+        ] {
+            assert_scope(text, Column::Project, text);
+            for column in [Column::User, Column::ProjectLocal, Column::Cli] {
+                assert_not_scope(text, column, &format!("{}: {text}", column.label()));
+            }
+        }
+    }
+
+    #[test]
     fn predicates_accept_and_refuse_their_values() {
         let s = |v: &str| toml::Value::String(v.to_string());
         let b = toml::Value::Boolean;

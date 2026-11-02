@@ -12,6 +12,7 @@ use fontaine_agents::mode::ModeSetting;
 use fontaine_agents::registry::{AgentType, ModelSpec, TypeOrigin};
 use fontaine_tools::names::{is_builtin, is_mcp};
 
+use crate::effort::Effort;
 use crate::frontmatter::{self, Document, Value};
 use crate::permission_rules::{Rule, parse_rule};
 use crate::plugins::{PluginDir, rewrite_mcp_reference};
@@ -174,6 +175,13 @@ fn model_of(doc: &Document) -> Result<Option<ModelSpec>, String> {
     }
 }
 
+fn effort_of(doc: &Document) -> Result<Option<Effort>, String> {
+    match doc.text("effort").as_deref().map(str::trim) {
+        None | Some("inherit") | Some("") => Ok(None),
+        Some(text) => text.parse().map(Some).map_err(|e| format!("`effort`: {e}")),
+    }
+}
+
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -327,6 +335,13 @@ fn agent_from(
             tightened_label(scope)
         )));
     }
+    let effort = effort_of(&doc).map_err(fail)?;
+    if scope.is_tightened() && effort.is_some() {
+        return Err(fail(format!(
+            "{} cannot choose an effort: it runs at the session's level (leave `effort` out or write `inherit`)",
+            tightened_label(scope)
+        )));
+    }
     let mode = match (scope, doc.text("permissionMode").as_deref().map(str::trim)) {
         (Scope::User, None | Some("inherit")) => ModeSetting::Inherit,
         (Scope::User, Some("default" | "manual")) => ModeSetting::Manual,
@@ -390,6 +405,7 @@ fn agent_from(
         disallowed,
         model,
         mode,
+        effort,
         origin: match scope {
             Scope::User => TypeOrigin::UserFile(path.to_path_buf()),
             Scope::Project => TypeOrigin::ProjectFile(path.to_path_buf()),

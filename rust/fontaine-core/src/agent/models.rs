@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::lock::{read, write};
+use rig_core::completion::GenerationOptions;
 
 use super::AgentRuntime;
 use super::setup::{build_guardian_telling, warm_output_mode};
@@ -90,6 +91,9 @@ impl AgentRuntime {
     /// fallback; a pinned or validated guardian stays where it is.
     pub async fn switch_main_model(&mut self, text: &str) -> Result<Switched, RuntimeError> {
         let guardian_followed = self.install_main(text).await?;
+        // The level stays; a new model that cannot take it is told about now, not at the next
+        // turn.
+        self.turn_generation_options();
         let reference = self.models.main.reference.to_string();
         let persist_error = self
             .persist(|path| user_config::set_model(path, &reference))
@@ -99,6 +103,14 @@ impl AgentRuntime {
             guardian_followed,
             persist_error,
         })
+    }
+
+    /// The reasoning effort the next main turn sends, checked against the current model. A level
+    /// the model cannot take is left out and the human told once.
+    pub fn turn_generation_options(&self) -> Option<GenerationOptions> {
+        self.models
+            .main
+            .generation_options_warned(&self.state, self.state.effort())
     }
 
     /// Resolves `text`, rebuilds the agent on it and makes it the model of the session and its

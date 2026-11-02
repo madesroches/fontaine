@@ -912,6 +912,7 @@ fn agent_setup(
         Some(prep.session.id.clone()),
     );
     let mut config = config.clone();
+    config.effort = cli.effort.or(config.effort);
     if headless && let Some(cap) = cli.max_budget_usd {
         // The tree's session ceiling counts root, guardian and child spend alike, so a running
         // child is stopped at the headless cap instead of finishing its own budget first.

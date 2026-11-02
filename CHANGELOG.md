@@ -76,6 +76,9 @@ All notable changes are recorded here. The format follows
   tag, each archive carrying the license, readme and changelog; `cargo install --git
   https://github.com/madesroches/fontaine fontaine` from source.
 - Documentation under `docs/`, a README quickstart, contributing guide and security policy.
+- `effort` in an agent type (`[agents.types.<name>]` or agent-file frontmatter) sets that subagent's
+  reasoning level; unset inherits the session's, and a child may differ from its parent. Only
+  user-scope agent files may set it (#53).
 
 #### Config
 
@@ -192,6 +195,11 @@ All notable changes are recorded here. The format follows
 - Skills, agent files and output styles with Claude Code's frontmatter, the `skill` tool, skills
   as `/name` commands with arguments, `` !`cmd` `` context run as gated `shell` calls, and
   `allowed-tools` lent for a turn.
+- `[model] effort` and `--effort <level>` set the main agent's reasoning effort through rig's
+  portable setting, which maps it onto each provider's own parameter. Unset sends nothing and the
+  model thinks at its own default. A level the model or its endpoint cannot take (including any
+  generic `openai-compatible` gateway) is left out of the request with a one-time warning. The
+  guardian keeps thinking off whatever the level; the key is user scope only (#53).
 
 #### Guardian
 
@@ -655,6 +663,10 @@ All notable changes are recorded here. The format follows
   interrupt` without the word `working`. A 16-colour theme gets a stepped shimmer and a glyph that
   cycles the theme's accents instead of a gradient; `FONTAINE_ASCII_GLYPHS=1` draws `.oO0Oo`. There is
   no spinner in screen-reader mode (#355).
+- `/effort [level]` shows or sets the main agent's reasoning effort (`off`, `low`, `medium`, `high`
+  or `max`) for the session, and the status bar shows it beside the model while one is set. A
+  `/model` switch keeps the level and checks it against the new model; one the model cannot take is
+  dropped with a one-time warning (#53).
 
 ### Changed
 

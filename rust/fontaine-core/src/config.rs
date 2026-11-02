@@ -9,6 +9,7 @@ use serde::Deserialize;
 
 use crate::config_scope::check_scope;
 use crate::credentials;
+use crate::effort::Effort;
 use crate::permission_rules::{RuleError, RuleSource, SourcedRule, parse_rule, validate_mcp_name};
 use crate::providers::{self, Provider};
 use crate::trust::{self, LocalClassification, ProjectDemotion};
@@ -424,6 +425,7 @@ impl Account {
 #[serde(deny_unknown_fields)]
 pub struct ModelSection {
     pub model: Option<String>,
+    pub effort: Option<Effort>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -665,6 +667,7 @@ pub struct AgentType {
     pub model: Option<String>,
     pub tools: Option<Vec<String>>,
     pub mode: Option<AgentMode>,
+    pub effort: Option<Effort>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -1818,6 +1821,8 @@ pub struct Config {
     /// The `[network]` section; an account's own keys are laid over it by [`Config::network_for`].
     pub network: NetworkSettings,
     pub model: Option<String>,
+    /// `[model] effort`; unset sends no reasoning parameter.
+    pub effort: Option<Effort>,
     pub guardian: Guardian,
     pub permissions: Permissions,
     pub hooks: Hooks,
@@ -1913,6 +1918,7 @@ impl Config {
             shadowed_accounts: Default::default(),
             network: NetworkSettings::default(),
             model: None,
+            effort: None,
             guardian: Guardian {
                 model: None,
                 profile: GuardianProfile::Full,
@@ -2028,6 +2034,9 @@ impl Config {
         }
         if let Some(model) = s.model.as_ref().and_then(|m| m.model.clone()) {
             self.model = Some(model);
+        }
+        if let Some(effort) = s.model.as_ref().and_then(|m| m.effort) {
+            self.effort = Some(effort);
         }
         if let Some(g) = &s.guardian {
             let t = &mut self.guardian;

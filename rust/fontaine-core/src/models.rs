@@ -7,11 +7,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rig_core::DynModel;
+use rig_core::completion::{CheckError, CompletionRequest, GenerationOptions, UnsupportedOption};
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
 
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::{Credentials, StoredCredential};
+use crate::effort::Effort;
+use crate::gate::SessionState;
 use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy};
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
 use fontaine_guardian::{OutputProbe, WireIds};
@@ -203,6 +206,54 @@ impl ModelHandle {
     /// prices, so whatever cost reaches us for it is dropped.
     pub fn catalog_billed(&self) -> bool {
         self.kind.provider().billing() == Billing::Catalog
+    }
+
+    /// The generation options one turn on this model sends for `effort`. `None` sends nothing,
+    /// so the model thinks at its own default. A level the model's catalog entry or its wire
+    /// refuses (a gateway rig has no option mapping for refuses every level) is left out and
+    /// returned as the refusal, because effort is a hint and a session must not fail on it; the
+    /// caller tells the user.
+    pub fn generation_options(
+        &self,
+        effort: Option<Effort>,
+    ) -> (Option<GenerationOptions>, Option<UnsupportedOption>) {
+        let Some(effort) = effort else {
+            return (None, None);
+        };
+        let options = GenerationOptions::new().reasoning(effort.to_reasoning());
+        if let Some(Err(refused)) = self.completion.spec().map(|spec| spec.validate(&options)) {
+            return (None, Some(refused));
+        }
+        // Only the options are under test, so any other way the probe fails to build is not
+        // this level's refusal.
+        let probe = CompletionRequest::new("probe").options(options.clone());
+        if let Err(CheckError::Unsupported(refused)) = self.completion.check(&probe)
+            && let Some(first) = refused.into_iter().next()
+        {
+            return (None, Some(first));
+        }
+        (Some(options), None)
+    }
+
+    /// `generation_options`, telling the human once through `state` when the level is refused.
+    pub fn generation_options_warned(
+        &self,
+        state: &SessionState,
+        effort: Option<Effort>,
+    ) -> Option<GenerationOptions> {
+        let (options, refused) = self.generation_options(effort);
+        if let (Some(effort), Some(refused)) = (effort, refused) {
+            state.warn_effort_refused(&self.reference.to_string(), effort, &refused);
+        }
+        options
+    }
+
+    /// The levels this model takes. A wire with no option mapping takes none.
+    pub fn supported_efforts(&self) -> Vec<Effort> {
+        Effort::ALL
+            .into_iter()
+            .filter(|level| self.generation_options(Some(*level)).1.is_none())
+            .collect()
     }
 
     /// Whether rig's catalog knows a price for this model; a spend cap needs one.

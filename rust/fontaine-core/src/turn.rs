@@ -9,7 +9,7 @@ use rig_agent::agent::MultiTurnStreamItem;
 use rig_agent::completion::PromptError;
 use rig_agent::prelude::*;
 use rig_core::catalog::Modalities;
-use rig_core::completion::Usage;
+use rig_core::completion::{GenerationOptions, Usage};
 use rig_core::message::{
     AssistantContent, DocumentMediaType, Message, ToolResultContent, UserContent,
 };
@@ -103,6 +103,9 @@ pub struct TurnParams<'a> {
     pub provider: String,
     /// Whether the request carries the provider's built-in search tool.
     pub native_search: bool,
+    /// The turn's reasoning effort, from `ModelHandle::generation_options` on the current model;
+    /// `None` sends nothing.
+    pub generation_options: Option<GenerationOptions>,
 }
 
 /// What an inline attachment is.
@@ -202,6 +205,7 @@ pub async fn run_turn(
             model: params.model,
             provider: params.provider,
             native_search: params.native_search,
+            generation_options: params.generation_options,
             span: interaction,
         },
         Some(&mut feed),
@@ -313,6 +317,9 @@ pub struct Drive<'a> {
     pub provider: String,
     /// Whether the request carries the provider's built-in search tool.
     pub native_search: bool,
+    /// The reasoning effort this run's model calls send, already checked against the model;
+    /// `None` sends nothing.
+    pub generation_options: Option<GenerationOptions>,
     /// The run adopts this span as its own agent span.
     pub span: tracing::Span,
 }
@@ -404,6 +411,7 @@ pub async fn drive(
                 model: params.model.clone(),
                 provider: params.provider.clone(),
                 native_search: params.native_search,
+                generation_options: params.generation_options.clone(),
                 span: params.span.clone(),
             },
             feed.as_deref_mut(),
@@ -451,6 +459,11 @@ async fn drive_once(
         .max_turns(params.max_turns.unwrap_or(usize::MAX))
         // One call at a time, in order: the guardian judges each call before the next starts.
         .tool_concurrency(1);
+    // Per turn, not at build, so `/effort` and `/model` take effect without a rebuild.
+    let runner = match params.generation_options {
+        Some(options) => runner.options(options),
+        None => runner,
+    };
     // The run adopts the span it is built under as its own agent span.
     let mut stream = params.span.in_scope(|| runner.stream());
     let mut step = ModelStep::begin(params.state, params.agent_id);

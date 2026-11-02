@@ -592,6 +592,7 @@ mod tests {
                 disallowed: Vec::new(),
                 model: Some(ModelSpec::Main),
                 mode: ModeSetting::Inherit,
+                effort: None,
                 origin: TypeOrigin::Config,
                 inherits_context: false,
             });

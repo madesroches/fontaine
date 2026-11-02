@@ -189,10 +189,37 @@ fn user_agent_files_accept_only_inherit_default_and_dont_ask() {
 }
 
 #[test]
+fn a_user_agent_file_sets_its_effort_and_a_bad_one_is_an_error_naming_the_levels() {
+    use fontaine_core::effort::Effort;
+    for (text, expected) in [
+        ("---\neffort: low\n---\nx", Some(Effort::Low)),
+        ("---\neffort: max\n---\nx", Some(Effort::Max)),
+        ("---\neffort: inherit\n---\nx", None),
+        ("---\nname: a\n---\nx", None),
+    ] {
+        let w = World::new();
+        user_agent(&w, "a", text);
+        assert_eq!(load_for(&w, &[]).unwrap().agent_types[0].effort, expected);
+    }
+    let w = World::new();
+    user_agent(&w, "a", "---\neffort: xhigh\n---\nx");
+    let e = message(&w, &[]);
+    assert!(
+        e.contains("a.md") && e.contains("off, low, medium, high, max"),
+        "{e}"
+    );
+    // Inheriting is no choice, so a repository's file may say it.
+    let w = World::new();
+    project_agent(&w, "p", "---\neffort: inherit\n---\nx");
+    assert_eq!(load_for(&w, &[]).unwrap().agent_types[0].effort, None);
+}
+
+#[test]
 fn a_project_agent_file_can_only_narrow() {
     // A model, an inherited or looser mode, and a tool the session lacks are all rejected.
     for (text, needle) in [
         ("---\nmodel: work/claude\n---\nx", "model"),
+        ("---\neffort: high\n---\nx", "effort"),
         ("---\npermissionMode: inherit\n---\nx", "inherit"),
         ("---\npermissionMode: auto\n---\nx", "auto"),
         ("---\npermissionMode: acceptEdits\n---\nx", "acceptEdits"),

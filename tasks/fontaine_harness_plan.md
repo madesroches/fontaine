@@ -399,6 +399,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-01: Deviation from Claude Code (#290) — a name is 1-32 characters of `[a-z0-9-]`, starting
   with a letter, and is not `main`, `root`, `job-*` or `agent-<n>`. Reason: safe to embed as untrusted
   text and free of collisions with agent ids and job ids.
+- 2026-11-02: A per-type `effort` (`[agents.types.<name>]` and agent-file frontmatter) inherits the session's level when unset and may differ from the parent's, since effort is not a permission; frontmatter `effort` is allowed in user-scope agent files only (a repository or plugin file may write `inherit`), like `model`.
 
 ### Build and release
 
@@ -423,6 +424,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-21: Deviation — with no main model configured (no `[model] model` or `--model`) Fontaine exits with a config error (exit 2) (Claude Code has a default model); reason: Fontaine is provider-agnostic with no default account (Phase 1).
 - 2026-10-25: project scope cannot set `[env]` (Claude Code honors it after trust); it cannot tighten, and a project `PATH` would shadow commands the pre-classifier and guardian reason about.
 - 2026-10-25: `[env]` applies to tool and extension subprocesses only, not Fontaine's own process (Claude Code applies it to both); credential and telemetry lookups keep their explicit keys.
+- 2026-11-02: `[model] effort` is `off|low|medium|high|max` (`off` is beyond Claude Code's set; `xhigh` and `minimal` are not exposed), user scope only. Unset sends nothing, so the model's own default applies, unlike a default level. `max` is passed through rig's provider mapping; Claude Code's exact `max` behavior was not re-verified. A level the model's catalog entry or its wire refuses (a generic `openai-compatible` gateway has no rig option mapping) is dropped with a one-time warning rather than failing the turn.
 
 ### Core
 
@@ -624,6 +626,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-01: A redirect whose target literal is exactly `/dev/null` writes no file: the shell analysis sets neither `output_redirect` nor an output target for it, so `rg x 2>/dev/null` is not destructive and lists no `/dev/null` path. `/dev/stdout`, `/dev/stderr` and `NUL` stay file writes; the fast path and the floor are unchanged (#357).
 - 2026-11-01: Touched paths carry `absent` and `git_tracked` marks, set by the harness (`symlink_metadata` is not found; git's index has an exact file entry for it; never a directory or the work-tree root) and rendered only in the guardian view, as `in_scratch` is, so the screen and composition reads and the minimal profile are byte-identical to before. For a shell call the marks are set only when it is a single simple command with a certain working directory and no glob or pathspec word (`*`, `?`, `[`, or a leading `:`), because a pre-run snapshot cannot describe a later command's targets. The Destroy Pre-existing Files rule exempts a move onto an `absent` path and writes onto a `git_tracked` one (#366).
 - 2026-11-01: The guardian-side `spawned_agent` fact, the guardian prompt's Subagents section and the guardian-kind spawn cases `overdeny-04` and `attack-overdeny-03` are removed because no `agent` call reaches the guardian (maintainer's call); `adjudication::spawn_facts` stays for the read-only fast path.
+- 2026-11-02: No `[guardian] effort`; the guardian, the composed guardian stage, the scanner, the critique, `project_env` and the goal evaluator keep `thinking_off` and never receive the session's effort; reason: no detection rule exists for models that refuse a forced tool call under thinking, and the fail-closed guardian must not gain an unspecified path.
 
 ### Headless
 
@@ -908,6 +911,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-01: A bare `/btw` is a usage error, not Claude Code's reopening of the last answer, because answers are not stored (#52).
 - 2026-11-01: Side questions are stateless, where Claude Code gives later ones the newest 20 exchanges, because nothing from them is saved and each answers from the conversation alone (#52).
 - 2026-11-01: AFK: `/btw` uses fixed constants, a 60 s timeout (`EVALUATOR_TIMEOUT`) and `SIDE_QUESTION_MAX_TOKENS = 4_096`, with a test-only `with_timeout`, not config keys, because the review loop found them unspecified and 1_024 tokens is too tight for a free-text answer (#52).
+- 2026-11-02: `/effort` and `--effort` copy Claude Code's surface; `/effort` is session-only and `[model] effort` is the standing choice. The level survives `/model` and is re-validated against the new model: a level the model cannot take is dropped with a one-time warning, not an error; reason: effort is a hint, and a session should not die on a switch to a model with fewer levels.
 
 ## Open Questions
 

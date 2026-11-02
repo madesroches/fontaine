@@ -3,6 +3,7 @@ use crate::ui::commands::config::overriding_scope;
 use crate::{App, Ui, UnavailableAnswer};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::config::Slot;
+use fontaine_core::effort::Effort;
 use fontaine_core::permissions::UnavailableChoice;
 
 impl<R: FnMut(&mut App)> Ui<R> {
@@ -31,6 +32,42 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 fontaine_tools::error_chain::chain(&e)
             )),
         }
+    }
+
+    /// `/effort`: shows the session's reasoning effort and the levels the model takes, or sets
+    /// it for this session. It is not saved: `[model] effort` is the standing choice.
+    pub(crate) fn effort(&mut self, runtime: &AgentRuntime, text: &str) {
+        let supported = takes(&runtime.models.main.supported_efforts());
+        if text.is_empty() {
+            let current = runtime.state.effort().map_or_else(
+                || "unset (the model's own default)".to_string(),
+                |e| e.to_string(),
+            );
+            self.app.transcript.notice(format!(
+                "effort: {current} · {} takes {supported} · /effort <level> sets it for this session, /effort unset clears it",
+                runtime.models.main.reference
+            ));
+            return;
+        }
+        let level = if text == "unset" {
+            None
+        } else {
+            match text.parse::<Effort>() {
+                Ok(level) => Some(level),
+                Err(e) => {
+                    self.app.transcript.error(format!("/effort: {e}, or unset"));
+                    return;
+                }
+            }
+        };
+        runtime.state.set_effort(level);
+        self.app.effort = level;
+        // A level the model cannot take is warned about here rather than at the next turn.
+        runtime.turn_generation_options();
+        self.app.transcript.notice(match level {
+            Some(level) => format!("effort is now {level} for this session"),
+            None => "effort is unset for this session: the model's own default applies".to_string(),
+        });
     }
 
     /// Lists the models of every account, or of `account` alone, which can take a while, then
@@ -251,5 +288,27 @@ impl<R: FnMut(&mut App)> Ui<R> {
             UnavailableAnswer::Deny => UnavailableChoice::Deny,
         };
         self.app.finish_unavailable(choice);
+    }
+}
+
+fn takes(levels: &[Effort]) -> String {
+    if levels.is_empty() {
+        return "no effort level (the endpoint has no reasoning mapping)".to_string();
+    }
+    levels
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_model_with_no_levels_says_so() {
+        assert!(takes(&[]).starts_with("no effort level"));
+        assert_eq!(takes(&[Effort::Low, Effort::High]), "low, high");
     }
 }
