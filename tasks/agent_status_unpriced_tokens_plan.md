@@ -42,12 +42,15 @@ sites copy `row.spend.unpriced_tokens`.
 3. Unpriced: `{n} unpriced tok` when `unpriced_tokens > 0`.
 
 Examples: `110k tok · $0.0066 · 128k unpriced tok`; `238k / 500k tok · $0.0066 · 128k unpriced tok`;
-fully unpriced `4.9M unpriced tok`; fully priced unchanged.
+fully unpriced `4.9M unpriced tok`; fully unpriced with a cost budget `cost n/a · 4.9M unpriced tok`;
+fully unpriced with a token budget and a cost budget `4.9M / 5M tok · cost n/a · 4.9M unpriced tok`;
+fully priced unchanged.
 
 Token counts in these segments trim a trailing `.0` (`110k`, not `110.0k`), to match the issue's
 examples. `compact_count` is shared with other output whose documented form is `1.0k`, so the trim
 is a small local helper in `agents_panel.rs` over `compact_count`, applied to the spend segments
-(including the token-budget cap) and to `writing_text`, so the row stays uniform.
+(including the token-budget cap), to `writing_text`, and to the `stopped_because` text built in
+`ui/mod.rs:134` (which would otherwise show untrimmed counts under a trimmed spend line).
 
 Narrow-row truncation in `agent_list.rs`: `AgentList::lines` joins age and spend with ` · `
 (`format!(" · {}", row.spend)`, with the width arithmetic following). The special case re-keys
@@ -62,31 +65,29 @@ first.
    trim helper and use it in `writing_text`; update panel call site and the in-file tests.
 2. `agent_list.rs`: pass `unpriced_tokens`, add `ListRow.unpriced`, change the join to ` · `,
    re-key the truncation, update tests.
-3. `ui/mod.rs`, `screen.rs`, `app.rs`: build `PanelRow` with `unpriced_tokens`.
+3. `ui/mod.rs`, `screen.rs`, `app.rs`, `spinner.rs`, `view.rs`: build `PanelRow` with
+   `unpriced_tokens`; pass the trim helper to `describe_with` for `stopped_because` in `ui/mod.rs`;
+   set `unpriced` in the test-only `ListRow` literals (`spinner.rs:418`, `view.rs:779`,
+   `app.rs:1637`, `app.rs:1651`; `ListRow` has no `Default`).
 4. `docs/tui.md`: update the agent-list and agents-panel sections and examples.
 5. `CHANGELOG.md` entry is handled by the `pr` step.
 
 ## Files to Modify
 
-- `rust/fontaine-tui/src/agents_panel.rs`, `agent_list.rs`, `ui/mod.rs`, `screen.rs`, `app.rs`
+- `rust/fontaine-tui/src/agents_panel.rs`, `agent_list.rs`, `ui/mod.rs`, `screen.rs`, `app.rs`, `spinner.rs`, `view.rs`
 - `docs/tui.md`
-
-## Trade-offs
-
-- Local `.0` trim vs. changing `compact_count`: the shared function feeds other documented output,
-  so changing it would widen the blast radius for a cosmetic request.
-- Showing priced tokens against the cap was rejected: budgets bind on the total.
 
 ## Decisions
 
-- 2026-11-02: trim `.0` only in agent spend and writing text, not in `compact_count` (see Trade-offs).
+- 2026-11-02: trim `.0` only in agent spend and writing text, not in `compact_count` since `compact_count` feeds other output documented as `1.0k`.
 
 ## Documentation
 
 `docs/tui.md`: agent-list paragraph (age is followed by ` · `, drop "`+ unpriced` marker", describe
 the `N unpriced tok` segment) and agents-panel paragraph (replace the `4863024 tok · $0.0519 +
 unpriced` example, state that a token budget keeps the total, that a fully unpriced agent reads
-`4.9M unpriced tok`, and that counts drop a trailing `.0`; fix the `1.5k / 200.0k tok` examples).
+`4.9M unpriced tok`, and that counts drop a trailing `.0`; fix the `1.5k / 200.0k tok` examples), and line ~909 "Displayed counts are compact (`999`,
+`1.0k`, `1.2M`)" (agent spend and writing text drop a trailing `.0`).
 
 ## Testing Strategy
 
@@ -97,8 +98,3 @@ Unit tests (all reachable by constructed inputs):
   segment (head cut with `…`), drops `writing` first; an ordinary narrow row is still cut at the
   end.
 - Panel rendering test updated for the new format.
-
-## Open Questions
-
-- Does a fully unpriced agent with a cost budget show `cost n/a · 4.9M unpriced tok`? Proposed yes
-  (the cost segment is unchanged), to be confirmed in review.
