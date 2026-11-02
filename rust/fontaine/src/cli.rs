@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fontaine_core::config::PermissionMode;
+use fontaine_core::effort::Effort;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "fontaine", version, about = "A terminal AI coding agent")]
@@ -47,6 +48,11 @@ pub struct Cli {
     /// The main model as `<account>/<model>`, overriding `[model] model`
     #[arg(long, value_name = "ACCOUNT/MODEL")]
     pub model: Option<String>,
+
+    /// The reasoning effort of the main agent: off, low, medium, high or max. Overrides
+    /// `[model] effort`
+    #[arg(long, value_name = "LEVEL")]
+    pub effort: Option<Effort>,
 
     /// How the headless run reports its result
     #[arg(long, value_enum, default_value_t = OutputFormat::Text, value_name = "FORMAT")]

@@ -106,7 +106,7 @@ tools are checked like any `arbitrary` tool. A headless run does not ask and loa
 
 ## Status bar
 
-The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model, how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key hint. The mode labels are `manual`,
+The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key hint. The mode labels are `manual`,
 `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`.
 
 While a [subagent's transcript](#the-agent-list-and-the-agent-view) is on screen the bar's key hint
@@ -456,6 +456,7 @@ error: an export never overwrites.
 | `/expand [<n> \| thinking]` | Prints tool call `n` in full (command, retained output, diff) as new transcript lines; the latest call without a number. `n` is the number in the card's `expand:` hint, counted from the start of the session. It is an error for a call that does not exist or that `/clear` removed. `/expand thinking` prints the latest [reasoning card](#model-reasoning) in full instead. |
 | `/export [<path>]` | Writes the conversation to a Markdown file, owner-only, never over an existing file; with subagents it is a folder — `main.md` plus one `<agent-id>.md` per subagent. See [Sessions](#sessions). |
 | `/goal [<condition> \| clear]` | Keeps working until the condition is met; see [Goals](#goals). Bare `/goal` shows the goal's status. |
+| `/effort [off\|low\|medium\|high\|max\|unset]` | Without an argument, shows the session's reasoning effort and the levels the current model takes. With a level, sets it for the rest of this session; `unset` goes back to the model's own default. It is not saved: `[model] effort` is the standing choice. The next turn sends it with no rebuild, and a subagent started afterwards inherits it. A level the model cannot take is left out with a one-time warning. The status bar shows `effort <level>` beside the model while one is set. |
 | `/guardian-disable` | Turns the guardian and the permission floor off for the rest of this session, after a confirmation. A warning chip stays in the status bar until `/guardian-enable`. Session-scoped only: it is never saved to settings, a project cannot turn it on, and subagents are never loosened by it. Intended as a development escape hatch. |
 | `/guardian-enable` | Turns the guardian and the permission floor back on for this session. |
 | `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) over a live listing. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. When a higher scope (`--settings` or a project-local file) sets `[guardian] model`, the notice adds that the scope wins from the next launch. |
@@ -466,7 +467,7 @@ error: an export never overwrites.
 | `/loop [<interval>] <prompt>`, `/loop list`, `/loop stop [<id>]` | Runs a prompt again and again while the session is idle; see [Scheduled prompts](#scheduled-prompts). |
 | `/mcp` | Lists each [MCP server](mcp.md) as `connected`, `failed` with the error, `left off` (you declined it) or `not loaded` (the workspace is not trusted), each with the scope that contributed it — a plugin's servers read `[plugin]`. It takes no arguments. |
 | `/memory [<n>]` | Lists the instruction files, numbered, with where each came from and the `FONTAINE.md` files that do not exist yet. With a number it opens that file in `$VISUAL` or `$EDITOR`, creating it first when needed. See [Instruction files](instructions.md#memory). |
-| `/model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file; when a higher scope sets `[model] model`, the notice adds that the scope wins from the next launch. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. |
+| `/model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file; when a higher scope sets `[model] model`, the notice adds that the scope wins from the next launch. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. The session's [`/effort`](#commands) level is kept and checked against the new model; one it cannot take is dropped with a warning. |
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
 | `/permissions` | Shows the permission mode and the `deny`, `ask` and `allow` rules in force, each with the scope that contributed it (session and always grants included), the workspace roots and the settings file where rules are edited. It is read-only; see [Permissions](permissions.md). While the guardian is off it adds that these rules are not being enforced. |
 | `/plan [<description>]` | Switches to plan mode, as Shift+Tab does. With a description it also sends it as your next message, so `/plan fix the auth bug` plans the fix. |
@@ -552,7 +553,7 @@ included.
 
 ## Choosing a model
 
-`/model` with no argument opens an overlay above the message box. The first line shows the current
+`/effort` is the reasoning-level counterpart: it shows or sets the level for the session, and a model switch keeps the level and checks it against the new model. `/model` with no argument opens an overlay above the message box. The first line shows the current
 model and the guardian. Below it, the models of every configured account sit under a heading per
 account, sorted by account name, and the current model is marked `(current)` and selected. A
 `Recent` group comes first with the models you switched to lately, up to five. They are kept in
@@ -627,6 +628,7 @@ editing stays in the files too; see [Permissions](permissions.md).
 | `memory.auto` | Cycles `true`, `false` | From the next launch |
 | `shell.max_timeout_secs` | Opens a field for a positive whole number; empty clears the key | From the next launch |
 | `model.model` | Closes the panel and opens the [model picker](#choosing-a-model) | At once, as `/model` |
+| `model.effort` | Read-only; shows the level the session runs at, which `--effort` and `/effort` can move off the setting | From the next launch |
 | `guardian.model` | Closes the panel and opens the guardian picker | At once, as `/guardian-model` |
 
 Del removes the key from the user file (a reset); resetting `tui.theme` also switches to the
@@ -886,7 +888,7 @@ conversation:
 
 Built-in commands that only show or set something run as usual against the main conversation, and
 their notices appear in the view. Commands that act on or change the main conversation (`/btw`,
-`/clear`, `/compact`, `/rewind`, `/branch`, `/resume`, `/model`, `/goal`, `/loop`, `/init`, `/output-style` and `/plan`
+`/clear`, `/compact`, `/rewind`, `/branch`, `/resume`, `/model`, `/effort`, `/goal`, `/loop`, `/init`, `/output-style` and `/plan`
 with an argument), skills and `!` lines are refused there with `switch back to main to run this`,
 and the text stays in the input. `/expand` and `/copy` act on the transcript on screen. Ctrl-C
 interrupts the main turn, which keeps running while you look at an agent; Esc does not.

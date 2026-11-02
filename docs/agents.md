@@ -99,7 +99,10 @@ file or config entry can grant.
 model = "work/claude-sonnet-5"
 tools = ["ls", "read", "glob", "grep"]
 mode = "inherit"
+effort = "low"
 ```
+
+`effort` (`off`, `low`, `medium`, `high` or `max`) sets the reasoning level of the type's model calls. Left out, the subagent runs at the level the session had when it started (see [`[model] effort`](configuration.md#model)). It may differ from its parent's: effort is not a permission. A level the type's model cannot take is dropped with a one-time warning.
 
 `tools` names built-in or `mcp__` tools; leave it out to give the type every tool its parent has.
 The toolset a subagent really gets is that list **cut down to what its parent has**: a type can
@@ -225,7 +228,7 @@ copying. Files live in `<config dir>/agents/<name>.md` and `<root>/.fontaine/age
 [Extensions](extensions.md#agent-files) for the frontmatter and what is refused.
 
 A file in a repository can only narrow: its tools must be tools its parent has, its mode is
-`default` (the default) or `dontAsk`, and it names no model, so it runs on the session model. A file
+`default` (the default) or `dontAsk`, and it names no model and no effort, so it runs on the session model at the session's level. A file
 that breaks this stops startup with exit code 2 naming the file. A repository's file replaces a
 user file or `[agents.types]` entry of the same name, and so stays narrowed.
 

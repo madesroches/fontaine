@@ -282,6 +282,65 @@ async fn the_model_flag_overrides_the_configured_model() {
     assert!(out.stderr.contains("nobody"), "{}", out.stderr);
 }
 
+fn openai_at(s: &mut Sandbox, url: &str, model: &str, extra: &str) {
+    s.user_config(&format!(
+        "[accounts.paid]\nkind = \"openai\"\nbase_url = \"{url}\"\napi_key_env = \"PAID_KEY\"\nmodels = [\"{model}\"]\n\n[model]\nmodel = \"paid/{model}\"\n{extra}"
+    ));
+    s.set_env("PAID_KEY", "sk-test-not-a-real-key");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_effort_flag_reaches_the_wire_and_overrides_the_configured_level() {
+    let endpoint = Endpoint::start(
+        Wire::Responses,
+        vec![Turn::text("ok"), Turn::text("ok"), Turn::text("ok")],
+    )
+    .await;
+    let mut s = Sandbox::new();
+    openai_at(&mut s, &endpoint.url(), "o3-mini", "");
+    let out = s.headless(&["hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+
+    openai_at(&mut s, &endpoint.url(), "o3-mini", "effort = \"low\"\n");
+    let out = s.headless(&["hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let out = s.headless(&["--effort", "high", "hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+
+    let requests = endpoint.requests().await;
+    assert!(requests[0].get("reasoning").is_none(), "{}", requests[0]);
+    assert_eq!(requests[1]["reasoning"]["effort"], "low", "{}", requests[1]);
+    assert_eq!(
+        requests[2]["reasoning"]["effort"], "high",
+        "{}",
+        requests[2]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_level_the_model_cannot_take_is_dropped_with_a_warning_and_the_run_goes_on() {
+    let endpoint = Endpoint::start(Wire::Responses, vec![Turn::text("ok")]).await;
+    let mut s = Sandbox::new();
+    openai_at(&mut s, &endpoint.url(), "gpt-4o-mini", "");
+    let out = s.headless(&["--effort", "high", "hi"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(out.stderr.contains("effort `high`"), "{}", out.stderr);
+    let requests = endpoint.requests().await;
+    assert!(requests[0].get("reasoning").is_none(), "{}", requests[0]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_effort_is_refused_with_the_valid_levels() {
+    let s = Sandbox::new();
+    let out = s.headless(&["--effort", "xhigh", "hi"]).await;
+    assert_eq!(out.code, Some(2));
+    assert!(
+        out.stderr.contains("off, low, medium, high, max"),
+        "{}",
+        out.stderr
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn auto_mode_is_accepted_by_flag_and_by_the_user_file() {
     let s = Sandbox::new();

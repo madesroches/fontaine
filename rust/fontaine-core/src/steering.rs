@@ -294,6 +294,7 @@ mod tests {
             agent_types: Arc::new(fontaine_agents::registry::AgentTypes::builtin()),
             reveal_mcp_names: false,
             auto_edits: crate::gate::AutoEdits::default(),
+            effort: None,
         }));
         let steering = Steering::default();
         (

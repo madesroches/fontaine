@@ -536,6 +536,38 @@ async fn model_switches_the_live_session_and_saves_the_choice() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn effort_sets_and_shows_the_session_level_and_model_revalidates_it() {
+    let w = World::new(vec![])
+        .with_config(
+            "[accounts.other]\nkind = \"openai-compatible\"\nbase_url = \"http://127.0.0.1:9\"\nmodels = [\"second\"]\n",
+        )
+        .guardian_follows_main();
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/effort");
+        ui.wait_for("effort: unset").await;
+        ui.send("/effort bogus");
+        ui.wait_for("expected one of off, low, medium, high, max")
+            .await;
+        ui.send("/effort high");
+        ui.wait_for("effort is now high for this session").await;
+        assert!(ui.screen().contains("effort high"), "{}", ui.screen());
+        ui.send("/effort");
+        ui.wait_for("effort: high").await;
+        // A gateway rig has no option mapping for takes no level: the switch keeps `high` and
+        // says the model cannot use it.
+        ui.send("/model other/second");
+        ui.wait_for("model is now other/second").await;
+        ui.wait_for("effort `high` is not used with other/second")
+            .await;
+        ui.send("/effort unset");
+        ui.wait_for("effort is unset for this session").await;
+        assert!(!ui.screen().contains("effort high"), "{}", ui.screen());
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn guardian_model_pins_the_guardian_and_saves_the_choice() {
     let w = World::new(vec![])
         .with_config(

@@ -475,6 +475,37 @@ fn agent_type_mode_accepts_only_inherit_manual_dont_ask() {
 }
 
 #[test]
+fn effort_is_read_from_the_model_section_and_agent_types() {
+    use fontaine_core::effort::Effort;
+    let w = World::new();
+    assert_eq!(w.load().unwrap().effort, None);
+    w.user_file("[model]\neffort = \"low\"\n[agents.types.t]\neffort = \"max\"\n");
+    let c = w.load().unwrap();
+    assert_eq!(c.effort, Some(Effort::Low));
+    assert_eq!(c.agents.types["t"].effort, Some(Effort::Max));
+}
+
+#[test]
+fn an_unknown_effort_is_a_config_error_naming_the_valid_set() {
+    for text in [
+        "[model]\neffort = \"xhigh\"\n",
+        "[agents.types.t]\neffort = \"minimal\"\n",
+        "[model]\neffort = 3\n",
+    ] {
+        let err = parse_settings(text, Path::new("u.toml"), Column::User).unwrap_err();
+        assert!(matches!(err, ConfigError::Parse { .. }), "{text}: {err:?}");
+    }
+    let err = parse_settings(
+        "[model]\neffort = \"xhigh\"\n",
+        Path::new("u.toml"),
+        Column::User,
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(err.contains("off") && err.contains("max"), "{err}");
+}
+
+#[test]
 fn agent_type_tools_must_be_known() {
     user_ok("[agents.types.t]\ntools = [\"read\", \"mcp__gh__issue\"]\n");
     assert!(

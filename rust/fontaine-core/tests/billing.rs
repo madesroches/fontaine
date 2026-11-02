@@ -42,6 +42,7 @@ async fn root_turn(priced: bool) -> (Option<f64>, Option<f64>) {
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            generation_options: None,
         },
         &mut on_event,
     )
@@ -84,6 +85,7 @@ async fn an_unpriced_subagent_adds_tokens_but_no_cost_to_the_subagent_total() {
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            generation_options: None,
             span: tracing::Span::none(),
         },
         None,
@@ -134,6 +136,7 @@ async fn writing_during_a_step(stop_at_delta: bool) -> (Vec<u64>, u64) {
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            generation_options: None,
         },
         &mut on_event,
     )
@@ -178,6 +181,7 @@ async fn a_failed_step_leaves_no_writing_behind() {
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            generation_options: None,
         },
         &mut on_event,
     )
@@ -249,6 +253,7 @@ async fn writing_across_a_tool_call() -> Vec<u64> {
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            generation_options: None,
         },
         &mut on_event,
     )
@@ -292,6 +297,7 @@ async fn argument_characters_count_toward_writing_at_the_next_delta() {
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            generation_options: None,
         },
         &mut on_event,
     )
@@ -326,6 +332,7 @@ async fn reasoning_events(turn: Vec<MockStreamEvent>) -> Vec<String> {
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            generation_options: None,
         },
         &mut on_event,
     )

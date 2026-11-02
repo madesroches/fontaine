@@ -7,11 +7,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 use rig_core::DynModel;
+use rig_core::completion::{CheckError, CompletionRequest, GenerationOptions, UnsupportedOption};
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
 
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::{Credentials, StoredCredential};
+use crate::effort::Effort;
 use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy};
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
 use fontaine_guardian::{OutputProbe, WireIds};
@@ -203,6 +205,41 @@ impl ModelHandle {
     /// prices, so whatever cost reaches us for it is dropped.
     pub fn catalog_billed(&self) -> bool {
         self.kind.provider().billing() == Billing::Catalog
+    }
+
+    /// The generation options one turn on this model sends for `effort`. `None` sends nothing,
+    /// so the model thinks at its own default. A level the model's catalog entry or its wire
+    /// refuses (a gateway rig has no option mapping for refuses every level) is left out and
+    /// returned as the refusal, because effort is a hint and a session must not fail on it; the
+    /// caller tells the user.
+    pub fn generation_options(
+        &self,
+        effort: Option<Effort>,
+    ) -> (Option<GenerationOptions>, Option<UnsupportedOption>) {
+        let Some(effort) = effort else {
+            return (None, None);
+        };
+        let options = GenerationOptions::new().reasoning(effort.to_reasoning());
+        if let Some(Err(refused)) = self.completion.spec().map(|spec| spec.validate(&options)) {
+            return (None, Some(refused));
+        }
+        // Only the options are under test, so any other way the probe fails to build is not
+        // this level's refusal.
+        let probe = CompletionRequest::new("probe").options(options.clone());
+        if let Err(CheckError::Unsupported(refused)) = self.completion.check(&probe)
+            && let Some(first) = refused.into_iter().next()
+        {
+            return (None, Some(first));
+        }
+        (Some(options), None)
+    }
+
+    /// The levels this model takes: all of them for a model the catalog does not know.
+    pub fn supported_efforts(&self) -> Vec<Effort> {
+        Effort::ALL
+            .into_iter()
+            .filter(|level| self.generation_options(Some(*level)).1.is_none())
+            .collect()
     }
 
     /// Whether rig's catalog knows a price for this model; a spend cap needs one.

@@ -23,6 +23,8 @@ pub enum Command {
     Context(String),
     OutputStyle(String),
     Model(String),
+    /// `/effort [level]`: shows or sets the reasoning effort for this session.
+    Effort(String),
     GuardianModel(String),
     /// `/guardian-disable`: turn the guardian and the permission floor off for this session.
     GuardianDisable,
@@ -95,6 +97,7 @@ impl Command {
             | Command::Branch(_)
             | Command::Resume(_)
             | Command::Model(_)
+            | Command::Effort(_)
             | Command::Goal(_)
             | Command::Loop(_)
             | Command::Init(_) => true,
@@ -213,6 +216,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "calls the guardian denied",
         command: |_| Command::Denied,
+    },
+    Builtin {
+        name: "effort",
+        aliases: &[],
+        hint: Some("[off|low|medium|high|max|unset]"),
+        description: "show or set the reasoning effort for this session",
+        command: Command::Effort,
     },
     Builtin {
         name: "exit",
@@ -815,6 +825,14 @@ mod tests {
             Some(Command::Model("work/claude-sonnet-4-6".into()))
         );
         assert_eq!(parse_command("/model"), Some(Command::Model(String::new())));
+        assert_eq!(
+            parse_command("/effort  high "),
+            Some(Command::Effort("high".into()))
+        );
+        assert_eq!(
+            parse_command("/effort"),
+            Some(Command::Effort(String::new()))
+        );
         assert_eq!(
             parse_command("/guardian-model a/b"),
             Some(Command::GuardianModel("a/b".into()))

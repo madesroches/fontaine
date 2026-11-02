@@ -16,11 +16,12 @@ use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Se
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::{lock, lock_recovering, read, write};
 use fontaine_tools::scope::Scope;
-use rig_core::completion::Usage;
+use rig_core::completion::{UnsupportedOption, Usage};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::audit::{AuditLog, Decision, DecisionRecord, args_digest, now_rfc3339};
 use crate::config::{PermissionMode, Slot};
+use crate::effort::Effort;
 use crate::ledger::{Ledger, Record};
 use crate::permission_rules::{
     CallContext, Posture, Rule, RuleSource, SourcedRule, is_broad_code_execution, matches,
@@ -136,6 +137,8 @@ pub struct StateParams {
     /// Telemetry may carry MCP server and tool names (`log_tool_details`).
     pub reveal_mcp_names: bool,
     pub auto_edits: AutoEdits,
+    /// The reasoning effort the main agent starts at: `[model] effort` or `--effort`.
+    pub effort: Option<Effort>,
 }
 
 /// The guardian's standing inputs, fixed for the session: the expanded rule lists, the
@@ -317,6 +320,10 @@ pub struct SessionState {
     mode: Arc<RwLock<PermissionMode>>,
     guardian_off: RwLock<bool>,
     setup_warned: AtomicBool,
+    effort: RwLock<Option<Effort>>,
+    /// The model and level the human was last told were incompatible, so a session says it once
+    /// per pairing rather than every turn.
+    effort_warned: Mutex<Option<(String, Effort)>>,
     agents: Arc<AgentTree>,
     agent_types: Arc<AgentTypes>,
     reveal_mcp_names: bool,
@@ -366,6 +373,8 @@ impl SessionState {
             mode,
             guardian_off: RwLock::new(false),
             setup_warned: AtomicBool::new(false),
+            effort: RwLock::new(params.effort),
+            effort_warned: Mutex::new(None),
             agents: params.agents,
             agent_types: params.agent_types,
             reveal_mcp_names: params.reveal_mcp_names,
@@ -446,6 +455,32 @@ impl SessionState {
     /// guardian. The interactive TUI is the only place that sets this.
     pub fn guardian_off(&self) -> bool {
         *read(&self.guardian_off, "guardian off")
+    }
+
+    /// The session's reasoning effort, which the next turn sends; `None` sends nothing.
+    pub fn effort(&self) -> Option<Effort> {
+        *read(&self.effort, "effort")
+    }
+
+    pub fn set_effort(&self, effort: Option<Effort>) {
+        *write(&self.effort, "effort") = effort;
+    }
+
+    /// Tells the human, once per model and level, that `model` cannot take the session's effort
+    /// and the turn runs without it.
+    pub fn warn_effort_refused(&self, model: &str, effort: Effort, refusal: &UnsupportedOption) {
+        let key = (model.to_string(), effort);
+        {
+            let mut warned = lock(&self.effort_warned, "effort warning");
+            if warned.as_ref() == Some(&key) {
+                return;
+            }
+            *warned = Some(key);
+        }
+        self.approver.warn(&format!(
+            "effort `{effort}` is not used with {model}: {}; the model's own default applies",
+            refusal.reason
+        ));
     }
 
     /// Whether the session has already told the human to run `fontaine auto-mode setup`, or has
@@ -987,6 +1022,7 @@ mod tests {
             agent_types: Arc::new(AgentTypes::builtin()),
             reveal_mcp_names: false,
             auto_edits: AutoEdits::default(),
+            effort: None,
         }));
         let holder = state.clone();
         let _ = std::thread::spawn(move || {

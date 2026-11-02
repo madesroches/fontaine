@@ -23,6 +23,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             main_model: &main,
             guardian_model: (runtime.models.guardian_choice == GuardianChoice::Pinned)
                 .then(|| guardian.label()),
+            effort: runtime.state.effort(),
         };
         self.app.config = Some(ConfigPanel::new(
             &runtime.config,

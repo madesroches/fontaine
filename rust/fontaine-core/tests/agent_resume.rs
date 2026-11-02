@@ -95,6 +95,7 @@ async fn with_one_child_seen(
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: false,
+            generation_options: None,
         },
         &mut |_| Flow::Continue,
     )

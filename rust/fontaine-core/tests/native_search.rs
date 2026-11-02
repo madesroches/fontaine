@@ -69,6 +69,7 @@ async fn turn(built: &Built) -> TurnOutcome {
             model: "scripted".to_string(),
             provider: "mock".to_string(),
             native_search: built.runtime.native_search_active(),
+            generation_options: None,
         },
         &mut |_| Flow::Continue,
     )

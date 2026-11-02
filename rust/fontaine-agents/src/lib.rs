@@ -3,6 +3,7 @@
 //! [`runner::ChildRunner`]'s job, implemented by `fontaine-core`.
 
 pub mod budget;
+pub mod effort;
 pub mod mode;
 pub mod registry;
 pub mod root_ledger;

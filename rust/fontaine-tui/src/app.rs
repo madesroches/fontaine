@@ -172,6 +172,8 @@ pub struct App {
     pub model_accepts_images: bool,
     pub mode: PermissionMode,
     pub model: String,
+    /// The session's reasoning effort; `None` is the model's own default.
+    pub effort: Option<fontaine_core::effort::Effort>,
     pub running: bool,
     /// When the main conversation's current model turn began; see [`App::set_running`].
     pub turn_started: Option<std::time::Instant>,
@@ -337,6 +339,7 @@ impl App {
             model_accepts_images: false,
             mode,
             model,
+            effort: None,
             running: false,
             turn_started: None,
             turn_elapsed: None,

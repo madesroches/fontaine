@@ -265,6 +265,7 @@ pub fn build_agent_types(config: &Config, extensions: &Extensions) -> AgentTypes
                 Some(AgentMode::Manual) => ModeSetting::Manual,
                 Some(AgentMode::DontAsk) => ModeSetting::DontAsk,
             },
+            effort: ty.effort,
             origin: TypeOrigin::Config,
             inherits_context: false,
         });
@@ -363,6 +364,7 @@ pub(super) fn session_state(
         agents: tree.clone(),
         agent_types: agent_types.clone(),
         reveal_mcp_names: telemetry.enabled && telemetry.log_tool_details,
+        effort: setup.config.effort,
         auto_edits: AutoEdits {
             tracked: permissions.auto_tracked_edits,
             scratch: permissions.auto_scratch_writes,

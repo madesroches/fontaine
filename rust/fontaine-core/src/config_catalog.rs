@@ -7,12 +7,15 @@ use std::fmt::Display;
 use toml_edit::Value;
 
 use crate::config::{Config, Slot, ThemeName};
+use crate::effort::Effort;
 
 /// Live state that diverges from [`Config`] once a session switches theme or model.
 pub struct Running<'a> {
     pub theme: &'a str,
     pub main_model: &'a str,
     pub guardian_model: Option<&'a str>,
+    /// The session's level, which `--effort` and `/effort` move off `[model] effort`.
+    pub effort: Option<Effort>,
 }
 
 /// Which model setting a picker row stands for.
@@ -291,6 +294,10 @@ pub const KEYS: &[KeyRow] = &[
         Edit::Picker(ModelSlot::Guardian),
         Live
     ),
+    row!("model.effort", Scalar, |_, r| unset_or(
+        r.effort,
+        "unset (the model's own default)"
+    )),
     row!("accounts", Map, |c, _| names(c.accounts.keys())),
     row!("network.https_proxy", Scalar, |c, _| {
         c.network
@@ -594,6 +601,7 @@ mod tests {
             theme: "dark-ansi",
             main_model: "work/opus",
             guardian_model: None,
+            effort: None,
         }
     }
 
@@ -649,6 +657,10 @@ mod tests {
         assert_eq!(effective("agents.max_parallel", &c), "4");
         assert_eq!(effective("agents.subagent_token_budget", &c), "unset");
         assert_eq!(effective("agents.subagent_cost_budget_usd", &c), "unset");
+        assert_eq!(
+            effective("model.effort", &c),
+            "unset (the model's own default)"
+        );
         assert_eq!(effective("guardian.profile", &c), "full");
         assert_eq!(effective("guardian.scanner", &c), "off");
         assert_eq!(effective("guardian.composition.model", &c), "unset");
@@ -695,11 +707,13 @@ mod tests {
             theme: "light",
             main_model: "a/b",
             guardian_model: Some("c/d"),
+            effort: Some(Effort::High),
         };
         let show = |path: &str| (find(path).unwrap().effective)(&c, &running);
         assert_eq!(show("tui.theme"), "light");
         assert_eq!(show("model.model"), "a/b");
         assert_eq!(show("guardian.model"), "c/d");
+        assert_eq!(show("model.effort"), "high");
     }
 
     #[test]

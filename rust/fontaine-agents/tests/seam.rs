@@ -382,6 +382,7 @@ async fn a_toolset_never_exceeds_the_parents() {
         disallowed: vec![],
         model: None,
         mode: fontaine_agents::mode::ModeSetting::Inherit,
+        effort: None,
         origin: TypeOrigin::Config,
         inherits_context: false,
     });
@@ -402,6 +403,7 @@ async fn an_explicit_mode_is_never_looser_than_the_parents() {
         disallowed: vec![],
         model: None,
         mode: fontaine_agents::mode::ModeSetting::Manual,
+        effort: None,
         origin: TypeOrigin::Config,
         inherits_context: false,
     });
@@ -452,6 +454,7 @@ async fn an_invalid_model_and_a_model_on_a_project_type_are_error_results() {
         disallowed: vec![],
         model: None,
         mode: fontaine_agents::mode::ModeSetting::Manual,
+        effort: None,
         origin: TypeOrigin::ProjectFile("repo-reviewer.md".into()),
         inherits_context: false,
     });
@@ -619,6 +622,7 @@ async fn nesting_stops_at_three_layers_and_the_agent_tool_is_withheld_there() {
         disallowed: vec![],
         model: None,
         mode: fontaine_agents::mode::ModeSetting::Inherit,
+        effort: None,
         origin: TypeOrigin::Config,
         inherits_context: false,
     });
@@ -949,6 +953,7 @@ async fn a_configured_type_named_fork_replaces_the_built_in_and_loses_the_capabi
         disallowed: vec![],
         model: None,
         mode: fontaine_agents::mode::ModeSetting::Inherit,
+        effort: None,
         origin: TypeOrigin::Config,
         inherits_context: false,
     });

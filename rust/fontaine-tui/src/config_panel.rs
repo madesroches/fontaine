@@ -528,6 +528,7 @@ mod tests {
             theme: config.tui.theme.as_str(),
             main_model: "work/opus",
             guardian_model: None,
+            effort: None,
         };
         ConfigPanel::new(
             &config,
