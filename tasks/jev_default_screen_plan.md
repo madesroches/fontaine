@@ -71,10 +71,9 @@ the machine.
   return `Err(String)`; the preset script already turns a failed read into `abstain()` and the
   call goes to the guardian.
 - The model id the server resolved (`typesafe/jev-1.14-20261014`) is returned beside the risk.
-  `Reader::read` keeps returning `f64`; a new `Reader::read_detailed` returns `{ risk, resolved_model,
-  level }`, used by the evaluator to record the pin (see 4).
+  `Reader::read` keeps returning `f64`; a new `Reader::read_detailed` returns `{ risk, resolved_model }`, used by the evaluator to record the pin (see 4).
 - The optional 12-category audit read is **not** built here (issue: "could be optional"). Recorded
-  as a Decision; the `level` the server returns is recorded instead, cheaply, as a score label.
+  as a Decision; the server's chosen `level` is not recorded.
 
 ### 2. The preset
 
@@ -237,9 +236,7 @@ the machine.
    `kinds` to `CompositionSpec`, update the `Read` struct literals (`config.rs`, `preset.rs`,
    `screen.rs`, `tests/composition.rs`) and the `spec()` callers.
 5. Core: `check_composition` by backend, credential check, `build_reader` by account kind,
-   `screen_model` pin, `Config` docs; add new composition keys (e.g. `allow`) to the
-   `config_catalog.rs` KEYS rows and `config_scope.rs` rules (the catalog tests enforce it);
-   `/config` read-only display unchanged.
+   `screen_model` pin, `Config` docs; `/config` read-only display unchanged.
 6. Core: Jev offer in `composition_offer.rs` (the `Offer` enum) + `fontaine/src/auto_mode.rs`,
    `fontaine-tui/src/ui/commands/auto_mode_setup.rs` (posture match), `fontaine-tui/src/setup_prompt.rs`
    (posture stage) and `fontaine-tui/src/app.rs` if needed, wording, tests.
@@ -274,7 +271,8 @@ the machine.
 - AFK: the Jev `shadow` default is `true` for a hand-written section and `false` only when the
   offer writes it; chosen as the most conservative reading of the issue's "shadow defaults to
   false", since flipping the global default would change enforcement for existing users.
-- AFK: no 12-category audit read now; the server's chosen `level` is recorded instead.
+- AFK: no 12-category audit read now, and the server's chosen `level` is not recorded anywhere (no audit field exists for it; adding one is out of scope).
+- AFK: no new `config_catalog.rs` row or `config_scope.rs` rule for `allow`: the existing `guardian.composition.params` Map row and user-only rule cover it by prefix, and a per-param row would fail `every_row_matches_a_settings_node`.
 - AFK: `allow = false` wins over `allow_threshold` silently (a toggle, not a contradiction).
 - AFK: no per-session egress notice at run time; disclosure is at the offer and in docs.
 - AFK: the default stop threshold ships with the preset; the offer writes `shadow = false` and its
