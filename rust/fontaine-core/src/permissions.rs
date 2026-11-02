@@ -51,6 +51,8 @@ const TARGET: &str = "fontaine::telemetry";
 pub struct ApprovalRequest {
     pub tool: String,
     pub agent: String,
+    /// The subagent's name; empty for the root.
+    pub agent_name: String,
     pub tool_use_id: Option<String>,
     pub args: Value,
     /// The call: the full command, path or URL.
@@ -1162,6 +1164,11 @@ impl PermissionPipeline {
             ts: now_rfc3339(),
             session_id: self.state.session_id.clone(),
             agent_id: cx.call.agent.to_string(),
+            agent_name: self
+                .state
+                .agents()
+                .is_child(cx.call.agent)
+                .then(|| self.state.agents().name_of(cx.call.agent)),
             tool_use_id: cx.tool_use_id.clone(),
             tool: cx.call.tool.to_string(),
             args_digest: cx.digest.clone(),
@@ -1930,6 +1937,11 @@ impl PermissionPipeline {
         let request = ApprovalRequest {
             tool: call.tool.to_string(),
             agent: call.agent.to_string(),
+            agent_name: if self.state.agents().is_child(call.agent) {
+                self.state.agents().name_of(call.agent)
+            } else {
+                String::new()
+            },
             tool_use_id: cx.tool_use_id.clone(),
             summary: summarize(call.tool, &args),
             args: args.clone(),

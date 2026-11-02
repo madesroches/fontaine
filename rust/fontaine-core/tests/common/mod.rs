@@ -120,6 +120,7 @@ pub fn audit_record(session_id: &str) -> fontaine_core::audit::DecisionRecord {
         ts: fontaine_core::audit::now_rfc3339(),
         session_id: session_id.to_string(),
         agent_id: "root".to_string(),
+        agent_name: None,
         tool_use_id: None,
         tool: "read".to_string(),
         args_digest: String::new(),

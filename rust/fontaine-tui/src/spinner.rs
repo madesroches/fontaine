@@ -417,6 +417,7 @@ mod tests {
     fn row(status: Option<ChildStatus>, elapsed: u64) -> ListRow {
         ListRow {
             id: Some("agent-1".into()),
+            name: "worker-1".into(),
             depth: 1,
             agent_type: "worker".into(),
             status,

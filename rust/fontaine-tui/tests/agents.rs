@@ -57,12 +57,12 @@ async fn a_killed_subagents_row_shows_killed_and_its_spend_against_its_budget() 
         idle(&ui).await;
         ui.send("root task");
         // The child's approval shows who is asking.
-        ui.wait_for_prompt("Allow shell (agent-1)?").await;
+        ui.wait_for_prompt("Allow shell (worker-1, agent-1)?").await;
         // The panel opens over the approval and lists the agent as waiting for the human.
         ctrl_t(&ui);
         ui.wait_for("waiting-on-permission").await;
         let screen = ui.screen();
-        assert!(screen.contains("agent-1 worker"), "{screen}");
+        assert!(screen.contains("worker-1 (agent-1) worker"), "{screen}");
         assert!(screen.contains("1.5k / 200.0k tok"), "{screen}");
         // Kill it: the row says so and keeps what it spent.
         ui.press(KeyCode::Char('x'));
@@ -118,7 +118,7 @@ async fn parallel_subagents_one_killed_the_others_finish_and_every_call_is_audit
         idle(&ui).await;
         ui.send("root task");
         // Three children ask the human at once; the asks queue rather than overwrite.
-        ui.wait_for_prompt("Allow shell (agent-").await;
+        ui.wait_for_prompt("Allow shell (worker-").await;
         ctrl_t(&ui);
         ui.wait_until("three rows", |s| {
             ["agent-1", "agent-2", "agent-3"]
@@ -134,7 +134,7 @@ async fn parallel_subagents_one_killed_the_others_finish_and_every_call_is_audit
         ui.press(KeyCode::Esc);
         // The other two are answered; each runs and finishes.
         for answered in 1..=2 {
-            ui.wait_for_prompt("Allow shell (agent-").await;
+            ui.wait_for_prompt("Allow shell (worker-").await;
             ui.press(KeyCode::Char('y'));
             ui.wait_until("the answer was noted", |s| {
                 s.matches("allowed once").count() >= answered
@@ -148,7 +148,7 @@ async fn parallel_subagents_one_killed_the_others_finish_and_every_call_is_audit
         })
         .await;
         let screen = ui.screen();
-        assert!(screen.contains("agent-2 worker"), "{screen}");
+        assert!(screen.contains("worker-2 (agent-2) worker"), "{screen}");
         ui.press(KeyCode::Esc);
     })
     .await;
@@ -479,15 +479,17 @@ async fn a_subagent_is_viewed_messaged_resumed_and_the_main_chat_comes_back_whol
         idle(&ui).await;
         ui.send("root task");
         // The list sits below the status line, `main` first.
-        ui.wait_until("the agent list", |s| s.contains("◯ agent-1 worker running"))
-            .await;
+        ui.wait_until("the agent list", |s| {
+            s.contains("◯ worker-1 (agent-1) worker running")
+        })
+        .await;
         assert!(ui.screen().contains("● main"), "{}", ui.screen());
 
         // Down to the list, Down to the agent, Enter.
         ui.press(KeyCode::Down);
         ui.press(KeyCode::Down);
         ui.press(KeyCode::Enter);
-        ui.wait_for("agent-1 · worker · running").await;
+        ui.wait_for("worker-1 (agent-1) · worker · running").await;
         let screen = ui.screen();
         assert!(screen.contains("> child-A: go"), "{screen}");
         assert!(
@@ -500,7 +502,7 @@ async fn a_subagent_is_viewed_messaged_resumed_and_the_main_chat_comes_back_whol
         ui.wait_for("queued: also count the lines").await;
         ui.wait_for("> also count the lines").await;
         ui.wait_for("first answer").await;
-        ui.wait_for("agent-1 · worker · done").await;
+        ui.wait_for("worker-1 (agent-1) · worker · done").await;
 
         // The agent has ended, and typing resumes it.
         ui.send("and the words");
@@ -510,7 +512,7 @@ async fn a_subagent_is_viewed_messaged_resumed_and_the_main_chat_comes_back_whol
         // Back to main: the whole chat is reprinted and holds no trace of the agent's lines.
         ui.press(KeyCode::Down);
         ui.press(KeyCode::Enter);
-        ui.wait_for("you resumed agent-1").await;
+        ui.wait_for("you resumed worker-1 (agent-1)").await;
         ui.wait_for("second report seen").await;
         let screen = ui.screen();
         assert!(screen.contains("launched"), "{screen}");
@@ -570,7 +572,7 @@ async fn typing_to_a_killed_agent_is_refused_and_the_text_stays() {
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("root task");
-        ui.wait_for_prompt("Allow shell (agent-1)?").await;
+        ui.wait_for_prompt("Allow shell (worker-1, agent-1)?").await;
         ctrl_t(&ui);
         ui.wait_for("waiting-on-permission").await;
         ui.press(KeyCode::Char('x'));
@@ -582,9 +584,9 @@ async fn typing_to_a_killed_agent_is_refused_and_the_text_stays() {
         ui.press(KeyCode::Down);
         ui.press(KeyCode::Down);
         ui.press(KeyCode::Enter);
-        ui.wait_for("agent-1 · worker · killed").await;
+        ui.wait_for("worker-1 (agent-1) · worker · killed").await;
         ui.send("hello again");
-        ui.wait_for("agent-1 was killed; it cannot be resumed")
+        ui.wait_for("worker-1 (agent-1) was killed; it cannot be resumed")
             .await;
         assert!(ui.live().contains("hello again"), "{}", ui.live());
     })
@@ -628,13 +630,13 @@ async fn a_joining_subagent_takes_a_turn_on_the_words_typed_into_its_view() {
         ui.press(KeyCode::Down);
         ui.press(KeyCode::Down);
         ui.press(KeyCode::Enter);
-        ui.wait_for("agent-1 · lead").await;
+        ui.wait_for("lead-1 (agent-1) · lead").await;
         // The lead has answered while the grandchild is still out, so it is joining.
         ui.wait_for("lead answered early").await;
         ui.send("mid-join words");
         ui.wait_for("lead read the words").await;
         ui.wait_for("lead read the report").await;
-        ui.wait_for("agent-1 · lead · done").await;
+        ui.wait_for("lead-1 (agent-1) · lead · done").await;
     })
     .await;
 
@@ -695,7 +697,9 @@ async fn export_with_a_subagent_writes_a_folder_with_the_index_and_transcripts()
     assert!(main.contains("## User\n\nroot task"), "{main}");
     assert!(main.contains("## Subagents"), "{main}");
     assert!(
-        main.contains("- `agent-1` — worker, child of `root`: done — [transcript](agent-1.md)"),
+        main.contains(
+            "- `worker-1` (`agent-1`) — worker, child of `root`: done — [transcript](agent-1.md)"
+        ),
         "{main}"
     );
     let child = std::fs::read_to_string(dir.join("agent-1.md")).unwrap();

@@ -414,6 +414,7 @@ fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Value {
         json!({
             "tool_use_id": record.tool_use_id.clone().unwrap_or_default(),
             "agent_id": record.agent_id,
+            "agent_name": record.agent_name,
             "tool": record.tool,
             "tier": record.tier.as_str(),
             "decision": record.decision.as_str(),

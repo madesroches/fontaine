@@ -96,7 +96,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Some(status) => status_label(status).to_string(),
             None => "no longer listed".to_string(),
         };
-        format!("viewing {id} · {state} · ↓ then Enter on main to go back · shift+tab mode")
+        let name = app
+            .viewed_row()
+            .map_or_else(|| id.clone(), |row| row.name.clone());
+        format!(
+            "viewing {name} ({id}) · {state} · ↓ then Enter on main to go back · shift+tab mode"
+        )
     });
     // Only while the turn runs: some paths clear `running` without settling the turn.
     let refusal = app.refusal.as_deref().filter(|_| app.running);

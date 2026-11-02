@@ -9,7 +9,7 @@ use fontaine_agents::tree::AgentRow;
 use fontaine_tools::jobs::format_age;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 
 use crate::agents_panel::{SpendView, spend_text, status_label, writing_text};
 
@@ -21,6 +21,8 @@ pub const ENDED_LISTED: Duration = Duration::from_secs(30);
 pub struct ListRow {
     /// `None` is the main conversation.
     pub id: Option<String>,
+    /// The agent's name; `main` for the main conversation.
+    pub name: String,
     pub depth: usize,
     pub agent_type: String,
     pub status: Option<ChildStatus>,
@@ -34,6 +36,7 @@ impl ListRow {
     fn main() -> ListRow {
         ListRow {
             id: None,
+            name: "main".to_string(),
             depth: 0,
             agent_type: String::new(),
             status: None,
@@ -75,6 +78,7 @@ pub fn rows(
         if listed(row) {
             out.push(ListRow {
                 id: Some(row.id.clone()),
+                name: row.name.clone(),
                 depth: row.depth,
                 agent_type: row.agent_type.clone(),
                 status: Some(row.status),
@@ -104,6 +108,22 @@ pub fn rows(
         },
     );
     out
+}
+
+/// `text` as a line with the `(id)` tag dimmed, when it holds one.
+pub(crate) fn line_dimming_id(text: String, id: &str, style: Style) -> Line<'static> {
+    let tag = format!("({id})");
+    let Some(at) = text.find(&tag) else {
+        return Line::styled(text, style);
+    };
+    let after = text[at + tag.len()..].to_string();
+    let before = text[..at].to_string();
+    Line::from(vec![
+        Span::raw(before),
+        Span::styled(tag, Style::default().add_modifier(Modifier::DIM)),
+        Span::raw(after),
+    ])
+    .style(style)
 }
 
 /// The agents with each one's children right after it.
@@ -293,15 +313,24 @@ impl AgentList {
             let marker = if viewed { "●" } else { "◯" };
             let indent = "  ".repeat(row.depth.saturating_sub(1));
             let (head, spend) = match (&row.id, row.status) {
-                (Some(id), Some(status)) => (
-                    format!(
-                        "{marker} {indent}{id} {} {} {}",
+                (Some(id), Some(status)) => {
+                    let lead = format!("{marker} {indent}{}", row.name);
+                    let tag = format!(" ({id})");
+                    let rest = format!(
+                        " {} {} {}",
                         row.agent_type,
                         status_label(status),
                         format_age(row.elapsed)
-                    ),
-                    format!(" {}", row.spend),
-                ),
+                    );
+                    let spend = format!(" {}", row.spend);
+                    // The id gives way before the status, the age and the spend.
+                    let whole = lead.chars().count()
+                        + tag.chars().count()
+                        + rest.chars().count()
+                        + spend.chars().count();
+                    let tag = if whole <= width { tag } else { String::new() };
+                    (format!("{lead}{tag}{rest}"), spend)
+                }
                 _ => (format!("{marker} main"), String::new()),
             };
             let writing = if (row.status.is_none()
@@ -341,7 +370,10 @@ impl AgentList {
             } else {
                 Style::default()
             };
-            out.push(Line::styled(shown, style));
+            out.push(match &row.id {
+                Some(id) => line_dimming_id(shown, id, style),
+                None => Line::styled(shown, style),
+            });
         }
         out
     }
@@ -369,6 +401,7 @@ mod tests {
     fn agent(id: &str, parent: &str, status: ChildStatus, now: Instant) -> AgentRow {
         AgentRow {
             id: id.into(),
+            name: id.into(),
             parent: Some(parent.into()),
             agent_type: "worker".into(),
             model: "m".into(),
@@ -612,6 +645,50 @@ mod tests {
         );
     }
 
+    fn named_list(width: usize) -> Vec<Line<'static>> {
+        let now = Instant::now();
+        let mut named = agent("agent-1", "main", ChildStatus::Running, now);
+        named.name = "survey-tech-debt".into();
+        let rows = rows(&[named], None, &HashSet::new(), now, 0);
+        let mut list = AgentList::default();
+        list.set_rows(rows);
+        list.lines(None, width, 10)
+    }
+
+    #[test]
+    fn a_named_row_shows_the_name_and_a_dimmed_id() {
+        let lines = named_list(80);
+        assert!(
+            lines[1]
+                .to_string()
+                .starts_with("◯ survey-tech-debt (agent-1) worker running"),
+            "{lines:?}"
+        );
+        let dimmed: Vec<String> = lines[1]
+            .spans
+            .iter()
+            .filter(|span| span.style.add_modifier.contains(Modifier::DIM))
+            .map(|span| span.content.to_string())
+            .collect();
+        assert_eq!(dimmed, ["(agent-1)"]);
+    }
+
+    #[test]
+    fn a_narrow_row_drops_the_id_before_the_status_and_the_age() {
+        // Wide enough for the name, type, status, age and spend, but not for the id too.
+        let lines = named_list(50);
+        let text = lines[1].to_string();
+        assert!(!text.contains("agent-1"), "{text}");
+        assert!(text.contains("running"), "{text}");
+        assert!(text.contains("1.2k tok"), "{text}");
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .all(|span| !span.style.add_modifier.contains(Modifier::DIM))
+        );
+    }
+
     #[test]
     fn the_viewed_row_is_marked_and_the_focused_one_reversed() {
         let now = Instant::now();
@@ -622,7 +699,10 @@ mod tests {
         let text: Vec<String> = lines.iter().map(ToString::to_string).collect();
         assert_eq!(text[0], "↑/↓ select · Enter view · x stop · Esc back");
         assert_eq!(text[1], "◯ main");
-        assert!(text[2].starts_with("● agent-1 worker running"), "{text:?}");
+        assert!(
+            text[2].starts_with("● agent-1 (agent-1) worker running"),
+            "{text:?}"
+        );
         assert!(lines[2].style.add_modifier.contains(Modifier::REVERSED));
         assert!(!lines[1].style.add_modifier.contains(Modifier::REVERSED));
     }

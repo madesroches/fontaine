@@ -166,6 +166,7 @@
             "type": { "const": "gate_decision" },
             "tool_use_id": { "type": "string", "minLength": 1 },
             "agent_id": { "type": "string", "minLength": 1 },
+            "agent_name": { "type": ["string", "null"] },
             "tier": { "$ref": "#/$defs/tier" },
             "decision": { "enum": ["allow", "deny", "prompt"] },
             "rule": { "type": ["string", "null"] },

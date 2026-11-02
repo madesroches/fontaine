@@ -413,7 +413,7 @@ impl<W: Write> Linear<W> {
             self.viewed = app.viewing.clone();
             lines.push(match &self.viewed {
                 Some(id) => match app.viewed_row() {
-                    Some(row) => format!("viewing {id} ({})", row.agent_type),
+                    Some(row) => format!("viewing {} ({id}, {})", row.name, row.agent_type),
                     None => format!("viewing {id}"),
                 },
                 None => "back to the main conversation".to_string(),
@@ -590,6 +590,7 @@ mod tests {
         ApprovalRequest {
             tool: "shell".into(),
             agent: "main".into(),
+            agent_name: String::new(),
             tool_use_id: None,
             args: serde_json::json!({ "command": command }),
             summary: command.into(),

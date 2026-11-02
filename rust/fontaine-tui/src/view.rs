@@ -3,7 +3,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::agent_list::ListRow;
@@ -614,6 +614,13 @@ fn draw_approval(
     }
 }
 
+/// The viewed agent's name, or its id when it has no row.
+fn viewed_name(app: &App) -> String {
+    let id = app.viewing.as_deref().unwrap_or_default();
+    app.viewed_row()
+        .map_or_else(|| id.to_string(), |row| row.name.clone())
+}
+
 fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
     let covered = app.covered() || app.search.is_some();
     let style = if covered {
@@ -635,15 +642,22 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
         .border_style(style);
     let viewed = app.viewing.as_deref();
     if let Some(id) = viewed {
-        let header = match app.viewed_row() {
+        let name = viewed_name(app);
+        let tag = Span::styled(
+            format!("({id})"),
+            Style::default().add_modifier(Modifier::DIM),
+        );
+        let tail = match app.viewed_row() {
             Some(ListRow {
                 agent_type,
                 status: Some(status),
                 ..
-            }) => format!(" {id} · {agent_type} · {} ", status_label(*status)),
-            _ => format!(" {id} "),
+            }) => format!(" · {agent_type} · {} ", status_label(*status)),
+            _ => " ".to_string(),
         };
-        block = block.title_top(Line::from(header).right_aligned());
+        block = block.title_top(
+            Line::from(vec![Span::raw(format!(" {name} ")), tag, Span::raw(tail)]).right_aligned(),
+        );
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -659,7 +673,11 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
     if viewed.is_some() && app.input.is_empty() && !app.input.has_attachments() && !covered {
         let dim = Style::default().add_modifier(Modifier::DIM);
         lines.push(Line::styled(
-            format!("Message {}…", viewed.unwrap_or_default()),
+            format!(
+                "Message {} ({})…",
+                viewed_name(app),
+                viewed.unwrap_or_default()
+            ),
             dim,
         ));
     } else {
@@ -758,6 +776,7 @@ mod tests {
     fn list_row(id: Option<&str>) -> ListRow {
         ListRow {
             id: id.map(str::to_string),
+            name: id.map_or("main", |_| "scout").into(),
             depth: usize::from(id.is_some()),
             agent_type: if id.is_some() { "worker" } else { "" }.into(),
             status: id.map(|_| fontaine_agents::runner::ChildStatus::Running),
@@ -806,7 +825,7 @@ mod tests {
             .expect("the status line");
         assert!(rows[status + 1].starts_with("● main"), "{rows:?}");
         assert!(
-            rows[status + 2].starts_with("◯ agent-1 worker running"),
+            rows[status + 2].starts_with("◯ scout (agent-1) worker running"),
             "{rows:?}"
         );
         // The hint joins the rows while the list has the keyboard.
@@ -835,6 +854,7 @@ mod tests {
             fontaine_core::permissions::ApprovalRequest {
                 tool: "shell".into(),
                 agent: "main".into(),
+                agent_name: String::new(),
                 tool_use_id: None,
                 args: serde_json::json!({}),
                 summary: "ls".into(),
@@ -901,7 +921,7 @@ mod tests {
             .set_rows(vec![list_row(None), list_row(Some("agent-1"))]);
         let with_list = drawn(&app, 60, 9);
         assert!(
-            with_list.iter().any(|r| r.starts_with("◯ agent-1")),
+            with_list.iter().any(|r| r.starts_with("◯ scout")),
             "{with_list:?}"
         );
         assert!(
@@ -918,22 +938,28 @@ mod tests {
         app.view(Some("agent-1".into()));
         let rows = drawn(&app, 80, 12);
         let border = rows.iter().find(|r| r.contains("message ·")).unwrap();
-        assert!(border.contains("agent-1 · worker · running"), "{border}");
         assert!(
-            rows.iter().any(|r| r.contains("Message agent-1…")),
+            border.contains("scout (agent-1) · worker · running"),
+            "{border}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("Message scout (agent-1)…")),
             "{rows:?}"
         );
         let status = rows.iter().find(|r| r.contains("manual")).unwrap();
-        assert!(status.contains("viewing agent-1 · working"), "{status}");
+        assert!(
+            status.contains("viewing scout (agent-1) · working"),
+            "{status}"
+        );
         // The viewed row is the marked one.
-        assert!(rows.iter().any(|r| r.starts_with("● agent-1")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.starts_with("● scout")), "{rows:?}");
         assert!(rows.iter().any(|r| r.starts_with("◯ main")), "{rows:?}");
         // Typing replaces the placeholder.
         app.input.insert_str("hi");
         assert!(
             !drawn(&app, 80, 12)
                 .iter()
-                .any(|r| r.contains("Message agent-1…"))
+                .any(|r| r.contains("Message scout (agent-1)…"))
         );
     }
 

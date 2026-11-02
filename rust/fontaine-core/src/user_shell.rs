@@ -68,6 +68,7 @@ impl AgentRuntime {
                 ts: now_rfc3339(),
                 session_id: self.session.id.clone(),
                 agent_id: "user".to_string(),
+                agent_name: None,
                 tool_use_id: None,
                 tool: "shell".to_string(),
                 args_digest: args_digest(&json!({ "command": command })),

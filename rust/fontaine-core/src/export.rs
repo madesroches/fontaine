@@ -60,6 +60,7 @@ impl std::error::Error for ExportError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentSummary {
     pub id: String,
+    pub name: String,
     pub parent: Option<String>,
     pub agent_type: String,
     /// The live status, the ledger's finished status, or `ended` when the ledger has no
@@ -83,6 +84,7 @@ pub fn subagents(session: &Session, tree: &AgentTree) -> Vec<AgentSummary> {
         .collect();
     let from_row = |row: &AgentRow| AgentSummary {
         id: row.id.clone(),
+        name: row.name.clone(),
         parent: row.parent.clone(),
         agent_type: row.agent_type.clone(),
         status: row.status.as_str().to_string(),
@@ -95,6 +97,7 @@ pub fn subagents(session: &Session, tree: &AgentTree) -> Vec<AgentSummary> {
             Some(row) => from_row(row),
             None => AgentSummary {
                 id: record.id.clone(),
+                name: record.name.clone(),
                 parent: record.parent.clone(),
                 agent_type: record.agent_type.clone(),
                 status: record.ended.clone().unwrap_or_else(|| "ended".to_string()),
@@ -359,7 +362,11 @@ pub fn index_section(agents: &[AgentSummary]) -> String {
     let mut doc = Doc::new();
     doc.block("## Subagents");
     for agent in agents {
-        let mut line = format!("- `{}` — {}", agent.id, agent.agent_type);
+        let mut line = if agent.name == agent.id {
+            format!("- `{}` — {}", agent.id, agent.agent_type)
+        } else {
+            format!("- `{}` (`{}`) — {}", agent.name, agent.id, agent.agent_type)
+        };
         if let Some(parent) = &agent.parent {
             line.push_str(&format!(", child of `{parent}`"));
         }
@@ -478,6 +485,7 @@ mod tests {
     ) -> AgentSummary {
         AgentSummary {
             id: id.into(),
+            name: id.into(),
             parent: parent.map(str::to_string),
             agent_type: agent_type.into(),
             status: status.into(),
@@ -497,6 +505,7 @@ mod tests {
             agent: agent.into(),
             parent: parent.map(str::to_string),
             detail: detail.map(str::to_string),
+            name: None,
         }
     }
 

@@ -324,7 +324,7 @@ than 1 MiB, and for an edit that matches nowhere or more than once. A `notebook_
 content are blanked and credential-shaped text is redacted before it is shown.
 
 When several agents ask at once their prompts queue and are shown one at a time, and a prompt that
-belongs to a subagent names it: `Allow shell (agent-2)?`. A prompt whose agent was killed goes away.
+belongs to a subagent names it: `Allow shell (scout, agent-2)?`. A prompt whose agent was killed goes away.
 
 Up, Down and Tab move the highlight, Enter confirms. Prompts forced by the floor (an `ask` rule, a
 critical path, a protected path) and shell calls that are not one literal simple command offer
@@ -805,8 +805,8 @@ their reports. Headless runs accept `-p "/goal <condition>"`; see
 ## The agent list and the agent view
 
 While a [subagent](agents.md) runs, a list of agents shows below the status bar: `main` first, then
-one row per subagent with its id, type, status, how long this run has gone on and what it has used,
-for example `◯ agent-3 worker running 1m02s 1.5k tok`. A nested agent is indented under its
+one row per subagent with its [name](agents.md#naming-a-subagent) and its id dimmed after it, type, status, how long this run has gone on and what it has used,
+for example `◯ survey-tech-debt (agent-3) worker running 1m02s 1.5k tok`. On a narrow terminal the id is cut before the status and the age. A nested agent is indented under its
 parent. The row on screen is marked `●` and the others `◯`. The list shows every running agent, the
 agent on screen, and an agent that failed, was killed or ran out of budget for 30 seconds after it
 ended or until you hide it with `x`. An agent that finished normally leaves at once. With nothing
@@ -828,7 +828,7 @@ lists these keys while the list has the keyboard.
 **Viewing an agent.** Enter on a subagent erases the screen and the terminal's scrollback and
 writes that agent's transcript: its task as the first message, then what it said and each tool
 call, drawn like the main chat and streaming as the agent works. The input box's border names the
-agent (`agent-3 · worker · running`) and the empty input reads `Message agent-3…`. The wheel and
+agent (`survey-tech-debt (agent-3) · worker · running`) and the empty input reads `Message survey-tech-debt (agent-3)…`. The wheel and
 tmux copy mode scroll the transcript like any other. The agent's own denials show there, as the
 main chat's show, and not in the main chat; the tier and rule of what a subagent was allowed are in
 the audit log, as for the main conversation. Selecting `main` and pressing Enter erases the screen
@@ -865,7 +865,7 @@ not printed yet.
 ## The agents panel
 
 `/agents` (or `/tasks`) or Ctrl-T opens the full overview: one row per [subagent](agents.md), ended
-ones included, and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its id and type, its
+ones included, and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its name with its id dimmed after it (`survey-tech-debt (agent-3)`), its type, its
 model, its status (`running`, `waiting-on-permission`, `done`, `killed`, `budget-exhausted` or
 `failed`) and what it has used, such as `1.5k tok · $0.0021`; each `/ <cap>` form
 (`1.5k / 200.0k tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`

@@ -224,7 +224,8 @@ impl Approval {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let who = match self.request.agent.as_str() {
             "" | fontaine_tools::gate::ROOT_AGENT => String::new(),
-            agent => format!(" ({agent})"),
+            agent if self.request.agent_name.is_empty() => format!(" ({agent})"),
+            agent => format!(" ({}, {agent})", self.request.agent_name),
         };
         let mut out = vec![Line::styled(
             format!("Allow {}{who}?", self.request.tool),
@@ -296,6 +297,7 @@ mod tests {
         ApprovalRequest {
             tool: "shell".into(),
             agent: String::new(),
+            agent_name: String::new(),
             tool_use_id: None,
             args: serde_json::Value::Null,
             summary: "ls".into(),

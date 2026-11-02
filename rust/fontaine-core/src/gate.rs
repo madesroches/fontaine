@@ -485,6 +485,7 @@ impl SessionState {
                 ts: now_rfc3339(),
                 session_id: self.session_id.clone(),
                 agent_id: ROOT_AGENT.to_string(),
+                agent_name: None,
                 tool_use_id: None,
                 tool: "guardian".to_string(),
                 args_digest: args_digest(&serde_json::json!({ "off": off })),

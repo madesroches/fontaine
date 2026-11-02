@@ -107,7 +107,10 @@ async fn an_agent_call_returns_its_id_and_the_childs_report_is_read_with_job_out
 
     let result = agent_result(&lines, 0);
     assert_eq!(result["success"], json!(true), "{result}");
-    assert_eq!(result["text"], r#"{"agent_id":"agent-1"}"#);
+    assert_eq!(
+        result["text"],
+        r#"{"agent_id":"agent-1","name":"explore-1"}"#
+    );
     let waited = of_type(&lines, "tool_result")
         .into_iter()
         .find(|r| r["tool"] == "job_output")
@@ -163,7 +166,10 @@ async fn a_child_returns_an_id_and_its_report_comes_back_as_a_notification() {
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();
 
-    assert_eq!(agent_result(&lines, 0)["text"], r#"{"agent_id":"agent-1"}"#);
+    assert_eq!(
+        agent_result(&lines, 0)["text"],
+        r#"{"agent_id":"agent-1","name":"explore-1"}"#
+    );
     // The run waited: the one `result` is the answer after the notification, and comes last.
     let results = of_type(&lines, "result");
     assert_eq!(results.len(), 1);
@@ -174,7 +180,7 @@ async fn a_child_returns_an_id_and_its_report_comes_back_as_a_notification() {
     let notified = requests_with(&endpoint, "B found the treasure").await;
     assert_eq!(notified.len(), 1, "{notified:?}");
     assert!(notified[0].contains("root task"));
-    assert!(notified[0].contains("Agent agent-1"));
+    assert!(notified[0].contains("Agent explore-1 (agent-1,"));
     assert!(notified[0].contains("not the user"));
 }
 
@@ -250,7 +256,10 @@ async fn a_nested_parent_that_answers_while_its_child_runs_joins_it_instead_of_e
     let out = run(&s, &["--allowed-tools", "agent"], "root task").await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();
-    assert_eq!(agent_result(&lines, 0)["text"], r#"{"agent_id":"agent-1"}"#);
+    assert_eq!(
+        agent_result(&lines, 0)["text"],
+        r#"{"agent_id":"agent-1","name":"lead-1"}"#
+    );
 
     // The root's wait ends with the lead's answer to the further turn, not its first answer.
     let waited = of_type(&lines, "tool_result")
@@ -272,7 +281,7 @@ async fn a_nested_parent_that_answers_while_its_child_runs_joins_it_instead_of_e
     let bodies = requests_with(&endpoint, "gc found the relic").await;
     assert_eq!(bodies.len(), 1, "{bodies:?}");
     assert!(bodies[0].contains("lead-L"));
-    assert!(bodies[0].contains("Agent agent-2"));
+    assert!(bodies[0].contains("Agent explore-1 (agent-2,"));
     assert!(bodies[0].contains("not the user"));
 }
 
@@ -388,7 +397,7 @@ async fn spawns_are_judged_in_call_order_and_a_denied_one_starts_nothing() {
     // A and C started and got the next ids; B never did.
     // A report may already ride on the result, so only its start is fixed.
     let c = agent_result(&lines, 2)["text"].as_str().unwrap();
-    assert!(c.starts_with(r#"{"agent_id":"agent-2"}"#), "{c}");
+    assert!(c.starts_with(r#"{"agent_id":"agent-2","name":"#), "{c}");
     assert!(requests_with(&endpoint, "B done").await.is_empty());
     let session = lines[0]["session_id"].as_str().unwrap().to_string();
     let spawned = ledger(&s, &session)
@@ -748,7 +757,7 @@ async fn the_per_call_model_overrides_the_types_and_bad_values_are_error_results
     assert!(
         agent_result(&lines, 0)["text"]
             .as_str()
-            .is_some_and(|t| t.starts_with(r#"{"agent_id":"agent-1"}"#))
+            .is_some_and(|t| t.starts_with(r#"{"agent_id":"agent-1","name":"#))
     );
     assert!(results_text(&lines).contains("F done"));
     // The model the call named is the one the child ran on.
@@ -824,7 +833,7 @@ async fn send_message_reaches_main_marked_with_the_senders_id_and_the_sender_is_
         .or(read.first())
         .unwrap();
     assert!(
-        main_turn.contains("Message from agent agent-1"),
+        main_turn.contains("Message from agent explore-1 (agent-1)"),
         "{main_turn}"
     );
     assert!(main_turn.contains("untrusted"));
@@ -1153,7 +1162,7 @@ async fn a_spawn_result_and_the_notification_for_its_report_pass_through_the_res
     // The spawn result is a tool result like any other: the hook's note follows it.
     assert_eq!(
         agent_result(&lines, 0)["text"],
-        "{\"agent_id\":\"agent-1\"}\nseen by the result pipeline"
+        "{\"agent_id\":\"agent-1\",\"name\":\"explore-1\"}\nseen by the result pipeline"
     );
     // So is the notification the main conversation reads for the report: the request for that
     // turn carries Q's report and a note, besides the note on the spawn's own result.

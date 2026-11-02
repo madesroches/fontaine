@@ -34,6 +34,7 @@ pub struct AgentArgs {
     pub agent_type: String,
     pub prompt: String,
     pub model: Option<String>,
+    pub name: Option<String>,
 }
 
 #[derive(Clone)]
@@ -60,11 +61,12 @@ impl Drop for ReleaseOnDrop {
     }
 }
 
-fn subagent_event(event: &str, id: &str, agent_type: &str) {
+fn subagent_event(event: &str, id: &str, name: &str, agent_type: &str) {
     tracing::info!(
         target: TARGET,
         event = event,
         agent.id = id,
+        agent.name = name,
         agent.type = agent_type,
         "subagent"
     );
@@ -84,12 +86,13 @@ fn conclude(
         status: report.status.as_str().to_string(),
     });
     tree.finish(id, report.clone());
+    let name = tree.name_of(id);
     let event = match report.status {
         ChildStatus::Killed => "killed",
         ChildStatus::BudgetExhausted => "budget_exhausted",
         _ => "complete",
     };
-    subagent_event(event, id, agent_type);
+    subagent_event(event, id, &name, agent_type);
 }
 
 /// Waits for the child's current run to end, hands its report to the parent, and concludes the
@@ -109,8 +112,9 @@ pub fn watch_report(
         // Queued before the child is marked finished, so a surface that sees no one
         // running always finds the report already waiting.
         if report.status != ChildStatus::Killed && !tree.was_killed(&id) {
+            let name = tree.name_of(&id);
             let note = format!(
-                "Agent {id} ({type_name}) finished: {}\n{}",
+                "Agent {name} ({id}, {type_name}) finished: {}\n{}",
                 report.status.as_str(),
                 report_text(&report)
             );
@@ -138,7 +142,7 @@ pub fn resume_child(
     ledger.append_event(AgentEvent::Resumed {
         agent: id.to_string(),
     });
-    subagent_event("resume", id, &type_name);
+    subagent_event("resume", id, &tree.name_of(id), &type_name);
     handle.resume(text);
     let parent = tree.parent_of(id).unwrap_or_else(|| ROOT_AGENT.to_string());
     watch_report(
@@ -183,6 +187,7 @@ pub fn describe(refusal: &Refusal) -> String {
         Refusal::Depth(max) => format!("subagents nest only {max} layers deep"),
         Refusal::SessionBudget(why) => format!("the session's agent budget is spent: {why}"),
         Refusal::AlreadyRunning => "it is already running".to_string(),
+        Refusal::Name(why) => why.clone(),
     }
 }
 
@@ -217,10 +222,11 @@ impl Tool for AgentTool {
             "Start a subagent: a separate conversation with its own context that works on one \
              task and returns a report. Give it everything it needs in `prompt`: a subagent \
              cannot see this conversation, except a `fork`, which starts from a copy of it and \
-             needs only a short task. The call starts the subagent and returns its `agent_id` at \
-             once. Subagents run concurrently with you and with each other, and the report \
+             needs only a short task. The call starts the subagent and returns its `agent_id` and \
+             `name` at once. When you start several, give each a short `name` that says its role. \
+             Subagents run concurrently with you and with each other, and the report \
              arrives as a notification with a later tool result or turn; call `job_output` with \
-             the id to wait for one. A subagent that answers while its own subagents run waits \
+             the id or the name to wait for one. A subagent that answers while its own subagents run waits \
              for them before it ends. A subagent has a subset of your tools and never more \
              authority than you, and every call it makes passes the same permission checks. \
              Agent types:\n{}",
@@ -241,6 +247,10 @@ impl Tool for AgentTool {
                 "model": {
                     "type": "string",
                     "description": "Optional model for this agent: `$main`, `$guardian_default` or `<account>/<model>`. Defaults to the agent type's model.",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Optional short name for this agent, 1 to 32 characters of a-z, 0-9 and `-`, starting with a letter, such as `survey-tech-debt`. It must be unused in this session, and `send_message` and `job_output` accept it in place of the id. Defaults to the agent type with a number, such as `explore-1`.",
                 },
             },
             "required": ["agent_type", "prompt"],
@@ -295,12 +305,13 @@ impl Tool for AgentTool {
         let mode = own_mode(agent_type.mode, self.tree.parent_posture(&caller));
         let id = self
             .tree
-            .reserve(
+            .reserve_named(
                 &caller,
                 &agent_type.name,
                 &model.as_text(),
                 tools.clone(),
                 mode,
+                args.name.as_deref(),
             )
             .map_err(|refusal| match refusal {
                 Refusal::Parallel(max) => ToolExecutionError::refused(format!(
@@ -312,12 +323,14 @@ impl Tool for AgentTool {
                 Refusal::SessionBudget(why) => ToolExecutionError::refused(format!(
                     "no more subagents can start: {why}. Do not retry this call."
                 )),
+                Refusal::Name(why) => ToolExecutionError::invalid_args(why),
                 // Only a resume can find a node already running; a reservation is always new.
                 Refusal::AlreadyRunning => {
                     ToolExecutionError::other("the subagent slot is already taken")
                 }
             })?;
 
+        let name = self.tree.name_of(&id);
         let mut reservation = ReleaseOnDrop {
             tree: self.tree.clone(),
             id: id.clone(),
@@ -348,10 +361,11 @@ impl Tool for AgentTool {
         reservation.armed = false;
         self.ledger.append_event(AgentEvent::Spawned {
             agent: id.clone(),
+            name: name.clone(),
             parent: caller.clone(),
             agent_type: agent_type.name.clone(),
         });
-        subagent_event("spawn", &id, &agent_type.name);
+        subagent_event("spawn", &id, &name, &agent_type.name);
 
         watch_report(
             self.tree.clone(),
@@ -361,7 +375,7 @@ impl Tool for AgentTool {
             agent_type.name.clone(),
             handle,
         );
-        Ok(ToolOutput::json(json!({ "agent_id": id })))
+        Ok(ToolOutput::json(json!({ "agent_id": id, "name": name })))
     }
 }
 
@@ -387,7 +401,8 @@ impl Tool for SendMessageTool {
     fn description(&self) -> String {
         "Send a message to another running agent: your parent, one of your subagents, a sibling \
          (another subagent of your parent) or `main`, the main conversation. The message is \
-         queued and the recipient reads it at its next turn, marked with your agent id. Returns \
+         queued and the recipient reads it at its next turn, marked with your agent name and id. \
+         Returns \
          `{\"status\":\"queued\"}`, or an error when the agent is not running."
             .to_string()
     }
@@ -396,7 +411,7 @@ impl Tool for SendMessageTool {
         json!({
             "type": "object",
             "properties": {
-                "to": { "type": "string", "description": "An agent id, or `main`." },
+                "to": { "type": "string", "description": "An agent name or id, or `main`." },
                 "message": { "type": "string", "description": "What to tell it." },
             },
             "required": ["to", "message"],
@@ -416,9 +431,8 @@ impl Tool for SendMessageTool {
             )));
         }
         match self.tree.deliver(&from, &args.to, args.message) {
-            Ok(()) => {
-                self.ledger
-                    .append_event(AgentEvent::Message { from, to: args.to });
+            Ok(to) => {
+                self.ledger.append_event(AgentEvent::Message { from, to });
                 Ok(ToolOutput::json(json!({ "status": "queued" })))
             }
             Err(DeliverError::NotRunning) => Err(ToolExecutionError::other("agent not running")),

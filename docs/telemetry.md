@@ -149,7 +149,7 @@ composition did not use is counted in the session's usage like any other guardia
 |---|---|
 | `api_request` | `model`, `provider`, `input_tokens`, `output_tokens`, `cost_usd` (when priced), `duration_ms`, `query_source` |
 | `user_prompt` | `prompt_id`, `prompt_length` (the length only) |
-| `subagent` | `event` (`spawn`, `complete`, `killed` or `budget_exhausted`), `agent.id`, `agent.type` |
+| `subagent` | `event` (`spawn`, `complete`, `killed` or `budget_exhausted`), `agent.id`, `agent.name`, `agent.type` |
 | `mcp_server_connection` | `server`, `transport` (`stdio` or `http`), `status` (`connected` or `failed`) |
 | `api_error` | `model`, `provider`, `query_source` (`main` or `subagent`), `agent.id`, `error_class` (rig's stable error code, such as `provider_response`, `http`, `timeout` or `json`), and `status_code` when the failure carries an HTTP status. The provider's message is not exported: it can echo the request. Retries are not visible, so there is no attempt count. Emitted for a main-agent or subagent turn that failed with a provider error or a rig error report, in practice a failed model call; `error_class` tells the rare rig-internal failures (such as `internal`, `divergence` or `handler_unavailable`) apart. A turn limit or a cancel is not one. |
 | `internal_error` | `class` (`audit_write` or `ledger_write`). Emitted for every failed write to the audit log or the session ledger, not only the first one the terminal reports. The I/O error text is not exported: it can contain a path. |

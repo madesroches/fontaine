@@ -121,6 +121,9 @@ pub enum Record {
         parent: Option<String>,
         #[serde(default)]
         detail: Option<String>,
+        /// The agent's name, set on `spawned`; records from before names existed lack it.
+        #[serde(default)]
+        name: Option<String>,
     },
     /// A `!` command the human ran in their own shell, outside the permission pipeline. `None`
     /// when it did not exit with a code, such as when it was interrupted.
@@ -217,6 +220,8 @@ pub fn path_key(path: &str) -> String {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentRecord {
     pub id: String,
+    /// The id when the spawn record predates names.
+    pub name: String,
     pub parent: Option<String>,
     pub agent_type: String,
     pub ended: Option<String>,
@@ -424,6 +429,7 @@ impl LedgerView {
                 agent,
                 parent,
                 detail,
+                name,
             } => match event.as_str() {
                 "spawned" => {
                     if let Some(ordinal) = agent_ordinal(agent) {
@@ -431,6 +437,7 @@ impl LedgerView {
                     }
                     self.agents.push(AgentRecord {
                         id: agent.clone(),
+                        name: name.clone().unwrap_or_else(|| agent.clone()),
                         parent: parent.clone(),
                         agent_type: detail.clone().unwrap_or_default(),
                         ended: None,
@@ -1027,6 +1034,7 @@ mod tests {
             agent: agent.into(),
             parent: parent.map(str::to_string),
             detail: detail.map(str::to_string),
+            name: None,
         }
     }
 
@@ -1060,12 +1068,14 @@ mod tests {
                 [
                     AgentRecord {
                         id: "agent-1".into(),
+                        name: "agent-1".into(),
                         parent: Some("main".into()),
                         agent_type: "worker".into(),
                         ended: Some("done".into()),
                     },
                     AgentRecord {
                         id: "agent-2".into(),
+                        name: "agent-2".into(),
                         parent: Some("agent-1".into()),
                         agent_type: "explore".into(),
                         ended: None,
@@ -1073,6 +1083,38 @@ mod tests {
                 ]
             );
             assert_eq!(view.next_agent, 3);
+        };
+        check(&ledger);
+        drop(ledger);
+        check(&Ledger::open(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn a_spawn_record_carries_its_name_and_a_legacy_one_falls_back_to_the_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        ledger
+            .append(Record::Agent {
+                event: "spawned".into(),
+                agent: "agent-1".into(),
+                parent: Some("root".into()),
+                detail: Some("worker".into()),
+                name: Some("survey-tech-debt".into()),
+            })
+            .unwrap();
+        let legacy: Record = serde_json::from_str(
+            r#"{"kind":"agent","event":"spawned","agent":"agent-2","parent":"root","detail":"worker"}"#,
+        )
+        .unwrap();
+        ledger.append(legacy).unwrap();
+        let check = |ledger: &Ledger| {
+            let names: Vec<String> = ledger
+                .view()
+                .agents
+                .iter()
+                .map(|a| a.name.clone())
+                .collect();
+            assert_eq!(names, ["survey-tech-debt", "agent-2"]);
         };
         check(&ledger);
         drop(ledger);

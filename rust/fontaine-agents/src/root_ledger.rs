@@ -7,6 +7,7 @@
 pub enum AgentEvent {
     Spawned {
         agent: String,
+        name: String,
         parent: String,
         agent_type: String,
     },
