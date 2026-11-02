@@ -12,6 +12,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::agents_panel::{SpendView, spend_text, status_label, writing_text};
+use crate::input::wrap;
 
 /// How long an agent that failed, was killed or ran out of budget stays listed.
 pub const ENDED_LISTED: Duration = Duration::from_secs(30);
@@ -124,6 +125,41 @@ pub(crate) fn line_dimming_id(text: String, id: &str, style: Style) -> Line<'sta
         Span::raw(after),
     ])
     .style(style)
+}
+
+/// `head` wrapped to `width` as lines, with the `(id)` tag dimmed even where a cut falls inside it.
+pub(crate) fn wrapped_dimming_id(
+    head: &str,
+    id: &str,
+    width: usize,
+    style: Style,
+) -> Vec<Line<'static>> {
+    let tag = format!("({id})");
+    let range = head.find(&tag).map(|at| {
+        let start = head[..at].chars().count();
+        start..start + tag.chars().count()
+    });
+    let width = width.max(1);
+    wrap(head, width)
+        .into_iter()
+        .enumerate()
+        .map(|(n, piece)| {
+            let Some(range) = &range else {
+                return Line::styled(piece, style);
+            };
+            let from = n * width;
+            let chars: Vec<char> = piece.chars().collect();
+            let lo = range.start.saturating_sub(from).min(chars.len());
+            let hi = range.end.saturating_sub(from).min(chars.len());
+            let part = |r: std::ops::Range<usize>| chars[r].iter().collect::<String>();
+            Line::from(vec![
+                Span::raw(part(0..lo)),
+                Span::styled(part(lo..hi), Style::default().add_modifier(Modifier::DIM)),
+                Span::raw(part(hi..chars.len())),
+            ])
+            .style(style)
+        })
+        .collect()
 }
 
 /// The agents with each one's children right after it.
@@ -751,5 +787,17 @@ mod tests {
         let text = line_text(&list, 60, 1);
         assert!(text.ends_with(" + unpriced"), "{text}");
         assert!(!text.contains("writing"), "{text}");
+    }
+
+    #[test]
+    fn a_wrap_inside_the_id_tag_dims_both_halves() {
+        let lines = wrapped_dimming_id("ab (agent-3) cd", "agent-3", 6, Style::default());
+        let dimmed: String = lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter(|s| s.style.add_modifier.contains(Modifier::DIM))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(dimmed, "(agent-3)");
     }
 }

@@ -788,8 +788,16 @@ async fn a_taken_or_reserved_name_is_an_invalid_args_error() {
     let rig = rig();
     spawn(&rig, named_args("explore", "scout")).await.unwrap();
     for name in ["scout", "main", "job-1", "agent-9", "Bad Name"] {
-        let error = spawn(&rig, named_args("explore", name)).await.unwrap_err();
-        assert!(!error.is_empty(), "{name}");
+        let error = rig
+            .agent
+            .call(&mut as_agent(ROOT_AGENT), named_args("explore", name))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            rig_core::tool::ToolErrorKind::InvalidArgs,
+            "{name}"
+        );
     }
     assert_eq!(rig.runner.spawned().len(), 1);
 }

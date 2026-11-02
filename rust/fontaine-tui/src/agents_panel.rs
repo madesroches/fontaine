@@ -12,7 +12,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
-use crate::agent_list::line_dimming_id;
+use crate::agent_list::wrapped_dimming_id;
 use crate::input::wrap;
 use crate::theme::Theme;
 
@@ -243,9 +243,7 @@ impl AgentsPanel {
             } else {
                 Style::default()
             };
-            for piece in wrap(&head, width) {
-                out.push(line_dimming_id(piece, &row.id, style));
-            }
+            out.extend(wrapped_dimming_id(&head, &row.id, width, style));
             let spend = spend_text(&SpendView {
                 tokens: row.tokens,
                 token_budget: row.token_budget,

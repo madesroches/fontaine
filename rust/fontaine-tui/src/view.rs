@@ -614,11 +614,13 @@ fn draw_approval(
     }
 }
 
-/// The viewed agent's name, or its id when it has no row.
-fn viewed_name(app: &App) -> String {
+/// The viewed agent as `name (id)`, or just the id when it has no other name.
+fn viewed_label(app: &App) -> String {
     let id = app.viewing.as_deref().unwrap_or_default();
-    app.viewed_row()
-        .map_or_else(|| id.to_string(), |row| row.name.clone())
+    match app.viewed_row() {
+        Some(row) if row.name != id => format!("{} ({id})", row.name),
+        _ => id.to_string(),
+    }
 }
 
 fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
@@ -642,9 +644,16 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
         .border_style(style);
     let viewed = app.viewing.as_deref();
     if let Some(id) = viewed {
-        let name = viewed_name(app);
+        let name = app
+            .viewed_row()
+            .map_or(id, |row| row.name.as_str())
+            .to_string();
         let tag = Span::styled(
-            format!("({id})"),
+            if name == id {
+                String::new()
+            } else {
+                format!("({id})")
+            },
             Style::default().add_modifier(Modifier::DIM),
         );
         let tail = match app.viewed_row() {
@@ -672,14 +681,7 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
     }
     if viewed.is_some() && app.input.is_empty() && !app.input.has_attachments() && !covered {
         let dim = Style::default().add_modifier(Modifier::DIM);
-        lines.push(Line::styled(
-            format!(
-                "Message {} ({})…",
-                viewed_name(app),
-                viewed.unwrap_or_default()
-            ),
-            dim,
-        ));
+        lines.push(Line::styled(format!("Message {}…", viewed_label(app)), dim));
     } else {
         lines.extend(view.rows.iter().map(|r| Line::raw(r.clone())));
     }
