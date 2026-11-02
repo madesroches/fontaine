@@ -15,8 +15,8 @@ per-subagent `effort`; this copies that surface.
 - The only thinking control is `thinking_off` (`providers/mod.rs:185`, `opencode_go.rs:185`), a raw
   `additional_params` JSON that the guardian and scanner use because a forced tool call is refused by a
   thinking model (`agent/setup.rs:75`, `scanner_stage.rs:61`, `project_env.rs:588`, `auto_mode.rs:305`,
-  `fontaine-evals/src/live.rs:127`). Ollama has its own `think` account key (`config.rs:352`).
-- The main builder sets `additional_params` only for the native web-search tool (`agent/build.rs:285`).
+  `goal.rs` (~827/876), `fontaine-evals/src/live.rs:127`). Ollama has its own `think` account key (`config.rs:352`).
+- The main builder sets `additional_params` only for the native web-search tool (`agent/build.rs:287`).
 - rig 0.45 offers `GenerationOptions::reasoning(Reasoning::{Off, Effort(Effort), Budget})`, accepted by
   `AgentBuilder::options` (`rig-agent builder.rs:255`) and `CompletionRequest::options`, and a per-model
   catalog `spec()` whose `validate(&options)` refuses unsupported controls (used in `side_question.rs:132`).
@@ -46,22 +46,29 @@ valid set. `medium` is included because rig and Claude Code have it; `xhigh`/`mi
 
 ### Applying it
 A single resolver `ModelHandle::generation_options(effort: Option<Effort>) -> Option<GenerationOptions>`:
-`None` yields no options (request unchanged). With a level it builds `default_options`-style options with
-`reasoning` set, and, when the handle has a catalog `spec()`, calls `spec.validate`; a refusal is not fatal:
-the level is dropped for that model and an `Approver::warn` says why once. Without a catalog spec (custom
-`openai-compatible` ids, `opencode-go`) the options are sent as is, since rig maps them per dialect and the
-gateways accept all values.
-- Main agent: `builder.options(..)` in `agent/build.rs` beside the native-search `additional_params`.
-- Subagents: `runner.rs` resolves `agent_type.effort.or(parent effective)`; a child may differ from its
-  parent (effort is not a permission), recorded per agent in the tree info for the status list.
+`None` yields no options (request unchanged). With a level it starts from rig's `ModelSpec::default_options`
+(`spec.rs:345`) with `reasoning` set, and, when the handle has a catalog `spec()`, runs `ModelSpec::fit`
+(`spec.rs:482`), which drops the options the spec refuses and reports them; a refusal is not fatal: the level
+is dropped for that model and an `Approver::warn` says why once. There is no extra clamping: rig's
+`ReasoningSupport::Listed` already refuses unlisted efforts (including `max`), and `Unknown` or missing specs
+(custom `openai-compatible` ids, `opencode-go`) send the options as is, since rig maps them per dialect and
+the gateways accept all values. An explicit effort overrides Ollama's account-level `think` key
+(`ollama.rs:189-191`), and `effort = off` equals `think = false`.
+- The effective level lives in session state, and `generation_options(effort)` reads it. `AgentBuilder::options`
+  bakes options at build time, so it is not used for the main agent; instead each turn applies
+  `.options(handle.generation_options(effort))` on rig's per-turn `AgentRunner::options` (rig-agent
+  `runner.rs:330`) in `drive_once` (`fontaine-core/src/turn.rs:443-455`).
+- Subagents: `fontaine-core/src/child_runner.rs` resolves `agent_type.effort.or(parent effective)` and applies
+  it the same way on the child's runner; a child may differ from its parent (effort is not a permission).
 - Guardian: `[guardian] effort` set → `with_generation_options` replaces `thinking_off` for that call
   only when the level is not `off`; **a forced tool call still needs thinking off on models that refuse it**,
-  so a non-`off` guardian level on such a model is rejected at guardian build with a clear
-  `GuardianUnavailable`-style error (fail-closed, per the security invariants), never silently ignored.
-  Unset or `off` keeps `thinking_off`. The scanner and screen follow `[guardian] effort` unchanged: they
-  always use `thinking_off`.
-- `/effort` mid-session rebuilds nothing: the effective level lives in session state and is read when each
-  request's options are built; `/model` switching keeps the level and re-validates against the new model.
+  so a non-`off` guardian level on such a model yields `GuardianModel::Unavailable{reference, reason}` at
+  guardian build, and every call is denied via the existing path (`agent/setup.rs:92-103`) (fail-closed, per
+  the security invariants), never silently ignored. Unset or `off` keeps `thinking_off`. The scanner (and
+  critique, `project_env`, goal evaluator) ignore `[guardian] effort` and always use `thinking_off`; the
+  composed guardian's LLM stage follows `[guardian] effort`.
+- `/effort` mid-session rebuilds nothing: it updates the session state read by the next turn's
+  `AgentRunner::options`; `/model` switching keeps the level and re-validates against the new model.
 
 ### Not in scope
 Token-budget style control (`Reasoning::Budget`), an `ultrathink`-style keyword, and the omp-style
@@ -72,16 +79,16 @@ accepted-values retry on a 400 (can be filed as a follow-up).
 2. `config.rs`: `effort` on `ModelSection`, `GuardianSection` (user scope only), agents-types entry; merge,
    source tracking and `config_catalog.rs` entry so `/config` lists them; schema regeneration.
 3. `models.rs`: `ModelHandle::generation_options`, with catalog validation and once-only warning.
-4. `agent/build.rs` and `agent/setup.rs`: apply options for main agent and guardian; guardian conflict check.
-5. `fontaine-agents`: `AgentType.effort`, frontmatter parsing, registry resolution, runner application.
+4. `turn.rs` (`drive_once`) and `agent/setup.rs`: apply per-turn options for the main agent from session state (no build-time `builder.options`); guardian options and conflict check.
+5. Subagents: `AgentType.effort` in `fontaine-agents/src/registry.rs` and the config-side `AgentType` (`config.rs:664`); `SpawnRequest` field in `fontaine-agents/src/spawn.rs`; frontmatter parsing in `fontaine-core/src/extensions.rs`; config-to-registry conversion (`agent/setup.rs:255`); resolution and application in `fontaine-core/src/child_runner.rs` (l.332/489). `fontaine-agents/src/runner.rs` is only the `ChildRunner` trait and resolves nothing.
 6. `fontaine/src/cli.rs`: `--effort`; thread into startup config as a CLI-scope override.
-7. `fontaine-tui`: `/effort` command (parse, completion, picker-free list of levels, status line mention).
+7. `fontaine-tui`: `/effort` command (parse, completion, picker-free list of levels), status line mention in `statusbar.rs`.
 8. Docs, changelog, master-plan Decisions.
 
 ## Files to Modify
-`rust/fontaine-core/src/{effort.rs (new),lib.rs,config.rs,config_catalog.rs,models.rs,agent/build.rs,agent/setup.rs}`,
-`rust/fontaine-agents/src/{registry.rs,runner.rs,tree.rs}`, `rust/fontaine/src/{cli.rs,lib.rs}`,
-`rust/fontaine-tui/src/{commands.rs,ui/mod.rs,ui/commands/*}`, `docs/*`, `CHANGELOG.md`,
+`rust/fontaine-core/src/{effort.rs (new),lib.rs,config.rs,config_catalog.rs,models.rs,turn.rs,child_runner.rs,extensions.rs,goal.rs,agent/setup.rs}`,
+`rust/fontaine-agents/src/{registry.rs,spawn.rs}`, `rust/fontaine/src/{cli.rs,lib.rs}`,
+`rust/fontaine-tui/src/{commands.rs,statusbar.rs,ui/mod.rs,ui/commands/*}`, `docs/*`, `CHANGELOG.md`,
 `tasks/fontaine_harness_plan.md`.
 
 ## Trade-offs
@@ -98,21 +105,24 @@ accepted-values retry on a 400 (can be filed as a follow-up).
 ## Documentation
 - `docs/configuration.md`: `[model] effort`, `[guardian] effort`, `[agents.types]` key, `--effort`.
 - `docs/tui.md`: `/effort` in the commands table.
+- `docs/headless.md`: `--effort`.
 - `docs/agents.md` / `docs/extensions.md`: `effort` frontmatter.
 - `docs/guardian.md`: guardian effort and the thinking-off interplay (near l.469).
-- `CHANGELOG.md`; master plan `## Decisions` lines (Claude Code parity: semantic `max` and `xhigh` differ).
+- `CHANGELOG.md`.
+- `tasks/fontaine_harness_plan.md` `## Decisions`, each appended at the end of its subsection:
+  - Config: `off` level added beyond Claude Code's set; `xhigh` not exposed; unset sends nothing (model default), unlike a default level; `max` semantics follow the rig/provider mapping rather than Claude Code's session-only `max`.
+  - TUI: `/effort` and `--effort` copy Claude Code's surface; the level survives `/model` and is re-validated.
+  - Agents: per-type `effort` inherits the session level and may differ from the parent.
+  - Guardian: `[guardian] effort` is user-scope only; the plan's two Decisions above (unsupported level dropped with a warning; non-`off` guardian effort on a thinking-refusing model fails closed).
 
 ## Testing Strategy
 Unit tests, all against deterministic models and `wiremock`, no live APIs:
 - `Effort` parse/display round trip; unknown values rejected with the valid set listed.
 - Config: precedence CLI > settings; guardian effort refused in project scope; unknown key/value errors.
-- `generation_options`: `None` leaves the request body unchanged (pin on the existing no-params body tests);
-  each level reaches the wire body on the Chat (`reasoning_effort`) and Messages (`output_config.effort`)
-  wires via `wiremock`; an unsupported level for a catalog spec is dropped and warned once.
+- `generation_options`: new assertion that `None` sends no reasoning field (no existing tests pin this);
+  one `wiremock` check per dialect (Chat `reasoning_effort`, Messages `output_config.effort`) asserting the
+  options reach the request; an unsupported level for a catalog spec is dropped and warned once.
 - Agents: frontmatter parse; child inherits parent's level unless set; a child can differ from its parent.
 - Guardian: non-`off` effort on a thinking-refusing model is Deny; `off`/unset keeps `thinking_off`.
 - TUI: `/effort` parse and completion; setting and displaying the session level; `/model` revalidation.
-- Choke-point and `fontaine -p --effort high` headless test through the cassette/wiremock harness.
-
-## Open Questions
-- Does a large `max` need per-model clamping (e.g. models without a `max` level) beyond catalog validation?
+- `fontaine -p --effort high` headless test through the cassette/wiremock harness.
