@@ -4,7 +4,7 @@
 
 ## Overview
 
-Claude Code's agent teams run several sessions as named teammates that share a task list, message
+Claude Code's agent teams run several sessions as named teammates that share a task list (called the **board** here, to keep it apart from the private `todo_write` list and the `/tasks` alias of `/agents`), message
 each other and are held to quality gates by hooks. Fontaine already has most of the pieces: named,
 addressable subagents (`name`, `send_message`), resumable ended agents, a join-before-end rule, a
 budget tree that debits the session root, and every call gated. Two things are missing: a **shared
@@ -118,7 +118,7 @@ Task { id: "t1", title, description, status: Pending|InProgress|Completed,
 - `TaskBoard::release_owned_by(agent)` returns every task the agent owns to `Pending` with no owner.
   `conclude`/`watch_report` call it when an agent ends in any non-`Done` status, and the wake path
   calls it when a wake is refused; each released task emits `TaskReleased`.
-- Task text is **agent-authored, untrusted data**: when `task_list` renders it to another agent it
+- Task text is **agent-authored, untrusted data**: when `board_show` renders it to another agent it
   is delimited and marked with its creator's name and id, never as intent for the guardian. The
   guardian's intent source stays the root ledger's human messages.
 
@@ -128,23 +128,28 @@ Two tools, split by risk class because the descriptor table gives one class per 
 
 | Tool | Class | Actions |
 |---|---|---|
-| `task_list` | `ReadOnly`, `path_free`, `Destructive::Never`, `Specifier::None` (like `todo_write`) | list all tasks, or `id` for one (status, owner, deps, text) |
-| `task_update` | `Arbitrary` | `create`, `claim`, `complete`, `release` (owner gives a task back to `Pending`) |
+| `board_show` | `ReadOnly`, `path_free`, `Destructive::Never`, `Specifier::None` (like `todo_write`) | list all tasks, or `id` for one (status, owner, deps, text) |
+| `board_update` | `Arbitrary` | `create`, `claim`, `complete`, `release` (owner gives a task back to `Pending`) |
 
-`task_update` is `Arbitrary` like `send_message` and `agent`: `manual`/`acceptEdits` ask, `auto`
-and `plan` allow it at the same non-guardian tier, `deny`/`ask` rules apply first (`task_update`
-has no specifier). This satisfies "every message and task claim is a gated pipeline request".
-`task_list` reading the shared board is read-only, so it joins the read-only fast path, and a
-`explore`-style type holding `task_list` still takes the read-only spawn fast path. `task_update`
+`board_update` is `Arbitrary` like `send_message`: `manual`/`acceptEdits` ask, `auto` and `plan`
+send it to the guardian (only `agent` has the `Spawn` tier, and this feature adds no tier and no
+fast-path exception), `deny`/`ask` rules apply first (`board_update` has no specifier). It is
+`Destructive::Always`, the value `send_message` uses: the guardian reads it as a consequential
+action, so low confidence denies it. This satisfies "every message and task claim is a gated pipeline request".
+`board_show` reading the board is read-only, so it joins the read-only fast path, and a
+`explore`-style type holding `board_show` still takes the read-only spawn fast path (the only
+fast-path interaction; `board_update` gets none). `board_update`
 is **not** added to `spawn_changes_state`'s read-only allowance, so a type holding it is a
 state-changing spawn. `permission_rules.rs:610` maps `"send_message" | "ask_user_question"` to no
-specifier; `task_update` is added to that arm.
+specifier; `board_update` is added to that arm. The tool names pass the choke-point name rule
+(no `list`/`status`/`kill`/`interrupt`/`stop` word; precedent `cron_jobs`), which is why the read tool
+is `board_show`, not `task_list`.
 
 Both are registered only when `[agents] teams` is on, for every agent in the tree (a teammate's
-toolset is still its type's list cut down to its parent's, so a type must name `task_list` /
-`task_update` or name no tools). `AgentTypes::builtin()` takes no config, so the registry
+toolset is still its type's list cut down to its parent's, so a type must name `board_show` /
+`board_update` or name no tools). `AgentTypes::builtin()` takes no config, so the registry
 post-processes the built-in set when teams are on: `worker` gains both tools in its list and
-`explore` gains `task_list` only. `fork` has `tools: None` and inherits `task_update` from its
+`explore` gains `board_show` only. `fork` has `tools: None` and inherits `board_update` from its
 parent automatically.
 
 ### Idle hand-off (self-claiming)
@@ -152,20 +157,23 @@ parent automatically.
 When a teammate's run ends `Done`, before it is finished as idle (after the `teammate_idle` hook, if
 that did not resume it) the runtime asks the board for a claimable task (`Pending`, unowned,
 unblocked). If there is one, it resumes the teammate through the non-recording `resume_child` variant
-with the system note "Task <id> is available: use `task_list` and `task_update` to claim it." The note is
-data-marked as harness text, not intent. The loop is bounded by budgets, `max_parallel` and the kill
-switch, exactly like a subagent's join rounds (no separate round cap); a resume refusal leaves the
-teammate idle and warns once through `Approver::warn`.
+with the system note "Task <id> is available: use `board_show` and `board_update` to claim it." The note is
+data-marked as harness text, not intent. The loop is not bounded by finite news the way join rounds are, so it has its own cap: a
+teammate is resumed by the hand-off or a `teammate_idle` hook block at most `MAX_IDLE_RESUMES = 3`
+times in a row without the board changing in between (the board keeps a mutation counter; any
+create, claim, complete or release resets the streak). Past the cap the teammate goes idle and one
+warning goes through `Approver::warn`. It is a constant, not a config key. A resume refusal also
+leaves the teammate idle and warns once.
 
 ### Quality-gate hooks
 
 Two new hook events in `rust/fontaine-core/src/user_hooks.rs`, configured like the existing three
-(`[[hooks.task_completed]]`, `[[hooks.teammate_idle]]`; project hooks load after workspace trust and
-can only tighten):
+(`[[hooks.task_completed]]`, `[[hooks.teammate_idle]]`; project `task_completed` hooks load after
+workspace trust and can only tighten, project `teammate_idle` hooks are ignored):
 
 | Event | Fires | Hook can |
 |---|---|---|
-| `task_completed` | Before `task_update complete` takes effect | `block` with a `reason`: the task stays `InProgress` and the reason is the tool error the owner reads |
+| `task_completed` | Before `board_update complete` takes effect | `block` with a `reason`: the task stays `InProgress` and the reason is the tool error the owner reads |
 | `teammate_idle` | After a teammate's run ends `Done`, before `finish` and before the report is queued | `block` with a `reason`: the teammate is resumed through the non-recording `resume_child` variant with the reason as feedback instead of idling |
 
 Input fields: the common ones (`session_id`, `cwd`, `hook_event_name`, `agent_id`), plus `task`
@@ -173,8 +181,10 @@ Input fields: the common ones (`session_id`, `cwd`, `hook_event_name`, `agent_id
 only add work. Answer shape is as for the existing hooks and Claude Code: exit code 2 with the
 reason on stderr blocks. These events carry no `tool_name`, so they take no matcher. A hook that
 errors or times out warns and does not block (these are quality gates, not security gates, and a
-failed gate that blocked forever would wedge the team); `block` loops are bounded the same way as
-the idle hand-off. Hooks run outside the board lock. `QualityGate` is a trait defined in
+failed gate that blocked forever would wedge the team); `block` loops share the idle hand-off's `MAX_IDLE_RESUMES` streak cap. `teammate_idle` forces
+resumes, which is spend, not tightening, so only user-scope and plugin hooks run for it; a
+project-origin `teammate_idle` hook is ignored with one warning (`task_completed`, which can only
+keep a task open, still loads from project scope). Hooks run outside the board lock. `QualityGate` is a trait defined in
 `fontaine-agents` and implemented in `fontaine-core` over `user_hooks.rs`.
 
 ### Persistence and resume
@@ -189,12 +199,12 @@ needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskComp
 
 - Telemetry: `task` events (`created`, `claimed`, `completed`, `released`) with `agent.id`,
   `agent.name`, `task.id`. Audit log needs nothing new:
-  the gate decision of each `task_update`/`send_message` call is already recorded.
+  the gate decision of each `board_update`/`send_message` call is already recorded.
 - Agents panel (`rust/fontaine-tui`): teammate rows show `idle` as a status distinct from `done`; a
-  Tasks section under the agents lists each task with status, owner name and blocked-by. The
+  Board section under the agents lists each task with status, owner name and blocked-by. The
   consumers keying on `status.is_running()` (`agents_panel.rs`, `agent_list.rs`, `ui/mod.rs`, and
   `export.rs` in core) read the `idle` flag so an idle teammate is not shown or exported as done. The
-  existing `/tasks` alias of `/agents` and Ctrl+T open the panel, where the Tasks section lives. No tmux split-pane display (Claude Code's display mode)
+  existing `/tasks` alias of `/agents` and Ctrl+T open the panel, where the Board section lives. No tmux split-pane display (Claude Code's display mode)
   is built.
 - Headless: `gate_decision` events already carry `agent_id`/`agent_name`; no new surface.
 
@@ -202,14 +212,15 @@ needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskComp
 
 1. **Config**: add `teams` (bool, default false) to `[agents]` in
    `rust/fontaine-core/src/config.rs`, its row in `config_catalog.rs`, and the `AgentsConfig`
-   consumer (`config_scope.rs` already covers `[agents]` as `user_trust`).
+   consumer (`config_scope.rs` already covers `[agents]` as `user_trust`). No
+   `teams_auto_claim` key.
 2. **Task board**: `rust/fontaine-agents/src/tasks.rs` with `TaskBoard`, `TaskStore`, caps and
    validation, atomic claim, dependency check; export in `lib.rs`. Unit tests (below).
-3. **Tools**: `TaskListTool` and `TaskUpdateTool` in `rust/fontaine-agents/src/spawn.rs` (or a new
+3. **Tools**: `BoardShowTool` and `BoardUpdateTool` in `rust/fontaine-agents/src/spawn.rs` (or a new
    `tools.rs` if `spawn.rs` grows past readable), using `caller_of`; ledger events and telemetry.
-4. **Descriptor rows**: `task_list` (ReadOnly, never destructive, `Specifier::None`) and
-   `task_update` (Arbitrary, destructive `Always` like `send_message`, `Specifier::None`) in
-   `rust/fontaine-tools/src/descriptor.rs`; `task_update` joins the
+4. **Descriptor rows**: `board_show` (ReadOnly, never destructive, `Specifier::None`) and
+   `board_update` (Arbitrary, destructive `Always` like `send_message`, `Specifier::None`) in
+   `rust/fontaine-tools/src/descriptor.rs`, and update `rows_are_pinned` (row count 24 to 26); `board_update` joins the
    no-specifier arm at `rust/fontaine-core/src/permission_rules.rs:610`.
 5. **Teammate flag and lifecycle**: `AgentArgs.teammate: Option<bool>` (`spawn.rs`), refused when
    teams are off or the caller is not `main`; `idle` flag in `tree.rs` `Node`, `finish`, `rows`
@@ -221,27 +232,43 @@ needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskComp
    queued, the `teammate_idle` hook and idle hand-off decide resume vs idle; `finish` then marks idle
    only if neither resumed, and the "idle" notice is sent only then. `/clear` and rewind also refuse
    while a teammate is idle. `conclude`/`watch_report` and a refused wake call `TaskBoard::release_owned_by` on any non-`Done` end.
-6. **Wiring**: register both tools in `extension_tools` (`agent/build.rs`) when teams are on;
+   The four new `AgentEvent` variants get arms in `LedgerWindow::append_event` (`child_runner.rs`, ~218-250). `wait_for_news` in `rust/fontaine/src/headless.rs` is rechecked so an idle teammate never counts as running (no logic change expected, a test pins it).
+6. **Wiring**: register both tools in `extension_tools` (`agent/build.rs`) when teams are on, and
+   teach `rust/fontaine-core/tests/choke_point.rs` the conditional registration (like `websearch`,
+   `lsp`, `powershell`), the two `extras` names and `extension()`;
    `TaskStore` implementation in `fontaine-core` (`tasks.rs` next to `todos.rs`) with load on
    resume and warning through `Approver::warn`; built-in type toolsets in `registry.rs`.
 7. **Hooks**: add the two events, their inputs and the `block` answer in
-   `rust/fontaine-core/src/user_hooks.rs`, `HooksSection` in `config.rs` (it has
-   `deny_unknown_fields`), `config_scope.rs` (tighten-only for project scope) and the plugin-hook
-   mapping; call `task_completed` from `TaskUpdateTool` through the `QualityGate` trait seam
-   (defined in `fontaine-agents`, implemented in core, injected like `RootLedger`) and
-   `teammate_idle` in `watch_report` before `finish`.
-8. **TUI**: idle status and the Tasks section in the agents panel (`rust/fontaine-tui`).
+   `rust/fontaine-core/src/user_hooks.rs`. Config plumbing: `HooksSection` and the resolved
+   `HooksConfig` (~1590) with `merge` (~2150) in `config.rs` (`deny_unknown_fields`), extending the
+   matcher-validation loop (~1209-1226) so a matcher on the new events is rejected; the hook rows
+   in `config_catalog.rs` (~422-430); `Rule::any("hooks.task_completed")` and
+   `Rule::any("hooks.teammate_idle")` next to `config_scope.rs:180-182` (plus the scope test
+   cases); plugin hooks in `fontaine-core/src/plugins.rs` (`PluginHooks` and its count,
+   `event_lists`/event-name mapping ~1577, `parse_hooks`, the two merges) and the plugin hook
+   listing in `rust/fontaine/src/plugin.rs` (~992); `trust_summary` in `rust/fontaine/src/lib.rs`
+   (~165) chains the two new event vectors so project hooks are counted in the workspace-trust
+   prompt. A project-origin `teammate_idle` hook is dropped with a warning at load. Call
+   `task_completed` from `BoardUpdateTool` through the `QualityGate` trait seam (defined in
+   `fontaine-agents`, implemented in core, injected like `RootLedger`) and `teammate_idle` in
+   `watch_report` before `finish`, both under the `MAX_IDLE_RESUMES` streak cap (a board mutation
+   counter on `TaskBoard`).
+8. **TUI**: idle status and the Board section in the agents panel (`rust/fontaine-tui`); `AgentRow`
+   gains `idle`, so every consumer and literal is updated: `agents_panel.rs`, `agent_list.rs` (and
+   its test helper literal), `statusbar.rs`, `spinner.rs`, `ui/mod.rs`, `ui/commands/reports.rs`,
+   plus `export.rs` and `agent/messaging.rs` in core. `/tasks` stays an alias of `/agents`.
 9. **Docs**: see Documentation.
 10. **Tests**: see Testing Strategy.
 
 ## Files to Modify
 
 - `rust/fontaine-agents/src/{tasks.rs (new), spawn.rs, tree.rs, registry.rs, root_ledger.rs, lib.rs}`
-- `rust/fontaine-tools/src/descriptor.rs`
-- `rust/fontaine-core/src/{agent/build.rs, tasks.rs (new), user_hooks.rs, permission_rules.rs, adjudication.rs, config.rs, config_catalog.rs, config_scope.rs, export.rs}`
-- `rust/fontaine-core/src/agent/messaging.rs` (wake seam), `rust/fontaine-core/src/child_runner.rs` (non-recording resume), `rust/fontaine-core/src/agent.rs` (`clear_conversation`), `rust/fontaine-core/src/agent/rewind.rs`
-- `rust/fontaine-tui/src/*` (agents panel, agent list, `ui/mod.rs`)
-- `rust/fontaine-core/tests/choke_point.rs`, `rust/fontaine-agents/tests/seam.rs`, `rust/fontaine/tests/parallel_agents.rs`
+- `rust/fontaine-tools/src/descriptor.rs` (rows and `rows_are_pinned`)
+- `rust/fontaine-core/src/{agent/build.rs, tasks.rs (new), user_hooks.rs, permission_rules.rs, adjudication.rs, config.rs, config_catalog.rs, config_scope.rs, plugins.rs, export.rs}`
+- `rust/fontaine/src/{lib.rs (trust_summary), plugin.rs, headless.rs}`
+- `rust/fontaine-core/src/agent/messaging.rs` (wake seam), `rust/fontaine-core/src/child_runner.rs` (non-recording resume, `LedgerWindow::append_event` arms), `rust/fontaine-core/src/agent.rs` (`clear_conversation`), `rust/fontaine-core/src/agent/rewind.rs`
+- `rust/fontaine-tui/src/{agents_panel.rs, agent_list.rs, statusbar.rs, spinner.rs, ui/mod.rs, ui/commands/reports.rs}`
+- `rust/fontaine-core/tests/{choke_point.rs, permissions_auto.rs, user_hooks.rs, config.rs, plugins.rs}`, `rust/fontaine-agents/tests/seam.rs`, `rust/fontaine/tests/parallel_agents.rs`
 - `docs/{agents,hooks,configuration,tools,tui,permissions,telemetry}.md`
 - `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
@@ -268,6 +295,11 @@ needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskComp
 - Task text is untrusted agent-authored data, never guardian intent.
 - No tmux/split-pane display and no per-teammate model override beyond what `agent` already has; both are Claude Code display/ergonomics features outside this issue.
 - Deviation from Claude Code: teammates are Fontaine subagents (same process, same session tree), not independent sessions; reason: one permission pipeline, one budget tree.
+- AFK: `board_update` stays guardian-judged in `auto`/`plan` like `send_message` (no new tier, no fast-path exception) and is `Destructive::Always` like `send_message`; the earlier "non-guardian tier" wording was wrong.
+- AFK: idle hand-off and `teammate_idle` hook-block resumes are capped at `MAX_IDLE_RESUMES = 3` consecutive resumes per teammate with no board change (a constant, not a config key, so no `teams_auto_claim`); project-scope `teammate_idle` hooks are ignored with a warning; reason: these loops are self-sustaining and project scope may only tighten.
+- AFK: tools are `board_show` (read) and `board_update`, since `task_list` fails the choke-point name rule (precedent `cron_jobs`); the choke-point exception, `extras`, `extension()` and `rows_are_pinned` are updated and tier assertions live in `permissions_auto.rs`.
+- AFK: the shared list is called the "board" in the plan, docs and UI (panel section "Board") to avoid the `todo_write` list and the `/tasks` alias of `/agents`, which is left untouched.
+- AFK: the hook plumbing (`trust_summary`, plugins, config resolve/merge/matcher rejection, catalog, scope rules, ledger `append_event`, headless wait, `AgentRow` consumers) is in Files to Modify and the steps; project `task_completed` hooks count in the workspace-trust summary.
 
 ## Documentation
 
@@ -276,8 +308,8 @@ needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskComp
   ("reaches only a running agent" gains the idle-teammate case).
 - `docs/hooks.md`: the two new events, inputs, `block` answer, failure behaviour.
 - `docs/configuration.md`: `[agents] teams`.
-- `docs/tools.md`: `task_list`, `task_update`; `docs/permissions.md`: their class and tier;
-  `docs/tui.md`: idle status and Tasks section; `docs/telemetry.md`: new events.
+- `docs/tools.md`: `board_show`, `board_update`; `docs/permissions.md`: their class and tier;
+  `docs/tui.md`: idle status and Board section; `docs/telemetry.md`: new events.
 - `CHANGELOG.md` entry (added by the `pr` step).
 
 ## Testing Strategy
@@ -305,26 +337,31 @@ Unit and integration tests only, deterministic models, no live APIs.
   `Done` report.
 - Hooks (`rust/fontaine-core/tests`): `task_completed` block keeps the task `InProgress` with the
   reason as the tool error; `teammate_idle` block resumes with feedback; a failing hook warns and
-  does not block; a hook answer of `allow` is ignored.
-- Permissions: `choke_point.rs` registers both tools and checks each has a risk class; `task_update`
-  is asked in `manual`/`acceptEdits` and allowed at the non-guardian tier in `auto`, and a `deny`
-  rule on it wins in every mode; `spawn_changes_state` treats a toolset with `task_list` as
-  read-only and one with `task_update` as state-changing.
+  does not block; a hook answer of `allow` is ignored; a project-origin `teammate_idle` hook is
+  ignored with a warning while a user-scope one runs; a `[[hooks.task_completed]]` entry with a
+  `matcher` is rejected at config load; project `task_completed` hooks count in the workspace-trust
+  summary (`trust_summary`); plugin-supplied `TaskCompleted`/`TeammateIdle` hooks parse and merge.
+- Resume cap: a hook that always blocks, or a hand-off with a perpetually claimable task and a
+  teammate that never claims it, resumes exactly `MAX_IDLE_RESUMES` times, then the teammate idles
+  with one warning; a board mutation in between resets the streak.
+- Permissions: `choke_point.rs` registers both tools (its conditional-registration filter and
+  `extras` list gain `board_show`/`board_update`, and the `extension()` fixture includes them) and
+  checks each has a risk class and passes the name rule; the pinned descriptor rows test
+  (`rows_are_pinned`) gains both rows; `board_update`
+  is asked in `manual`/`acceptEdits` and guardian-judged in `auto` and `plan` (no new tier, same as
+  `send_message`), and a `deny` rule on it wins in every mode (these assertions live in
+  `permissions_auto.rs`, not `choke_point.rs`); `spawn_changes_state` treats a toolset with `board_show` as
+  read-only and one with `board_update` as state-changing.
 - `parallel_agents.rs` (headless, wiremock models): a lead spawns two teammates, they claim
   different tasks, one finishes and goes idle, a message wakes it, the idle hand-off claims the
   remaining task, and the run ends without waiting on idle teammates. Pins the silent-failure
   class: a double claim, and a budget refusal that must not leave a task owned by a dead agent.
-- TUI: a `TestBackend` render test of the idle status and Tasks section (live layout checks stay
+- TUI: a `TestBackend` render test of the idle status and Board section (live layout checks stay
   in Manual Verification).
 
 ## Manual Verification
 
 1. `fontaine` in a scratch repo with `[agents] teams = true`; ask the model to split a three-part
    job across two teammates with dependencies. Expected: Ctrl+T shows rows `idle` after their turn
-   and the Tasks section updating. Not automated because the panel's look and feel needs eyes (see
+   and the Board section updating. Not automated because the panel's look and feel needs eyes (see
    `tasks/design/testing.md`, "Reproducing terminal layout bugs", for a real tmux).
-
-## Open Questions
-
-- Should the idle hand-off be switchable off (`[agents] teams_auto_claim`)? Default proposal: no
-  key, since budgets and the kill switch bound it; revisit only if live runs show waste.
