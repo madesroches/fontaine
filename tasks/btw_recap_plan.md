@@ -94,13 +94,16 @@ handler gathers `LedgerView` data into plain values. Contents, each line omitted
   recent few, each cut to one line;
 - the goal, if one is active: `runtime.session.goal().status(runtime.tree_spend()).active`, its
   `condition`;
-- files changed (whole session): distinct resolved paths of `write`, `edit` and `notebook_edit`
-  actions, counted, with the first few named;
+- files allowed to be written or edited (whole session): distinct resolved paths of allowed
+  `write`, `edit` and `notebook_edit` calls, counted, with the first few named; it ignores whether
+  the call succeeded and whether `/rewind` reverted it;
 - commands and tools (whole session): count of actions by tool name (top few);
 - denials (whole session): count and the most recent one's tool, rule and summary;
 - subagents: total spawned this session from the ledger; how many are running now from the live
-  tree (`runtime.state.agents().rows()`, `status.is_running()`), since the ledger's `ended` is not
-  restored by `/resume`;
+  tree (`runtime.state.agents().rows()`, `status.is_running()`), since an agent cut off when its
+  process exited never gets a `finished` record and the live tree starts empty on `/resume`; "whole
+  session" includes earlier processes of a resumed session and the source's records in a `/branch`
+  copy;
 - the current mode (`runtime.state.mode()`).
 
 `/clear` and `/rewind` reset only the human's message list in the ledger, so only that line is
@@ -137,7 +140,7 @@ brief synchronous read of the ledger view (`Ledger::view()`), so the `runs_mid_t
 - `rust/fontaine-tui/src/commands.rs`, `src/reports.rs`, `src/ui/mod.rs`,
   `src/ui/commands/context.rs`, `src/ui/commands/reports.rs`
 - `rust/fontaine-tui/tests/tui.rs`
-- `docs/tui.md`, `CHANGELOG.md`, `research/research-claude-code-parity.md` (mark the row done)
+- `docs/tui.md`, `CHANGELOG.md`, `research/research-claude-code-parity.md` (update the "Side questions" row to partial: prompt suggestions are still missing)
 
 ## Trade-offs
 
@@ -164,7 +167,7 @@ brief synchronous read of the ledger view (`Ledger::view()`), so the `runs_mid_t
 ## Documentation
 
 `docs/tui.md`: add both rows to the command table and a short section on side questions (not saved,
-costs tokens on the main model, queued behind a running turn) and on what `/recap` lists. Add an
+costs tokens on the main model, queued behind a running turn) and on what `/recap` lists (its files line is files the session was allowed to write or edit). Add an
 `### Added` entry to `CHANGELOG.md` and the Decisions above to the master plan's `## Decisions`
 under `### TUI`.
 
@@ -177,8 +180,8 @@ under `### TUI`.
   denial and agent counts); `reports::recap` formatting including the empty session; parser rows
   (`/btw x` → `Btw("x")`, `/recap` → `Recap`), sort order and no-duplicate-name checks already in
   `commands.rs`.
-- Unit: `LedgerView::recap` after `/clear` and `/rewind` counts messages since the reset and files,
+- Unit: `LedgerView::recap` after `/clear` and `/rewind` counts messages since the reset and allowed-write files,
   denials and agents over the whole session.
 - Integration (`tui.rs`, deterministic model, no live API): `/btw q` prints the answer and leaves
   the saved conversation and the ledger's `user_messages` unchanged (silent-corruption class, so
-  automated); `/btw` without a question errors; `/recap` after a turn lists the message and files.
+  automated); `/btw` without a question errors; `/recap` after a turn lists the message and the allowed-write files.
