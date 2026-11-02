@@ -219,11 +219,14 @@ and the board tools are not registered.
   `max_parallel` slot while it waits. The lead is told with a report that says the teammate finished
   its turn and is idle. A teammate that fails, is killed or runs out of budget is final, as any
   agent is.
+- **Retired when the work is done.** Once the board holds tasks, every one is completed and no
+  teammate is running, the idle teammates end as `done` and leave the agent list. A later task needs
+  a new teammate. `job_output` shows an idle teammate as `idle`, never `done`.
 - **Waking a teammate.** A `send_message` to an idle teammate wakes it: the message becomes its next
   prompt, marked with the sender's name and id and as untrusted data. The sender still gets
   `{"status": "queued"}`. You can also type into its view, as for any ended agent. A wake can be
   refused like any resume: a spent budget, a full `max_parallel`, or a session that is ending.
-  The sender then gets the reason as the tool's error, and the teammate's tasks go back to the board.
+  The sender then gets the reason as the tool's error, and the teammate's tasks go back to the board. A message queued as the teammate went idle, then lost to a kill or a session ending, is returned to its sender as a message.
   What wakes a teammate is never recorded as something you said, so a peer's message, a hand-off
   note or a hook's reason never becomes the guardian's idea of your intent; only words you type
   into its view are recorded, as for any subagent.

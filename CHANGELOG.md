@@ -33,7 +33,7 @@ All notable changes are recorded here. The format follows
 
 #### Agents
 
-- Agent teams, on by default and switched off with `[agents] teams = false` (user or CLI scope only): the `agent`
+- Agent teams, on by default and switched off with `[agents] teams = false` (user, project-local or CLI scope; shared project settings are refused): the `agent`
   tool takes `teammate`, which starts a named teammate that goes idle between pieces of work and
   wakes on a `send_message`, and the new `board_show` and `board_update` tools give the team a shared
   task board with claiming, dependencies and release of a dead owner's tasks. The new

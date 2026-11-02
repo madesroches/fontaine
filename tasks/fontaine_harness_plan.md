@@ -405,6 +405,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-02: What wakes an idle teammate (a peer message, the idle hand-off note, a `teammate_idle` hook's reason) is delivered without recording a user message, so it never becomes guardian intent; only the human typing in its view is recorded. The hand-off and hook-block resumes are capped at 3 in a row with no board change (a constant, not a config key); reason: the loops sustain themselves.
 - 2026-11-02: The `task_completed` and `teammate_idle` hooks can only block, never allow, take no matcher, and a hook that fails or times out warns and blocks nothing; a repository's `teammate_idle` hook is ignored with a warning (it forces spend), while its `task_completed` hook loads and can only keep a task open. Reason: quality gates add work, they must not wedge the team or loosen anything.
 - 2026-11-02: No tmux split-pane display and no per-teammate model beyond what `agent` already has; both are Claude Code display or ergonomics features outside #40.
+- 2026-11-02 (user): Deviation — once the team board has tasks, all completed, and no teammate is running, idle teammates are retired (ended `done`, off the agent list) instead of staying idle until killed; reason: a finished team should not linger in the list, and a later task spawns a fresh teammate.
 
 ### Build and release
 

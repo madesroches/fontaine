@@ -1845,3 +1845,38 @@ async fn a_task_board_with_dependencies_hands_out_only_unblocked_work() {
     .unwrap();
     assert!(board_call(&team, &id, missing).await.is_err());
 }
+
+#[tokio::test]
+async fn idle_teammates_leave_once_every_task_is_completed() {
+    let team = team_rig();
+    board_call(&team, ROOT_AGENT, create("one")).await.unwrap();
+    board_call(&team, ROOT_AGENT, create("two")).await.unwrap();
+    let (a, a_child) = (start_teammate(&team, "first").await, None::<Arc<FakeChild>>);
+    let a_child = a_child.unwrap_or_else(|| child_of(&team, &a));
+    let b = start_teammate(&team, "second").await;
+    let b_child = child_of(&team, &b);
+    for (id, task) in [(&a, "t1"), (&b, "t2")] {
+        board_call(&team, id, update("claim", Some(task)))
+            .await
+            .unwrap();
+    }
+    board_call(&team, &a, update("complete", Some("t1")))
+        .await
+        .unwrap();
+    a_child.finish(ChildStatus::Done, "first done");
+    until(|| team.rig.tree.is_idle(&a)).await;
+    assert!(team.rig.tree.is_idle(&a), "t2 is still open, so a stays");
+    board_call(&team, &b, update("complete", Some("t2")))
+        .await
+        .unwrap();
+    b_child.finish(ChildStatus::Done, "second done");
+    until(|| !team.rig.tree.any_idle()).await;
+    assert!(!team.rig.tree.any_idle());
+    assert!(
+        team.rig
+            .tree
+            .rows()
+            .iter()
+            .all(|row| !row.idle && !row.status.is_running())
+    );
+}

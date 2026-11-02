@@ -14,7 +14,8 @@ use crate::mode::own_mode;
 use crate::registry::{AgentTypes, ModelSpec};
 use crate::root_ledger::{AgentEvent, RootLedger};
 use crate::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnRequest};
-use crate::tree::{AgentTree, DeliverError, Notification, NotificationKind, Refusal};
+use crate::tasks::TaskStatus;
+use crate::tree::{AgentTree, DeliverError, Killed, Notification, NotificationKind, Refusal};
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -114,11 +115,9 @@ fn conclude(
         agent: id.to_string(),
         status: report.status.as_str().to_string(),
     });
-    // A teammate that finished its turn keeps its tasks: it is idle, not gone.
-    let keeps_tasks =
-        report.status == ChildStatus::Done && tree.is_teammate(id) && !tree.was_killed(id);
-    tree.finish(id, report.clone());
-    if !keeps_tasks {
+    // A teammate that finished its turn keeps its tasks: it is idle, not gone. `finish` says
+    // whether it ended so, because a kill can land at any point before it.
+    if !tree.finish(id, report.clone()) {
         release_tasks(tree, ledger, id);
     }
     let name = tree.name_of(id);
@@ -133,11 +132,10 @@ fn conclude(
 /// Kills an agent from outside its run. An idle teammate has no watcher to conclude it, so its
 /// end, its released tasks and the telemetry are recorded here.
 pub fn kill_agent(tree: &AgentTree, ledger: &dyn RootLedger, id: &str) -> bool {
-    let was_idle = tree.is_idle(id);
-    if !tree.kill(id) {
+    let Some(found) = tree.kill_outcome(id) else {
         return false;
-    }
-    if was_idle {
+    };
+    if found == Killed::Idle {
         ledger.append_event(AgentEvent::Finished {
             agent: id.to_string(),
             status: ChildStatus::Killed.as_str().to_string(),
@@ -178,7 +176,7 @@ pub fn watch_report(
         if report.status != ChildStatus::Killed && !tree.was_killed(&id) {
             let name = tree.name_of(&id);
             let outcome = if finished_turn {
-                "finished its turn and is idle (send it a message to wake it)".to_string()
+                "finished its turn and is idle (send it a message to wake it; idle teammates are retired once every task on the board is completed)".to_string()
             } else {
                 format!("finished: {}", report.status.as_str())
             };
@@ -196,6 +194,7 @@ pub fn watch_report(
         resume_missed(&tree, &ledger, &id, &handle);
         if teammate {
             wake_for_inbox(&tree, &ledger, &id);
+            retire_finished_team(&tree);
         }
     });
 }
@@ -290,6 +289,25 @@ fn render_notes(notes: &[Notification]) -> String {
         .join("\n\n")
 }
 
+/// Ends the idle teammates once the team's work is done: the board holds tasks, all completed,
+/// and no teammate is still running. They leave the agent list as `done`; a later task needs a
+/// new teammate.
+fn retire_finished_team(tree: &AgentTree) {
+    let Some(teams) = tree.teams() else {
+        return;
+    };
+    let tasks = teams.board.list();
+    if tasks.is_empty() || tasks.iter().any(|t| t.status != TaskStatus::Completed) {
+        return;
+    }
+    if tree.any_teammate_running() {
+        return;
+    }
+    for id in tree.idle_ids() {
+        tree.retire_idle(&id);
+    }
+}
+
 /// Wakes an idle teammate that was sent messages in the moment between its last check and its
 /// end, which would otherwise wait for the next message.
 fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str) {
@@ -301,6 +319,19 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
         Ok(()) => {}
         Err(WakeError::AlreadyRunning) => tree.requeue(id, notes),
         Err(WakeError::Refused(why)) => {
+            // The senders were told "queued"; they learn here that nobody read it.
+            let name = tree.name_of(id);
+            for note in notes.iter().filter(|n| n.kind == NotificationKind::Message) {
+                let text = format!(
+                    "Your message to {name} was not read: it ended before it could ({why}).\nThe message was: {}",
+                    note.text
+                );
+                if tree.is_running(&note.from) {
+                    tree.push(&note.from, id, NotificationKind::Message, text);
+                } else {
+                    tree.post_to_root(id, NotificationKind::Message, text);
+                }
+            }
             if let Some(teams) = tree.teams() {
                 teams.gate.warn(&format!(
                     "teammate {} could not read a message sent as it went idle: {why}",
