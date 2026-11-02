@@ -752,6 +752,9 @@ All notable changes are recorded here. The format follows
 - Each tool's decision inputs (risk class, path containment, destructive policy, rule specifier
   and Claude Code name) now live in one descriptor table, `fontaine-tools/src/descriptor.rs`, and
   the unknown-tool error lists Claude Code names in table order (#181).
+- `monitor` no longer stops after 300 s by default: without `timeout_secs` a monitor runs until
+  its command ends, `job_cancel` stops it or the session ends, so a watch on a 20-minute CI run is
+  not cut short. An explicit `timeout_secs` keeps its 3,600 s cap (#363).
 
 #### TUI
 
