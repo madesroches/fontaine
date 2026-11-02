@@ -5,12 +5,19 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::{CompositionError, Param};
-use crate::screen::{DEFAULT_STEERING_VETO, Prompt, Question, Read};
+use crate::screen::{BackendKind, DEFAULT_STEERING_VETO, Prompt, Question, Read};
 
 pub const SCREEN: &str = "screen";
 
 /// The names `preset` accepts.
 pub const NAMES: &[&str] = &[SCREEN];
+
+/// The stop threshold of the screen preset on a hosted model: the 5% stop point of the synthetic
+/// corpus.
+pub const JEV_STOP_THRESHOLD: f64 = 0.34;
+/// The allow threshold of the screen preset on a hosted model: the synthetic corpus's zero-miss
+/// skip point (0.30) less a 0.10 margin for the model's nondeterminism.
+pub const JEV_ALLOW_THRESHOLD: f64 = 0.20;
 
 pub(crate) struct Resolved {
     pub source: &'static str,
@@ -18,13 +25,27 @@ pub(crate) struct Resolved {
     pub params: HashMap<String, Param>,
 }
 
-/// The reads a preset declares on `model`; `question` is the screen preset's stop question.
+/// The reads a preset declares on `model`; `question` is the screen preset's stop question on a
+/// local model. A hosted model reads one question, asked for the stop and the allow alike.
 pub(crate) fn declared_reads(
     name: &str,
     model: &str,
+    backend: Option<BackendKind>,
     params: &BTreeMap<String, Param>,
 ) -> Result<BTreeMap<String, Read>, CompositionError> {
     match name {
+        SCREEN if backend == Some(BackendKind::SystemOne) => {
+            let read = || Read {
+                model: model.to_owned(),
+                prompt: Prompt::Plain,
+                question: Question::Level5Employee,
+                backend: BackendKind::SystemOne,
+            };
+            Ok(BTreeMap::from([
+                ("stop".to_owned(), read()),
+                ("allow".to_owned(), read()),
+            ]))
+        }
         SCREEN => {
             let question = match params.get("question") {
                 None | Some(Param::Unset) => Question::EmployeeAllowed,
@@ -48,6 +69,7 @@ pub(crate) fn declared_reads(
                 model: model.to_owned(),
                 prompt,
                 question,
+                backend: BackendKind::Ollama,
             };
             Ok(BTreeMap::from([
                 ("stop".to_owned(), read(Prompt::Plain, question)),
@@ -84,28 +106,58 @@ fn number(
     }
 }
 
+fn boolean(
+    params: &BTreeMap<String, Param>,
+    key: &str,
+    default: bool,
+) -> Result<bool, CompositionError> {
+    match params.get(key) {
+        None | Some(Param::Unset) => Ok(default),
+        Some(Param::Bool(b)) => Ok(*b),
+        Some(_) => Err(CompositionError::at(key, "must be a boolean")),
+    }
+}
+
+/// `backend` is `None` when the caller does not know the model's account: the parameters of either
+/// backend are then accepted, and the reads are those of a local model.
 pub(crate) fn resolve(
     name: &str,
     model: &str,
+    backend: Option<BackendKind>,
     params: &BTreeMap<String, Param>,
     shadow: bool,
 ) -> Result<Resolved, CompositionError> {
-    let reads = declared_reads(name, model, params)?;
+    let reads = declared_reads(name, model, backend, params)?;
     match name {
         SCREEN => {
-            const KNOWN: &[&str] = &[
+            const OLLAMA: &[&str] = &[
                 "question",
                 "stop_threshold",
                 "allow_threshold",
                 "steering_veto",
                 "concurrent",
             ];
-            if let Some(key) = params.keys().find(|k| !KNOWN.contains(&k.as_str())) {
+            const SYSTEMONE: &[&str] =
+                &["stop_threshold", "allow_threshold", "allow", "concurrent"];
+            const EITHER: &[&str] = &[
+                "question",
+                "stop_threshold",
+                "allow_threshold",
+                "allow",
+                "steering_veto",
+                "concurrent",
+            ];
+            let known = match backend {
+                Some(BackendKind::Ollama) => OLLAMA,
+                Some(BackendKind::SystemOne) => SYSTEMONE,
+                None => EITHER,
+            };
+            if let Some(key) = params.keys().find(|k| !known.contains(&k.as_str())) {
                 return Err(CompositionError::at(
                     key,
                     format!(
-                        "unknown parameter of the screen preset; expected one of: {}",
-                        KNOWN.join(", ")
+                        "unknown parameter of the screen preset on this model; expected one of: {}",
+                        known.join(", ")
                     ),
                 ));
             }
@@ -127,11 +179,24 @@ pub(crate) fn resolve(
                 |v| v > 0.0 && v <= 1.0,
                 "must be greater than 0 and at most 1",
             )?;
-            let concurrent = match params.get("concurrent") {
-                None | Some(Param::Unset) => false,
-                Some(Param::Bool(b)) => *b,
-                Some(_) => return Err(CompositionError::at("concurrent", "must be a boolean")),
-            };
+            let concurrent = boolean(params, "concurrent", false)?;
+            let allowing = boolean(params, "allow", true)?;
+            if backend == Some(BackendKind::SystemOne) {
+                // `allow = false` wins over a threshold: it is a switch, not a contradiction.
+                let allow = allowing.then(|| allow.unwrap_or(JEV_ALLOW_THRESHOLD));
+                return Ok(Resolved {
+                    source: include_str!("screen_jev.rn"),
+                    reads,
+                    params: HashMap::from([
+                        (
+                            "stop_threshold".to_owned(),
+                            Param::Optional(Some(stop.unwrap_or(JEV_STOP_THRESHOLD))),
+                        ),
+                        ("allow_threshold".to_owned(), Param::Optional(allow)),
+                        ("concurrent".to_owned(), Param::Bool(concurrent)),
+                    ]),
+                });
+            }
             if !shadow && stop.is_none() && allow.is_none() {
                 return Err(CompositionError::at(
                     "allow_threshold",

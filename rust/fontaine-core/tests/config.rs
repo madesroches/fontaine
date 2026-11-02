@@ -1046,6 +1046,181 @@ fn a_composition_needs_models_on_ollama_accounts() {
     }
 }
 
+const HOSTED_ACCOUNT: &str = "[accounts.or]\nkind = \"openrouter\"\napi_key_env = \"OR_KEY\"\n";
+
+fn hosted_world(extra: &str) -> World {
+    let w = World::new();
+    w.user_file(&format!(
+        "{HOSTED_ACCOUNT}\n[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n{extra}"
+    ));
+    w
+}
+
+fn or_key(name: &str) -> Option<std::ffi::OsString> {
+    (name == "OR_KEY").then(|| "sk-or-test".into())
+}
+
+#[test]
+fn a_composition_may_read_on_an_openrouter_account_with_a_key() {
+    let w = hosted_world("");
+    let config = w.load_from(&w.work, None, &or_key).unwrap();
+    let composition = config.guardian.composition.unwrap();
+    assert!(composition.shadow, "a hand-written section stays in shadow");
+    assert_eq!(composition.model.as_deref(), Some("or/typesafe/jev-1.14"));
+    let spec = composition.spec(&config.accounts).unwrap();
+    let reads = spec.declared_reads().unwrap();
+    assert_eq!(
+        reads.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["allow", "stop"]
+    );
+    assert!(
+        reads
+            .values()
+            .all(|r| r.backend == fontaine_guardian::BackendKind::SystemOne)
+    );
+}
+
+#[test]
+fn a_hosted_screen_without_a_key_stops_startup_naming_the_model_and_the_account() {
+    let w = hosted_world("");
+    let err = w.load().unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    let text = err.to_string();
+    assert!(text.contains("guardian.composition.model"), "{text}");
+    assert!(text.contains("OR_KEY") || text.contains("`or`"), "{text}");
+
+    let w = World::new();
+    w.user_file(
+        "[accounts.or]\nkind = \"openrouter\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n",
+    );
+    let err = w.load().unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    let text = err.to_string();
+    assert!(text.contains("guardian.composition.model"), "{text}");
+    assert!(text.contains("no OpenRouter key"), "{text}");
+    assert!(text.contains("`or`"), "{text}");
+    assert!(!text.contains("/login"), "{text}");
+}
+
+#[test]
+fn a_hosted_read_without_a_key_names_the_reads_model_key() {
+    let w = World::new();
+    w.user_file(
+        "[accounts.or]\nkind = \"openrouter\"\n\n[guardian.composition]\nscript = \"g.rn\"\n\n[guardian.composition.reads.extra]\nmodel = \"or/typesafe/jev-1.14\"\nprompt = \"plain\"\nquestion = \"level5_employee\"\n",
+    );
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let text = w.load().unwrap_err().to_string();
+    assert!(
+        text.contains("guardian.composition.reads.extra.model"),
+        "{text}"
+    );
+    assert!(text.contains("no OpenRouter key"), "{text}");
+}
+
+#[test]
+fn a_stored_login_key_satisfies_a_hosted_screen() {
+    let w = World::new();
+    w.user_file(
+        "[accounts.or]\nkind = \"openrouter\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n",
+    );
+    write(
+        &w.data.join("credentials.toml"),
+        "[accounts.or]\napi_key = \"sk-stored\"\n",
+    );
+    w.load().unwrap();
+}
+
+#[test]
+fn a_hosted_screen_needs_an_account_and_a_base_url_a_key_may_travel_to() {
+    let w = World::new();
+    w.user_file("[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n");
+    let err = w.load().unwrap_err();
+    assert_eq!(err.exit_code(), 2);
+    assert!(err.to_string().contains("not configured"), "{err}");
+
+    for url in ["not a url", "ftp://host/", "http://example.com/api/v1"] {
+        let w = World::new();
+        w.user_file(&format!(
+            "[accounts.or]\nkind = \"openrouter\"\napi_key_env = \"OR_KEY\"\nbase_url = \"{url}\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n"
+        ));
+        let err = w.load_from(&w.work, None, &or_key).unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{url}");
+        assert!(
+            err.to_string().contains("accounts.or.base_url"),
+            "{url}: {err}"
+        );
+    }
+    let w = World::new();
+    w.user_file(
+        "[accounts.or]\nkind = \"openrouter\"\napi_key_env = \"OR_KEY\"\nbase_url = \"http://127.0.0.1:9/api/v1\"\n\n[guardian.composition]\npreset = \"screen\"\nmodel = \"or/typesafe/jev-1.14\"\n",
+    );
+    w.load_from(&w.work, None, &or_key).unwrap();
+}
+
+#[test]
+fn the_hosted_preset_takes_allow_and_refuses_question_and_a_steering_veto() {
+    let w = hosted_world("\n[guardian.composition.params]\nallow = false\n");
+    w.load_from(&w.work, None, &or_key).unwrap();
+    for bad in ["question = \"outside_request\"", "steering_veto = 0.01"] {
+        let w = hosted_world(&format!("\n[guardian.composition.params]\n{bad}\n"));
+        let err = w.load_from(&w.work, None, &or_key).unwrap_err();
+        assert_eq!(err.exit_code(), 2, "{bad}");
+        assert!(
+            err.to_string().contains("guardian.composition.params."),
+            "{bad}: {err}"
+        );
+    }
+    let w = World::new();
+    w.user_file(&format!(
+        "{COMPOSITION_ACCOUNT}\n[guardian.composition]\npreset = \"screen\"\nmodel = \"local/m\"\n\n[guardian.composition.params]\nallow = false\n"
+    ));
+    let err = w.load().unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("guardian.composition.params.allow"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_hosted_screen_enforces_with_defaults_and_no_threshold() {
+    let w = hosted_world("shadow = false\n");
+    let composition = w
+        .load_from(&w.work, None, &or_key)
+        .unwrap()
+        .guardian
+        .composition
+        .unwrap();
+    assert!(!composition.shadow);
+    assert!(composition.params.is_empty());
+}
+
+#[test]
+fn project_scope_cannot_set_the_hosted_allow_path_but_may_force_shadow() {
+    for text in [
+        "[guardian.composition.params]\nallow = true\n",
+        "[guardian.composition.params]\nallow_threshold = 0.5\n",
+        "[guardian.composition]\nshadow = false\n",
+    ] {
+        for column in [Column::Project, Column::ProjectLocal, Column::Cli] {
+            let err = parse_settings(text, Path::new("p.toml"), column).unwrap_err();
+            assert!(matches!(err, ConfigError::Scope { .. }), "{text}: {err:?}");
+        }
+    }
+    let w = hosted_world("shadow = false\n");
+    w.project_file("[guardian.composition]\nshadow = true\n");
+    let composition = w
+        .load_from(&w.work, None, &or_key)
+        .unwrap()
+        .guardian
+        .composition
+        .unwrap();
+    assert!(composition.shadow);
+}
+
 #[test]
 fn a_composition_account_needs_a_usable_base_url() {
     for url in ["not a url", "ftp://host/", "http://"] {
@@ -1224,9 +1399,14 @@ fn only_user_scope_may_set_the_composition() {
 fn the_composition_builds_one_reader_per_model() {
     let w = composition_world("preset = \"screen\"\nmodel = \"local/qwen3:4b\"\n");
     let config = w.load().unwrap();
-    let stage = fontaine_core::agent::build_composition(&config, fontaine_guardian::Profile::Full)
-        .unwrap()
-        .unwrap();
+    let stage = fontaine_core::agent::build_composition(
+        &config,
+        fontaine_guardian::Profile::Full,
+        &common::no_env,
+        &w.data,
+    )
+    .unwrap()
+    .unwrap();
     assert!(stage.shadow);
     assert_eq!(stage.label, "local/qwen3:4b");
     assert_eq!(

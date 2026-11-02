@@ -295,3 +295,49 @@ async fn an_existing_composition_is_left_untouched() {
         before
     );
 }
+
+fn with_openrouter(s: &Sandbox) {
+    let base = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
+    s.user_config(&format!(
+        "{base}\n[accounts.or]\nkind = \"openrouter\"\napi_key_env = \"OR_KEY\"\n"
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_terminal_the_hosted_screen_is_reported_for_an_openrouter_account_with_a_key() {
+    let model = endpoint().await;
+    let mut s = sandbox(&model.url());
+    with_openrouter(&s);
+    s.set_env("OR_KEY", "sk-or-test");
+    let before = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
+    let out = s
+        .run_with_stdin(
+            &["auto-mode", "setup", "--no-model", "--format", "json"],
+            "1\ny\n",
+        )
+        .await;
+    let value = json(&out);
+    assert_eq!(value["composition"]["status"], "offered_unanswered");
+    assert_eq!(
+        value["composition"]["candidates"][0],
+        "or/typesafe/jev-1.14"
+    );
+    assert_eq!(
+        std::fs::read_to_string(s.config.join("config.toml")).unwrap(),
+        before
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_an_openrouter_key_setup_says_how_to_add_the_account() {
+    let model = endpoint().await;
+    let s = sandbox(&model.url());
+    let out = s.run(&["auto-mode", "setup", "--no-model"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(out.stdout.contains("OpenRouter account"), "{}", out.stdout);
+    assert!(out.stdout.contains("/login"), "{}", out.stdout);
+
+    with_openrouter(&s);
+    let out = s.run(&["auto-mode", "setup", "--no-model"]).await;
+    assert!(out.stdout.contains("OpenRouter account"), "{}", out.stdout);
+}

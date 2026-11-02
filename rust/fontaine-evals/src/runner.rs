@@ -104,21 +104,23 @@ struct RunArgs {
     guardian: Option<String>,
 
     /// Compose a `live:` guardian with the `screen` preset: `live:<account>/<model>`, an `ollama`
-    /// account. It needs `--stop-threshold`, `--allow-threshold` or both, except with
-    /// `--composition-script`, where it only names the default read model. The scorecard then
-    /// reports the cascade (catch, guardian calls, allowed-call latency, benign cases escalated,
-    /// calls the composition allowed) and leaves the guardian models file alone
+    /// or `openrouter` account. On an `ollama` account it needs `--stop-threshold`,
+    /// `--allow-threshold` or both; an `openrouter` account (the hosted Jev screen) runs the
+    /// preset's default thresholds when none is given. With `--composition-script` it only names
+    /// the default read model. The scorecard then reports the cascade (catch, guardian calls,
+    /// allowed-call latency, benign cases escalated, calls the composition allowed) and leaves the
+    /// guardian models file alone
     #[arg(long, value_name = "MODE")]
     screen: Option<String>,
 
-    /// The risk at which the screen preset stops a case. There is no default: a threshold is
-    /// only meaningful for the model and question it was calibrated on
+    /// The risk at which the screen preset stops a case. A local model has no default, since a
+    /// threshold is only meaningful for the model and question it was calibrated on; the hosted
+    /// screen defaults to the preset's fit
     #[arg(long, value_name = "RISK", requires = "screen")]
     stop_threshold: Option<f64>,
 
-    /// The allow risk below which, with the steering score under the veto, the screen preset
-    /// allows a case without the guardian. There is no default, for the same reason as the stop
-    /// threshold
+    /// The allow risk below which, with the steering score under the veto on a local model, the
+    /// screen preset allows a case without the guardian. Defaults as the stop threshold does
     #[arg(long, value_name = "RISK", requires = "screen")]
     allow_threshold: Option<f64>,
 
@@ -473,16 +475,13 @@ fn run_score(args: &RunArgs) -> u8 {
             "`--composition-script` takes its parameters from `--composition-param`; drop the threshold flags",
         );
     }
-    if cascade_screen.is_some()
-        && cascade_script.is_none()
-        && stop_threshold.is_none()
-        && args.allow_threshold.is_none()
-        && !composition_params
+    // Whether the screen model needs thresholds is known only once its account is: a hosted model
+    // has defaults, a local one has none.
+    let thresholds_given = stop_threshold.is_some()
+        || args.allow_threshold.is_some()
+        || composition_params
             .iter()
-            .any(|(k, _)| k == "stop_threshold" || k == "allow_threshold")
-    {
-        return usage("`--screen` needs `--stop-threshold`, `--allow-threshold` or both");
-    }
+            .any(|(k, _)| k == "stop_threshold" || k == "allow_threshold");
     let param_number = |name: &str| {
         composition_params
             .iter()
@@ -569,32 +568,54 @@ fn run_score(args: &RunArgs) -> u8 {
     // reports as its own.
     // The label carries everything the measurement depends on, so a run resumes only from the
     // same screen and thresholds.
-    let label = match &cascade {
-        Some(c) => {
-            let threshold = |t: Option<f64>| t.map_or("none".to_string(), |t| t.to_string());
-            let mut label = format!(
-                "{guardian} +screen live:{} stop={} allow={} veto={}",
-                c.screen,
-                threshold(c.stop_threshold),
-                threshold(c.allow_threshold),
-                threshold(c.steering_veto),
-            );
-            if let Some(script) = &c.script {
-                label.push_str(&format!(" script={script}"));
-            }
-            for (key, value) in &c.params {
-                label.push_str(&format!(" {key}={value}"));
-            }
-            label
-        }
-        None => guardian.clone(),
-    };
+    let mut label = cascade_label(guardian, cascade.as_ref());
     let mut skipped = Vec::new();
     let mut live_run = None;
     let mut screen_version = None;
     let mut screen_warm_up = None;
     let mut screen_framing = screen::Framing::default();
     let results: Vec<CaseResult> = if let Some(spec) = live_spec {
+        let guardian_profile = match profile {
+            Profile::Full => fontaine_guardian::Profile::Full,
+            Profile::Minimal => fontaine_guardian::Profile::Minimal,
+        };
+        let mut connected = match live::connect(
+            spec,
+            guardian_profile,
+            forced_mode(args.verdict_transport),
+            &|name| std::env::var_os(name),
+        ) {
+            Ok(connected) => connected,
+            Err(e) => return usage(&e),
+        };
+        let hosted = cascade_script.is_none()
+            && cascade_screen.and_then(|screen| connected.screen_backend(screen))
+                == Some(fontaine_guardian::BackendKind::SystemOne);
+        if cascade_screen.is_some() && cascade_script.is_none() && !hosted && !thresholds_given {
+            return usage("`--screen` needs `--stop-threshold`, `--allow-threshold` or both");
+        }
+        if hosted && let Some(c) = &mut cascade {
+            if steering_veto_set.is_some() {
+                return usage(
+                    "`--steering-veto` does not apply to a hosted screen, which has no steering read",
+                );
+            }
+            // The effective thresholds, so the scorecard states what was measured.
+            let allowing = !composition_params
+                .iter()
+                .any(|(k, v)| k == "allow" && v.as_bool() == Some(false));
+            c.stop_threshold = Some(
+                c.stop_threshold
+                    .unwrap_or(fontaine_guardian::composition::JEV_STOP_THRESHOLD),
+            );
+            c.allow_threshold = allowing.then(|| {
+                c.allow_threshold
+                    .unwrap_or(fontaine_guardian::composition::JEV_ALLOW_THRESHOLD)
+            });
+            c.steering_veto = None;
+        }
+        // Only now are the effective thresholds known, and the label must state them.
+        label = cascade_label(guardian, cascade.as_ref());
         let header = Header {
             dataset_version: match report::dataset_version(dataset) {
                 Ok(version) => version,
@@ -634,19 +655,6 @@ fn run_score(args: &RunArgs) -> u8 {
                 Err(e) => return usage(&chain(&e)),
             },
             None => Vec::new(),
-        };
-        let guardian_profile = match profile {
-            Profile::Full => fontaine_guardian::Profile::Full,
-            Profile::Minimal => fontaine_guardian::Profile::Minimal,
-        };
-        let mut connected = match live::connect(
-            spec,
-            guardian_profile,
-            forced_mode(args.verdict_transport),
-            &|name| std::env::var_os(name),
-        ) {
-            Ok(connected) => connected,
-            Err(e) => return usage(&e),
         };
         if let Some(c) = &cascade
             && let Err(e) = live::add_composition(
@@ -1374,6 +1382,27 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     }
     let rank = ((sorted.len() as f64) * p).ceil() as usize;
     sorted[rank.clamp(1, sorted.len()) - 1]
+}
+
+fn cascade_label(guardian: &str, cascade: Option<&CascadeParams>) -> String {
+    let Some(c) = cascade else {
+        return guardian.to_string();
+    };
+    let threshold = |t: Option<f64>| t.map_or("none".to_string(), |t| t.to_string());
+    let mut label = format!(
+        "{guardian} +screen live:{} stop={} allow={} veto={}",
+        c.screen,
+        threshold(c.stop_threshold),
+        threshold(c.allow_threshold),
+        threshold(c.steering_veto),
+    );
+    if let Some(script) = &c.script {
+        label.push_str(&format!(" script={script}"));
+    }
+    for (key, value) in &c.params {
+        label.push_str(&format!(" {key}={value}"));
+    }
+    label
 }
 
 /// What a cascade run was asked to measure.

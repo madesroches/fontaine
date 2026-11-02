@@ -1,38 +1,59 @@
 //! The state one evaluation owns: the shared LLM request and the reads. The root owns this, not
 //! the script's task, so what an aborted evaluation spent can still be read afterwards.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use futures::FutureExt;
 use futures::future::{BoxFuture, Shared};
+use rig_core::completion::Usage;
 use tokio::task::AbortHandle;
 use tracing::Instrument;
 
 use super::Composition;
 use crate::guardian::{Adjudication, Guardian};
 use crate::request::AdjudicationRequest;
+use crate::screen::{Prompt, Question, Read};
 
 /// What one read came to.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReadRecord {
     pub name: String,
-    /// The label of the model that answered.
+    /// The model that answered: the id the server says it ran when it says, else the label.
     pub model: String,
     pub result: Result<f64, String>,
     pub latency_ms: u64,
     /// When the read finished, counted from the start of the evaluation.
     pub finished_ms: u64,
+    /// What the request cost. Reads that share one request share its cost, which only the first of
+    /// them carries, so the sum over a call's records counts it once.
+    pub usage: Option<Usage>,
 }
 
+/// What one request to a model came to, shared by every read that asks the same thing.
+struct Answered {
+    result: Result<f64, String>,
+    model: String,
+    usage: Option<Usage>,
+    latency_ms: u64,
+    finished_ms: u64,
+}
+
+type RequestKey = (String, Prompt, Question);
 type SharedRead = Shared<BoxFuture<'static, Arc<ReadRecord>>>;
+type SharedRequest = Shared<BoxFuture<'static, Arc<Answered>>>;
 type SharedLlm = Shared<BoxFuture<'static, Arc<Adjudication>>>;
 
 struct Slot {
     name: String,
     done: SharedRead,
-    abort: Option<AbortHandle>,
+}
+
+struct Request {
+    done: SharedRequest,
+    abort: AbortHandle,
 }
 
 pub(crate) struct EvalCtx {
@@ -47,6 +68,9 @@ pub(crate) struct EvalCtx {
 #[derive(Default)]
 struct ReadTable {
     slots: Vec<Slot>,
+    // Reads that ask the same model the same question send one request: the answer is the model's,
+    // however many names the composition gives it.
+    requests: HashMap<RequestKey, Request>,
     // Set under the table's lock so a read the script starts after the abort never spawns.
     aborted: bool,
 }
@@ -114,66 +138,93 @@ impl EvalCtx {
                 result: Err("the read was cancelled".to_owned()),
                 latency_ms: 0,
                 finished_ms: 0,
+                usage: None,
             });
             let done = futures::future::ready(record).boxed().shared();
             table.slots.push(Slot {
                 name: name.to_owned(),
                 done: done.clone(),
-                abort: None,
             });
             return Ok(done);
         }
-        let reader = self.composition.reader(&read.model);
-        let request = self.request.clone();
-        let started = self.started;
+        let key = (read.model.clone(), read.prompt, read.question);
+        let first = !table.requests.contains_key(&key);
+        if first {
+            let request = self.send(read);
+            table.requests.insert(key.clone(), request);
+        }
+        let request = table.requests[&key].done.clone();
         let record_name = name.to_owned();
-        let read = read.clone();
-        let task = tokio::spawn(
-            async move {
-                let began = Instant::now();
-                let result = match reader {
-                    Some(reader) => reader.read(&read, &request).await,
-                    None => Err(format!("no reader is configured for {}", read.model)),
-                };
-                ReadRecord {
-                    name: record_name,
-                    model: read.model,
-                    result,
-                    latency_ms: began.elapsed().as_millis() as u64,
-                    finished_ms: started.elapsed().as_millis() as u64,
-                }
-            }
-            .in_current_span(),
-        );
-        let abort = task.abort_handle();
-        let failed = ReadRecord {
-            name: name.to_owned(),
-            model: self
-                .composition
-                .read(name)
-                .map(|read| read.model.clone())
-                .unwrap_or_default(),
-            result: Err("the read was cancelled".to_owned()),
-            latency_ms: 0,
-            finished_ms: 0,
-        };
         let done = async move {
-            match task.await {
-                Ok(record) => Arc::new(record),
-                Err(error) => Arc::new(ReadRecord {
-                    result: Err(format!("the read did not finish: {error}")),
-                    ..failed
-                }),
-            }
+            let answered = request.await;
+            Arc::new(ReadRecord {
+                name: record_name,
+                model: answered.model.clone(),
+                result: answered.result.clone(),
+                latency_ms: answered.latency_ms,
+                finished_ms: answered.finished_ms,
+                usage: if first { answered.usage } else { None },
+            })
         }
         .boxed()
         .shared();
         table.slots.push(Slot {
             name: name.to_owned(),
             done: done.clone(),
-            abort: Some(abort),
         });
         Ok(done)
+    }
+
+    fn send(&self, read: &Read) -> Request {
+        let reader = self.composition.reader(&read.model);
+        let request = self.request.clone();
+        let started = self.started;
+        let label = read.model.clone();
+        let sent = read.clone();
+        let task = tokio::spawn(
+            async move {
+                let began = Instant::now();
+                let outcome = match reader {
+                    Some(reader) => reader.read_detailed(&sent, &request).await,
+                    None => Err(format!("no reader is configured for {}", sent.model)),
+                };
+                let latency_ms = began.elapsed().as_millis() as u64;
+                let finished_ms = started.elapsed().as_millis() as u64;
+                match outcome {
+                    Ok(outcome) => Answered {
+                        result: Ok(outcome.risk),
+                        model: outcome.resolved_model.unwrap_or(sent.model),
+                        usage: outcome.usage,
+                        latency_ms,
+                        finished_ms,
+                    },
+                    Err(reason) => Answered {
+                        result: Err(reason),
+                        model: sent.model,
+                        usage: None,
+                        latency_ms,
+                        finished_ms,
+                    },
+                }
+            }
+            .in_current_span(),
+        );
+        let abort = task.abort_handle();
+        let done = async move {
+            match task.await {
+                Ok(answered) => Arc::new(answered),
+                Err(error) => Arc::new(Answered {
+                    result: Err(format!("the read did not finish: {error}")),
+                    model: label,
+                    usage: None,
+                    latency_ms: 0,
+                    finished_ms: 0,
+                }),
+            }
+        }
+        .boxed()
+        .shared();
+        Request { done, abort }
     }
 
     /// Starts every declared read.
@@ -205,8 +256,8 @@ impl EvalCtx {
     pub(crate) fn abort_reads(&self) {
         let mut table = self.reads.lock().expect("the read table is not poisoned");
         table.aborted = true;
-        for abort in table.slots.iter().filter_map(|slot| slot.abort.as_ref()) {
-            abort.abort();
+        for request in table.requests.values() {
+            request.abort.abort();
         }
     }
 }

@@ -511,9 +511,10 @@ of every scanner type, and the `pg2` model load at startup.
 
 How the guardian is composed from the LLM guardian and cheap local reads in `auto` and `plan`
 mode: a built-in preset or a Rune script. With the `screen` preset it is an allow screen in front
-of the guardian: a small local model that answers yes/no questions allows a call that is clearly
-safe without waiting for the guardian, and, only if you set `stop_threshold`, escalates a call that
-is confidently outside what you asked for. Every other call meets the guardian.
+of the guardian: a small model, local (Ollama, yes/no questions) or hosted (Jev on OpenRouter), allows
+a call that is clearly safe without waiting for the guardian, and escalates a call that is
+confidently outside what you asked for (on a local model only if you set `stop_threshold`). Every
+other call meets the guardian.
 [Composing the guardian](guardian.md#composing-the-guardian) explains it, how to calibrate it and
 how to write a script. The section is read from the user file only: other scopes may set
 `shadow = true`, which holds over the user file's `shadow = false`, and nothing else, so a
@@ -524,7 +525,7 @@ key.
 |---|---|---|
 | `preset` | A built-in preset: `screen`. Exactly one of `preset` and `script` is required. | unset |
 | `script` | A Rune file. A relative path resolves against the user config directory. It must compile against the host functions and define `guardian` with two parameters. | unset |
-| `model` | `<account>/<model>` of an `[accounts.*]` entry of kind `ollama`; its `base_url` is the daemon that is asked, without credentials, so the endpoint must not require authentication. The default model of every read, and required with a preset. The account's `context_tokens` is the window a read requests; Ollama reloads a model whenever the requested window changes, so a read and a guardian on the same model need the same value (the same account does). | unset |
+| `model` | `<account>/<model>` of an `[accounts.*]` entry of kind `ollama` or `openrouter`. For `ollama`, its `base_url` is the daemon that is asked, without credentials, so the endpoint must not require authentication. For `openrouter` (`typesafe/jev-1.14`), the model is read through `<base_url>/systemone`, where `base_url` is the same one that serves chat (default `https://openrouter.ai/api/v1`), with the account's key (`api_key_env` or the one `/login` stored); the key is sent only over https or to a loopback host. A key that does not resolve stops startup with exit code 2, naming this key and the account. The default model of every read, and required with a preset: a hand-written section never starts sending guardian state to a hosted model by itself. The account's `context_tokens` is the window a read requests; Ollama reloads a model whenever the requested window changes, so a read and a guardian on the same model need the same value (the same account does). | unset |
 | `shadow` | Run the composition and record every read, but let the guardian decide. | `true` |
 | `timeout_ms` | Time allowed for each read; at least 1. On expiry the read fails. | `2000` |
 
@@ -533,10 +534,11 @@ booleans passed to a script as `params`. The `screen` preset takes:
 
 | Param | Meaning | Default |
 |---|---|---|
-| `question` | The stop read's question: `employee_allowed` ("If an employee were given the user's request, would they be allowed to take this action?") or `outside_request` ("Is this action outside what the user's request asked for?"). A threshold is calibrated for one question. | `employee_allowed` |
-| `stop_threshold` | The risk, greater than 0 and at most 1, at which a call is escalated. | unset: the screen never escalates |
-| `allow_threshold` | Allow a call without the guardian when the hardened allow read's risk is below this and the steering score is below `steering_veto`. Greater than 0 and less than 1. With `shadow = false`, at least one of `stop_threshold` and `allow_threshold` is required. | unset: no allow path |
-| `steering_veto` | The steering score, greater than 0 and at most 1, at or above which the screen never allows a call. | `0.001` |
+| `question` | Local model only (refused for a hosted one, which asks a single five-level question). The stop read's question: `employee_allowed` ("If an employee were given the user's request, would they be allowed to take this action?") or `outside_request` ("Is this action outside what the user's request asked for?"). A threshold is calibrated for one question. | `employee_allowed` |
+| `stop_threshold` | The risk, greater than 0 and at most 1, at which a call is escalated. | local model: unset, the screen never escalates; hosted model: `0.34` |
+| `allow_threshold` | Allow a call without the guardian when the allow read's risk is below this (and, on a local model, the steering score is below `steering_veto`). Greater than 0 and less than 1. On a local model with `shadow = false`, at least one of `stop_threshold` and `allow_threshold` is required. | local model: unset, no allow path; hosted model: `0.20` |
+| `allow` | Hosted model only: `false` switches the allow path off, and `allow_threshold` is then ignored. Refused on a local model. | `true` |
+| `steering_veto` | Local model only: the steering score, greater than 0 and at most 1, at or above which the screen never allows a call. A hosted model has no steering read, and this is refused for it. | `0.001` |
 | `concurrent` | Race the screen against the guardian instead of asking the guardian only for what the screen does not settle. A settled call then spends the guardian's input tokens. | `false` |
 
 `[guardian.composition.reads.<name>]` declares a script's reads; a preset declares its own and
@@ -558,6 +560,27 @@ allow_threshold = 0.00000156
 # stop_threshold = 0.0000599
 # concurrent = true
 ```
+
+The hosted screen needs no threshold; its defaults apply. Where it is enabled, guardian state leaves
+the machine for OpenRouter and Typesafe (see [the screen preset on a hosted
+model](guardian.md#the-screen-preset-on-a-hosted-model)):
+
+```toml
+[accounts.openrouter]
+kind = "openrouter"
+api_key_env = "OPENROUTER_API_KEY"
+
+[guardian.composition]
+preset = "screen"
+model = "openrouter/typesafe/jev-1.14"
+shadow = false
+
+# [guardian.composition.params]
+# allow = false            # keep the stop path, switch the allow path off
+```
+
+With no `shadow` key a hand-written section stays in shadow mode; `fontaine auto-mode setup` is
+what writes `shadow = false`.
 
 The model's answers are nearly certain, so its risk scores are tiny or near 1, and a working
 threshold is a small number. `0.0000599` and `0.00000156` are the ones measured in

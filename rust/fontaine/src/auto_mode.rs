@@ -6,7 +6,7 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use fontaine_core::composition_offer::{self, Offer, Posture};
+use fontaine_core::composition_offer::{self, Candidate, Offer, Posture};
 use fontaine_core::config::{Config, Slot};
 use fontaine_core::containment;
 use fontaine_core::dirs::Dirs;
@@ -390,21 +390,27 @@ async fn composition_step(
         .listings(None, Some(&ollama))
         .await
     };
-    let found = composition_offer::detect(&listings);
+    let (found, notes) = composition_offer::offer_candidates(
+        config,
+        &*crate::shared_env(host),
+        &dirs.data,
+        &listings,
+    );
+    let with_notes = |mut lines: Vec<String>| {
+        lines.extend(notes.clone());
+        lines
+    };
     if found.is_empty() {
-        return CompositionReport::skipped(vec![composition_offer::nothing_to_offer()]);
+        return CompositionReport::skipped(with_notes(vec![composition_offer::nothing_to_offer()]));
     }
-    let candidates: Vec<String> = found
-        .iter()
-        .map(|c| format!("{}/{}", c.account, c.benchmark.tag))
-        .collect();
+    let candidates: Vec<String> = found.iter().map(Candidate::model).collect();
     if !std::io::stdin().is_terminal() {
         return CompositionReport {
             status: "offered_unanswered",
-            lines: vec![format!(
+            lines: with_notes(vec![format!(
                 "guardian composition: available on {}; run `fontaine auto-mode setup` in a terminal to set it up",
                 candidates.join(", ")
-            )],
+            )]),
             candidates,
         };
     }
@@ -413,25 +419,28 @@ async fn composition_step(
         lines: vec!["guardian composition: not set up".to_owned()],
         candidates,
     };
-    let postures = [Posture::Safe, Posture::Fast];
-    let labels: Vec<String> = postures.iter().map(|p| p.describe().to_owned()).collect();
-    let Some(posture) = choose("Set up the guardian's allow screen?", &labels).map(|i| postures[i])
-    else {
-        return declined(candidates);
-    };
+    for note in &notes {
+        eprintln!("{note}");
+    }
     let pick = if found.len() == 1 {
         Some(0)
     } else {
-        choose("Which account runs the screen?", &candidates)
+        choose("Which model runs the screen?", &candidates)
     };
     let Some(pick) = pick else {
         return declined(candidates);
     };
-    let offer = Offer {
-        account: found[pick].account.clone(),
-        benchmark: found[pick].benchmark,
-        posture,
+    let posture = if found[pick].asks_posture() {
+        let postures = [Posture::Safe, Posture::Fast];
+        let labels: Vec<String> = postures.iter().map(|p| p.describe().to_owned()).collect();
+        let Some(choice) = choose("Set up the guardian's allow screen?", &labels) else {
+            return declined(candidates);
+        };
+        Some(postures[choice])
+    } else {
+        None
     };
+    let offer = Offer::on(&found[pick], posture).expect("a posture is chosen where one is asked");
     eprintln!("\nsetup would write to your user settings:");
     for line in offer.proposal() {
         eprintln!("  {line}");
@@ -444,10 +453,7 @@ async fn composition_step(
         Ok(()) => {
             let mut lines = vec![format!(
                 "guardian composition: wrote the {} screen on {} to {}",
-                match posture {
-                    Posture::Safe => "safe",
-                    Posture::Fast => "fast",
-                },
+                offer.name(),
                 offer.model(),
                 file.display()
             )];

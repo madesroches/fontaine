@@ -620,6 +620,11 @@ impl AgentRuntime {
         self.state.scope().roots()[0].clone()
     }
 
+    /// The process environment as the session was started with.
+    pub fn env(&self) -> &EnvLookup {
+        &self.setup.env
+    }
+
     pub fn guardian_profile(&self) -> Profile {
         self.guardian_profile
     }

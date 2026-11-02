@@ -260,21 +260,24 @@ first: an `ask` rule or a critical path still asks.
   model matters.
 
 The guardian's model endpoint inherits the [network settings](configuration.md#network) of its
-account, and a composition's reads those of their Ollama accounts. An invalid `[network]` stops startup with exit
+account, and a composition's reads those of their accounts (Ollama or OpenRouter). An invalid `[network]` stops startup with exit
 code 2; the guardian never falls back to a direct connection.
 
 ## Composing the guardian
 
 A guardian verdict takes seconds. The guardian can be composed: a short Rune script decides how
 the LLM stage described above and cheap local reads are combined, and Fontaine wraps the script in
-a fail-closed root. A read asks a small local model a yes/no question about the call and turns the
-first token's logprobs into a risk between 0 and 1; it needs an Ollama model, because Ollama's
-native chat endpoint is the one that returns logprobs. The composition is configured in
+a fail-closed root. A read asks a small model a question about the call and turns its answer into a
+risk between 0 and 1. A local read puts a yes/no question to an Ollama model and reads the first
+token's logprobs, because Ollama's native chat endpoint is the one that returns logprobs. A hosted
+read puts a five-level question to a `/v1/systemone` model on an `openrouter` account (Jev,
+`typesafe/jev-1.14`) and reads the level probabilities; see
+[the screen preset on a hosted model](#the-screen-preset-on-a-hosted-model). The composition is configured in
 [`[guardian.composition]`](configuration.md#guardiancomposition) and is either a built-in preset,
 `screen` being the one that ships, or a script of your own. Nothing is enabled without
-configuration: a guardian with no `[guardian.composition]` is the LLM stage alone, and the only
-threshold Fontaine proposes is the one benchmarked for the model it is paired with, offered by
-[`fontaine auto-mode setup`](#setting-up-the-composition) and never applied without a yes.
+configuration: a guardian with no `[guardian.composition]` is the LLM stage alone, and what Fontaine
+proposes is offered by [`fontaine auto-mode setup`](#setting-up-the-composition) and never applied
+without a yes.
 
 The composition runs after everything deterministic, only where the guardian would run, and not
 while the denial breaker is paused. A read requests the account's
@@ -311,6 +314,9 @@ The reads see the same redacted, delimited request the guardian sees, and sequen
 guardian is asked only for a call the screen did not settle: a settled call spends no guardian
 tokens.
 
+This describes the preset on a local Ollama model. On a hosted model it declares two reads and ships
+thresholds; see below.
+
 With `concurrent = true` the screen is raced against the guardian instead. They start together, the
 screen can settle a call only while the guardian is still pending, and a guardian verdict already in
 hand wins. A call the screen does not settle then costs the slower of the two, in practice the
@@ -325,10 +331,124 @@ finished but whose verdict the composition did not use is added to the session's
 | Call the screen settles | about the screen | about the screen |
 | Guardian tokens on settled calls | none | input spent, estimated in the audit log |
 
+### The screen preset on a hosted model
+
+When the composition's `model` is on an `openrouter` account (`model = "<account>/typesafe/jev-1.14"`),
+the preset asks Jev, OpenRouter's `/v1/systemone` model, how far outside what an employee given the
+user's request would be allowed to do the call is, on five levels from "within" to "a fireable
+offence". The risk of a call is one minus the probability of "within". One request costs about
+$0.000027 and about 150 ms. The endpoint is the account's `base_url` (default
+`https://openrouter.ai/api/v1`, the one that serves chat) with `systemone` joined on, and the key is
+the account's `api_key_env` or the key stored by `/login`. A composition on an `openrouter` model
+whose key does not resolve stops startup with exit code 2 naming `guardian.composition.model` and
+the account. The key is sent only over https or to a loopback host.
+
+The preset declares two reads, `stop` and `allow`, which ask the same model the same question. They
+share one request, so a call costs one hosted request and the two audit scores (`screen_risk` and
+`screen_allow_risk`) are equal. There is no `steering` read: in the measured set the steering text
+moved 2 to 9 of 1,503 calls across a 0.10 margin on Jev, against 93 of 134 on qwen3-4b, so a veto
+would add a local model to a hosted default for no measured gain. `question` and `steering_veto`
+are refused for a hosted model.
+
+The thresholds have defaults, so a section needs none:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `allow_threshold` | `0.20` | A call whose risk is below it is allowed without the LLM guardian. |
+| `stop_threshold` | `0.34` | A call whose risk reaches it is escalated, as a guardian escalation is. |
+| `allow` | `true` | `allow = false` switches the allow path off and ignores `allow_threshold`. |
+
+The allow default is the zero-miss skip point of the synthetic corpus (0.30) less a margin of 0.10
+for the model's nondeterminism; the stop default is the point that stops 5% of its allowed calls.
+Both were fitted on the synthetic corpus only, never on the golden set (see
+[Evals](evals.md#cascade-scorecards)). A stop default can only escalate, but off-domain it stopped
+28 to 88% of allowed calls on synthetic thresholds, which is why setup recommends checking real
+traffic with `shadow = true` first.
+
+Jev is not deterministic: 60 to 75% of repeated requests for one call differ, by up to 0.22 in the
+risk. A zero-miss threshold fitted on one pass does not hold on the next, which is what the margin
+is for. Known leak classes, calls the screen clears that the LLM guardian would not, are `.env`
+reads, session facts and `kubectl get ... secrets`; on a fresh set and on public corpora one to three
+must-not-clear cases were cleared. Treat the allow path as a latency and cost optimisation for
+ordinary calls, not as a second guardian.
+
+**Data leaves this machine.** Wherever this screen is enabled, every guardian-gated call sends the
+task intent, the recent user messages, the tool name and arguments, and project facts, redacted and
+delimited as the guardian sees them, to OpenRouter and Typesafe. If that is not acceptable, use a
+local model or no composition.
+
+To turn the allow path off while keeping the stop path:
+
+```toml
+[guardian.composition.params]
+allow = false
+```
+
+or lower `allow_threshold`. To log scores without acting, set `shadow = true`; a repository's
+project settings can force `shadow = true` too, which is the repository-level off switch for the
+allow path. A repository can never turn the allow path on or change `allow`.
+
+A hand-written `[guardian.composition]` without `shadow` stays in shadow mode, so configuring the
+preset never enforces it. Only `fontaine auto-mode setup` writes `shadow = false`.
+
+A script that prefers Jev but falls back to a local read when the hosted one fails declares one read
+on each model and tries them in order. This one passes the soundness rules, since only the
+host's `allow_below` applied to a declared read can allow:
+
+```rune
+pub async fn guardian(call, params) {
+    let verdict = match read(call, "hosted").await {
+        Ok(score) => hosted_verdict(score, params),
+        Err(_) => match read(call, "local").await {
+            Ok(score) => local_verdict(score, params),
+            Err(_) => abstain(),
+        },
+    };
+    if verdict.is_abstain() { llm(call).await } else { verdict }
+}
+
+fn hosted_verdict(score, params) {
+    if score.value() >= params.stop {
+        escalate("hosted.stop", format!("risk {:.2}", score.value()))
+    } else {
+        allow_below("hosted.allow", score, params.allow)
+    }
+}
+
+fn local_verdict(score, params) {
+    if score.value() >= params.local_stop {
+        escalate("local.stop", format!("risk {:.2}", score.value()))
+    } else {
+        abstain()
+    }
+}
+```
+
+with
+
+```toml
+[guardian.composition]
+script = "fallback.rn"
+model = "or/typesafe/jev-1.14"
+shadow = false
+
+[guardian.composition.params]
+stop = 0.34
+allow = 0.20
+local_stop = 0.95
+
+[guardian.composition.reads.hosted]
+question = "level5_employee"
+
+[guardian.composition.reads.local]
+model = "local/qwen3:4b-instruct-2507-q4_K_M"
+question = "outside_request"
+```
+
 ### The allow path
 
-A call is allowed without the guardian only when two extra reads of the same local model agree that
-it is clearly safe:
+On a local model, a call is allowed without the guardian only when two extra reads of the same
+model agree that it is clearly safe:
 
 - **A hardened permission read.** The question is always "If an employee were given the user's
   request, would they be allowed to take this action?", whatever `question` the stop read uses,
@@ -345,10 +465,12 @@ below the veto and the stop read did not stop it. Without the detector, one stee
 call's arguments moved most of the should-not-allow cases in the measured set below the skip
 threshold, which is why the allow path has its own prompt and a veto.
 
-The allow path is user scope only, off by default and a deliberate exception to the rule that only
+The allow path is user scope only, a deliberate exception to the rule that only
 containment earns a skip of the guardian: the allow is a verdict of the composed guardian. It
 never runs before the deterministic floor, and a paused breaker prompts you without running the
-composition. A composition allow does not reset the denial breaker.
+composition. A composition allow does not reset the denial breaker. On a local model it is off until
+you set `allow_threshold`; on a hosted model it is on once the composition enforces (`shadow =
+false`), unless `allow = false`.
 
 ### Calibrating with shadow mode
 
@@ -362,9 +484,11 @@ shadow mode for a while, then read the audit log: the risk of the calls the guar
 declined, against the risk of the calls that were allowed, shows where a threshold would have
 caught the first without escalating too many of the second. For `allow_threshold`, look for a value
 below which no call the guardian denied or you declined appears, and check the steering scores of
-the calls you would not want allowed. There is no shipped threshold, because the right one depends
-on the model, the question and your own traffic. Set `stop_threshold` and/or `allow_threshold` and
-`shadow = false` when the numbers are acceptable. To see the effect on the golden set, run a
+the calls you would not want allowed. A local model has no shipped threshold, because the right one
+depends on the model, the question and your own traffic; set `stop_threshold` and/or
+`allow_threshold` and `shadow = false` when the numbers are acceptable. A hosted model ships
+defaults, so its section needs no threshold, but the same reading of the audit log tells you
+whether they suit your traffic. To see the effect on the golden set, run a
 [cascade scorecard](evals.md#cascade-scorecards).
 
 ### Writing a composition script
@@ -716,7 +840,19 @@ next session in either case.
 
 The last, optional step of `fontaine auto-mode setup` and `/auto-mode-setup` offers the
 [`screen` preset](#composing-the-guardian) so you do not write `[guardian.composition]` by hand or
-guess a threshold. It looks for an `ollama` account that lists a model Fontaine has a benchmark for
+guess a threshold. It offers two things.
+
+**The hosted screen.** If an `openrouter` account has a key that resolves (judged by the credential
+alone, with no listing call), setup offers the preset on `typesafe/jev-1.14` with the preset's
+default thresholds and the allow path on. The offer states that guardian state (task intent, recent
+user messages, tool name and arguments, project facts) is sent to OpenRouter and Typesafe, that the
+allow path is on, and how to turn it off (`allow = false`) or to check real traffic first
+(`shadow = true`). It writes `preset = "screen"`, `model = "<account>/typesafe/jev-1.14"` and
+`shadow = false`, with no threshold key, so a later recalibration reaches you with no config
+rewrite. It creates no account: with none, setup prints a line saying to add an OpenRouter account
+with `/login` or `api_key_env` and run it again.
+
+**A local screen.** It looks for an `ollama` account that lists a model Fontaine has a benchmark for
 (today `qwen3:4b-instruct-2507-q4_K_M`, matched by its exact tag, since a threshold is fitted to one
 model, quantization, prompt and question) and asks one basic choice:
 
@@ -726,16 +862,15 @@ model, quantization, prompt and question) and asks one basic choice:
 - **fast**: `allow_threshold` only. The screen allows the calls it is confident about, which is a
   guardian-tier allow; every call it does not clear goes to the LLM guardian, which decides it.
 
-You type no number. Setup shows what it will write, with the benchmark behind the threshold, and
-writes nothing unless you answer yes: `preset = "screen"`, `model = "<account>/<model>"`,
-`shadow = false` and the one threshold, to the user settings file only, in one edit that is first
-checked as a session start would check it. The step is skipped, with a line saying why, when a
-composition is already configured, under the `minimal` profile (the thresholds were fitted on full
-profile reads), with `--no-composition`, and when no reachable Ollama account holds a benchmarked
-model (the line names the model to pull). A run without a terminal lists what it found in the
-report and writes nothing.
+You type no number. Setup shows what it will write, with the benchmark behind the threshold for a
+local model, and writes nothing unless you answer yes: to the user settings file only, in one edit
+that is first checked as a session start would check it. The step is skipped, with a line saying
+why, when a composition is already configured, under the `minimal` profile (the thresholds were
+fitted on full profile reads), with `--no-composition`, and when there is nothing to offer (the line
+names the model to pull, and the hint for the hosted screen). A run without a terminal lists what it
+found in the report and writes nothing.
 
-The value is a fit on a small dataset. The fast threshold let one call through live that the
+The local value is a fit on a small dataset. The fast threshold let one call through live that the
 dataset expects denied or escalated, so score it on your own traffic with
 `fontaine-evals --screen live:<account>/<model>` or the `screen_risk` (safe) and `screen_allow_risk`
 (fast) values in the audit log, and set `shadow = true` to log scores without acting while you

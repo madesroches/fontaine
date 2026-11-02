@@ -17,14 +17,14 @@ use rune::{Context, Diagnostics, Source, Sources, Unit, Vm};
 use tracing::Instrument;
 
 pub use eval::ReadRecord;
-pub use preset::{NAMES as PRESETS, SCREEN};
+pub use preset::{JEV_ALLOW_THRESHOLD, JEV_STOP_THRESHOLD, NAMES as PRESETS, SCREEN};
 
 use eval::EvalCtx;
 use host::{Call, VerdictKind, verdict_of};
 
 use crate::guardian::{Adjudication, Guardian};
 use crate::request::AdjudicationRequest;
-use crate::screen::{Read, Reader, check_pairing};
+use crate::screen::{BackendKind, Read, Reader, check_backend, check_pairing};
 use crate::verdict::{Decision, FailClosed};
 
 const TARGET: &str = "fontaine::telemetry";
@@ -97,11 +97,15 @@ impl ToValue for Param {
 
 /// Checks a preset's parameters alone, whatever model it reads on and whether or not it is in
 /// shadow mode.
+///
+/// `backend` is the kind of the model's account when the caller knows it: a parameter only one
+/// backend takes is then refused on the other. Without it, any parameter of either is accepted.
 pub fn check_preset_params(
     name: &str,
     params: &BTreeMap<String, Param>,
+    backend: Option<BackendKind>,
 ) -> Result<(), CompositionError> {
-    preset::resolve(name, "", params, true).map(|_| ())
+    preset::resolve(name, "", backend, params, true).map(|_| ())
 }
 
 /// Where a composition's script comes from.
@@ -123,9 +127,21 @@ pub struct CompositionSpec {
     /// Preset parameters, or the values passed to a script.
     pub params: BTreeMap<String, Param>,
     pub shadow: bool,
+    /// What each read model's account is, by account name. A model whose account is not listed is
+    /// read over Ollama.
+    pub kinds: BTreeMap<String, BackendKind>,
 }
 
 impl CompositionSpec {
+    /// The backend of the model labelled `model` (`<account>/<model>`).
+    pub fn backend_of(&self, model: &str) -> BackendKind {
+        let account = model.split_once('/').map_or("", |(account, _)| account);
+        self.kinds
+            .get(account)
+            .copied()
+            .unwrap_or(BackendKind::Ollama)
+    }
+
     /// The reads this composition declares.
     pub fn declared_reads(&self) -> Result<BTreeMap<String, Read>, CompositionError> {
         match &self.script {
@@ -135,7 +151,12 @@ impl CompositionSpec {
                         "a preset declares its own reads; `reads` is for scripts",
                     ));
                 }
-                preset::declared_reads(name, &self.model, &self.params)
+                preset::declared_reads(
+                    name,
+                    &self.model,
+                    Some(self.backend_of(&self.model)),
+                    &self.params,
+                )
             }
             Script::Source(_) => Ok(self.reads.clone()),
         }
@@ -175,7 +196,13 @@ impl Composition {
                         "a preset declares its own reads; `reads` is for scripts",
                     ));
                 }
-                let resolved = preset::resolve(name, &spec.model, &spec.params, spec.shadow)?;
+                let resolved = preset::resolve(
+                    name,
+                    &spec.model,
+                    Some(spec.backend_of(&spec.model)),
+                    &spec.params,
+                    spec.shadow,
+                )?;
                 (resolved.source.to_owned(), resolved.reads, resolved.params)
             }
             Script::Source(source) => (
@@ -186,6 +213,8 @@ impl Composition {
         };
         for (name, read) in &reads {
             check_pairing(read.prompt, read.question)
+                .map_err(|message| CompositionError::at(name, message))?;
+            check_backend(read.question, read.backend)
                 .map_err(|message| CompositionError::at(name, message))?;
         }
         let (unit, runtime) = build(&source)?;
@@ -249,7 +278,7 @@ impl Composition {
     fn read_timeout(&self) -> Duration {
         self.readers
             .values()
-            .map(|reader| reader.settings().timeout)
+            .map(|reader| reader.timeout())
             .max()
             .unwrap_or(DEFAULT_READ_TIMEOUT)
     }
@@ -641,6 +670,7 @@ mod tests {
                 reads: BTreeMap::new(),
                 params: BTreeMap::new(),
                 shadow: false,
+                kinds: BTreeMap::new(),
             },
             vec![],
         )

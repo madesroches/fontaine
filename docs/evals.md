@@ -188,7 +188,9 @@ entry earned on the other.
 
 With the [`screen` preset](guardian.md#the-screen-preset) in front of the guardian, `--screen
 live:<account>/<model>` (an Ollama account) and `--stop-threshold <risk>`, `--allow-threshold
-<risk>` or both score the composition from one run: each guardian case meets the screen first and
+<risk>` or both score the composition from one run (an `openrouter` account scores the hosted
+screen with the preset's default thresholds when none is given, and the summary records the ones in
+force; `--steering-veto` is a usage error there, since the hosted screen has no steering read): each guardian case meets the screen first and
 the guardian only if the screen does not settle it. A case the screen stops counts as an `escalate`,
 and one it allows counts as an `allow`, with no guardian call; any other case takes the guardian's
 verdict. `--steering-veto <p>` (default `0.001`) goes with `--allow-threshold`.
@@ -202,7 +204,8 @@ their time limit come from `[guardian.composition.reads]` and `timeout_ms` in yo
 else from `[guardian.composition] model`. With a script, `--screen` only names that model, the
 threshold flags are usage errors, and the script's parameters go through `--composition-param`.
 Either way the run builds the composition the way a session does, including the check that every
-read model is on an `ollama` account. The summary adds a `cascade` object with:
+read model is on an `ollama` or `openrouter` account, and that an `openrouter` key resolves. The
+summary adds a `cascade` object with:
 
 - `llm_call_rate`: the share of cases whose verdict came from the guardian model.
 - `allowed_latency_ms` (`p50` and `mean`): the latency over the should-allow cases the cascade
@@ -267,6 +270,26 @@ The guardian-alone row is the committed
 [`kimi-for-coding.json`](../evals/scorecards/kimi-for-coding.json) run on the same dataset. The
 scorecard is
 [`cascade-qwen3-4b-instruct-kimi.json`](../evals/scorecards/cascade-qwen3-4b-instruct-kimi.json).
+
+### Hosted screen scorecards
+
+The hosted screen (`typesafe/jev-1.14` asked the five-level question) is scored with
+
+```
+cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:kimi/kimi-for-coding --screen live:openrouter/typesafe/jev-1.14 --out ../evals/scorecards/cascade-jev-level5-employee-kimi.json
+```
+
+with the account set up as in [`[guardian.composition]`](configuration.md#guardiancomposition). The
+run needs a live OpenRouter key, so it is a manual step like every live run. Its scorecards
+(`cascade-jev-level5-employee-kimi.json`, with a `haiku` guardian as a second row) are added when a
+person runs them, together with a report on a fresh set and on the public corpora; none is committed
+yet. The `stop_threshold` default of `0.34` is the 5% stop point (`skip 0.30, stop@5% 0.34`) that
+`transfer` in `research/typed-decision-screen/scripts/jev_synth.py` derives from
+`research/typed-decision-screen/results/jev/synthetic/level5_employee.json`, and the
+`allow_threshold` default of `0.20` is its zero-miss skip point less a 0.10 margin for
+nondeterminism. Both come from the synthetic corpus alone; the golden set is for scoring them, never
+for fitting them. Because Jev's repeated answers differ by up to 0.22, score a run more than once
+before trusting a zero in `must_not_clear_screen_allowed`.
 
 ## Results
 

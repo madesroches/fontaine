@@ -149,7 +149,9 @@ support](guardian.md#models-with-no-tool-support)) and, when it failed closed, t
 `timeout`, `unparseable`, `low_confidence` or `unavailable`). With a
 [composition](guardian.md#composing-the-guardian) configured, the record also carries
 `screen_risk`, `screen_allow_risk` and `screen_steering` (the reads named `stop`, `allow` and
-`steering`), `screen_scores` (every other read, by name), `screen_model`, `screen_latency_ms` and
+`steering`), `screen_scores` (every other read, by name), `screen_model` (the model id a hosted
+read's server resolved, such as `typesafe/jev-1.14-20261014`, with no account prefix; the
+`<account>/<model>` label for a read that did not answer), `screen_latency_ms` and
 `screen_outcome`, and a call the composition escalated, denied or allowed has `tier = screen` and
 the deciding node as its `rule` (`decision = prompt` or `deny` for an escalation, `deny` for a
 denial, `allow` for an allow). A composition that fails (a script error, a timeout, no verdict) is

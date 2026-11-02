@@ -47,6 +47,16 @@ pub struct Live {
     pub model: String,
 }
 
+impl Live {
+    /// What a screen read on `<account>/<model>` is asked through, when its account says.
+    pub fn screen_backend(&self, screen: &str) -> Option<fontaine_guardian::BackendKind> {
+        let account = screen
+            .split_once('/')
+            .map_or(screen, |(account, _)| account);
+        config::backend_of(self.config.accounts.get(account)?.kind)
+    }
+}
+
 /// Resolves `<account>/<model>` against the user's configuration. The profile is built
 /// directly: eval cases never execute tools, so no containment is resolved, and a `minimal`
 /// column can never silently score `full`.
@@ -158,7 +168,8 @@ pub struct CompositionArgs<'a> {
 
 /// Puts a composition in front of the guardian: the `screen` preset the flags describe, or the
 /// script. It is built the way a session builds `[guardian.composition]`, including the check
-/// that every read model is on an `ollama` account.
+/// that every read model is on an `ollama` or `openrouter` account and, for the latter, that its
+/// key resolves.
 pub fn add_composition(
     live: &mut Live,
     args: CompositionArgs<'_>,
@@ -227,7 +238,8 @@ pub fn add_composition(
     let user_path = live.config_dir.join("config.toml");
     config::check_composition(&mut config, &user_path, &live.config_dir)
         .map_err(|e| e.to_string())?;
-    let stage = fontaine_core::agent::build_composition(&config, profile)
+    let env = |name: &str| live.snapshot.get(name).cloned();
+    let stage = fontaine_core::agent::build_composition(&config, profile, &env, &live.data_dir)
         .map_err(|e| fontaine_tools::error_chain::chain(&e))?
         .expect("a composition was just configured");
     live.composition = Some(stage.composition);

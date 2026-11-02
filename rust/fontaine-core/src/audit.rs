@@ -100,8 +100,9 @@ pub struct DecisionRecord {
     /// The score of every other read of the composition, by read name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_scores: Option<std::collections::BTreeMap<String, f64>>,
-    /// The distinct `<account>/<model>` of the reads that scored, or tried to score, the call,
-    /// comma-joined.
+    /// The distinct models of the reads that scored, or tried to score, the call, comma-joined: a
+    /// read that answered is named by the model id its server resolved (`typesafe/jev-1.14-20261014`,
+    /// with no account prefix), one that did not by its `<account>/<model>` label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub screen_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
