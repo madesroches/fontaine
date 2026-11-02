@@ -6,7 +6,8 @@
 
 Let `write`, `edit` and `notebook_edit` name a path outside every workspace root and route that
 call through the normal permission pipeline — floor first, then the mode: it asks in `manual` and
-`acceptEdits`, the guardian judges it in `auto`, and it denies in `dontAsk` and headless runs —
+`acceptEdits`, the guardian judges it in `auto`, and it denies in `dontAsk` — and, in headless
+runs, whenever the call would have asked —
 instead of refusing it for containment before anything can decide. In `auto`, an out-of-root write
 the user did not ask for is denied: the user's own typed messages are the only user-intent source
 the guardian trusts, and they are the verdict-changing input that can allow it. After any approval
@@ -303,6 +304,8 @@ the same target. Do not tell the model external writes are unconditionally allow
 
 - `rust/fontaine-core/tests/permissions.rs`
 - `rust/fontaine-core/tests/permissions_auto.rs`
+- `rust/fontaine-core/tests/permissions_screen.rs` (the screen-allow-of-an-external-write
+  resolved-target test, mirroring the #284 read row `a_screen_allow_of_an_external_read_returns_the_resolved_target`)
 - `rust/fontaine-core/tests/hook_slot.rs`
 - `rust/fontaine-core/tests/guardian_off.rs`
 - `rust/fontaine-core/tests/audit_telemetry.rs`
