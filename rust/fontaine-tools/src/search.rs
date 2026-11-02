@@ -336,7 +336,8 @@ fn scan(
                         groups.extend(render_content(
                             &name,
                             &lines,
-                            &hits[..take],
+                            &hits,
+                            take,
                             params.before,
                             params.after,
                             params.numbers,
@@ -385,17 +386,19 @@ pub fn render_count(path: &str, matches: usize) -> String {
 
 /// The lines of one file `hits` (indices into `lines`) put in front of the model: each match
 /// as `path:line: text`, the context lines around them as `path-line- text`, in groups that are
-/// not adjacent to each other.
+/// not adjacent to each other. Only the first `take` hits start a span, but every hit marks its
+/// line as a match, so a match inside a kept hit's context is still shown as one.
 pub fn render_content(
     path: &str,
     lines: &[&str],
     hits: &[usize],
+    take: usize,
     before: usize,
     after: usize,
     numbers: bool,
 ) -> Vec<Vec<String>> {
     let mut spans: Vec<(usize, usize)> = Vec::new();
-    for &hit in hits {
+    for &hit in &hits[..take] {
         let start = hit.saturating_sub(before);
         let end = hit.saturating_add(after).min(lines.len().saturating_sub(1));
         match spans.last_mut() {
@@ -566,6 +569,16 @@ mod tests {
     }
 
     #[test]
+    fn matches_in_trailing_context_of_a_cut_file_stay_matches() {
+        let lines = ["foo1", "bar", "foo2", "foo3", "baz"];
+        let groups = render_content("f", &lines, &[0, 2, 3], 1, 0, 3, true);
+        assert_eq!(
+            groups,
+            vec![vec!["f:1: foo1", "f-2- bar", "f:3: foo2", "f:4: foo3"]]
+        );
+    }
+
+    #[test]
     fn grep_args_take_claude_codes_names() {
         let args = parse(serde_json::json!({
             "pattern": "x", "-i": true, "-n": false, "-A": 2, "-B": 1, "-C": 3,
@@ -618,7 +631,7 @@ mod tests {
     #[test]
     fn content_groups_merge_when_adjacent_or_overlapping() {
         let lines = ["a", "b", "c", "d", "e", "f", "g", "h"];
-        let groups = render_content("f", &lines, &[1, 3, 7], 1, 0, true);
+        let groups = render_content("f", &lines, &[1, 3, 7], 3, 1, 0, true);
         assert_eq!(
             groups,
             vec![
@@ -631,14 +644,14 @@ mod tests {
     #[test]
     fn content_without_numbers_drops_them() {
         let lines = ["a", "b", "c"];
-        let groups = render_content("f", &lines, &[1], 1, 1, false);
+        let groups = render_content("f", &lines, &[1], 1, 1, 1, false);
         assert_eq!(groups, vec![vec!["f- a", "f: b", "f- c"]]);
     }
 
     #[test]
     fn content_context_stops_at_the_file_edges() {
         let lines = ["a", "b"];
-        let groups = render_content("f", &lines, &[0], 5, 5, true);
+        let groups = render_content("f", &lines, &[0], 1, 5, 5, true);
         assert_eq!(groups, vec![vec!["f:1: a", "f-2- b"]]);
     }
 
