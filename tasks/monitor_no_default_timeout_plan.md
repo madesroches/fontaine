@@ -30,8 +30,12 @@ its 3,600 s ceiling.
   existing state of the job machinery and needs no new code path there.
 - Bounds that stay in place without a timeout: at most `MAX_RUNNING` (8) jobs and monitors run at
   once, a monitor is terminated after `MONITOR_NOTIFICATIONS` (1,000) notifications
-  (`jobs.rs:56`), pending lines are capped (`MONITOR_PENDING`), and `Drop for Jobs`
-  (`jobs.rs:1098`) kills every running job, monitors included, when the session ends.
+  (`jobs.rs:56`), pending lines are capped (`MONITOR_PENDING`), and session end calls
+  `terminate_all` (TUI exit `fontaine-tui/src/lib.rs:388`, `/clear` via `end_jobs`, headless run
+  end `headless.rs:928-929` and its failure paths), which stops every running job, monitors
+  included; `Drop for Jobs` (`jobs.rs:1098`) is only a backstop. Headless runs never wait for
+  jobs (they count only subagents), so a still-running monitor at the end of a `-p` run is
+  stopped by `terminate_all` and nothing changes there.
 - Docs: `docs/tools.md:23` (tools table: arguments) and `docs/tools.md:345-363` (`## Monitor`:
   "`timeout_secs` (default 300, at most 3,600)", "It ends at its timeout or when its command
   ends").
@@ -96,6 +100,10 @@ its 3,600 s ceiling.
 
 ## Decisions
 
+- 2026-11-01: no default monitor timeout; an omitted `timeout_secs` means no deadline.
+- 2026-11-01: the 3,600 s cap stays on explicit `timeout_secs` values.
+- 2026-11-01: deviates from Claude Code's 5-minute default and re-arm pattern (recorded in the master plan's Tools decisions).
+
 ## Documentation
 
 - `docs/tools.md`: the tools-table `monitor` row (note that `timeout_secs` is optional with no
@@ -108,23 +116,15 @@ its 3,600 s ceiling.
 
 Unit and registry tests, no live services:
 
-- `jobs/tests.rs`: a monitor started with `timeout: None` on `sleep 30` is still running after
-  the point where a short explicit timeout would have fired (compare with the existing
-  short-timeout test at `tests.rs:479`, which uses 2 s). Use a margin of about 3 s, then
-  `job_cancel` it. Assert it ends as cancelled, not `MonitorTimeout`.
-- `jobs/tests.rs`: dropping `Jobs` with a no-timeout monitor running kills it (the command's
-  process group is gone). This pins session-end teardown as the bound that replaces the default.
+- `jobs/tests.rs`: start `monitor(&jobs, "sleep 30", None)` and assert the job's
+  `control.deadline.is_none()` (read as in `tests.rs:661-675`; the only path to
+  `Kill::MonitorTimeout` is a `Some` deadline). Check that a `Some(..)` monitor gets a deadline,
+  then cancel.
 - `tests/jobs.rs` (through the registry): a `monitor` call without `timeout_secs` returns a start
   message that says it has no timeout and contains no "after …s". A call with
-  `timeout_secs: 5` still says "after 5s", and `timeout_secs: 99999` is rejected by the schema
-  or clamped to 3600, following what the existing behavior is.
+  `timeout_secs: 5` still says "after 5s", and `timeout_secs: 99999` is clamped (there is no runtime
+  schema validation) and the start message says "after 3600s".
 - The existing explicit-timeout test keeps passing with `Some(..)`, so `Kill::MonitorTimeout` is
   still covered.
 - The tool description no longer contains "default 300". Assert this in the registry test so the
   model-facing text can't drift back.
-
-## Open Questions
-
-- Should a no-timeout monitor that is still running at the end of a headless (`-p`) run be
-  reported differently? Today `Drop for Jobs` kills it at teardown as it does any job, which seems
-  sufficient.
