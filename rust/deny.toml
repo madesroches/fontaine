@@ -12,6 +12,7 @@ ignore = [
     { id = "RUSTSEC-2026-0367", reason = "zip via candle-core; extract() is never called" },
     { id = "RUSTSEC-2026-0368", reason = "zip via candle-core; extract() is never called" },
     { id = "RUSTSEC-2026-0369", reason = "zip via candle-core; extract() is never called" },
+    { id = "RUSTSEC-2026-0429", reason = "zip via candle-core; extract() is never called" },
     { id = "RUSTSEC-2024-0436", reason = "paste (unmaintained, compile-time only) via gemm in candle-core" },
 ]
 
