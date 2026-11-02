@@ -11,7 +11,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::agents_panel::{SpendView, spend_text, status_label, writing_text};
+use crate::agents_panel::{SpendView, row_label, spend_text, writing_text};
 use crate::input::wrap;
 
 /// How long an agent that failed, was killed or ran out of budget stays listed.
@@ -33,6 +33,8 @@ pub struct ListRow {
     pub unpriced: bool,
     /// Characters the model has written in its current step; shown while the agent runs.
     pub writing: u64,
+    /// A teammate waiting for work, listed until killed rather than dropped as done.
+    pub idle: bool,
 }
 
 impl ListRow {
@@ -47,6 +49,7 @@ impl ListRow {
             spend: String::new(),
             unpriced: false,
             writing: 0,
+            idle: false,
         }
     }
 }
@@ -63,7 +66,7 @@ pub fn rows(
     main_writing: u64,
 ) -> Vec<ListRow> {
     let listed = |row: &AgentRow| {
-        if row.status.is_running() || viewing == Some(row.id.as_str()) {
+        if row.status.is_running() || row.idle || viewing == Some(row.id.as_str()) {
             return true;
         }
         let recent = row
@@ -99,6 +102,7 @@ pub fn rows(
                 }),
                 unpriced: row.spend.unpriced_tokens > 0,
                 writing: row.writing,
+                idle: row.idle,
             });
         }
     }
@@ -109,6 +113,7 @@ pub fn rows(
         0,
         ListRow {
             writing: main_writing,
+            idle: false,
             ..ListRow::main()
         },
     );
@@ -316,7 +321,7 @@ impl AgentList {
                         return ListKey::Blur { typed: true };
                     }
                     Some(id) => {
-                        if row.status.is_some_and(ChildStatus::is_running) {
+                        if row.idle || row.status.is_some_and(ChildStatus::is_running) {
                             return ListKey::Kill(id);
                         }
                         self.dismissed.insert(id);
@@ -359,7 +364,7 @@ impl AgentList {
                     let rest = format!(
                         " {} {} {}",
                         row.agent_type,
-                        status_label(status),
+                        row_label(status, row.idle),
                         format_age(row.elapsed)
                     );
                     let spend = format!(" · {}", row.spend);
@@ -457,6 +462,7 @@ mod tests {
             started: now,
             ended: (!status.is_running()).then_some(now),
             writing: 0,
+            idle: false,
         }
     }
 
@@ -473,6 +479,18 @@ mod tests {
         list.set_rows(rows);
         list.focus();
         list
+    }
+
+    #[test]
+    fn an_idle_teammate_stays_listed_unlike_a_done_agent() {
+        let now = Instant::now();
+        let mut idle = agent("agent-1", "main", ChildStatus::Done, now);
+        idle.idle = true;
+        let done = agent("agent-2", "main", ChildStatus::Done, now);
+        let listed = rows(&[idle, done], None, &HashSet::new(), now, 0);
+        let ids: Vec<_> = listed.iter().filter_map(|r| r.id.as_deref()).collect();
+        assert_eq!(ids, ["agent-1"]);
+        assert!(listed[1].idle);
     }
 
     #[test]

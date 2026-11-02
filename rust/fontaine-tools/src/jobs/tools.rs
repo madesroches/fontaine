@@ -135,7 +135,12 @@ fn render_agent_wait(id: &str, state: &AgentState) -> String {
                 AgentDelivery::Killed => "It was killed and delivers no report.",
                 AgentDelivery::AlreadyDelivered => "Its report was already delivered to you.",
             };
-            format!("[{id} ended: {status}]\n{tail}")
+            let wake = if status == "idle" {
+                "\nIt is idle, not finished: send_message wakes it."
+            } else {
+                ""
+            };
+            format!("[{id} ended: {status}]\n{tail}{wake}")
         }
     }
 }

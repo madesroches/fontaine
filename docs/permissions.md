@@ -70,13 +70,14 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    and `auto` and `plan` send it to the guardian. The label alone earns
    nothing: a path outside the roots does not qualify, and an external read never takes this
    step. `lsp` has no external route at all: a path outside every root is denied, with the
-   `/add-dir` hint. `skill`, `ask_user_question`, `todo_write` and the read-only scheduling tools name
+   `/add-dir` hint. `skill`, `ask_user_question`, `todo_write`, `board_show` and the read-only scheduling tools name
    no path and take this step too. `ask_user_question` only shows you text and collects your choice,
    and no mode, `auto` included, ever answers it: the answer comes from you or, in a headless run,
    from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
    intent for the guardian; the options you pick do not.
    An `agent` call whose child can only read takes this step too: Fontaine computes the child's
-   toolset, and when every tool in it is read-only (plus `send_message`), the spawn runs without
+   toolset, and when every tool in it is read-only (plus `send_message`; `board_show` is
+   read-only, `board_update` is not), the spawn runs without
    the guardian or a prompt, in every mode. `worker`, `fork` and any type whose set holds `agent`,
    `shell`, a write tool, a network tool or an MCP tool do not qualify. A `deny` or `ask` rule on
    `agent` and a hook still act first, and each call the child makes goes through the whole
@@ -174,6 +175,18 @@ cross over: `shell(...)` allows are for `shell` only, and the read-only pre-clas
 allows a `monitor` by itself, so allow one with `monitor(tail *)` or let the guardian judge it. In
 `auto`, `monitor` with no specifier is a broad allow like `shell`, and is set aside.
 
+## Agent teams
+
+With `[agents] teams` on (the default) the [task board](agents.md#the-task-board) adds two tools and no new
+tier. `board_show` is read-only and names no path, so it takes the read-only fast path in every
+mode. `board_update` is an `arbitrary` tool, and always a destructive call for the guardian like
+`send_message` (so a low-confidence allow is denied): `manual` and `acceptEdits` ask, `auto` and
+`plan` send it to the guardian, and a `deny` or `ask` rule naming `board_update` (a hook too) runs
+first in every mode. It has no fast path, no specifier and no spawn tier. Waking an idle teammate
+with `send_message` is gated like any message, and each call the woken teammate makes passes the
+whole pipeline. A subagent type holding `board_show` can still take the read-only spawn fast path;
+one holding `board_update` is a state-changing spawn.
+
 ## Scheduled prompts
 
 `cron_create` is an `arbitrary` tool, and always a destructive call for the guardian (so a low-confidence allow is denied), even though it touches no file: it plants model-written text
@@ -226,7 +239,7 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
 | `agent`, `skill` | the agent type or skill name | exact name |
 | `monitor` | words, as for `shell` | the parsed command line, as for `shell`; a `shell` deny or ask rule covers `monitor` too, an allow rule does not |
-| `send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `job_output`, `job_cancel` | none | the tool name |
+| `send_message`, `board_update`, `board_show`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `job_output`, `job_cancel` | none | the tool name |
 
 Deny and ask rules fail toward matching; allow rules fail toward not matching:
 

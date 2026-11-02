@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::agent_list::ListRow;
-use crate::agents_panel::status_label;
+use crate::agents_panel::row_label;
 use crate::app::App;
 use crate::input::{InputBuffer, PendingMedia, wrap};
 use crate::model_picker::PickerPurpose;
@@ -660,8 +660,9 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App, view: &InputView) {
             Some(ListRow {
                 agent_type,
                 status: Some(status),
+                idle,
                 ..
-            }) => format!(" · {agent_type} · {} ", status_label(*status)),
+            }) => format!(" · {agent_type} · {} ", row_label(*status, *idle)),
             _ => " ".to_string(),
         };
         block = block.title_top(
@@ -786,6 +787,7 @@ mod tests {
             spend: "12 tok".into(),
             unpriced: false,
             writing: 0,
+            idle: false,
         }
     }
 

@@ -15,6 +15,8 @@ use crate::session::ClearError;
 pub enum RewindError {
     /// A subagent is running or has a report to deliver.
     SubagentsRunning,
+    /// A teammate is idle: it holds conversation history a later wake needs.
+    IdleTeammates,
     /// The conversation could not be put back.
     Conversation(ClearError),
 }
@@ -25,6 +27,9 @@ impl fmt::Display for RewindError {
             RewindError::SubagentsRunning => f.write_str(
                 "subagents are still running or have reports to deliver; /rewind is refused until they finish or are killed",
             ),
+            RewindError::IdleTeammates => f.write_str(
+                "a teammate is idle and keeps its own history; /rewind is refused until it is killed or the session ends",
+            ),
             RewindError::Conversation(_) => f.write_str("the conversation could not be rewound"),
         }
     }
@@ -33,7 +38,7 @@ impl fmt::Display for RewindError {
 impl std::error::Error for RewindError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            RewindError::SubagentsRunning => None,
+            RewindError::SubagentsRunning | RewindError::IdleTeammates => None,
             RewindError::Conversation(e) => Some(e),
         }
     }
@@ -82,6 +87,9 @@ impl AgentRuntime {
         let agents = self.state.agents();
         if agents.any_running() || agents.has_agent_notifications() {
             return Err(RewindError::SubagentsRunning);
+        }
+        if agents.any_idle() {
+            return Err(RewindError::IdleTeammates);
         }
         let checkpoints = self.session.checkpoints();
         if what.includes_conversation() {

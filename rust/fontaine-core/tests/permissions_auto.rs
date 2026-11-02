@@ -8,7 +8,7 @@ use common::pipeline::{
     verdict_json,
 };
 use fontaine_core::audit::Decision;
-use fontaine_core::config::PermissionMode::{Auto, DontAsk, Manual};
+use fontaine_core::config::PermissionMode::{AcceptEdits, Auto, DontAsk, Manual, Plan};
 use fontaine_core::ledger::Record;
 use fontaine_core::permissions::{Answer, DenyAll, UnavailableChoice};
 use fontaine_core::tier::Tier;
@@ -1156,4 +1156,58 @@ async fn a_retried_adjudication_counts_as_one_guardian_call() {
     rig.state.set_guardian(fake.guardian.clone());
     assert!(allowed(&rig.check("shell", shell("make all")).await));
     assert_eq!(rig.state.guardian_usage().calls, 1);
+}
+
+fn board_create() -> Value {
+    json!({"action": "create", "title": "write the parser"})
+}
+
+#[tokio::test]
+async fn board_update_asks_in_manual_and_accept_edits_like_send_message() {
+    for mode in [Manual, AcceptEdits] {
+        let fake = fake_guardian(allow_verdict());
+        let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
+        rig.approver.answer(Answer::AllowOnce);
+        assert!(allowed(&rig.check("board_update", board_create()).await));
+        assert_eq!(rig.approver.asked(), 1, "{mode:?}");
+        assert_eq!(fake.calls(), 0);
+    }
+}
+
+#[tokio::test]
+async fn board_update_is_guardian_judged_in_auto_and_plan_with_no_fast_path() {
+    for mode in [Auto, Plan] {
+        let fake = fake_guardian(allow_verdict());
+        let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
+        assert!(allowed(&rig.check("board_update", board_create()).await));
+        assert_eq!(fake.calls(), 1, "{mode:?}");
+        assert_eq!(last(&rig).tier, Tier::Guardian);
+    }
+}
+
+#[tokio::test]
+async fn board_show_takes_the_read_only_fast_path_in_auto() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "");
+    assert!(allowed(&rig.check("board_show", json!({})).await));
+    assert_eq!(last(&rig).tier, Tier::ReadOnlyFastPath);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn a_deny_rule_on_board_update_wins_in_every_mode() {
+    for mode in [Manual, AcceptEdits, Plan, DontAsk, Auto] {
+        let fake = fake_guardian(allow_verdict());
+        let rig = Rig::with(
+            Options::new(mode)
+                .guardian(fake.guardian.clone())
+                .settings("[permissions]\ndeny = [\"board_update\"]\n"),
+        );
+        assert!(
+            !allowed(&rig.check("board_update", board_create()).await),
+            "{mode:?}"
+        );
+        assert_eq!(fake.calls(), 0, "{mode:?}");
+        assert_eq!(rig.approver.asked(), 0, "{mode:?}");
+    }
 }

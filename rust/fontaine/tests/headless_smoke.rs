@@ -74,6 +74,8 @@ async fn the_registered_tools_are_advertised_to_the_model() {
         "send_message",
         "ask_user_question",
         "todo_write",
+        "board_show",
+        "board_update",
     ];
     assert_eq!(out.lines()[0]["tools"], json!(names));
 

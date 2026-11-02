@@ -16,6 +16,7 @@ use fontaine_agents::registry::AgentTypes;
 use fontaine_agents::root_ledger::{AgentEvent, RootLedger};
 use fontaine_agents::runner::{ChildHandle, ChildRunner, SpawnRequest};
 use fontaine_agents::spawn::{AgentTool, SendMessageTool};
+use fontaine_agents::tools::{BoardShowTool, BoardUpdateTool};
 use fontaine_agents::tree::{AgentTree, Limits};
 use fontaine_core::config::PermissionMode::{self, Manual};
 use fontaine_core::questions::HumanQuestions;
@@ -118,6 +119,11 @@ fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
             ledger: Arc::new(NoLedger),
         }),
         ExtensionTool::new(SendMessageTool {
+            tree: tree.clone(),
+            ledger: Arc::new(NoLedger),
+        }),
+        ExtensionTool::new(BoardShowTool { tree: tree.clone() }),
+        ExtensionTool::new(BoardUpdateTool {
             tree,
             ledger: Arc::new(NoLedger),
         }),
@@ -194,6 +200,8 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "agent",
         "skill",
         "send_message",
+        "board_show",
+        "board_update",
         "ask_user_question",
         "todo_write",
         "cron_create",

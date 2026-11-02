@@ -87,6 +87,13 @@ pub trait ChildHandle: Send + Sync {
     /// has already moved the node back to running in the tree.
     fn resume(&self, _prompt: String) {}
 
+    /// Starts another run like [`resume`](Self::resume), on `text` that is not the human's: a
+    /// peer's message, a hand-off note or a hook's reason. It must never become intent for the
+    /// guardian, so an implementation does not record it as a human message.
+    fn resume_with_data(&self, text: String) {
+        self.resume(text);
+    }
+
     /// Takes the messages the human typed to this child that its last run ended without
     /// reading.
     fn take_missed(&self) -> Vec<String> {

@@ -13,7 +13,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use crate::agent_list;
-use crate::agents_panel::{AgentsPanel, JobRow, PanelRow, trimmed_count};
+use crate::agents_panel::{AgentsPanel, BoardRow, JobRow, PanelRow, trimmed_count};
 use crate::config_panel::ConfigKey;
 use crate::denials::{DeniedList, UnavailablePrompt};
 use crate::input::{MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia};
@@ -161,6 +161,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 unpriced_tokens: row.spend.unpriced_tokens,
                 depth: row.depth,
                 writing: row.writing,
+                idle: row.idle,
                 stopped_because: row.exhausted.map(|why| why.describe_with(trimmed_count)),
             })
             .collect();
@@ -177,9 +178,25 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 state: job.state,
             })
             .collect();
+        let tree = runtime.state.agents();
+        let board: Vec<BoardRow> = tree.teams().map_or_else(Vec::new, |teams| {
+            teams
+                .board
+                .list()
+                .into_iter()
+                .map(|task| BoardRow {
+                    id: task.id,
+                    title: task.title,
+                    status: task.status.as_str().to_string(),
+                    owner: task.owner.as_deref().map(|owner| tree.name_of(owner)),
+                    blocked_by: task.blocked_by,
+                })
+                .collect()
+        });
         if let Some(panel) = &mut self.app.agents {
             panel.set_rows(panel_rows);
             panel.set_jobs(job_rows);
+            panel.set_board(board);
         }
     }
 
@@ -393,7 +410,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// The notice lands where the human is looking: an agent's view, or the main chat.
     fn kill_agent(&mut self, runtime: &AgentRuntime, id: &str) {
         let label = agent_label(runtime, id);
-        if runtime.state.agents().kill(id) {
+        if runtime.kill_agent(id) {
             self.app.shown_mut().notice(format!("killed {label}"));
         }
     }
@@ -840,6 +857,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     &hooks.pre_tool_use,
                     &hooks.post_tool_use,
                     &hooks.permission_denied,
+                    &hooks.task_completed,
+                    &hooks.teammate_idle,
                     runtime.project_executables(),
                 ));
             }

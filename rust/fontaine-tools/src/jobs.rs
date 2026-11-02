@@ -131,7 +131,7 @@ pub enum AgentState {
         age: Duration,
         on_permission: bool,
     },
-    /// `status` is the subagent's final status word.
+    /// `status` is the subagent's final status word, or `idle` for a teammate that can be woken.
     Ended {
         status: String,
         delivery: AgentDelivery,

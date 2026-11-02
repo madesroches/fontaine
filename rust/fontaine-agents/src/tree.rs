@@ -16,6 +16,7 @@ use tokio::sync::Notify;
 use crate::budget::{Budget, Exhausted, Spend};
 use crate::mode::{Ladder, Posture, RootMode};
 use crate::runner::{ChildHandle, ChildReport, ChildStatus};
+use crate::tasks::Teams;
 
 /// Minimum gap between tree wakeups caused by `note_writing`.
 const WRITING_WAKE_INTERVAL: Duration = Duration::from_millis(250);
@@ -102,6 +103,15 @@ impl Default for Limits {
     }
 }
 
+/// What a kill found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Killed {
+    /// A run was stopped; its watcher concludes it.
+    Running,
+    /// An idle teammate was ended; nothing is left to conclude it.
+    Idle,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotificationKind {
     /// A `send_message` from another agent.
@@ -157,6 +167,8 @@ pub enum Refusal {
     SessionBudget(String),
     /// A resume found the agent running, or not ended: another resume won.
     AlreadyRunning,
+    /// A kill ended the agent for good; a wake that checked before the kill must not undo it.
+    Killed,
     /// The requested name is malformed, reserved or taken; the text says why.
     Name(String),
 }
@@ -165,6 +177,9 @@ pub enum Refusal {
 pub enum DeliverError {
     /// The target ended, was killed, or never existed.
     NotRunning,
+    /// The target is a teammate waiting for work: reachable, but a message needs to wake it. It
+    /// carries the teammate's id.
+    Idle(String),
     /// The target is not the sender's parent, child or sibling, and is not `main`.
     NotReachable,
 }
@@ -194,6 +209,10 @@ struct Node {
     started: Instant,
     ended: Option<Instant>,
     writing: u64,
+    /// Spawned as a teammate: its finished turn leaves it idle instead of done.
+    teammate: bool,
+    /// A teammate whose turn ended `Done` and that a message or the human can wake.
+    idle: bool,
 }
 
 impl Node {
@@ -296,6 +315,8 @@ pub struct AgentRow {
     pub ended: Option<Instant>,
     /// Characters the model wrote in its current step; display state, cleared when the step ends.
     pub writing: u64,
+    /// A teammate waiting for work: its turn ended and a message can wake it.
+    pub idle: bool,
 }
 
 type RootModeSource = Arc<dyn Fn() -> RootMode + Send + Sync>;
@@ -312,6 +333,9 @@ pub struct AgentTree {
     display: Notify,
     next: AtomicU64,
     unpriced_noticed: AtomicBool,
+    /// Set when the session starts ending, after which no agent is woken.
+    shutdown: AtomicBool,
+    teams: RwLock<Option<Arc<Teams>>>,
 }
 
 impl AgentTree {
@@ -339,6 +363,8 @@ impl AgentTree {
             started: Instant::now(),
             ended: None,
             writing: 0,
+            teammate: false,
+            idle: false,
         };
         AgentTree {
             limits,
@@ -355,7 +381,53 @@ impl AgentTree {
             display: Notify::new(),
             next: AtomicU64::new(next_agent),
             unpriced_noticed: AtomicBool::new(false),
+            shutdown: AtomicBool::new(false),
+            teams: RwLock::new(None),
         }
+    }
+
+    /// Turns teams on for the session: the board and the quality gates. Without it `teammate`
+    /// spawns are refused and the watcher never idles an agent.
+    pub fn set_teams(&self, teams: Arc<Teams>) {
+        *write(&self.teams, "teams") = Some(teams);
+    }
+
+    pub fn teams(&self) -> Option<Arc<Teams>> {
+        read(&self.teams, "teams").clone()
+    }
+
+    /// Marks a freshly reserved agent as a teammate.
+    pub fn set_teammate(&self, id: &str) {
+        if let Some(node) = self.lock().nodes.get_mut(id) {
+            node.teammate = true;
+        }
+    }
+
+    pub fn is_teammate(&self, id: &str) -> bool {
+        self.lock().nodes.get(id).is_some_and(|n| n.teammate)
+    }
+
+    /// Whether any teammate has a run in flight.
+    pub fn any_teammate_running(&self) -> bool {
+        self.lock()
+            .nodes
+            .values()
+            .any(|n| n.teammate && n.status.is_running())
+    }
+
+    /// Whether `id` is a teammate waiting for work.
+    pub fn is_idle(&self, id: &str) -> bool {
+        self.lock().nodes.get(id).is_some_and(|n| n.idle)
+    }
+
+    /// Whether any teammate is idle. Its conversation holds history a later wake needs, so a
+    /// surface that discards conversations refuses while one is.
+    pub fn any_idle(&self) -> bool {
+        self.lock().nodes.values().any(|n| n.idle)
+    }
+
+    pub fn shutting_down(&self) -> bool {
+        self.shutdown.load(Ordering::SeqCst)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -567,6 +639,8 @@ impl AgentTree {
                 started: Instant::now(),
                 ended: None,
                 writing: 0,
+                teammate: false,
+                idle: false,
             },
         );
         drop(inner);
@@ -656,7 +730,9 @@ impl AgentTree {
     /// Records how a child ended. A child already marked killed or exhausted keeps that. Its
     /// own running children are stopped: a child ends normally only once they have reported, so
     /// any left belong to a child that was killed, failed or ran out of budget.
-    pub fn finish(&self, id: &str, report: ChildReport) {
+    /// Returns whether the node was left idle, which is the only end that keeps its tasks: it is
+    /// read from the same lock that decided it, so a kill that came first cannot be missed.
+    pub fn finish(&self, id: &str, report: ChildReport) -> bool {
         let mut inner = self.lock();
         let mut handles = Vec::new();
         if inner.nodes.contains_key(id) {
@@ -668,10 +744,13 @@ impl AgentTree {
                 }
             }
         }
+        let mut idle = false;
         if let Some(node) = inner.nodes.get_mut(id) {
             if node.status.is_running() {
                 node.status = report.status;
             }
+            node.idle = node.teammate && node.status == ChildStatus::Done;
+            idle = node.idle;
             node.ended = Some(Instant::now());
             node.report = Some(report);
         }
@@ -680,6 +759,7 @@ impl AgentTree {
             handle.kill();
         }
         self.changed.notify_waiters();
+        idle
     }
 
     /// Why `id`, which has ended, cannot be resumed: a kill and a spent budget are final.
@@ -695,6 +775,29 @@ impl AgentTree {
             ChildStatus::BudgetExhausted => Some("its budget is spent".to_string()),
             _ => None,
         }
+    }
+
+    /// Why `id` cannot be woken to take a message or a task hand-off: the session is ending, or
+    /// its end is final (see [`resume_blocker`](Self::resume_blocker)).
+    pub fn wake_blocker(&self, id: &str) -> Option<String> {
+        if self.shutting_down() {
+            return Some("the session is ending".to_string());
+        }
+        self.resume_blocker(id)
+    }
+
+    /// Why a teammate whose run just ended `Done` cannot take another run in the same
+    /// conversation: the session is ending or the session's agent budget is spent. The node still
+    /// counts as running, so no parallel slot is needed.
+    pub fn continue_blocker(&self, id: &str) -> Option<String> {
+        if let Some(why) = self.wake_blocker(id) {
+            return Some(why);
+        }
+        let inner = self.lock();
+        self.limits
+            .session
+            .exhausted(&inner.session_spend, true)
+            .map(|why| format!("the session's agent budget is spent: {}", why.describe()))
     }
 
     /// Where `id` stands now, a prompt wait included.
@@ -719,6 +822,9 @@ impl AgentTree {
         if node.status.is_running() {
             return Err(Refusal::AlreadyRunning);
         }
+        if node.status == ChildStatus::Killed {
+            return Err(Refusal::Killed);
+        }
         if let Some(why) = self.limits.session.exhausted(&inner.session_spend, true) {
             return Err(Refusal::SessionBudget(why.describe()));
         }
@@ -730,6 +836,7 @@ impl AgentTree {
             .get_mut(id)
             .expect("the node was found under this same lock");
         node.status = ChildStatus::Running;
+        node.idle = false;
         node.report = None;
         node.ended = None;
         node.started = Instant::now();
@@ -742,15 +849,35 @@ impl AgentTree {
         self.lock().nodes.get(id).and_then(|n| n.report.clone())
     }
 
-    /// Stops a running child and every running descendant. Returns whether it was running.
+    /// Stops a running child and every running descendant, or ends an idle teammate for good.
+    /// Returns whether it was running or idle. An idle kill leaves its tasks and the ledger to
+    /// `spawn::kill_agent`, which a caller that holds the ledger must use.
     pub fn kill(&self, id: &str) -> bool {
+        self.kill_outcome(id).is_some()
+    }
+
+    /// Like [`kill`](Self::kill), but says which end it found, decided under the same lock as the
+    /// kill itself.
+    pub fn kill_outcome(&self, id: &str) -> Option<Killed> {
         let handles = {
             let mut inner = self.lock();
-            let Some(node) = inner.nodes.get(id) else {
-                return false;
-            };
-            if id == ROOT_AGENT || !node.status.is_running() {
-                return false;
+            let node = inner.nodes.get(id)?;
+            if id == ROOT_AGENT {
+                return None;
+            }
+            if node.idle {
+                // Nothing runs: no watcher will conclude it, and no report is queued for a kill.
+                // `spawn::kill_agent` records the end and returns its tasks.
+                let node = inner.nodes.get_mut(id).expect("checked above");
+                node.status = ChildStatus::Killed;
+                node.idle = false;
+                node.ended = Some(Instant::now());
+                drop(inner);
+                self.changed.notify_waiters();
+                return Some(Killed::Idle);
+            }
+            if !node.status.is_running() {
+                return None;
             }
             let mut doomed = vec![id.to_string()];
             doomed.extend(inner.running_descendants(id));
@@ -768,11 +895,41 @@ impl AgentTree {
             handle.kill();
         }
         self.changed.notify_waiters();
+        Some(Killed::Running)
+    }
+
+    /// Ends an idle teammate as `done` without a kill, so it leaves the agent list. False when it
+    /// is not idle any more (a wake won) or has messages waiting.
+    pub fn retire_idle(&self, id: &str) -> bool {
+        let mut inner = self.lock();
+        let Some(node) = inner.nodes.get_mut(id) else {
+            return false;
+        };
+        if !node.idle || !node.inbox.is_empty() {
+            return false;
+        }
+        node.idle = false;
+        node.ended = Some(Instant::now());
+        drop(inner);
+        self.changed.notify_waiters();
         true
+    }
+
+    /// The ids of the teammates that are idle, oldest first.
+    pub fn idle_ids(&self) -> Vec<String> {
+        let inner = self.lock();
+        inner
+            .order
+            .iter()
+            .filter(|id| inner.nodes.get(*id).is_some_and(|n| n.idle))
+            .cloned()
+            .collect()
     }
 
     /// Kills every running child below the root.
     pub fn kill_all(&self) {
+        // Called only as the session ends; from here on nothing may be woken.
+        self.shutdown.store(true, Ordering::SeqCst);
         let ids: Vec<String> = {
             let inner = self.lock();
             inner
@@ -913,9 +1070,6 @@ impl AgentTree {
         let Some(target) = inner.nodes.get(to) else {
             return Err(DeliverError::NotRunning);
         };
-        if to != ROOT_AGENT && !target.status.is_running() {
-            return Err(DeliverError::NotRunning);
-        }
         let sender_parent = inner.nodes.get(from).and_then(|n| n.info.parent.clone());
         let target_parent = target.info.parent.clone();
         let reachable = to != from
@@ -923,6 +1077,15 @@ impl AgentTree {
                 || sender_parent.as_deref() == Some(to)
                 || target_parent.as_deref() == Some(from)
                 || (sender_parent.is_some() && sender_parent == target_parent));
+        if to != ROOT_AGENT && !target.status.is_running() {
+            // An idle teammate is told apart only to a sender that may reach it: others learn
+            // nothing about it.
+            return Err(if target.idle && reachable {
+                DeliverError::Idle(to.to_string())
+            } else {
+                DeliverError::NotRunning
+            });
+        }
         if !reachable {
             return Err(DeliverError::NotReachable);
         }
@@ -949,7 +1112,7 @@ impl AgentTree {
         self.push(ROOT_AGENT, from, kind, text);
     }
 
-    fn push(&self, parent: &str, from: &str, kind: NotificationKind, text: String) {
+    pub(crate) fn push(&self, parent: &str, from: &str, kind: NotificationKind, text: String) {
         // A killed parent never drains its inbox; the note would only keep waiters blocked.
         let mut inner = self.lock();
         let from_name = inner.name_of(from);
@@ -1060,10 +1223,12 @@ impl AgentTree {
         } else {
             AgentDelivery::AlreadyDelivered
         };
-        Ok(AgentState::Ended {
-            status: node.status.as_str().to_owned(),
-            delivery,
-        })
+        let status = if node.idle {
+            "idle".to_owned()
+        } else {
+            node.status.as_str().to_owned()
+        };
+        Ok(AgentState::Ended { status, delivery })
     }
 
     /// Empties `agent`'s inbox.
@@ -1073,6 +1238,17 @@ impl AgentTree {
             .get_mut(agent)
             .map(|n| n.inbox.drain(..).collect())
             .unwrap_or_default()
+    }
+
+    /// Puts notifications taken for `agent` back at the front of its inbox, in their order, when
+    /// they could not be delivered after all.
+    pub fn requeue(&self, agent: &str, notes: Vec<Notification>) {
+        if let Some(node) = self.lock().nodes.get_mut(agent) {
+            for note in notes.into_iter().rev() {
+                node.inbox.push_front(note);
+            }
+        }
+        self.changed.notify_waiters();
     }
 
     pub fn has_notifications(&self, agent: &str) -> bool {
@@ -1146,6 +1322,7 @@ impl AgentTree {
                 started: n.started,
                 ended: n.ended,
                 writing: n.writing,
+                idle: n.idle,
             })
             .collect()
     }
@@ -2011,5 +2188,173 @@ mod tests {
         tree.note_writing(&a, 1);
         tree.reset_writing(&a);
         assert!(notified.now_or_never().is_none());
+    }
+
+    fn teammate(tree: &AgentTree) -> String {
+        let id = reserve(tree, ROOT_AGENT).unwrap();
+        tree.set_teammate(&id);
+        id
+    }
+
+    #[test]
+    fn a_teammates_done_finish_is_idle_and_any_other_end_is_not() {
+        let tree = tree(8);
+        let done = teammate(&tree);
+        tree.finish(&done, report(ChildStatus::Done));
+        assert!(tree.is_idle(&done));
+        assert!(tree.any_idle());
+        assert!(tree.rows()[0].idle);
+        assert!(!tree.any_running());
+        for status in [
+            ChildStatus::Failed,
+            ChildStatus::BudgetExhausted,
+            ChildStatus::Killed,
+        ] {
+            let id = teammate(&tree);
+            tree.finish(&id, report(status));
+            assert!(!tree.is_idle(&id), "{status:?}");
+        }
+        let killed = teammate(&tree);
+        tree.kill(&killed);
+        tree.finish(&killed, report(ChildStatus::Done));
+        assert!(!tree.is_idle(&killed), "a kill that came first stays final");
+        let plain = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.finish(&plain, report(ChildStatus::Done));
+        assert!(!tree.is_idle(&plain));
+    }
+
+    #[test]
+    fn finish_says_whether_the_teammate_was_left_idle_and_kill_which_end_it_found() {
+        let tree = tree(8);
+        let done = teammate(&tree);
+        assert!(tree.finish(&done, report(ChildStatus::Done)));
+        assert_eq!(tree.kill_outcome(&done), Some(Killed::Idle));
+        assert_eq!(tree.kill_outcome(&done), None);
+        let racing = teammate(&tree);
+        assert_eq!(tree.kill_outcome(&racing), Some(Killed::Running));
+        assert!(
+            !tree.finish(&racing, report(ChildStatus::Done)),
+            "a kill that landed first means the tasks are not kept"
+        );
+    }
+
+    #[test]
+    fn retiring_an_idle_teammate_ends_it_as_done_unless_it_has_mail() {
+        let tree = tree(8);
+        let a = teammate(&tree);
+        let b = teammate(&tree);
+        tree.finish(&a, report(ChildStatus::Done));
+        tree.finish(&b, report(ChildStatus::Done));
+        tree.requeue(
+            &b,
+            vec![Notification {
+                from: ROOT_AGENT.into(),
+                from_name: ROOT_AGENT.into(),
+                kind: NotificationKind::Message,
+                text: "hi".into(),
+            }],
+        );
+        assert!(tree.retire_idle(&a));
+        assert!(!tree.retire_idle(&a));
+        assert!(!tree.retire_idle(&b));
+        assert!(!tree.is_idle(&a));
+        assert_eq!(tree.idle_ids(), vec![b]);
+    }
+
+    #[test]
+    fn job_output_names_an_idle_teammate_idle() {
+        let tree = tree(8);
+        let id = teammate(&tree);
+        tree.finish(&id, report(ChildStatus::Done));
+        let state = tree.agent_state(ROOT_AGENT, &id).unwrap();
+        assert!(matches!(state, AgentState::Ended { ref status, .. } if status == "idle"));
+    }
+
+    #[test]
+    fn deliver_to_an_idle_teammate_says_idle_and_to_a_plain_finished_agent_not_running() {
+        let tree = tree(8);
+        let idle = teammate(&tree);
+        let plain = reserve(&tree, ROOT_AGENT).unwrap();
+        tree.finish(&idle, report(ChildStatus::Done));
+        tree.finish(&plain, report(ChildStatus::Done));
+        assert_eq!(
+            tree.deliver(ROOT_AGENT, &idle, "hi".into()),
+            Err(DeliverError::Idle(idle.clone()))
+        );
+        assert_eq!(
+            tree.deliver(ROOT_AGENT, &plain, "hi".into()),
+            Err(DeliverError::NotRunning)
+        );
+        assert!(!tree.has_notifications(&idle));
+    }
+
+    #[test]
+    fn an_idle_teammate_is_not_revealed_to_a_sender_that_cannot_reach_it() {
+        let tree = tree(8);
+        let idle = teammate(&tree);
+        let stranger = reserve(&tree, ROOT_AGENT).unwrap();
+        let nested = reserve(&tree, &stranger).unwrap();
+        tree.finish(&idle, report(ChildStatus::Done));
+        // A sibling can reach it; a child of the sibling cannot.
+        assert_eq!(
+            tree.deliver(&stranger, &idle, "hi".into()),
+            Err(DeliverError::Idle(idle.clone()))
+        );
+        assert_eq!(
+            tree.deliver(&nested, &idle, "hi".into()),
+            Err(DeliverError::NotRunning)
+        );
+    }
+
+    #[test]
+    fn resuming_a_teammate_clears_idle() {
+        let tree = tree(8);
+        let id = teammate(&tree);
+        tree.finish(&id, report(ChildStatus::Done));
+        tree.resume(&id).unwrap();
+        assert!(!tree.is_idle(&id));
+        assert!(tree.is_running(&id));
+        assert!(tree.deliver(ROOT_AGENT, &id, "hi".into()).is_ok());
+    }
+
+    #[test]
+    fn a_wake_is_refused_once_the_session_starts_ending() {
+        let tree = tree(8);
+        let id = teammate(&tree);
+        tree.finish(&id, report(ChildStatus::Done));
+        assert_eq!(tree.wake_blocker(&id), None);
+        tree.kill_all();
+        assert!(tree.wake_blocker(&id).unwrap().contains("ending"));
+        assert!(tree.shutting_down());
+    }
+
+    #[test]
+    fn requeued_notes_return_to_the_front_in_order() {
+        let tree = tree(8);
+        let id = teammate(&tree);
+        tree.deliver(ROOT_AGENT, &id, "later".into()).unwrap();
+        tree.requeue(
+            &id,
+            vec![
+                Notification {
+                    from: "a".into(),
+                    from_name: "a".into(),
+                    kind: NotificationKind::Message,
+                    text: "first".into(),
+                },
+                Notification {
+                    from: "a".into(),
+                    from_name: "a".into(),
+                    kind: NotificationKind::Message,
+                    text: "second".into(),
+                },
+            ],
+        );
+        let texts: Vec<_> = tree
+            .take_notifications(&id)
+            .into_iter()
+            .map(|n| n.text)
+            .collect();
+        assert_eq!(texts, ["first", "second", "later"]);
     }
 }

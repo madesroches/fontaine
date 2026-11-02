@@ -5,6 +5,10 @@
 //!
 //! A hook can only add: `deny` and `ask` tighten, `allow` acts exactly as an allow rule does,
 //! and a hook that fails, times out or says something unreadable decides nothing.
+//!
+//! The two team events, `task_completed` and `teammate_idle`, are quality gates and can only
+//! block: exit code 2 keeps the task open or keeps the teammate working, with stderr as the
+//! reason. They have no `allow` answer.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -12,6 +16,8 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
+use fontaine_agents::tasks::{QualityGate, Task};
+use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::CallView;
 use fontaine_tools::git_bash::{GitBash, sh_command};
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note, text_view};
@@ -24,7 +30,7 @@ use crate::config::{Config, Hook};
 use crate::gate::SessionState;
 use crate::permission_rules::{CallContext, Posture, matches, parse_rule};
 use crate::permissions::{
-    HookDecision, HookError, HookPermission, PermissionDeniedEvent, PermissionDeniedHook,
+    Approver, HookDecision, HookError, HookPermission, PermissionDeniedEvent, PermissionDeniedHook,
     PreToolUseEvent, PreToolUseHook,
 };
 
@@ -112,6 +118,8 @@ mod wire {
     pub const PRE: &str = "PreToolUse";
     pub const POST: &str = "PostToolUse";
     pub const DENIED: &str = "PermissionDenied";
+    pub const TASK_COMPLETED: &str = "TaskCompleted";
+    pub const TEAMMATE_IDLE: &str = "TeammateIdle";
 }
 
 /// One configured hook.
@@ -480,12 +488,129 @@ impl ResultStage for PostHookStage {
     }
 }
 
-/// The three hook lists a session runs.
+/// What a hook of a team event is told besides the common fields.
+enum TeamEvent<'a> {
+    TaskCompleted(&'a Task),
+    TeammateIdle(&'a str),
+}
+
+/// The team's quality gates over the user's hooks. A gate that cannot run says so to the human
+/// and lets the work go on: it is a quality check, and one that failed closed would wedge the
+/// team.
+pub struct TeamGate {
+    task_completed: Vec<CommandHook>,
+    teammate_idle: Vec<CommandHook>,
+    state: Arc<SessionState>,
+    approver: Arc<dyn Approver>,
+}
+
+impl TeamGate {
+    pub fn new(
+        task_completed: Vec<CommandHook>,
+        teammate_idle: Vec<CommandHook>,
+        state: Arc<SessionState>,
+        approver: Arc<dyn Approver>,
+    ) -> TeamGate {
+        TeamGate {
+            task_completed,
+            teammate_idle,
+            state,
+            approver,
+        }
+    }
+
+    /// The first hook that blocks, with its reason.
+    async fn run(
+        &self,
+        hooks: &[CommandHook],
+        name: &str,
+        agent: &str,
+        event: TeamEvent<'_>,
+    ) -> Option<String> {
+        for hook in hooks {
+            let mut input = json!({
+                "session_id": self.state.session_id,
+                "cwd": self.state.scope().primary().display().to_string(),
+                "hook_event_name": name,
+                "agent_id": agent,
+            });
+            match &event {
+                TeamEvent::TaskCompleted(task) => {
+                    input["task"] = serde_json::to_value(task).expect("a task serializes");
+                }
+                TeamEvent::TeammateIdle(teammate) => input["teammate_name"] = json!(teammate),
+            }
+            match tokio::time::timeout(hook.timeout, hook.call(name, input)).await {
+                Ok(Ok(output)) => match output.code {
+                    Some(0) => {}
+                    Some(2) => {
+                        let reason = output.stderr.trim();
+                        return Some(if reason.is_empty() {
+                            format!("the hook `{}` blocked it", hook.command)
+                        } else {
+                            reason.to_string()
+                        });
+                    }
+                    other => self.approver.warn(&format!(
+                        "the {name} hook `{}` exited with {}; it blocks nothing",
+                        hook.command,
+                        other.map_or_else(|| "a signal".to_string(), |c| c.to_string())
+                    )),
+                },
+                Ok(Err(e)) => self.approver.warn(&format!(
+                    "the {name} hook `{}` failed: {}; it blocks nothing",
+                    hook.command,
+                    chain(&e)
+                )),
+                Err(_) => self.approver.warn(&format!(
+                    "the {name} hook `{}` timed out; it blocks nothing",
+                    hook.command
+                )),
+            }
+        }
+        None
+    }
+}
+
+impl QualityGate for TeamGate {
+    fn task_completed<'a>(
+        &'a self,
+        agent: &'a str,
+        task: &'a Task,
+    ) -> BoxFuture<'a, Option<String>> {
+        Box::pin(self.run(
+            &self.task_completed,
+            wire::TASK_COMPLETED,
+            agent,
+            TeamEvent::TaskCompleted(task),
+        ))
+    }
+
+    fn teammate_idle<'a>(&'a self, agent: &'a str, name: &'a str) -> BoxFuture<'a, Option<String>> {
+        Box::pin(self.run(
+            &self.teammate_idle,
+            wire::TEAMMATE_IDLE,
+            agent,
+            TeamEvent::TeammateIdle(name),
+        ))
+    }
+
+    fn warn(&self, message: &str) {
+        self.approver.warn(message);
+    }
+}
+
+/// The hook lists a session runs.
 #[derive(Default)]
 pub struct BuiltHooks {
     pub pre: Vec<Arc<dyn PreToolUseHook>>,
     pub denied: Vec<Arc<dyn PermissionDeniedHook>>,
     pub post: Vec<CommandHook>,
+    pub task_completed: Vec<CommandHook>,
+    pub teammate_idle: Vec<CommandHook>,
+    /// `teammate_idle` hooks the repository defined, which are never run: a hook that forces
+    /// more model calls is spend, and a repository may only tighten.
+    pub ignored_project_idle: usize,
 }
 
 /// Builds the configured hooks. A hook the repository defines is left out when
@@ -512,5 +637,68 @@ pub fn build(config: &Config, project_executables: bool, process: Arc<HookProces
             .post
             .push(CommandHook::new("post_tool_use", hook, process.clone()));
     }
+    for hook in config.hooks.task_completed.iter().filter(keep) {
+        built
+            .task_completed
+            .push(CommandHook::new("task_completed", hook, process.clone()));
+    }
+    for hook in &config.hooks.teammate_idle {
+        if hook.origin.is_project() {
+            built.ignored_project_idle += 1;
+        } else {
+            built
+                .teammate_idle
+                .push(CommandHook::new("teammate_idle", hook, process.clone()));
+        }
+    }
     built
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Origin, Slot};
+
+    fn hook(command: &str, slot: Slot) -> Hook {
+        Hook {
+            matcher: None,
+            command: command.to_string(),
+            timeout_secs: None,
+            origin: Origin {
+                slot,
+                user_trust: slot == Slot::User,
+            },
+            plugin: None,
+        }
+    }
+
+    fn process() -> Arc<HookProcess> {
+        Arc::new(HookProcess {
+            scrub_env: Vec::new(),
+            set_env: Vec::new(),
+            git_bash: None,
+            project_dir: std::env::temp_dir(),
+        })
+    }
+
+    #[test]
+    fn a_project_teammate_idle_hook_is_dropped_while_a_user_one_is_kept() {
+        let mut config = Config::defaults(std::env::temp_dir());
+        config.hooks.teammate_idle = vec![
+            hook("project.sh", Slot::Project),
+            hook("user.sh", Slot::User),
+        ];
+        config.hooks.task_completed = vec![hook("project-gate.sh", Slot::Project)];
+        let built = build(&config, true, process());
+        assert_eq!(built.teammate_idle.len(), 1);
+        assert_eq!(built.ignored_project_idle, 1);
+        assert_eq!(
+            built.task_completed.len(),
+            1,
+            "a project gate can only keep work open, so it still loads"
+        );
+        let untrusted = build(&config, false, process());
+        assert!(untrusted.task_completed.is_empty());
+        assert_eq!(untrusted.teammate_idle.len(), 1);
+    }
 }

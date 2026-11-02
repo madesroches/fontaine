@@ -87,7 +87,11 @@ pub fn subagents(session: &Session, tree: &AgentTree) -> Vec<AgentSummary> {
         name: row.name.clone(),
         parent: row.parent.clone(),
         agent_type: row.agent_type.clone(),
-        status: row.status.as_str().to_string(),
+        status: if row.idle {
+            "idle".to_string()
+        } else {
+            row.status.as_str().to_string()
+        },
         running: row.status.is_running(),
         linked: true,
     };

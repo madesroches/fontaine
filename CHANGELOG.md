@@ -33,6 +33,12 @@ All notable changes are recorded here. The format follows
 
 #### Agents
 
+- Agent teams, on by default and switched off with `[agents] teams = false` (user, project-local or CLI scope; shared project settings are refused): the `agent`
+  tool takes `teammate`, which starts a named teammate that goes idle between pieces of work and
+  wakes on a `send_message`, and the new `board_show` and `board_update` tools give the team a shared
+  task board with claiming, dependencies and release of a dead owner's tasks. The new
+  `task_completed` and `teammate_idle` hooks can block to hold the team to a quality gate; the agents
+  panel shows idle teammates and the Board (#40).
 - Subagents have a stable, human-readable name besides their `agent-N` id (#290). The `agent` tool
   takes an optional `name` (1 to 32 characters of `a-z`, `0-9` and `-`, starting with a letter) and
   returns it with the id; without one the subagent is called `<type>-<k>`, such as `explore-1`.

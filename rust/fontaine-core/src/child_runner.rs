@@ -250,8 +250,23 @@ impl RootLedger for LedgerWindow {
                 detail: None,
                 name: None,
             },
+            AgentEvent::TaskCreated { task, agent } => task_record("task_created", agent, task),
+            AgentEvent::TaskClaimed { task, agent } => task_record("task_claimed", agent, task),
+            AgentEvent::TaskCompleted { task, agent } => task_record("task_completed", agent, task),
+            AgentEvent::TaskReleased { task, agent } => task_record("task_released", agent, task),
         };
         self.0.append(record);
+    }
+}
+
+/// A board event as the ledger keeps it: who did it and to which task, never the task's text.
+fn task_record(event: &str, agent: String, task: String) -> Record {
+    Record::Agent {
+        event: event.into(),
+        agent,
+        parent: None,
+        detail: Some(task),
+        name: None,
     }
 }
 
@@ -406,6 +421,37 @@ fn launch(shared: Arc<RunShared>, prompt: String, span: tracing::Span) {
     );
 }
 
+impl ChildRun {
+    /// Starts another run on `text`. The human's own words are recorded as theirs, which is what
+    /// makes them intent for the guardian; anything else (a peer's message, a hand-off note, a
+    /// hook's reason) is only shown in the child's view.
+    fn start_run(&self, text: String, from_human: bool) {
+        let shared = &self.shared;
+        // `Node::live_status` reads this while the node runs; `launch` writes it only at run end.
+        *lock(&shared.status, "child status") = ChildStatus::Running;
+        if from_human {
+            record_human_prompt(shared, &text);
+        } else {
+            shared
+                .state
+                .emit_agent_event(&shared.id, AgentViewEvent::Prompt(text.clone()));
+        }
+        shared.reports.send_modify(|(run, latest)| {
+            *run += 1;
+            *latest = None;
+        });
+        let span = tracing::info_span!(
+            target: TARGET,
+            "fontaine.subagent",
+            agent.id = shared.id.as_str(),
+            agent.type = shared.agent_type.as_str(),
+            model.priced = shared.model.priced,
+            resumed = true,
+        );
+        launch(shared.clone(), text, span);
+    }
+}
+
 impl ChildHandle for ChildRun {
     fn status(&self) -> ChildStatus {
         let status = *lock(&self.shared.status, "child status");
@@ -448,23 +494,11 @@ impl ChildHandle for ChildRun {
     }
 
     fn resume(&self, prompt: String) {
-        let shared = &self.shared;
-        // `Node::live_status` reads this while the node runs; `launch` writes it only at run end.
-        *lock(&shared.status, "child status") = ChildStatus::Running;
-        record_human_prompt(shared, &prompt);
-        shared.reports.send_modify(|(run, latest)| {
-            *run += 1;
-            *latest = None;
-        });
-        let span = tracing::info_span!(
-            target: TARGET,
-            "fontaine.subagent",
-            agent.id = shared.id.as_str(),
-            agent.type = shared.agent_type.as_str(),
-            model.priced = shared.model.priced,
-            resumed = true,
-        );
-        launch(shared.clone(), prompt, span);
+        self.start_run(prompt, true);
+    }
+
+    fn resume_with_data(&self, text: String) {
+        self.start_run(text, false);
     }
 
     fn take_missed(&self) -> Vec<String> {

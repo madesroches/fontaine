@@ -425,6 +425,7 @@ mod tests {
             spend: String::new(),
             unpriced: false,
             writing: 0,
+            idle: false,
         }
     }
 

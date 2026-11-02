@@ -223,6 +223,25 @@ impl AgentTypes {
         types
     }
 
+    /// Gives the built-in `worker` both board tools and the built-in `explore` the reading one,
+    /// since a type's toolset is only what it names. `fork` names none and inherits whatever its
+    /// parent has.
+    pub fn enable_teams(&mut self) {
+        for (name, tools) in [
+            ("worker", &["board_show", "board_update"][..]),
+            ("explore", &["board_show"][..]),
+        ] {
+            if let Some(agent) = self
+                .types
+                .get_mut(name)
+                .filter(|t| t.origin == TypeOrigin::Builtin)
+                && let Some(list) = &mut agent.tools
+            {
+                list.extend(tools.iter().map(|tool| tool.to_string()));
+            }
+        }
+    }
+
     /// Adds a type, replacing one of the same name.
     pub fn insert(&mut self, agent_type: AgentType) {
         self.types.insert(agent_type.name.clone(), agent_type);
@@ -397,6 +416,27 @@ mod tests {
         assert!(!ty.accepts_model_override());
         ty.origin = TypeOrigin::PluginFile("x.md".into());
         assert!(!ty.accepts_model_override());
+    }
+
+    #[test]
+    fn teams_give_the_built_in_types_the_board_tools() {
+        let mut types = AgentTypes::builtin();
+        types.enable_teams();
+        let parent = names(&["read", "board_show", "board_update", "send_message"]);
+        assert_eq!(
+            types.get("worker").unwrap().toolset(&parent),
+            names(&["read", "board_show", "board_update", "send_message"])
+        );
+        assert_eq!(
+            types.get("explore").unwrap().toolset(&parent),
+            names(&["read", "board_show", "send_message"])
+        );
+        assert_eq!(types.get("fork").unwrap().toolset(&parent), parent);
+        let plain = AgentTypes::builtin();
+        assert_eq!(
+            plain.get("worker").unwrap().toolset(&parent),
+            names(&["read", "send_message"])
+        );
     }
 
     #[test]

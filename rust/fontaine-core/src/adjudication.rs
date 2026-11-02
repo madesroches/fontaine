@@ -558,6 +558,30 @@ mod tests {
     }
 
     #[test]
+    fn a_toolset_with_board_show_is_read_only_and_one_with_board_update_is_not() {
+        let mut types = AgentTypes::builtin();
+        types.enable_teams();
+        let all: Vec<&str> = fontaine_tools::descriptor::names().collect();
+        assert_eq!(spawn(&types, &all, "explore"), Some(false));
+        assert_eq!(
+            spawn(&types, &["read", "board_show"], "explore"),
+            Some(false)
+        );
+        assert_eq!(
+            spawn(&types, &["read", "board_update"], "explore"),
+            Some(false)
+        );
+        assert_eq!(
+            spawn(&types, &["read", "board_update"], "worker"),
+            Some(true)
+        );
+        assert_eq!(
+            spawn(&types, &["read", "board_show"], "worker"),
+            Some(false)
+        );
+    }
+
+    #[test]
     fn the_toolset_is_cut_to_the_parents_and_an_unknown_one_fails_closed() {
         let types = AgentTypes::builtin();
         assert_eq!(spawn(&types, &["read", "shell"], "explore"), Some(false));

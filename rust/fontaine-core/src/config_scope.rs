@@ -180,6 +180,8 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::any("hooks.pre_tool_use"),
     Rule::any("hooks.post_tool_use"),
     Rule::any("hooks.permission_denied"),
+    Rule::any("hooks.task_completed"),
+    Rule::any("hooks.teammate_idle"),
     Rule::any("mcp.servers"),
     Rule::user_trust("auto_mode.environment", TIGHTEN),
     Rule::user_trust("auto_mode.allow", TIGHTEN),
@@ -511,6 +513,16 @@ mod tests {
         (
             "hooks.permission_denied",
             "[[hooks.permission_denied]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.task_completed",
+            "[[hooks.task_completed]]\ncommand = \"true\"\n",
+            None,
+        ),
+        (
+            "hooks.teammate_idle",
+            "[[hooks.teammate_idle]]\ncommand = \"true\"\n",
             None,
         ),
         ("mcp.servers", "[mcp.servers.s]\ncommand = \"srv\"\n", None),

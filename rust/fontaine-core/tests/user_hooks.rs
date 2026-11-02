@@ -10,12 +10,13 @@ use std::sync::Arc;
 use common::pipeline::{
     Options, Rig, allow_verdict, allowed, denied_message, fake_guardian, verdict_json,
 };
+use fontaine_agents::tasks::{QualityGate, Task, TaskStatus};
 use fontaine_core::audit::args_digest;
 use fontaine_core::config::PermissionMode::{Auto, Manual};
 use fontaine_core::config::{Hook, Origin, Slot};
 use fontaine_core::permissions::{PermissionDeniedHook, PreToolUseHook};
 use fontaine_core::tier::Tier;
-use fontaine_core::user_hooks::{CommandHook, HookProcess, PostHookStage};
+use fontaine_core::user_hooks::{CommandHook, HookProcess, PostHookStage, TeamGate};
 use fontaine_tools::gate::{CallView, ROOT_AGENT};
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
 use fontaine_tools::risk::RiskClass;
@@ -734,4 +735,140 @@ async fn malformed_hook_output_keeps_the_json_error_as_its_source() {
         source.downcast_ref::<serde_json::Error>().is_some(),
         "{source}"
     );
+}
+
+// ---- the team's quality gates ----
+
+fn task() -> Task {
+    Task {
+        id: "t1".into(),
+        title: "ship it".into(),
+        description: String::new(),
+        status: TaskStatus::InProgress,
+        owner: Some("agent-1".into()),
+        blocked_by: Vec::new(),
+        created_by: "root".into(),
+    }
+}
+
+fn gate(rig: &Rig, completed: &[Hook], idle: &[Hook]) -> TeamGate {
+    let build = |event: &str, hooks: &[Hook]| -> Vec<CommandHook> {
+        hooks
+            .iter()
+            .map(|h| CommandHook::new(event, h, process(Vec::new())))
+            .collect()
+    };
+    TeamGate::new(
+        build("task_completed", completed),
+        build("teammate_idle", idle),
+        rig.state.clone(),
+        rig.approver.clone(),
+    )
+}
+
+#[tokio::test]
+async fn a_task_completed_hook_that_exits_2_blocks_with_its_stderr_and_sees_the_task() {
+    let rig = Rig::new(Manual);
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("event.json");
+    let blocking = hook(
+        None,
+        command(&[
+            "--record",
+            &record.to_string_lossy(),
+            "--exit",
+            "2",
+            "--stderr",
+            "tests are red",
+        ]),
+        user(),
+    );
+    let gate = gate(&rig, &[blocking], &[]);
+    let reason = gate.task_completed("root", &task()).await;
+    assert_eq!(reason.as_deref(), Some("tests are red"));
+    let event: Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    assert_eq!(event["hook_event_name"], "TaskCompleted");
+    assert_eq!(event["task"]["id"], "t1");
+    assert_eq!(event["task"]["title"], "ship it");
+    assert_eq!(
+        event["agent_id"], "root",
+        "the agent completing it, not the owner"
+    );
+    assert!(event["session_id"].is_string());
+    assert!(event["cwd"].is_string());
+    assert!(
+        event.get("tool_name").is_none(),
+        "no tool name, so no matcher"
+    );
+}
+
+#[tokio::test]
+async fn a_teammate_idle_hook_that_exits_2_blocks_and_is_told_who_went_idle() {
+    let rig = Rig::new(Manual);
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("event.json");
+    let blocking = hook(
+        None,
+        command(&[
+            "--record",
+            &record.to_string_lossy(),
+            "--exit",
+            "2",
+            "--stderr",
+            "run the linter",
+        ]),
+        user(),
+    );
+    let gate = gate(&rig, &[], &[blocking]);
+    let reason = gate.teammate_idle("agent-3", "linter-1").await;
+    assert_eq!(reason.as_deref(), Some("run the linter"));
+    let event: Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    assert_eq!(event["hook_event_name"], "TeammateIdle");
+    assert_eq!(event["teammate_name"], "linter-1");
+    assert_eq!(event["agent_id"], "agent-3");
+}
+
+#[tokio::test]
+async fn a_gate_hook_that_fails_or_times_out_warns_and_blocks_nothing() {
+    let rig = Rig::new(Manual);
+    let crashes = hook(None, command(&["--exit", "1"]), user());
+    let mut slow = hook(None, command(&["--sleep", "5"]), user());
+    slow.timeout_secs = Some(1);
+    let missing = hook(None, "definitely-not-a-command-xyz".to_string(), user());
+    let gate = gate(&rig, &[crashes, slow, missing], &[]);
+    assert_eq!(gate.task_completed("agent-1", &task()).await, None);
+    assert_eq!(rig.approver.warnings.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn a_gate_hook_answer_of_allow_changes_nothing() {
+    let rig = Rig::new(Manual);
+    let allows = hook(None, command(&["--reply", &reply("allow")]), user());
+    let gate = gate(
+        &rig,
+        std::slice::from_ref(&allows),
+        std::slice::from_ref(&allows),
+    );
+    assert_eq!(gate.task_completed("agent-1", &task()).await, None);
+    assert_eq!(gate.teammate_idle("agent-1", "a").await, None);
+    assert!(rig.approver.warnings.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_first_blocking_gate_hook_wins_and_later_ones_do_not_run() {
+    let rig = Rig::new(Manual);
+    let dir = tempfile::tempdir().unwrap();
+    let second = dir.path().join("second.json");
+    let first = hook(None, command(&["--exit", "2", "--stderr", "first"]), user());
+    let after = hook(
+        None,
+        command(&["--record", &second.to_string_lossy()]),
+        user(),
+    );
+    let gate = gate(&rig, &[first, after], &[]);
+    assert_eq!(
+        gate.task_completed("agent-1", &task()).await.as_deref(),
+        Some("first")
+    );
+    assert!(!second.exists());
 }

@@ -12,7 +12,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::agents_panel::status_label;
+use crate::agents_panel::row_label;
 use crate::app::{App, QuotaView};
 use crate::theme::Theme;
 
@@ -137,9 +137,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     // In an agent's view the state is the agent's: the main turn is out of sight, and Esc does
     // not stop it from here.
     let viewed_state = app.viewing.as_ref().map(|id| {
-        let state = match app.viewed_row().and_then(|row| row.status) {
-            Some(status) if status.is_running() => "working".to_string(),
-            Some(status) => status_label(status).to_string(),
+        let state = match app
+            .viewed_row()
+            .and_then(|row| Some((row.status?, row.idle)))
+        {
+            Some((status, _)) if status.is_running() => "working".to_string(),
+            Some((status, idle)) => row_label(status, idle).to_string(),
             None => "no longer listed".to_string(),
         };
         let who = match app.viewed_row() {

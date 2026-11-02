@@ -834,12 +834,16 @@ impl AgentRuntime {
     }
 
     /// `/clear`: empties the model's context in this session. Refused while a subagent runs,
-    /// because its guardian requests read the human messages the clear drops, and while a
-    /// finished subagent's report is undelivered, which would otherwise reach the empty context.
+    /// because its guardian requests read the human messages the clear drops, while a
+    /// finished subagent's report is undelivered, which would otherwise reach the empty context,
+    /// and while a teammate is idle, whose history a later wake needs.
     pub async fn clear_conversation(&self) -> Result<(), ClearError> {
         let agents = self.state.agents();
         if agents.any_running() || agents.has_agent_notifications() {
             return Err(ClearError::SubagentsRunning);
+        }
+        if agents.any_idle() {
+            return Err(ClearError::IdleTeammates);
         }
         self.session.clear().await?;
         self.end_jobs().await;

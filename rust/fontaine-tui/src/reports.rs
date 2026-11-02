@@ -222,6 +222,8 @@ pub fn hooks(
     pre_tool_use: &[Hook],
     post_tool_use: &[Hook],
     permission_denied: &[Hook],
+    task_completed: &[Hook],
+    teammate_idle: &[Hook],
     project_executables: bool,
 ) -> String {
     let mut sections = Vec::new();
@@ -229,6 +231,8 @@ pub fn hooks(
         ("pre_tool_use", pre_tool_use),
         ("post_tool_use", post_tool_use),
         ("permission_denied", permission_denied),
+        ("task_completed", task_completed),
+        ("teammate_idle", teammate_idle),
     ] {
         if hooks.is_empty() {
             continue;
@@ -327,6 +331,8 @@ pub fn plugins(
                 .iter()
                 .chain(&hooks.post_tool_use)
                 .chain(&hooks.permission_denied)
+                .chain(&hooks.task_completed)
+                .chain(&hooks.teammate_idle)
                 .filter(|hook| hook.plugin.as_deref() == Some(plugin.name.as_str()))
                 .count();
             let server_prefix = format!("plugin_{}_", plugin.name);
@@ -1069,18 +1075,18 @@ mod tests {
 
     #[test]
     fn hooks_group_by_event() {
-        assert_eq!(hooks(&[], &[], &[], true), "no hooks configured");
+        assert_eq!(hooks(&[], &[], &[], &[], &[], true), "no hooks configured");
         let pre = [
             hook(Some("shell(git push)"), "check.sh", Slot::User, Some(5)),
             hook(None, "log.sh", Slot::Project, None),
         ];
         let denied = [hook(None, "notify.sh", Slot::User, None)];
-        let text = hooks(&pre, &[], &denied, true);
+        let text = hooks(&pre, &[], &denied, &[], &[], true);
         assert_eq!(
             text,
             "pre_tool_use:\n  shell(git push) → check.sh [user] timeout 5s\n  every call → log.sh [project]\npermission_denied:\n  every call → notify.sh [user]"
         );
-        let untrusted = hooks(&pre, &[], &[], false);
+        let untrusted = hooks(&pre, &[], &[], &[], &[], false);
         assert!(
             untrusted.contains("every call → log.sh [project] not loaded (workspace not trusted)"),
             "{untrusted}"

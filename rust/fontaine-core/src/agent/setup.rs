@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 
 use fontaine_agents::mode::ModeSetting;
 use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
+use fontaine_agents::tasks::{TaskBoard, Teams};
 use fontaine_agents::tree::{AgentTree, Limits, NotificationKind};
 use fontaine_guardian::composition::Composition;
 use fontaine_guardian::{
@@ -39,8 +40,9 @@ use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::{Backend, ScannerStage};
 use crate::skills::SkillRuntime;
 use crate::steering::Steering;
+use crate::tasks::SessionTasks;
 use crate::tools;
-use crate::user_hooks::{self, CommandHook, HookProcess, PostHookStage};
+use crate::user_hooks::{self, CommandHook, HookProcess, PostHookStage, TeamGate};
 
 /// The guardian a session runs with, from the model that was resolved for it.
 pub fn build_guardian(
@@ -282,6 +284,9 @@ pub fn build_composition(
 /// ones, and a repository's can only have narrowed.
 pub fn build_agent_types(config: &Config, extensions: &Extensions) -> AgentTypes {
     let mut types = AgentTypes::builtin();
+    if config.agents.teams {
+        types.enable_teams();
+    }
     for agent in extensions
         .agent_types
         .iter()
@@ -508,6 +513,28 @@ pub(super) fn instruction_stage(
     stage
 }
 
+/// Turns teams on: the task board, loaded from an earlier process of the session if it saved
+/// one, and the quality gates over the user's hooks.
+fn start_teams(
+    setup: &AgentSetup,
+    state: &Arc<SessionState>,
+    task_completed: Vec<CommandHook>,
+    teammate_idle: Vec<CommandHook>,
+) {
+    let store = Arc::new(SessionTasks::new(
+        &setup.session.dir,
+        setup.approver.clone(),
+    ));
+    let board = Arc::new(TaskBoard::restore(Some(store.clone()), store.load()));
+    let gate = Arc::new(TeamGate::new(
+        task_completed,
+        teammate_idle,
+        state.clone(),
+        setup.approver.clone(),
+    ));
+    state.agents().set_teams(Arc::new(Teams::new(board, gate)));
+}
+
 /// The pre-tool pipeline, and the post-tool hooks the result pipeline runs.
 pub(super) fn permission_pipeline(
     setup: &AgentSetup,
@@ -519,7 +546,21 @@ pub(super) fn permission_pipeline(
         git_bash: setup.git_bash.clone(),
         project_dir: setup.roots[0].clone(),
     });
-    let hooks = user_hooks::build(&setup.config, setup.project_executables, hook_process);
+    let mut hooks = user_hooks::build(&setup.config, setup.project_executables, hook_process);
+    if setup.config.agents.teams {
+        if hooks.ignored_project_idle > 0 {
+            setup.approver.warn(&format!(
+                "{} teammate_idle hook(s) from the repository are ignored: they force more model calls, so only your own config and plugins can define them",
+                hooks.ignored_project_idle
+            ));
+        }
+        start_teams(
+            setup,
+            state,
+            std::mem::take(&mut hooks.task_completed),
+            std::mem::take(&mut hooks.teammate_idle),
+        );
+    }
     let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
         state: state.clone(),
         approver: setup.approver.clone(),

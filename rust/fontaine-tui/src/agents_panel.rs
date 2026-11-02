@@ -35,6 +35,8 @@ pub struct PanelRow {
     pub writing: u64,
     /// Why it stopped early, when its budget ran out.
     pub stopped_because: Option<String>,
+    /// A teammate waiting for work, which is not the same as done.
+    pub idle: bool,
 }
 
 /// One background job or monitor of the main agent, as the driver reads it from the registry.
@@ -58,9 +60,23 @@ pub enum PanelKey {
     View(String),
 }
 
+/// One task of the team's board, as the driver reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoardRow {
+    pub id: String,
+    /// Written by an agent: shown with its control characters taken out.
+    pub title: String,
+    pub status: String,
+    /// The owner's name, when it has one.
+    pub owner: Option<String>,
+    pub blocked_by: Vec<String>,
+}
+
 #[derive(Default)]
 pub struct AgentsPanel {
     rows: Vec<PanelRow>,
+    /// The team's task board, shown below the agents and the jobs; it is not selectable.
+    board: Vec<BoardRow>,
     /// The background jobs, listed below the agents; the selection runs through both.
     jobs: Vec<JobRow>,
     selected: usize,
@@ -74,6 +90,15 @@ pub fn status_label(status: ChildStatus) -> &'static str {
         ChildStatus::Killed => "killed",
         ChildStatus::BudgetExhausted => "budget-exhausted",
         ChildStatus::Failed => "failed",
+    }
+}
+
+/// What a row says about its agent: a teammate that finished its turn is `idle`, not `done`.
+pub fn row_label(status: ChildStatus, idle: bool) -> &'static str {
+    if idle && status == ChildStatus::Done {
+        "idle"
+    } else {
+        status_label(status)
     }
 }
 
@@ -160,6 +185,11 @@ impl AgentsPanel {
         self.reselect(id);
     }
 
+    /// Replaces the board's rows.
+    pub fn set_board(&mut self, board: Vec<BoardRow>) {
+        self.board = board;
+    }
+
     fn reselect(&mut self, id: Option<String>) {
         let at = id.and_then(|id| {
             self.rows.iter().position(|r| r.id == id).or_else(|| {
@@ -218,7 +248,7 @@ impl AgentsPanel {
                 match self.selected.checked_sub(self.rows.len()) {
                     None => {
                         let row = &self.rows[self.selected];
-                        if row.status.is_running() {
+                        if row.status.is_running() || row.idle {
                             return PanelKey::Kill(row.id.clone());
                         }
                     }
@@ -237,7 +267,7 @@ impl AgentsPanel {
     pub fn body(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
         let bold = Style::default().add_modifier(Modifier::BOLD);
         let dim = Style::default().add_modifier(Modifier::DIM);
-        if self.len() == 0 {
+        if self.len() == 0 && self.board.is_empty() {
             return vec![Line::styled(
                 "No subagents or background jobs have been started.",
                 dim,
@@ -256,7 +286,7 @@ impl AgentsPanel {
                 row.id,
                 row.agent_type,
                 row.model,
-                status_label(row.status)
+                row_label(row.status, row.idle)
             );
             let style = if i == self.selected {
                 bold.add_modifier(Modifier::REVERSED)
@@ -311,6 +341,28 @@ impl AgentsPanel {
                 out.push(Line::styled(piece, dim));
             }
         }
+        if !self.board.is_empty() {
+            out.push(Line::styled("Board", bold.fg(theme.heading)));
+        }
+        for task in &self.board {
+            let title: String = task
+                .title
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            for piece in wrap(&format!("  {} {} {title}", task.id, task.status), width) {
+                out.push(Line::raw(piece));
+            }
+            let owner = task.owner.as_deref().unwrap_or("nobody");
+            let blocked = if task.blocked_by.is_empty() {
+                String::new()
+            } else {
+                format!(" · blocked by {}", task.blocked_by.join(", "))
+            };
+            for piece in wrap(&format!("    owner: {owner}{blocked}"), width) {
+                out.push(Line::styled(piece, dim));
+            }
+        }
         out
     }
 
@@ -343,6 +395,7 @@ mod tests {
             unpriced_tokens: 0,
             depth: 1,
             writing: 0,
+            idle: false,
             stopped_because: None,
         }
     }
@@ -493,6 +546,18 @@ mod tests {
             row("agent-2", ChildStatus::Running),
         ]);
         assert_eq!(panel.selected_id().as_deref(), Some("agent-2"));
+    }
+
+    #[test]
+    fn an_idle_teammate_can_be_killed() {
+        let mut panel = AgentsPanel::new();
+        let mut idle = row("agent-1", ChildStatus::Done);
+        idle.idle = true;
+        panel.set_rows(vec![idle]);
+        assert_eq!(
+            panel.handle_key(key(KeyCode::Char('x'))),
+            PanelKey::Kill("agent-1".into())
+        );
     }
 
     fn job(id: &str, running: bool) -> JobRow {

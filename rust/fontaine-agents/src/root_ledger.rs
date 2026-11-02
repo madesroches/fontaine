@@ -23,6 +23,23 @@ pub enum AgentEvent {
     Resumed {
         agent: String,
     },
+    /// Board events carry ids only, never the task's text.
+    TaskCreated {
+        task: String,
+        agent: String,
+    },
+    TaskClaimed {
+        task: String,
+        agent: String,
+    },
+    TaskCompleted {
+        task: String,
+        agent: String,
+    },
+    TaskReleased {
+        task: String,
+        agent: String,
+    },
 }
 
 pub trait RootLedger: Send + Sync {

@@ -168,6 +168,7 @@ fn trust_summary(config: &Config) -> fontaine_tui::trust_prompt::Summary {
         .iter()
         .chain(&config.hooks.post_tool_use)
         .chain(&config.hooks.permission_denied)
+        .chain(&config.hooks.task_completed)
         .filter(|hook| hook.origin.is_project())
         .count();
     let servers = config
@@ -1105,5 +1106,36 @@ async fn run_interactive(
             eprintln!("fontaine: {message}");
             Outcome::Done(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod trust_tests {
+    use super::*;
+
+    #[test]
+    fn project_team_hooks_count_in_the_trust_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        let project = work.join(config::PROJECT_DIR);
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join(config::PROJECT_FILE),
+            "[[hooks.pre_tool_use]]\ncommand = \"a.sh\"\n\
+             [[hooks.task_completed]]\ncommand = \"b.sh\"\n\
+             [[hooks.teammate_idle]]\ncommand = \"c.sh\"\n",
+        )
+        .unwrap();
+        let env = |_: &str| None;
+        let config = config::load(&LoadParams {
+            launch_dir: &work,
+            config_dir: &dir.path().join("config"),
+            data_dir: &dir.path().join("data"),
+            settings_file: None,
+            cli_rules: Default::default(),
+            env: &env,
+        })
+        .unwrap();
+        assert_eq!(trust_summary(&config).hooks, 2);
     }
 }

@@ -116,11 +116,17 @@ pub struct PluginHooks {
     pub pre_tool_use: Vec<Hook>,
     pub post_tool_use: Vec<Hook>,
     pub permission_denied: Vec<Hook>,
+    pub task_completed: Vec<Hook>,
+    pub teammate_idle: Vec<Hook>,
 }
 
 impl PluginHooks {
     pub fn len(&self) -> usize {
-        self.pre_tool_use.len() + self.post_tool_use.len() + self.permission_denied.len()
+        self.pre_tool_use.len()
+            + self.post_tool_use.len()
+            + self.permission_denied.len()
+            + self.task_completed.len()
+            + self.teammate_idle.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -480,6 +486,8 @@ pub fn load_installed(
         out.hooks
             .permission_denied
             .extend(build.hooks.permission_denied);
+        out.hooks.task_completed.extend(build.hooks.task_completed);
+        out.hooks.teammate_idle.extend(build.hooks.teammate_idle);
         out.servers.extend(build.servers);
         out.lsp_servers.extend(build.lsp_servers);
         out.deny.extend(build.deny);
@@ -1412,6 +1420,8 @@ fn parse_hooks(
         hooks.pre_tool_use.extend(more.pre_tool_use);
         hooks.post_tool_use.extend(more.post_tool_use);
         hooks.permission_denied.extend(more.permission_denied);
+        hooks.task_completed.extend(more.task_completed);
+        hooks.teammate_idle.extend(more.teammate_idle);
     }
     Ok(hooks)
 }
@@ -1446,7 +1456,7 @@ fn parse_hooks_file(
     };
     let mut hooks = PluginHooks::default();
     for (event, entries) in events {
-        // Fontaine has exactly these three hook events; the rest are ignored.
+        // Fontaine has exactly these hook events; the rest are ignored.
         let Some(into) = event_lists(&mut hooks, event) else {
             continue;
         };
@@ -1465,9 +1475,11 @@ fn parse_hooks_file(
                     format!("a `hooks.{event}` entry is not an object"),
                 )
             })?;
+            // These events carry no tool name, so a matcher on them means nothing.
             let matcher = entry_object
                 .get("matcher")
                 .and_then(Value::as_str)
+                .filter(|_| !matches!(event.as_str(), "TaskCompleted" | "TeammateIdle"))
                 .map(str::to_string);
             let specs = entry_object
                 .get("hooks")
@@ -1575,6 +1587,8 @@ fn event_lists<'a>(hooks: &'a mut PluginHooks, event: &str) -> Option<&'a mut Ve
         "PreToolUse" => Some(&mut hooks.pre_tool_use),
         "PostToolUse" => Some(&mut hooks.post_tool_use),
         "PermissionDenied" => Some(&mut hooks.permission_denied),
+        "TaskCompleted" => Some(&mut hooks.task_completed),
+        "TeammateIdle" => Some(&mut hooks.teammate_idle),
         _ => None,
     }
 }
@@ -1997,6 +2011,8 @@ impl crate::config::Config {
             &mut self.hooks.pre_tool_use,
             &mut self.hooks.post_tool_use,
             &mut self.hooks.permission_denied,
+            &mut self.hooks.task_completed,
+            &mut self.hooks.teammate_idle,
         ] {
             hooks.retain(|hook| hook.origin.slot != Slot::Plugin);
             for hook in hooks.iter_mut() {
@@ -2054,6 +2070,16 @@ impl crate::config::Config {
         crate::config::union_hooks(
             &mut self.hooks.permission_denied,
             Some(&plugins.hooks.permission_denied),
+            origin,
+        );
+        crate::config::union_hooks(
+            &mut self.hooks.task_completed,
+            Some(&plugins.hooks.task_completed),
+            origin,
+        );
+        crate::config::union_hooks(
+            &mut self.hooks.teammate_idle,
+            Some(&plugins.hooks.teammate_idle),
             origin,
         );
         for (name, server) in &plugins.servers {

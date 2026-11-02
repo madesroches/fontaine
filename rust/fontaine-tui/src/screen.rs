@@ -1965,6 +1965,7 @@ mod tests {
             unpriced_tokens: 0,
             depth: 1,
             writing: 0,
+            idle: false,
             stopped_because: None,
         }
     }
@@ -2004,6 +2005,56 @@ mod tests {
             let count = all.iter().filter(|row| **row == text).count();
             assert_eq!(count, 1, "{text}: {all:?}");
         }
+    }
+
+    #[test]
+    fn the_agents_panel_shows_an_idle_teammate_apart_from_done_and_lists_the_board() {
+        let mut screen = screen(80, 24);
+        let mut app = app();
+        let mut idle = panel_row(1);
+        idle.idle = true;
+        let done = panel_row(2);
+        let mut panel = crate::agents_panel::AgentsPanel::new();
+        panel.set_rows(vec![idle, done]);
+        panel.set_board(vec![
+            crate::agents_panel::BoardRow {
+                id: "t1".into(),
+                title: "write the parser".into(),
+                status: "in_progress".into(),
+                owner: Some("worker-1".into()),
+                blocked_by: Vec::new(),
+            },
+            crate::agents_panel::BoardRow {
+                id: "t2".into(),
+                title: "write the\x1b[31m printer".into(),
+                status: "pending".into(),
+                owner: None,
+                blocked_by: vec!["t1".into()],
+            },
+        ]);
+        app.agents = Some(panel);
+        screen.render(&mut app).unwrap();
+        let shown = rows(screen.backend().buffer()).join("\n");
+        let line_of = |needle: &str| {
+            shown
+                .lines()
+                .find(|line| line.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} is not shown:\n{shown}"))
+                .to_string()
+        };
+        assert!(
+            line_of("worker-1 (agent-1)").contains("m/x idle"),
+            "{shown}"
+        );
+        assert!(
+            line_of("worker-2 (agent-2)").contains("m/x done"),
+            "{shown}"
+        );
+        assert!(shown.contains("Board"), "{shown}");
+        assert!(line_of("t1 in_progress").contains("write the parser"));
+        assert!(line_of("owner: worker-1").contains("owner: worker-1"));
+        assert!(shown.contains("owner: nobody · blocked by t1"), "{shown}");
+        assert!(!shown.contains('\x1b'), "task text cannot carry escapes");
     }
 
     #[test]
