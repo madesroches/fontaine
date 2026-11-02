@@ -850,12 +850,12 @@ impl PermissionPipeline {
         // The child's toolset is enforced by Fontaine and every call it makes is gated, so a
         // spawn of a type that can only read is contained like a read.
         if tool == "agent"
-            && adjudication::spawn_facts(
+            && adjudication::spawn_changes_state(
                 self.state.agent_types(),
                 self.state.agents().known_tools_of(call.agent).as_deref(),
                 args,
             )
-            .is_some_and(|spawn| !spawn.changes_state)
+            .is_some_and(|changes_state| !changes_state)
         {
             return Verdict::Allow {
                 tier: Tier::ReadOnlyFastPath,

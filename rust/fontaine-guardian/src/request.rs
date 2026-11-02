@@ -56,6 +56,12 @@ pub struct TouchedPath {
     pub status: PreExistence,
     /// Set by the harness when the resolved path lies inside the session scratch directory.
     pub in_scratch: bool,
+    /// Set by the harness when nothing exists at the path (not even a dangling symlink) as the
+    /// request is built.
+    pub absent: bool,
+    /// Set by the harness when git's index has an exact file entry for the path; never for a
+    /// directory.
+    pub git_tracked: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -83,8 +89,6 @@ pub struct SessionFacts {
     /// The session scratch directory, set by the harness from the session and never from a tool
     /// argument. It is created empty when the session starts.
     pub scratch_dir: Option<String>,
-    /// What the agent a call would start can do. Set only for an `agent` call.
-    pub spawn: Option<SpawnFacts>,
     /// What `fontaine auto-mode setup` stored for this project. Only the guardian sees it.
     pub project_environment: Option<ProjectEnvironmentFacts>,
 }
@@ -160,16 +164,6 @@ pub struct ScanFindings {
     pub protected_targets: Vec<String>,
     #[serde(default)]
     pub trusted_destinations: Vec<String>,
-}
-
-/// The toolset of the agent an `agent` call starts, computed by the harness.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct SpawnFacts {
-    pub agent_type: String,
-    pub tools: Vec<String>,
-    /// False only when every tool in `tools` is read-only, ignoring the `send_message` exemption
-    /// (see `fontaine_core::adjudication::spawn_facts`).
-    pub changes_state: bool,
 }
 
 /// A denial earlier in the session, reason-coded, for loop detection.

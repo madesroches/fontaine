@@ -498,6 +498,8 @@ async fn a_cache_entry_is_not_reused_after_the_session_changes() {
         path: "/work/proj/x.sh".into(),
         status: PreExistence::CreatedThisSession,
         in_scratch: false,
+        absent: false,
+        git_tracked: false,
     });
     assert!(!guardian.adjudicate(&with_status).await.cache_hit);
 

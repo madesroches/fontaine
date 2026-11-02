@@ -5,8 +5,8 @@
 use fontaine_agents::registry::AgentTypes;
 use fontaine_guardian::{
     ACTIONS_TAKEN, ActionTaken, AdjudicationRequest, DenialRecord, PreExistence,
-    RECENT_USER_MESSAGES, SessionFacts, SpawnFacts, TASK_INTENT_CHARS, ToolCallSummary,
-    TouchedPath, task_intent,
+    RECENT_USER_MESSAGES, SessionFacts, TASK_INTENT_CHARS, ToolCallSummary, TouchedPath,
+    task_intent,
 };
 use fontaine_tools::descriptor::{self, Destructive};
 use fontaine_tools::gate::ROOT_AGENT;
@@ -21,6 +21,7 @@ use crate::gate::SessionState;
 use crate::instructions::InstructionFile;
 use crate::ledger::{Existence, LedgerView};
 use crate::permissions::summarize;
+use crate::trust;
 
 /// Longest compact summary of a call's arguments kept in the ledger and shown to the guardian.
 pub const SUMMARY_CHARS: usize = 200;
@@ -65,21 +66,21 @@ fn status(existence: Existence) -> PreExistence {
     }
 }
 
-/// What the child of an `agent` call can do, from the same toolset `AgentTool` gives it. `None`
-/// when the type is unknown: the call then fails on its own.
+/// Whether the child of an `agent` call can change state, from the same toolset `AgentTool` gives
+/// it. `None` when the type is unknown: the call then fails on its own.
 ///
-/// `changes_state` is false only when every tool is read-only and non-destructive, or is
+/// The answer is false only when every tool is read-only and non-destructive, or is
 /// `send_message`, which reaches only agents of the same tree whose calls are all gated. A tool
 /// missing from the descriptor table (every MCP tool) counts as state-changing, and so does an
 /// unknown parent toolset (`parent_tools` is `None`: never set, which a type that inherits it
 /// would otherwise resolve to nothing). A toolset that is known and empty can change nothing.
 /// The depth trim that drops
 /// `agent` at the nesting limit is left out, which only makes the answer more conservative.
-pub fn spawn_facts(
+pub fn spawn_changes_state(
     types: &AgentTypes,
     parent_tools: Option<&[String]>,
     args: &Value,
-) -> Option<SpawnFacts> {
+) -> Option<bool> {
     let name = args.get("agent_type")?.as_str()?;
     let tools = types.get(name)?.toolset(parent_tools.unwrap_or_default());
     let read_only = |tool: &String| {
@@ -88,12 +89,7 @@ pub fn spawn_facts(
                 d.risk == RiskClass::ReadOnly && d.destructive == Destructive::Never
             })
     };
-    let changes_state = parent_tools.is_none() || !tools.iter().all(read_only);
-    Some(SpawnFacts {
-        agent_type: name.to_string(),
-        tools,
-        changes_state,
-    })
+    Some(parent_tools.is_none() || !tools.iter().all(read_only))
 }
 
 /// Whether `path`, already resolved, lies inside the scratch root. Component-wise, so a sibling
@@ -105,6 +101,82 @@ fn in_scratch(path: &str, scratch: Option<&std::path::Path>) -> bool {
             && !path
                 .components()
                 .any(|c| matches!(c, std::path::Component::ParentDir))
+    })
+}
+
+/// Nothing is at `path` as the request is built. A dangling symlink is something. A path that
+/// went through a lossy conversion (U+FFFD) names a different file than the one on disk.
+fn is_absent(path: &str) -> bool {
+    !path.contains('\u{FFFD}')
+        && matches!(
+            std::fs::symlink_metadata(path),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound
+        )
+}
+
+/// Programs that neither change the working directory nor take an option that names another one.
+/// An allowlist: anything that can run or wrap another command, or move the shell, is absent.
+const CWD_SAFE_PROGRAMS: [&str; 19] = [
+    "mv", "cp", "rm", "rmdir", "mkdir", "touch", "ln", "cat", "echo", "printf", "ls", "head",
+    "tail", "wc", "rg", "grep", "true", "test", "git",
+];
+
+/// Whether the paths `touched_paths` joined to the call's working directory are the ones the
+/// command will hit. A shell command that moves the shell, runs another command that might,
+/// assigns `GIT_WORK_TREE` and the like, or names another tree with `-C`/`--git-dir`/
+/// `--work-tree`, resolves its relative paths elsewhere, and a mark computed for the wrong file
+/// would tell the guardian an overwrite is safe. So only a short list of programs is trusted.
+///
+/// The marks are computed before the call runs, and a later command can act on what an earlier
+/// one created or moved, and a glob or magic pathspec names files no literal word does, so only
+/// one simple command with plain words is marked.
+fn marks_apply(tool: &str, args: &Value) -> bool {
+    const DIR_FLAGS: [&str; 5] = ["-C", "--directory", "--chdir", "--git-dir", "--work-tree"];
+    const DIR_PREFIXES: [&str; 4] = ["--directory=", "--chdir=", "--git-dir=", "--work-tree="];
+    if !fontaine_tools::descriptor::is_shell_class(tool) {
+        return true;
+    }
+    let Some(command) = args.get("command").and_then(Value::as_str) else {
+        return true;
+    };
+    let analysis = fontaine_tools::preclassify::analyze(command);
+    if !analysis.parsed || analysis.unanalyzed || analysis.nested_chain || analysis.assignments {
+        return false;
+    }
+    let [simple] = analysis.commands.as_slice() else {
+        return false;
+    };
+    let Some(first) = simple.words.first() else {
+        return true;
+    };
+    let Some(program) = first.literal.as_deref() else {
+        return false;
+    };
+    // A path-qualified program is not the allowlisted one.
+    if program.contains(['/', '\\']) {
+        return false;
+    }
+    let program = fontaine_tools::preclassify::program_name(program);
+    if !CWD_SAFE_PROGRAMS.contains(&program.as_ref()) {
+        return false;
+    }
+    // Git options before the subcommand (`-C`, `-c`, `--namespace`, ...) can all redirect it.
+    if program == "git"
+        && !simple
+            .words
+            .get(1)
+            .is_none_or(|w| w.literal.as_deref().is_some_and(|l| !l.starts_with('-')))
+    {
+        return false;
+    }
+    simple.words.iter().all(|word| {
+        word.literal.as_deref().is_none_or(|literal| {
+            !literal.contains(['*', '?', '['])
+                && !literal.starts_with(':')
+                && !DIR_FLAGS.contains(&literal)
+                && !literal.starts_with("-C")
+                && !DIR_PREFIXES.iter().any(|p| literal.starts_with(p))
+        })
     })
 }
 
@@ -133,11 +205,22 @@ fn facts(
     .collect();
     let scratch =
         scratch.map(|dir| std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf()));
-    let touched_paths = touched_paths(tool, args, scope)
+    let paths = touched_paths(tool, args, scope);
+    let resolved: Vec<std::path::PathBuf> = paths.iter().map(std::path::PathBuf::from).collect();
+    let certain = marks_apply(tool, args);
+    let tracked = if certain {
+        trust::tracked_files(scope.primary(), &resolved)
+    } else {
+        vec![false; resolved.len()]
+    };
+    let touched_paths = paths
         .into_iter()
-        .map(|path| TouchedPath {
+        .zip(tracked)
+        .map(|(path, git_tracked)| TouchedPath {
             status: status(view.existence(&path)),
             in_scratch: in_scratch(&path, scratch.as_deref()),
+            absent: certain && is_absent(&path),
+            git_tracked,
             path,
         })
         .collect();
@@ -157,7 +240,6 @@ fn facts(
             .collect(),
         memory_dir: memory_dir.map(|dir| dir.display().to_string()),
         scratch_dir: scratch.map(|dir| dir.display().to_string()),
-        spawn: None,
         project_environment: view
             .project_environment
             .as_ref()
@@ -206,7 +288,7 @@ pub fn build(
             view: &view,
         },
     );
-    let mut session_facts = facts(
+    let session_facts = facts(
         &view,
         &scope,
         state.memory_root.as_deref(),
@@ -214,13 +296,6 @@ pub fn build(
         tool,
         args,
     );
-    if tool == "agent" {
-        session_facts.spawn = spawn_facts(
-            state.agent_types(),
-            state.agents().known_tools_of(caller).as_deref(),
-            args,
-        );
-    }
     let denials_from = view.denials.len().saturating_sub(PRIOR_DENIALS);
     AdjudicationRequest {
         task_intent: task_intent(&intent, TASK_INTENT_CHARS),
@@ -262,6 +337,136 @@ mod tests {
         let got = facts(&view, &scope, Some(&memory), None, "Read", &Value::Null);
         assert_eq!(got.workspace_roots, vec![work.display().to_string()]);
         assert_eq!(got.memory_dir, Some(memory.display().to_string()));
+    }
+
+    #[test]
+    fn absent_and_git_tracked_are_read_from_the_disk_and_the_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = std::fs::canonicalize(dir.path()).unwrap();
+        let git = |args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&work)
+                .status()
+                .unwrap();
+            assert!(status.success(), "{args:?}");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(work.join("kept.txt"), "a").unwrap();
+        std::fs::write(work.join("loose.txt"), "a").unwrap();
+        git(&["add", "kept.txt"]);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(work.join("nowhere"), work.join("dangling")).unwrap();
+        let scope = Scope::new(work.clone(), []);
+        let view = LedgerView::default();
+        let command = "echo x > kept.txt > loose.txt > missing.txt > dangling";
+        let got = facts(
+            &view,
+            &scope,
+            None,
+            None,
+            "shell",
+            &serde_json::json!({ "command": command }),
+        );
+        let by_name = |name: &str| {
+            got.touched_paths
+                .iter()
+                .find(|t| t.path.ends_with(name))
+                .unwrap_or_else(|| panic!("{name} in {:?}", got.touched_paths))
+        };
+        assert!(by_name("kept.txt").git_tracked && !by_name("kept.txt").absent);
+        assert!(!by_name("loose.txt").git_tracked && !by_name("loose.txt").absent);
+        assert!(by_name("missing.txt").absent && !by_name("missing.txt").git_tracked);
+        #[cfg(unix)]
+        assert!(!by_name("dangling").absent);
+    }
+
+    #[test]
+    fn marks_need_a_certain_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = std::fs::canonicalize(dir.path()).unwrap();
+        std::fs::write(work.join("README.md"), "a").unwrap();
+        let scope = Scope::new(work.clone(), []);
+        let view = LedgerView::default();
+        let marks = |command: &str| {
+            let got = facts(
+                &view,
+                &scope,
+                None,
+                None,
+                "shell",
+                &serde_json::json!({ "command": command }),
+            );
+            got.touched_paths.iter().any(|t| t.absent || t.git_tracked)
+        };
+        assert!(marks("mv a.txt ./b.txt"));
+        assert!(!marks("cd /x && mv a.txt ./b.txt"));
+        assert!(!marks("pushd /x && cp a README.md"));
+        assert!(!marks("git -C /x mv a README.md"));
+        assert!(!marks("git --work-tree=/x mv a ./b"));
+        for probe in [
+            "builtin cd /x && mv a ./b",
+            "command cd /x && mv a ./b",
+            "eval cd /x; mv a ./b",
+            "GIT_WORK_TREE=/x git mv a ./b",
+            "export GIT_WORK_TREE=/x; git mv a ./b",
+            "env -C/x mv a ./b",
+            "sudo -D /x mv a ./b",
+            "find . -execdir mv {} ./b \\;",
+            "source ./x.sh; mv a ./b",
+        ] {
+            assert!(!marks(probe), "{probe}");
+        }
+        std::fs::create_dir(work.join("tasks")).unwrap();
+        std::fs::create_dir(work.join("tasks/completed")).unwrap();
+        assert!(!marks(
+            "git mv tasks/x_plan.md tasks/completed/x_plan.md && git add -u"
+        ));
+        assert!(marks("rm ./missing"));
+        for multi in [
+            "mv precious_dir newdir && rm newdir/notes.md",
+            "mv a ./b; rm ./b",
+            "echo x | tee ./b",
+        ] {
+            assert!(!marks(multi), "{multi}");
+        }
+        for glob in [
+            "git rm -f 'docs/*.md'",
+            "git checkout -- ':/docs'",
+            "rm ./f?.txt",
+            "rm ./f[12].txt",
+        ] {
+            assert!(!marks(glob), "{glob}");
+        }
+        let absent = |command: &str| {
+            facts(
+                &view,
+                &scope,
+                None,
+                None,
+                "shell",
+                &serde_json::json!({ "command": command }),
+            )
+            .touched_paths
+            .iter()
+            .any(|t| std::path::Path::new(&t.path).ends_with("t") && t.absent)
+        };
+        assert!(absent("mv notes.txt ./t"));
+        assert!(marks("mv a ./b"));
+        assert!(!marks("./mv a ./b"));
+        assert!(
+            facts(
+                &view,
+                &scope,
+                None,
+                None,
+                "shell",
+                &serde_json::json!({ "command": "git mv tasks/x_plan.md tasks/completed/x_plan.md" }),
+            )
+            .touched_paths
+            .iter()
+            .any(|t| std::path::Path::new(&t.path).ends_with("completed/x_plan.md") && t.absent)
+        );
     }
 
     #[cfg(unix)]
@@ -335,8 +540,8 @@ mod tests {
         items.iter().map(|s| s.to_string()).collect()
     }
 
-    fn spawn(types: &AgentTypes, parent: &[&str], agent_type: &str) -> Option<SpawnFacts> {
-        spawn_facts(
+    fn spawn(types: &AgentTypes, parent: &[&str], agent_type: &str) -> Option<bool> {
+        spawn_changes_state(
             types,
             Some(&names(parent)),
             &serde_json::json!({ "agent_type": agent_type, "prompt": "p" }),
@@ -347,35 +552,26 @@ mod tests {
     fn explore_cannot_change_state_and_worker_can() {
         let types = AgentTypes::builtin();
         let all: Vec<&str> = fontaine_tools::descriptor::names().collect();
-        let explore = spawn(&types, &all, "explore").unwrap();
-        let mut tools = explore.tools.clone();
-        tools.sort();
-        assert_eq!(
-            tools,
-            names(&["glob", "grep", "ls", "lsp", "read", "send_message"])
-        );
-        assert!(!explore.changes_state);
-        assert!(spawn(&types, &all, "worker").unwrap().changes_state);
-        assert!(spawn(&types, &all, "fork").unwrap().changes_state);
+        assert_eq!(spawn(&types, &all, "explore"), Some(false));
+        assert_eq!(spawn(&types, &all, "worker"), Some(true));
+        assert_eq!(spawn(&types, &all, "fork"), Some(true));
     }
 
     #[test]
     fn the_toolset_is_cut_to_the_parents_and_an_unknown_one_fails_closed() {
         let types = AgentTypes::builtin();
-        let cut = spawn(&types, &["read", "shell"], "explore").unwrap();
-        assert_eq!(cut.tools, names(&["read"]));
-        assert!(!cut.changes_state);
-        let empty = spawn(&types, &[], "explore").unwrap();
-        assert!(empty.tools.is_empty() && !empty.changes_state);
-        let unknown = spawn_facts(
+        assert_eq!(spawn(&types, &["read", "shell"], "explore"), Some(false));
+        assert_eq!(spawn(&types, &[], "explore"), Some(false));
+        let unknown = spawn_changes_state(
             &types,
             None,
             &serde_json::json!({ "agent_type": "explore", "prompt": "p" }),
-        )
-        .unwrap();
-        assert!(unknown.changes_state);
+        );
+        assert_eq!(unknown, Some(true));
         assert!(spawn(&types, &["read"], "nope").is_none());
-        assert!(spawn_facts(&types, Some(&names(&["read"])), &serde_json::json!({})).is_none());
+        assert!(
+            spawn_changes_state(&types, Some(&names(&["read"])), &serde_json::json!({})).is_none()
+        );
     }
 
     #[test]
@@ -402,10 +598,7 @@ mod tests {
         }
         let parent = ["read", "agent", "mcp__srv__lookup", "webfetch"];
         for name in ["nests", "mcp", "fetches"] {
-            assert!(
-                spawn(&types, &parent, name).unwrap().changes_state,
-                "{name}"
-            );
+            assert!(spawn(&types, &parent, name) == Some(true), "{name}");
         }
     }
 }

@@ -43,6 +43,7 @@ args:
 </untrusted>
 
 <untrusted kind="prior_denials">
+note: earlier guardian verdicts, for spotting loops and a denied action retried by another route; not evidence about this call
 - shell [Git Destructive] git push --force
 </untrusted>
 

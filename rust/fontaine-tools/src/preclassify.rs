@@ -60,14 +60,23 @@ pub struct ShellAnalysis {
     /// Some construct was not followed (arithmetic, a parameter expansion that may hold a
     /// substitution, a deep nesting); callers that need completeness fall back to the raw text.
     pub unanalyzed: bool,
+    /// Some simple command, anywhere in the text, carries a prefix assignment (`A=b cmd`, or a
+    /// bare `A=b`). Callers that resolve paths against a working directory cannot
+    /// trust it then: `GIT_WORK_TREE=/x git mv a b` acts elsewhere.
+    pub assignments: bool,
     /// Some command, anywhere in the text, redirects output to a file (`>`, `>>`, `>|`, `<>`,
-    /// `&>`). Duplicating a descriptor (`2>&1`) is not a file.
+    /// `&>`). Duplicating a descriptor (`2>&1`) is not a file, and neither is `/dev/null`
+    /// (exactly that literal; `/dev/stderr` truncates whatever file stderr points to).
     pub output_redirect: bool,
     /// The target word of every redirect that writes a file, in source order, including those on
     /// compound commands, in substitutions and in nested runner command lines. Descriptor copies
-    /// (`2>&1`) have none. A target that expands has `literal == None`.
+    /// (`2>&1`) and `/dev/null` have none. A target that expands has `literal == None`.
     pub output_targets: Vec<ShellWord>,
     pub raw: String,
+}
+
+fn is_dev_null(word: &ShellWord) -> bool {
+    word.literal.as_deref() == Some("/dev/null")
 }
 
 fn options() -> ParserOptions {
@@ -218,9 +227,9 @@ impl Walk<'_> {
                             | IoFileRedirectKind::ReadAndWrite
                             | IoFileRedirectKind::Clobber
                     );
-                    self.out.output_redirect |= writes;
                     let classified = self.word(word);
-                    if writes {
+                    if writes && !is_dev_null(&classified) {
+                        self.out.output_redirect = true;
                         self.out.output_targets.push(classified);
                     }
                 }
@@ -231,7 +240,10 @@ impl Walk<'_> {
                         text == "-"
                             || (!text.is_empty() && text.chars().all(|c| c.is_ascii_digit()))
                     });
-                    if matches!(kind, IoFileRedirectKind::DuplicateOutput) && !copies_descriptor {
+                    if matches!(kind, IoFileRedirectKind::DuplicateOutput)
+                        && !copies_descriptor
+                        && !is_dev_null(&classified)
+                    {
                         self.out.output_redirect = true;
                         self.out.output_targets.push(classified);
                     }
@@ -245,9 +257,11 @@ impl Walk<'_> {
                 }
             }
             IoRedirect::OutputAndError(word, _) => {
-                self.out.output_redirect = true;
                 let classified = self.word(word);
-                self.out.output_targets.push(classified);
+                if !is_dev_null(&classified) {
+                    self.out.output_redirect = true;
+                    self.out.output_targets.push(classified);
+                }
             }
             IoRedirect::HereString(_, word) => {
                 self.word(word);
@@ -290,6 +304,7 @@ impl Walk<'_> {
             self.out.unanalyzed = true;
         }
         self.out.unanalyzed |= nested.unanalyzed;
+        self.out.assignments |= nested.assignments;
         self.out.output_redirect |= nested.output_redirect;
         self.out.output_targets.extend(nested.output_targets);
         self.out.nested_chain |= nested.nested_chain || (nested.parsed && nested.simple.is_none());
@@ -307,6 +322,8 @@ impl Walk<'_> {
             // `export A=b` carries its assignment as a word; a prefix assignment is not a word
             // of the command, but its value can still hold a substitution.
             CommandPrefixOrSuffixItem::AssignmentWord(_, word) => {
+                // A suffix `a=b` is an argument; `export A=b` is rejected by its program name.
+                self.out.assignments |= words.is_none();
                 let classified = self.word(word);
                 if let Some(words) = words {
                     words.push(classified);
@@ -409,6 +426,7 @@ impl Walk<'_> {
                 if !nested.parsed {
                     self.out.unanalyzed = true;
                 }
+                self.out.assignments |= nested.assignments;
                 self.out.unanalyzed |= nested.unanalyzed;
                 self.out.output_redirect |= nested.output_redirect;
                 self.out.output_targets.extend(nested.output_targets);
@@ -880,6 +898,22 @@ mod tests {
     }
 
     #[test]
+    fn assignments_are_flagged_wherever_they_sit() {
+        for text in [
+            "A=b cmd",
+            "A=b",
+            "A=b; ls",
+            "ls; A=b mv x y",
+            "echo $(A=b ls)",
+        ] {
+            assert!(analyze(text).assignments, "{text}");
+        }
+        for text in ["mv a b", "echo a=b"] {
+            assert!(!analyze(text).assignments, "{text}");
+        }
+    }
+
+    #[test]
     fn quoted_words_are_literal_and_expansions_are_not() {
         assert_eq!(lit("plain").as_deref(), Some("plain"));
         assert_eq!(lit("'a;b.txt'").as_deref(), Some("a;b.txt"));
@@ -991,6 +1025,32 @@ mod tests {
             assert!(!analyze(text).output_redirect, "{text}");
             assert!(analyze(text).output_targets.is_empty(), "{text}");
         }
+    }
+
+    #[test]
+    fn a_redirect_to_dev_null_writes_no_file() {
+        for text in [
+            "echo x >/dev/null",
+            "rg x 2>/dev/null",
+            "echo x >>/dev/null",
+            "echo x &>/dev/null",
+            "echo x >&/dev/null",
+            "echo x > \"/dev/null\"",
+        ] {
+            let analysis = analyze(text);
+            assert!(!analysis.output_redirect, "{text}");
+            assert!(analysis.output_targets.is_empty(), "{text}");
+        }
+        for text in [
+            "echo x >/dev/stderr",
+            "echo x >/dev/../dev/null",
+            "echo x >/dev/nullx",
+            "echo x >$X",
+            "echo x >/dev/null >f",
+        ] {
+            assert!(analyze(text).output_redirect, "{text}");
+        }
+        assert_eq!(analyze("rg x 2>/dev/null").simple, None);
     }
 
     #[test]

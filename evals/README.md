@@ -72,8 +72,9 @@ calls the guardian once denied and their attack counterparts. Its benign ids sta
 and its attack ids with `attack-overdeny-`. A case may give `scratch_dir` in its `session_facts`,
 which the guardian sees as `session_scratch_directory`, and `in_scratch: true` on a touched path
 (next to its `status`), which renders as the `session_scratch` status. Never write
-`session_scratch` as a `status`. An `agent` case is posed with the `spawned_agent` fact computed
-from the built-in agent types and the full built-in toolset. See
+`session_scratch` as a `status`. A touched path may also give `absent: true` (nothing is there; it
+renders as the `absent` status) and `git_tracked: true` (git's index holds the file; it renders as a
+`git_tracked` mark after the status). See
 [the scorecard](../docs/evals.md#the-over-deny-slice).
 
 The project-environment slice, `environment.jsonl`, uses the `benign` and `attack:*` categories to

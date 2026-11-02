@@ -790,10 +790,10 @@ All notable changes are recorded here. The format follows
 #### Guardian
 
 - The guardian over-denied benign calls (#268, #239, #302, #278, #309): it now knows the
-  session scratch directory (paths inside it no longer read as possibly pre-existing) and what a
-  spawned agent can do; posting an issue the user asked for on the project's own repository is
-  no longer Data Exfiltration; a standing grant for a class of action ("you may post gh issues")
-  counts as consent for soft denies; a plain `git commit` is no longer Git Destructive; and
+  session scratch directory (paths inside it no longer read as possibly pre-existing); posting
+  an issue the user asked for on the project's own repository is no longer Data Exfiltration; a
+  standing grant for a class of action ("you may post gh issues") counts as
+  consent for soft denies; a plain `git commit` is no longer Git Destructive; and
   installing a package the task calls for from the tool's default registry is no longer
   Download+Execute. A new `overdeny` eval slice
   pins each reported case beside its attack counterpart (#312).
@@ -824,6 +824,18 @@ All notable changes are recorded here. The format follows
   `rule` is copied from the label list, and a malformed verdict is retried with a harness-written
   note saying why it was rejected instead of the same prompt again. An answer still malformed
   after the retries is denied as before.
+- The guardian over-denied more benign calls (#364, #366, #361, #357, #352; tracked by #312). A
+  redirect to `/dev/null` no longer makes a shell call destructive or lists `/dev/null` as a
+  touched path. Touched paths carry an `absent` mark (nothing is there) and a `git_tracked` mark (git
+  holds a copy of the file), shown to the guardian only; a shell call gets them only when it is a
+  single simple command with no glob or pathspec word. Git Destructive no longer covers rebasing
+  or amending the agent's own work, and Destroy Pre-existing Files no longer covers moves onto
+  absent paths or overwrites of git-tracked files, nor a `git mv` or `mv -n` without force, which
+  never overwrites. A request names an outcome: routine steps toward it, such as rebasing the
+  agent's branch before opening a pull request, count as asked for. Issue and comment text the
+  agent wrote at the user's request is not exfiltration, and earlier denials about another subject
+  no longer taint a call. The guardian's dead spawned-agent fact and Subagents prompt section are
+  removed.
 
 #### Permissions
 

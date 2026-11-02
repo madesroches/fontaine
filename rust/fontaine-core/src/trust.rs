@@ -5,7 +5,7 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use gix::bstr::BStr;
+use gix::bstr::{BStr, BString};
 use serde::Deserialize;
 
 use crate::config::ConfigError;
@@ -364,25 +364,9 @@ pub fn tracking(root: &Path, resolved: &Path) -> Tracking {
     let Ok((repo, workdir)) = discover(root) else {
         return Tracking::Unknown;
     };
-    let canonical = match std::fs::canonicalize(resolved) {
-        Ok(path) => path,
-        Err(_) => {
-            let (Some(parent), Some(name)) = (resolved.parent(), resolved.file_name()) else {
-                return Tracking::Unknown;
-            };
-            match std::fs::canonicalize(parent) {
-                Ok(parent) => parent.join(name),
-                Err(_) => return Tracking::Unknown,
-            }
-        }
-    };
-    let Ok(relative) = canonical.strip_prefix(&workdir) else {
+    let Some(relative) = index_relative(&workdir, resolved) else {
         return Tracking::Unknown;
     };
-    let Ok(relative) = gix::path::into_bstr(relative) else {
-        return Tracking::Unknown;
-    };
-    let relative = gix::path::to_unix_separators(relative).into_owned();
     let Ok(index) = repo.index_or_empty() else {
         return Tracking::Unknown;
     };
@@ -391,6 +375,57 @@ pub fn tracking(root: &Path, resolved: &Path) -> Tracking {
     } else {
         Tracking::Untracked
     }
+}
+
+/// Canonical `resolved` as an index key under `workdir`; a path that does not exist yet goes
+/// through its canonical parent. `None` when it cannot be resolved or lies outside the work tree.
+fn index_relative(workdir: &Path, resolved: &Path) -> Option<BString> {
+    let canonical = match std::fs::canonicalize(resolved) {
+        Ok(path) => path,
+        Err(_) => {
+            let (parent, name) = (resolved.parent()?, resolved.file_name()?);
+            std::fs::canonicalize(parent).ok()?.join(name)
+        }
+    };
+    let relative = gix::path::into_bstr(canonical.strip_prefix(workdir).ok()?).ok()?;
+    Some(gix::path::to_unix_separators(relative).into_owned())
+}
+
+/// For each of `paths`, whether git's index has an exact file entry for it, in the work tree
+/// that encloses `root`. A directory and the work-tree root are never tracked here: writing or
+/// extracting into one can overwrite files git does not hold. Opens the repository and its index
+/// once for all of them. `false` wherever [`tracking`] would say `Unknown`.
+pub fn tracked_files(root: &Path, paths: &[PathBuf]) -> Vec<bool> {
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    let none = || vec![false; paths.len()];
+    let Ok((repo, workdir)) = discover(root) else {
+        return none();
+    };
+    let Ok(index) = repo.index_or_empty() else {
+        return none();
+    };
+    paths
+        .iter()
+        .map(|resolved| {
+            index_relative(&workdir, resolved).is_some_and(|relative| {
+                // `entry_by_path` ignores the mode: a submodule gitlink holds only a commit
+                // pointer, and an intent-to-add entry has no content in git yet.
+                !relative.is_empty()
+                    && index.entry_by_path(relative.as_ref()).is_some_and(|entry| {
+                        matches!(
+                            entry.mode,
+                            gix::index::entry::Mode::FILE
+                                | gix::index::entry::Mode::FILE_EXECUTABLE
+                                | gix::index::entry::Mode::SYMLINK
+                        ) && !entry
+                            .flags
+                            .contains(gix::index::entry::Flags::INTENT_TO_ADD)
+                    })
+            })
+        })
+        .collect()
 }
 
 /// User trust is earned only by a file git does not know about (untracked or ignored — both

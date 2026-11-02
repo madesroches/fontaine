@@ -337,6 +337,18 @@ fn shell_redirect_targets_are_touched_paths() {
 }
 
 #[test]
+fn a_redirect_to_dev_null_is_not_a_touched_path_or_a_write() {
+    let (_dir, scope, _view) = world();
+    let command = "RIG_DIR=$(find ~/.cargo/registry/src -maxdepth 2 -type d -name \"rig-core-0.45.0\" | head -1); echo \"$RIG_DIR\"; rg -n \"enum ContentPart\" -A 40 \"$RIG_DIR/src\" 2>/dev/null | head -80";
+    assert!(shell_is(command));
+    let paths = touched_paths("shell", &json!({ "command": command }), &scope);
+    assert!(paths.iter().all(|p| !p.contains("/dev/null")), "{paths:?}");
+
+    assert!(!shell_is("rg -n x src 2>/dev/null | head -80"));
+    assert!(shell_is("echo x > /dev/stderr"));
+}
+
+#[test]
 fn touched_paths_are_resolved_by_the_scope() {
     let (_dir, scope, _view) = world();
     let root = scope.primary().to_path_buf();

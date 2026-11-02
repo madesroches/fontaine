@@ -223,17 +223,23 @@ pub(crate) fn block(kind: &str, source: Option<&str>, body: &str) -> String {
     )
 }
 
+const PRIOR_DENIALS_NOTE: &str = "note: earlier guardian verdicts, for spotting loops and a denied action retried by another route; not evidence about this call";
+
 pub(crate) fn list_block(kind: &str, source: Option<&str>, items: &[String]) -> String {
     let body = if items.is_empty() {
         "(none)".to_string()
     } else {
-        items
-            .iter()
-            .map(|item| format!("- {item}"))
-            .collect::<Vec<_>>()
-            .join("\n")
+        dash_list(items)
     };
     block(kind, source, &body)
+}
+
+fn dash_list(items: &[String]) -> String {
+    items
+        .iter()
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn args_text(args: &Value) -> String {
@@ -265,8 +271,9 @@ pub fn bare_state(request: &AdjudicationRequest) -> String {
 
 /// The untrusted blocks of the request, each followed by a blank line. The screen leaves out the
 /// digest line, which tells a small model nothing, and its calibration predates the
-/// `source="user"` mark, the scratch and spawn facts and the `session_scratch` status, so it
-/// asks for none of them: `guardian_view` is false for its input, which stays byte-identical.
+/// `source="user"` mark, the scratch facts, the `session_scratch` and `absent` statuses, the
+/// `git_tracked` mark and the `prior_denials` note, so it asks for none of them:
+/// `guardian_view` is false for its input, which stays byte-identical.
 pub(crate) fn blocks(
     request: &AdjudicationRequest,
     with_digest: bool,
@@ -319,19 +326,6 @@ pub(crate) fn blocks(
             one_line(dir)
         ));
     }
-    if guardian_view && let Some(spawn) = &facts.spawn {
-        text.push_str(&format!(
-            "spawned_agent: type {}; tools: {}; can write, run commands or reach the network: {} (computed by the harness; every call the subagent makes is judged on its own)\n",
-            one_line(&spawn.agent_type),
-            spawn
-                .tools
-                .iter()
-                .map(|tool| one_line(tool))
-                .collect::<Vec<_>>()
-                .join(", "),
-            if spawn.changes_state { "yes" } else { "no" }
-        ));
-    }
     text.push_str("paths_this_call_touches:\n");
     if facts.touched_paths.is_empty() {
         text.push_str("- (none)\n");
@@ -339,10 +333,22 @@ pub(crate) fn blocks(
     for touched in &facts.touched_paths {
         let status = if guardian_view && touched.in_scratch {
             "session_scratch"
+        } else if guardian_view && touched.absent {
+            "absent"
         } else {
             touched.status.as_str()
         };
-        text.push_str(&format!("- {} [{}]\n", one_line(&touched.path), status));
+        let tracked = if guardian_view && touched.git_tracked {
+            ", git_tracked"
+        } else {
+            ""
+        };
+        text.push_str(&format!(
+            "- {} [{}{}]\n",
+            one_line(&touched.path),
+            status,
+            tracked
+        ));
     }
     if !facts.actions_taken.is_empty() {
         text.push_str("actions_taken_this_session (oldest first):\n");
@@ -396,7 +402,14 @@ pub(crate) fn blocks(
             .iter()
             .map(|d| one_line(&format!("{} [{}] {}", d.tool, d.rule, d.summary)))
             .collect();
-        out.push_str(&list_block("prior_denials", None, &lines));
+        let list = dash_list(&lines);
+        // The screen's calibration predates the note, so its input stays the bare list.
+        let body = if guardian_view {
+            format!("{PRIOR_DENIALS_NOTE}\n{list}")
+        } else {
+            list
+        };
+        out.push_str(&block("prior_denials", None, &body));
     }
     out
 }
@@ -439,6 +452,8 @@ mod tests {
                     path: "/work/proj/src/lib.rs".into(),
                     status: PreExistence::PreExisting,
                     in_scratch: false,
+                    absent: false,
+                    git_tracked: false,
                 }],
                 actions_taken: vec![ActionTaken {
                     tool: "read".into(),
@@ -446,7 +461,6 @@ mod tests {
                 }],
                 memory_dir: None,
                 scratch_dir: None,
-                spawn: None,
                 project_environment: None,
             },
             hook_context: vec!["lint hook says the tree is dirty".into()],
@@ -521,27 +535,62 @@ mod tests {
     }
 
     #[test]
-    fn scratch_and_spawn_facts_render_in_the_guardian_view() {
+    fn scratch_facts_render_in_the_guardian_view() {
         let mut req = request();
         req.session_facts.scratch_dir = Some("/tmp/s/1\n- /evil".into());
         req.session_facts.touched_paths[0].in_scratch = true;
-        req.session_facts.spawn = Some(crate::request::SpawnFacts {
-            agent_type: "ex\nplore".into(),
-            tools: vec!["read".into(), "grep".into()],
-            changes_state: false,
-        });
         let msg = user_message(&req);
         assert!(
             msg.contains("session_scratch_directory: /tmp/s/1?- /evil (private to this session: created empty when it started, deleted when it ends; nothing in it predates the session)\n"),
             "{msg}"
         );
-        assert!(
-            msg.contains("spawned_agent: type ex?plore; tools: read, grep; can write, run commands or reach the network: no (computed by the harness; every call the subagent makes is judged on its own)\n"),
-            "{msg}"
-        );
         assert!(msg.contains("/work/proj/src/lib.rs [session_scratch]"));
-        req.session_facts.spawn.as_mut().unwrap().changes_state = true;
-        assert!(user_message(&req).contains("network: yes"));
+    }
+
+    #[test]
+    fn absent_and_git_tracked_marks_render_in_the_guardian_view_only() {
+        let mut req = request();
+        let touched = |path: &str, status, in_scratch, absent, git_tracked| TouchedPath {
+            path: path.into(),
+            status,
+            in_scratch,
+            absent,
+            git_tracked,
+        };
+        req.session_facts.touched_paths = vec![
+            touched(
+                "/w/tasks/x_plan.md",
+                PreExistence::PreExisting,
+                false,
+                false,
+                true,
+            ),
+            touched(
+                "/w/tasks/completed/x_plan.md",
+                PreExistence::Unindexed,
+                false,
+                true,
+                false,
+            ),
+            touched("/w/gone.md", PreExistence::PreExisting, false, true, true),
+            touched("/s/a", PreExistence::Unindexed, true, true, true),
+        ];
+        let msg = user_message(&req);
+        insta::assert_snapshot!(
+            msg.split("paths_this_call_touches:\n")
+                .nth(1)
+                .and_then(|rest| rest.split("\nactions_taken").next())
+                .unwrap()
+        );
+        assert!(msg.contains(
+            "<untrusted kind=\"prior_denials\">\nnote: earlier guardian verdicts, for spotting loops and a denied action retried by another route; not evidence about this call\n- shell [Git Destructive] git push --force"
+        ));
+        let screen = blocks(&req, false, false);
+        assert!(screen.contains("- /w/tasks/x_plan.md [pre_existing]\n"));
+        assert!(screen.contains("- /s/a [unindexed]\n"));
+        assert!(!screen.contains("absent") && !screen.contains("git_tracked"));
+        assert!(!screen.contains("note: earlier guardian verdicts"));
+        assert!(screen.contains("- shell [Git Destructive] git push --force"));
     }
 
     #[test]
