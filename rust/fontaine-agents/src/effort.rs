@@ -1,6 +1,6 @@
-//! The reasoning effort a user asks of the main agent, one provider-neutral setting that rig
-//! maps onto each provider's own parameter. It lives here because an agent type carries one and
-//! this crate sits below the core.
+//! The reasoning effort a user asks of the main agent and its subagents, one provider-neutral
+//! setting that rig maps onto each provider's own parameter. It lives here because an agent type
+//! carries one and this crate sits below the core.
 
 use std::fmt;
 use std::str::FromStr;
@@ -9,8 +9,8 @@ use rig_core::completion::{Effort as RigEffort, Reasoning};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-/// `xhigh` and `minimal` exist in rig but are not offered: the five levels are the ones every
-/// provider's mapping has a place for.
+/// `xhigh` and `minimal` exist in rig but are not offered: the levels match Claude Code's surface
+/// plus `off`, and a level a model refuses is dropped at runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Effort {

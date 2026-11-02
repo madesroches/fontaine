@@ -245,6 +245,24 @@ fn a_plugin_agent_file_follows_the_project_rules() {
     })
     .unwrap_err();
     assert!(err.to_string().contains("plugin agent file cannot inherit"));
+
+    write(
+        &root.join("agents/inherit.md"),
+        "---\neffort: high\n---\nBody",
+    );
+    let build = build_plugin(&root, "p", &context(&w.work)).unwrap();
+    let err = extensions::load(&mut extensions::LoadParams {
+        config_dir: &w.config,
+        project_root: &w.work,
+        servers: &[],
+        plugins: std::slice::from_ref(&build.dir),
+        warnings: &mut Vec::new(),
+    })
+    .unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("plugin agent file cannot choose an effort")
+    );
 }
 
 #[test]

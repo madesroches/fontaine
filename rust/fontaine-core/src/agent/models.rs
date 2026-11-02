@@ -108,16 +108,9 @@ impl AgentRuntime {
     /// The reasoning effort the next main turn sends, checked against the current model. A level
     /// the model cannot take is left out and the human told once.
     pub fn turn_generation_options(&self) -> Option<GenerationOptions> {
-        let effort = self.state.effort();
-        let (options, refused) = self.models.main.generation_options(effort);
-        if let (Some(effort), Some(refused)) = (effort, refused) {
-            self.state.warn_effort_refused(
-                &self.models.main.reference.to_string(),
-                effort,
-                &refused,
-            );
-        }
-        options
+        self.models
+            .main
+            .generation_options_warned(&self.state, self.state.effort())
     }
 
     /// Resolves `text`, rebuilds the agent on it and makes it the model of the session and its

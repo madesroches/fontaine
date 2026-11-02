@@ -14,6 +14,7 @@ use rig_core::operation::Completion;
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::{Credentials, StoredCredential};
 use crate::effort::Effort;
+use crate::gate::SessionState;
 use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy};
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
 use fontaine_guardian::{OutputProbe, WireIds};
@@ -232,6 +233,19 @@ impl ModelHandle {
             return (None, Some(first));
         }
         (Some(options), None)
+    }
+
+    /// `generation_options`, telling the human once through `state` when the level is refused.
+    pub fn generation_options_warned(
+        &self,
+        state: &SessionState,
+        effort: Option<Effort>,
+    ) -> Option<GenerationOptions> {
+        let (options, refused) = self.generation_options(effort);
+        if let (Some(effort), Some(refused)) = (effort, refused) {
+            state.warn_effort_refused(&self.reference.to_string(), effort, &refused);
+        }
+        options
     }
 
     /// The levels this model takes. A wire with no option mapping takes none.
