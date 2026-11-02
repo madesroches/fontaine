@@ -43,7 +43,10 @@ succeeded. Keep every counter and tally; drop only the subagent nodes.
 
 Under one `Inner` lock:
 
-- Retain only the root node (`ROOT_AGENT`) in `nodes`; rebuild `order` as just the root.
+- Retain only the root node (`ROOT_AGENT`) in `nodes`, plus any running nodes that are
+  skipped per the next bullet; rebuild `order` from the retained nodes (root first, then the
+  running nodes in their previous relative order) so every retained node stays iterable via
+  `order` and visible to `kill_all` and the `/clear` refusal check.
 - Remove only nodes whose status is not running. In practice none can be running here —
   `clear_conversation` refuses while any run, and `/clear` is not in `Command::runs_mid_turn`
   (`rust/fontaine-tui/src/commands.rs:116`), so no model call is in flight to reserve an agent
@@ -85,7 +88,10 @@ always `None` here because `/clear` is `main_only`
 3. `rust/fontaine-tui/src/ui/commands/context.rs`: clear `app.agent_views` on success.
 4. Docs: `docs/tui.md` Context section — note that past subagents leave the agent list and the
    agents panel (their persisted transcripts stay on disk for `/export`); `docs/tui.md` "The
-   agent list and the agent view" — one clause that `/clear` empties the list.
+   agent list and the agent view" — one clause that `/clear` empties the list; qualify the
+   "one row per subagent, ended ones included" phrasing in `docs/tui.md`'s agents-panel section
+   and in `docs/agents.md` (e.g. "until a `/clear`") so it stays true for agents that ended
+   before a clear.
 
 ## Files to Modify
 
@@ -93,6 +99,7 @@ always `None` here because `/clear` is `main_only`
 - `rust/fontaine-core/src/agent.rs`
 - `rust/fontaine-tui/src/ui/commands/context.rs`
 - `docs/tui.md`
+- `docs/agents.md`
 
 ## Trade-offs
 
@@ -113,14 +120,18 @@ always `None` here because `/clear` is `main_only`
 
 ## Documentation
 
-`docs/tui.md` (Context section and "The agent list and the agent view" section) per
-Implementation Step 4. No other page describes the agent list's contents.
+`docs/tui.md` (Context section, "The agent list and the agent view" section and the agents-panel
+section) and `docs/agents.md` per Implementation Step 4.
 
 ## Testing Strategy
 
 - Unit tests in `rust/fontaine-agents/src/tree.rs`: after `clear_ended`, `rows()` is empty and
   the root remains; a node reserved after the clear gets a fresh id (the `next` counter was not
   reset) and no reused name; `session_spend` is retained.
+- Unit test for the skip-running branch of `clear_ended` in `rust/fontaine-agents/src/tree.rs`:
+  with a running child reserved (as in `a_finished_agent_frees_its_place`), `clear_ended`
+  removes the ended nodes but leaves the running node present, running, and still in `order`,
+  so a racing spawn never has its node yanked from under it.
 - Integration test in `rust/fontaine-core` driving `AgentRuntime`: run a child subagent to an
   ended state, `clear_conversation()`, then assert `rows()` is empty. The existing refusal
   coverage (`rust/fontaine-core/tests/scanner.rs:365`, clear refused while a subagent runs)
