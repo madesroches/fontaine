@@ -12,10 +12,8 @@ the user did not ask for is denied: the user's own typed messages are the only u
 the guardian trusts, and they are the verdict-changing input that can allow it. After any approval
 the call executes once, on an unconfined write fallback instance, at the resolved absolute target.
 The containment-earned fast paths never widen: `tracked_edit` and `scratch_write` stay in-root only,
-the deterministic floor still runs first, and `lsp` keeps its hard containment denial — an
-out-of-root `shell`/`powershell` cwd never hit that deny (they are `RiskClass::Arbitrary`) and
-keeps falling through to the mode: prompt in `manual`/`acceptEdits`, guardian in `auto`. The
-read-only half of #269 already shipped as #284; this plan is the write half.
+the deterministic floor still runs first, and `lsp` keeps its hard containment denial.
+The read-only half of #269 already shipped as #284; this plan is the write half.
 
 ## Current State
 
@@ -97,8 +95,7 @@ hooks and deterministic floor (unchanged, always first)
   -> strict in-root read-only fast path (unchanged)
   -> shell pre-classifier (unchanged)
   -> allow rules / hook allows (unchanged)
-  -> containment hard deny: now only lsp (shell/powershell cwd never reached it —
-     Arbitrary risk skips the branch — and keeps falling to the mode)
+  -> containment hard deny: now only lsp
   -> mode:
        manual / acceptEdits  -> human prompt
        auto / (plan: edits are plan-blocked earlier) -> guardian
@@ -107,8 +104,8 @@ hooks and deterministic floor (unchanged, always first)
 
 - The deny branch's condition becomes "not a read-only external, not a write external": introduce
   `is_external_write(tool)` beside `is_external_read` in `scope.rs` and use both at the deny site.
-  `lsp` keeps its current hard refusal and message; `shell`/`powershell` cwd never hit the branch
-  (`RiskClass::Arbitrary`) and keep falling through to the mode, unchanged.
+  `lsp` keeps its current hard refusal and message; the narrowed deny must not newly cover
+  `shell`/`powershell`.
 - Headless behavior mirrors reads: a would-prompt external write is denied; an `auto` guardian
   allow or an applicable user allow rule can still run it.
 - Existing absolute-path allow rules and hook allows become effective for external writes, audited
@@ -156,7 +153,11 @@ Generalize the once-resolved normalization from reads to writes, reusing the #28
   - `preview.rs:56` falls back to `scope.resolved(path)` when `find` fails, so the approval
     prompt shows the real diff of the resolved external target;
   - `GuardedTool::capture` does the same, so an external edit's pre-image is stored and a later
-    rewind can restore the file.
+    rewind can restore the file. Generalize `refusal_for`
+    (`rust/fontaine-core/src/checkpoint.rs`) to match: a captured external pre-image resolves via
+    `Scope::resolved` instead of being marked `Step::Refused(OutOfScope)`, at both the plan-build
+    and restore-time applications. The manifest is trusted data from disk, so the restore writes
+    exactly the recorded resolved path.
 - An external write target is not added to `Scope::roots`, grants no read fast path and triggers
   no instruction-file discovery — same as external reads.
 
@@ -209,8 +210,7 @@ the same target. Do not tell the model external writes are unconditionally allow
 2. In `rust/fontaine-core/src/permissions.rs`: normalize a valid external write after hooks into
    `CallCtx.args` (written form kept for deny/ask matching); apply the same normalization in the
    `GuardianOff` branch; narrow the step-5b deny to exclude the write tools while keeping it for
-   `lsp` (shell/powershell cwd never reached it — `RiskClass::Arbitrary` — and keeps following
-   the mode, unchanged); in the floor's protected-path branch, return `Verdict::Guardian` for
+   `lsp`; in the floor's protected-path branch, return `Verdict::Guardian` for
    external writes in `auto` (in-root behavior unchanged, asking modes unchanged); leave the
    mode branches, `unjudged_edit` and the arg-error handling intact.
    Update the mode-matrix tests in `rust/fontaine-core/tests/permissions.rs` and
@@ -219,10 +219,14 @@ the same target. Do not tell the model external writes are unconditionally allow
 3. In `rust/fontaine-tools/src/guarded.rs` and `builtins.rs`: add the write-fallback routing mode
    and register `write`/`edit`/`notebook_edit` with one unconfined fallback each (`confine: false`,
    primary-root base, shared `Seen`), consuming normalized arguments without a second resolution.
-   Generalize `capture` to fall back to `Scope::resolved` for external paths. Cover plain and
+   Generalize `capture` to fall back to `Scope::resolved` for external paths. In
+   `rust/fontaine-core/src/checkpoint.rs`, generalize `refusal_for` so a captured external
+   pre-image resolves via `Scope::resolved` and restores at both its plan-build and restore-time
+   applications; the manifest is trusted data from disk, so the restore writes exactly the
+   recorded resolved path. Cover plain and
    notebook external writes in `rust/fontaine-tools/tests/scope.rs` and the `notebook.rs` test
    module; add a denied-gate execution test proving the write fallback cannot be reached without
-   an allow.
+   an allow, and a checkpoint test showing a rewind restores the external file.
 4. Generalize `rust/fontaine-core/src/preview.rs` to resolve external targets for the diff
    preview, with a unit test showing an external edit's prompt preview carries the resolved
    target's diff.
@@ -281,6 +285,7 @@ the same target. Do not tell the model external writes are unconditionally allow
 
 - `rust/fontaine-core/src/permissions.rs`
 - `rust/fontaine-core/src/preview.rs`
+- `rust/fontaine-core/src/checkpoint.rs`
 - `rust/fontaine-core/prompts/system_prompt.md`
 - `rust/fontaine-tools/src/scope.rs`
 - `rust/fontaine-tools/src/guarded.rs`
@@ -311,6 +316,9 @@ the same target. Do not tell the model external writes are unconditionally allow
 - `docs/tools.md`
 - `docs/permissions.md`
 - `docs/guardian.md`
+- `docs/architecture.md` (the "Write tools and `shell` have no fallback and stay confined" passage)
+- `docs/configuration.md` (the "Workspace roots" section's write-confinement sentence)
+- `docs/evals.md` (extend "The external-read slice" with the external-write rows)
 - `docs/tui.md` (only where it repeats the write-denial wording)
 - `tasks/design/permissions.md`
 - `tasks/fontaine_harness_plan.md`
@@ -370,6 +378,12 @@ No configuration schema, headless event schema, tool descriptor, risk-class tabl
   writes as it already does for in-root ones.
 - `docs/guardian.md`: document the local-write-outside-workspace rule and that user authorization
   for it comes only from the user's own messages.
+- `docs/architecture.md`: correct the confinement passage — writes gain an unconfined fallback
+  reached only after an approval; `shell` stays confined.
+- `docs/configuration.md`: correct the "Workspace roots" sentence — file-tool writes now
+  adjudicate paths outside every root through the normal pipeline.
+- `docs/evals.md`: extend "The external-read slice" section with the new external-write rows in
+  `benign.jsonl`, `attacks-a.jsonl` and `floor.jsonl`.
 - `docs/tui.md`: narrow any `/add-dir` write-denial wording to the tools that still deny.
 - `tasks/design/permissions.md`: update step 5b to the narrowed deny and the external-write
   pipeline position.
