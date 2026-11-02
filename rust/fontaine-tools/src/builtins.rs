@@ -11,8 +11,8 @@ use rig_core::tool::{DynamicTool, ExitStatus, Tool, ToolContext, ToolExecutionEr
 pub use rig_tools::Seen;
 use rig_tools::process::{Launcher, Process, Spawn};
 use rig_tools::{
-    Edit, List, ListArgs, MAX_FILES, MAX_MATCHES, OutputLimit, Read, Search, SearchArgs, Shell,
-    ShellArgs, ShellRun, Write,
+    Edit, List, MAX_FILES, MAX_MATCHES, OutputLimit, Read, Search, SearchArgs, Shell, ShellArgs,
+    ShellRun, Write,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -30,6 +30,7 @@ use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, ReadView};
 use crate::powershell::{self, PowerShellSettings};
 use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
+use crate::search::{GrepArgs, LsArgs, footprint, run_grep, run_ls};
 use crate::shell_cwd::{CwdFile, ShellCwd, TRACKED_SCRIPT};
 use crate::tls::LoadedNetwork;
 use crate::webfetch::{Webfetch, WebfetchConfig};
@@ -43,32 +44,42 @@ pub struct Ls {
 
 impl Tool for Ls {
     const NAME: &'static str = "ls";
-    type Args = ListArgs;
+    type Args = LsArgs;
     type Output = String;
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
         "List the files under a directory, sorted, one path per line below it. Skips files \
          ignored by git and, unless `hidden` is set or the glob names one, hidden files. With \
-         `depth`, directories below that depth are listed once as `dir/`. Use it to see what \
-         a directory holds, not `ls` or `find` in `shell`."
+         `depth`, directories below that depth are listed once as `dir/`. `ignore` takes globs \
+         of files and directories to leave out: `node_modules` names one at any depth, \
+         `src/gen` a path below the listed directory. Use it to see what a directory holds, \
+         not `ls` or `find` in `shell`."
             .to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        args_schema::<ListArgs>()
+        args_schema::<LsArgs>()
     }
 
     fn annotations(&self) -> ToolAnnotations {
         self.list.annotations()
     }
 
+    fn footprint(&self, args: &LsArgs) -> rig_core::tool::Touches {
+        footprint(
+            &self.list.workspace,
+            self.list.base.as_deref(),
+            args.path.as_deref(),
+        )
+    }
+
     async fn call(
         &self,
         context: &mut ToolContext,
-        args: ListArgs,
+        args: LsArgs,
     ) -> Result<String, ToolExecutionError> {
-        self.list.call(context, args).await
+        run_ls(&self.list, context, args).await
     }
 }
 
@@ -215,34 +226,46 @@ pub struct Grep {
 
 impl Tool for Grep {
     const NAME: &'static str = "grep";
-    type Args = SearchArgs;
+    type Args = GrepArgs;
     type Output = String;
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
         format!(
-            "Search file contents with a regular expression (Rust regex syntax; prefix the \
-             pattern with `(?i)` to ignore case). Skips files ignored by git and, unless \
-             `hidden` is set or the glob names one, hidden files. Returns `path:line: text`, at \
-             most {MAX_MATCHES} matches; with `files`, only the paths of the files with a match. \
-             Use it to find code, not `grep` or `rg` in `shell`."
+            "Search file contents with a regular expression (Rust regex syntax). Skips files \
+             ignored by git and, unless `hidden` is set or the glob names one, hidden files. \
+             `output_mode` is `files_with_matches` (the default: the paths of the files with a \
+             match, at most {MAX_FILES}), `content` (`path:line: text`, at most {MAX_MATCHES} \
+             matches; `-n` false drops the line numbers, `-A`, `-B` and `-C` add lines of \
+             context) or `count` (`path:N` per file). `-i` ignores case, `type` keeps one \
+             file type such as `rust` or `py`, `head_limit` caps the entries returned. An \
+             empty pattern with `files_with_matches` lists every file. Use it to find code, \
+             not `grep` or `rg` in `shell`."
         )
     }
 
     fn parameters(&self) -> serde_json::Value {
-        args_schema::<SearchArgs>()
+        args_schema::<GrepArgs>()
     }
 
     fn annotations(&self) -> ToolAnnotations {
         self.search.annotations()
     }
 
+    fn footprint(&self, args: &GrepArgs) -> rig_core::tool::Touches {
+        footprint(
+            &self.search.workspace,
+            self.search.base.as_deref(),
+            args.path.as_deref(),
+        )
+    }
+
     async fn call(
         &self,
         context: &mut ToolContext,
-        args: SearchArgs,
+        args: GrepArgs,
     ) -> Result<String, ToolExecutionError> {
-        self.search.call(context, args).await
+        run_grep(&self.search, context, args).await
     }
 }
 
