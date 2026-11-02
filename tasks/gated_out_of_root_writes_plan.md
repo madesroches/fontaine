@@ -23,12 +23,12 @@ half.
   is denied with the scratch/`/add-dir` hint, unless the tool is one of the four read-only externals
   (`is_external_read`). Today that branch fires for `write`/`edit`/`notebook_edit` and also for a
   `shell`/`powershell` working directory outside every root. The read-side carve-out shipped in
-  #284 (`f0efba7`…`fb4e5a8`); the write tools still die there, before allow rules could even matter
-  — wait, no: the branch runs *after* allow rules and hook allows (evaluate steps 5a then 5b), so
-  an allowed external write still fails, and in `dontAsk` the mode's blanket deny fires first.
+  #284 (`f0efba7`…`fb4e5a8`); the write tools still die there even when an allow rule or hook
+  allowed the call (the branch runs after allow rules and hook allows, evaluate steps 5a then 5b),
+  and in `dontAsk` the mode's blanket deny fires first.
 - External reads are normalized once after hooks by `normalize_external_read`
   (`permissions.rs:1056-1078`), which keys on `is_external_read` and rewrites the target through
-  `Scope::external_read` (`rust/fontaine-tools/src/scope.rs:236-280`). `Scope::external_read` and
+  `Scope::external_read` (`rust/fontaine-tools/src/scope.rs:229-268`). `Scope::external_read` and
   `external_shape` (`scope.rs:64-98`) reject any tool that is not one of the four read-only
   externals (`"{tool}" has no external read route`); `Scope::find`/`Scope::locate` stay strict.
 - Execution: `write`, `edit` and `notebook_edit` register `GuardedTool::per_root`
@@ -45,10 +45,11 @@ half.
   path against Fontaine-owned directories, workspace roots and the home directory, so
   `~/.ssh/authorized_keys`, shell rc files and `~/.fontaine` are flagged wherever they sit.
   `plan` mode blocks every `WorkspaceWrite` call before the mode branches
-  (`permissions.rs:673-679`). For in-root protected writes in `auto`, the floor returns
-  `Verdict::Guardian` (`permissions.rs:731-750`); for out-of-root ones the same branch falls into
-  `would_prompt`, so an external write to a protected path *asks the user in auto today* — the
-  only external-write outcome auto produces.
+  (`permissions.rs:733-739`). For in-root protected writes in `auto`, the floor returns
+  `Verdict::Guardian` (`permissions.rs:802-820`); for out-of-root ones the same branch falls into
+  `would_prompt`, so an external write to a protected path *asks the user in auto today*; a
+  non-protected external write is containment-denied there instead — the only two
+  external-write outcomes `auto` produces.
 - The `auto` edit fast paths can never fire out of root: `unjudged_edit`
   (`permissions.rs:1080-1103`) starts from `scope.find(given).ok()?`, which fails for an external
   path. The invariant holds by construction; nothing yet pins it for writes.
@@ -62,7 +63,7 @@ half.
   rendered in blocks marked `source="user"`, declared authoritative about intent
   (`rust/fontaine-guardian/prompts/guardian_prompt.md:10,36`). That is the #256 mechanism the
   issue points at. No default rule yet speaks about writes outside the workspace roots;
-  `DEFAULT_SOFT_DENY` (`rust/fontaine-guardian/src/rules.rs:62-78`) covers persistence
+  `DEFAULT_SOFT_DENY` (`rust/fontaine-guardian/src/rules.rs:40-60`) covers persistence
   mechanisms (SSH keys, cron, shell-profile lines) only as shell-class actions.
 - Approval previews and write checkpoints re-resolve through strict `Scope::find`:
   `rust/fontaine-core/src/preview.rs:56` and `GuardedTool::capture`
@@ -231,8 +232,9 @@ the same target. Do not tell the model external writes are unconditionally allow
    `rust/fontaine-guardian/src/rules.rs` and the parallel line to
    `rust/fontaine-guardian/prompts/guardian_minimal.md`; refresh the affected guardian prompt
    snapshots. Keep the screen stage unchanged.
-8. Replace the external-write expectations in `rust/fontaine/tests/headless_tools.rs` and add
-   cases alongside the #284 read rows:
+8. Add cases alongside the #284 read rows in `rust/fontaine/tests/headless_tools.rs`; the
+   replacement of the existing write-denial expectations stays with step 2's `fontaine-core`
+   test updates:
    - manual headless still denies an unapproved external write and nothing is created;
    - auto headless with a scripted guardian allow and a user message asking for the write
      creates the file and records `tier = guardian`;
@@ -341,6 +343,11 @@ No configuration schema, headless event schema, tool descriptor, risk-class tabl
 
 - 2026-11-06 (issue #269): The write half follows the read half's adjudication pattern; the
   containment hard deny survives only for `shell`/`powershell` cwd and `lsp`.
+- 2026-11-06 (maintainer review): How "asked by the user" is established for an external write is settled — only the user's own typed messages count, carried to the guardian in the `task_intent` and `recent_user_messages` blocks; the approval at the ask prompt is the establishment in the asking modes; no deterministic prose parse is introduced.
+- 2026-11-06 (maintainer review): Directory listing outside the roots is not gated more strictly than single-file reads; all four read-only tools adjudicate alike, with no stricter tier for listing (#284).
+- 2026-11-06 (maintainer review): An out-of-root read is served on an unconfined read-only fallback instance, resolved once after the hooks; this plan mirrors that mechanism for writes rather than re-opening it (#284).
+- 2026-11-06 (maintainer review): `session_facts` already receives the out-of-root file-tool path: `touched_paths` resolves external file-tool paths today; tests pin the resolved form for writes.
+- 2026-11-06 (maintainer review): External writes record `tool_decision` at the existing `guardian`/`human`/`allow_rule` tiers with no new tier (#284).
 
 ## Documentation
 
@@ -424,17 +431,4 @@ not use live APIs in unit or integration tests.
 
 ## Open Questions
 
-- How "asked by the user" is established for a write: this plan adopts the issue's first option —
-  the user's own turn naming the path is the authorization, carried to the guardian in the
-  existing `source="user"` blocks; the explicit approval at the ask prompt is the establishment in
-  the asking modes. A deterministic prose parse is not introduced.
-- Whether directory listing outside the roots should be gated more strictly than single-file
-  reads was settled by #284: all four read-only tools adjudicate alike, with no stricter tier for
-  listing. No change here.
-- How the out-of-root read is served (separate instance vs. relaxed confinement) was settled by
-  #284's unconfined read-only fallback; this plan mirrors it for writes rather than re-opening it.
-- Whether `session_facts` needs the out-of-root file-tool path in the touched-paths slot was
-  settled for reads by #284 and holds for writes already: `touched_paths` resolves external
-  file-tool paths today. Tests pin the resolved form for writes.
-- The `tool_decision` tier question was settled by #284 (`guardian`/`human`/`allow_rule`, no new
-  tier); external writes reuse those tiers.
+None.
