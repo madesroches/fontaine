@@ -1099,6 +1099,25 @@ fn a_hosted_screen_without_a_key_stops_startup_naming_the_model_and_the_account(
     assert!(text.contains("guardian.composition.model"), "{text}");
     assert!(text.contains("no OpenRouter key"), "{text}");
     assert!(text.contains("`or`"), "{text}");
+    assert!(!text.contains("/login"), "{text}");
+}
+
+#[test]
+fn a_hosted_read_without_a_key_names_the_reads_model_key() {
+    let w = World::new();
+    w.user_file(
+        "[accounts.or]\nkind = \"openrouter\"\n\n[guardian.composition]\nscript = \"g.rn\"\n\n[guardian.composition.reads.extra]\nmodel = \"or/typesafe/jev-1.14\"\nprompt = \"plain\"\nquestion = \"level5_employee\"\n",
+    );
+    w.config_file(
+        "g.rn",
+        "pub async fn guardian(call, params) { llm(call).await }",
+    );
+    let text = w.load().unwrap_err().to_string();
+    assert!(
+        text.contains("guardian.composition.reads.extra.model"),
+        "{text}"
+    );
+    assert!(text.contains("no OpenRouter key"), "{text}");
 }
 
 #[test]

@@ -194,8 +194,8 @@ fn build_reader(sources: &ReaderSources<'_>, reference: &str) -> Result<Reader, 
             .map_err(|e| RuntimeError::new(format!("the base_url of account `{account}`: {e}")))?;
         let stored = crate::credentials::Credentials::load(data_dir)
             .map_err(|e| RuntimeError::caused("the stored credentials", e))?;
-        let key =
-            crate::config::screen_key(account, hosted, env, &stored).map_err(RuntimeError::new)?;
+        let key = crate::config::screen_key(account, hosted, env, &stored, true)
+            .map_err(RuntimeError::new)?;
         return Ok(Reader::systemone(
             client,
             SystemOneSettings {

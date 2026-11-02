@@ -1591,14 +1591,22 @@ pub(crate) fn screen_key(
     account: &Account,
     env: EnvLookup<'_>,
     stored: &credentials::Credentials,
+    can_login: bool,
 ) -> Result<String, String> {
     use crate::credentials::StoredCredential;
     use crate::models::{Credential, credential};
     match credential(name, account, env, stored) {
         Credential::Found(StoredCredential::ApiKey(key)) => Ok(key),
-        Credential::Found(_) | Credential::NoSource => Err(format!(
-            "account `{name}` has no OpenRouter key; set `api_key_env` in [accounts.{name}] or run `/login {name}`"
-        )),
+        Credential::Found(_) | Credential::NoSource => Err(if can_login {
+            format!(
+                "account `{name}` has no OpenRouter key; set `api_key_env` in [accounts.{name}] or run `/login {name}`"
+            )
+        } else {
+            // Startup fails here, so `/login` is unreachable.
+            format!(
+                "account `{name}` has no OpenRouter key; set `api_key_env` in [accounts.{name}], or fix or remove [guardian.composition]"
+            )
+        }),
         Credential::Unresolved(why) => Err(format!("account `{name}`: {why}")),
     }
 }
@@ -2785,14 +2793,7 @@ pub fn check_composition(
         ConfigError::invalid(user_path, composition_key(composition, &e), &e.message)
     })?;
     for model in models {
-        let key = composition
-            .reads
-            .iter()
-            .find(|(_, read)| read.model.as_deref() == Some(model.as_str()))
-            .map_or_else(
-                || "guardian.composition.model".to_owned(),
-                |(name, _)| format!("guardian.composition.reads.{name}.model"),
-            );
+        let key = model_key(composition, &model);
         let account = model.split_once('/').map_or("", |(a, _)| a);
         let Some(configured) = config.accounts.get(account) else {
             return bad(&key, &format!("account `{account}` is not configured"));
@@ -2865,11 +2866,23 @@ fn check_composition_credentials(
             stored = Some(credentials::Credentials::load(params.data_dir)?);
         }
         let stored = stored.as_ref().expect("the credentials were just loaded");
-        screen_key(account, configured, params.env, stored).map_err(|message| {
-            ConfigError::invalid(user_path, "guardian.composition.model", message)
+        screen_key(account, configured, params.env, stored, false).map_err(|message| {
+            ConfigError::invalid(user_path, model_key(composition, &model), message)
         })?;
     }
     Ok(())
+}
+
+/// The settings key that supplies a read model: the read's own `model`, else the section's.
+fn model_key(composition: &GuardianComposition, model: &str) -> String {
+    composition
+        .reads
+        .iter()
+        .find(|(_, read)| read.model.as_deref() == Some(model))
+        .map_or_else(
+            || "guardian.composition.model".to_owned(),
+            |(name, _)| format!("guardian.composition.reads.{name}.model"),
+        )
 }
 
 /// The settings key a composition build error points at.

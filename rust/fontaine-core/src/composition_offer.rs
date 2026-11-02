@@ -279,7 +279,7 @@ pub fn detect_hosted(
             backend_of(account.kind) == Some(fontaine_guardian::BackendKind::SystemOne)
         })
         .filter(|(name, account)| {
-            screen_key(name, account, env, &stored).is_ok()
+            screen_key(name, account, env, &stored, true).is_ok()
                 && systemone_endpoint(account)
                     .is_ok_and(|url| fontaine_guardian::systemone::key_may_travel(&url))
         })
