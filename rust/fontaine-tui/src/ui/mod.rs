@@ -106,9 +106,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
             return;
         }
         if let Some(error) = &snapshot.error
-            && self
-                .quota_warned
-                .insert(runtime.models.main.reference.account.clone())
+            && warn_once(
+                &mut self.quota_warned,
+                &runtime.models.main.reference.account,
+            )
         {
             runtime.approver().warn(&format!(
                 "could not read the {} quota: {}",
@@ -916,4 +917,9 @@ fn agent_label(runtime: &AgentRuntime, id: &str) -> String {
     } else {
         format!("{name} ({id})")
     }
+}
+
+/// A failing quota is reported once per account, not on every redraw or re-point.
+fn warn_once(warned: &mut std::collections::HashSet<String>, account: &str) -> bool {
+    warned.insert(account.to_string())
 }

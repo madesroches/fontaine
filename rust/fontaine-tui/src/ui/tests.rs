@@ -446,3 +446,11 @@ fn a_message_handed_to_a_resume_is_not_restored_to_the_input() {
     );
     assert_eq!(ui.app.input.text(), "hello");
 }
+
+#[test]
+fn a_failing_quota_warns_once_per_account() {
+    let mut warned = Default::default();
+    assert!(super::warn_once(&mut warned, "kimi"));
+    assert!(!super::warn_once(&mut warned, "kimi"));
+    assert!(super::warn_once(&mut warned, "other"));
+}

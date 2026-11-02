@@ -190,8 +190,8 @@ unpriced, so `--max-budget-usd` does not apply to them.
 A flat-rate account has no token price worth estimating; its own quota is the budget signal. With
 `quota = "kimi"` Fontaine asks `<base_url>/usages` for the account's usage windows when the
 account's model is in use, then every minute, with the account's key as the bearer token (no
-`Authorization` header when the account has none) and a 10 second timeout. No request goes to an
-endpoint you did not name, and nothing is sent without the key you configured. It is display only:
+`Authorization` header when the account has none) and a 10 second timeout. No credential other than
+the account's own is sent, and only to the account's own `base_url`. It is display only:
 it never affects permissions or the guardian, and a failure is reported once and hides the segment.
 
 ```toml

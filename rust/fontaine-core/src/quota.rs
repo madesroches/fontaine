@@ -150,6 +150,12 @@ async fn run(
             }
         }
         published.quota = last_good.as_ref().map(|(quota, _)| quota.clone());
+        // select! picks randomly when the fetch and a re-point are both ready.
+        if sources.has_changed().unwrap_or(true) {
+            last_good = None;
+            snapshot.send_replace(QuotaSnapshot::default());
+            continue;
+        }
         snapshot.send_replace(published);
         tokio::select! {
             () = tokio::time::sleep(POLL_INTERVAL) => {}
@@ -158,6 +164,7 @@ async fn run(
                     return;
                 }
                 last_good = None;
+                snapshot.send_replace(QuotaSnapshot::default());
             }
         }
     }
