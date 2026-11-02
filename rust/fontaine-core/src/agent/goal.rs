@@ -7,7 +7,6 @@ use fontaine_tools::gate::ROOT_AGENT;
 use rig_memory::load_async;
 
 use super::AgentRuntime;
-use crate::gate::spend_of;
 use crate::goal::{
     Applied, Cleared, Continue, Evaluation, GoalCaps, GoalError, GoalEvaluator, PauseReason,
     Pending, REASON_CHARS, Step, cut, goal_prompt_text, transcript_of,
@@ -16,6 +15,7 @@ use crate::ledger::{GoalEvent, Record};
 use crate::session::{CONVERSATION_LOG, CompactReason, CompactResult};
 use crate::side_question::{Answer, SideQuestion, SideQuestionError};
 use crate::turn::TurnOutcome;
+use crate::usage_ledger::UsageSource;
 
 impl AgentRuntime {
     /// What the session has spent so far: the root's spend, which holds the main model, the
@@ -47,7 +47,8 @@ impl AgentRuntime {
             )
             .await;
         if let Some(usage) = result.usage() {
-            self.state.agents().debit(ROOT_AGENT, &spend_of(usage));
+            self.state
+                .record_usage(UsageSource::Compaction, ROOT_AGENT, usage, true);
         }
         result
     }
@@ -69,7 +70,8 @@ impl AgentRuntime {
             Err(e) => e.usage(),
         };
         if let Some(usage) = usage {
-            self.state.agents().debit(ROOT_AGENT, &spend_of(usage));
+            self.state
+                .record_usage(UsageSource::SideQuestion, ROOT_AGENT, usage, true);
         }
         asked
     }

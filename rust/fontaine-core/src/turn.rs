@@ -19,8 +19,9 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::audit::DecisionRecord;
-use crate::gate::{DecisionFeed, Published, SessionState, spend_of};
+use crate::gate::{DecisionFeed, Published, SessionState};
 use crate::preview::DiffPreview;
+use crate::usage_ledger::UsageSource;
 
 /// The retries a transient transport failure earns, on top of the first attempt.
 const MAX_RETRIES: usize = 2;
@@ -556,11 +557,14 @@ async fn drive_once(
                 if !params.priced {
                     usage.cost = None;
                 }
-                let spend = spend_of(&usage);
-                params.state.agents().debit(params.agent_id, &spend);
-                if params.agent_id != ROOT_AGENT {
-                    params.state.add_subagent_usage(&usage);
-                }
+                let source = if params.agent_id == ROOT_AGENT {
+                    UsageSource::Main
+                } else {
+                    UsageSource::Subagent
+                };
+                params
+                    .state
+                    .record_usage(source, params.agent_id, &usage, true);
                 let flow = on_event(SessionEvent::Usage {
                     usage,
                     calls_tool: turn_calls_tool,

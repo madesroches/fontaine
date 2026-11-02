@@ -2233,3 +2233,39 @@ async fn recap_after_a_turn_lists_the_message_and_the_allowed_write() {
     // A model-free report: it made no request of its own.
     assert_eq!(w.requests().len(), 2);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cost_lists_the_guardian_row_with_the_calls_the_guardian_made() {
+    let w = World::new(vec![
+        tool_turn("c1", "shell", json!({"command": "echo x > out.txt"})),
+        text_turn("blocked"),
+    ])
+    .in_mode(PermissionMode::Auto)
+    .with_guardian(vec![verdict("deny", "Safety Bypass", 0.95)]);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("do it");
+        ui.wait_for("blocked").await;
+        idle(&ui).await;
+
+        ui.send("/usage");
+        ui.wait_for("Session usage").await;
+        let screen = ui.screen();
+        let row = |label: &str| {
+            let line = screen
+                .lines()
+                .find(|l| l.trim_start().starts_with(label))
+                .unwrap_or_else(|| panic!("no {label} row in\n{screen}"));
+            line.split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse::<usize>()
+                .unwrap()
+        };
+        assert_eq!(row("main"), 2, "{screen}");
+        assert_eq!(row("guardian"), 1, "{screen}");
+        assert_eq!(row("total"), 3, "{screen}");
+    })
+    .await;
+    assert_eq!(w.guardian_calls(), 1);
+}

@@ -1138,3 +1138,22 @@ async fn every_powershell_call_goes_to_the_guardian_in_auto() {
         assert_eq!(last(&rig).tier, Tier::Guardian, "{command}");
     }
 }
+
+#[tokio::test]
+async fn an_unavailable_guardian_adds_no_guardian_call() {
+    let missing = Rig::with(Options::new(Auto).headless());
+    assert!(!allowed(&missing.check("shell", shell("make all")).await));
+    assert_eq!(missing.state.guardian_usage().calls, 0);
+}
+
+#[tokio::test]
+async fn a_retried_adjudication_counts_as_one_guardian_call() {
+    let rig = Rig::with(Options::new(Auto));
+    let fake = fake_guardian(allow_verdict());
+    rig.approver.when_unavailable(UnavailableChoice::Retry);
+    assert!(!allowed(&rig.check("shell", shell("make all")).await));
+    assert_eq!(rig.state.guardian_usage().calls, 0);
+    rig.state.set_guardian(fake.guardian.clone());
+    assert!(allowed(&rig.check("shell", shell("make all")).await));
+    assert_eq!(rig.state.guardian_usage().calls, 1);
+}

@@ -11,6 +11,8 @@ pub enum Command {
     Todos,
     /// `/btw <question>`: a side question answered without entering the conversation.
     Btw(String),
+    /// `/cost` (`/usage`): the session's token usage and spend by source; takes no argument.
+    Cost,
     /// `/recap`: a report of the session from the ledger; takes no argument.
     Recap,
     /// `/clear` (`/reset`, `/new`); a name for the old conversation is refused.
@@ -128,6 +130,7 @@ impl Command {
                 | Command::Expand(_)
                 | Command::Config
                 | Command::Recap
+                | Command::Cost
         )
     }
 }
@@ -209,6 +212,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: Some("[n]"),
         description: "copy the latest assistant reply to the clipboard",
         command: Command::Copy,
+    },
+    Builtin {
+        name: "cost",
+        aliases: &["usage"],
+        hint: None,
+        description: "show this session's token usage and cost, by source",
+        command: |_| Command::Cost,
     },
     Builtin {
         name: "denied",
@@ -931,6 +941,10 @@ mod tests {
         assert_eq!(parse_command("/recap foo"), Some(Command::Recap));
         assert!(Command::Btw("x".into()).main_only());
         assert!(!Command::Recap.main_only());
+        assert_eq!(parse_command("/cost"), Some(Command::Cost));
+        assert_eq!(parse_command("/usage"), Some(Command::Cost));
+        assert_eq!(parse_command("/usage now"), Some(Command::Cost));
+        assert!(!Command::Cost.main_only());
         let menu = builtin_menu();
         let btw = menu.iter().find(|e| e.name == "btw").expect("a btw row");
         assert!(btw.requires_argument());
@@ -953,6 +967,8 @@ mod tests {
             "/expand 2",
             "/config",
             "/recap",
+            "/cost",
+            "/usage",
         ] {
             let command = parse_command(immediate).expect("a command");
             assert!(command.runs_mid_turn(), "{immediate}");

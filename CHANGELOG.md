@@ -667,6 +667,10 @@ All notable changes are recorded here. The format follows
   or `max`) for the session, and the status bar shows it beside the model while one is set. A
   `/model` switch keeps the level and checks it against the new model; one the model cannot take is
   dropped with a one-time warning (#53).
+- `/cost` (alias `/usage`) reports the session's token usage and dollar cost by source: the main
+  model, the guardian, subagents, goal evaluations, compaction and `/btw` side questions, with
+  cache tokens, the call count and a `· N unpriced tok` marker where a price is missing. It runs
+  mid-turn, and the headless result reads its figures from the same usage ledger (#56).
 
 ### Changed
 

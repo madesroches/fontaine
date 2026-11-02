@@ -711,6 +711,8 @@ async fn a_failed_composition_is_a_guardian_denial_that_can_be_approved_later() 
     assert!(rig.state.auto_paused());
     let warnings = rig.approver.warnings.lock().unwrap().clone();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
+    // The default usage record of the failed composition stands for no request.
+    assert_eq!(rig.state.guardian_usage().calls, 0);
 }
 
 #[tokio::test]

@@ -13,6 +13,7 @@ use fontaine_core::ledger::Record;
 use fontaine_core::permission_rules::parse_rule;
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::SessionEvent;
+use fontaine_core::usage_ledger::UsageSource;
 use fontaine_tools::gate::ROOT_AGENT;
 use serde_json::{Value, json};
 
@@ -386,10 +387,10 @@ async fn guardian_spend_is_counted_per_agent_and_against_that_agents_budget() {
     usage.output_tokens = Some(8);
     // The state's own tree is the default one; its bookkeeping per agent is the same call.
     let other = child(&rig, Ladder::Manual);
-    rig.state.add_guardian_usage(&other, &usage);
-    rig.state.add_guardian_usage(ROOT_AGENT, &usage);
-    assert_eq!(rig.state.guardian_usage_of(&other).input_tokens, 8);
+    rig.state.add_guardian_usage(&other, &usage, true);
+    rig.state.add_guardian_usage(ROOT_AGENT, &usage, true);
     assert_eq!(rig.state.guardian_usage().input_tokens, 16);
+    assert_eq!(rig.agents.spend_of(&other).input_tokens, 8);
     assert_eq!(rig.agents.spend_of(&other).tokens(), 16);
     // Over a budget, the tree says so.
     let spend = fontaine_core::gate::spend_of(&usage);
@@ -1484,15 +1485,57 @@ async fn cache_tokens_reach_every_usage_bucket() {
     usage.input_tokens = Some(10);
     usage.cached_input_tokens = Some(7);
     usage.cache_creation_input_tokens = Some(3);
-    rig.state.add_guardian_usage(ROOT_AGENT, &usage);
-    rig.state.add_guardian_usage(ROOT_AGENT, &usage);
+    rig.state.add_guardian_usage(ROOT_AGENT, &usage, true);
+    rig.state.add_guardian_usage(ROOT_AGENT, &usage, true);
     rig.state.add_goal_usage(&usage);
-    rig.state.add_subagent_usage(&usage);
-    let reads = |u: fontaine_core::gate::GuardianUsage| {
+    rig.state
+        .record_usage(UsageSource::Subagent, ROOT_AGENT, &usage, true);
+    let reads = |u: fontaine_core::usage_ledger::Bucket| {
         (u.cache_read_input_tokens, u.cache_creation_input_tokens)
     };
     assert_eq!(reads(rig.state.guardian_usage()), (14, 6));
-    assert_eq!(reads(rig.state.guardian_usage_of(ROOT_AGENT)), (14, 6));
     assert_eq!(reads(rig.state.goal_usage()), (7, 3));
     assert_eq!(reads(rig.state.subagent_usage()), (7, 3));
+}
+
+#[tokio::test]
+async fn record_usage_lands_in_its_source_and_debits_the_calling_agent() {
+    let rig = Rig::new(Manual);
+    let other = child(&rig, Ladder::Manual);
+    let mut usage = rig_core::completion::Usage::new();
+    usage.input_tokens = Some(5);
+    usage.output_tokens = Some(2);
+    let before = rig.agents.spend_of(ROOT_AGENT).tokens();
+    for source in UsageSource::ALL {
+        rig.state.record_usage(source, ROOT_AGENT, &usage, true);
+    }
+    for source in UsageSource::ALL {
+        let bucket = rig.state.usage_ledger().bucket(source);
+        assert_eq!((bucket.calls, bucket.input_tokens), (1, 5), "{source:?}");
+    }
+    assert_eq!(rig.agents.spend_of(ROOT_AGENT).tokens() - before, 42);
+
+    rig.state
+        .record_usage(UsageSource::Subagent, &other, &usage, true);
+    assert_eq!(rig.agents.spend_of(&other).input_tokens, 5);
+    assert_eq!(
+        rig.state
+            .usage_ledger()
+            .bucket(UsageSource::Subagent)
+            .input_tokens,
+        10
+    );
+}
+
+#[tokio::test]
+async fn a_guardian_record_that_sent_no_request_adds_no_call() {
+    let rig = Rig::new(Manual);
+    let mut usage = rig_core::completion::Usage::new();
+    usage.input_tokens = Some(3);
+    rig.state.add_guardian_usage(ROOT_AGENT, &usage, false);
+    rig.state
+        .add_guardian_usage(ROOT_AGENT, &Default::default(), false);
+    rig.state.add_guardian_usage(ROOT_AGENT, &usage, true);
+    let bucket = rig.state.guardian_usage();
+    assert_eq!((bucket.calls, bucket.input_tokens), (1, 6));
 }

@@ -15,6 +15,7 @@ use fontaine_core::instructions::{MemoryEntry, MemoryKind};
 use fontaine_core::ledger::LedgerRecap;
 use fontaine_core::permission_rules::SourcedRule;
 use fontaine_core::plugins::Registry;
+use fontaine_core::usage_ledger::{Bucket, UsageSource};
 use fontaine_tools::display::compact_count;
 
 use crate::commands::{BUILTINS, MenuEntry, is_builtin};
@@ -500,6 +501,104 @@ pub fn recap(input: &RecapInput) -> String {
     }
     lines.push(format!("mode: {}", mode_label(input.mode)));
     format!("Session recap\n{}", lines.join("\n"))
+}
+
+/// What `/cost` reports: the ledger's buckets and the session cost budget.
+pub struct UsageReport {
+    /// In `UsageSource::ALL` order.
+    pub by_source: [Bucket; 6],
+    /// The `[agents]` session cost cap and what the tree has spent against it.
+    pub budget: Option<(f64, f64)>,
+}
+
+/// `/cost`: tokens, cache tokens and dollars per source, then the total.
+pub fn cost(report: &UsageReport) -> String {
+    let bucket = |source: UsageSource| report.by_source[source.index()];
+    let shown = [
+        ("main", UsageSource::Main),
+        ("guardian", UsageSource::Guardian),
+        ("subagents", UsageSource::Subagent),
+        ("goal", UsageSource::Goal),
+        ("compaction", UsageSource::Compaction),
+        ("side questions", UsageSource::SideQuestion),
+    ];
+    let total = fontaine_core::usage_ledger::total(&report.by_source);
+    let cache = total.cache_read_input_tokens > 0 || total.cache_creation_input_tokens > 0;
+    let cost_cell = |b: &Bucket| {
+        let mut cell = match b.cost_usd {
+            Some(cost) => format!("${cost:.4}"),
+            None => return "n/a".to_string(),
+        };
+        if b.unpriced_tokens > 0 {
+            let _ = write!(cell, " · {} unpriced tok", compact_count(b.unpriced_tokens));
+        }
+        cell
+    };
+    let cells = |label: &str, b: &Bucket| {
+        let mut row = vec![
+            label.to_string(),
+            b.calls.to_string(),
+            compact_count(b.input_tokens),
+            compact_count(b.output_tokens),
+        ];
+        if cache {
+            row.push(compact_count(b.cache_read_input_tokens));
+            row.push(compact_count(b.cache_creation_input_tokens));
+        }
+        row.push(cost_cell(b));
+        row
+    };
+    let mut head = vec!["source", "calls", "input", "output"];
+    if cache {
+        head.extend(["cache read", "cache write"]);
+    }
+    head.push("cost");
+    let mut table: Vec<Vec<String>> = vec![head.into_iter().map(String::from).collect()];
+    for (label, source) in shown {
+        let b = bucket(source);
+        if b.calls > 0 {
+            table.push(cells(label, &b));
+        }
+    }
+    let mut out = String::from("Session usage");
+    if table.len() == 1 {
+        out.push_str("\n  no model calls yet");
+    } else {
+        table.push(cells("total", &total));
+        let columns = table[0].len();
+        let widths: Vec<usize> = (0..columns)
+            .map(|c| {
+                table
+                    .iter()
+                    .map(|row| row[c].chars().count())
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        for row in &table {
+            out.push_str("\n ");
+            for (c, cell) in row.iter().enumerate() {
+                match c {
+                    0 => {
+                        let _ = write!(out, " {cell:<w$}", w = widths[c]);
+                    }
+                    c if c + 1 == columns => {
+                        let _ = write!(out, "  {cell}");
+                    }
+                    _ => {
+                        let _ = write!(out, "  {cell:>w$}", w = widths[c]);
+                    }
+                }
+            }
+        }
+    }
+    out.push_str(
+        "\nExcludes the guardian estimate for requests a composition dropped, the tool-result scanner and local screen calls, and the auto-mode setup scan.",
+    );
+    if let Some((spent, cap)) = report.budget {
+        let _ = write!(out, "\nSession cost budget: ${spent:.4} / ${cap:.2}");
+    }
+    out
 }
 
 /// `/context`: what fills the window, estimated. With `all`, each instruction file and tool
@@ -1093,6 +1192,126 @@ mod tests {
             mcp_tools: vec![("mcp__gh__issue".into(), 2_900)],
             messages: 35_700,
         }
+    }
+
+    fn spent(calls: u64, input: u64, output: u64, cost: Option<f64>, unpriced: u64) -> Bucket {
+        Bucket {
+            calls,
+            input_tokens: input,
+            output_tokens: output,
+            cost_usd: cost,
+            unpriced_tokens: unpriced,
+            ..Bucket::default()
+        }
+    }
+
+    fn usage_report(rows: &[(UsageSource, Bucket)]) -> UsageReport {
+        let mut by_source = [Bucket::default(); 6];
+        for (source, bucket) in rows {
+            by_source[source.index()] = *bucket;
+        }
+        UsageReport {
+            by_source,
+            budget: None,
+        }
+    }
+
+    #[test]
+    fn cost_lists_priced_sources_in_order_with_a_total() {
+        let text = cost(&usage_report(&[
+            (
+                UsageSource::Subagent,
+                spent(8, 40_100, 5_000, Some(0.19), 0),
+            ),
+            (UsageSource::Main, spent(12, 84_200, 9_100, Some(0.412), 0)),
+            (
+                UsageSource::Guardian,
+                spent(31, 22_000, 1_400, Some(0.015), 0),
+            ),
+        ]));
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "Session usage");
+        assert!(lines[1].starts_with("  source"), "{text}");
+        assert!(lines[2].starts_with("  main"), "{text}");
+        assert!(lines[3].starts_with("  guardian"), "{text}");
+        assert!(lines[4].starts_with("  subagents"), "{text}");
+        assert!(lines[5].starts_with("  total"), "{text}");
+        assert!(lines[5].ends_with("$0.6170"), "{text}");
+        assert!(lines[2].contains("84.2k"), "{text}");
+        assert!(!text.contains("unpriced"), "{text}");
+        assert!(!text.contains("budget"), "{text}");
+    }
+
+    #[test]
+    fn cost_marks_a_partial_figure_with_the_unpriced_tokens() {
+        let text = cost(&usage_report(&[
+            (UsageSource::Main, spent(12, 84_200, 9_100, Some(0.412), 0)),
+            (
+                UsageSource::Subagent,
+                spent(8, 40_100, 5_000, Some(0.19), 5_000),
+            ),
+        ]));
+        let rows: Vec<&str> = text.lines().collect();
+        assert!(rows[3].ends_with("$0.1900 · 5.0k unpriced tok"), "{text}");
+        assert!(rows[4].ends_with("$0.6020 · 5.0k unpriced tok"), "{text}");
+        assert!(!rows[2].contains("unpriced"), "{text}");
+    }
+
+    #[test]
+    fn cost_with_no_priced_source_says_n_a_and_has_no_dollar_total() {
+        let text = cost(&usage_report(&[(
+            UsageSource::Main,
+            spent(3, 1_000, 200, None, 1_200),
+        )]));
+        assert!(!text.contains('$'), "{text}");
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[2].ends_with("n/a"), "{text}");
+        assert!(lines[3].ends_with("n/a"), "{text}");
+    }
+
+    #[test]
+    fn cost_hides_the_cache_columns_when_every_cache_counter_is_zero() {
+        let plain = cost(&usage_report(&[(
+            UsageSource::Main,
+            spent(1, 10, 1, Some(0.1), 0),
+        )]));
+        assert!(!plain.contains("cache"), "{plain}");
+
+        let mut cached = spent(1, 10, 1, Some(0.1), 0);
+        cached.cache_read_input_tokens = 61_000;
+        cached.cache_creation_input_tokens = 3_200;
+        let text = cost(&usage_report(&[(UsageSource::Main, cached)]));
+        assert!(text.contains("cache read"), "{text}");
+        assert!(text.contains("cache write"), "{text}");
+        assert!(text.contains("61.0k"), "{text}");
+    }
+
+    #[test]
+    fn cost_omits_sources_that_made_no_call() {
+        let mut idle = spent(0, 500, 5, Some(0.2), 0);
+        idle.calls = 0;
+        let text = cost(&usage_report(&[
+            (UsageSource::Main, spent(1, 10, 1, Some(0.1), 0)),
+            (UsageSource::Goal, idle),
+        ]));
+        assert!(!text.contains("goal"), "{text}");
+        let empty = cost(&usage_report(&[]));
+        assert!(empty.contains("no model calls yet"), "{empty}");
+        assert!(!empty.contains("total"), "{empty}");
+    }
+
+    #[test]
+    fn cost_shows_the_budget_footer_only_with_a_cap_and_always_the_exclusions() {
+        let mut report = usage_report(&[(UsageSource::Main, spent(1, 10, 1, Some(0.1), 0))]);
+        let without = cost(&report);
+        assert!(!without.contains("Session cost budget"), "{without}");
+        assert!(without.contains("setup scan"), "{without}");
+        report.budget = Some((0.1, 5.0));
+        let with = cost(&report);
+        assert!(
+            with.ends_with("Session cost budget: $0.1000 / $5.00"),
+            "{with}"
+        );
     }
 
     #[test]

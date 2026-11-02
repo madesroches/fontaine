@@ -1545,7 +1545,7 @@ impl PermissionPipeline {
                 .await;
                 let screened = self.note_composition(&stage, &composed, &guardian);
                 if let Some(usage) = &composed.llm_usage {
-                    self.state.add_guardian_usage(cx.call.agent, usage);
+                    self.state.add_guardian_usage(cx.call.agent, usage, true);
                 }
                 (composed.decided, Some(screened))
             }
@@ -1625,8 +1625,11 @@ impl PermissionPipeline {
                 UnavailableChoice::Deny => {}
             }
         }
-        self.state
-            .add_guardian_usage(cx.call.agent, &adjudication.usage);
+        self.state.add_guardian_usage(
+            cx.call.agent,
+            &adjudication.usage,
+            adjudication.transport.is_some() && !adjudication.cache_hit,
+        );
         self.settle(cx, adjudication, screened.as_ref()).await
     }
 
