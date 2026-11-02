@@ -43,12 +43,12 @@ valid set. `medium` is included because rig and Claude Code have it (dsh's set i
   `config_scope.rs:156`) and `agents.types.<name>.effort` (`[agents]`, `:189`), which refuse the shared
   `.fontaine/settings.toml`; `guardian.effort` has no row today, so `config_scope.rs` gets an explicit
   user-only row for it (a key with no row is refused from project scope). Agent-file frontmatter `effort:` is
-  barred from repository and plugin agent files the way `model` is (`extensions.rs:323-340`): user-scope
+  barred from repository and plugin agent files the way `model` is (`extensions.rs:323-330`): user-scope
   agent files only.
 
 ### Applying it
 A single resolver `ModelHandle::generation_options(effort: Option<Effort>) -> (Option<GenerationOptions>, Option<UnsupportedOption>)`:
-`None` yields no options (request unchanged). With a level it starts from rig's `ModelSpec::default_options`
+`None` yields no options (request unchanged). With a level it starts from rig's `ModelSpec::default_options(Option<Reasoning>)`
 (`spec.rs:345`) with `reasoning` set and, when `self.completion.spec()` yields a catalog spec, checks it with
 `ModelSpec::validate(&GenerationOptions)` (`spec.rs:429`, as `side_question.rs:132` does). A refusal is not
 fatal: the level is dropped for that model and the refused option is returned alongside. `ModelHandle` has no
@@ -58,16 +58,16 @@ state. There is no extra clamping: rig's
 (custom `openai-compatible` ids, `opencode-go`) send the options as is, since rig maps them per dialect and
 the gateways accept all values. An explicit effort overrides Ollama's account-level `think` key
 (`ollama.rs:189-191`), and `effort = off` equals `think = false`.
-- The effective level lives in session state, and `generation_options(effort)` reads it. `AgentBuilder::options`
-  bakes options at build time, so it is not used for the main agent; instead each turn applies
-  `.options(handle.generation_options(effort))` on rig's per-turn `AgentRunner::options` (`rig-agent-0.45.0/src/agent/runner.rs:330`) in `drive_once` (`fontaine-core/src/turn.rs:443-455`), reading the level from `SessionState` (`Drive` carries `&SessionState`), so `TurnParams` is untouched.
+- The effective level lives in session state. `AgentBuilder::options` bakes options at build time, so it is not
+  used; each turn applies finished options on rig's per-turn `AgentRunner::options` (`rig-agent-0.45.0/src/agent/runner.rs:330`) in `drive_once` (`fontaine-core/src/turn.rs:443-455`). `drive_once` has no `ModelHandle` (`Drive`/`TurnParams` carry only `model: String` and `provider: String`; the main handle sits in `Arc<RwLock<MainModel>>`, `child_runner.rs:100,262`, and a child's handle is a local in the spawn code), so the options are resolved and validated before `drive_once`, by the code that holds the current handle (main turn start; child spawn), and passed in a new `Drive` field. `TurnParams` still gains nothing for this. Options are recomputed at each turn start from the current handle, which is how `/model` revalidation reaches the next turn. The once-only warned flag lives in session state.
+- Session state: `SessionState`/`StateParams` (`gate.rs:110-139`) gain the effort field and the warned flag, seeded at session setup from `[model] effort` or `effort_override`.
 - Subagents: `fontaine-core/src/child_runner.rs` resolves `agent_type.effort.or(parent effective)` and applies
   it the same way on the child's runner; a child may differ from its parent (effort is not a permission).
 - Guardian: `[guardian] effort` set → a new generation-options field on `Guardian` (applied to its request) replaces `thinking_off` for that call
   only when the level is not `off`; when the level is non-`off`, `thinking_off` is not passed (`with_additional_params(None)`); **a forced tool call still needs thinking off on models that refuse it**,
   so a non-`off` guardian level on such a model yields `GuardianModel::Unavailable{reference, reason}` at
-  guardian build, and every call is denied via the existing path (`agent/setup.rs:92-103`) (fail-closed, per
-  the security invariants), never silently ignored. Unset or `off` keeps `thinking_off`. The scanner (and
+  guardian build, and every call is denied via the existing path (`agent/setup.rs:~89-91`) (fail-closed, per
+  the security invariants), never silently ignored. Unset or `off` keeps `thinking_off` and sends no `Reasoning` options. `agent/setup.rs` reads `[guardian] effort` and builds the Guardian options where `thinking_off` is passed today (`setup.rs:75`, and the composed guardian ~:236). The scanner (and
   critique, `project_env`, goal evaluator) ignore `[guardian] effort` and always use `thinking_off`; the
   composed guardian's LLM stage follows `[guardian] effort`.
 - `/effort` mid-session rebuilds nothing: it updates the session state read by the next turn's
@@ -82,17 +82,19 @@ accepted-values retry on a 400 (can be filed as a follow-up).
 2. `config.rs`: `effort` on `ModelSection`, `GuardianSection` (user scope only), agents-types entry; merge,
    source tracking and `config_catalog.rs` entry so `/config` lists them; schema regeneration. `config_scope.rs`: explicit user-only row for `guardian.effort`, with its `SNIPPETS` entry (so `every_settings_leaf_has_a_row` in the config_scope.rs tests passes); tests that `model.effort`, `agents.types.<name>.effort` and `guardian.effort` are refused from project scope (the schema-pinning test).
 3. `models.rs`: `ModelHandle::generation_options`, with catalog validation via `ModelSpec::validate` returning the refused options; the once-only `Approver::warn` is emitted by the caller from session state.
-4. `turn::Drive` (`turn.rs:297`): add an options (effort) field, used only for the child override. Update every construction site: `turn.rs:193` and `:395`, `child_runner.rs:685`, `tests/billing.rs`, `tests/audit_telemetry.rs`.
-5. `turn.rs` (`drive_once`) and `agent/setup.rs`: apply per-turn options on `AgentRunner::options`; the main agent reads the level from `SessionState` inside `drive_once` (`Drive` carries `&SessionState`), so `TurnParams` is untouched; the `Drive` field overrides it for a child. No build-time `builder.options`; guardian conflict check.
-6. `fontaine-guardian/src/guardian.rs`: introduce an options field on `Guardian` (applied to its request) alongside `with_additional_params(Option<Value>)` (l.130); non-`off` level passes `with_additional_params(None)` instead of `thinking_off`.
-7. Subagents: `AgentType.effort` in `fontaine-agents/src/registry.rs` and the config-side `AgentType` (`config.rs:664`); frontmatter parsing in `fontaine-core/src/extensions.rs`; config-to-registry conversion (`agent/setup.rs:255`); resolution and application in `fontaine-core/src/child_runner.rs` (builder at ~:532-541, drive call at ~:684-685). `fontaine-agents/src/runner.rs` is only the `ChildRunner` trait and resolves nothing; resolution is `agent_type.effort.or(parent effective)` in `child_runner.rs`, and the model-callable `AgentArgs` schema does not expose effort.
-8. `fontaine/src/cli.rs`: `--effort`; its mechanism is an `effort_override` parameter alongside `model_override` (`models.rs:263,489`; set at `fontaine/src/lib.rs:841,1034,1047`), not a CLI-scope config layer.
-9. `fontaine-tui`: `/effort` command (parse, completion, picker-free list of levels), status line mention in `statusbar.rs`.
-10. Docs, changelog, master-plan Decisions.
+4. `gate.rs` (`SessionState`/`StateParams`, l.110-139): add the effort field and once-only warned flag, seeded at session setup from `[model] effort` or `effort_override`; update the `StateParams` construction sites (~7).
+5. `turn::Drive` (`turn.rs:297`): add a finished-options field, filled before `drive_once` by the code holding the current `ModelHandle` (main turn start; child spawn with the child override computed the same way). Update every construction site: `turn.rs:193` and `:395`, `child_runner.rs:685`, `tests/billing.rs`, `tests/audit_telemetry.rs`.
+6. `turn.rs` (`drive_once`) and `agent/setup.rs`: apply the `Drive` options on `AgentRunner::options`; `TurnParams` carries no handle or effort. No build-time `builder.options`; guardian conflict check. `agent/setup.rs` reads `[guardian] effort` and builds the Guardian options at the site where `thinking_off` is passed today (`setup.rs:75`, composed guardian ~:236).
+7. `fontaine-guardian/src/guardian.rs` and `structured.rs`: introduce an options field on `Guardian` (applied to its request) alongside `with_additional_params(Option<Value>)` (l.130); `structured.rs` (`Options` and both builder sites, Tool ~l.251 / Schema ~l.265) threads the field. A non-`off` level passes `with_additional_params(None)` instead of `thinking_off`; `off` or unset keeps `thinking_off` and sends no `Reasoning` options.
+8. Subagents: `AgentType.effort` in `fontaine-agents/src/registry.rs` and the config-side `AgentType` (`config.rs:664`); frontmatter parsing in `fontaine-core/src/extensions.rs`; a clause rejecting frontmatter `effort` when `scope.is_tightened()`, mirroring the `model` check (`extensions.rs:323-330`); config-to-registry conversion (`agent/setup.rs:255`); resolution and application in `fontaine-core/src/child_runner.rs` (builder at ~:532-541, drive call at ~:684-685). `fontaine-agents/src/runner.rs` is only the `ChildRunner` trait and resolves nothing; resolution is `agent_type.effort.or(parent effective)` in `child_runner.rs`, and the model-callable `AgentArgs` schema does not expose effort.
+9. `fontaine/src/cli.rs`: `--effort`; its mechanism is an `effort_override` parameter alongside `model_override` (`models.rs:263,489`; set at `fontaine/src/lib.rs:841,1034,1047` and `fontaine/src/auto_mode.rs:280,487`), not a CLI-scope config layer.
+10. `fontaine-tui`: `/effort` command (parse, completion, picker-free list of levels), status line mention in `statusbar.rs`.
+11. Docs, changelog, master-plan Decisions.
 
 ## Files to Modify
-`rust/fontaine-core/src/{effort.rs (new),lib.rs,config.rs,config_scope.rs,config_catalog.rs,models.rs,turn.rs,child_runner.rs,extensions.rs,goal.rs,agent/setup.rs}`,
-`rust/fontaine-agents/src/registry.rs`, `rust/fontaine-guardian/src/guardian.rs`, `rust/fontaine/src/{cli.rs,lib.rs}`,
+`rust/fontaine-core/src/{effort.rs (new),lib.rs,config.rs,config_scope.rs,config_catalog.rs,models.rs,gate.rs,turn.rs,child_runner.rs,extensions.rs,goal.rs,agent/setup.rs}`,
+`rust/fontaine-agents/src/registry.rs`, `rust/fontaine-guardian/src/{guardian.rs,structured.rs}`, `rust/fontaine/src/{cli.rs,lib.rs,auto_mode.rs}`,
+`rust/fontaine/tests/{billing.rs,audit_telemetry.rs}`,
 `rust/fontaine-tui/src/{commands.rs,statusbar.rs,ui/mod.rs,ui/commands/*}`, `docs/*`, `CHANGELOG.md`,
 `tasks/fontaine_harness_plan.md`.
 
@@ -104,11 +106,13 @@ accepted-values retry on a 400 (can be filed as a follow-up).
 - 2026-11-02: Unsupported level for a catalog-known model is dropped with a warning, not an error; reason: effort is a hint, and a session should not die on `/model` to a model with fewer levels.
 - 2026-11-02: A non-`off` guardian effort on a model that refuses forced tool calls under thinking fails closed (Deny via unavailable guardian); reason: the guardian invariant allows no silent fallback.
 
+- 2026-11-02: AFK: Options are resolved before `drive_once` by the handle-holding code and passed in a `Drive` field, recomputed each turn start; reason: `drive_once` has no `ModelHandle` and `/model` changes it.
 - 2026-11-02: AFK: `model.effort` and `agents.*.effort` stay under the existing `user_trust` rows, `guardian.effort` gets an explicit user-only row, and frontmatter `effort` is barred from repository/plugin agent files like `model`; reason: most conservative option, since a key with no row is refused from project scope anyway.
 
 ## Documentation
 - `docs/configuration.md`: `[model] effort`, `[guardian] effort`, `[agents.types]` key, `--effort`.
-- `docs/tui.md`: `/effort` in the commands table and the status-line passages (~l.568, 611).
+- `docs/tui.md`: `/effort` in the commands table, the `/model` row (~l.469), the `/config` panel table (~l.629) and the subagent-view command list (~l.889).
+- `docs/configuration.md` ollama `think` row (~l.166): cross-reference to `effort`.
 - `docs/index.md`: `/effort` in the command list (l.35).
 - `docs/headless.md`: `--effort`.
 - `docs/agents.md` / `docs/extensions.md`: `effort` frontmatter.
@@ -126,6 +130,7 @@ Unit tests, all against deterministic models and `wiremock`, no live APIs:
 - Config: precedence CLI > settings; `model.effort`, `agents.types.<name>.effort` and `guardian.effort` refused in project scope (schema-pinning test in `config_scope.rs`); frontmatter `effort` rejected in repository/plugin agent files; unknown key/value errors.
 - `generation_options`: new assertion that `None` sends no reasoning field (no existing tests pin this);
   a `MockCompletionModel` assertion on `requests()[0].options.reasoning` for `Some(level)` and `None` (as `fontaine-core/tests/side_question.rs`); an unsupported level for a catalog spec is dropped and warned once.
+- Core: two turns on an unsupported level emit exactly one warning; a `/model` switch to a model with fewer levels drops the level and emits a warning.
 - Agents: frontmatter parse; child inherits parent's level unless set; a child can differ from its parent.
 - Guardian: non-`off` effort on a thinking-refusing model is Deny; `off`/unset keeps `thinking_off`.
 - TUI: `/effort` parse and completion; setting and displaying the session level; `/model` revalidation.
