@@ -234,7 +234,7 @@ impl ModelHandle {
         (Some(options), None)
     }
 
-    /// The levels this model takes: all of them for a model the catalog does not know.
+    /// The levels this model takes. A wire with no option mapping takes none.
     pub fn supported_efforts(&self) -> Vec<Effort> {
         Effort::ALL
             .into_iter()

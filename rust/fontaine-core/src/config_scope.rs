@@ -688,16 +688,15 @@ mod tests {
     }
 
     #[test]
-    fn effort_keys_are_user_scope_only() {
+    fn effort_keys_refuse_the_shared_project_file() {
         for text in [
             "[model]\neffort = \"high\"\n",
             "[agents.types.x]\neffort = \"max\"\n",
         ] {
-            for column in PROJECT_COLUMNS {
-                assert_scope(text, column, &format!("{}: {text}", column.label()));
+            assert_scope(text, Column::Project, text);
+            for column in [Column::User, Column::ProjectLocal, Column::Cli] {
+                assert_not_scope(text, column, &format!("{}: {text}", column.label()));
             }
-            assert_not_scope(text, Column::User, text);
-            assert_not_scope(text, Column::Cli, text);
         }
     }
 

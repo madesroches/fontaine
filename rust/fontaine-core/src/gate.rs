@@ -2,7 +2,7 @@
 //! changed by the surfaces: the mode, the workspace scope, the rules and the grants live behind
 //! a lock so a change takes effect on the very next call.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -321,9 +321,9 @@ pub struct SessionState {
     guardian_off: RwLock<bool>,
     setup_warned: AtomicBool,
     effort: RwLock<Option<Effort>>,
-    /// The model and level the human was last told were incompatible, so a session says it once
-    /// per pairing rather than every turn.
-    effort_warned: Mutex<Option<(String, Effort)>>,
+    /// Every model and level the human was told were incompatible, so a session says it once per
+    /// pairing however main turns and child spawns interleave.
+    effort_warned: Mutex<HashSet<(String, Effort)>>,
     agents: Arc<AgentTree>,
     agent_types: Arc<AgentTypes>,
     reveal_mcp_names: bool,
@@ -374,7 +374,7 @@ impl SessionState {
             guardian_off: RwLock::new(false),
             setup_warned: AtomicBool::new(false),
             effort: RwLock::new(params.effort),
-            effort_warned: Mutex::new(None),
+            effort_warned: Mutex::new(HashSet::new()),
             agents: params.agents,
             agent_types: params.agent_types,
             reveal_mcp_names: params.reveal_mcp_names,
@@ -469,13 +469,9 @@ impl SessionState {
     /// Tells the human, once per model and level, that `model` cannot take the session's effort
     /// and the turn runs without it.
     pub fn warn_effort_refused(&self, model: &str, effort: Effort, refusal: &UnsupportedOption) {
-        let key = (model.to_string(), effort);
-        {
-            let mut warned = lock(&self.effort_warned, "effort warning");
-            if warned.as_ref() == Some(&key) {
-                return;
-            }
-            *warned = Some(key);
+        let first = lock(&self.effort_warned, "effort warning").insert((model.to_string(), effort));
+        if !first {
+            return;
         }
         self.approver.warn(&format!(
             "effort `{effort}` is not used with {model}: {}; the model's own default applies",

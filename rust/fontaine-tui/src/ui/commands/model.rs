@@ -37,14 +37,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// `/effort`: shows the session's reasoning effort and the levels the model takes, or sets
     /// it for this session. It is not saved: `[model] effort` is the standing choice.
     pub(crate) fn effort(&mut self, runtime: &AgentRuntime, text: &str) {
-        let supported = runtime
-            .models
-            .main
-            .supported_efforts()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
+        let supported = takes(&runtime.models.main.supported_efforts());
         if text.is_empty() {
             let current = runtime.state.effort().map_or_else(
                 || "unset (the model's own default)".to_string(),
@@ -295,5 +288,27 @@ impl<R: FnMut(&mut App)> Ui<R> {
             UnavailableAnswer::Deny => UnavailableChoice::Deny,
         };
         self.app.finish_unavailable(choice);
+    }
+}
+
+fn takes(levels: &[Effort]) -> String {
+    if levels.is_empty() {
+        return "no effort level (the endpoint has no reasoning mapping)".to_string();
+    }
+    levels
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_model_with_no_levels_says_so() {
+        assert!(takes(&[]).starts_with("no effort level"));
+        assert_eq!(takes(&[Effort::Low, Effort::High]), "low, high");
     }
 }

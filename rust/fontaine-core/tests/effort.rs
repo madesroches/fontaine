@@ -152,6 +152,37 @@ fn an_unsupported_level_is_warned_once_per_model_and_a_new_model_warns_again() {
     assert_eq!(warnings.about_effort().len(), 2);
 }
 
+#[test]
+fn interleaved_main_turns_and_child_spawns_warn_once_per_model_and_level() {
+    let world = World::new();
+    world.user_file("[model]\neffort = \"max\"\n");
+    let warnings = Arc::new(Warnings::default());
+    let mut runtime = runtime_on(&world, handle_with(Some(LISTED)), warnings.clone());
+    let other = || {
+        let mut handle = handle_with(Some(NOT_REASONING));
+        handle.reference = ModelRef::parse("test/other").unwrap();
+        handle
+    };
+    let child_spawn = |runtime: &fontaine_core::agent::AgentRuntime, handle: &ModelHandle| {
+        let refused = handle.generation_options(Some(Effort::Max)).1.unwrap();
+        runtime
+            .state
+            .warn_effort_refused(&handle.reference.to_string(), Effort::Max, &refused);
+    };
+    let first = runtime.models.main.clone();
+    let second = other();
+
+    runtime.turn_generation_options();
+    child_spawn(&runtime, &second);
+    child_spawn(&runtime, &first);
+    runtime.models.main = second.clone();
+    runtime.turn_generation_options();
+    child_spawn(&runtime, &first);
+    runtime.models.main = first;
+    runtime.turn_generation_options();
+    assert_eq!(warnings.about_effort().len(), 2);
+}
+
 fn text_turn(text: &str) -> Vec<MockStreamEvent> {
     vec![
         MockStreamEvent::Text(text.to_string()),
