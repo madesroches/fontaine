@@ -885,8 +885,8 @@ conversation:
   budget is refused the same way.
 
 Built-in commands that only show or set something run as usual against the main conversation, and
-their notices appear in the view. Commands that act on or change the main conversation (`/btw`, `/clear`, `/compact`,
-`/rewind`, `/branch`, `/resume`, `/model`, `/goal`, `/loop`, `/init`, `/output-style` and `/plan`
+their notices appear in the view. Commands that act on or change the main conversation (`/btw`,
+`/clear`, `/compact`, `/rewind`, `/branch`, `/resume`, `/model`, `/goal`, `/loop`, `/init`, `/output-style` and `/plan`
 with an argument), skills and `!` lines are refused there with `switch back to main to run this`,
 and the text stays in the input. `/expand` and `/copy` act on the transcript on screen. Ctrl-C
 interrupts the main turn, which keeps running while you look at an agent; Esc does not.

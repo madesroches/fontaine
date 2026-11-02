@@ -105,8 +105,9 @@ impl Command {
 
     /// Whether the command runs immediately, even while a turn works: its handler is
     /// synchronous and touches only UI state — never the turn, the conversation or a blocking
-    /// wait, and the ledger only through one brief read of its view. Every other built-in queues like a message and executes once the
-    /// turn ends; `/loop` and unknown names stay refused mid-turn.
+    /// wait, and the ledger only through one brief read of its view. Every other built-in queues
+    /// like a message and executes once the turn ends; `/loop` and unknown names stay refused
+    /// mid-turn.
     pub fn runs_mid_turn(&self) -> bool {
         matches!(
             self,
