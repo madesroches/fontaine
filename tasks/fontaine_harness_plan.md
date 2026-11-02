@@ -777,7 +777,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-25: Ctrl-O and `/todos` both toggle the task panel (`/todos` does not print), because the panel can be hidden to reclaim height (#22).
 - 2026-10-25: `todo_write` takes the name-based read-only fast path, like `skill`, because it touches no file the model names, process or network, and only writes the session's own `todos.json` (#22).
 - 2026-10-22: `webfetch` sends `User-Agent: fontaine/<version> (+https://github.com/madesroches/fontaine)`, not Claude Code's `Claude-User (claude-code/<version>; ...)`. Reason: sites such as Wikimedia 403 a missing User-Agent, and a harness must not present itself as Claude Code's agent.
-- 2026-10-21: Phase 2 `ls`/`grep` take rig-tools 0.45 `ListArgs`/`SearchArgs` only (`grep`: `pattern`, `path`, `glob`, `hidden`, `files` mode, 200-match cap; `(?i)` for case-insensitivity; no context lines, count, type or head_limit). Deviation from Claude Code's Grep/LS arguments; reason: no custom search layer over rig.
+- 2026-10-21 (superseded by 2026-11-01 below): Phase 2 `ls`/`grep` take rig-tools 0.45 `ListArgs`/`SearchArgs` only (`grep`: `pattern`, `path`, `glob`, `hidden`, `files` mode, 200-match cap; `(?i)` for case-insensitivity; no context lines, count, type or head_limit). Deviation from Claude Code's Grep/LS arguments; reason: no custom search layer over rig.
 - 2026-10-30: A separate Windows-only `powershell` tool (issue #28; `Arbitrary`, `Destructive::Always`, `Specifier::None`, Claude name `PowerShell`) runs commands through the interpreter's `-EncodedCommand`; details in `design/platforms.md`.
 - 2026-10-30: No `powershell(...)` specifiers (`Specifier::None`); bare-name rules only.
 - 2026-10-30: Bare `shell` deny/ask rules also cover `powershell`; specifier'd `shell(...)` rules do not.
@@ -830,6 +830,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   A write-class call in a tracked `sub/` loads `sub/AGENTS.md` on demand, and a retry grant keyed on
   the arguments digest stops matching once the directory moves (it fails safe).
 - 2026-11-01: `monitor` has no default timeout (an omitted `timeout_secs` means no deadline; an explicit one keeps its 3,600 s cap), unlike Claude Code's 5-minute default and re-arm pattern, because a CI watch outlives 5 minutes and the "reached its timeout" notice reads as a failure of the watched command (#363).
+- 2026-11-01: `grep` and `ls` take Claude Code's arguments (`output_mode`, `-i`, `-n`, `-A`/`-B`/`-C`, `type`, `head_limit`; `ignore`) through a first-party module in `fontaine-tools` over rig's public `Workspace` walker, superseding the 2026-10-21 line; `path` keeps its name and meaning, so path rules, scope and footprints are unchanged (#62). Default `output_mode` is `files_with_matches`, as in Claude Code, a change from the old `content` default; `files` stays as an alias that `output_mode` overrides. `head_limit` is clamped to the existing hard caps (200 matches, 1,000 files). An empty `pattern` lists files in `files_with_matches` mode and is an invalid-arguments error in `content` and `count` (rig returned arbitrary lines; Claude Code differs). Results are sorted by path. Offset/pagination and `multiline` are out of scope. See `tasks/grep_ls_parity_plan.md`.
 
 ### TUI
 

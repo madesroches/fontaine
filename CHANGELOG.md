@@ -543,6 +543,9 @@ All notable changes are recorded here. The format follows
   ones that arrive later ride the next tool result and never start a turn. Servers are defined
   under `[lsp.servers.<name>]` in the user file or `--settings` only, or by an installed
   plugin's `.lsp.json` / `lspServers`; the tool exists only while one is configured (#27).
+- `grep` takes Claude Code's arguments: `output_mode` (`content`, `files_with_matches`, `count`),
+  `-i`, `-n`, `-A`/`-B`/`-C` context lines, `type` (ripgrep file types) and `head_limit`; `ls`
+  takes `ignore`, a list of globs for files and directories to leave out (#62).
 
 #### TUI
 
@@ -763,6 +766,10 @@ All notable changes are recorded here. The format follows
 - `monitor` no longer stops after 300 s by default: without `timeout_secs` a monitor runs until
   its command ends, `job_cancel` stops it or the session ends, so a watch on a 20-minute CI run is
   not cut short. An explicit `timeout_secs` keeps its 3,600 s cap (#363).
+- `grep` now returns the paths of the files with a match by default, as Claude Code's does; pass
+  `output_mode: "content"` for `path:line: text` lines. An empty `pattern` is an error in `content`
+  and `count` mode and lists every file in `files_with_matches` mode. The `files` argument stays as
+  an alias that `output_mode` overrides, and results are sorted by path (#62).
 
 #### TUI
 
