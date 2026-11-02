@@ -822,6 +822,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Command::Expand(argument) => self.expand(argument),
             Command::Config => self.open_config(runtime),
             Command::Recap => self.recap(runtime),
+            Command::Cost => self.cost(runtime),
             _ => {}
         }
     }

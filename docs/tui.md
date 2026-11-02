@@ -295,7 +295,7 @@ as yours for the [guardian](guardian.md).
   bar, so there the refusal is a transcript notice. `/loop` is refused until #298.
 - A `!` shell command queues the same way and executes after the turn, one at a time and in the
   order typed; while one executes, nothing else can be sent or queued.
-- The commands that act on the UI alone (`/status`, `/theme`, the panels, `/help`, …) run
+- The commands that act on the UI alone (`/status`, `/theme`, the panels, `/help`, `/recap`, `/cost`, …) run
   immediately, turn or no turn.
 - A queued command that opens a picker or dialog (`/model`, bare `/resume`, `/rewind`, `/login`)
   holds the later queued entries until it closes. `/resume <name>` and `/branch` are refused while
@@ -451,6 +451,7 @@ error: an export never overwrites.
 | `/config`, `/settings` | Opens the [settings panel](#settings-panel): every settings key with its effective value and the scope that supplied it, and a few preferences you can change. |
 | `/context [all]` | Shows what fills the context window. See [Context](#context). |
 | `/copy [<n>]` | Copies the latest assistant reply, or the `n`th latest, to the system clipboard. A reply is the text between tool calls, so a turn that calls a tool and then answers has two; `/copy` takes the last one. It is an error when there is no such reply. |
+| `/cost`, `/usage` | Shows the session's token usage and spend by source, guardian included; see [Usage and cost](#usage-and-cost). Runs immediately, turn or no turn. |
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/exit`, `/quit` | Leave. |
 | `/expand [<n> \| thinking]` | Prints tool call `n` in full (command, retained output, diff) as new transcript lines; the latest call without a number. `n` is the number in the card's `expand:` hint, counted from the start of the session. It is an error for a call that does not exist or that `/clear` removed. `/expand thinking` prints the latest [reasoning card](#model-reasoning) in full instead. |
@@ -550,6 +551,38 @@ reachable. Each line is left out when it has nothing to say:
 
 Everything except the first line covers the whole session, earlier runs of a resumed session
 included.
+
+## Usage and cost
+
+`/cost` (alias `/usage`) prints what the session's model calls have used, one row per source that
+made a call, then a total:
+
+```
+Session usage
+  source        calls   input   output  cache read  cache write  cost
+  main             12   84.2k    9.1k       61.0k       3.2k      $0.4120
+  guardian         31   22.0k    1.4k        9.8k          0      $0.0150
+  subagents         8   40.1k    5.0k          0           0      $0.1900 · 5.0k unpriced tok
+  total            51  146.3k   15.5k       70.8k       3.2k      $0.6170 · 5.0k unpriced tok
+```
+
+The sources are `main`, `guardian`, `subagents`, `goal` (the goal evaluator), `compaction` and
+`side questions` (`/btw`), in that order. `calls` counts model requests, with a guardian
+adjudication counting once however many requests it took to get a verdict; a guardian answer served
+from its verdict cache is not a call, but one inside a guardian composition cannot be told apart
+and does count. The `cache read` and `cache write` columns are left out when the provider reported
+no cache tokens.
+
+A dollar figure covers only the calls that had a price. A source with none shows `n/a`, and when
+some calls had no price (an account whose models the catalog does not price) the figure is a lower
+bound and ends with ` · N unpriced tok`, the input and output tokens of those calls. A session
+cost budget set under `[agents]` adds a last line with the spend against it.
+
+The report does not count the estimate for a guardian request a composition dropped before its
+answer came back, the repository scan of `/auto-mode-setup`, or calls made outside a session such
+as `fontaine auto-mode critique`. It reports the current process's session: `/clear` keeps
+counting, while `/resume`, `/branch` and `--resume` start from zero, because the figures are not
+saved with the session.
 
 ## Choosing a model
 

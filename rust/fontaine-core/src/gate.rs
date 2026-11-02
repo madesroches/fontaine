@@ -30,6 +30,7 @@ use crate::permissions::Approver;
 use crate::preview::DiffPreview;
 use crate::project_env::{self, ProjectEnvironment};
 use crate::turn::SessionEvent;
+use crate::usage_ledger::{Bucket, UsageLedger, UsageSource};
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -204,29 +205,6 @@ struct RetryApproval {
     args_digest: String,
 }
 
-/// What the guardian has cost so far.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct GuardianUsage {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cache_read_input_tokens: u64,
-    pub cache_creation_input_tokens: u64,
-    pub cost_usd: Option<f64>,
-}
-
-impl GuardianUsage {
-    /// Adds one call's tokens and cost.
-    pub fn add(&mut self, usage: &Usage) {
-        self.input_tokens += usage.input_tokens.unwrap_or(0);
-        self.output_tokens += usage.output_tokens.unwrap_or(0);
-        self.cache_read_input_tokens += usage.cached_input_tokens.unwrap_or(0);
-        self.cache_creation_input_tokens += usage.cache_creation_input_tokens.unwrap_or(0);
-        if let Some(cost) = usage.cost {
-            *self.cost_usd.get_or_insert(0.0) += cost.total;
-        }
-    }
-}
-
 /// The rules in force, as they stand now.
 #[derive(Clone, Debug, Default)]
 pub struct Rules {
@@ -337,10 +315,7 @@ pub struct SessionState {
     breaker: Mutex<LoopBreaker>,
     denied: Mutex<Vec<DeniedCall>>,
     retries: Mutex<Vec<RetryApproval>>,
-    guardian_usage: Mutex<GuardianUsage>,
-    guardian_usage_by: Mutex<HashMap<String, GuardianUsage>>,
-    subagent_usage: Mutex<GuardianUsage>,
-    goal_usage: Mutex<GuardianUsage>,
+    usage: UsageLedger,
     skill_grants: Mutex<HashMap<String, Vec<SourcedRule>>>,
     child_restrictions: Mutex<HashMap<String, ChildRestrictions>>,
     current_calls: Mutex<HashMap<String, String>>,
@@ -394,10 +369,7 @@ impl SessionState {
             breaker: Mutex::default(),
             denied: Mutex::default(),
             retries: Mutex::default(),
-            guardian_usage: Mutex::default(),
-            guardian_usage_by: Mutex::default(),
-            goal_usage: Mutex::default(),
-            subagent_usage: Mutex::default(),
+            usage: UsageLedger::default(),
             skill_grants: Mutex::default(),
             child_restrictions: Mutex::default(),
             current_calls: Mutex::new(HashMap::new()),
@@ -650,50 +622,48 @@ impl SessionState {
             .map(|at| retries.remove(at).source)
     }
 
-    /// Counts a guardian call made for `agent`: in the session total, in the agent's own tally
-    /// and against the agent's budget.
-    pub fn add_guardian_usage(&self, agent: &str, usage: &Usage) {
-        lock(&self.guardian_usage, "guardian usage").add(usage);
-        lock(&self.guardian_usage_by, "guardian usage by")
-            .entry(agent.to_string())
-            .or_default()
-            .add(usage);
+    /// Records one model call: in the session's usage ledger under `source` and against
+    /// `agent`'s budget. `sent_request` is false for a record that stands for no request.
+    pub fn record_usage(
+        &self,
+        source: UsageSource,
+        agent: &str,
+        usage: &Usage,
+        sent_request: bool,
+    ) {
+        self.usage.record(source, usage, sent_request);
         self.agents.debit(agent, &spend_of(usage));
     }
 
+    /// The session's usage ledger.
+    pub fn usage_ledger(&self) -> &UsageLedger {
+        &self.usage
+    }
+
+    /// Counts a guardian call made for `agent`.
+    pub fn add_guardian_usage(&self, agent: &str, usage: &Usage, sent_request: bool) {
+        self.record_usage(UsageSource::Guardian, agent, usage, sent_request);
+    }
+
     /// What the guardian has cost across the whole tree.
-    pub fn guardian_usage(&self) -> GuardianUsage {
-        *lock(&self.guardian_usage, "guardian usage")
+    pub fn guardian_usage(&self) -> Bucket {
+        self.usage.bucket(UsageSource::Guardian)
     }
 
-    /// What the guardian has cost for `agent` alone.
-    pub fn guardian_usage_of(&self, agent: &str) -> GuardianUsage {
-        lock(&self.guardian_usage_by, "guardian usage by")
-            .get(agent)
-            .copied()
-            .unwrap_or_default()
-    }
-
-    /// Counts a goal evaluation's model calls: in the session total and against the root, so
-    /// the spend a goal's cost cap reads includes them.
+    /// Counts a goal evaluation's model calls against the root, so the spend a goal's cost cap
+    /// reads includes them.
     pub fn add_goal_usage(&self, usage: &Usage) {
-        lock(&self.goal_usage, "goal usage").add(usage);
-        self.agents.debit(ROOT_AGENT, &spend_of(usage));
+        self.record_usage(UsageSource::Goal, ROOT_AGENT, usage, true);
     }
 
     /// What goal evaluations have cost this session, which outlives the goal.
-    pub fn goal_usage(&self) -> GuardianUsage {
-        *lock(&self.goal_usage, "goal usage")
+    pub fn goal_usage(&self) -> Bucket {
+        self.usage.bucket(UsageSource::Goal)
     }
 
-    /// Counts a subagent's model call. The agent's own tally is the tree's; this is the
-    /// session-wide total the headless result reports.
-    pub fn add_subagent_usage(&self, usage: &Usage) {
-        lock(&self.subagent_usage, "subagent usage").add(usage);
-    }
-
-    pub fn subagent_usage(&self) -> GuardianUsage {
-        *lock(&self.subagent_usage, "subagent usage")
+    /// What subagents' model calls have cost.
+    pub fn subagent_usage(&self) -> Bucket {
+        self.usage.bucket(UsageSource::Subagent)
     }
 
     /// Lets `agent` use the rules a skill carries until the end of the user turn. The invoking

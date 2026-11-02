@@ -9,11 +9,11 @@ use std::path::Path;
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::{Decision, DecisionRecord};
 use fontaine_core::config::PermissionMode;
-use fontaine_core::gate::GuardianUsage;
 use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
 use fontaine_core::trust;
 use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn};
+use fontaine_core::usage_ledger::{Bucket, UsageSource};
 use fontaine_tools::kills::KILL_SETTLE;
 use rig_core::schemars::Schema;
 use serde_json::{Value, json};
@@ -198,27 +198,12 @@ async fn open_input(options: &mut Options) -> Result<Input, String> {
     }
 }
 
-#[derive(Default)]
-struct Totals {
-    input_tokens: u64,
-    output_tokens: u64,
-    cache_read_input_tokens: u64,
-    cache_creation_input_tokens: u64,
-    cost_usd: Option<f64>,
-    model_calls: u64,
-}
-
-impl Totals {
-    fn add(&mut self, usage: &rig_core::completion::Usage) {
-        self.model_calls += 1;
-        self.input_tokens += usage.input_tokens.unwrap_or(0);
-        self.output_tokens += usage.output_tokens.unwrap_or(0);
-        self.cache_read_input_tokens += usage.cached_input_tokens.unwrap_or(0);
-        self.cache_creation_input_tokens += usage.cache_creation_input_tokens.unwrap_or(0);
-        if let Some(cost) = usage.cost {
-            *self.cost_usd.get_or_insert(0.0) += cost.total;
-        }
-    }
+/// What the main model has cost, with the summarizer that keeps its context in bounds.
+fn main_usage(runtime: &AgentRuntime) -> Bucket {
+    let ledger = runtime.state.usage_ledger();
+    let mut main = ledger.bucket(UsageSource::Main);
+    main.merge(&ledger.bucket(UsageSource::Compaction));
+    main
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -267,25 +252,27 @@ fn session_cost(
 }
 
 /// What the session has spent so far, subagents included.
-fn spent(runtime: &AgentRuntime, totals: &Totals) -> Option<f64> {
+fn spent(runtime: &AgentRuntime) -> Option<f64> {
     session_cost(
-        totals.cost_usd,
+        main_usage(runtime).cost_usd,
         runtime.state.guardian_usage().cost_usd,
         runtime.state.goal_usage().cost_usd,
         runtime.state.subagent_usage().cost_usd,
     )
 }
 
-/// What the models other than the main one have cost.
-struct Others {
-    guardian: GuardianUsage,
-    goal: GuardianUsage,
-    subagents: GuardianUsage,
+/// What each model of the session has cost.
+struct Usage {
+    main: Bucket,
+    guardian: Bucket,
+    goal: Bucket,
+    subagents: Bucket,
 }
 
-impl Others {
-    fn of(runtime: &AgentRuntime) -> Others {
-        Others {
+impl Usage {
+    fn of(runtime: &AgentRuntime) -> Usage {
+        Usage {
+            main: main_usage(runtime),
             guardian: runtime.state.guardian_usage(),
             goal: runtime.state.goal_usage(),
             subagents: runtime.state.subagent_usage(),
@@ -296,22 +283,21 @@ impl Others {
 fn result_event(
     session_id: &str,
     outcome: &Outcome,
-    totals: &Totals,
-    others: &Others,
+    usage: &Usage,
     goal: Option<&goal::GoalReport>,
 ) -> Value {
-    let (guardian, subagents) = (&others.guardian, &others.subagents);
+    let (totals, guardian, subagents) = (&usage.main, &usage.guardian, &usage.subagents);
     let mut fields = json!({
         "subtype": outcome.subtype.name(),
         "is_error": outcome.subtype != Subtype::Success,
         "result": outcome.text,
         "error": outcome.error,
-        "num_turns": totals.model_calls,
+        "num_turns": totals.calls,
         "duration_ms": outcome.started.elapsed().as_millis() as u64,
         "total_cost_usd": session_cost(
             totals.cost_usd,
             guardian.cost_usd,
-            others.goal.cost_usd,
+            usage.goal.cost_usd,
             subagents.cost_usd,
         ),
         "usage": {
@@ -337,11 +323,11 @@ fn result_event(
                 "cost_usd": subagents.cost_usd,
             },
             "goal": {
-                "input_tokens": others.goal.input_tokens,
-                "output_tokens": others.goal.output_tokens,
-                "cache_read_input_tokens": others.goal.cache_read_input_tokens,
-                "cache_creation_input_tokens": others.goal.cache_creation_input_tokens,
-                "cost_usd": others.goal.cost_usd,
+                "input_tokens": usage.goal.input_tokens,
+                "output_tokens": usage.goal.output_tokens,
+                "cache_read_input_tokens": usage.goal.cache_read_input_tokens,
+                "cache_creation_input_tokens": usage.goal.cache_creation_input_tokens,
+                "cost_usd": usage.goal.cost_usd,
             },
         },
         "denials": outcome.denials,
@@ -437,7 +423,6 @@ async fn run_one(
     runtime: &AgentRuntime,
     options: &Options,
     text: String,
-    totals: &mut Totals,
     stream_events: bool,
 ) -> Outcome {
     let started = std::time::Instant::now();
@@ -487,13 +472,11 @@ async fn run_one(
                 json!({ "tool_use_id": id, "tool": tool, "success": success, "text": text }),
             )),
             SessionEvent::ToolPreview { .. } => {}
-            SessionEvent::Usage { usage, calls_tool } => {
-                totals.add(&usage);
+            SessionEvent::Usage { calls_tool, .. } => {
                 // The cap is checked between turns: a spent budget stops the run before its
                 // tool calls run, but never discards an answer already complete.
                 if calls_tool
-                    && let (Some(cap), Some(spent)) =
-                        (options.max_budget_usd, spent(runtime, totals))
+                    && let (Some(cap), Some(spent)) = (options.max_budget_usd, spent(runtime))
                     && spent > cap
                 {
                     return Flow::Stop;
@@ -623,9 +606,9 @@ async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> N
     }
 }
 
-fn over_cap(runtime: &AgentRuntime, options: &Options, totals: &Totals) -> bool {
+fn over_cap(runtime: &AgentRuntime, options: &Options) -> bool {
     matches!(
-        (options.max_budget_usd, spent(runtime, totals)),
+        (options.max_budget_usd, spent(runtime)),
         (Some(cap), Some(spent)) if spent > cap
     )
 }
@@ -644,19 +627,12 @@ fn budget_stop() -> Outcome {
 /// What must hold before a paid call starts: a text-only answer that crossed the cap ends its
 /// own turn as a success, so the cap is enforced here, and again after the summarizing call
 /// that may precede a turn, which is paid too. `Some` is the stop that replaces the call.
-async fn stop_before_call(
-    runtime: &AgentRuntime,
-    options: &Options,
-    totals: &mut Totals,
-) -> Option<Outcome> {
-    if over_cap(runtime, options, totals) {
+async fn stop_before_call(runtime: &AgentRuntime, options: &Options) -> Option<Outcome> {
+    if over_cap(runtime, options) {
         return Some(budget_stop());
     }
-    let compaction = runtime.compact_if_needed().await;
-    if let Some(usage) = compaction.usage() {
-        totals.add(usage);
-    }
-    over_cap(runtime, options, totals).then(budget_stop)
+    runtime.compact_if_needed().await;
+    over_cap(runtime, options).then(budget_stop)
 }
 
 /// Appends a further turn's outcome to the message's: its denials join the earlier ones and the
@@ -671,15 +647,14 @@ fn merge(earlier: Outcome, mut next: Outcome) -> Outcome {
 async fn guarded_turn(
     runtime: &AgentRuntime,
     options: &Options,
-    totals: &mut Totals,
     stream_events: bool,
     prompt: String,
 ) -> Outcome {
-    if let Some(stop) = stop_before_call(runtime, options, totals).await {
+    if let Some(stop) = stop_before_call(runtime, options).await {
         runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
         return stop;
     }
-    let outcome = run_one(runtime, options, prompt, totals, stream_events).await;
+    let outcome = run_one(runtime, options, prompt, stream_events).await;
     runtime.goal_turn_ended(Some(&goal::turn_end(&outcome)));
     outcome
 }
@@ -690,14 +665,13 @@ async fn guarded_turn(
 async fn settle(
     runtime: &AgentRuntime,
     options: &Options,
-    totals: &mut Totals,
     stream_events: bool,
     mut outcome: Outcome,
 ) -> Outcome {
     while outcome.subtype == Subtype::Success {
-        match wait_for_news(runtime, &|| over_cap(runtime, options, totals)).await {
+        match wait_for_news(runtime, &|| over_cap(runtime, options)).await {
             News::Prompt(prompt) => {
-                let next = run_one(runtime, options, prompt, totals, stream_events).await;
+                let next = run_one(runtime, options, prompt, stream_events).await;
                 runtime.goal_turn_ended(Some(&goal::turn_end(&next)));
                 outcome = merge(outcome, next);
             }
@@ -725,7 +699,6 @@ struct Handled {
 async fn handle_message(
     runtime: &AgentRuntime,
     options: &Options,
-    totals: &mut Totals,
     stream_events: bool,
     text: String,
 ) -> Handled {
@@ -784,14 +757,14 @@ async fn handle_message(
         }
     };
     runtime.goal_user_prompt();
-    let outcome = guarded_turn(runtime, options, totals, stream_events, prompt).await;
-    let mut outcome = settle(runtime, options, totals, stream_events, outcome).await;
+    let outcome = guarded_turn(runtime, options, stream_events, prompt).await;
+    let mut outcome = settle(runtime, options, stream_events, outcome).await;
     let mut ended = None;
     while involved && outcome.subtype == Subtype::Success {
         let Some(pending) = runtime.next_goal_step() else {
             break;
         };
-        if let Some(stop) = stop_before_call(runtime, options, totals).await {
+        if let Some(stop) = stop_before_call(runtime, options).await {
             runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
             outcome = merge(outcome, stop);
             break;
@@ -810,15 +783,8 @@ async fn handle_message(
         match applied.step {
             Step::Continue(next) => {
                 let prompt = runtime.goal_prompt(&next).await;
-                let turn = guarded_turn(runtime, options, totals, stream_events, prompt).await;
-                outcome = settle(
-                    runtime,
-                    options,
-                    totals,
-                    stream_events,
-                    merge(outcome, turn),
-                )
-                .await;
+                let turn = guarded_turn(runtime, options, stream_events, prompt).await;
+                outcome = settle(runtime, options, stream_events, merge(outcome, turn)).await;
             }
             Step::Done { event, summary } => {
                 ended = Some(goal::Ended {
@@ -862,7 +828,6 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
         emit_line(&init_event(&runtime, data_dir));
     }
 
-    let mut totals = Totals::default();
     let mut last: Option<Handled> = None;
     let mut goal_failure: Option<String> = None;
     let mut code = 0u8;
@@ -878,7 +843,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             }
         };
         let handled = match runtime.refresh_native_search() {
-            Ok(()) => handle_message(&runtime, &options, &mut totals, stream_events, text).await,
+            Ok(()) => handle_message(&runtime, &options, stream_events, text).await,
             Err(e) => Handled {
                 outcome: Outcome {
                     subtype: Subtype::Execution,
@@ -914,8 +879,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             emit_line(&result_event(
                 &session_id,
                 outcome,
-                &totals,
-                &Others::of(&runtime),
+                &Usage::of(&runtime),
                 handled.goal.as_ref(),
             ));
         }
@@ -940,8 +904,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
         OutputFormat::Json => emit_line(&result_event(
             &session_id,
             &last.outcome,
-            &totals,
-            &Others::of(&runtime),
+            &Usage::of(&runtime),
             last.goal.as_ref(),
         )),
         OutputFormat::Text => {
@@ -959,8 +922,8 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
 
 #[cfg(test)]
 mod tests {
-    use super::{Others, Outcome, Subtype, Totals, result_event, session_cost};
-    use fontaine_core::gate::GuardianUsage;
+    use super::{Outcome, Subtype, Usage, result_event, session_cost};
+    use fontaine_core::usage_ledger::{Bucket, UsageLedger, UsageSource};
 
     #[test]
     fn session_cost_adds_the_guardian_and_subagents_and_is_null_only_when_none_is_priced() {
@@ -978,13 +941,13 @@ mod tests {
 
     #[test]
     fn cache_tokens_reach_the_result_usage() {
-        let mut totals = Totals::default();
+        let ledger = UsageLedger::default();
         for (read, written) in [(Some(800), Some(100)), (Some(900), None), (None, None)] {
             let mut usage = rig_core::completion::Usage::new();
             usage.input_tokens = Some(1000);
             usage.cached_input_tokens = read;
             usage.cache_creation_input_tokens = written;
-            totals.add(&usage);
+            ledger.record(UsageSource::Main, &usage, true);
         }
         let outcome = Outcome {
             subtype: Subtype::Success,
@@ -994,17 +957,19 @@ mod tests {
             started: std::time::Instant::now(),
             denials: Vec::new(),
         };
-        let bucket = |read, written| GuardianUsage {
+        let bucket = |read, written| Bucket {
             cache_read_input_tokens: read,
             cache_creation_input_tokens: written,
-            ..GuardianUsage::default()
+            ..Bucket::default()
         };
-        let others = Others {
+        let usage = Usage {
+            main: ledger.bucket(UsageSource::Main),
             guardian: bucket(10, 11),
             goal: bucket(30, 31),
             subagents: bucket(20, 21),
         };
-        let result = result_event("s", &outcome, &totals, &others, None);
+        let result = result_event("s", &outcome, &usage, None);
+        assert_eq!(result["num_turns"], 3);
         assert_eq!(result["usage"]["main"]["input_tokens"], 3000);
         assert_eq!(result["usage"]["main"]["cache_read_input_tokens"], 1700);
         assert_eq!(result["usage"]["main"]["cache_creation_input_tokens"], 100);

@@ -32,6 +32,22 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.transcript.notice(text);
     }
 
+    /// `/cost` (`/usage`): the session's token usage and spend by source; no argument.
+    pub(crate) fn cost(&mut self, runtime: &AgentRuntime) {
+        let budget = runtime
+            .state
+            .agents()
+            .limits()
+            .session
+            .cost_usd
+            .map(|cap| (runtime.tree_spend().cost_usd.unwrap_or(0.0), cap));
+        let text = reports::cost(&reports::UsageReport {
+            by_source: runtime.state.usage_ledger().snapshot(),
+            budget,
+        });
+        self.app.transcript.notice(text);
+    }
+
     /// `/recap`: the ledger's account of the session; it takes no argument.
     pub(crate) fn recap(&mut self, runtime: &AgentRuntime) {
         let recap = runtime.session.ledger.view().recap();

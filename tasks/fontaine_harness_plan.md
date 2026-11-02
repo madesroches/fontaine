@@ -912,6 +912,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-01: Side questions are stateless, where Claude Code gives later ones the newest 20 exchanges, because nothing from them is saved and each answers from the conversation alone (#52).
 - 2026-11-01: AFK: `/btw` uses fixed constants, a 60 s timeout (`EVALUATOR_TIMEOUT`) and `SIDE_QUESTION_MAX_TOKENS = 4_096`, with a test-only `with_timeout`, not config keys, because the review loop found them unspecified and 1_024 tokens is too tight for a free-text answer (#52).
 - 2026-11-02: `/effort` and `--effort` copy Claude Code's surface; `/effort` is session-only and `[model] effort` is the standing choice. The level survives `/model` and is re-validated against the new model: a level the model cannot take is dropped with a one-time warning, not an error; reason: effort is a hint, and a session should not die on a switch to a model with fewer levels.
+- 2026-11-02: `/usage` aliases `/cost`. The usage ledger is in-memory, and `/cost` breaks down by source (main, guardian, subagents, goal, compaction, side questions) rather than per model, with no durations or code-change counts, unlike Claude Code's `/cost`; the sources are what a user needs to attribute Fontaine's spend (#56).
 
 ## Open Questions
 
