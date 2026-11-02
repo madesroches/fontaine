@@ -21,9 +21,11 @@ operation and every message is an ordinary gated pipeline request.
   refuses a target that is not running (`DeliverError::NotRunning`). Messages reach parent,
   children, siblings and `main`; the text is queued, sender-marked and untrusted.
 - An ended agent (`done`/`failed`) can be resumed by the human typing into its view
-  (`resume_child`, `spawn.rs:128`; `AgentTree::resume`, `tree.rs:714`; `resume_blocker`, `tree.rs:687`),
-  which re-checks `max_parallel` and the budget and refuses killed or budget-exhausted agents.
-- `watch_report` (`spawn.rs:99`) delivers a finished child's report to its parent as a notification
+  (`resume_child`, `spawn.rs:133`; `AgentTree::resume`, `tree.rs:714`, which re-checks `max_parallel`;
+  `resume_blocker`, `tree.rs:687`, which refuses killed or budget-exhausted agents).
+- The existing wake path for a message is `message_agent` (`rust/fontaine-core/src/agent/messaging.rs`),
+  which handles the is_running/drain race and treats `AlreadyRunning` as "queue".
+- `watch_report` (`spawn.rs:102`) delivers a finished child's report to its parent as a notification
   and calls `conclude` (ledger `finished`, `tree.finish`, telemetry).
 - `todo_write` (`rust/fontaine-tools/src/todo.rs`, store in `rust/fontaine-core/src/todos.rs`) is a
   per-agent private list; only the root's is saved (`todos.json`), because agent ids do not survive
@@ -62,16 +64,29 @@ Today a run that ends is `done`. A teammate's finished run becomes **`idle`** in
   `failed`, `killed` and `budget_exhausted` stay final, exactly as for any agent.
 - The report is still delivered to the lead as the usual notification (`watch_report`), worded
   `finished its turn` / marked idle, so the lead sees what was done.
-- An idle teammate **does not count toward `max_parallel`** (no model call is in flight) but holds
-  its name. Waking it goes through the existing `AgentTree::resume`, which re-checks the cap and
-  both budgets, so a wake can be refused like any resume.
-- `deliver` accepts an idle teammate as a target: the message resumes it (`resume_child`) with the
-  message as the new prompt (sender-marked, untrusted, same rendering as a queued one). The sender
-  still gets `{"status":"queued"}`; a refused wake returns the refusal reason as the tool error.
+- An idle teammate holds its name. Waking it goes through `resume_blocker` (killed/exhausted) and
+  `AgentTree::resume` (cap and budgets), so a wake can be refused like any resume. `tree.resume`
+  clears the `idle` flag.
+- Wake on message: `AgentTree::deliver` is synchronous under the tree lock and has no runner or
+  ledger, so it cannot resume. It returns a new `DeliverError::Idle` for an idle teammate target
+  (checked after reachability, before `NotRunning`). `SendMessageTool::call`, after its reachability
+  check, handles that result by waking the teammate through a trait seam implemented in
+  `fontaine-core` (the agents crate cannot depend on core) that reuses `message_agent`'s path:
+  `resume_blocker`, then `resume_child` with the message as the new prompt (sender-marked,
+  untrusted, same rendering as a queued one); `AlreadyRunning` means "queue". The sender still gets
+  `{"status":"queued"}`; a refused wake returns the refusal reason as the tool error. A wake after
+  session shutdown is refused.
 - Wake sources: a message, a human typing into its view (existing path), or the **idle hand-off**
   below.
-- Session end (`kill_all`, headless exit) stops idle teammates; they hold no resources. The headless
-  `settle` waits only for running agents, so idle teammates never keep a run open.
+- Session end: idle teammates hold nothing, so `kill_all` (which selects only running nodes) needs
+  no change; a shutdown flag on the tree makes every wake refuse once session end begins. The
+  headless wait (`wait_for_news` on `any_running()`) must not end between a teammate's `conclude`
+  and a pending hand-off or hook resume: the `teammate_idle` hook and hand-off decision are made
+  before the node is reported as ended to the waiter, and the resume (when there is one) keeps the
+  run open. Idle teammates themselves never keep a run open.
+- Ownership: a task owned by an agent that ends `failed`, `killed` or `budget_exhausted`, or whose
+  wake is refused, is released (see Shared task board). An idle teammate's `InProgress` tasks stay
+  owned by it; they are released only if it later ends non-`Done`.
 
 ### Shared task board
 
@@ -91,6 +106,9 @@ Task { id: "t1", title, description, status: Pending|InProgress|Completed,
 - `blocked_by` must name existing tasks; cycles are impossible by construction (a task can only
   depend on already-existing ids, and dependencies are fixed at creation).
 - Only the owner (or the lead) may update an `InProgress` task; completing needs the owner's id.
+- `TaskBoard::release_owned_by(agent)` returns every task the agent owns to `Pending` with no owner.
+  `conclude`/`watch_report` call it when an agent ends in any non-`Done` status, and the wake path
+  calls it when a wake is refused; each released task emits `TaskReleased`.
 - Task text is **agent-authored, untrusted data**: when `task_list` renders it to another agent it
   is delimited and marked with its creator's name and id, never as intent for the guardian. The
   guardian's intent source stays the root ledger's human messages.
@@ -110,18 +128,21 @@ has no specifier). This satisfies "every message and task claim is a gated pipel
 `task_list` reading the shared board is read-only, so it joins the read-only fast path, and a
 `explore`-style type holding `task_list` still takes the read-only spawn fast path. `task_update`
 is **not** added to `spawn_changes_state`'s read-only allowance, so a type holding it is a
-state-changing spawn.
+state-changing spawn. `permission_rules.rs:610` maps `"send_message" | "ask_user_question"` to no
+specifier; `task_update` is added to that arm.
 
 Both are registered only when `[agents] teams` is on, for every agent in the tree (a teammate's
 toolset is still its type's list cut down to its parent's, so a type must name `task_list` /
-`task_update` or name no tools). The built-in `worker` and `fork` gain them in their list when teams
-are on; `explore` gets `task_list` only.
+`task_update` or name no tools). `AgentTypes::builtin()` takes no config, so the registry
+post-processes the built-in set when teams are on: `worker` gains both tools in its list and
+`explore` gains `task_list` only. `fork` has `tools: None` and inherits `task_update` from its
+parent automatically.
 
 ### Idle hand-off (self-claiming)
 
-When a teammate's run ends and goes idle, `watch_report` asks the board for a claimable task
-(`Pending`, unowned, unblocked). If there is one, the runtime resumes the teammate with the system
-note "Task <id> is available: use `task_list` and `task_update` to claim it." The note is
+When a teammate's run ends and goes idle, after `finish`/`conclude` the runtime asks the board for a
+claimable task (`Pending`, unowned, unblocked). If there is one, it resumes the teammate through
+`resume_child` with the system note "Task <id> is available: use `task_list` and `task_update` to claim it." The note is
 data-marked as harness text, not intent. The loop is bounded by budgets, `max_parallel` and the kill
 switch, exactly like a subagent's join rounds (no separate round cap); a resume refusal leaves the
 teammate idle and warns once through `Approver::warn`.
@@ -135,13 +156,16 @@ can only tighten):
 | Event | Fires | Hook can |
 |---|---|---|
 | `task_completed` | Before `task_update complete` takes effect | `block` with a `reason`: the task stays `InProgress` and the reason is the tool error the owner reads |
-| `teammate_idle` | When a teammate's run ends, before it goes idle | `block` with a `reason`: the teammate is resumed with the reason as feedback instead of idling |
+| `teammate_idle` | After a teammate's run ends (after `finish`), before it idles | `block` with a `reason`: the teammate is resumed through `resume_child` with the reason as feedback instead of idling |
 
 Input fields: the common ones (`session_id`, `cwd`, `hook_event_name`, `agent_id`), plus `task`
 (the task object) or `teammate_name`. A hook can never **loosen**: it has no `allow` answer, it can
-only add work. A hook that errors or times out warns and does not block (these are quality gates,
-not security gates, and a failed gate that blocked forever would wedge the team); `block` loops are
-bounded the same way as the idle hand-off.
+only add work. Answer shape is as for the existing hooks and Claude Code: exit code 2 with the
+reason on stderr blocks. These events carry no `tool_name`, so they take no matcher. A hook that
+errors or times out warns and does not block (these are quality gates, not security gates, and a
+failed gate that blocked forever would wedge the team); `block` loops are bounded the same way as
+the idle hand-off. Hooks run outside the board lock. `QualityGate` is a trait defined in
+`fontaine-agents` and implemented in `fontaine-core` over `user_hooks.rs`.
 
 ### Persistence and resume
 
@@ -149,15 +173,17 @@ bounded the same way as the idle hand-off.
 (`owner_only`). On resume the board loads, but agent ids do not survive, so every `InProgress` task
 is returned to `Pending` with no owner and teammates are not recreated. The lead re-spawns what it
 needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskCompleted`,
-`TaskReleased` (ids and agent only, no text), and an `Idle`/`Woken` pair for teammates.
+`TaskReleased` (ids and agent only, no text); idle and wake reuse `Finished` and `Resumed`.
 
 ### Observability and UI
 
 - Telemetry: `task` events (`created`, `claimed`, `completed`, `released`) with `agent.id`,
-  `agent.name`, `task.id`; `subagent` events gain `idle` and `woken`. Audit log needs nothing new:
+  `agent.name`, `task.id`. Audit log needs nothing new:
   the gate decision of each `task_update`/`send_message` call is already recorded.
 - Agents panel (`rust/fontaine-tui`): teammate rows show `idle` as a status distinct from `done`; a
-  Tasks section under the agents lists each task with status, owner name and blocked-by. Existing
+  Tasks section under the agents lists each task with status, owner name and blocked-by. The
+  consumers keying on `status.is_running()` (`agents_panel.rs`, `agent_list.rs`, `ui/mod.rs`, and
+  `export.rs` in core) read the `idle` flag so an idle teammate is not shown or exported as done. Existing
   `/agents`, `/tasks` and `Ctrl+T` open it. No tmux split-pane display (Claude Code's display mode)
   is built.
 - Headless: `gate_decision` events already carry `agent_id`/`agent_name`; no new surface.
@@ -165,26 +191,33 @@ needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskComp
 ## Implementation Steps
 
 1. **Config**: add `teams` (bool, default false) to `[agents]` in
-   `rust/fontaine-core/src/config*` with its scope entry beside the other `[agents]` keys
-   (`user_trust`), the config schema in `docs/schemas/`, and the `AgentsConfig` consumer.
+   `rust/fontaine-core/src/config.rs`, its row in `config_catalog.rs`, and the `AgentsConfig`
+   consumer (`config_scope.rs` already covers `[agents]` as `user_trust`).
 2. **Task board**: `rust/fontaine-agents/src/tasks.rs` with `TaskBoard`, `TaskStore`, caps and
    validation, atomic claim, dependency check; export in `lib.rs`. Unit tests (below).
 3. **Tools**: `TaskListTool` and `TaskUpdateTool` in `rust/fontaine-agents/src/spawn.rs` (or a new
    `tools.rs` if `spawn.rs` grows past readable), using `caller_of`; ledger events and telemetry.
 4. **Descriptor rows**: `task_list` (ReadOnly, never destructive, `Specifier::None`) and
    `task_update` (Arbitrary, destructive `Always` like `send_message`, `Specifier::None`) in
-   `rust/fontaine-tools/src/descriptor.rs`; permission-rule name tables
-   (`rust/fontaine-core/src/permission_rules.rs:610` neighbourhood) for `task_update`.
+   `rust/fontaine-tools/src/descriptor.rs`; `task_update` joins the
+   no-specifier arm at `rust/fontaine-core/src/permission_rules.rs:610`.
 5. **Teammate flag and lifecycle**: `AgentArgs.teammate: Option<bool>` (`spawn.rs`), refused when
    teams are off or the caller is not `main`; `idle` flag in `tree.rs` `Node`, `finish`, `rows`
-   (`AgentRow` gains `idle`), `deliver` wake path, `resume_blocker` unchanged. `watch_report`
-   decides idle vs done and runs the idle hand-off.
+   (`AgentRow` gains `idle`), `DeliverError::Idle`, `tree.resume` clearing `idle`, a shutdown flag
+   refusing wakes. `SendMessageTool::call` performs the wake through a core-implemented trait seam
+   (`resume_blocker`, then `resume_child`, `AlreadyRunning` queues). `finish`/`conclude` decide
+   idle vs done; after `finish`, the `teammate_idle` hook and idle hand-off run through
+   `resume_child` before the node is reported ended to the headless waiter. `conclude`/`watch_report`
+   and a refused wake call `TaskBoard::release_owned_by` on any non-`Done` end.
 6. **Wiring**: register both tools in `extension_tools` (`agent/build.rs`) when teams are on;
    `TaskStore` implementation in `fontaine-core` (`tasks.rs` next to `todos.rs`) with load on
    resume and warning through `Approver::warn`; built-in type toolsets in `registry.rs`.
 7. **Hooks**: add the two events, their inputs and the `block` answer in
-   `rust/fontaine-core/src/user_hooks.rs`; call `task_completed` from `TaskUpdateTool` through a
-   `QualityGate` trait seam (injected like `RootLedger`) and `teammate_idle` from `watch_report`.
+   `rust/fontaine-core/src/user_hooks.rs`, `HooksSection` in `config.rs` (it has
+   `deny_unknown_fields`), `config_scope.rs` (tighten-only for project scope) and the plugin-hook
+   mapping; call `task_completed` from `TaskUpdateTool` through the `QualityGate` trait seam
+   (defined in `fontaine-agents`, implemented in core, injected like `RootLedger`) and
+   `teammate_idle` after `finish`.
 8. **TUI**: idle status and the Tasks section in the agents panel (`rust/fontaine-tui`).
 9. **Docs**: see Documentation.
 10. **Tests**: see Testing Strategy.
@@ -193,10 +226,11 @@ needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskComp
 
 - `rust/fontaine-agents/src/{tasks.rs (new), spawn.rs, tree.rs, registry.rs, root_ledger.rs, lib.rs}`
 - `rust/fontaine-tools/src/descriptor.rs`
-- `rust/fontaine-core/src/{agent/build.rs, tasks.rs (new), user_hooks.rs, permission_rules.rs, adjudication.rs, config*}`
-- `rust/fontaine-tui/src/*` (agents panel)
+- `rust/fontaine-core/src/{agent/build.rs, tasks.rs (new), user_hooks.rs, permission_rules.rs, adjudication.rs, config.rs, config_catalog.rs, config_scope.rs, export.rs}`
+- `rust/fontaine-core/src/agent/messaging.rs` (wake seam)
+- `rust/fontaine-tui/src/*` (agents panel, agent list, `ui/mod.rs`)
 - `rust/fontaine-core/tests/choke_point.rs`, `rust/fontaine-agents/tests/seam.rs`, `rust/fontaine/tests/parallel_agents.rs`
-- `docs/{agents,hooks,configuration,tools,tui,permissions,telemetry}.md`, `docs/schemas/*`
+- `docs/{agents,hooks,configuration,tools,tui,permissions,telemetry}.md`
 - `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
 ## Trade-offs
@@ -218,6 +252,7 @@ needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskComp
 - Teams are off by default behind `[agents] teams`, user/CLI scope only; a repository cannot turn them on.
 - The lead is always `main`; one team per session; teammates cannot spawn teammates.
 - `task_completed` / `teammate_idle` hooks can only `block`, never allow, and a hook failure warns and does not block; reason: quality gates add work, they must not wedge the team or loosen anything.
+- Hook failure or timeout warns and does not block (unlike `pre_tool_use`), and these events take no matcher; reason: they are quality gates with no tool name.
 - Task text is untrusted agent-authored data, never guardian intent.
 - No tmux/split-pane display and no per-teammate model override beyond what `agent` already has; both are Claude Code display/ergonomics features outside this issue.
 - Deviation from Claude Code: teammates are Fontaine subagents (same process, same session tree), not independent sessions; reason: one permission pipeline, one budget tree.
@@ -228,7 +263,7 @@ needs. Ledger events: `AgentEvent` gains `TaskCreated`, `TaskClaimed`, `TaskComp
   task board and tools, idle hand-off, limits, resume behaviour); update the `send_message` text
   ("reaches only a running agent" gains the idle-teammate case).
 - `docs/hooks.md`: the two new events, inputs, `block` answer, failure behaviour.
-- `docs/configuration.md` and `docs/schemas/`: `[agents] teams`.
+- `docs/configuration.md`: `[agents] teams`.
 - `docs/tools.md`: `task_list`, `task_update`; `docs/permissions.md`: their class and tier;
   `docs/tui.md`: idle status and Tasks section; `docs/telemetry.md`: new events.
 - `CHANGELOG.md` entry (added by the `pr` step).
@@ -242,9 +277,12 @@ Unit and integration tests only, deterministic models, no live APIs.
   unblocks dependents; release; owner-only update; `blocked_by` naming a missing id is refused;
   restore from the store turns `InProgress` into `Pending`; ids never reused.
 - `tree.rs` unit tests: a teammate's `Done` finish sets idle and a failed/killed/budget one does
-  not; idle does not count toward `max_parallel`; `deliver` to an idle teammate resumes it and one
-  refused by the cap or budget returns the reason; `deliver` to a plain finished agent still says
-  `agent not running`.
+  not; `deliver` to an idle teammate returns `DeliverError::Idle`; `tree.resume` clears `idle`;
+  `deliver` to a plain finished agent still says `agent not running`.
+- Wake (`SendMessageTool`, core seam): a message to an idle teammate resumes it; a wake refused by
+  the cap, budget, kill or shutdown returns the reason and releases its tasks; `AlreadyRunning`
+  queues. `release_owned_by` runs on a failed/killed/exhausted end and leaves an idle teammate's
+  tasks owned.
 - `seam.rs`: `teammate: true` refused when teams are off and when the caller is a subagent; both
   tools refuse a call with no agent id (`caller_of`); task text is rendered delimited and
   sender-marked.
