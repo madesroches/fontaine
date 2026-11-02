@@ -43,8 +43,8 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               structured matching (tool name + risk metadata + path containment), never regex on raw
               args. For `shell` calls the critical-path check parses the command with the same
               `brush-parser` pass as Tier 0.5 and inspects the targets of every `rm`/`rmdir` word (exact word
-              equality), resolving each against the call's `cwd` argument (the model-supplied
-              `ShellArgs.cwd`, not the process cwd); a target it cannot resolve (command substitution, variable-rooted glob), a target word that is not
+              equality), resolving each against the call's effective `cwd` (the argument, else the
+              tracked shell directory, written into the arguments before the gate; not the process cwd); a target it cannot resolve (command substitution, variable-rooted glob), a target word that is not
               literal (parameter expansion `$…`/`${…}`, tilde, brace pattern, unquoted glob chars), or
               a command that fails to parse, or parses as anything but one simple command, while
               containing an `rm`/`rmdir` word anywhere (every segment of `;`/`|`/`&&`/`||` lists is
@@ -79,7 +79,7 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               (`--files-from`, `-f`, `-m`, etc.) are themselves treated as path arguments and
               validated (mirrors Claude Code's documented per-command flag handling; the initial
               allowlist table is in the Phase 3 plan)
-              the call's `cwd` is resolved first: relative path arguments resolve against it and an
+              the call's effective `cwd` (argument, else the tracked directory) is resolved first: relative path arguments resolve against it and an
               out-of-scope `cwd` disqualifies the fast path
               → Allow, with an audit-log entry (no guardian)
            5a. Allow rules — only when the floor forced nothing (no Deny, prompt, or
@@ -195,7 +195,7 @@ Matching is structured — never regex on raw args. A tool that is neither built
 | Tool | Specifier | Match |
 |---|---|---|
 | `shell` | words, optional trailing ` *` (`shell(git push)`, `shell(npm run test *)`) | argv from the Tier-0.5 `brush-parser` pass (quoted words stay one argument): exact argv, or argv prefix when the rule ends in ` *`; no wildcard inside a word |
-| `read`, `edit`, `write`, `ls`, `glob`, `grep` | gitignore-style path pattern (`src/**`, `~/.aws/**`, `//etc/hosts`) | relative patterns anchor at each workspace root; the path argument is resolved by the scope validator (symlinks, `..`, the call's `cwd`) and the resolved path is matched; for `ls`/`glob`/`grep` that is the `path` argument (default: the primary root), and for `glob` also the pattern's anchored base |
+| `read`, `edit`, `write`, `ls`, `glob`, `grep` | gitignore-style path pattern (`src/**`, `~/.aws/**`, `//etc/hosts`) | relative patterns anchor at each workspace root; the path argument is resolved by the scope validator (symlinks, `..`, the call's effective `cwd`: argument, else the tracked directory) and the resolved path is matched; for `ls`/`glob`/`grep` that is the `path` argument (default: the primary root), and for `glob` also the pattern's anchored base |
 | `webfetch` | `domain:<host>` or `domain:*.<host>` | parsed URL host (lowercased, IDNA-normalized); `*.` matches subdomains only |
 | MCP | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | registered tool name |
 | `agent`, `skill` | agent type / skill name | exact name |

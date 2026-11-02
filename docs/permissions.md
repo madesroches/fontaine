@@ -332,7 +332,8 @@ PowerShell command. Without an allow rule or hook, every call prompts in `manual
 
 A small set of read-only commands runs without a prompt when the call is one simple command made of
 literal words, parsed by a real shell parser, with every path inside the workspace roots. The
-call's `cwd` is resolved first, and a `cwd` outside the roots disqualifies the call. Anything not
+call's `cwd` (the directory the shell was left in by an earlier call when the call names none) is
+resolved first, and a `cwd` outside the roots disqualifies the call. Anything not
 fully understood falls through to the next step: a chain, pipe, redirection, background marker,
 substitution, variable, tilde, glob, brace pattern or assignment prefix.
 
@@ -361,7 +362,7 @@ takes no flags (any flag falls through), and its positional words must be in-sco
 from the prompt never extends the set.
 
 Each word of the command that could be a path
-(including the value of `--flag=value`), as written and resolved against the `cwd`, is checked
+(including the value of `--flag=value`), as written and resolved against the call's `cwd` (the shell's current directory when it names none), is checked
 against the `read` deny and ask rules, and against the `ls` or `grep` rules for those commands. A
 deny match denies the call and an ask match asks, so `deny = ["read(.env)"]` also stops `cat .env`. Only the words written in the command are
 checked: files a recursive search reaches under a directory (`grep -r KEY .`) are not checked

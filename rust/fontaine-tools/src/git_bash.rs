@@ -17,6 +17,18 @@ pub const COMMAND_VAR: &str = "FONTAINE_SH_COMMAND";
 /// the command itself never sees it.
 pub const RUN_COMMAND_SCRIPT: &str = "eval \"unset FONTAINE_SH_COMMAND\n$FONTAINE_SH_COMMAND\"";
 
+/// Carries the file a foreground call's final directory is written to, for the same reason.
+pub const CWD_FILE_VAR: &str = "FONTAINE_SH_CWD_FILE";
+
+/// What a foreground call runs in place of `RUN_COMMAND_SCRIPT`: the same environment
+/// hand-over, then the command, then the directory it ended in. `pwd -W` is a builtin that
+/// prints the native `C:/...` path, which the scope check reads; `-P` would print a `/tmp/...`
+/// path it cannot map. Both variables are read-only copies and gone from the environment before
+/// the command runs.
+pub const RUN_TRACKED_SCRIPT: &str = "readonly __fnt_f=$FONTAINE_SH_CWD_FILE __fnt_c=$FONTAINE_SH_COMMAND; \
+unset FONTAINE_SH_COMMAND FONTAINE_SH_CWD_FILE; eval \"$__fnt_c\"; __fnt_rc=$?; \
+command pwd -W >|\"$__fnt_f\" 2>/dev/null; exit \"$__fnt_rc\"";
+
 /// The `sh -c` script and the variable to set so `sh` runs `command` as written.
 pub struct ShCommand<'a> {
     pub script: &'a str,
@@ -225,8 +237,11 @@ mod tests {
     }
 
     #[test]
-    fn the_wrapper_script_survives_the_windows_reparse() {
+    fn the_wrapper_scripts_survive_the_windows_reparse() {
         assert!(!RUN_COMMAND_SCRIPT.contains('\\'));
+        assert!(!RUN_TRACKED_SCRIPT.contains('\\'));
+        assert!(RUN_TRACKED_SCRIPT.contains(COMMAND_VAR));
+        assert!(RUN_TRACKED_SCRIPT.contains(CWD_FILE_VAR));
         assert_eq!(
             RUN_COMMAND_SCRIPT,
             format!("eval \"unset {COMMAND_VAR}\n${COMMAND_VAR}\"")

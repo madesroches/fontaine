@@ -2118,12 +2118,22 @@ fn text_number(args: &Value, key: &str) -> Option<u64> {
     args.get(key).and_then(Value::as_u64)
 }
 
+/// `command` with the directory it starts in. A call that names none starts in the primary
+/// root, and a tracked directory is written into the arguments before the call is judged, so
+/// the directory is shown exactly when it is not the default.
+fn with_cwd(args: &Value, command: &str) -> String {
+    match args.get("cwd").and_then(Value::as_str) {
+        Some(cwd) => format!("in {cwd}: {command}"),
+        None => command.to_string(),
+    }
+}
+
 /// The call as the human is shown it: the whole command, path or URL, never cut short.
 pub fn summarize(tool: &str, args: &Value) -> String {
     let text = |key: &str| args.get(key).and_then(Value::as_str);
     let line = match tool {
-        tool if is_shell_class(tool) => text("command").map(str::to_string),
-        "powershell" => text("command").map(str::to_string),
+        tool if is_shell_class(tool) => text("command").map(|command| with_cwd(args, command)),
+        "powershell" => text("command").map(|command| with_cwd(args, command)),
         "read" | "write" | "edit" | "notebook_edit" => text("path").map(str::to_string),
         "lsp" => text("path").map(|path| {
             let position = match (text_number(args, "line"), text_number(args, "character")) {

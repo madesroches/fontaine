@@ -447,6 +447,14 @@ All notable changes are recorded here. The format follows
 
 #### Tools
 
+- The `shell` and `powershell` working directory now persists between calls, as in Claude Code: a
+  `cd sub` in one call means the next starts in `sub`, per agent. Only the directory carries over;
+  one that leaves the workspace roots, or no longer exists, resets to the primary root with a note in
+  the result. `/clear` and a conversation `/rewind` reset it, a subagent starts in the primary root
+  and keeps a directory of its own, and background jobs, `monitor`, `!` commands and skill `!` lines
+  do not move it. Relative paths in the permission checks, the shell pre-classifier and the
+  guardian's input resolve against it, and the approval prompt shows the directory when it is not the
+  primary root. A subagent's shell output is now capped at 64 MB like the main agent's (#26).
 - Multimodal `read`: an image (PNG, JPEG, GIF or WebP, sniffed by magic bytes) is returned to the
   model as an image content part when the current model accepts images — a text header names the
   file, kind and size, then the image, capped at 5 MB — and as a text note otherwise. A PDF is never
@@ -530,6 +538,8 @@ All notable changes are recorded here. The format follows
 
 #### TUI
 
+- The status bar shows the shell's current directory and the git branch checked out there, such
+  as `· ~/work/app (main)`, read from `HEAD` without running `git` (#26).
 - The model's reasoning shows in the transcript as a dim `thinking` card that streams its last five
   rows live and folds to its first five once it settles; `/expand thinking` prints it in full.
   `[tui] show_reasoning = false` hides it, and `tui.show_reasoning` is a row in the settings panel.

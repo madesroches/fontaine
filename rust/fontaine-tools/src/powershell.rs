@@ -55,16 +55,44 @@ pub fn discover(probe: &Probe<'_>) -> Option<PowerShellSettings> {
         .map(|path| PowerShellSettings { path })
 }
 
+/// The environment variable that names the file a foreground call's final directory goes to.
+pub const CWD_FILE_VAR: &str = "FONTAINE_PS_CWD_FILE";
+
+/// What runs after a foreground command, on a line of its own so a trailing comment in the
+/// command cannot swallow it. `$?` is read first, because a failing last statement must keep
+/// exiting 1 as it does without the trailer; `$LASTEXITCODE` is ignored, as it is there. A
+/// location in a provider other than the file system is written as a path that is no directory.
+const TRACKER: &str = "$__fnt_ok = $?\n\
+    try { $__fnt_at = Get-Location; \
+    if ($__fnt_at.Provider.Name -eq 'FileSystem') { $__fnt_dir = $__fnt_at.ProviderPath } \
+    else { $__fnt_dir = '<' + $__fnt_at.Provider.Name + '>' }; \
+    [IO.File]::WriteAllText($env:FONTAINE_PS_CWD_FILE, $__fnt_dir) } catch { }\n\
+    exit $(if ($__fnt_ok) { 0 } else { 1 })";
+
 /// The arguments that run `command` under the preamble. The script travels as UTF-16LE base64
 /// so the Windows command line cannot re-parse it.
 pub fn launch_args(command: &str) -> Vec<OsString> {
+    encoded_args(&script_of(command, ""))
+}
+
+/// `launch_args` for a foreground call: the command is followed by a trailer that writes the
+/// directory it ended in to the file `CWD_FILE_VAR` names.
+pub fn launch_args_tracked(command: &str) -> Vec<OsString> {
+    encoded_args(&script_of(command, TRACKER))
+}
+
+fn script_of(command: &str, trailer: &str) -> String {
     let (usings, rest) = split_usings(command);
     let break_after = if usings.is_empty() || usings.ends_with('\n') {
         ""
     } else {
         "\n"
     };
-    let script = format!("{usings}{break_after}{PREAMBLE}\n{rest}");
+    let line = if trailer.is_empty() { "" } else { "\n" };
+    format!("{usings}{break_after}{PREAMBLE}\n{rest}{line}{trailer}")
+}
+
+fn encoded_args(script: &str) -> Vec<OsString> {
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     [
         "-NoProfile",
@@ -163,7 +191,10 @@ mod tests {
     }
 
     fn decoded_script(command: &str) -> String {
-        let args = launch_args(command);
+        decoded(launch_args(command))
+    }
+
+    fn decoded(args: Vec<OsString>) -> String {
         assert_eq!(args[args.len() - 2], "-EncodedCommand");
         let bytes = unbase64(
             args.last()
@@ -227,6 +258,23 @@ mod tests {
         ] {
             assert_eq!(decoded_script(command), format!("{PREAMBLE}\n{command}"));
         }
+    }
+
+    #[test]
+    fn the_tracking_trailer_follows_the_command_on_a_line_of_its_own() {
+        let script = decoded(launch_args_tracked("Get-Date # note"));
+        assert_eq!(script, format!("{PREAMBLE}\nGet-Date # note\n{TRACKER}"));
+        // `$?` is read before anything else can change it, and the exit code comes from it.
+        let trailer = script.split_once("# note\n").unwrap().1;
+        assert!(trailer.starts_with("$__fnt_ok = $?\n"));
+        assert!(trailer.ends_with("exit $(if ($__fnt_ok) { 0 } else { 1 })"));
+        assert!(!trailer.contains("LASTEXITCODE"));
+        assert!(trailer.contains(CWD_FILE_VAR));
+        // Leading `using` statements still precede the preamble.
+        let moved = decoded(launch_args_tracked("using namespace System.IO\nGet-Date"));
+        assert!(moved.starts_with("using namespace System.IO\n$ProgressPreference"));
+        // Untracked calls are unchanged.
+        assert!(!decoded_script("Get-Date").contains("__fnt"));
     }
 
     #[test]

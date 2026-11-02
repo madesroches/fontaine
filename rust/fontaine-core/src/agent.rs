@@ -22,6 +22,7 @@ use fontaine_tools::lsp::LspServers;
 use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::RiskClass;
+use fontaine_tools::shell_cwd::ShellCwd;
 use fontaine_tools::websearch::SearxngChild;
 use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
@@ -221,6 +222,8 @@ pub(crate) struct Setup {
     /// The session's background jobs, created once so a registry rebuild keeps the running
     /// ones. Dropping the runtime terminates them.
     pub(crate) jobs: Arc<Jobs>,
+    /// Where each agent's shell calls start, created once so a registry rebuild keeps them.
+    pub(crate) shell_cwd: ShellCwd,
     /// The language servers, created once so a registry rebuild keeps the running ones. They
     /// end with `/clear`, `/rewind` and the runtime.
     pub(crate) lsp: Arc<LspServers>,
@@ -835,6 +838,7 @@ impl AgentRuntime {
         }
         self.session.clear().await?;
         self.end_jobs().await;
+        self.reset_shell_cwd();
         self.state.append(Record::ContextCleared {});
         if let Err(e) = self.session.todos().clear() {
             self.approver
@@ -860,6 +864,24 @@ impl AgentRuntime {
         self.setup.jobs.terminate_all().await;
         self.setup.lsp.shutdown_all().await;
         self.state.agents().discard_job_notifications();
+    }
+
+    /// Where the main agent's next shell call starts.
+    pub fn shell_cwd(&self) -> PathBuf {
+        self.setup
+            .shell_cwd
+            .current(ROOT_AGENT, &self.state.scope())
+    }
+
+    /// The user's home directory, when the session knows it.
+    pub fn home(&self) -> Option<&Path> {
+        self.setup.home.as_deref()
+    }
+
+    /// Puts the main agent's shell back in the primary root: the model forgets its `cd` along
+    /// with the conversation that made it.
+    pub(crate) fn reset_shell_cwd(&self) {
+        self.setup.shell_cwd.reset(ROOT_AGENT);
     }
 
     /// The session's background jobs, for the surface that lists and kills them.

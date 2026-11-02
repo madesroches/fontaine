@@ -313,6 +313,42 @@ async fn after_a_clear_the_picker_lists_only_the_later_prompts() {
     assert!(built.runtime.rewind_plan(3).is_none());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn clearing_or_rewinding_the_conversation_puts_the_shell_back_in_the_root() {
+    let w = World::new();
+    w.enable_scratch();
+    std::fs::create_dir_all(w.work.join("sub")).unwrap();
+    w.user_file("[permissions]\nallow = [\"shell(cd *)\"]\n");
+    let built = build(
+        &w,
+        AcceptEdits,
+        vec![
+            call("shell", json!({"command": "cd sub"})),
+            text("moved"),
+            text("again"),
+            call("shell", json!({"command": "cd sub"})),
+            text("moved"),
+        ],
+        false,
+    );
+    say(&built, "go").await;
+    assert_eq!(built.runtime.shell_cwd(), w.work.join("sub"));
+    built.runtime.clear_conversation().await.unwrap();
+    assert_eq!(built.runtime.shell_cwd(), w.work);
+
+    say(&built, "after the clear").await;
+    say(&built, "go again").await;
+    assert_eq!(built.runtime.shell_cwd(), w.work.join("sub"));
+    let plan = built.runtime.rewind_plan(2).unwrap();
+    built
+        .runtime
+        .rewind(&plan, RewindWhat::Conversation, false)
+        .await
+        .unwrap();
+    assert_eq!(built.runtime.shell_cwd(), w.work);
+}
+
 #[tokio::test]
 async fn a_rewind_is_refused_while_a_subagent_runs() {
     let w = World::new();

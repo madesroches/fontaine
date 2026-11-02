@@ -343,6 +343,11 @@ fn build_with_env_session(
         .memory_dir()
         .is_dir()
         .then(|| std::fs::canonicalize(world.memory_dir()).unwrap());
+    let scratch = world
+        .root
+        .join("scratch")
+        .is_dir()
+        .then(|| world.root.join("scratch"));
     let setup = AgentSetup {
         config,
         config_dir: world.config.clone(),
@@ -351,8 +356,9 @@ fn build_with_env_session(
         session,
         roots: std::iter::once(world.work.clone())
             .chain(memory_root.clone())
+            .chain(scratch.clone())
             .collect(),
-        scratch: None,
+        scratch,
         memory_root,
         mode,
         scrub_env: Vec::new(),

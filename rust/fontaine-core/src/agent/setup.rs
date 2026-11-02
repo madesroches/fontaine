@@ -16,6 +16,7 @@ use fontaine_tools::kills::KillSwitches;
 use fontaine_tools::lsp::DiagnosticsStage;
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
 use fontaine_tools::scope::Scope;
+use fontaine_tools::shell_cwd::ShellCwd;
 use rig_agent::tool::server::{ToolServer, ToolServerHandle};
 
 use super::{AgentSetup, Setup};
@@ -555,6 +556,7 @@ pub(super) fn retained(
         env: setup.env.clone(),
         searxng: Arc::default(),
         jobs: Arc::default(),
+        shell_cwd: ShellCwd::default(),
         lsp: super::lsp::build(&setup.config, state, setup.env.clone()),
         store: setup.session.store(),
     })

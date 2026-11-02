@@ -858,7 +858,7 @@ fn is_settled(entry: &Entry) -> bool {
     )
 }
 
-fn truncate(text: &str, width: usize) -> String {
+pub(crate) fn truncate(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_string();
     }

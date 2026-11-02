@@ -51,6 +51,14 @@ impl World {
         std::fs::canonicalize(dir).unwrap()
     }
 
+    /// Makes runtimes built in this world run with a session scratch directory, as the binary
+    /// gives every session.
+    pub fn enable_scratch(&self) -> PathBuf {
+        let dir = self.root.join("scratch");
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
     pub fn load(&self) -> Result<Config, ConfigError> {
         self.load_from(&self.work, None, &no_env)
     }

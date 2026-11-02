@@ -1503,3 +1503,58 @@ deny = [\"shell(git push)\"]
         (Decision::Prompt, Tier::Mode)
     );
 }
+
+/// A tracked shell directory is written into the call as `cwd` before the gate sees it, so a
+/// relative operand resolves against it exactly as an explicit `cwd` does today.
+#[tokio::test]
+async fn a_relative_operand_resolves_against_the_tracked_directory() {
+    for mode in MODES {
+        let rig = Rig::new(mode);
+        let sub = rig.work().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(".env"), "S=1").unwrap();
+        let sub = sub.to_string_lossy().into_owned();
+        let in_sub = |command: &str| json!({"command": command, "cwd": sub});
+
+        let secret = first(&rig, "shell", in_sub("cat .env")).await;
+        assert_eq!(
+            secret,
+            first(&rig, "shell", shell("cat .env")).await,
+            "{mode:?}"
+        );
+        assert_ne!(secret.1, Tier::Tier05, "{mode:?}");
+        assert_eq!(
+            first(&rig, "shell", in_sub("cat .env.example")).await,
+            (Decision::Allow, Tier::Tier05),
+            "{mode:?}"
+        );
+        // `..` out of the tracked directory is still judged against the real path.
+        let up = first(&rig, "shell", in_sub("cat ../sub/.env")).await;
+        assert_ne!(up.1, Tier::Tier05, "{mode:?}");
+        // A directory outside every root disqualifies the fast path, tracked or explicit.
+        let outside = json!({"command": "cat a.txt", "cwd": "/"});
+        assert_ne!(
+            first(&rig, "shell", outside).await.1,
+            Tier::Tier05,
+            "{mode:?}"
+        );
+    }
+}
+
+#[test]
+fn the_approval_summary_names_a_directory_only_when_the_call_has_one() {
+    use fontaine_core::permissions::summarize;
+    assert_eq!(summarize("shell", &json!({"command": "ls"})), "ls");
+    assert_eq!(
+        summarize("shell", &json!({"command": "ls", "cwd": null})),
+        "ls"
+    );
+    assert_eq!(
+        summarize("shell", &json!({"command": "ls", "cwd": "/w/sub"})),
+        "in /w/sub: ls"
+    );
+    assert_eq!(
+        summarize("powershell", &json!({"command": "dir", "cwd": "C:/w/sub"})),
+        "in C:/w/sub: dir"
+    );
+}

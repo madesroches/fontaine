@@ -21,6 +21,7 @@ pub mod result_pipeline;
 pub mod risk;
 pub mod schedule;
 pub mod scope;
+pub mod shell_cwd;
 pub mod skill;
 pub mod tls;
 pub mod todo;

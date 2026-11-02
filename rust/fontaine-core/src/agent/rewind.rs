@@ -90,6 +90,7 @@ impl AgentRuntime {
                 .await
                 .map_err(RewindError::Conversation)?;
             self.end_jobs().await;
+            self.reset_shell_cwd();
         }
         let code = what
             .includes_code()
