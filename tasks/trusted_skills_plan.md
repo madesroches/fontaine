@@ -53,10 +53,9 @@ tools = ["Bash(git *)"]        # the trusted version's declared allowed-tools
 commands = ["!git status"]     # the trusted version's `!` lines
 ```
 
-Granularity is per skill: a trusted `pr` does not vouch for the other skills of its plugin.
+Granularity is per skill.
 `trust <plugin>` is shorthand that records every skill the installed plugin has at that moment; a
-skill added later is untrusted until trusted. Keying by composed name makes uninstalling and
-reinstalling a plugin keep the record; a digest mismatch covers a changed file.
+skill added later is untrusted until trusted.
 
 The digest covers the raw bytes of the file the loader reads, so `allowed-tools`, the body and its
 `!` lines are all pinned. Commands (`commands/*.md`) are skills too and are trusted the same way.
@@ -74,13 +73,14 @@ context note below. A plugin skill lends nothing without trust.
 `Skill.declared_tools: Vec<Rule>` (validated as today). `Skill.allowed_tools` keeps its meaning,
 the rules lent without trust. `Extensions` carries a `TrustedSkills` view (the parsed
 `skill-trust.toml`, loaded at startup next to the plugins through `LoadParams`, which also receives
-the project-skill-record warning) and `expand` resolves a `SkillGrant`:
+the project-skill-record warning) and `expand` branches on `trust_state`:
 
 ```
 trust_state(skill) =
   Project scope                    -> Untrusted
   record absent                    -> Untrusted
-  record digest != file digest     -> Stale   (grants off; notice once per session)
+  record digest != file digest     -> Stale   (plugin skills: grants off; a user skill falls back to today's untrusted
+                                             behaviour; notice once per session)
   record digest == file digest     -> Trusted
 ```
 
@@ -116,8 +116,8 @@ when `guardian_view` is set and the list is non-empty (existing insta goldens de
 being absent otherwise). The line is guardian-only. Both shipped prompts (`prompts/guardian_prompt.md`,
 `prompts/guardian_minimal.md`) state that a trusted skill's declared classes are user intent for
 routine steps of that class, never for destructive or out-of-purpose steps. `Profile::Minimal.shape`
-(`profile.rs`) keeps `active_skills`, since it carries user intent, and `adjudication::facts`
-rebuilds `SessionFacts` including the field. The composed screen renders the same
+(`profile.rs`) keeps `active_skills`, since it carries user intent. `adjudication::facts()`
+initialises `active_skills` empty; `build` fills it from the caller's notes. The composed screen renders the same
 `blocks(request, false, false)` (`screen.rs`), so the screen's input stays byte-identical. Every deny
 rule, the floor and the fail-closed outcomes are unchanged: this is context, not an allow, so a
 `git push --force origin main` is still the guardian's call (and any deny/ask rule's). A note is
@@ -138,9 +138,10 @@ exactly as `/skills` and the trust record show it (so user-directory skills and 
 plugin skills are nameable). `<name>` that is an installed plugin and not a skill is the
 `trust <plugin>` shorthand; a bare name matching both an installed plugin and a skill is an error.
 `trust` prints, per skill, the digest and the declared `allowed-tools` split into narrow and broad,
-and the skill's `!` lines, then records after a `[y/N]` confirmation. The confirmation prompt and
-the `--yes=yes` flag are new; `--yes=yes` skips only the confirmation, and without a terminal and
-without it, `trust` refuses. `trust`/`untrust` enumerate skills through `plugins::load_installed`
+and the skill's `!` lines, then records after a `[y/N]` confirmation. The confirmation reuses the
+`confirm` helper (`rust/fontaine/src/auto_mode.rs:~320-326`) and the `stdin().is_terminal()`
+refusal (~407). The `--yes` flag (a plain `#[arg(long)] bool`) is new; it skips only the
+confirmation, and without a terminal and without it, `trust` refuses. `trust`/`untrust` enumerate skills through `plugins::load_installed`
 plus `extensions::load` with `project_root` set to an empty path (the `validate_components` pattern,
 `rust/fontaine/src/plugin.rs:~917-933`), so project files are never read. A name that is not a skill of an installed, enabled plugin or a
 user-directory skill is an error. `untrust` removes records. Trust state is listed by `/skills`
@@ -160,9 +161,10 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
   the old file.
 - A headless run (`fontaine -p`) never prompts: a `Stale` or `Untrusted` plugin skill lends
   nothing (a user-directory skill keeps today's behaviour). When such a skill that declares
-  `allowed-tools` is invoked, the run warns via `Approver::warn`, deduplicated per skill with the
-  once-per-key `HashSet` pattern at `rust/fontaine/src/headless.rs:~288-320`. Core `expand` returns
-  the skill name in its result; `headless.rs`, where that result arrives, emits the warning.
+  `allowed-tools` is invoked, core `expand` warns via `Approver::warn`, deduplicated per skill with
+  the once-per-key pattern of `warn_effort_refused` in `gate.rs` (~441-451: the `effort_warned`
+  `HashSet`), so it covers model-invoked skills and the TUI's `expand_skill` alike. This is separate
+  from the load-time stale warning (`prep.warnings`, `lib.rs`).
 - `/skills` lists each skill's trust state: `trusted`, `changed (re-trust)`, or none.
 
 ## Implementation Steps
@@ -170,14 +172,19 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
 1. **Trust store** (`fontaine-core/src/skill_trust.rs`, new): `TrustFile` (de)serialization with
    `deny_unknown_fields`, `read`/`write` under `file_lock` and owner-only, `digest_of(bytes)` with
    `sha2` (already a dependency in `rust/Cargo.toml` and `fontaine-core`; lift an existing hex
-   helper, `plugins.rs` ~2170 or `checkpoint.rs` ~49), `trust_state`. Export from `lib.rs`.
+   helper, `plugins.rs` ~2170 or `checkpoint.rs` ~49), `trust_state`. Export from `lib.rs`. Use
+   `owner_only::write_atomic`, `file_lock::lock`/`read_shared` and `config::bare_toml_message`, and
+   model the digest-pinned store on `approve_server` in `trust.rs` (~128-175). If the docs show a
+   fenced `skill-trust.toml` example, add a validator branch in
+   `rust/fontaine-core/tests/docs.rs` (~94-96).
 2. **Loader** (`extensions.rs`): keep `declared_tools` for every scope; `read_document` (~214-226)
    also returns the raw text the digest is computed from; record each skill's digest
    (`Skill.digest`) from it; `Skill.allowed_tools` stays as today. Thread the trust file and the
    project-skill-record warning through `LoadParams` into `Extensions`' `TrustedSkills` view.
 3. **Grants** (`skills.rs`, `gate.rs`): split narrow and broad in `expand`; add the trusted-skill
    note to `SessionState` with `end_turn` clearing and per-agent keying; surface stale skills
-   through the notice channel.
+   through the notice channel; the once-per-skill warning for untrusted or stale plugin skills that
+   declare `allowed-tools`, in `expand`.
 4. **Guardian** (`fontaine-guardian/src/request.rs`, `prompt_builder.rs`, `profile.rs`, both prompt
    files, `adjudication.rs`): `active_skills` in `SessionFacts` (the `request()` fixture in
    `prompt_builder.rs` tests, ~446-465, is a full `SessionFacts` literal and needs the field); set it
@@ -186,14 +193,13 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
    cases (a) and (b) pass; eval cases; extend `facts_from` in `fontaine-evals/src/live.rs` with
    `active_skills`, and add an `active_skills` shape check in `rust/fontaine-evals/src/case.rs`
    `validate` (~291-300) so the fixture run validates it.
-5. **CLI** (`cli.rs`, `plugin.rs`): `trust` and `untrust`, the confirmation prompt and the
-   `--yes=yes` flag.
+5. **CLI** (`cli.rs`, `plugin.rs`): `trust` and `untrust`, the confirmation prompt (existing
+   `confirm` helper) and the `--yes` flag.
 6. **TUI** (`fontaine-tui`, `commands.rs`, `ui/commands`, `reports.rs`): `/skills` takes no
    arguments today (`commands.rs:~399-403`), so add an argument-parsing `Command` variant for
    `/skills trust <name>`, a new skills file under `ui/commands`, the dialog, and trust state in
    the `/skills` report.
-7. **Headless** (`rust/fontaine/src/headless.rs`): the once-per-skill warning.
-8. **Docs and plan**: see Documentation; observe what Claude Code does with a plugin skill's
+7. **Docs and plan**: see Documentation; observe what Claude Code does with a plugin skill's
    `allowed-tools` (`claude -p` against an installed plugin skill) before wording the Decisions
    amendment; add the Decisions lines to the master plan.
 
@@ -204,9 +210,10 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
 - `rust/fontaine-guardian/src/request.rs`, `prompt_builder.rs`, `profile.rs`,
   `prompts/guardian_prompt.md`, `prompts/guardian_minimal.md`
 - `rust/fontaine-evals/src/live.rs`, `case.rs`
-- `rust/fontaine/src/cli.rs`, `plugin.rs`, `lib.rs`, `headless.rs`
+- `rust/fontaine/src/cli.rs`, `plugin.rs`, `lib.rs`
 - `rust/fontaine-tui/src/commands.rs`, `ui/commands/` (new skills file), `reports.rs`
-- `evals/dataset/` (new cases), tests listed below
+- `evals/dataset/` (new cases), `evals/README.md` (~66-85) and `docs/evals.md` (~120) for the
+  `active_skills` `session_facts` key, tests listed below
 - `docs/extensions.md`, `docs/plugins.md`, `docs/permissions.md`, `docs/guardian.md`,
   `docs/tui.md`, `docs/headless.md`, `docs/configuration.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
@@ -229,6 +236,7 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
 - `docs/tui.md`, `docs/headless.md`: `/skills trust`, stale notice, no prompt headless.
 - `docs/configuration.md`: a `<config dir>/skill-trust.toml` row, distinguished from workspace
   `trust.toml`.
+- `evals/README.md`, `docs/evals.md`: the `active_skills` `session_facts` key.
 - `CHANGELOG.md`.
 - Master plan Decisions (`tasks/fontaine_harness_plan.md`), each line in its subject's subsection:
   - Config: amend the 2026-10-21 project-skill `allowed-tools` line (~424) to say project skills can
@@ -249,8 +257,9 @@ Unit and integration (no live API):
 - `trust_state`: absent, matching, stale, project scope never trusted.
 - Loader: plugin skill with `allowed-tools` keeps `declared_tools`, `allowed_tools` empty; digest
   changes with a body edit and an `allowed-tools` edit.
-- Grants (extend `tests/extensions.rs` and `tests/plugins.rs`): a trusted plugin skill lends its
-  narrow rules for the turn to the invoking agent only; a stale one lends nothing; broad rules are
+- Grants (extend `tests/extensions.rs` and `tests/plugins.rs`): a trusted plugin skill's narrow rule
+  yields `Tier::AllowRule` with the guardian fake not called (pattern: `tests/permissions_auto.rs`
+  ~483-530), for the invoking agent only; a stale one lends nothing; broad rules are
   not allows in `auto` and appear as an active-skill note; outside `auto` they allow; deny/ask and
   the floor still win; `end_turn` clears both. An untrusted or stale user-directory skill lends all
   its rules with no note. Regression pin for #361: a trusted `pr`-style skill with `Bash(git *)`
@@ -259,17 +268,19 @@ Unit and integration (no live API):
 - Guardian: `blocks` renders the `active_skill` line only when `guardian_view` is set and the list
   is non-empty; a screen-input test (like `prompt_builder.rs:~588`) shows the composed screen's
   input is unchanged when `active_skills` is non-empty; `facts_from` reads `active_skills` (unit test like `live.rs:~684-700`).
-- CLI: `trust` refuses non-interactive without `--yes=yes`, records the digest, `untrust` removes
+- CLI: `trust` refuses non-interactive without `--yes`, records the digest, `untrust` removes
   it; a user-directory and a multi-segment plugin skill name resolve; an ambiguous bare name errors.
-- Headless: invoking a stale plugin skill that declares `allowed-tools` prints one warning per
-  skill and lends nothing.
+- Warning: invoking a stale or untrusted plugin skill that declares `allowed-tools` warns once per
+  skill through `Approver::warn` (core test) and lends nothing.
+- `!`-line diff between the trusted and current versions.
+- TUI: `/skills trust` parsing (`commands.rs` tests ~809, ~1031); the trust column in
+  `reports::skills` (`reports.rs` test ~1171); the acknowledgement writes the record (ui harness
+  `src/ui/tests.rs`, `tests/tui.rs` ~420).
+- Once-per-session stale notice.
 - Guardian evals (live, manual): cases in Guardian prompt section, run with the Haiku eval; the
   `--guardian fixture` run validates dataset schema and labels only.
 
 ## Manual Verification
 
-1. `fontaine plugin trust <plugin>:<skill>` against an installed plugin skill, then run it under
-   `auto` in a tmux session: its narrow rules run without a prompt. Not automated: end-to-end TUI
-   plumbing.
-2. Edit the installed skill file; restart; the stale notice appears and `/skills trust` shows the
+1. Edit the installed skill file; restart; the stale notice appears and `/skills trust` shows the
    `allowed-tools` diff. Not automated: dialog layout.
