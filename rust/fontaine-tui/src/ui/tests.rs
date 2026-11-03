@@ -20,7 +20,7 @@ use crate::ui::providers::queue_provider_request;
 use crate::ui::turn::{
     CommandOutcome, EndOfTurn, Submission, TurnEnd, end_of_turn, front_push, restore_block,
 };
-use crate::{App, Prompt, Ui, transcript};
+use crate::{App, Prompt, StatuslineTrigger, Ui, transcript};
 
 #[test]
 fn a_cancel_removes_the_queued_sign_in_it_cancels() {
@@ -31,6 +31,27 @@ fn a_cancel_removes_the_queued_sign_in_it_cancels() {
     assert_eq!(queue, VecDeque::from([DialogKey::LogOut("a".into())]));
     queue_provider_request(&mut queue, DialogKey::CancelSignIn);
     assert_eq!(queue.len(), 1);
+}
+
+#[test]
+fn a_dropped_draw_trigger_owes_one_trailing_run() {
+    let mut ui = ui(unbounded_channel().1);
+    let (tx, mut rx) = unbounded_channel();
+    ui.statusline_tx = Some(tx);
+    ui.statusline_last_run = Some(std::time::Instant::now());
+    ui.trigger_statusline(StatuslineTrigger::Draw);
+    assert!(ui.statusline_dirty && rx.try_recv().is_err());
+
+    // The redraw of a run's own result must not owe another run.
+    ui.statusline_dirty = false;
+    ui.statusline_result_redraw = true;
+    ui.trigger_statusline(StatuslineTrigger::Draw);
+    assert!(!ui.statusline_dirty);
+
+    ui.statusline_last_run = None;
+    ui.statusline_dirty = true;
+    ui.trigger_statusline(StatuslineTrigger::Draw);
+    assert!(!ui.statusline_dirty && rx.try_recv().is_ok());
 }
 
 #[test]
@@ -88,6 +109,8 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         statusline_script: None,
         statusline_running: false,
         statusline_last_run: None,
+        statusline_dirty: false,
+        statusline_result_redraw: false,
     }
 }
 

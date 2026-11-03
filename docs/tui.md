@@ -146,7 +146,8 @@ A `[statusline]` command in your user settings replaces the built-in bar's hint 
 output. The command receives one JSON object on stdin and the first line of its stdout (ANSI
 escape sequences stripped) is shown after the mode, directory, model, quota, effort, agents,
 scheduled tasks and goal segments. Any non-zero exit, timeout after five seconds, or empty output
-keeps the previous good line; with none yet, the built-in rendering is used.
+keeps the previous good line; with none yet, the built-in rendering is used. While a refusal, attach notice or
+viewed-agent message is showing, it takes the custom line's place.
 
 ```toml
 [statusline]

@@ -277,6 +277,10 @@ struct Ui<R> {
     statusline_running: bool,
     /// When the last status-line run started, for the draw-trigger minimum interval.
     statusline_last_run: Option<Instant>,
+    /// A draw trigger was dropped (in flight or debounced), so one trailing run is owed.
+    statusline_dirty: bool,
+    /// The next draw is the redraw of a run's own result and must not owe another run.
+    statusline_result_redraw: bool,
 }
 
 /// Why the status-line command should run.
@@ -388,6 +392,8 @@ pub async fn drive(
         statusline_script,
         statusline_running: false,
         statusline_last_run: None,
+        statusline_dirty: false,
+        statusline_result_redraw: false,
     };
     ui.app.theme = theme;
     // Config validation has parsed and scope-checked every entry, so a resolve failure here

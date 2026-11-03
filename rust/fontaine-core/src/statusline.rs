@@ -256,6 +256,7 @@ fn strip_ansi(text: &str) -> String {
 
 /// Builds the payload from the pieces the TUI assembles. Kept as a free function so the TUI
 /// can read live state and pass it in without exposing runtime internals to serialization.
+// One argument per independently-sourced piece of live TUI state; a struct would only rename them.
 #[allow(clippy::too_many_arguments)]
 pub fn build_payload(
     model: String,
@@ -363,11 +364,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_zero_exit_keeps_the_previous_line() {
-        let previous: Option<String> = Some("keep me".into());
+    async fn non_zero_exit_yields_no_line() {
         let result = script("exit 1").run(&payload()).await;
         assert_eq!(result, None);
-        assert_eq!(previous, Some("keep me".into()));
     }
 
     #[tokio::test]

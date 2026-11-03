@@ -108,15 +108,20 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let Some(tx) = &self.statusline_tx else {
             return;
         };
-        if self.statusline_running {
-            return;
-        }
-        if matches!(trigger, StatuslineTrigger::Draw)
+        let is_draw = matches!(trigger, StatuslineTrigger::Draw);
+        let redraw_of_result = is_draw && std::mem::take(&mut self.statusline_result_redraw);
+        let debounced = is_draw
             && self
                 .statusline_last_run
-                .is_some_and(|t| t.elapsed() < STATUSLINE_DEBOUNCE)
-        {
+                .is_some_and(|t| t.elapsed() < STATUSLINE_DEBOUNCE);
+        if self.statusline_running || debounced {
+            if is_draw && !redraw_of_result {
+                self.statusline_dirty = true;
+            }
             return;
+        }
+        if is_draw {
+            self.statusline_dirty = false;
         }
         let _ = tx.send(trigger);
     }
@@ -128,12 +133,20 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if self.statusline_script.is_none() || self.statusline_running {
             return None;
         }
-        let interval = runtime.config.statusline.refresh_interval_secs?;
-        let interval = Duration::from_secs(interval);
         let since = self
             .statusline_last_run
             .map_or(Duration::MAX, |t| t.elapsed());
-        Some(interval.saturating_sub(since))
+        // The trailing run owed for a dropped draw trigger; waking only once the debounce
+        // has passed keeps it from spinning.
+        let owed = self
+            .statusline_dirty
+            .then(|| STATUSLINE_DEBOUNCE.saturating_sub(since));
+        let scheduled = runtime
+            .config
+            .statusline
+            .refresh_interval_secs
+            .map(|secs| Duration::from_secs(secs).saturating_sub(since));
+        [owed, scheduled].into_iter().flatten().min()
     }
 
     /// Builds the status-line payload from live state.
@@ -206,6 +219,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         };
         let result_tx = self.statusline_result_tx.clone();
         self.statusline_running = true;
+        self.statusline_dirty = false;
         self.statusline_last_run = Some(std::time::Instant::now());
         tokio::spawn(async move {
             let line = script
@@ -222,6 +236,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mut landed = false;
         while let Ok(line) = self.statusline_result_rx.try_recv() {
             self.statusline_running = false;
+            self.statusline_result_redraw = true;
             // Debounce from the finish: a slow script must not retrigger on the redraw
             // its own result causes.
             self.statusline_last_run = Some(std::time::Instant::now());
@@ -248,6 +263,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     .is_some_and(|t| t.elapsed() < STATUSLINE_DEBOUNCE)
             {
                 due = false;
+                self.statusline_dirty = true;
             }
         }
         due
@@ -529,6 +545,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 // waiting for an unrelated event.
                 Some(line) = statusline_result_rx.recv() => {
                     self.statusline_running = false;
+                    self.statusline_result_redraw = true;
                     self.statusline_last_run = Some(std::time::Instant::now());
                     if let Some(line) = line {
                         self.app.statusline = Some(line);

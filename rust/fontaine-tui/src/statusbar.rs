@@ -188,12 +188,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     });
     // Only while the turn runs: some paths clear `running` without settling the turn.
     let refusal = app.refusal.as_deref().filter(|_| app.running);
-    let hint = if let Some(text) = refusal {
-        Some(text.to_string())
-    } else if let Some(text) = &app.attach_notice {
-        Some(text.clone())
-    } else if let Some(text) = &viewed_state {
-        Some(text.clone())
+    let message = refusal
+        .map(str::to_string)
+        .or_else(|| app.attach_notice.clone())
+        .or_else(|| viewed_state.clone());
+    let hint = if message.is_some() {
+        message.clone()
     } else if app.running {
         None
     } else {
@@ -247,7 +247,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let effort = app
         .effort
         .map_or_else(String::new, |level| format!(" · effort {level}"));
-
     spans.push(Span::styled(
         format!("{}· {}", location(app), app.model),
         dim,
@@ -264,7 +263,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         };
         spans.push(Span::styled(format!(" · {text}"), style));
     }
-    if let Some(statusline) = &app.statusline {
+    // The custom line replaces the static hint but never a message the user must see.
+    if let (Some(statusline), None) = (&app.statusline, &message) {
         spans.push(Span::styled(
             format!("{effort}{agents}{scheduled}{goal} · "),
             dim,
@@ -324,15 +324,20 @@ mod tests {
 
     use super::*;
 
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
     #[test]
-    fn truncate_row_measures_display_width() {
+    fn truncate_row_keeps_short_text_and_cuts_by_display_width() {
+        assert_eq!(truncate_row("hi", 10), "hi");
+        assert_eq!(truncate_row("hello world", 5), "…orld");
+        assert_eq!(truncate_row("x", 1), "x");
+        assert_eq!(truncate_row("xy", 1), "…");
         assert_eq!(truncate_row("日本語日本語", 12), "日本語日本語");
         let cut = truncate_row("日本語日本語", 6);
         assert_eq!(cut, "…本語");
         assert!(Span::raw(cut).width() <= 6);
     }
-    use ratatui::Terminal;
-    use ratatui::backend::TestBackend;
 
     fn bar(app: &App) -> String {
         let mut terminal = Terminal::new(TestBackend::new(120, 1)).unwrap();
@@ -697,6 +702,20 @@ mod tests {
     }
 
     #[test]
+    fn a_message_replaces_the_custom_line() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+            line: "CUSTOM".into(),
+        });
+        app.attach_notice = Some("NOTICE".into());
+        let text = bar(&app);
+        assert!(
+            text.contains("NOTICE") && !text.contains("CUSTOM"),
+            "{text}"
+        );
+    }
+
+    #[test]
     fn a_custom_line_keeps_the_guardian_off_badge_first() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.guardian_off = true;
@@ -718,13 +737,5 @@ mod tests {
         let text = bar(&app);
         assert!(text.contains('…'), "{text}");
         assert!(!text.contains(&"a".repeat(200)), "{text}");
-    }
-
-    #[test]
-    fn truncate_row_keeps_short_text_and_ellipsizes_long_ones() {
-        assert_eq!(truncate_row("hi", 10), "hi");
-        assert_eq!(truncate_row("hello world", 5), "…orld");
-        assert_eq!(truncate_row("x", 1), "x");
-        assert_eq!(truncate_row("xy", 1), "…");
     }
 }

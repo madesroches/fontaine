@@ -20,14 +20,11 @@ async fn a_configured_command_replaces_the_status_bar() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_sleep_script_does_not_stall_the_ui() {
-    let w = World::new(Vec::new()).with_config("[statusline]\ncommand = \"sleep 10; echo LATE\"\n");
+    let w = World::new(Vec::new()).with_config("[statusline]\ncommand = \"exec sleep 10\"\n");
     w.run(|ui| async move {
         ui.wait_for("shift+tab mode · /add-dir").await;
-        let screen = ui.screen();
-        assert!(
-            !screen.contains("LATE"),
-            "a timed-out script must not update the bar: {screen}"
-        );
+        ui.type_text("still-typing");
+        ui.wait_for("still-typing").await;
     })
     .await;
 }
