@@ -165,7 +165,18 @@ pub fn discover(probe: &Probe<'_>) -> Result<GitBash, GitBashError> {
     .into_iter()
     .filter_map(|(var, git)| (probe.env)(var).map(|base| PathBuf::from(base).join(git)))
     .map(|git| git.join("cmd").join("git.exe"));
-    for candidate in on_path.chain(installs) {
+    // Scoop puts only a shim on PATH, which does not reveal the installation behind it.
+    let scoop_roots = [
+        (probe.env)("SCOOP").map(PathBuf::from),
+        (probe.env)("USERPROFILE").map(|home| PathBuf::from(home).join("scoop")),
+        (probe.env)("SCOOP_GLOBAL").map(PathBuf::from),
+        (probe.env)("ProgramData").map(|data| PathBuf::from(data).join("scoop")),
+    ];
+    let scoop = scoop_roots
+        .into_iter()
+        .flatten()
+        .map(|root| root.join("apps/git/current/cmd/git.exe"));
+    for candidate in on_path.chain(installs).chain(scoop) {
         if (probe.is_file)(&candidate)
             && let Some(found) = GitBash::from_executable(&candidate)
         {
@@ -350,5 +361,25 @@ mod tests {
             &[("LocalAppData", "/local")],
         );
         assert_eq!(found, Ok(bash("/local/Programs/Git")));
+    }
+
+    #[test]
+    fn a_scoop_install_is_found_behind_its_shim() {
+        let git = "apps/git/current/cmd/git.exe";
+        let user = probe_with(
+            &[&format!("/home/scoop/{git}")],
+            &[("PATH", "/home/scoop/shims"), ("USERPROFILE", "/home")],
+        );
+        assert_eq!(user, Ok(bash("/home/scoop/apps/git/current")));
+        let custom = probe_with(
+            &[&format!("/tools/scoop/{git}")],
+            &[("SCOOP", "/tools/scoop"), ("USERPROFILE", "/home")],
+        );
+        assert_eq!(custom, Ok(bash("/tools/scoop/apps/git/current")));
+        let global = probe_with(
+            &[&format!("/data/scoop/{git}")],
+            &[("ProgramData", "/data")],
+        );
+        assert_eq!(global, Ok(bash("/data/scoop/apps/git/current")));
     }
 }
