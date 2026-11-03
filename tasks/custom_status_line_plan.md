@@ -120,17 +120,21 @@ New module `rust/fontaine-core/src/statusline.rs`:
 ### TUI integration
 
 - `App` gains `statusline: Option<StatuslineState>` (last good line + generation) and a
-  fixed-size (5) ring of recent verdict records. The ring is fed in `Ui::on_event` /
-  `apply_event` in `rust/fontaine-tui/src/ui/turn.rs` from `SessionEvent::Decision` — records
-  with `guardian_verdict: None` are skipped. The payload builder reads the ring.
-- `Ui::run` spawns one supervisor task when `[statusline]` is configured, following the
-  `QuotaPoller` pattern: a trigger channel plus a result channel, with a new `select!` arm for
-  results (ui/mod.rs:337-359). Triggers: once at startup; then a coalesced trigger from
-  `Ui::draw` (skipped while a run is in flight — that is the debounce); plus the
-  `refresh_interval_secs` timer folded into `soonest_tick` when configured. The supervisor
-  builds the payload (awaiting `context_usage()`, reading the ledger, session id, guardian
-  label), runs the script, and publishes `(line, generation)`; `Ui::draw` copies the result into
-  `App.statusline`.
+  fixed-size (5) ring of recent verdict records. The ring is fed from `SessionEvent::Decision`
+  in both `Ui::on_event` and `Ui::on_agent_event` in `rust/fontaine-tui/src/ui/turn.rs`,
+  before the transcript consumes each event — records with `guardian_verdict: None` are
+  skipped. The payload builder reads the ring.
+- `Ui::run` handles status-line triggers when `[statusline]` is configured, following the
+  `QuotaPoller` ownership shape: a dedicated task publishes through a channel that a new
+  `select!` arm consumes (ui/mod.rs:337-359). Triggers: once at startup; then a coalesced
+  trigger from `Ui::draw` (skipped while a run is in flight — that is the debounce); plus the
+  `refresh_interval_secs` timer folded into `soonest_tick` when configured. The payload is
+  assembled inline in the `Ui::run` trigger handler (awaiting `context_usage()`, reading the
+  ledger, session id, guardian label) and handed to a `'static` spawned task that runs the
+  script and publishes `(line, generation)`; `Ui::draw` copies the result into
+  `App.statusline`. `StatuslineScript` is constructed inside `fontaine-core` (like
+  `HookProcess` in `agent/setup.rs`) via a constructor taking `&AgentRuntime`, so the TUI never
+  touches the `pub(crate) setup.git_bash` field.
 - Rendering in `statusbar::render`: when `App.statusline` holds a line, the row shows the
   guardian-off badge first when `guardian_off` is set (that warning stays visible in every
   mode — it reports a security-relevant state), then the custom line truncated to the row width.
@@ -141,8 +145,9 @@ New module `rust/fontaine-core/src/statusline.rs`:
 
 ### Payload assembly cost
 
-The script runs on events, not per frame, and the supervisor does the async work off the draw
-path — `context_usage()` and the ledger read never block rendering.
+The script runs on events, not per frame; the payload is built and the script is run in the
+`Ui::run` loop, off the draw path — `context_usage()` and the ledger read never block
+rendering.
 
 ## Implementation Steps
 
@@ -154,11 +159,12 @@ path — `context_usage()` and the ledger read never block rendering.
 2. `fontaine-core/src/statusline.rs`: `StatuslineScript` runner (env posture copied from
    `HookProcess::run`), payload builder struct + serialization, ANSI stripping, generation
    handling. Unit tests in-module.
-3. `App`: `statusline` state and verdict ring (app.rs); feed the ring in `Ui::on_event` /
-   `apply_event` in `rust/fontaine-tui/src/ui/turn.rs` when a `SessionEvent::Decision` carries
-   a `guardian_verdict`.
-4. Supervisor task + select arm + `soonest_tick` entry (ui/mod.rs); wire session id, guardian
-   label, ledger, `context_usage()` into the payload build.
+3. `App`: `statusline` state and verdict ring (app.rs); feed the ring in both `Ui::on_event`
+   and `Ui::on_agent_event` in `rust/fontaine-tui/src/ui/turn.rs`, before the transcript
+   consumes each event, when a `SessionEvent::Decision` carries a `guardian_verdict`.
+4. Status-line trigger handler + select arm + `soonest_tick` entry (ui/mod.rs); build the
+   payload inline in `Ui::run` (wire session id, guardian label, ledger, `context_usage()`) and
+   spawn only the script execution as a `'static` task over owned data.
 5. `statusbar::render`: custom-line branch with guardian-off badge and width truncation; remove
    the running hint; keep the idle hint. Update the existing hint tests and add custom-line
    tests.
