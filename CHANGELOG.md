@@ -117,6 +117,7 @@ All notable changes are recorded here. The format follows
 
 #### Core
 
+- `fontaine models [<account>] [--format=text|json]` and a read-only `models` tool print the models each configured account offers, marking the main, guardian and benchmark-validated guardian models; the tool is read-only and path-free, takes the fast path in every mode and is left out of the built-in `explore` and `worker` agents (#254, #393).
 - Auto memory (`[memory] auto`, user scope only, on by default while it is tested). The agent saves
   notes about the project with `write` and `edit` to `<data dir>/memory/<project key>/`, outside the
   repository, and the capped `MEMORY.md` index loads into later sessions framed as unverified notes.

@@ -70,7 +70,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    and `auto` and `plan` send it to the guardian. The label alone earns
    nothing: a path outside the roots does not qualify, and an external read never takes this
    step. `lsp` has no external route at all: a path outside every root is denied, with the
-   `/add-dir` hint. `skill`, `ask_user_question`, `todo_write`, `board_show` and the read-only scheduling tools name
+   `/add-dir` hint. `skill`, `ask_user_question`, `todo_write`, `models`, `board_show` and the read-only scheduling tools name
    no path and take this step too. `ask_user_question` only shows you text and collects your choice,
    and no mode, `auto` included, ever answers it: the answer comes from you or, in a headless run,
    from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
@@ -79,7 +79,7 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    toolset, and when every tool in it is read-only (plus the coordination tools `send_message` and `board_update`; `board_show` is
    read-only), the spawn runs without
    the guardian or a prompt, in every mode. `worker`, `fork` and any type whose set holds `agent`,
-   `shell`, a write tool, a network tool or an MCP tool do not qualify. A `deny` or `ask` rule on
+   `shell`, a write tool, a network tool (`webfetch`, `websearch`; `models` is read-only, so a custom type whose tools hold it still qualifies, and the built-in types do not include it) or an MCP tool do not qualify. A `deny` or `ask` rule on
    `agent` and a hook still act first, and each call the child makes goes through the whole
    pipeline. A spawn of any other type is handled at step 7.
    A file-tool *write* (`write`, `edit`, `notebook_edit`) that names a path outside every root
@@ -242,7 +242,7 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
 | `agent`, `skill` | the agent type or skill name | exact name |
 | `monitor` | words, as for `shell` | the parsed command line, as for `shell`; a `shell` deny or ask rule covers `monitor` too, an allow rule does not |
-| `send_message`, `board_update`, `board_show`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `job_output`, `job_cancel` | none | the tool name |
+| `send_message`, `board_update`, `board_show`, `ask_user_question`, `todo_write`, `models`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `job_output`, `job_cancel` | none | the tool name |
 
 Deny and ask rules fail toward matching; allow rules fail toward not matching:
 

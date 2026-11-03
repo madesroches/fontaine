@@ -1,6 +1,7 @@
 mod auto_mode;
 pub mod cli;
 pub mod headless;
+mod models_cmd;
 mod plugin;
 mod plugin_auto_update;
 pub mod telemetry;
@@ -276,6 +277,9 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
 
     if let Some(cli::Command::AutoMode(args)) = &cli.command {
         return auto_mode::run(&cli, args, &config, &dirs, &host);
+    }
+    if let Some(cli::Command::Models(args)) = &cli.command {
+        return models_cmd::run(&cli, args, &config, &dirs, &host);
     }
 
     let mode = session_mode(&cli, &config);

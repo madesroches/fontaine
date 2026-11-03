@@ -304,6 +304,16 @@ mod tests {
     }
 
     #[test]
+    fn the_built_in_explore_and_worker_tiers_exclude_models() {
+        let parent = names(&["read", "shell", "models"]);
+        let types = AgentTypes::builtin();
+        for name in ["explore", "worker"] {
+            let toolset = types.get(name).unwrap().toolset(&parent);
+            assert!(!toolset.contains(&"models".to_string()), "{name}");
+        }
+    }
+
+    #[test]
     fn a_type_narrowed_to_read_does_not_get_the_task_list() {
         let mut ty = AgentTypes::builtin().get("worker").unwrap().clone();
         ty.tools = Some(names(&["read"]));

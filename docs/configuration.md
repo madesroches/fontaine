@@ -243,6 +243,17 @@ account qualifies, the main model is the guardian and the start shows a warning 
 running on your main model `<account>/<model>`", with the advice to set `[guardian] model` or run
 `/guardian-model`): in the conversation in the terminal UI, on stderr in a headless run.
 
+`fontaine models [<account>]` prints the models each account offers (just that account when named),
+marking the main model, the guardian model and the benchmark-validated guardian models. It lists
+the way the `/model` picker does: an account with a `models` list costs no call, the others are
+asked once with a 10 second limit, and an account that fails keeps its entry with the error.
+`--format=json` prints the same report as JSON (`{"accounts": [{"account", "kind", "models":
+[{"id", "roles", "validated_guardian"}]}]}`, or `{"account", "kind", "error"}` for a failed one).
+`fontaine --model <account>/<model> models` marks that model as the main one. The exit code is 2
+for an unknown account or when no account is configured, and 1 when every requested account
+failed to list. The agent can read the same report through the `models` tool (see
+[Tools](tools.md)); neither shows endpoints, keys or environment values.
+
 #### Worked examples
 
 Anthropic, with the key in an environment variable:
@@ -631,7 +642,7 @@ file, and the notice names the scope that wins from the next launch.
 Rule strings use the `Tool` or `Tool(specifier)` form described in
 [Permissions](permissions.md#rules). At load, Fontaine checks the outer shape, that the tool is one
 of `shell`, `read`, `edit`, `write`, `notebook_edit`, `ls`, `glob`, `grep`, `webfetch`, `websearch`, `agent`, `skill`,
-`monitor`, `lsp`, `powershell`, `job_output`, `job_cancel`, `send_message`, `ask_user_question`, `todo_write`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
+`monitor`, `lsp`, `powershell`, `job_output`, `job_cancel`, `send_message`, `ask_user_question`, `todo_write`, `models`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
 tool (a `shell` specifier is literal command words, a path specifier a gitignore-style pattern, a
 `webfetch` specifier `domain:<host>` or `domain:*.<host>`). A bad rule is a configuration error.
 `deny` and `ask` rules apply in every mode; `allow` rules act after the floor.

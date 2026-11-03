@@ -138,6 +138,17 @@ pub enum Command {
     AutoMode(AutoModeArgs),
     /// Install and manage plugins and marketplaces
     Plugin(PluginArgs),
+    /// List the models each configured account offers
+    Models(ModelsArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ModelsArgs {
+    /// List only this account
+    #[arg(value_name = "ACCOUNT")]
+    pub account: Option<String>,
+    #[command(flatten)]
+    pub format: FormatArgs,
 }
 
 #[derive(Args, Debug, Clone)]

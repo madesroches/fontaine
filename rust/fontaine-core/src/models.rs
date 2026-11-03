@@ -441,7 +441,8 @@ fn with_causes(error: &ProviderError) -> String {
     text
 }
 
-fn known_accounts(config: &Config) -> String {
+/// The accounts the config names, or what to do when it names none.
+pub fn known_accounts(config: &Config) -> String {
     if config.accounts.is_empty() {
         return "no accounts are configured; add an [accounts.<name>] table".to_string();
     }
