@@ -6,6 +6,7 @@ use std::time::SystemTime;
 
 use fontaine_core::config::PermissionMode;
 use fontaine_core::goal;
+use fontaine_core::quota::{AccountUsage, UsageRole};
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -13,7 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use crate::agents_panel::row_label;
-use crate::app::{App, QuotaView};
+use crate::app::App;
 use crate::theme::Theme;
 
 pub fn mode_label(mode: PermissionMode) -> &'static str {
@@ -107,11 +108,18 @@ fn left_text(until: std::time::Duration) -> String {
 }
 
 /// `<name> <pct>% · <Nd|Nh|Nm> left`, then any other window that is running hot as
-/// `<label> <pct>%`; and whether any shown window is past the warning level. `None` when the
-/// quota has no window.
-fn quota_segment(view: &QuotaView, now: SystemTime) -> Option<(String, bool)> {
-    let (headline, rest) = view.quota.windows.split_first()?;
-    let mut text = format!("{} {}%", view.name, percent(headline.used_ratio));
+/// `<label> <pct>%`; and whether any shown window is past the warning level. The guardian's
+/// segment carries a `guardian ` prefix and shows only once a window is running hot. `None`
+/// when there is nothing to show: no data, or no window.
+fn quota_segment(usage: &AccountUsage, now: SystemTime) -> Option<(String, bool)> {
+    let quota = usage.quota.as_ref()?;
+    let (headline, rest) = quota.windows.split_first()?;
+    let guardian = usage.role == UsageRole::Guardian;
+    if guardian && !quota.windows.iter().any(|w| w.used_ratio >= HOT_RATIO) {
+        return None;
+    }
+    let prefix = if guardian { "guardian " } else { "" };
+    let mut text = format!("{prefix}{} {}%", usage.label, percent(headline.used_ratio));
     let left = headline
         .reset_at
         .and_then(|reset| reset.duration_since(now).ok())
@@ -197,10 +205,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         format!("{}· {}", location(app), app.model),
         dim,
     ));
-    if let Some((text, warn)) = app
-        .quota
-        .as_ref()
-        .and_then(|view| quota_segment(view, view.as_of))
+    for (text, warn) in app
+        .usage
+        .iter()
+        .filter_map(|usage| quota_segment(usage, app.usage_as_of))
     {
         let style = if warn {
             Style::default().fg(app.theme.warning)
@@ -373,12 +381,17 @@ mod tests {
         }
     }
 
-    fn view(windows: Vec<QuotaWindow>, now: SystemTime) -> QuotaView {
-        QuotaView {
-            name: "kimi".into(),
-            quota: Quota { windows },
-            as_of: now,
+    fn usage(role: UsageRole, windows: Vec<QuotaWindow>) -> AccountUsage {
+        AccountUsage {
+            role,
+            account: "moon".into(),
+            label: "kimi".into(),
+            quota: Some(Quota { windows }),
         }
+    }
+
+    fn view(windows: Vec<QuotaWindow>) -> AccountUsage {
+        usage(UsageRole::Main, windows)
     }
 
     #[test]
@@ -386,7 +399,7 @@ mod tests {
         let now = SystemTime::now();
         let day = 86_400;
         let segment = |ratio, reset| {
-            quota_segment(&view(vec![window("month", ratio, reset, now)], now), now)
+            quota_segment(&view(vec![window("month", ratio, reset, now)]), now)
                 .unwrap()
                 .0
         };
@@ -405,8 +418,8 @@ mod tests {
     #[test]
     fn a_reset_in_the_past_shows_no_time_left() {
         let now = SystemTime::now();
-        let mut v = view(vec![window("month", 0.2, None, now)], now);
-        v.quota.windows[0].reset_at = Some(now - Duration::from_secs(60));
+        let mut v = view(vec![window("month", 0.2, None, now)]);
+        v.quota.as_mut().unwrap().windows[0].reset_at = Some(now - Duration::from_secs(60));
         assert_eq!(quota_segment(&v, now).unwrap().0, "kimi 20%");
     }
 
@@ -415,13 +428,10 @@ mod tests {
         let now = SystemTime::now();
         let shown = |ratio| {
             quota_segment(
-                &view(
-                    vec![
-                        window("month", 0.16, Some(86_400), now),
-                        window("5h", ratio, None, now),
-                    ],
-                    now,
-                ),
+                &view(vec![
+                    window("month", 0.16, Some(86_400), now),
+                    window("5h", ratio, None, now),
+                ]),
                 now,
             )
             .unwrap()
@@ -437,13 +447,10 @@ mod tests {
         let now = SystemTime::now();
         let warns = |month, hot| {
             quota_segment(
-                &view(
-                    vec![
-                        window("month", month, None, now),
-                        window("5h", hot, None, now),
-                    ],
-                    now,
-                ),
+                &view(vec![
+                    window("month", month, None, now),
+                    window("5h", hot, None, now),
+                ]),
                 now,
             )
             .unwrap()
@@ -461,17 +468,72 @@ mod tests {
         app.effort = Some(fontaine_core::effort::Effort::High);
         assert!(!bar(&app).contains("kimi"), "{}", bar(&app));
         let now = SystemTime::now();
-        app.quota = Some(view(
-            vec![window("month", 0.16, Some(29 * 86_400 + 5), now)],
+        app.usage = vec![view(vec![window(
+            "month",
+            0.16,
+            Some(29 * 86_400 + 5),
             now,
-        ));
+        )])];
+        app.usage_as_of = now;
         let text = bar(&app);
         assert!(
             text.contains("· m · kimi 16% · 29d left · effort high ·"),
             "{text}"
         );
-        app.quota = Some(view(vec![], now));
+        app.usage = vec![view(vec![])];
         assert!(!bar(&app).contains("kimi"), "{}", bar(&app));
+    }
+
+    #[test]
+    fn the_guardian_segment_shows_from_seventy_percent_on_any_window() {
+        let now = SystemTime::now();
+        let shown = |month, hot| {
+            quota_segment(
+                &usage(
+                    UsageRole::Guardian,
+                    vec![
+                        window("month", month, Some(12 * 86_400 + 5), now),
+                        window("5h", hot, None, now),
+                    ],
+                ),
+                now,
+            )
+            .map(|segment| segment.0)
+        };
+        assert_eq!(shown(0.16, 0.69), None);
+        assert_eq!(
+            shown(0.70, 0.1).as_deref(),
+            Some("guardian kimi 70% · 12d left")
+        );
+        assert_eq!(
+            shown(0.16, 0.82).as_deref(),
+            Some("guardian kimi 16% · 12d left · 5h 82%")
+        );
+    }
+
+    #[test]
+    fn a_guardian_without_data_shows_nothing() {
+        let now = SystemTime::now();
+        let mut none = usage(UsageRole::Guardian, vec![]);
+        assert_eq!(quota_segment(&none, now), None);
+        none.quota = None;
+        assert_eq!(quota_segment(&none, now), None);
+    }
+
+    #[test]
+    fn the_guardian_segment_follows_the_main_one_before_the_effort() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.effort = Some(fontaine_core::effort::Effort::High);
+        let now = SystemTime::now();
+        app.usage = vec![
+            view(vec![window("month", 0.16, None, now)]),
+            usage(UsageRole::Guardian, vec![window("month", 0.8, None, now)]),
+        ];
+        let text = bar(&app);
+        assert!(
+            text.contains("· m · kimi 16% · guardian kimi 80% · effort high ·"),
+            "{text}"
+        );
     }
 
     #[test]

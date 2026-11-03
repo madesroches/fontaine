@@ -3,14 +3,17 @@
 
 mod goal;
 
+use std::collections::HashSet;
 use std::io::{IsTerminal, Write};
 use std::path::Path;
 
+use fontaine_core::RuntimeError;
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::{Decision, DecisionRecord};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
+use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
 use fontaine_core::trust;
 use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn};
 use fontaine_core::usage_ledger::{Bucket, UsageSource};
@@ -280,11 +283,72 @@ impl Usage {
     }
 }
 
+/// The usage-window state of the main and guardian accounts, fetched once because a headless run
+/// has no draw loop to poll for. Empty when neither account has a quota source.
+async fn account_usage(runtime: &AgentRuntime, warned: &mut HashSet<String>) -> Vec<Value> {
+    let main = &runtime.models.main;
+    let guardian = runtime
+        .guardian_quota()
+        .filter(|(account, _)| *account != main.reference.account);
+    let (main_quota, guardian_quota) = tokio::join!(
+        fetch_quota(main.quota.as_ref()),
+        fetch_quota(guardian.as_ref().map(|(_, source)| source)),
+    );
+    let accounts = [
+        (
+            UsageRole::Main,
+            main.reference.account.as_str(),
+            main.quota.as_ref(),
+            main_quota,
+        ),
+        (
+            UsageRole::Guardian,
+            guardian.as_ref().map_or("", |(account, _)| account),
+            guardian.as_ref().map(|(_, source)| source),
+            guardian_quota,
+        ),
+    ];
+    let mut entries = Vec::new();
+    for (role, account, source, fetched) in accounts {
+        let (Some(source), Some(fetched)) = (source, fetched) else {
+            continue;
+        };
+        let quota = match fetched {
+            Ok(quota) => Some(quota),
+            Err(e) => {
+                if warned.insert(account.to_string()) {
+                    runtime.approver().warn(&format!(
+                        "could not read the {} quota: {}",
+                        source.name(),
+                        fontaine_tools::error_chain::chain(&e)
+                    ));
+                }
+                None
+            }
+        };
+        let usage = AccountUsage {
+            role,
+            account: account.to_string(),
+            label: source.name().to_string(),
+            quota,
+        };
+        entries.push(usage.json());
+    }
+    entries
+}
+
+async fn fetch_quota(
+    source: Option<&std::sync::Arc<dyn QuotaSource>>,
+) -> Option<Result<Quota, RuntimeError>> {
+    Some(source?.fetch().await)
+}
+
 fn result_event(
     session_id: &str,
     outcome: &Outcome,
     usage: &Usage,
     goal: Option<&goal::GoalReport>,
+    account_usage: &[Value],
 ) -> Value {
     let (totals, guardian, subagents) = (&usage.main, &usage.guardian, &usage.subagents);
     let mut fields = json!({
@@ -337,6 +401,9 @@ fn result_event(
     }
     if let (Some(goal), Some(map)) = (goal, fields.as_object_mut()) {
         map.insert("goal".into(), goal.json());
+    }
+    if let (false, Some(map)) = (account_usage.is_empty(), fields.as_object_mut()) {
+        map.insert("account_usage".into(), account_usage.to_vec().into());
     }
     event("result", session_id, fields)
 }
@@ -831,6 +898,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
     let mut last: Option<Handled> = None;
     let mut goal_failure: Option<String> = None;
     let mut code = 0u8;
+    let mut usage_warned = HashSet::new();
     loop {
         let text = match input.next().await {
             Ok(Some(text)) => text,
@@ -876,11 +944,13 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             runtime.lsp().shutdown_all().await;
         }
         if stream_events {
+            let account_usage = account_usage(&runtime, &mut usage_warned).await;
             emit_line(&result_event(
                 &session_id,
                 outcome,
                 &Usage::of(&runtime),
                 handled.goal.as_ref(),
+                &account_usage,
             ));
         }
         last = Some(handled);
@@ -901,12 +971,16 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
     };
     match options.output_format {
         OutputFormat::StreamJson => {}
-        OutputFormat::Json => emit_line(&result_event(
-            &session_id,
-            &last.outcome,
-            &Usage::of(&runtime),
-            last.goal.as_ref(),
-        )),
+        OutputFormat::Json => {
+            let account_usage = account_usage(&runtime, &mut usage_warned).await;
+            emit_line(&result_event(
+                &session_id,
+                &last.outcome,
+                &Usage::of(&runtime),
+                last.goal.as_ref(),
+                &account_usage,
+            ));
+        }
         OutputFormat::Text => {
             if let Some(failure) = &goal_failure {
                 eprintln!("fontaine: {failure}");
@@ -968,7 +1042,7 @@ mod tests {
             goal: bucket(30, 31),
             subagents: bucket(20, 21),
         };
-        let result = result_event("s", &outcome, &usage, None);
+        let result = result_event("s", &outcome, &usage, None, &[]);
         assert_eq!(result["num_turns"], 3);
         assert_eq!(result["usage"]["main"]["input_tokens"], 3000);
         assert_eq!(result["usage"]["main"]["cache_read_input_tokens"], 1700);

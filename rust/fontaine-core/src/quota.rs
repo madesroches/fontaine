@@ -38,6 +38,70 @@ pub trait QuotaSource: Send + Sync + std::fmt::Debug {
     fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>>;
 }
 
+/// Whose quota an [`AccountUsage`] is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UsageRole {
+    Main,
+    Guardian,
+}
+
+impl UsageRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UsageRole::Main => "main",
+            UsageRole::Guardian => "guardian",
+        }
+    }
+}
+
+/// One account's usage-window state, as every surface shows it. Only an account with a quota
+/// source has one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccountUsage {
+    pub role: UsageRole,
+    /// The configured account name.
+    pub account: String,
+    /// [`QuotaSource::name`], such as `kimi`.
+    pub label: String,
+    /// `None` when the fetch failed or has not answered yet.
+    pub quota: Option<Quota>,
+}
+
+impl AccountUsage {
+    /// The one serialisation, shared by headless output and the custom status line. A window
+    /// follows Claude Code's `rate_limits` fields: `used_percentage` is 0-100 and `resets_at`
+    /// is Unix epoch seconds. Nothing is guessed: an absent value is omitted.
+    pub fn json(&self) -> serde_json::Value {
+        let mut entry = serde_json::json!({
+            "role": self.role.as_str(),
+            "account": self.account,
+            "label": self.label,
+        });
+        let Some(quota) = &self.quota else {
+            return entry;
+        };
+        let windows: Vec<serde_json::Value> = quota
+            .windows
+            .iter()
+            .map(|window| {
+                let mut value = serde_json::json!({
+                    "label": window.label,
+                    "used_percentage": (window.used_ratio.clamp(0.0, 1.0) * 100.0).round() as u32,
+                });
+                let resets_at = window
+                    .reset_at
+                    .and_then(|at| at.duration_since(SystemTime::UNIX_EPOCH).ok());
+                if let Some(at) = resets_at {
+                    value["resets_at"] = at.as_secs().into();
+                }
+                value
+            })
+            .collect();
+        entry["windows"] = windows.into();
+        entry
+    }
+}
+
 /// What the poller last published.
 #[derive(Clone, Debug, Default)]
 pub struct QuotaSnapshot {
@@ -225,6 +289,53 @@ mod tests {
                 }
             })
         }
+    }
+
+    fn usage(quota: Option<Quota>) -> AccountUsage {
+        AccountUsage {
+            role: UsageRole::Guardian,
+            account: "moon".into(),
+            label: "kimi".into(),
+            quota,
+        }
+    }
+
+    #[test]
+    fn usage_json_follows_the_rate_limits_fields() {
+        let quota = Quota {
+            windows: vec![
+                QuotaWindow {
+                    label: "month".into(),
+                    used_ratio: 0.165,
+                    reset_at: Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000)),
+                },
+                QuotaWindow {
+                    label: "5h".into(),
+                    used_ratio: 1.4,
+                    reset_at: None,
+                },
+            ],
+        };
+        assert_eq!(
+            usage(Some(quota)).json(),
+            serde_json::json!({
+                "role": "guardian",
+                "account": "moon",
+                "label": "kimi",
+                "windows": [
+                    {"label": "month", "used_percentage": 17, "resets_at": 1_800_000_000u64},
+                    {"label": "5h", "used_percentage": 100},
+                ],
+            })
+        );
+    }
+
+    #[test]
+    fn usage_without_data_has_no_windows() {
+        assert_eq!(
+            usage(None).json(),
+            serde_json::json!({"role": "guardian", "account": "moon", "label": "kimi"})
+        );
     }
 
     fn erased(fake: &Arc<Fake>) -> Arc<dyn QuotaSource> {

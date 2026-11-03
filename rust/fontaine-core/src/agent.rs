@@ -17,7 +17,7 @@ use fontaine_tools::gate::{CallView, ROOT_AGENT};
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::jobs::Jobs;
 use fontaine_tools::kills::KillSwitches;
-use fontaine_tools::lock::write_recovering;
+use fontaine_tools::lock::{read, write_recovering};
 use fontaine_tools::lsp::LspServers;
 use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::result_pipeline::ResultPipeline;
@@ -71,7 +71,7 @@ use build::{Parts, build_agent};
 pub use mcp::{McpOutcome, McpServerPlan};
 pub use messaging::{Delivered, MessageRefusal};
 pub use model_source::{GuardianRef, SessionModels};
-pub use models::{CredentialEffect, Switched};
+pub use models::{CredentialEffect, GuardianQuota, Switched};
 pub use rewind::{RewindError, RewindOutcome};
 pub use setup::{build_agent_types, build_composition, build_guardian, build_guardian_telling};
 
@@ -186,6 +186,9 @@ pub struct AgentRuntime {
     kills: Arc<KillSwitches>,
     /// The `llm` scanner's slot, which `install_guardian` keeps on the guardian's model.
     llm_scanner: Option<Arc<RwLock<Backend>>>,
+    /// The live guardian's account and quota source, which `install_guardian` keeps current
+    /// because `models.guardian` goes stale after a retry or a switch.
+    guardian_quota: Arc<RwLock<Option<GuardianQuota>>>,
     skills: Arc<SkillRuntime>,
     agent_types: Arc<AgentTypes>,
     extensions: Arc<Extensions>,
@@ -298,6 +301,7 @@ impl AgentRuntime {
             instruction_stage,
             state,
             session: setup.session,
+            guardian_quota: models::guardian_quota_slot(setup.models.guardian.as_ref()),
             models: setup.models,
             config: setup.config,
             start_mode: setup.mode,
@@ -824,6 +828,11 @@ impl AgentRuntime {
             // The completion index is advisory: a stale list only misses a suggestion.
             *write_recovering(&slot) = Arc::new(index.paths);
         });
+    }
+
+    /// The live guardian's account name and quota source, when it has one.
+    pub fn guardian_quota(&self) -> Option<GuardianQuota> {
+        read(&self.guardian_quota, "guardian quota").clone()
     }
 
     /// The session's approver, for warnings from work done outside the permission pipeline.

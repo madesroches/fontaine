@@ -318,6 +318,9 @@ All notable changes are recorded here. The format follows
 - `result.usage.guardian`, `subagents` and `goal` report `cache_read_input_tokens` and
   `cache_creation_input_tokens` like `main` (#331). The fields are required on every usage bucket
   in `headless-v1.schema.json`, an additive change for consumers of the contract.
+- The `result` event gains `account_usage`: the usage window of the main and the guardian account
+  when they have a `quota` source, each as `{role, account, label, windows[{label, used_percentage,
+  resets_at}]}` (#116). Additive within `v1`.
 
 #### MCP
 
@@ -439,6 +442,8 @@ All notable changes are recorded here. The format follows
   quota in the status bar (`kimi 16% · 29d left`, with the 5h window added once it passes 70%).
   It reads `<base_url>/usages` with the account's own key every minute, never blocks a turn, and
   hides the segment when the fetch fails (#353).
+- The guardian's account is polled too: its quota shows as `guardian kimi 16% · 12d left` once
+  any window reaches 70%, and never when it is the main model's account (#116).
 
 #### Research
 

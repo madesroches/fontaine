@@ -106,7 +106,7 @@ tools are checked like any `arbitrary` tool. A headless run does not ask and loa
 
 ## Status bar
 
-The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by the account's [subscription quota](#subscription-quota) when it has one, then `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key hint. The mode labels are `manual`,
+The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by the [subscription quota](#subscription-quota) of the main and the guardian account when they have one, then `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key hint. The mode labels are `manual`,
 `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`.
 
 ### Subscription quota
@@ -118,11 +118,18 @@ percent (`100%` from the limit up), and the time until it resets in days, hours 
 sight until one is at 70% or more, then it is appended, as in `kimi 16% · 29d left · 5h 82%`. From
 90% on any shown window, the segment takes the theme's warning colour.
 
+The guardian's account is read the same way, and can be a different subscription. Its segment follows
+the main one with a `guardian` prefix, as in `guardian kimi 16% · 12d left · 5h 82%`, and shows only
+once any of its windows is at 70% or more, so a guardian with room to spare adds nothing to the bar.
+A guardian on the main model's account is not shown twice. The same figures reach the
+[`result` event](headless.md#output) of a headless run as `account_usage`.
+
 The figures are refreshed every minute in the background, and never block a turn or a redraw. If a
 refresh fails the last figures stay for ten minutes and are then hidden; the first failure of a
-session is reported once as a warning. The segment is also hidden when the main model is on an
-account without `quota`, and on a narrow terminal it is kept in preference to the key hint, goal,
-scheduled and agent counts.
+session is reported once per account as a warning. A segment is also hidden when its model is on an
+account without `quota`, and no figure is ever estimated: with no data from the provider nothing is
+shown. On a narrow terminal the segments are kept in preference to the key hint, goal, scheduled
+and agent counts, and the guardian's is dropped before the main one.
 
 While a [subagent's transcript](#the-agent-list-and-the-agent-view) is on screen the bar's key hint
 is about that agent: `viewing agent-3 · working · ↓ then Enter on main to go back · shift+tab mode`,

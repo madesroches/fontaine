@@ -2,7 +2,7 @@
 //! accounts and credentials that change mid-session.
 
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::lock::{read, write};
@@ -14,9 +14,29 @@ use crate::accounts::AccountsError;
 use crate::child_runner::MainModel;
 use crate::config::Account;
 use crate::models::{AccountListing, GuardianChoice, GuardianModel, ModelRef, Switcher};
+use crate::quota::QuotaSource;
 use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::llm_backend;
 use crate::user_config;
+
+/// A guardian account's name and the source of its subscription quota.
+pub type GuardianQuota = (String, Arc<dyn QuotaSource>);
+
+pub(super) fn guardian_quota_of(model: Option<&GuardianModel>) -> Option<GuardianQuota> {
+    match model {
+        Some(GuardianModel::Ready(handle)) => handle
+            .quota
+            .as_ref()
+            .map(|source| (handle.reference.account.clone(), source.clone())),
+        _ => None,
+    }
+}
+
+pub(super) fn guardian_quota_slot(
+    model: Option<&GuardianModel>,
+) -> Arc<RwLock<Option<GuardianQuota>>> {
+    Arc::new(RwLock::new(guardian_quota_of(model)))
+}
 
 /// What a model switch did.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +71,7 @@ impl AgentRuntime {
         ));
         warm_output_mode(&guardian);
         self.state.set_guardian(guardian);
+        *write(&self.guardian_quota, "guardian quota") = guardian_quota_of(Some(model));
         if let Some(slot) = &self.llm_scanner {
             let timeout = std::time::Duration::from_secs(self.config.guardian.timeout_secs);
             *write(slot, "scanner model") = llm_backend(Some(model), timeout);
