@@ -46,7 +46,7 @@ pub struct AccountUsage {
 
 `AccountUsage::json()` is the single serialisation (fields: `role`, `account`, `label`,
 `windows[{label, used_percentage, resets_at}]`). Per window it follows Claude Code's status-line
-`rate_limits` schema: `used_percentage` is 0-100 and `resets_at` is Unix epoch seconds (internal
+`rate_limits` schema: `used_percentage` is `used_ratio` x 100 clamped to 0-100 and rounded to the nearest integer (as the status bar's `percent()` does), and `resets_at` is Unix epoch seconds (internal
 types keep `used_ratio`). Headless and the future custom status line both call it (DRY). Absent
 values are omitted, not null-filled with guesses.
 
@@ -113,7 +113,7 @@ status-line JSON embeds under `account_usage`; this plan adds the line to the ma
 4. `fontaine-tui/src/statusbar.rs`: `QuotaView` removed, `quota_segment(&AccountUsage, now)`; guardian segment with threshold, placed after the main quota span
    and before effort; update existing tests.
 5. `fontaine/src/headless.rs`: one-shot fetch and `account_usage` in `result_event`.
-6. Docs: `docs/tui.md` (Subscription quota section), `docs/headless.md` (result fields),
+6. Docs: `docs/tui.md` (Subscription quota section; line 109, the status-bar sentence "the model (followed by the account's subscription quota…" names only the main quota), `docs/headless.md` (result fields),
    `docs/configuration.md` (quota is described as status-bar-only at lines 167, 191);
    `docs/schemas/headless-v1.schema.json` (`result.account_usage`, additive, stays v1); in
    `docs/tui.md` lines ~123-124, the "hidden when the main model is on an account without quota"
