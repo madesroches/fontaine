@@ -109,17 +109,17 @@ New module `rust/fontaine-core/src/statusline.rs`:
   `FONTAINE_PROJECT_DIR` set to the project dir, JSON payload written to stdin, stdout/stderr/
   exit captured. Stderr goes to the telemetry/debug log, never the UI.
 - Fixed 5-second timeout (`tokio::time::timeout`; a hung script must not stall the bar). Not
-  configurable in this iteration — Claude Code has no timeout knob either.
+  configurable in this iteration — Claude Code has no timeout knob either. A test-only
+  `with_timeout` builder overrides the duration for fast unit tests.
 - Result policy: exit 0 with non-empty stdout → the **first line** becomes the custom line,
   with ANSI escape sequences stripped (the built-in bar is one row of plain styled spans; full
   ANSI/OSC and multi-line support is a documented follow-up, not this plan). Any other outcome
   (non-zero exit, timeout, empty output) keeps the previous good line; with none yet, the bar
-  falls back to the built-in rendering. A generation counter drops stale results when a newer
-  run has started.
+  falls back to the built-in rendering.
 
 ### TUI integration
 
-- `App` gains `statusline: Option<StatuslineState>` (last good line + generation) and a
+- `App` gains `statusline: Option<StatuslineState>` (last good line) and a
   fixed-size (5) ring of recent verdict records. The ring is fed from `SessionEvent::Decision`
   in both `Ui::on_event` and `Ui::on_agent_event` in `rust/fontaine-tui/src/ui/turn.rs`,
   before the transcript consumes each event — records with `guardian_verdict: None` are
@@ -133,7 +133,7 @@ New module `rust/fontaine-core/src/statusline.rs`:
   the `refresh_interval_secs` timer folded into `soonest_tick` when configured. The payload is
   assembled inline in the `Ui::run` trigger handler (awaiting `context_usage()`, reading the
   ledger, session id, guardian label) and handed to a `'static` spawned task that runs the
-  script and publishes `(line, generation)`; `Ui::draw` copies the result into
+  script and publishes `line`; `Ui::draw` copies it into
   `App.statusline`. `StatuslineScript` is constructed inside `fontaine-core` (like
   `HookProcess` in `agent/setup.rs`) via a constructor taking `&AgentRuntime`, so the TUI never
   touches the `pub(crate) setup.git_bash` field.
@@ -162,8 +162,8 @@ rendering.
    `rust/fontaine-core/src/config_catalog.rs` (effective-value closures reading the merged
    `Config.statusline`).
 2. `fontaine-core/src/statusline.rs`: `StatuslineScript` runner (env posture copied from
-   `HookProcess::run`), payload builder struct + serialization, ANSI stripping, generation
-   handling. Unit tests in-module.
+   `HookProcess::run`), payload builder struct + serialization, ANSI stripping, and a test-only
+   `with_timeout` builder. Unit tests in-module.
 3. `App`: `statusline` state and verdict ring (app.rs); feed the ring in both `Ui::on_event`
    and `Ui::on_agent_event` in `rust/fontaine-tui/src/ui/turn.rs`, before the transcript
    consumes each event, when a `SessionEvent::Decision` carries a `guardian_verdict`.
@@ -235,8 +235,9 @@ rendering.
 - Unit (`statusline.rs`): payload JSON shape — field presence/absence across states (no effort,
   no priced calls, no quota, guardian verdict ring empty/full); the runner against real local
   shell snippets — echo round-trip, first-line selection, ANSI stripping, non-zero exit keeps
-  the previous line, timeout (a `sleep` past the limit) keeps the previous line, empty stdout
-  falls back. The tests get a shell the way production does — on Windows via
+  the previous line, timeout using the test-only `with_timeout(1)` override (a `sleep` past the
+  short limit) keeps the previous line while production's timeout remains the fixed 5 s, empty
+  stdout falls back. The tests get a shell the way production does — on Windows via
   `GitBash::discover`, otherwise plain `sh` — and skip only if that shell spawn itself fails;
   no network.
 - Unit (`statusbar.rs`): custom line renders with the guardian-off badge ahead of it; long lines
