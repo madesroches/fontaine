@@ -8,9 +8,11 @@ A plugin skill's `allowed-tools` is ignored today (plugin content is tighten-onl
 user-directory skill's broad grant such as `Bash(git *)` is set aside. A user who has decided to
 trust a skill has no way to say so, so unattended runs stall on steps the skill documents (#361).
 This plan adds an explicit, user-scope trust record for a skill, pinned to a digest of the skill
-file. While the record matches, the skill's `allowed-tools` are honoured: narrow rules act as real
-allows, and in `auto` broad rules reach the guardian as context instead of as an allow. A changed file
-suspends the grants until the user acknowledges the new version interactively.
+file. While the record matches, the skill's `allowed-tools` are honoured: specific rules (a non-wildcard
+command such as `Bash(git status)`, and non-shell tools) act as real allows, and wildcard shell rules
+(`Bash(git *)`, bare `Bash`) reach the guardian as context instead of as an allow. A changed file
+suspends the grants until the user acknowledges the new version interactively. A trust or untrust
+takes effect at the next session start.
 
 ## Current State
 
@@ -89,17 +91,29 @@ it cannot differ from the body that is run.
 
 ### Grants
 
-For a `Trusted` skill, `expand` passes every declared rule to the existing `grant_skill_rules`: real
-allows for the turn, after the floor, deny/ask rules and hooks. The existing `auto` suspension of
-broad rules (`is_broad_code_execution`, `permissions.rs:~935-946`) applies unchanged, so outside
-`auto` broad rules allow and in `auto` they do not. Additionally, the broad declared rules
-(`Bash(git *)`, bare `Bash`) are recorded through a new
-`SessionState::note_trusted_skill(agent, TrustedSkillNote { name, declared })`; the narrow/broad
-split in `expand` only decides what goes into the note. `permissions.rs` is unchanged;
+`is_broad_code_execution` (`permission_rules.rs:~676`) is not changed: it does not classify
+`Bash(git *)` as broad (`code_execution.rs` PROGRAMS/LAUNCHERS hold no git/gh/mv), so a user's own
+`shell(git *)` rule stays a real allow in `auto`, and it would let `git push --force origin main`
+through unguarded if a trusted skill's rule were treated the same. Trusted skills therefore use
+their own, stricter split in `expand`: a declared rule is *wildcard* when its tool is shell-class
+(`is_shell_class`) and it is either bare or has a ` *` specifier (any `Bash(<prog> *)`, bare
+`Bash`); it is *specific* otherwise (a non-wildcard shell command, and every non-shell tool).
+
+For a `Trusted` skill, `expand` passes only the specific rules to the existing `grant_skill_rules`:
+real allows for the turn, after the floor, deny/ask rules and hooks. Wildcard rules are never
+passed to `grant_skill_rules`, in any mode (deciding at `expand` by the current mode would leave a
+mid-turn switch into `auto` or `plan` holding an unguarded `git *` allow; `plan` also does not
+suspend broad rules, since its mode verdict is the guardian). Every wildcard rule is recorded
+through a new `SessionState::note_trusted_skill(agent, TrustedSkillNote { name, declared })`,
+where `declared` lists the wildcard rules; the wildcard/specific split in `expand` decides what goes
+into the grants and the note. `permissions.rs` is unchanged, and the existing `auto` suspension of
+`is_broad_code_execution` rules still applies to the specific rules it covers.
 `adjudication::build` reads the notes from `SessionState`.
 
 - A `Scope::User` skill that is untrusted keeps today's behaviour exactly: all its rules lent, no
-  note. A `Stale` user skill falls back to that same behaviour.
+  note. A `Stale` user skill falls back to that same behaviour. A trusted user skill also keeps
+  lending all its rules as today (trust never makes a skill looser or stricter than untrusted)
+  and additionally records the note for its wildcard rules.
 - A `Stale` or untrusted plugin skill lends nothing, and a stale one raises a notice telling the
   user to acknowledge. A `Project` skill is unchanged.
 
@@ -125,7 +139,8 @@ only emitted for the invoking agent, so a subagent of the invoking agent carries
 
 The guardian prompt change is verified with the live Haiku eval before done (project policy):
 new cases in `evals/dataset` for (a) a routine `git rebase origin/main` under an active trusted
-`pr` skill, allowed, and (b) `git push --force origin main` under the same skill, still denied.
+`pr` skill declaring `Bash(git *)`, allowed by the guardian with the skill as context, and (b)
+`git push --force origin main` under the same skill, still denied.
 Goldens for existing cases are not edited. `facts_from` in `fontaine-evals/src/live.rs` reads only
 known `session_facts` keys, so it is extended to read `active_skills`; the `--guardian fixture` run
 returns canned verdicts without building prompts and validates the dataset schema and labels only.
@@ -137,13 +152,16 @@ returns canned verdicts without building prompts and validates the dataset schem
 exactly as `/skills` and the trust record show it (so user-directory skills and multi-segment
 plugin skills are nameable). `<name>` that is an installed plugin and not a skill is the
 `trust <plugin>` shorthand; a bare name matching both an installed plugin and a skill is an error.
-`trust` prints, per skill, the digest and the declared `allowed-tools` split into narrow and broad,
+`trust` prints, per skill, the digest and the declared `allowed-tools` split into specific and wildcard,
 and the skill's `!` lines, then records after a `[y/N]` confirmation. The confirmation reuses the
 `confirm` helper (`rust/fontaine/src/auto_mode.rs:~320-326`) and the `stdin().is_terminal()`
 refusal (~407). The `--yes` flag (a plain `#[arg(long)] bool`) is new; it skips only the
-confirmation, and without a terminal and without it, `trust` refuses. `trust`/`untrust` enumerate skills through `plugins::load_installed`
-plus `extensions::load` with `project_root` set to an empty path (the `validate_components` pattern,
-`rust/fontaine/src/plugin.rs:~917-933`), so project files are never read. A name that is not a skill of an installed, enabled plugin or a
+confirmation, and without a terminal and without it, `trust` refuses. `trust`/`untrust` enumerate skills through `plugins::load_installed` for the plugin list, plus
+`extensions::load` with the real `config_dir` (so user-directory skills are found) and a
+nonexistent sentinel `project_root` (like `validate_components`' `root.join(".fontaine-plugin-validation")`,
+`rust/fontaine/src/plugin.rs:~917-933`), so project files are never read.
+A trust or untrust takes effect at the next session start, and `trust` says so.
+The CLI is unaudited, like plugin install. A name that is not a skill of an installed, enabled plugin or a
 user-directory skill is an error. `untrust` removes records. Trust state is listed by `/skills`
 (see below), not by a new `plugin list` column.
 
@@ -156,7 +174,11 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
   trusted it; its trust note for the guardian is off until /skills trust my-skill`.
 - TUI: `/skills trust <name>` (interactive only) opens an approval dialog showing the
   `allowed-tools` diff against the trusted version and, for a first trust, the full list, plus a
-  `!` command-line diff. Confirming writes the record. The previous version's `allowed-tools` and
+  `!` command-line diff. The dialog says that the trust applies from the next session start. Confirming writes the record
+and appends a `Record::SkillTrust { name, digest }` entry to the ledger and the audit log (as
+`Record::Approval` and `Record::GuardianOff` are). The in-session `TrustedSkills` view is read-only
+(`Extensions` is immutable behind an `Arc`), so the running session's grants and trust column do
+not change until the next session start. The previous version's `allowed-tools` and
   `!` lines are kept in the record (`tools`, `commands`) so the diffs are available without keeping
   the old file.
 - A headless run (`fontaine -p`) never prompts: a `Stale` or `Untrusted` plugin skill lends
@@ -181,7 +203,7 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
    also returns the raw text the digest is computed from; record each skill's digest
    (`Skill.digest`) from it; `Skill.allowed_tools` stays as today. Thread the trust file and the
    project-skill-record warning through `LoadParams` into `Extensions`' `TrustedSkills` view.
-3. **Grants** (`skills.rs`, `gate.rs`): split narrow and broad in `expand`; add the trusted-skill
+3. **Grants** (`skills.rs`, `gate.rs`): split specific and wildcard in `expand`; add the trusted-skill
    note to `SessionState` with `end_turn` clearing and per-agent keying; surface stale skills
    through the notice channel; the once-per-skill warning for untrusted or stale plugin skills that
    declare `allowed-tools`, in `expand`.
@@ -198,7 +220,9 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
 6. **TUI** (`fontaine-tui`, `commands.rs`, `ui/commands`, `reports.rs`): `/skills` takes no
    arguments today (`commands.rs:~399-403`), so add an argument-parsing `Command` variant for
    `/skills trust <name>`, a new skills file under `ui/commands`, the dialog, and trust state in
-   the `/skills` report.
+   the `/skills` report; the confirmation text says trust applies from the next session start.
+   Add `Record::SkillTrust { name, digest }` in `fontaine-core/src/ledger.rs` (plus the audit log
+   and the match arm at ~512) and write it when the TUI dialog confirms.
 7. **Docs and plan**: see Documentation; observe what Claude Code does with a plugin skill's
    `allowed-tools` (`claude -p` against an installed plugin skill) before wording the Decisions
    amendment; add the Decisions lines to the master plan.
@@ -206,7 +230,7 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
 ## Files to Modify
 
 - `rust/fontaine-core/src/skill_trust.rs` (new), `lib.rs`, `extensions.rs`, `skills.rs`,
-  `gate.rs`, `adjudication.rs` (reads the notes from `SessionState`; `permissions.rs` is unchanged)
+  `gate.rs`, `ledger.rs` (`Record::SkillTrust`), `adjudication.rs` (reads the notes from `SessionState`; `permissions.rs` is unchanged)
 - `rust/fontaine-guardian/src/request.rs`, `prompt_builder.rs`, `profile.rs`,
   `prompts/guardian_prompt.md`, `prompts/guardian_minimal.md`
 - `rust/fontaine-evals/src/live.rs`, `case.rs`
@@ -223,13 +247,17 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
   time; reason: a trusted skill must not vouch for the other skills of its plugin.
 - 2026-11-03: Trust is pinned to a digest of the skill file, not the plugin pin; reason: the pin
   changes with unrelated files, the digest only when this skill does.
+- AFK: 2026-11-03: A trusted skill's wildcard shell rules (any `Bash(<prog> *)`, bare `Bash`) are guardian context only, never skill grants in any mode, and only its specific rules are allows; reason: `is_broad_code_execution` does not classify `git *` as broad and `plan` does not suspend broad rules, so reusing it would allow `git push --force origin main` unguarded; the global classifier is left unchanged.
+- AFK: 2026-11-03: A skill trust or untrust takes effect at the next session start, and the `/skills trust` dialog says so; reason: `Extensions` is immutable behind an `Arc`, so the running session's `TrustedSkills` view is read-only.
+- AFK: 2026-11-03: Confirming `/skills trust` in the TUI appends a `Record::SkillTrust { name, digest }` ledger and audit entry, while the CLI `trust`/`untrust` is unaudited like plugin install; reason: an interactive grant of tool permissions belongs in the record, as `Record::Approval` and `Record::GuardianOff` are.
+- AFK: 2026-11-03: CLI `trust`/`untrust` enumerate skills with the real config dir, a nonexistent sentinel `project_root` and `plugins::load_installed`; reason: user-directory skills must be found while project files are never read.
 - 2026-11-03: Trust lives in its own `skill-trust.toml`, not `plugins.toml`; reason: `plugins.toml`
   is rewritten by auto-update and tied to plugin lifecycle, and a separate file also covers
   user-directory skills and survives uninstall.
 
 ## Documentation
 
-- `docs/extensions.md` `allowed-tools`: trusted skills and the broad-rule behavior.
+- `docs/extensions.md` `allowed-tools`: trusted skills and the wildcard-rule behavior.
 - `docs/plugins.md` "What install approves": install approves executables, `plugin trust`
   approves a skill's `allowed-tools`; the `trust`/`untrust` commands.
 - `docs/permissions.md`, `docs/guardian.md`: `active_skill` context.
@@ -245,7 +273,7 @@ user-directory skill is an error. `untrust` removes records. Trust state is list
     than Claude Code" line (~472) to name `plugin trust` as the way back to parity, and the
     2026-10-28 line likewise.
   - New deviations (Extensibility unless the plan has a better-fitting subsection): a trusted
-    skill's broad rules are guardian context, not allows, in `auto`; trust is pinned to a file
+    skill's wildcard shell rules are guardian context, not allows; trust is pinned to a file
     digest and suspended when stale; headless never re-acknowledges.
 
 ## Testing Strategy
@@ -258,17 +286,22 @@ Unit and integration (no live API):
 - Loader: plugin skill with `allowed-tools` keeps `declared_tools`, `allowed_tools` empty; digest
   changes with a body edit and an `allowed-tools` edit.
 - Grants (extend `tests/extensions.rs` and `tests/plugins.rs`): a trusted plugin skill's narrow rule
-  yields `Tier::AllowRule` with the guardian fake not called (pattern: `tests/permissions_auto.rs`
-  ~483-530), for the invoking agent only; a stale one lends nothing; broad rules are
-  not allows in `auto` and appear as an active-skill note; outside `auto` they allow; deny/ask and
+  (a specific rule such as `Bash(git status)`) yields `Tier::AllowRule` with the guardian fake not called (pattern: `tests/permissions_auto.rs`
+  ~483-530), for the invoking agent only; a stale one lends nothing; wildcard rules (`Bash(git *)`, bare `Bash`) are
+  not allows in `auto`, `plan`, or any other mode, and appear as an active-skill note; deny/ask and
   the floor still win; `end_turn` clears both. An untrusted or stale user-directory skill lends all
   its rules with no note. Regression pin for #361: a trusted `pr`-style skill with `Bash(git *)`
-  yields guardian context, not an allow, for `git rebase origin/main`.
+  yields guardian context, not an allow, for `git rebase origin/main` and for
+  `git push --force origin main`, in `auto` and in `plan`; a user's own `shell(git *)` rule is
+  unchanged (still an allow in `auto`).
 - `adjudication::build`: a subagent of the invoking agent carries no `active_skills`.
 - Guardian: `blocks` renders the `active_skill` line only when `guardian_view` is set and the list
   is non-empty; a screen-input test (like `prompt_builder.rs:~588`) shows the composed screen's
   input is unchanged when `active_skills` is non-empty; `facts_from` reads `active_skills` (unit test like `live.rs:~684-700`).
-- CLI: `trust` refuses non-interactive without `--yes`, records the digest, `untrust` removes
+- Ledger: confirming `/skills trust` appends `Record::SkillTrust`; the CLI writes none. A trust
+  written mid-session does not change the running session's grants or `/skills` column.
+- CLI: `trust` enumerates user-directory skills from the real config dir and never reads project
+  files; `trust` refuses non-interactive without `--yes`, records the digest, `untrust` removes
   it; a user-directory and a multi-segment plugin skill name resolve; an ambiguous bare name errors.
 - Warning: invoking a stale or untrusted plugin skill that declares `allowed-tools` warns once per
   skill through `Approver::warn` (core test) and lends nothing.
