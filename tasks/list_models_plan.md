@@ -62,11 +62,13 @@ auto-mode pattern: call `models::resolve(&ResolveParams{…, model_override: cli
 session_id: None})` (`auto_mode.rs:276-282, 489-495`) to get the main reference, main listing
 and guardian (pinned `[guardian] model`, validated default, main fallback; `models.rs:556-585`).
 When `resolve` fails (no main model, main listing fails, pinned guardian unknown), the CLI still
-lists, with no role marks, and prints a warning.
+lists, with no role marks, and prints a warning. It prints `models.notices` to stderr as auto-mode does
+(`print_warnings`, `auto_mode.rs:288, 501`).
 Builds a `Switcher` the same way session setup does (same account resolution and `[network]`),
-calls `switcher.listings(Some((&main_ref, &main_listing)), only)`, builds the report, prints. An unknown account is checked against
+calls `switcher.listings(..., only)`, passing `Some((&main_ref, &main_listing))` when `resolve` succeeded and `None` otherwise, builds the report, prints. An unknown account is checked against
 `config.accounts` before listing and exits 2 through `usage()` (`EXIT_CONFIG`,
-`fontaine/src/lib.rs:69`); a listing failure for an account prints its error chain and still
+`fontaine/src/lib.rs:69`); with no accounts configured it prints the `known_accounts` "no accounts are configured"
+message (`fontaine-core/src/models.rs:445-446`) and exits 2 (`EXIT_CONFIG`); a listing failure for an account prints its error chain and still
 exits 0 unless every requested account failed (exit 1 then, so scripts notice).
 
 **Tool** (`fontaine-tools/src/list_models.rs`): `ListModelsTool { source: Arc<dyn ModelSource> }`
@@ -139,11 +141,14 @@ Descriptor row: `list_models`, `RiskClass::ReadOnly`, `path_free: true`, `Destru
 - Unit (`model_report`): role marking for main/guardian, validated flag, Ollama `name:tag` ids
   kept intact, `ollama/llama3` marks the `llama3:latest` row, failed account keeps an error row, text and JSON golden output, nothing but the
   listed fields can appear in JSON.
-- Unit (`list_models`): unknown account errors; args reject unknown fields.
+- Unit (`list_models`): args reject unknown fields.
+- Unit (`ModelSource` adapter, in `fontaine-core` beside the other adapters' tests): unknown account errors naming the
+  known accounts; a `None` switcher returns `Err("models cannot be listed in this session")`; roles are read live at
+  call time (e.g. after the main model is replaced).
 - Headless integration (`fontaine/tests`): the test writes a `user_config` account with no
   `models` list and mounts `GET /models` on the endpoint's server (or a 500 route for the
   all-failed case), since `Sandbox::compatible` sets `models=["scripted"]`
   (`fontaine/tests/common/mod.rs:603-607`); `fontaine models` and `--format=json` against it;
-  unknown account exits 2; all-failed exits 1.
+  unknown account exits 2; no accounts configured exits 2; all-failed exits 1.
 - Descriptor table test and choke-point test cover the risk class; a permissions test asserts
   the tool takes the read-only fast path in `auto` and for a read-only subagent toolset.
