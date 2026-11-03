@@ -3,7 +3,9 @@
 `fontaine doctor` answers "why isn't my setup doing what I wrote?". It reads the settings layers,
 workspace trust, the models, the MCP servers, the instruction files, hooks and skills, and the
 auto-memory store, and reports what loaded, what did not, and why. It starts no session, sends no
-prompt, and changes nothing: it never writes, repairs or deletes a file.
+prompt, and changes nothing: it never repairs or deletes a file and writes none of your
+configuration. The one exception is an expiring OAuth token, which resolving a model may refresh
+and save, as any session would.
 
 ```
 fontaine doctor [--format text|json] [--connect yes|no] [--all]
@@ -67,7 +69,8 @@ unavailable guardian model is a failure, because every call the guardian must ju
 denied. A model that does not resolve (no main model, a missing credential, an unknown model, a
 pinned guardian on an unknown account) is a failure that shows the full error chain. Doctor adds
 no reachability probe of its own: an account with a static `models` list is not contacted, and a
-listing account is asked for its models once, with a 10 second limit, as `fontaine models` does.
+listing account is asked for its models once, with a 10 second limit, as `fontaine models` does. Resolving a model refreshes an expiring OAuth token and saves it, as a
+session would.
 
 **MCP servers.** Each configured server with its origin, transport and approval state, and whether
 it connected (`connected (N tools)`), failed to start (a warning, since a session warns and

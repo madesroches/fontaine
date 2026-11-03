@@ -209,7 +209,13 @@ where
             cwd,
         } => {
             let mut process = tokio::process::Command::new(command);
-            process.args(args).current_dir(cwd).env_clear();
+            // rmcp's cleanup guard only spawns the kill from Drop, which a runtime that is
+            // shutting down (a doctor probe that timed out) never polls.
+            process
+                .args(args)
+                .current_dir(cwd)
+                .env_clear()
+                .kill_on_drop(true);
             process.envs(fontaine_tools::child_env::server_env(
                 env, env_vars, set_env,
             ));

@@ -348,8 +348,21 @@ fn read_index(path: &Path) -> IndexRead {
     let prefix = std::str::from_utf8(&bytes[..valid]).expect("the prefix was validated");
     let mut lines = prefix.split_inclusive('\n');
     let kept: String = lines.by_ref().take(MAX_INDEX_LINES).collect();
-    let rest = String::from_utf8_lossy(&bytes[kept.len()..]);
-    let lines_beyond = rest.lines().filter(|l| !l.trim().is_empty()).count();
+    // A byte cap that lands mid-line leaves the tail of a kept line in `rest`; it is not a
+    // further line, so counting starts at the next line boundary.
+    let rest = &bytes[kept.len()..];
+    let after_boundary = if kept.ends_with('\n') || kept.is_empty() {
+        rest
+    } else {
+        rest.iter()
+            .position(|b| *b == b'\n')
+            .map_or(&rest[rest.len()..], |i| &rest[i + 1..])
+    };
+    let mut lines_beyond = String::from_utf8_lossy(after_boundary).lines().count();
+    // Blank lines past the cap are still cut by `load`, which warns.
+    if lines_beyond == 0 && (cut || lines.next().is_some()) {
+        lines_beyond = 1;
+    }
     IndexRead::Text { kept, lines_beyond }
 }
 
@@ -428,7 +441,7 @@ pub fn check(dir: &Path) -> Vec<MemoryFinding> {
                 Ok(meta) => {
                     let single = relative.components().count() == 1;
                     if single && meta.file_type().is_file() {
-                        linked.insert(name);
+                        linked.insert(name.to_lowercase());
                     } else {
                         findings.push(UnloadedTarget {
                             line,
@@ -453,7 +466,8 @@ pub fn check(dir: &Path) -> Vec<MemoryFinding> {
         else {
             continue;
         };
-        if name != INDEX_FILE && !linked.contains(&name) {
+        // Lowercased on both sides: on a case-insensitive filesystem `A.md` links `a.md`.
+        if name != INDEX_FILE && !linked.contains(&name.to_lowercase()) {
             findings.push(OrphanFile { file: name });
         }
     }

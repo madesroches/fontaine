@@ -2305,16 +2305,16 @@ fn diagnose_reports_every_failing_layer_with_its_own_first_error() {
     w.project_file("[permissions]\ndefault_mode = \"auto\"\n");
     let layers = diagnose(&w, None);
     let labels: Vec<_> = layers.iter().map(|l| l.slot.label()).collect();
-    assert_eq!(labels, ["user", "project", "project-local"]);
-    assert!(matches!(failure(&layers[0]), ConfigError::Parse { .. }));
-    match failure(&layers[1]) {
+    assert_eq!(labels, ["managed", "user", "project", "project-local"]);
+    assert!(matches!(failure(&layers[1]), ConfigError::Parse { .. }));
+    match failure(&layers[2]) {
         ConfigError::Scope { key, reason, .. } => {
             assert_eq!(key, "permissions.default_mode");
             assert!(!reason.is_empty());
         }
         other => panic!("{other:?}"),
     }
-    assert!(matches!(layers[2].outcome, config::LayerOutcome::Absent));
+    assert!(matches!(layers[3].outcome, config::LayerOutcome::Absent));
 }
 
 #[test]
@@ -2324,11 +2324,11 @@ fn diagnose_still_shows_a_good_file_after_a_bad_one() {
     w.local_file("[permissions]\ndeny = [\"shell(rm)\"]\n");
     let cli = w.cli_file("[agents]\nmax_parallel = 3\n");
     let layers = diagnose(&w, Some(&cli));
-    assert!(matches!(failure(&layers[0]), ConfigError::Parse { .. }));
-    assert!(matches!(layers[1].outcome, config::LayerOutcome::Absent));
-    assert!(matches!(layers[2].outcome, config::LayerOutcome::Loaded));
+    assert!(matches!(failure(&layers[1]), ConfigError::Parse { .. }));
+    assert!(matches!(layers[2].outcome, config::LayerOutcome::Absent));
     assert!(matches!(layers[3].outcome, config::LayerOutcome::Loaded));
-    assert_eq!(layers[3].slot.label(), "cli");
+    assert!(matches!(layers[4].outcome, config::LayerOutcome::Loaded));
+    assert_eq!(layers[4].slot.label(), "cli");
 }
 
 #[test]
@@ -2336,7 +2336,7 @@ fn diagnose_names_the_path_of_a_parse_error() {
     let w = World::new();
     w.project_file("this is not toml");
     let layers = diagnose(&w, None);
-    match failure(&layers[1]) {
+    match failure(&layers[2]) {
         ConfigError::Parse { path, .. } => {
             assert_eq!(path, &w.work.join(".fontaine/settings.toml"));
         }
@@ -2360,7 +2360,7 @@ fn diagnose_gives_a_demoted_local_file_its_reason() {
     let w = World::new();
     w.local_file("[permissions]\ndefault_mode = \"auto\"\n");
     let layers = diagnose(&w, None);
-    let local = &layers[2];
+    let local = &layers[3];
     assert!(local.demotion.is_some());
     assert!(matches!(
         failure(local),

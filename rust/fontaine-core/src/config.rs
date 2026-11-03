@@ -2774,14 +2774,23 @@ fn diagnose_file(
 /// parser and scope rules. Checks that span layers are not repeated here.
 pub fn diagnose(params: &LoadParams<'_>) -> Vec<LayerDiagnosis> {
     let user_path = params.config_dir.join(USER_FILE);
-    let mut out = vec![diagnose_file(
-        Slot::User,
-        Column::User,
-        &user_path,
-        crate::file_lock::read_shared,
-        None,
-        None,
-    )];
+    let mut out = vec![
+        LayerDiagnosis {
+            slot: Slot::Managed,
+            column: None,
+            path: None,
+            demotion: None,
+            outcome: LayerOutcome::NotChecked("not supported".to_string()),
+        },
+        diagnose_file(
+            Slot::User,
+            Column::User,
+            &user_path,
+            crate::file_lock::read_shared,
+            None,
+            None,
+        ),
+    ];
     match project_files(params.launch_dir) {
         Ok(files) => {
             out.push(diagnose_file(
