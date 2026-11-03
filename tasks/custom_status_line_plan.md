@@ -157,7 +157,10 @@ rendering.
    `refresh_interval_secs >= 1` when set (config.rs); add a `statusline` field to the merged
    `Config` struct (e.g. `StatuslineConfig { command: Option<String>, refresh_interval_secs: Option<u64> }`),
    initialize it in `Config::defaults`, and copy `Settings.statusline` into it in `Config::apply`
-   (config.rs); add `Rule::user_only("statusline", …)` and its `SNIPPETS` entry (config_scope.rs).
+   (config.rs); add `Rule::user_only("statusline", …)` and its `SNIPPETS` entry (config_scope.rs);
+   add `KEYS` rows for `statusline.command` and `statusline.refresh_interval_secs` in
+   `rust/fontaine-core/src/config_catalog.rs` (effective-value closures reading the merged
+   `Config.statusline`).
 2. `fontaine-core/src/statusline.rs`: `StatuslineScript` runner (env posture copied from
    `HookProcess::run`), payload builder struct + serialization, ANSI stripping, generation
    handling. Unit tests in-module.
@@ -179,6 +182,8 @@ rendering.
 - `rust/fontaine-core/src/config.rs` — `StatuslineSection`, `Settings.statusline`, `Config.statusline`,
   `Config::defaults` initialization, `Config::apply` copy, value check
 - `rust/fontaine-core/src/config_scope.rs` — user-only rule + snippet
+- `rust/fontaine-core/src/config_catalog.rs` — `KEYS` rows for `statusline.command` and
+  `statusline.refresh_interval_secs`
 - `rust/fontaine-core/src/statusline.rs` — new: runner, payload, ANSI strip (with tests)
 - `rust/fontaine-core/src/lib.rs` — `pub mod statusline;`
 - `rust/fontaine-tui/src/app.rs` — status line state and verdict ring
@@ -190,25 +195,22 @@ rendering.
 
 ## Trade-offs
 
-- **First line, plain text** vs Claude's multi-line + ANSI/OSC support: the Fontaine bar is one
-  row rendered as styled ratatui spans; full escape support needs an ANSI-to-span parser
-  dependency. Plain first line ships the feature; escape support is a follow-up if users ask.
 - **Draw-coalesced triggers** vs Claude's exact trigger list (new assistant message, mode
   change, vim toggle, …): Fontaine's draw already funnels those events; drawing while a run is
   in flight is the only coordination needed. Slightly more runs than Claude's list, bounded by
   the in-flight skip.
 - **Fixed 5 s timeout** vs a config knob: matches hooks' fixed default in spirit, keeps the
   section to two keys.
-- **Keeping the guardian-off badge in custom mode** vs replacing the row wholesale: the badge
-  reports a security-relevant state the user must not lose by configuring a script.
 
 ## Decisions
 
 - 2026-11-03: The built-in bar's running hint `esc to interrupt · shift+tab mode` is removed
   outright; it is not relocated elsewhere in the UI. The idle hint stays as is.
-- 2026-11-03: The guardian-off warning badge renders even when a custom status line is active.
+- 2026-11-03: The guardian-off warning badge renders even when a custom status line is active,
+  because it reports a security-relevant state the user must not lose by configuring a script.
 - 2026-11-03: First stdout line only, ANSI escapes stripped; multi-line and colored output are
-  deferred.
+  deferred, because the Fontaine bar is one row of styled spans and full ANSI/OSC support needs
+  an ANSI-to-span parser dependency.
 
 ## Documentation
 
