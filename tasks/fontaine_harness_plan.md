@@ -957,6 +957,10 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-01: AFK: `/btw` uses fixed constants, a 60 s timeout (`EVALUATOR_TIMEOUT`) and `SIDE_QUESTION_MAX_TOKENS = 4_096`, with a test-only `with_timeout`, not config keys, because the review loop found them unspecified and 1_024 tokens is too tight for a free-text answer (#52).
 - 2026-11-02: `/effort` and `--effort` copy Claude Code's surface; `/effort` is session-only and `[model] effort` is the standing choice. The level survives `/model` and is re-validated against the new model: a level the model cannot take is dropped with a one-time warning, not an error; reason: effort is a hint, and a session should not die on a switch to a model with fewer levels.
 - 2026-11-02: `/usage` aliases `/cost`. The usage ledger is in-memory, and `/cost` breaks down by source (main, guardian, subagents, goal, compaction, side questions) rather than per model, with no durations or code-change counts, unlike Claude Code's `/cost`; the sources are what a user needs to attribute Fontaine's spend (#56).
+- 2026-11-03: Keybindings live in a `[keybindings]` table of the typed TOML config, not Claude Code's separate free-form `keybindings.json`; reason: Fontaine's one config file carries scope columns, fail-closed unknown keys and exit-2 validation, which a second JSON file would bypass (#49).
+- 2026-11-03: No hot reload of keybindings: they apply at startup like the rest of the config surface (`/config` saves are next-launch too); reason: consistency, and no file watcher exists to reuse (#49).
+- 2026-11-03: No chord support in the keybinding parser: Fontaine has no chord bindings to remap, and a chord engine (pending-prefix state, timeout, prefix reservation) is pure addition; the parser rejects space-separated sequences with a clear error (#49).
+- 2026-11-03: No per-overlay keybinding contexts (Claude Code's 25+): the remappable set is the global/chat action level, and vim keys are not remappable either (same as Claude Code); reason: remapping every overlay's internal keys is disproportionate for a prompt harness (#49).
 
 ## Open Questions
 

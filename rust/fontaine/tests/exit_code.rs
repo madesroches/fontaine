@@ -130,6 +130,51 @@ fn a_scope_violation_in_project_settings_exits_two() {
 }
 
 #[test]
+fn keybindings_and_editor_mode_in_the_user_file_load() {
+    let s = Sandbox::new();
+    write(
+        &s.config.join("config.toml"),
+        "[keybindings]\n\"ctrl+t\" = \"todos\"\n[tui]\neditor_mode = \"vim\"\n",
+    );
+    // Past config loading, the start ends at the missing terminal.
+    let out = s.run(&[]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("needs a terminal"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn an_invalid_keybinding_in_the_user_file_exits_two() {
+    let s = Sandbox::new();
+    write(
+        &s.config.join("config.toml"),
+        "[keybindings]\n\"ctrl+c\" = \"quit\"\n",
+    );
+    let out = s.run(&[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(
+        stderr(&out).contains("keybindings.ctrl+c"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_keybindings_table_in_project_settings_exits_two() {
+    let s = Sandbox::new();
+    write(
+        &s.work.join(".fontaine/settings.toml"),
+        "[keybindings]\n\"ctrl+t\" = \"todos\"\n",
+    );
+    let out = s.run(&[]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("keybindings"), "{}", stderr(&out));
+}
+
+#[test]
 fn a_missing_settings_file_exits_two_naming_the_path() {
     let s = Sandbox::new();
     let out = s.run(&["--settings", "nope.toml"]);

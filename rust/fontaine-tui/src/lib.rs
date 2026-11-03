@@ -16,6 +16,7 @@ pub mod diff;
 pub mod guardian_prompt;
 pub mod history;
 pub mod input;
+pub mod keymap;
 pub mod linear;
 mod markdown;
 pub mod model_picker;
@@ -350,6 +351,11 @@ pub async fn drive(
         quota_warned: Default::default(),
     };
     ui.app.theme = theme;
+    // Config validation has parsed and scope-checked every entry, so a resolve failure here
+    // would mean the merged config came from somewhere other than `config::load`.
+    ui.app.keymap = keymap::Keymap::resolve(&runtime.config.keybindings)
+        .expect("config validation has rejected invalid keybindings");
+    ui.app.input.mode = runtime.config.tui.editor_mode;
     ui.app.transcript.glyphs = theme::Glyphs::from_env(
         (env_lookup)(theme::ASCII_GLYPHS_VAR)
             .and_then(|v| v.into_string().ok())

@@ -3,8 +3,33 @@
 use std::ops::Range;
 use std::path::PathBuf;
 
+use fontaine_core::config::EditorMode;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rig_core::message::ImageMediaType;
+
+/// The most undo snapshots kept; edits before the oldest are no longer undoable.
+const MAX_UNDO: usize = 100;
+
+/// A vim operator waiting for its motion or target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PendingOp {
+    Delete,
+    Change,
+    /// The first `g` of `gg`.
+    G,
+    /// `r`, waiting for the replacement character.
+    Replace,
+}
+
+/// The vim input state. Insert is the start state; Normal may carry a pending operator.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum VimState {
+    #[default]
+    Insert,
+    Normal {
+        pending: Option<PendingOp>,
+    },
+}
 
 /// What an attached file is.
 #[derive(Clone, Debug, PartialEq)]
@@ -34,10 +59,16 @@ pub struct PendingAttachment {
 pub struct InputBuffer {
     chars: Vec<char>,
     cursor: usize,
-    /// The last non-empty kill, for Ctrl-Y; it outlives `take` and `set_text`.
+    /// The last non-empty kill, for Ctrl-Y and vim's `p`; it outlives `take` and `set_text`.
     killed: String,
     /// Files attached to the message, shown as chips above the typed text.
     attachments: Vec<PendingAttachment>,
+    /// How key events edit the buffer; overlay inputs keep the default (Emacs).
+    pub mode: EditorMode,
+    /// The vim modal state while `mode` is Vim.
+    pub vim: VimState,
+    /// Snapshots taken before each Normal-mode edit, for `u`; capped at `MAX_UNDO`.
+    undo: Vec<(Vec<char>, usize)>,
 }
 
 impl InputBuffer {
@@ -270,8 +301,42 @@ impl InputBuffer {
         (line, self.cursor - start)
     }
 
-    /// Applies an editing key; false when the key is not one.
+    /// Whether the buffer is in vim Insert state and consumes an Esc to switch to Normal.
+    /// The App asks before its own Esc handling, so Esc never interrupts from Insert.
+    pub fn esc_leaves_insert(&mut self) -> bool {
+        if self.mode == EditorMode::Vim && matches!(self.vim, VimState::Insert) {
+            self.vim = VimState::Normal { pending: None };
+            true
+        } else {
+            false
+        }
+    }
+
+    /// `vim:insert` or `vim:normal` while vim mode is on, for the status bar.
+    pub fn vim_label(&self) -> Option<&'static str> {
+        if self.mode != EditorMode::Vim {
+            return None;
+        }
+        Some(match self.vim {
+            VimState::Insert => "vim:insert",
+            VimState::Normal { .. } => "vim:normal",
+        })
+    }
+
+    /// Applies an editing key; false when the key is not one (or, in vim Normal, when the key
+    /// is Esc or a Ctrl/Alt shortcut, which belong to the App-level keymap).
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        match self.mode {
+            EditorMode::Emacs => self.emacs_key(key),
+            EditorMode::Vim => match self.vim {
+                VimState::Insert => self.vim_insert_key(key),
+                VimState::Normal { .. } => self.vim_normal_key(key),
+            },
+        }
+    }
+
+    /// The readline/emacs key set: unchanged from before vim mode existed.
+    fn emacs_key(&mut self, key: KeyEvent) -> bool {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
@@ -314,6 +379,260 @@ impl InputBuffer {
             _ => return false,
         }
         true
+    }
+
+    /// Vim Insert: printable text edits; Esc switches to Normal; the Ctrl+D/H/W editing keys
+    /// stay the buffer's. Every other Ctrl+key returns false so the App-level keymap sees it.
+    fn vim_insert_key(&mut self, key: KeyEvent) -> bool {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => self.vim = VimState::Normal { pending: None },
+            KeyCode::Char(c) if !control && !alt => self.insert(c),
+            KeyCode::Char('d') if control => self.delete(),
+            KeyCode::Char('h') if control => self.backspace(),
+            KeyCode::Char('w') if control => self.delete_word_whitespace(),
+            // Backspace on an empty input removes the last attachment chip.
+            KeyCode::Backspace if self.chars.is_empty() && self.pop_attachment().is_some() => {}
+            KeyCode::Backspace => self.backspace(),
+            KeyCode::Delete => self.delete(),
+            KeyCode::Left => self.left(),
+            KeyCode::Right => self.right(),
+            KeyCode::Up => self.up(),
+            KeyCode::Down => self.down(),
+            KeyCode::Home => self.home(),
+            KeyCode::End => self.end(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// Vim Normal: motions, operators and undo. Esc and Ctrl/Alt shortcuts return false for
+    /// the App-level keymap (interrupt, history search); every other key is consumed, and an
+    /// unrecognized one just cancels a pending operator.
+    fn vim_normal_key(&mut self, key: KeyEvent) -> bool {
+        let control = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        match key.code {
+            KeyCode::Esc => return false,
+            KeyCode::Char(c) if !control && !alt => return self.vim_normal_char(c),
+            KeyCode::Char(_) => return false,
+            KeyCode::Left => {
+                self.vim_motion(|b| b.left());
+            }
+            KeyCode::Right => {
+                self.vim_motion(|b| b.right());
+            }
+            KeyCode::Up => {
+                self.vim_motion(|b| b.up());
+            }
+            KeyCode::Down => {
+                self.vim_motion(|b| b.down());
+            }
+            KeyCode::Home => {
+                self.vim_motion(|b| b.home());
+            }
+            KeyCode::End => {
+                self.vim_motion(|b| b.end());
+            }
+            KeyCode::Backspace => {
+                self.vim_motion(|b| b.left());
+            }
+            _ => return true,
+        }
+        true
+    }
+
+    /// A movement key in Normal mode moves the cursor and cancels any pending operator.
+    fn vim_motion(&mut self, motion: impl FnOnce(&mut Self)) -> bool {
+        self.vim = VimState::Normal { pending: None };
+        motion(self);
+        true
+    }
+
+    /// Enter Insert at `pos`, the shared tail of `i` and `a`.
+    fn vim_insert_at(&mut self, pos: usize) {
+        self.cursor = pos.min(self.chars.len());
+        self.vim = VimState::Insert;
+    }
+
+    /// A Normal-mode character; a pending operator takes it as its motion or target.
+    fn vim_normal_char(&mut self, c: char) -> bool {
+        if let VimState::Normal { pending: Some(op) } = self.vim {
+            self.vim = VimState::Normal { pending: None };
+            return self.vim_operator(op, c);
+        }
+        match c {
+            'h' => self.left(),
+            'l' => self.right(),
+            'j' => self.down(),
+            'k' => self.up(),
+            '0' => self.home(),
+            '$' => self.end(),
+            'w' => self.word_right(),
+            'b' => self.word_left(),
+            'e' => self.cursor = self.vim_word_end(),
+            'd' => self.vim_pending(PendingOp::Delete),
+            'c' => self.vim_pending(PendingOp::Change),
+            'g' => self.vim_pending(PendingOp::G),
+            'G' => self.buffer_end(),
+            'r' => self.vim_pending(PendingOp::Replace),
+            'x' => {
+                self.snapshot();
+                let end = (self.cursor + 1).min(self.chars.len());
+                self.kill(self.cursor..end);
+            }
+            'D' => {
+                self.snapshot();
+                self.kill(self.cursor..self.line_end(self.cursor));
+            }
+            'C' => {
+                self.snapshot();
+                self.kill(self.cursor..self.line_end(self.cursor));
+                self.vim = VimState::Insert;
+            }
+            'u' => self.undo(),
+            'p' => {
+                if !self.killed.is_empty() {
+                    self.snapshot();
+                    let killed = self.killed.clone();
+                    let at = (self.cursor + 1).min(self.chars.len());
+                    self.replace_range(at, at, &killed);
+                }
+            }
+            'i' => self.vim_insert_at(self.cursor),
+            'a' => self.vim_insert_at(self.cursor + 1),
+            'A' => {
+                self.end();
+                self.vim = VimState::Insert;
+            }
+            'I' => {
+                self.home();
+                self.vim = VimState::Insert;
+            }
+            'o' => {
+                self.end();
+                self.insert('\n');
+                self.vim = VimState::Insert;
+            }
+            'O' => {
+                self.home();
+                self.insert('\n');
+                self.up();
+                self.end();
+                self.vim = VimState::Insert;
+            }
+            // Any other key is consumed and ignored.
+            _ => {}
+        }
+        true
+    }
+
+    /// The follow-up of a pending operator: its motion or target. An unrecognized key cancels
+    /// the operator and is otherwise ignored.
+    fn vim_operator(&mut self, op: PendingOp, c: char) -> bool {
+        match op {
+            PendingOp::G => {
+                if c == 'g' {
+                    self.buffer_start();
+                }
+            }
+            PendingOp::Replace => {
+                self.snapshot();
+                if let Some(slot) = self.chars.get_mut(self.cursor) {
+                    *slot = c;
+                }
+            }
+            PendingOp::Delete | PendingOp::Change => {
+                let change = op == PendingOp::Change;
+                let range = match c {
+                    'd' if !change => Some(self.line_range()),
+                    'c' if change => Some(self.line_range()),
+                    'w' => Some(self.cursor..self.vim_word_delete_end()),
+                    'b' => Some(
+                        self.word_start_before(self.cursor, char::is_alphanumeric)..self.cursor,
+                    ),
+                    'e' => Some(self.cursor..(self.vim_word_end() + 1).min(self.chars.len())),
+                    '$' => Some(self.cursor..self.line_end(self.cursor)),
+                    '0' => Some(self.line_start(self.cursor)..self.cursor),
+                    _ => None,
+                };
+                if let Some(range) = range {
+                    self.snapshot();
+                    self.kill(range);
+                    if change {
+                        self.vim = VimState::Insert;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn vim_pending(&mut self, op: PendingOp) {
+        self.vim = VimState::Normal { pending: Some(op) };
+    }
+
+    /// The current line's whole span, what `dd`/`cc` delete.
+    fn line_range(&self) -> Range<usize> {
+        self.line_start(self.cursor)..self.line_end(self.cursor)
+    }
+
+    /// Where `dw` ends: the next word's end plus the separators after it, like vim's
+    /// exclusive word motion.
+    fn vim_word_delete_end(&self) -> usize {
+        let mut end = self.word_end_after(self.cursor, char::is_alphanumeric);
+        while end < self.chars.len()
+            && self.chars[end] != '\n'
+            && !self.chars[end].is_alphanumeric()
+        {
+            end += 1;
+        }
+        end
+    }
+
+    /// Where `e` lands: the last character of the word under the cursor, or of the next word.
+    fn vim_word_end(&self) -> usize {
+        let len = self.chars.len();
+        let mut pos = self.cursor.min(len);
+        if pos >= len {
+            return self.cursor;
+        }
+        let is_word = |c: char| c.is_alphanumeric();
+        if is_word(self.chars[pos]) {
+            let mut end = pos;
+            while end + 1 < len && is_word(self.chars[end + 1]) {
+                end += 1;
+            }
+            if end > pos {
+                return end;
+            }
+            pos += 1;
+        }
+        while pos < len && !is_word(self.chars[pos]) {
+            pos += 1;
+        }
+        let mut end = pos;
+        while end + 1 < len && is_word(self.chars[end + 1]) {
+            end += 1;
+        }
+        end
+    }
+
+    /// Pushes the current text and cursor for `u`.
+    fn snapshot(&mut self) {
+        self.undo.push((self.chars.clone(), self.cursor));
+        if self.undo.len() > MAX_UNDO {
+            self.undo.remove(0);
+        }
+    }
+
+    /// `u`: restores the buffer as it was before the last Normal-mode edit.
+    fn undo(&mut self) {
+        if let Some((chars, cursor)) = self.undo.pop() {
+            self.chars = chars;
+            self.cursor = cursor.min(self.chars.len());
+        }
     }
 }
 
@@ -527,6 +846,201 @@ mod tests {
         assert_eq!(b.cursor(), 0);
         b.buffer_end();
         assert_eq!(b.cursor(), 8);
+    }
+
+    fn vim(text: &str) -> InputBuffer {
+        let mut b = buffer(text);
+        b.mode = EditorMode::Vim;
+        b
+    }
+
+    fn vim_at(text: &str, cursor: usize) -> InputBuffer {
+        let mut b = vim(text);
+        b.cursor = cursor;
+        b
+    }
+
+    fn normal(b: &mut InputBuffer) {
+        b.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(matches!(b.vim, VimState::Normal { .. }));
+    }
+
+    #[test]
+    fn vim_starts_in_insert_and_esc_switches_to_normal_without_leaving_the_buffer() {
+        let mut b = vim("");
+        assert!(matches!(b.vim, VimState::Insert));
+        b.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "a");
+        assert!(b.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(matches!(b.vim, VimState::Normal { .. }));
+        // Esc in Normal is not consumed: it belongs to the App-level keymap.
+        assert!(!b.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert_eq!(b.text(), "a");
+    }
+
+    #[test]
+    fn esc_leaves_insert_reports_the_switch_once() {
+        let mut b = vim("x");
+        assert!(b.esc_leaves_insert());
+        assert!(matches!(b.vim, VimState::Normal { .. }));
+        assert!(!b.esc_leaves_insert());
+        // Emacs mode never claims Esc.
+        let mut e = buffer("x");
+        assert!(!e.esc_leaves_insert());
+    }
+
+    #[test]
+    fn vim_normal_motions_move_by_char_word_and_line() {
+        let mut b = vim_at("one two three\nlast", 0);
+        normal(&mut b);
+        // 0 is the line's start; the cursor is already there.
+        b.handle_key(KeyEvent::new(KeyCode::Char('0'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 0);
+        for _ in 0..2 {
+            b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        }
+        assert_eq!(b.cursor(), 7);
+        b.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 4);
+        b.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 6);
+        b.handle_key(KeyEvent::new(KeyCode::Char('$'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 13);
+        b.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 12);
+        b.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 13);
+        // j and k walk the lines; k on the first line stays put, j clamps the column.
+        b.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+        assert_eq!(b.cursor_position(), (0, 13));
+        b.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(b.cursor_position(), (1, 4));
+        // gg and G jump across the buffer.
+        b.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 0);
+        b.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), b.text().chars().count());
+    }
+
+    #[test]
+    fn vim_operators_delete_and_change_and_fill_the_kill_slot() {
+        let mut b = vim_at("one two three", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "two three");
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(b.text().is_empty());
+
+        let mut b = vim_at("one two three", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert!(matches!(b.vim, VimState::Insert));
+        b.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        // cw takes the word and the separators after it, as dw does.
+        assert_eq!(b.text(), "xtwo three");
+
+        let mut b = vim_at("one two three", 8);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('D'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "one two ");
+
+        // x deletes into the kill slot, p pastes it back after the cursor.
+        let mut b = vim_at("abc", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "bc");
+        b.handle_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "bac");
+
+        // r replaces one character and stays in Normal.
+        let mut b = vim_at("abc", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "zbc");
+        assert!(matches!(b.vim, VimState::Normal { .. }));
+
+        // An unrecognized operator follow-up cancels the operator and is ignored.
+        let mut b = vim("abc");
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "abc");
+        assert!(matches!(b.vim, VimState::Normal { pending: None }));
+    }
+
+    #[test]
+    fn vim_undo_restores_the_last_normal_edit() {
+        let mut b = vim_at("one two", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "two");
+        b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "one two");
+        b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "one two");
+    }
+
+    #[test]
+    fn vim_entry_keys_enter_insert_at_the_right_spot() {
+        // i, a, A and I on a single line.
+        let mut b = vim_at("ac", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE));
+        assert!(matches!(b.vim, VimState::Insert));
+        b.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "xac");
+
+        let mut b = vim_at("ac", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "axc");
+
+        let mut b = vim("ac bd");
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "ac bdx");
+
+        let mut b = vim_at("ac bd", 4);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('I'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "xac bd");
+
+        // o opens a line below the current one, O above it.
+        let mut b = vim("one\ntwo");
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert_eq!(b.cursor_position(), (2, 0));
+        b.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::NONE));
+        assert_eq!(b.cursor_position(), (2, 0));
+        b.handle_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "one\ntwo\ny\nx");
+    }
+
+    #[test]
+    fn vim_insert_keeps_ctrl_d_h_w_and_passes_other_ctrl_through() {
+        let mut b = vim_at("ac", 1);
+        assert!(b.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL)));
+        assert_eq!(b.text(), "c");
+        assert!(b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)));
+        assert_eq!(b.text(), "");
+        b.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
+        assert!(b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)));
+        assert_eq!(b.text(), "a ");
+        // Ctrl+T is the App-level agents panel: the buffer refuses it.
+        assert!(!b.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)));
     }
 
     #[test]

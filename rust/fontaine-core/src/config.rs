@@ -810,6 +810,32 @@ pub enum ThemeName {
     LightAnsi,
 }
 
+/// The input-box editing mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum EditorMode {
+    #[default]
+    Emacs,
+    Vim,
+}
+
+impl EditorMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            EditorMode::Emacs => "emacs",
+            EditorMode::Vim => "vim",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<EditorMode> {
+        match name {
+            "emacs" => Some(EditorMode::Emacs),
+            "vim" => Some(EditorMode::Vim),
+            _ => None,
+        }
+    }
+}
+
 impl ThemeName {
     pub const ALL: [ThemeName; 6] = [
         ThemeName::DarkAnsi,
@@ -844,6 +870,7 @@ pub struct TuiSection {
     pub screen_reader: Option<bool>,
     /// Show the model's reasoning in the transcript (default true).
     pub show_reasoning: Option<bool>,
+    pub editor_mode: Option<EditorMode>,
 }
 
 /// One `[env]` value. Its `Debug` is redacted so a stray `{config:?}` cannot put a proxy password
@@ -941,6 +968,7 @@ pub struct Settings {
     pub telemetry: Option<TelemetrySection>,
     pub websearch: Option<WebsearchSection>,
     pub env: Option<BTreeMap<String, EnvValue>>,
+    pub keybindings: Option<BTreeMap<String, String>>,
 }
 
 /// Parses one settings file and runs every check that does not depend on the rest of the
@@ -1144,6 +1172,11 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     for (name, account) in s.accounts.iter().flatten() {
         if let Err((key, message)) = check_account(name, account) {
             return bad(&key, &message);
+        }
+    }
+    for (keystroke, action) in s.keybindings.iter().flatten() {
+        if let Err(message) = crate::keybindings::parse_binding(keystroke, action) {
+            return bad(&format!("keybindings.{keystroke}"), &message);
         }
     }
     if let Some(network) = &s.network
@@ -1906,6 +1939,7 @@ pub struct Tui {
     pub theme: ThemeName,
     pub screen_reader: Option<bool>,
     pub show_reasoning: bool,
+    pub editor_mode: EditorMode,
 }
 
 /// The merged, validated configuration.
@@ -1956,6 +1990,8 @@ pub struct Config {
     pub tui: Tui,
     /// `[env]`: variables set on every tool and extension subprocess.
     pub env: BTreeMap<String, EnvValue>,
+    /// `[keybindings]`: keystroke → action map.
+    pub keybindings: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -2078,6 +2114,7 @@ impl Config {
                 theme: ThemeName::default(),
                 screen_reader: None,
                 show_reasoning: true,
+                editor_mode: EditorMode::default(),
             },
             telemetry: Telemetry {
                 enabled: false,
@@ -2103,6 +2140,7 @@ impl Config {
                 timeout_secs: 30,
             },
             env: BTreeMap::new(),
+            keybindings: BTreeMap::new(),
         }
     }
 
@@ -2134,6 +2172,9 @@ impl Config {
             }
             if let Some(v) = tui.show_reasoning {
                 self.tui.show_reasoning = v;
+            }
+            if let Some(v) = tui.editor_mode {
+                self.tui.editor_mode = v;
             }
         }
         if let Some(model) = s.model.as_ref().and_then(|m| m.model.clone()) {
@@ -2420,6 +2461,9 @@ impl Config {
                     .retain(|existing, _| !existing.eq_ignore_ascii_case(k));
             }
             self.env.insert(k.clone(), v.clone());
+        }
+        for (k, v) in s.keybindings.iter().flatten() {
+            self.keybindings.insert(k.clone(), v.clone());
         }
     }
 }

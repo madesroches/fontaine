@@ -189,6 +189,14 @@ fn theme_choices() -> Vec<ChoiceValue> {
         .collect()
 }
 
+fn editor_mode_choices() -> Vec<ChoiceValue> {
+    vec![
+        ("emacs", Some("emacs".into())),
+        ("vim", Some("vim".into())),
+        ("unset", None),
+    ]
+}
+
 fn composition_field(
     config: &Config,
     field: impl Fn(&crate::config::GuardianComposition) -> String,
@@ -253,6 +261,12 @@ pub const KEYS: &[KeyRow] = &[
         "tui.show_reasoning",
         |c, _| c.tui.show_reasoning.to_string(),
         Edit::Choice(bool_choices),
+        NextLaunch
+    ),
+    row!(
+        "tui.editor_mode",
+        |c, _| lowercase_debug(c.tui.editor_mode),
+        Edit::Choice(editor_mode_choices),
         NextLaunch
     ),
     row!(
@@ -580,6 +594,7 @@ pub const KEYS: &[KeyRow] = &[
         .timeout_secs
         .to_string()),
     row!("env", Map, |c, _| names(c.env.keys())),
+    row!("keybindings", Map, |c, _| entries(c.keybindings.len())),
 ];
 
 #[cfg(test)]
@@ -770,6 +785,7 @@ mod tests {
                 "tui.theme",
                 "tui.screen_reader",
                 "tui.show_reasoning",
+                "tui.editor_mode",
                 "context.autocompact_window",
                 "schedule.enabled",
                 "memory.auto",

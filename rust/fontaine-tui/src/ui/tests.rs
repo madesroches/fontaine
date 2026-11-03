@@ -561,3 +561,68 @@ mod usage {
         assert_eq!(entries[1].quota, Some(quota(0.2)));
     }
 }
+
+#[test]
+fn vim_toggles_the_input_mode_and_persists_the_choice() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let file = dir.path().join("config.toml");
+    std::fs::write(&file, "[tui]\ntheme = \"dark\"\n").unwrap();
+    let (_tx, rx) = unbounded_channel();
+    let mut ui = ui(rx);
+    ui.user_config = Some(file.clone());
+
+    ui.vim();
+    assert_eq!(ui.app.input.mode, fontaine_core::config::EditorMode::Vim);
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("editor_mode = \"vim\""), "{saved}");
+    assert!(saved.contains("theme = \"dark\""), "{saved}");
+
+    ui.vim();
+    assert_eq!(ui.app.input.mode, fontaine_core::config::EditorMode::Emacs);
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("editor_mode = \"emacs\""), "{saved}");
+
+    // No user file: the toggle still applies to the session, and says it is not saved.
+    ui.user_config = None;
+    ui.vim();
+    assert_eq!(ui.app.input.mode, fontaine_core::config::EditorMode::Vim);
+    let notice = ui
+        .app
+        .transcript
+        .entries
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            transcript::Entry::Notice { headline, .. } => Some(headline.as_str()),
+            _ => None,
+        })
+        .expect("a notice");
+    assert!(notice.contains("for this session only"), "{notice}");
+}
+
+#[test]
+fn keybindings_lists_every_action_with_its_effective_keys() {
+    let (_tx, rx) = unbounded_channel();
+    let mut ui = ui(rx);
+    ui.keybindings();
+    let notice = ui
+        .app
+        .transcript
+        .entries
+        .iter()
+        .rev()
+        .find_map(|e| match e {
+            transcript::Entry::Notice { headline, .. } => Some(headline.as_str()),
+            _ => None,
+        })
+        .expect("a notice");
+    for action in fontaine_core::keybindings::TuiAction::ALL {
+        assert!(notice.contains(action.as_str()), "{notice}");
+    }
+    assert!(notice.contains("shift+tab"), "{notice}");
+    assert!(notice.contains("default"), "{notice}");
+    assert!(
+        notice.contains("there is no user settings file"),
+        "{notice}"
+    );
+}

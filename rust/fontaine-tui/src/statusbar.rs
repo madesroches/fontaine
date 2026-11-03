@@ -16,6 +16,27 @@ use ratatui::widgets::Paragraph;
 use crate::agents_panel::row_label;
 use crate::app::App;
 use crate::theme::Theme;
+use fontaine_core::keybindings::TuiAction;
+
+/// The keystrokes bound to `action` as the hint strings show them; `None` when the action is
+/// unbound, so its hint is dropped.
+fn binding(app: &App, action: TuiAction) -> Option<String> {
+    let keys = app.keymap.keys_for(action);
+    if keys.is_empty() {
+        return None;
+    }
+    Some(
+        keys.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
+}
+
+/// `<keys> mode`, or nothing when `cycle_mode` is unbound.
+fn cycle_hint(app: &App) -> Option<String> {
+    binding(app, TuiAction::CycleMode).map(|keys| format!("{keys} mode"))
+}
 
 pub fn mode_label(mode: PermissionMode) -> &'static str {
     match mode {
@@ -157,20 +178,37 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Some(row) if row.name != *id => format!("{} ({id})", row.name),
             _ => id.clone(),
         };
-        format!("viewing {who} · {state} · ↓ then Enter on main to go back · shift+tab mode")
+        let cycle = cycle_hint(app).unwrap_or_default();
+        format!("viewing {who} · {state} · ↓ then Enter on main to go back · {cycle}")
     });
     // Only while the turn runs: some paths clear `running` without settling the turn.
     let refusal = app.refusal.as_deref().filter(|_| app.running);
     let hint = if let Some(text) = refusal {
-        text
+        text.to_string()
     } else if let Some(text) = &app.attach_notice {
-        text.as_str()
+        text.clone()
     } else if let Some(text) = &viewed_state {
-        text.as_str()
+        text.clone()
     } else if app.running {
-        "esc to interrupt · shift+tab mode"
+        match cycle_hint(app) {
+            Some(cycle) => format!("esc to interrupt · {cycle}"),
+            None => "esc to interrupt".to_string(),
+        }
     } else {
-        "shift+tab mode · /add-dir · /denied · /model · ctrl+t agents · /exit"
+        let mut parts = Vec::new();
+        if let Some(cycle) = cycle_hint(app) {
+            parts.push(cycle);
+        }
+        parts.extend([
+            "/add-dir".to_string(),
+            "/denied".to_string(),
+            "/model".to_string(),
+        ]);
+        if let Some(keys) = binding(app, TuiAction::AgentsPanel) {
+            parts.push(format!("{keys} agents"));
+        }
+        parts.push("/exit".to_string());
+        parts.join(" · ")
     };
     let agents = match app.running_agents {
         0 => String::new(),
@@ -190,6 +228,12 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         format!(" {} ", mode_label(app.mode)),
         mode_style(app.mode, &app.theme),
     )];
+    if let Some(vim) = app.input.vim_label() {
+        spans.push(Span::styled(
+            format!(" {vim} "),
+            Style::default().fg(app.theme.mode_plan),
+        ));
+    }
     if app.guardian_off {
         spans.push(Span::styled(
             " ⚠ guardian off ",
@@ -357,6 +401,35 @@ mod tests {
         let text = bar(&app);
         assert!(text.contains("esc to interrupt · shift+tab mode"), "{text}");
         assert!(!text.contains("working"), "{text}");
+    }
+
+    #[test]
+    fn the_vim_state_shows_and_unbound_hint_parts_drop() {
+        use fontaine_core::config::EditorMode;
+
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.input.mode = EditorMode::Vim;
+        let text = bar(&app);
+        assert!(text.contains("vim:insert"), "{text}");
+        app.input
+            .handle_key(ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Esc,
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ));
+        let text = bar(&app);
+        assert!(text.contains("vim:normal"), "{text}");
+
+        // An unbound cycle key drops the "shift+tab mode" hint part.
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.keymap = crate::keymap::Keymap::resolve(
+            &[("shift+tab".to_string(), String::new())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        let text = bar(&app);
+        assert!(!text.contains("shift+tab"), "{text}");
+        assert!(text.contains("/add-dir"), "{text}");
     }
 
     #[test]
