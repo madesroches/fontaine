@@ -285,7 +285,7 @@ The diagnostics-store unit test pins this line.
 - `rust/fontaine-core/tests/choke_point.rs`, (`docs.rs` iterates `TOOLS`, no edit)
 - `rust/fontaine-agents/src/registry.rs` (`explore`/`worker` toolsets)
 - `rust/fontaine-mcp/src/servers.rs`
-- `rust/fontaine/examples/fake_lsp.rs` (new; thin `#[path]` wrapper over the `fontaine-tools` example, as `repo_mcp_server.rs`), `rust/fontaine/tests/lsp.rs` (new)
+- `rust/fontaine/examples/fontaine_fake_lsp.rs` (new; thin `#[path]` wrapper over the `fontaine-tools` example, as `repo_mcp_server.rs`), `rust/fontaine/tests/lsp.rs` (new)
 - `rust/fontaine-core/tests/snapshots/system_prompt__the_assembled_prompt_is_stable.snap`
 - `rust/fontaine-tui/src/lib.rs`, `rust/fontaine/src/headless.rs`
 - `docs/tools.md`, `docs/configuration.md`, `docs/plugins.md`, `docs/permissions.md`, `docs/agents.md`, `docs/extensions.md`, `research/research-claude-code-parity.md`, `tasks/fontaine_harness_plan.md`

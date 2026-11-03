@@ -881,6 +881,11 @@ All notable changes are recorded here. The format follows
   down while the session model is healthy. `$guardian_default` remains a valid model value for
   types you define.
 
+#### Build and release
+
+- The `fake_lsp` test example is now `fontaine_fake_lsp`, so its binary no longer collides with the
+  `fontaine-tools` example of the same name in `target/`.
+
 #### Config
 
 - Reading the user settings or `trust.toml` while another session replaces it no longer fails on
