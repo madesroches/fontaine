@@ -801,6 +801,11 @@ All notable changes are recorded here. The format follows
   longer escalate an unattended run to a human (#360). Every call the child makes is still gated,
   `manual`/`acceptEdits` still prompt and `dontAsk` still denies. The audit record's `explanation`
   is now also kept for guardian allows and escalations.
+- `send_message` and `board_update` no longer go to the guardian or prompt: after the deterministic
+  floor, deny/ask rules and hooks, every mode allows them at the new `coordination` tier (#394).
+  They reach only agents of the same tree, whose calls are all still gated. A subagent holding only
+  read-only tools plus these two keeps the read-only spawn fast path, and these calls do not reset
+  the auto-pause denial run.
 
 #### Tools
 
