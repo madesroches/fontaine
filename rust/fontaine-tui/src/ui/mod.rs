@@ -211,14 +211,18 @@ impl<R: FnMut(&mut App)> Ui<R> {
         });
     }
 
-    /// Applies finished status-line results if any arrived.
-    fn finish_statusline(&mut self) {
+    /// Applies finished status-line results if any arrived. Returns true when a new line
+    /// landed, so the caller can redraw before parking in the select.
+    fn finish_statusline(&mut self) -> bool {
+        let mut landed = false;
         while let Ok(line) = self.statusline_result_rx.try_recv() {
             self.statusline_running = false;
             if let Some(line) = line {
                 self.app.statusline = Some(line);
+                landed = true;
             }
         }
+        landed
     }
 
     /// Drains queued status-line triggers and returns whether at least one was pending.
@@ -478,13 +482,18 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let list_tick = self.app.agent_list.counts_time().then_some(LIST_TICK);
             let statusline_tick = self.statusline_tick(runtime);
             let tick = soonest_tick(&self.app, &[tick, list_tick, statusline_tick]);
-            self.finish_statusline();
+            if self.finish_statusline() {
+                // A run finished between wakeups: redraw now rather than parking with an
+                // undrawn line.
+                continue;
+            }
             if self.drain_statusline_triggers() {
                 let payload = self.build_statusline_payload(runtime).await;
                 self.run_statusline(payload);
             }
             let [main_quota, guardian_quota] = &mut self.quota_rx;
             let mut statusline_rx = self.statusline_rx.as_mut();
+            let statusline_result_rx = &mut self.statusline_result_rx;
             let action = tokio::select! {
                 input = self.input.recv() => match input {
                     Some(input) => self.app.handle_input(input),
@@ -506,6 +515,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 } => {
                     let payload = self.build_statusline_payload(runtime).await;
                     self.run_statusline(payload);
+                    Action::None
+                }
+                // A finished run wakes the loop so its line lands in the bar without
+                // waiting for an unrelated event.
+                Some(line) = statusline_result_rx.recv() => {
+                    self.statusline_running = false;
+                    if let Some(line) = line {
+                        self.app.statusline = Some(line);
+                    }
                     Action::None
                 }
                 _ = &mut changed => Action::None,

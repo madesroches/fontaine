@@ -720,7 +720,7 @@ mod tests {
     #[test]
     fn truncate_row_keeps_short_text_and_ellipsizes_long_ones() {
         assert_eq!(truncate_row("hi", 10), "hi");
-        assert_eq!(truncate_row("hello world", 5), "…world");
+        assert_eq!(truncate_row("hello world", 5), "…orld");
         assert_eq!(truncate_row("x", 1), "x");
         assert_eq!(truncate_row("xy", 1), "…");
     }

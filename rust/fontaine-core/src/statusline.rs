@@ -221,19 +221,35 @@ impl StatuslineScript {
 /// and colored output are deferred; the built-in bar is one row of plain styled spans.
 fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut in_escape = false;
-    for ch in text.chars() {
-        if in_escape {
-            if ch.is_ascii_alphabetic() {
-                in_escape = false;
+    let mut chars = text.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '\u{1b}' {
+            out.push(ch);
+            continue;
+        }
+        match chars.next() {
+            // OSC (`ESC ]`) runs until BEL or ST (`ESC \`), so hyperlinks like
+            // `ESC ] 8 ; ; url ST` drop as one unit.
+            Some(']') => {
+                let mut prev = '\0';
+                for c in chars.by_ref() {
+                    if c == '\u{7}' || (prev == '\u{1b}' && c == '\\') {
+                        break;
+                    }
+                    prev = c;
+                }
             }
-            continue;
+            // CSI (`ESC [`): parameter/intermediate bytes, then a final byte 0x40–0x7E.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // A lone ESC at end of input or the tail of a two-byte sequence drops.
+            Some(_) | None => {}
         }
-        if ch == '\u{1b}' {
-            in_escape = true;
-            continue;
-        }
-        out.push(ch);
     }
     out
 }

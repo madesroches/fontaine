@@ -1633,6 +1633,78 @@ mod tests {
         App::new(PermissionMode::Manual, "m".into())
     }
 
+    fn decision(
+        tool: &str,
+        guardian_verdict: Option<&str>,
+    ) -> fontaine_core::audit::DecisionRecord {
+        fontaine_core::audit::DecisionRecord {
+            ts: "t".into(),
+            session_id: "s".into(),
+            agent_id: "a".into(),
+            agent_name: None,
+            tool_use_id: None,
+            tool: tool.into(),
+            args_digest: "d".into(),
+            original_args_digest: None,
+            tier: fontaine_core::tier::Tier::Guardian,
+            decision: fontaine_core::audit::Decision::Allow,
+            rule: Some("rule".into()),
+            confidence: None,
+            guardian_model: None,
+            latency_ms: 0,
+            guardian_profile: None,
+            guardian_verdict: guardian_verdict.map(Into::into),
+            guardian_cache_hit: None,
+            verdict_transport: None,
+            guardian_latency_ms: None,
+            fail_closed_reason: None,
+            screen_risk: None,
+            screen_allow_risk: None,
+            screen_steering: None,
+            screen_scores: None,
+            screen_model: None,
+            screen_outcome: None,
+            screen_latency_ms: None,
+            guardian_dropped_input_tokens: None,
+            guardian_dropped_provider: None,
+            guardian_dropped_model: None,
+            guardian_dropped_priced: None,
+            permission_mode: "manual".into(),
+            headless: false,
+            explanation: None,
+        }
+    }
+
+    #[test]
+    fn a_decision_with_a_guardian_verdict_enters_the_ring() {
+        let mut app = app();
+        app.push_verdict(&decision("shell", Some("allow")));
+        let verdicts = app.recent_verdicts();
+        assert_eq!(verdicts.len(), 1);
+        assert_eq!(verdicts[0].tool, "shell");
+        assert_eq!(verdicts[0].guardian_verdict, "allow");
+    }
+
+    #[test]
+    fn a_decision_without_a_guardian_verdict_is_skipped() {
+        let mut app = app();
+        app.push_verdict(&decision("shell", None));
+        assert!(app.recent_verdicts().is_empty());
+    }
+
+    #[test]
+    fn the_verdict_ring_caps_at_five() {
+        let mut app = app();
+        for i in 0..7 {
+            app.push_verdict(&decision(&format!("tool-{i}"), Some("allow")));
+        }
+        let tools: Vec<String> = app.recent_verdicts().into_iter().map(|v| v.tool).collect();
+        assert_eq!(
+            tools,
+            vec!["tool-2", "tool-3", "tool-4", "tool-5", "tool-6"]
+        );
+    }
+
     fn dialog_on_key_screen() -> ProviderDialog {
         use fontaine_core::accounts::{AccountRow, SignInState};
         let rows = vec![AccountRow {
