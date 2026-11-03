@@ -9,8 +9,7 @@
 Both reach only agents of the same tree (a message queue, the team's task board), and every call
 those agents make is already gated, so guardian review and prompts add latency with no security
 value. After the deterministic floor, allow hooks and allow rules, both tools run in every mode with
-no guardian verdict and no prompt. Issue #394 asked for `send_message`; its owner comment extends
-it to `board_update` ("task management is there to help the model").
+no guardian verdict and no prompt.
 
 ## Current State
 
@@ -51,8 +50,10 @@ matching are unchanged: this is a gate-level skip, not a reclassification (read-
 coordination tools keeps the read-only spawn fast path. This is the same containment argument:
 neither tool changes anything outside the tree.
 
-`Tier::Coordination` is excluded from `guardian_allowed()` like the other skip tiers and, like
-`Spawn`, returns before `guardian_branch`, so it ignores the auto-pause circuit breaker.
+`Tier::Coordination` is excluded from `guardian_allowed()` like `Spawn` and the read-only fast
+path, unlike `tracked_edit`/`scratch_write`, and returns before `guardian_branch`, so it ignores the
+auto-pause circuit breaker. Coordination calls therefore no longer reset the denial run (today a
+guardian allow of them does).
 
 `fontaine-guardian` is untouched (lift-out-able); embedders may still route these calls to it.
 
@@ -64,21 +65,24 @@ neither tool changes anything outside the tree.
 3. `rust/fontaine-core/src/permissions.rs`: the branch above, before the `agent` branch.
 4. `rust/fontaine-core/src/adjudication.rs`: use `is_coordination`; update the doc comment and
    its unit tests (a child with `board_update` no longer changes state).
-5. Update tests that expected a guardian/prompt for these tools: `rust/fontaine-core/tests/`
-   `permissions_auto.rs`, `permission_rules.rs`, `teams.rs`, `agent_pipeline.rs`, and
-   `rust/fontaine/tests/{parallel_agents,headless_smoke}.rs`, `rust/fontaine-agents/tests/seam.rs`
-   where they assert on gating of `send_message`/`board_update` (rg for them). `choke_point.rs`
-   must stay green unchanged.
+5. Update `rust/fontaine-core/tests/permissions_auto.rs`: tests
+   `board_update_asks_in_manual_and_accept_edits_like_send_message` and
+   `board_update_is_guardian_judged_in_auto_and_plan_with_no_fast_path` (~L1161-1190) break; the new
+   per-mode tests belong there too. The `adjudication.rs` unit test is step 4; `choke_point.rs`
+   stays green unchanged.
 6. `docs/schemas/headless-v1.schema.json`: add `"coordination"` to `$defs.tier.enum`.
 7. Evals: add `evals/dataset` cases (pipeline kind) for `send_message` and `board_update` in
-   `auto`, `expected_tier: "coordination"`; add `coordination` to the tier name list in
+   `auto`, `expected_tier: "coordination"`, category `spawn` (`case.rs` ~L202-207); also add `manual`
+   and `dontAsk` cases for each tool so the branch is checked deterministically under
+   `--guardian none` (auto cases are skipped there and fixture mode returns canned verdicts); add `coordination` to the tier name list in
    `evals/README.md`. Run the fixture evals and the live guardian eval (see Testing).
 8. Docs: `docs/permissions.md` (pipeline step, tier list, the `board_update`/`send_message`
    paragraph ~L182, spawn paragraph ~L79), `docs/agents.md` (~L185, ~L247, ~L262), `docs/tools.md`
-   (rows ~L34-36), `docs/headless.md` (tier list), `docs/architecture.md` (pipeline diagram),
-   `tasks/design/permissions.md` (~L60 tier list), `AGENTS.md` (the fast-path exceptions: add the
+   (rows ~L34-36), `docs/headless.md` (tier list), `docs/architecture.md` (pipeline diagram, ~L143, ~L148-149),
+   `docs/permissions.md` (~L20 modes table),
+   `tasks/design/permissions.md` (~L60 read-only-spawn clause, ~L123, ~L171 tier list, ~L230), `AGENTS.md` (the fast-path exceptions: add the
    coordination tools, and the `send_message` mention in the read-only-spawn clause becomes
-   "coordination tools"). `tasks/fontaine_harness_plan.md` `## Decisions`: add a dated line at
+   "coordination tools"; change "four exceptions" to "five"). `tasks/fontaine_harness_plan.md` `## Decisions`: add a dated line at
    the end of `### Permissions`; the ~L404 board line is amended by reference, not rewritten.
    `CHANGELOG.md` is updated by the `pr` step.
 
@@ -86,16 +90,13 @@ neither tool changes anything outside the tree.
 
 - `rust/fontaine-tools/src/descriptor.rs`
 - `rust/fontaine-core/src/{tier,permissions,adjudication}.rs`
-- the tests listed in step 5
+- `rust/fontaine-core/tests/permissions_auto.rs`
 - `docs/schemas/headless-v1.schema.json`, `evals/dataset/*.jsonl`, `evals/README.md`
 - `docs/{permissions,agents,tools,headless,architecture}.md`, `tasks/design/permissions.md`,
   `AGENTS.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
 
-- **New tier vs reclassifying as `ReadOnly`.** Reclassifying would put the tools on the read-only
-  fast path but would lie in the descriptor table, feed "read-only" to every consumer (guardian
-  prompt, MCP-style heuristics) and contradict "read-only ≠ safe". A tier keeps the audit record.
 - **New tier vs reusing `Spawn`/`Mode`.** One enum variant buys an audit trail of why the call ran.
 
 ## Decisions
@@ -104,6 +105,12 @@ neither tool changes anything outside the tree.
   mode" and a headless team run would otherwise stall on its own messaging.
 - 2026-11-02 (design): `board_update` joins `send_message` per the issue-owner comment; both
   are bounded to the agent tree, and task text stays untrusted data, never guardian intent.
+- 2026-11-02 (design): coordination calls do not reset the auto-pause breaker; messaging/board
+  churn between denials is not progress, and the more conservative choice keeps the breaker from
+  being evaded by cheap allowed calls.
+- 2026-11-02 (design): the other `Arbitrary` tools were reviewed; `cron_create` stays
+  guardian-judged (existing decision in `tasks/fontaine_harness_plan.md` ~L767) and `job_cancel`
+  is not a coordination tool.
 
 ## Documentation
 
@@ -111,14 +118,15 @@ See step 8.
 
 ## Testing Strategy
 
-- Unit tests in `permissions` integration tests: for each of `send_message` and `board_update`,
+- Per-mode tests in `rust/fontaine-core/tests/permissions_auto.rs`: for each of `send_message` and `board_update`,
   in every mode, the verdict is `Allow` at `coordination` with 0 guardian calls and 0 prompts.
 - A `deny` rule and an `ask` rule naming each tool still win; a hook deny still wins; a
   critical/protected-path floor is unaffected (not reachable by these tools, covered by existing
   tests).
 - `spawn_changes_state`: a child with `read` + `board_update` is not state-changing.
-- Tier round-trip tests (`Tier::ALL`, schema validation in `headless_contract.rs`) cover the new
-  value.
+- Add a unit assertion in `rust/fontaine/tests/headless_contract.rs` (it already loads the schema)
+  that `$defs.tier.enum` equals `Tier::ALL`'s `as_str` names and that `ALL` covers every variant
+  (existing `tier.rs` tests do not cover the new value).
 - Choke-point test stays green; fixture evals (`--guardian fixture`, default and
   `--profile minimal`) pass with the new cases.
 - Live Haiku guardian eval run before push (per project practice) to confirm no regression; no
