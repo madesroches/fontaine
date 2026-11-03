@@ -6,7 +6,9 @@
 
 `send_message` and `board_update` are agent-coordination tools. They are classified `Arbitrary` /
 `Destructive::Always`, so every call goes to the guardian and `manual`/`acceptEdits` prompt for it.
-Both reach only agents of the same tree (a message queue, the team's task board), and every call
+Both reach only agents of the same tree (a message queue, the team's task board; no model-chosen
+effect lands outside the tree, `board_update` writes only the session's own `tasks.json` and runs
+the user's `task_completed` hooks), and every call
 those agents make is already gated, so guardian review and prompts add latency with no security
 value. After the deterministic floor, allow hooks and allow rules, both tools run in every mode with
 no guardian verdict and no prompt.
@@ -36,8 +38,9 @@ In `evaluate`, next to the `agent` branch (same position: after allow rules, hoo
 out-of-scope handling, before the mode dispatch), a branch for coordination tools returns
 `Verdict::Allow { tier: Tier::Coordination, rule: None }` in **every** mode, `dontAsk` included
 (an unattended `dontAsk` team run could otherwise never message or use the board). Everything
-above stays in force, so `deny`/`ask` rules naming either tool, the floor, hooks and the
-child-toolset restriction still act first. The `task_completed` hook still runs inside
+above stays in force, so `deny`/`ask` rules naming either tool, the floor, hooks and
+child specifier deny rules still act first; a child without these tools never has them (its
+toolset is removed at fork, `fork_tools` in `child_runner.rs`). The `task_completed` hook still runs inside
 `board_update complete`.
 
 The set lives once in `fontaine-tools/src/descriptor.rs` as `pub fn is_coordination(name: &str)
@@ -48,7 +51,8 @@ matching are unchanged: this is a gate-level skip, not a reclassification (read-
 `spawn_changes_state` replaces its `tool == "send_message"` clause with
 `descriptor::is_coordination(tool)`, so a child holding only read-only tools plus the
 coordination tools keeps the read-only spawn fast path. This is the same containment argument:
-neither tool changes anything outside the tree.
+no model-chosen effect reaches outside the tree; `board_update` writes only the session's own
+`tasks.json` and runs the user's `task_completed` hooks.
 
 `Tier::Coordination` is excluded from `guardian_allowed()` like `Spawn` and the read-only fast
 path, unlike `tracked_edit`/`scratch_write`, and returns before `guardian_branch`, so it ignores the
@@ -65,6 +69,9 @@ guardian allow of them does).
 3. `rust/fontaine-core/src/permissions.rs`: the branch above, before the `agent` branch.
 4. `rust/fontaine-core/src/adjudication.rs`: use `is_coordination`; update the doc comment and
    its unit tests (a child with `board_update` no longer changes state).
+4b. Doc comments: `rust/fontaine-agents/src/tools.rs` (L1-4) and `rust/fontaine-agents/src/spawn.rs`
+   (L3) call these "ordinary Arbitrary tools behind the permission pipeline"; reword to say the
+   coordination tools skip the guardian at the `coordination` tier.
 5. Update `rust/fontaine-core/tests/permissions_auto.rs`: tests
    `board_update_asks_in_manual_and_accept_edits_like_send_message` and
    `board_update_is_guardian_judged_in_auto_and_plan_with_no_fast_path` (~L1161-1190) break; the new
@@ -74,25 +81,33 @@ guardian allow of them does).
 7. Evals: add `evals/dataset` cases (pipeline kind) for `send_message` and `board_update` in
    `auto`, `expected_tier: "coordination"`, category `spawn` (`case.rs` ~L202-207); also add `manual`
    and `dontAsk` cases for each tool so the branch is checked deterministically under
-   `--guardian none` (auto cases are skipped there and fixture mode returns canned verdicts); add `coordination` to the tier name list in
+   `--guardian none` (auto cases are skipped there and fixture mode returns canned verdicts). Every
+   case, in any mode, expects `allow`/`coordination`, so each carries
+   `"fixture_verdict": {"decision": "allow", "tier": "coordination"}` (`case.rs` ~L231-242 rejects a
+   pipeline case without a `{decision, tier}` verdict); add `coordination` to the tier name list in
    `evals/README.md`. Run the fixture evals and the live guardian eval (see Testing).
 8. Docs: `docs/permissions.md` (pipeline step, tier list, the `board_update`/`send_message`
-   paragraph ~L182, spawn paragraph ~L79), `docs/agents.md` (~L185, ~L247, ~L262), `docs/tools.md`
+   paragraph ~L182, spawn paragraph ~L79, modes table ~L15-20 incl. the `dontAsk` row ~L19, and the
+   "adds two tools and no new tier" sentence ~L179), `docs/guardian.md` (~L9-16, list of what the
+   guardian never sees), `README.md` (~L90-93 "## Auto mode" list), `docs/evals.md` (~L126-127,
+   `spawn.jsonl` pipeline description), `docs/agents.md` (~L185, ~L247, ~L262), `docs/tools.md`
    (rows ~L34-36), `docs/headless.md` (tier list), `docs/architecture.md` (pipeline diagram, ~L143, ~L148-149),
-   `docs/permissions.md` (~L20 modes table),
    `tasks/design/permissions.md` (~L60 read-only-spawn clause, ~L123, ~L171 tier list, ~L230), `AGENTS.md` (the fast-path exceptions: add the
    coordination tools, and the `send_message` mention in the read-only-spawn clause becomes
    "coordination tools"; change "four exceptions" to "five"). `tasks/fontaine_harness_plan.md` `## Decisions`: add a dated line at
-   the end of `### Permissions`; the ~L404 board line is amended by reference, not rewritten.
+   the end of `### Permissions`; it states explicitly that it supersedes the ~L404 board decision and
+   the `send_message` guardian clauses at ~L343 and ~L714 of that file, which are amended by
+   reference, not rewritten.
    `CHANGELOG.md` is updated by the `pr` step.
 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/descriptor.rs`
 - `rust/fontaine-core/src/{tier,permissions,adjudication}.rs`
+- `rust/fontaine-agents/src/{tools,spawn}.rs` (doc comments)
 - `rust/fontaine-core/tests/permissions_auto.rs`
 - `docs/schemas/headless-v1.schema.json`, `evals/dataset/*.jsonl`, `evals/README.md`
-- `docs/{permissions,agents,tools,headless,architecture}.md`, `tasks/design/permissions.md`,
+- `docs/{permissions,guardian,agents,tools,headless,architecture,evals}.md`, `README.md`, `tasks/design/permissions.md`,
   `AGENTS.md`, `tasks/fontaine_harness_plan.md`
 
 ## Trade-offs
@@ -125,7 +140,7 @@ See step 8.
   tests).
 - `spawn_changes_state`: a child with `read` + `board_update` is not state-changing.
 - Add a unit assertion in `rust/fontaine/tests/headless_contract.rs` (it already loads the schema)
-  that `$defs.tier.enum` equals `Tier::ALL`'s `as_str` names and that `ALL` covers every variant
+  that `$defs.tier.enum` equals `Tier::ALL`'s `as_str` names
   (existing `tier.rs` tests do not cover the new value).
 - Choke-point test stays green; fixture evals (`--guardian fixture`, default and
   `--profile minimal`) pass with the new cases.
