@@ -27,8 +27,7 @@ suspends the grants until the user acknowledges the new version interactively.
   `plugins.toml` (`plugins.rs`, `Registry`, `deny_unknown_fields`, owner-only, written under
   `file_lock` by `fontaine plugin ...`) holds each plugin's pin and executables fingerprint.
 - The executables fingerprint (`approval_fingerprint`) deliberately excludes skill prose, so a
-  trusted plugin skill's body can change through auto-update with no approval step. Trust therefore
-  needs its own digest.
+  trusted plugin skill's body can change through auto-update with no approval step.
 - The guardian request (`AdjudicationRequest`, `fontaine-guardian/src/request.rs`;
   `adjudication::build`) carries `session_facts`, `hook_context` and intent; nothing about the
   active skill.
@@ -43,7 +42,8 @@ suspends the grants until the user acknowledges the new version interactively.
 A user-scope file `skill-trust.toml` in the config directory, beside `plugins.toml`: written only
 by the `fontaine plugin trust` CLI and the TUI acknowledgement, owner-only, under `file_lock`, not a
 settings file (no scope stack, nothing in project scope can read it into a grant). A corrupt file
-loads nothing and warns once, like `plugins.toml`.
+loads nothing and warns once, like `plugins.toml`; `trust`/`untrust` error on a corrupt file
+(mirroring `read_registry`) rather than overwrite it.
 
 ```toml
 [[skill]]
@@ -72,8 +72,9 @@ context note below. A plugin skill lends nothing without trust.
 
 `load_skill` parses `allowed-tools` for every scope and stores it in a new
 `Skill.declared_tools: Vec<Rule>` (validated as today). `Skill.allowed_tools` keeps its meaning,
-the rules lent without trust. `SkillRuntime` gets a `TrustedSkills` view (the parsed
-`skill-trust.toml`, loaded at startup next to the plugins) and `expand` resolves a `SkillGrant`:
+the rules lent without trust. `Extensions` carries a `TrustedSkills` view (the parsed
+`skill-trust.toml`, loaded at startup next to the plugins through `LoadParams`, which also receives
+the project-skill-record warning) and `expand` resolves a `SkillGrant`:
 
 ```
 trust_state(skill) =
@@ -112,15 +113,15 @@ invoking agent only; the note follows the same lifetime and keying.
 notes (trusted skills only). `prompt_builder::blocks` (`fontaine-guardian/src/prompt_builder.rs`)
 renders it as `active_skill: dev-skills:pr (trusted by the user; declares git *, gh *, mv *)`, only
 when `guardian_view` is set and the list is non-empty (existing insta goldens depend on the line
-being absent otherwise). Both shipped prompts (`prompts/guardian_prompt.md`,
+being absent otherwise). The line is guardian-only. Both shipped prompts (`prompts/guardian_prompt.md`,
 `prompts/guardian_minimal.md`) state that a trusted skill's declared classes are user intent for
 routine steps of that class, never for destructive or out-of-purpose steps. `Profile::Minimal.shape`
 (`profile.rs`) keeps `active_skills`, since it carries user intent, and `adjudication::facts`
 rebuilds `SessionFacts` including the field. The composed screen renders the same
-`blocks(request, false, false)` (`screen.rs`), so it carries the line byte-identically. Every deny
+`blocks(request, false, false)` (`screen.rs`), so the screen's input stays byte-identical. Every deny
 rule, the floor and the fail-closed outcomes are unchanged: this is context, not an allow, so a
 `git push --force origin main` is still the guardian's call (and any deny/ask rule's). A note is
-only emitted for the invoking agent, so a subagent's request carries none.
+only emitted for the invoking agent, so a subagent of the invoking agent carries none.
 
 The guardian prompt change is verified with the live Haiku eval before done (project policy):
 new cases in `evals/dataset` for (a) a routine `git rebase origin/main` under an active trusted
@@ -139,30 +140,30 @@ plugin skills are nameable). `<name>` that is an installed plugin and not a skil
 `trust` prints, per skill, the digest and the declared `allowed-tools` split into narrow and broad,
 and the skill's `!` lines, then records after a `[y/N]` confirmation. The confirmation prompt and
 the `--yes=yes` flag are new; `--yes=yes` skips only the confirmation, and without a terminal and
-without it, `trust` refuses. A name that is not a skill of an installed, enabled plugin or a
+without it, `trust` refuses. `trust`/`untrust` enumerate skills through `plugins::load_installed`
+plus `extensions::load` with `project_root` set to an empty path (the `validate_components` pattern,
+`rust/fontaine/src/plugin.rs:~917-933`), so project files are never read. A name that is not a skill of an installed, enabled plugin or a
 user-directory skill is an error. `untrust` removes records. Trust state is listed by `/skills`
 (see below), not by a new `plugin list` column.
 
 ### Re-acknowledgement
 
-- At session start, after skills load, each trusted record whose digest differs marks the skill
-  `Stale` and raises one [notice](../docs/tui.md#notices): `skill dev-skills:pr changed since you
-  trusted it; its allowed-tools are off until /skills trust dev-skills:pr`.
+- At session start, after skills load, each trusted record whose digest differs (auto-update still
+  applies it) marks the skill `Stale` and raises one [notice](../docs/tui.md#notices). For a plugin
+  skill: `skill dev-skills:pr changed since you trusted it; its allowed-tools are off until /skills
+  trust dev-skills:pr`. For a user skill, whose rules stay lent: `skill my-skill changed since you
+  trusted it; its trust note for the guardian is off until /skills trust my-skill`.
 - TUI: `/skills trust <name>` (interactive only) opens an approval dialog showing the
   `allowed-tools` diff against the trusted version and, for a first trust, the full list, plus a
   `!` command-line diff. Confirming writes the record. The previous version's `allowed-tools` and
   `!` lines are kept in the record (`tools`, `commands`) so the diffs are available without keeping
   the old file.
 - A headless run (`fontaine -p`) never prompts: a `Stale` or `Untrusted` plugin skill lends
-  nothing (a user-directory skill keeps today's behaviour), and the run prints one stderr line (via
-  `Approver::warn`) naming it, once per skill.
+  nothing (a user-directory skill keeps today's behaviour). When such a skill that declares
+  `allowed-tools` is invoked, the run warns via `Approver::warn`, deduplicated per skill with the
+  once-per-key `HashSet` pattern at `rust/fontaine/src/headless.rs:~288-320`. Core `expand` returns
+  the skill name in its result; `headless.rs`, where that result arrives, emits the warning.
 - `/skills` lists each skill's trust state: `trusted`, `changed (re-trust)`, or none.
-
-### Interaction with auto-update
-
-Auto-update continues to apply on the executables fingerprint only. A revision that edits a
-trusted skill's file applies, the record becomes `Stale` at the next start, and the grants stay off
-until acknowledged. The held-revision notice is unchanged.
 
 ## Implementation Steps
 
@@ -172,15 +173,19 @@ until acknowledged. The held-revision notice is unchanged.
    helper, `plugins.rs` ~2170 or `checkpoint.rs` ~49), `trust_state`. Export from `lib.rs`.
 2. **Loader** (`extensions.rs`): keep `declared_tools` for every scope; `read_document` (~214-226)
    also returns the raw text the digest is computed from; record each skill's digest
-   (`Skill.digest`) from it; `Skill.allowed_tools` stays as today. Thread the trust file through
-   `LoadParams`.
+   (`Skill.digest`) from it; `Skill.allowed_tools` stays as today. Thread the trust file and the
+   project-skill-record warning through `LoadParams` into `Extensions`' `TrustedSkills` view.
 3. **Grants** (`skills.rs`, `gate.rs`): split narrow and broad in `expand`; add the trusted-skill
    note to `SessionState` with `end_turn` clearing and per-agent keying; surface stale skills
    through the notice channel.
 4. **Guardian** (`fontaine-guardian/src/request.rs`, `prompt_builder.rs`, `profile.rs`, both prompt
-   files, `adjudication.rs`): `active_skills` in `SessionFacts`; render in `blocks`; keep it in
-   `Profile::Minimal.shape`; prompt paragraph in both prompts, tuned until eval cases (a) and (b)
-   pass; eval cases; extend `facts_from` in `fontaine-evals/src/live.rs` with `active_skills`.
+   files, `adjudication.rs`): `active_skills` in `SessionFacts` (the `request()` fixture in
+   `prompt_builder.rs` tests, ~446-465, is a full `SessionFacts` literal and needs the field); set it
+   in `adjudication::build`, since `adjudication::facts` takes no state or caller; render in
+   `blocks`; keep it in `Profile::Minimal.shape`; prompt paragraph in both prompts, tuned until eval
+   cases (a) and (b) pass; eval cases; extend `facts_from` in `fontaine-evals/src/live.rs` with
+   `active_skills`, and add an `active_skills` shape check in `rust/fontaine-evals/src/case.rs`
+   `validate` (~291-300) so the fixture run validates it.
 5. **CLI** (`cli.rs`, `plugin.rs`): `trust` and `untrust`, the confirmation prompt and the
    `--yes=yes` flag.
 6. **TUI** (`fontaine-tui`, `commands.rs`, `ui/commands`, `reports.rs`): `/skills` takes no
@@ -198,17 +203,17 @@ until acknowledged. The held-revision notice is unchanged.
   `gate.rs`, `adjudication.rs` (reads the notes from `SessionState`; `permissions.rs` is unchanged)
 - `rust/fontaine-guardian/src/request.rs`, `prompt_builder.rs`, `profile.rs`,
   `prompts/guardian_prompt.md`, `prompts/guardian_minimal.md`
-- `rust/fontaine-evals/src/live.rs`
+- `rust/fontaine-evals/src/live.rs`, `case.rs`
 - `rust/fontaine/src/cli.rs`, `plugin.rs`, `lib.rs`, `headless.rs`
 - `rust/fontaine-tui/src/commands.rs`, `ui/commands/` (new skills file), `reports.rs`
 - `evals/dataset/` (new cases), tests listed below
 - `docs/extensions.md`, `docs/plugins.md`, `docs/permissions.md`, `docs/guardian.md`,
-  `docs/tui.md`, `docs/headless.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
+  `docs/tui.md`, `docs/headless.md`, `docs/configuration.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`
 
 ## Decisions
 
 - 2026-11-03: Trust is per skill, with `trust <plugin>` as shorthand for the skills present at that
-  time; reason: a skill's prose is not covered by the plugin's approval fingerprint.
+  time; reason: a trusted skill must not vouch for the other skills of its plugin.
 - 2026-11-03: Trust is pinned to a digest of the skill file, not the plugin pin; reason: the pin
   changes with unrelated files, the digest only when this skill does.
 - 2026-11-03: Trust lives in its own `skill-trust.toml`, not `plugins.toml`; reason: `plugins.toml`
@@ -222,6 +227,8 @@ until acknowledged. The held-revision notice is unchanged.
   approves a skill's `allowed-tools`; the `trust`/`untrust` commands.
 - `docs/permissions.md`, `docs/guardian.md`: `active_skill` context.
 - `docs/tui.md`, `docs/headless.md`: `/skills trust`, stale notice, no prompt headless.
+- `docs/configuration.md`: a `<config dir>/skill-trust.toml` row, distinguished from workspace
+  `trust.toml`.
 - `CHANGELOG.md`.
 - Master plan Decisions (`tasks/fontaine_harness_plan.md`), each line in its subject's subsection:
   - Config: amend the 2026-10-21 project-skill `allowed-tools` line (~424) to say project skills can
@@ -248,13 +255,14 @@ Unit and integration (no live API):
   the floor still win; `end_turn` clears both. An untrusted or stale user-directory skill lends all
   its rules with no note. Regression pin for #361: a trusted `pr`-style skill with `Bash(git *)`
   yields guardian context, not an allow, for `git rebase origin/main`.
-- `adjudication::build`: a subagent request carries no `active_skills`.
+- `adjudication::build`: a subagent of the invoking agent carries no `active_skills`.
 - Guardian: `blocks` renders the `active_skill` line only when `guardian_view` is set and the list
   is non-empty; a screen-input test (like `prompt_builder.rs:~588`) shows the composed screen's
-  input carries it; `facts_from` reads `active_skills` (unit test like `live.rs:~684-700`).
+  input is unchanged when `active_skills` is non-empty; `facts_from` reads `active_skills` (unit test like `live.rs:~684-700`).
 - CLI: `trust` refuses non-interactive without `--yes=yes`, records the digest, `untrust` removes
   it; a user-directory and a multi-segment plugin skill name resolve; an ambiguous bare name errors.
-- Headless: a stale plugin skill prints one warning and lends nothing.
+- Headless: invoking a stale plugin skill that declares `allowed-tools` prints one warning per
+  skill and lends nothing.
 - Guardian evals (live, manual): cases in Guardian prompt section, run with the Haiku eval; the
   `--guardian fixture` run validates dataset schema and labels only.
 
