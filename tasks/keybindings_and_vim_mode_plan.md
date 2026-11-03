@@ -60,13 +60,17 @@ the config excludes.
   all action names are `snake_case`, matching every other config identifier Fontaine defines:
   `cycle_mode` (shift+tab), `interrupt` (ctrl+c — see Reserved below), `quit` (ctrl+d),
   `agents_panel` (ctrl+t), `todos` (ctrl+o), `reprint` (ctrl+l), `attach_clipboard`
-  (ctrl+v), `history_search` (ctrl+r), `history_previous` (up / ctrl+p),
-  `history_next` (down / ctrl+n), `submit` (enter), `newline` (shift+enter, ctrl+j).
+  (ctrl+v), `history_search` (ctrl+r), `history_previous` (up), `history_next` (down)
+  (ctrl+p/ctrl+n are hardcoded Up/Down aliases), `submit` (enter), `newline`
+  (shift+enter, alt+enter, ctrl+j).
   Parsing from string via `FromStr`; serde via string for config.
 - `struct Keymap` built by `Keymap::resolve(bindings: &BTreeMap<String, String>) ->
   Result<Keymap, KeymapError>`: starts from the default table, applies user entries, and
   answers `lookup(&self, key: KeyEvent) -> Option<TuiAction>` plus
   `keys_for(&self, action: TuiAction) -> Vec<Keystroke>` (for the hint strings).
+- `Keymap::lookup` normalizes a `Tab` event with `SHIFT` to `KeyCode::BackTab` before
+  matching, so the default `cycle_mode` binding works on terminals that deliver `Tab`+SHIFT
+  instead of `BackTab`.
 - **Unbind**: the empty string as the action value removes that keystroke's default binding
   (`"ctrl+t" = ""`). There is no TOML null; `""` is the unbind marker.
 - **Reserved**: `ctrl+c` may not be rebound or unbound (interrupt must always work). `ctrl+d`
@@ -95,9 +99,11 @@ the config excludes.
 - `config_scope.rs`: `Rule::user_or_cli("keybindings", …)` and add `tui.editor_mode` to the
   existing `tui` rule's coverage (the `tui` row is section-wide; verify the schema-node
   choke-point test passes).
-- `config_catalog.rs`: read-only rows (`keybindings` summarized as count/overrides,
-  `tui.editor_mode` showing the value). `tui.editor_mode` is writable through `/config` via
-  `Edit::Choice(emacs/vim/unset)`, matching how `tui.theme` uses `Edit::Choice(theme_choices)`.
+- `config_catalog.rs`: `keybindings` is a read-only summary row (count/overrides);
+  `tui.editor_mode` is an editable choice row via `Edit::Choice(emacs/vim/unset)`, matching
+  how `tui.theme` uses `Edit::Choice(theme_choices)`. Note that a `/config` save of
+  `tui.editor_mode` applies next launch (the plan's Trade-offs rule); only `/vim` applies
+  live.
 
 ### Dispatch changes (`fontaine-tui`)
 
@@ -117,10 +123,12 @@ the config excludes.
   Up/Down events before dispatch, so they are hardcoded aliases of the Up/Down keys rather
   than separate default bindings. Unbinding `history_previous`/`history_next` therefore
   affects Ctrl+P/Ctrl+N as well.
-- **Esc in vim Insert**: when vim Insert is active, `App::handle_key` offers `Esc` to the
-  input first. The input consumes it and switches to Normal, so the App-level Esc arms
-  (close palette, interrupt, cancel wakeup, double-Esc rewind) only see `Esc` from Normal
-  state (or from emacs mode).
+- **Esc in vim Insert**: `App::handle_key` first runs the palette-close check
+  (`close_palette`) exactly as today, because history search, `@` completion and the `/`
+  menu stay open while typing. If a palette is open, Esc closes it and is consumed. Only
+  when no palette is open does `App::handle_key` offer Esc to the input; in vim Insert the
+  input consumes it and switches to Normal. App-level Esc arms (interrupt, cancel wakeup,
+  double-Esc rewind) therefore see Esc only from Normal state (or from emacs mode).
 - **Mode-cycling constraint**: the rebound key returns the same `Action::CycleMode` and goes
   through `Ui::cycle_mode` → `statusbar::next_mode` exactly like Shift+Tab. There is no path
   from a keybinding to an arbitrary `PermissionMode`, so a binding cannot jump straight to
@@ -171,8 +179,11 @@ the config excludes.
    `shift+tab`→BackTab, unknown key/action, reserved detection).
 2. `config.rs`: `Settings.keybindings` (direct map), `EditorMode`, `Settings`/`Config`/
    `defaults`/`apply` wiring, `validate_values` for `[keybindings]` and `tui.editor_mode`.
-   `config_scope.rs` rule row; `config_catalog.rs` rows. Keep the schema-node and catalog
-   choke-point tests green; add scope tests (project file with `[keybindings]` exits 2).
+   `config_scope.rs` rule row; `config_catalog.rs` rows. Add a `keybindings` snippet to
+   `config_scope.rs::SNIPPETS` and `tui.editor_mode` to the
+   `config_catalog.rs::editable_rows_are_exactly_the_preference_set` expectation. Add an
+   `exit_code.rs`-style integration test that a project file with `[keybindings]` exits 2
+   naming the scope violation.
 3. `fontaine-tui/src/keymap.rs`: default table, `Keymap::resolve`, `lookup`, `keys_for`.
    Unit tests: override, unbind, conflict replacement, reserved rejection surfacing.
 4. `app.rs` / `ui/mod.rs` / `lib.rs`: inject `Keymap` + `EditorMode`, replace hardcoded
@@ -240,8 +251,10 @@ the config excludes.
 - TUI-level: existing `TestBackend` tests in `app.rs` style — a rebound `cycle_mode` key
   cycles modes in the same order and never yields `dontAsk`; an unbound key does nothing;
   vim mode Enter submits, Esc switches state without interrupting.
-- The `config_scope.rs` schema-node and `config_catalog.rs` choke-point tests must pass
-  unchanged — they are the regression net for the new config keys.
+- The `config_scope.rs` schema-node and `config_catalog.rs` choke-point tests are the
+  regression net for the new config keys: update `config_scope.rs`'s `SNIPPETS` with a
+  `keybindings` entry and `config_catalog.rs`'s
+  `editable_rows_are_exactly_the_preference_set` expectation to include `tui.editor_mode`.
 - Manual: one tmux pass (below) for the feel of modal editing, which unit tests cannot
   judge.
 
@@ -253,12 +266,6 @@ Modal editing feel and real-terminal key delivery are not unit-testable:
    type text, Esc → NORMAL, `bbdw` edits a word, `A` appends, `u` restores, Enter submits,
    status bar shows the vim state. Expected: each behaves as vim users expect; no terminal
    rendering glitches in the input area.
-2. With `[keybindings] "ctrl+g" = "cycle_mode"` in the user config: Ctrl-G cycles the mode
-   and the status bar hint shows the new key; Shift+Tab no longer cycles if explicitly unbound
-   (`"shift+tab" = ""`).
-3. `cargo run -p fontaine -- -p hi` (headless) with a `[keybindings]` section in the project
-   file exits 2 naming the scope violation. (Automatable as a smoke test if cheap; the
-   manual run also confirms the error text reads well.)
 
 ## Open Questions
 
