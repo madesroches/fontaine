@@ -126,6 +126,9 @@ guardian allow of them does).
 - 2026-11-02 (design): the other `Arbitrary` tools were reviewed; `cron_create` stays
   guardian-judged (existing decision in `tasks/fontaine_harness_plan.md` ~L767) and `job_cancel`
   is not a coordination tool.
+- 2026-11-02 (review): in `manual`, `acceptEdits` and `dontAsk` agents can now message and wake
+  each other without a human prompt; spend is bounded only by the opt-in session and subagent
+  budgets (all unset by default), and no wake cap is added.
 
 ## Documentation
 

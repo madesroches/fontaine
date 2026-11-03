@@ -185,7 +185,9 @@ mode. `board_update` is a coordination tool like `send_message`: it writes only 
 no guardian verdict and no prompt. A `deny` or `ask` rule naming `board_update` (a hook too) runs
 first in every mode. It has no fast path and no specifier. Waking an idle teammate
 with `send_message` is likewise unjudged, and each call the woken teammate makes passes the
-whole pipeline. A subagent type holding `board_show` or `board_update` can still take the read-only
+whole pipeline. So in `manual`, `acceptEdits` and `dontAsk` agents can message and wake each other
+without a prompt to you; spend is bounded only by the session and subagent budgets, which are
+unset by default. A subagent type holding `board_show` or `board_update` can still take the read-only
 spawn fast path when the rest of its tools are read-only.
 
 ## Scheduled prompts

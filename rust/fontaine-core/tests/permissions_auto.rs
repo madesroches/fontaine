@@ -1212,6 +1212,39 @@ async fn a_deny_or_ask_rule_on_a_coordination_tool_still_wins() {
 }
 
 #[tokio::test]
+async fn a_hook_deny_or_ask_on_a_coordination_tool_still_wins() {
+    use fontaine_core::permissions::HookPermission::{Ask, Deny};
+    for (tool, args) in coordination_calls() {
+        for mode in [Manual, Auto] {
+            for (permission, asked) in [(Deny, 0), (Ask, 1)] {
+                let fake = fake_guardian(allow_verdict());
+                let mut options = Options::new(mode).guardian(fake.guardian.clone());
+                options.hooks = vec![std::sync::Arc::new(AutoHook {
+                    matcher: None,
+                    permission: Some(permission),
+                    note: None,
+                })];
+                let rig = Rig::with(options);
+                rig.approver.answer(Answer::AllowOnce);
+                let decision = rig.check(tool, args.clone()).await;
+                assert_eq!(
+                    allowed(&decision),
+                    asked == 1,
+                    "{tool} {mode:?} {permission:?}"
+                );
+                assert_eq!(
+                    rig.approver.asked(),
+                    asked,
+                    "{tool} {mode:?} {permission:?}"
+                );
+                assert_eq!(fake.calls(), 0, "{tool} {mode:?} {permission:?}");
+                assert_ne!(last(&rig).tier, Tier::Coordination, "{tool} {mode:?}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn board_show_takes_the_read_only_fast_path_in_auto() {
     let fake = fake_guardian(allow_verdict());
     let rig = auto_rig(&fake, "");
