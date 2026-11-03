@@ -1443,6 +1443,15 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     {
         return bad("statusline.refresh_interval_secs", "must be at least 1");
     }
+    if let Some(sl) = &s.statusline
+        && sl.refresh_interval_secs.is_some()
+        && sl.command.as_deref().is_none_or(|c| c.trim().is_empty())
+    {
+        return bad(
+            "statusline.refresh_interval_secs",
+            "requires statusline.command",
+        );
+    }
     if let Some(t) = &s.telemetry
         && t.endpoint.as_deref() == Some("")
     {
@@ -3279,6 +3288,20 @@ mod tests {
         // The equivalent spelling from the higher-precedence layer replaces, not coexists.
         assert_eq!(config.keybindings.len(), 1);
         assert_eq!(config.keybindings["ctrl+t"], "reprint");
+    }
+
+    #[test]
+    fn statusline_refresh_requires_a_command() {
+        let check = |text: &str| {
+            super::validate_settings(
+                text,
+                std::path::Path::new("config.toml"),
+                super::Column::User,
+            )
+        };
+        assert!(check("[statusline]\nrefresh_interval_secs = 5\n").is_err());
+        assert!(check("[statusline]\ncommand = \" \"\nrefresh_interval_secs = 5\n").is_err());
+        assert!(check("[statusline]\ncommand = \"date\"\nrefresh_interval_secs = 5\n").is_ok());
     }
 
     #[test]

@@ -248,23 +248,23 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         .effort
         .map_or_else(String::new, |level| format!(" · effort {level}"));
 
+    spans.push(Span::styled(
+        format!("{}· {}", location(app), app.model),
+        dim,
+    ));
+    for (text, warn) in app
+        .usage
+        .iter()
+        .filter_map(|usage| quota_segment(usage, app.usage_as_of))
+    {
+        let style = if warn {
+            Style::default().fg(app.theme.warning)
+        } else {
+            dim
+        };
+        spans.push(Span::styled(format!(" · {text}"), style));
+    }
     if let Some(statusline) = &app.statusline {
-        spans.push(Span::styled(
-            format!("{}· {}", location(app), app.model),
-            dim,
-        ));
-        for (text, warn) in app
-            .usage
-            .iter()
-            .filter_map(|usage| quota_segment(usage, app.usage_as_of))
-        {
-            let style = if warn {
-                Style::default().fg(app.theme.warning)
-            } else {
-                dim
-            };
-            spans.push(Span::styled(format!(" · {text}"), style));
-        }
         spans.push(Span::styled(
             format!("{effort}{agents}{scheduled}{goal} · "),
             dim,
@@ -275,22 +275,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         );
         spans.push(Span::styled(custom, dim));
     } else {
-        spans.push(Span::styled(
-            format!("{}· {}", location(app), app.model),
-            dim,
-        ));
-        for (text, warn) in app
-            .usage
-            .iter()
-            .filter_map(|usage| quota_segment(usage, app.usage_as_of))
-        {
-            let style = if warn {
-                Style::default().fg(app.theme.warning)
-            } else {
-                dim
-            };
-            spans.push(Span::styled(format!(" · {text}"), style));
-        }
         let trailer = match hint {
             Some(h) => format!("{effort}{agents}{scheduled}{goal} · {h}"),
             None => format!("{effort}{agents}{scheduled}{goal}"),
@@ -308,16 +292,27 @@ fn width_used(spans: &[Span<'_>]) -> u16 {
 
 /// Cuts `text` to fit in the remaining `width`, adding a leading ellipsis when truncated.
 fn truncate_row(text: &str, width: u16) -> String {
+    let cw = |c: char| Span::raw(c.to_string()).width();
     let width = usize::from(width);
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= width {
+    let total: usize = text.chars().map(cw).sum();
+    if total <= width {
         return text.to_string();
     }
     if width <= 1 {
         return "…".to_string();
     }
-    let kept: String = chars[(chars.len() - (width - 1))..].iter().collect();
-    format!("…{kept}")
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for c in text.chars().rev() {
+        let w = cw(c);
+        if used + w > width - 1 {
+            break;
+        }
+        used += w;
+        kept.push(c);
+    }
+    kept.reverse();
+    format!("…{}", kept.into_iter().collect::<String>())
 }
 
 #[cfg(test)]
@@ -328,6 +323,14 @@ mod tests {
     use fontaine_core::quota::{Quota, QuotaWindow};
 
     use super::*;
+
+    #[test]
+    fn truncate_row_measures_display_width() {
+        assert_eq!(truncate_row("日本語日本語", 12), "日本語日本語");
+        let cut = truncate_row("日本語日本語", 6);
+        assert_eq!(cut, "…本語");
+        assert!(Span::raw(cut).width() <= 6);
+    }
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 

@@ -651,7 +651,7 @@ project-local and `--settings` files are refused.
 | Key | Meaning | Default |
 |---|---|---|
 | `command` | The shell command; when absent or empty the feature is off. | unset |
-| `refresh_interval_secs` | Re-run the command while idle, at least 1. | unset |
+| `refresh_interval_secs` | Re-run the command while idle, at least 1; requires `command`. | unset |
 
 The command receives one JSON object on stdin and its first stdout line (ANSI escapes stripped)
 is shown in the bar. It is killed after 5 seconds, and any non-zero exit, timeout or empty output

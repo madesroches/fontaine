@@ -123,6 +123,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// The status-line refresh timer, when configured.
     fn statusline_tick(&self, runtime: &AgentRuntime) -> Option<Duration> {
+        // A scheduled trigger is a no-op without a script or mid-run, so a zero tick there
+        // would spin the loop.
+        if self.statusline_script.is_none() || self.statusline_running {
+            return None;
+        }
         let interval = runtime.config.statusline.refresh_interval_secs?;
         let interval = Duration::from_secs(interval);
         let since = self
@@ -217,6 +222,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mut landed = false;
         while let Ok(line) = self.statusline_result_rx.try_recv() {
             self.statusline_running = false;
+            // Debounce from the finish: a slow script must not retrigger on the redraw
+            // its own result causes.
+            self.statusline_last_run = Some(std::time::Instant::now());
             if let Some(line) = line {
                 self.app.statusline = Some(line);
                 landed = true;
@@ -521,6 +529,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 // waiting for an unrelated event.
                 Some(line) = statusline_result_rx.recv() => {
                     self.statusline_running = false;
+                    self.statusline_last_run = Some(std::time::Instant::now());
                     if let Some(line) = line {
                         self.app.statusline = Some(line);
                     }
