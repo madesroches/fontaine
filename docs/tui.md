@@ -106,7 +106,10 @@ tools are checked like any `arbitrary` tool. A headless run does not ask and loa
 
 ## Status bar
 
-The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by the [subscription quota](#subscription-quota) of the main and the guardian account when they have one, then `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key hint. The mode labels are `manual`,
+The bar shows the permission mode, the directory the shell is in with the git branch checked out there (`· ~/work/app (main)`; a detached `HEAD` shows its short commit, the home directory is `~`, a long path is cut from the left with `…`), the model (followed by the [subscription quota](#subscription-quota) of the main and the guardian account when they have one, then `effort <level>` while a [reasoning effort](configuration.md#model) is set), how many subagents are running, `⏱ N` when `N` [scheduled tasks](#scheduled-prompts) exist, `◎ goal 12m` while a [goal](#goals) is active (`◎ goal paused` when it waits for you), and a key
+hint rendered from the effective [keybindings](#remapping-the-keys). With [vim input
+mode](#vim-input-mode) on, the bar also shows `vim:insert` or `vim:normal` after the mode. The
+mode labels are `manual`,
 `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`.
 
 ### Subscription quota
@@ -153,29 +156,79 @@ sits on the rows below the bar.
 
 ## Keys
 
+The global keys below are remappable: each row names the action it triggers, and
+`[keybindings]` in the settings maps keystrokes onto those actions (see
+[Remapping the keys](#remapping-the-keys)). Keys that belong to an open overlay — approvals, the
+`/config` panel, pickers, the slash-command menu — are not remapped, and neither are the vim
+cursor keys (see [Vim input mode](#vim-input-mode)).
+
 | Key | Action |
 |---|---|
-| Enter | Submit. Alt+Enter, Shift+Enter or Ctrl+J insert a newline; a trailing `\` before Enter also continues the line. Which of these your terminal sends, and how to bind Shift+Enter, is in [Terminal setup](terminal.md#new-lines-in-the-message-box). While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead; with the [slash-command menu](#slash-command-menu) open on a bare `/name`, it runs the selected command; after other text, it sends the message. |
-| Up, Down, Ctrl-P, Ctrl-N | With the `@` list or the slash-command menu open, move the selection. Otherwise, on the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. Down on the last line, when the input is not walking the history and the [agent list](#the-agent-list-and-the-agent-view) shows, moves the keyboard into the list: Up and Down select a row, Up on the first row gives the keyboard back. |
+| Enter (`submit`) | Submit. Alt+Enter, Shift+Enter or Ctrl+J (`newline`) insert a newline; a trailing `\` before Enter also continues the line. A binding matches its exact modifiers, so Ctrl+Enter and Shift+Alt+Enter do nothing unless bound. Which of these your terminal sends, and how to bind Shift+Enter, is in [Terminal setup](terminal.md#new-lines-in-the-message-box). While a turn runs, a message is queued (see [Messages during a turn](#messages-during-a-turn)). With a `@` list open, Enter completes instead; with the [slash-command menu](#slash-command-menu) open on a bare `/name`, it runs the selected command; after other text, it sends the message. |
+| Up, Down (`history_previous`, `history_next`), Ctrl-P, Ctrl-N | With the `@` list or the slash-command menu open, move the selection. Otherwise, on the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. Down on the last line, when the input is not walking the history and the [agent list](#the-agent-list-and-the-agent-view) shows, moves the keyboard into the list: Up and Down select a row, Up on the first row gives the keyboard back. Ctrl-P and Ctrl-N are hardcoded aliases of Up and Down. |
 | Enter, x, Esc in the agent list | Enter shows the selected row's transcript (`main` or a subagent). `x` stops a running subagent, or hides an ended one; on `main` or the agent on screen it is typed into the input. Esc gives the keyboard back to the input, and any printable key does too and is typed there. |
-| Ctrl-R | Search the prompt history; see [History](#history). |
-| Ctrl-V | Attach the clipboard's image to the message; see [Attaching files](#attaching-files). Terminals that turn Ctrl+V into a bracketed paste never deliver the key event; their paste arrives as text, and a dropped PDF path becomes a PDF attachment. |
+| Ctrl-R (`history_search`) | Search the prompt history; see [History](#history). |
+| Ctrl-V (`attach_clipboard`) | Attach the clipboard's image to the message; see [Attaching files](#attaching-files). Terminals that turn Ctrl+V into a bracketed paste never deliver the key event; their paste arrives as text, and a dropped PDF path becomes a PDF attachment. |
 | Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the menu it first extends the name to what all the listed commands share. |
-| Shift+Tab | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. |
+| Shift+Tab (`cycle_mode`) | Cycle the mode: manual, accept edits, plan, auto, and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` lists the broad allow rules it sets aside and says so when the guardian cannot be asked. A rebound key runs the same cycle — no binding can jump to a mode outside it. |
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one. While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
 | Esc twice in quick succession when idle with an empty input | Opens the `/rewind` picker; see [Checkpoints and /rewind](checkpoints.md). Any other meaning of Esc above wins first. Off while a subagent's transcript is on screen. |
-| Ctrl-C, or Ctrl-D on an empty input, when idle | Quit. With text in the input, Ctrl-D deletes the character under the cursor. |
+| Ctrl-C (`interrupt`), or Ctrl-D on an empty input (`quit`), when idle | Quit. Both keys are reserved: they cannot be rebound or unbound. With text in the input, Ctrl-D deletes the character under the cursor in Emacs mode and in vim's Insert state. |
 | PageUp, PageDown | Scroll the command or diff in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/B/F/H/D | Move by character or line and delete a character. Ctrl-H is Backspace, Ctrl-D is Delete. |
 | Ctrl-Left, Ctrl-Right, Alt-Left, Alt-Right, Alt-B, Alt-F | Move by word. A word is a run of letters and digits, so `/`, `.` and `_` separate words. |
 | Alt-Backspace, Ctrl-Backspace, Alt-D, Ctrl-Delete, Ctrl-W | Delete the previous word, or with Alt-D and Ctrl-Delete the next one. Ctrl-W deletes back to the previous whitespace, so a path goes in one piece. See [Terminal setup](terminal.md#word-movement-and-deletion) for Ctrl-Backspace. |
 | Ctrl-Home, Ctrl-End | Jump to the start or end of the whole input; Home and End stay on the current line. |
 | Ctrl-U, Ctrl-K, Ctrl-Y | Delete to the start or end of the line, and paste the last deleted text back. One entry is kept, and it survives submitting. |
-| Ctrl-L | Redraw the screen from the transcript, keeping the conversation. Like switching to a subagent, it erases the terminal's scrollback first. Does nothing in screen-reader mode. |
-| Ctrl-T | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. Enter on an agent row there shows its transcript. |
-| Ctrl-O | Expand or collapse the [task list](#the-task-panel). Ignored while the agents panel is open. |
+| Ctrl-L (`reprint`) | Redraw the screen from the transcript, keeping the conversation. Like switching to a subagent, it erases the terminal's scrollback first. Does nothing in screen-reader mode. |
+| Ctrl-T (`agents_panel`) | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. Enter on an agent row there shows its transcript. |
+| Ctrl-O (`todos`) | Expand or collapse the [task list](#the-task-panel). Ignored while the agents panel is open. |
 | `/` at the start of the input or after a space | Opens the [slash-command menu](#slash-command-menu). |
+
+### Remapping the keys
+
+The global actions above live in a `[keybindings]` table of the settings: each entry maps one
+keystroke onto an action, and the empty string unbinds the keystroke:
+
+```toml
+[keybindings]
+"ctrl+t" = "todos"   # this key now opens the task list…
+"ctrl+o" = ""        # …and this one does nothing
+"f2" = "cycle_mode"  # extra keys can trigger any action
+```
+
+`/keybindings` prints the effective table — every action, the keystrokes it answers to, and
+whether each binding is yours or a default — and the path of the user settings file to edit.
+Changes apply on the next launch. A keystroke bound to a new action stops triggering the action it
+had; binding one action to several keys is fine. `ctrl+c` and `ctrl+d` are reserved and always
+keep their roles. The full syntax — modifiers, key names, the action list, scope rules — is in
+[Configuration](configuration.md#keybindings).
+
+### Vim input mode
+
+`[tui] editor_mode = "vim"` (or `/vim`, which also saves the choice) makes the input box modal
+instead of readline-style. The status bar shows `vim:insert` or `vim:normal` while it is on;
+`/vim` toggles back to emacs editing. Approval prompts, questions and other overlay input fields
+stay emacs-style.
+
+- **Insert** is the start state and types as usual. `Esc` switches to Normal — it never
+  interrupts or cancels from Insert, and with a history search, `@` list or `/` menu open it
+  closes that first, exactly as in emacs mode. Ctrl+D (delete character), Ctrl+H (backspace)
+  and Ctrl+W (delete word back) stay editing keys; every other Ctrl+key passes through to the
+  remappable global keys above, so Ctrl+R still searches history.
+- **Normal** takes text keys as commands: `h l 0 $` and the arrow keys move (by character, to
+the line's ends), `w b e` move by word, `j`/`k` move between lines, `gg`/`G` jump to the start or
+  end of the input. `d` and `c` wait for a motion (`w b e $ 0`) or double for the whole line
+  (`dd`, `cc`, the latter into Insert); `D` and `C` take the rest of the line; `x` deletes a
+  character, `r` waits for the character to replace it with; deleted text goes to the same
+  single-entry yank slot as Ctrl-U/Ctrl-K, and `p` pastes it after the cursor. `i a A I o O`
+  enter Insert at the cursor, after it, at the line's ends or on a new line below or above.
+  `u` undoes the last Normal-mode edit (snapshots, capped at 100); there is no redo — Ctrl+R is
+  history search. `Enter` submits from either state, and an unrecognized key is ignored.
+- **Esc in Normal** is not consumed by the input: it reaches the usual arms — interrupting a
+  running turn, cancelling a waiting `/loop`, or a double press opening `/rewind` — as it does in
+  emacs mode.
 
 ## Slash-command menu
 

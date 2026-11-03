@@ -25,6 +25,7 @@ pub mod gate;
 pub mod git_head;
 pub mod goal;
 pub mod instructions;
+pub mod keybindings;
 pub mod ledger;
 pub mod managed_search;
 pub mod memory;

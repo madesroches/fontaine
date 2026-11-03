@@ -859,7 +859,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         match command {
             Command::Help => {
                 let (skills, _) = crate::commands::skill_menu(runtime.slash_skills());
-                self.app.transcript.notice(reports::help(&skills));
+                self.app
+                    .transcript
+                    .notice(reports::help(&skills, &self.app.keymap));
             }
             Command::Status => self.status(runtime),
             Command::Theme(name) => self.theme(name),
@@ -891,6 +893,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Command::Config => self.open_config(runtime),
             Command::Recap => self.recap(runtime),
             Command::Cost => self.cost(runtime),
+            Command::Vim => self.vim(),
+            Command::Keybindings => self.keybindings(),
             _ => {}
         }
     }

@@ -24,6 +24,7 @@ use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt
 use crate::guardian_prompt::GuardianOffPrompt;
 use crate::history::History;
 use crate::input::{InputBuffer, MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia};
+use crate::keymap::Keymap;
 use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
 use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::question::QuestionPanel;
@@ -37,6 +38,7 @@ use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
 use fontaine_core::checkpoint::{RewindPlan, RewindWhat};
 use fontaine_core::config_catalog::ModelSlot;
+use fontaine_core::keybindings::TuiAction;
 
 pub use crate::commands::Command;
 
@@ -171,6 +173,8 @@ pub struct App {
     /// What the human typed to the viewed agent that it has not read yet.
     pub queued_agent: Vec<String>,
     pub input: InputBuffer,
+    /// The keystroke→action table in force; built from `[keybindings]` over the defaults.
+    pub keymap: Keymap,
     /// Whether the current model's catalog row says it takes images, for the attach warning.
     pub model_accepts_images: bool,
     pub mode: PermissionMode,
@@ -327,11 +331,6 @@ fn dropped_pdf(text: &str) -> Option<PendingAttachment> {
     })
 }
 
-fn is_cycle_key(key: &KeyEvent) -> bool {
-    key.code == KeyCode::BackTab
-        || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
-}
-
 impl App {
     pub fn new(mode: PermissionMode, model: String) -> App {
         App {
@@ -346,6 +345,7 @@ impl App {
             linear: false,
             queued_agent: Vec::new(),
             input: InputBuffer::default(),
+            keymap: Keymap::default(),
             model_accepts_images: false,
             mode,
             model,
@@ -856,10 +856,14 @@ impl App {
         if key.code != KeyCode::Esc {
             self.last_esc = None;
         }
-        if is_cycle_key(&key) {
+        // The remappable global actions, looked up once; arms below test `mapped` at the same
+        // points the hardcoded keys used to live. Ctrl+C is reserved, so the interrupt lookup
+        // keeps working even if every other binding is changed.
+        let mapped = self.keymap.lookup(key);
+        if mapped == Some(TuiAction::CycleMode) {
             return Action::CycleMode;
         }
-        if control && key.code == KeyCode::Char('c') {
+        if mapped == Some(TuiAction::Interrupt) {
             if !self.covered() && self.close_palette() {
                 return Action::None;
             }
@@ -1047,6 +1051,9 @@ impl App {
             && !key.modifiers.contains(KeyModifiers::ALT)
             && !self.covered()
             && self.search.is_none()
+            // An explicit binding of Ctrl+P/Ctrl+N wins over the Up/Down alias; only the
+            // unbound keys fall through to the alias.
+            && mapped.is_none()
         {
             let code = if key.code == KeyCode::Char('p') {
                 KeyCode::Up
@@ -1059,23 +1066,29 @@ impl App {
         if self.agent_list.focused && !control && !self.covered() {
             return self.list_key(key);
         }
-        if control && key.code == KeyCode::Char('t') && !typing_reason {
+        if mapped == Some(TuiAction::AgentsPanel) && !typing_reason {
             self.agent_list.focused = false;
             self.agents = Some(AgentsPanel::new());
             return Action::None;
         }
-        if control && key.code == KeyCode::Char('v') && !typing_reason {
+        if mapped == Some(TuiAction::AttachClipboard) && !typing_reason {
             return Action::AttachClipboard;
         }
-        if control && key.code == KeyCode::Char('o') && !typing_reason {
+        if mapped == Some(TuiAction::Todos) && !typing_reason {
             self.todos.toggle();
             return Action::None;
         }
-        if control && key.code == KeyCode::Char('l') && !typing_reason {
+        if mapped == Some(TuiAction::Reprint) && !typing_reason {
             self.reprint = true;
             return Action::None;
         }
         if key.code == KeyCode::Esc && self.approval.is_none() && self.close_palette() {
+            return Action::None;
+        }
+        // With no palette open, vim Insert claims Esc for the switch to Normal; the
+        // interrupt, cancel-wakeup and double-Esc arms below see Esc only from Normal
+        // state (or from emacs mode).
+        if key.code == KeyCode::Esc && self.approval.is_none() && self.input.esc_leaves_insert() {
             return Action::None;
         }
         // The main turn is out of sight in an agent's view, and Esc there must not stop what the
@@ -1121,7 +1134,10 @@ impl App {
             self.last_esc = Some(now);
             return Action::None;
         }
-        if control && key.code == KeyCode::Char('d') && self.input.is_empty() {
+        // Quit fires on an empty input under whichever keystroke names it (Ctrl+D is
+        // reserved, so `mapped` is its binding too). With text, Ctrl+D alone falls through
+        // to the input's delete-char; any other quit key does nothing.
+        if mapped == Some(TuiAction::Quit) && self.input.is_empty() {
             return if self.running {
                 Action::None
             } else {
@@ -1371,43 +1387,47 @@ impl App {
     }
 
     fn message_key(&mut self, key: KeyEvent) -> Action {
-        match key.code {
-            KeyCode::Enter => {
-                let newline = key
-                    .modifiers
-                    .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT);
-                return self.enter(newline);
-            }
-            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+        match self.keymap.lookup(key) {
+            Some(TuiAction::Submit) => return self.enter(false),
+            Some(TuiAction::Newline) => {
                 self.input.insert('\n');
                 self.history.reset();
             }
-            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            Some(TuiAction::HistorySearch) => {
                 self.search = Some(HistorySearch::default());
                 self.completion = None;
                 self.search_step(false);
             }
-            KeyCode::Up if self.input.cursor_position().0 == 0 => return self.up(),
-            KeyCode::Down if self.on_last_line() && self.history.navigating() => {
+            // The guarded history arms: Up recalls on the first line, Down walks the recalled
+            // entry on the last. Unbinding the actions leaves the cursor roles below intact.
+            Some(TuiAction::HistoryPrevious) if self.input.cursor_position().0 == 0 => {
+                return self.up();
+            }
+            Some(TuiAction::HistoryNext) if self.on_last_line() && self.history.navigating() => {
                 if let Some(text) = self.history.newer() {
                     self.input.set_text(&text);
                 }
             }
-            KeyCode::Down
-                if self.on_last_line()
-                    && self.agent_list.has_rows()
-                    && !self.linear
-                    && !key.modifiers.intersects(
-                        KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL,
-                    ) =>
-            {
-                self.agent_list.focus();
-            }
             _ => {
+                // Whether the cursor sat on the last line before the key moved it, which is
+                // what focuses the agent list on Down.
+                let was_on_last_line = self.on_last_line();
                 let before = self.input.text();
                 self.input.handle_key(key);
                 if self.input.text() != before {
                     self.history.reset();
+                }
+                // Down on the last line moves the keyboard onto the agent list, hardcoded as
+                // before; cursor movement inside a multi-line input stays on Down as well.
+                if key.code == KeyCode::Down
+                    && was_on_last_line
+                    && self.agent_list.has_rows()
+                    && !self.linear
+                    && !key
+                        .modifiers
+                        .intersects(KeyModifiers::SHIFT | KeyModifiers::ALT | KeyModifiers::CONTROL)
+                {
+                    self.agent_list.focus();
                 }
             }
         }
@@ -1665,6 +1685,66 @@ mod tests {
             app.handle_input(key(KeyCode::Esc, KeyModifiers::NONE)),
             Action::Interrupt
         );
+    }
+
+    #[test]
+    fn a_rebound_cycle_key_cycles_and_an_unbound_key_does_nothing() {
+        use fontaine_core::config::EditorMode;
+
+        let mut rebound = app();
+        rebound.keymap = Keymap::resolve(
+            &[
+                ("f2".to_string(), "cycle_mode".to_string()),
+                ("shift+tab".to_string(), String::new()),
+            ]
+            .into_iter()
+            .collect(),
+        )
+        .unwrap();
+        assert_eq!(press(&mut rebound, KeyCode::F(2)), Action::CycleMode);
+        // Unbound: the default cycle key now does nothing.
+        assert_eq!(press(&mut rebound, KeyCode::BackTab), Action::None);
+
+        let mut unbound = app();
+        unbound.keymap = Keymap::resolve(
+            &[("ctrl+t".to_string(), String::new())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        assert_eq!(ctrl(&mut unbound, 't'), Action::None);
+        assert!(unbound.agents.is_none());
+
+        // Sanity: vim's Esc-switch still reaches the input, not the keymap.
+        let mut vim_app = app();
+        vim_app.input.mode = EditorMode::Vim;
+        type_text(&mut vim_app, "x");
+        assert_eq!(press(&mut vim_app, KeyCode::Esc), Action::None);
+    }
+
+    #[test]
+    fn vim_mode_treats_esc_as_a_mode_switch_and_enter_submits() {
+        use fontaine_core::config::EditorMode;
+
+        let mut app = app();
+        app.input.mode = EditorMode::Vim;
+        type_text(&mut app, "hi");
+        app.running = true;
+        // Esc from Insert switches to Normal; it must not interrupt the turn.
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::None);
+        assert!(matches!(
+            app.input.vim,
+            crate::input::VimState::Normal { .. }
+        ));
+        assert_eq!(app.input.text(), "hi");
+        // Esc from Normal reaches the App-level arms, as in emacs mode.
+        assert_eq!(press(&mut app, KeyCode::Esc), Action::Interrupt);
+        app.running = false;
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            Action::Submit("hi".into(), Vec::new())
+        );
+        assert!(app.input.is_empty());
     }
 
     fn running_row(id: &str) -> ListRow {
@@ -2337,6 +2417,43 @@ mod tests {
         assert_eq!(ctrl(&mut app, 'd'), Action::Quit);
         app.running = true;
         assert_eq!(ctrl(&mut app, 'd'), Action::None);
+    }
+
+    #[test]
+    fn a_rebound_quit_key_quits_only_on_an_empty_input() {
+        let mut app = app();
+        app.keymap = Keymap::resolve(
+            &[("f2".to_string(), "quit".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        type_text(&mut app, "abc");
+        assert_eq!(press(&mut app, KeyCode::F(2)), Action::None);
+        assert_eq!(app.input.text(), "abc");
+        app.input.take();
+        assert_eq!(press(&mut app, KeyCode::F(2)), Action::Quit);
+        app.running = true;
+        assert_eq!(press(&mut app, KeyCode::F(2)), Action::None);
+    }
+
+    #[test]
+    fn an_explicit_ctrl_p_binding_wins_over_the_up_alias() {
+        let mut app = app();
+        app.keymap = Keymap::resolve(
+            &[("ctrl+p".to_string(), "submit".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        type_text(&mut app, "hi");
+        assert_eq!(ctrl(&mut app, 'p'), Action::Submit("hi".into(), Vec::new()));
+        // Unbound, Ctrl+P keeps its Up alias.
+        let mut plain = self::app();
+        plain.history.push("older");
+        type_text(&mut plain, "draft");
+        ctrl(&mut plain, 'p');
+        assert_eq!(plain.input.text(), "older");
     }
 
     #[test]

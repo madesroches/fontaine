@@ -112,6 +112,8 @@ const NETWORK: &str =
 const WEBSEARCH: &str = "the search backend, its key and the command that starts it come only from the user file or --settings";
 const LSP: &str = "a language server is a program Fontaine starts on every edit, so only the user file or --settings defines one";
 const TUI: &str = "terminal preferences come only from the user file or --settings";
+const KEYBINDINGS: &str =
+    "keybindings steer what the human's keys do, so only the user file or --settings sets them";
 const ENV: &str = "environment overrides come only from user-trust scopes";
 const SCANNER: &str = "scanner settings come only from the user file";
 const COMPOSITION: &str = "the guardian composition is configured only in the user file; other scopes may only set `shadow = true`";
@@ -143,6 +145,7 @@ fn is_shadow_true(v: &toml::Value) -> bool {
 
 pub(crate) const RULES: &[Rule] = &[
     Rule::user_or_cli("tui", TUI),
+    Rule::user_or_cli("keybindings", KEYBINDINGS),
     Rule::user_or_cli("schedule.enabled", SCHEDULE),
     Rule::user_or_cli("memory", MEMORY),
     Rule::user_or_cli("goal", GOAL),
@@ -388,6 +391,11 @@ mod tests {
     /// One valid snippet per row, and for value-gated rows a second one the gate refuses.
     const SNIPPETS: &[(&str, &str, Option<&str>)] = &[
         ("tui", "[tui]\ntheme = \"dark\"\n", None),
+        (
+            "keybindings",
+            "[keybindings]\n\"ctrl+t\" = \"todos\"\n",
+            None,
+        ),
         ("accounts", "[accounts.x]\nkind = \"ollama\"\n", None),
         ("network", "[network]\nhttps_proxy = \"http://p:1\"\n", None),
         ("websearch", "[websearch]\nnative = \"off\"\n", None),
@@ -696,6 +704,46 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn keybindings_are_user_or_cli_only_and_each_entry_validates() {
+        let good = "[keybindings]\n\"ctrl+t\" = \"todos\"\n";
+        assert_not_scope(good, Column::User, "user keybindings");
+        assert_scope(good, Column::Project, "project keybindings");
+        assert_scope(good, Column::ProjectLocal, "project-local keybindings");
+        assert_not_scope(good, Column::Cli, "cli keybindings");
+
+        // The empty string unbinds, and is accepted.
+        let unbind = "[keybindings]\n\"ctrl+t\" = \"\"\n";
+        assert_not_scope(unbind, Column::User, "unbind");
+
+        for (text, why) in [
+            ("[keybindings]\n\"ctrl+t\" = \"nope\"\n", "unknown action"),
+            ("[keybindings]\n\"ctrl+c\" = \"quit\"\n", "reserved rebind"),
+            ("[keybindings]\n\"ctrl+d\" = \"\"\n", "reserved unbind"),
+            ("[keybindings]\n\"fn+t\" = \"todos\"\n", "unknown key"),
+            ("[keybindings]\n\"ctrl+k ctrl+c\" = \"quit\"\n", "chord"),
+        ] {
+            match outcome(text, Column::User) {
+                Err(ConfigError::Invalid { key, .. }) => {
+                    assert!(key.starts_with("keybindings."), "{why}: {key}")
+                }
+                other => panic!("{why}: expected an invalid-value error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn tui_editor_mode_accepts_emacs_and_vim_only() {
+        for mode in ["emacs", "vim"] {
+            let text = format!("[tui]\neditor_mode = \"{mode}\"\n");
+            assert_not_scope(&text, Column::User, mode);
+        }
+        match outcome("[tui]\neditor_mode = \"vi\"\n", Column::User) {
+            Err(ConfigError::Parse { .. }) => {}
+            other => panic!("unknown variant: expected a parse error, got {other:?}"),
         }
     }
 

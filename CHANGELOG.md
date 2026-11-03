@@ -615,6 +615,24 @@ All notable changes are recorded here. The format follows
 
 #### TUI
 
+- The global TUI keys are configurable: a `[keybindings]` table in the settings maps keystrokes
+  (`ctrl+alt+shift` plus a key name, such as `ctrl+t`, `f2` or `shift+tab`) onto the global
+  actions (`cycle_mode`, `interrupt`, `quit`, `agents_panel`, `todos`, `reprint`,
+  `attach_clipboard`, `history_search`, `history_previous`, `history_next`, `submit`,
+  `newline`), and the empty string unbinds a keystroke. `ctrl+c` and `ctrl+d` are reserved and
+  always work. The section is user/CLI scope only, validates every entry at load (exit 2 naming
+  the offender), applies on the next launch, and `/keybindings` prints the effective table —
+  each action, its keystrokes, and whether the binding is yours or a default — plus the file to
+  edit. The status bar and `/help` hints render from the effective bindings (#49). A binding
+  now matches its exact modifiers, so Ctrl+Enter, which used to submit, and Shift+Alt+Enter,
+  which used to insert a newline, do nothing unless you bind them.
+- The input box has a vim mode: `[tui] editor_mode = "vim"` or `/vim` (which saves the choice)
+  switches the message box to modal INSERT/NORMAL editing. Esc leaves Insert without ever
+  interrupting, Normal takes the usual motions and operators (`h l 0 $ w b e j k gg G`,
+  `dw/dd/de/D/x/r…`, `cc/C`, `i a A I o O`, `p`, `u` for undo with no redo — Ctrl+R stays
+  history search), Ctrl+D/H/W stay editing keys in Insert while the other Ctrl+keys pass through
+  to the remappable global actions, Enter submits from either state, and the status bar shows
+  `vim:insert`/`vim:normal`. Overlay input fields stay emacs-style (#49).
 - `/btw <question>` asks a side question about the conversation on the main model and prints the
   answer as a transcript notice. The model gets the conversation as text with no tools, and
   neither the question nor the answer is saved or recorded in the ledger, so the conversation and

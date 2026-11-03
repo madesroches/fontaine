@@ -72,6 +72,10 @@ pub enum Command {
     Expand(String),
     /// `/export [path]`.
     Export(String),
+    /// `/vim`: toggles the input box between emacs and vim editing.
+    Vim,
+    /// `/keybindings`: the effective keystroke→action table and where to edit it.
+    Keybindings,
     /// A name no built-in command has; it may be a skill.
     Other {
         name: String,
@@ -131,6 +135,8 @@ impl Command {
                 | Command::Config
                 | Command::Recap
                 | Command::Cost
+                | Command::Vim
+                | Command::Keybindings
         ) || matches!(self, Command::Skills(argument) if argument.is_empty())
     }
 }
@@ -305,6 +311,13 @@ pub const BUILTINS: &[Builtin] = &[
         command: Command::Init,
     },
     Builtin {
+        name: "keybindings",
+        aliases: &[],
+        hint: None,
+        description: "the effective keybindings and where to change them",
+        command: |_| Command::Keybindings,
+    },
+    Builtin {
         name: "login",
         aliases: &[],
         hint: Some("[account]"),
@@ -422,6 +435,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "expand or collapse the task list",
         command: |_| Command::Todos,
+    },
+    Builtin {
+        name: "vim",
+        aliases: &[],
+        hint: None,
+        description: "toggle vim input mode (also: [tui] editor_mode)",
+        command: |_| Command::Vim,
     },
 ];
 
@@ -935,6 +955,8 @@ mod tests {
             parse_command("/context all"),
             Some(Command::Context("all".into()))
         );
+        assert_eq!(parse_command("/vim"), Some(Command::Vim));
+        assert_eq!(parse_command("/keybindings"), Some(Command::Keybindings));
     }
 
     #[test]
@@ -976,6 +998,8 @@ mod tests {
             "/recap",
             "/cost",
             "/usage",
+            "/vim",
+            "/keybindings",
         ] {
             let command = parse_command(immediate).expect("a command");
             assert!(command.runs_mid_turn(), "{immediate}");

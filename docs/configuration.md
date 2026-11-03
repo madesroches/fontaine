@@ -126,6 +126,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[lsp.servers.*]` | no | no | yes |
 | `[telemetry]` | `enabled = false` only | `enabled = false` only | yes |
 | `[tui]` | no | no | yes |
+| `[keybindings]` | no | no | yes |
 | `[env]` | no | yes | yes |
 
 A project-local file that has not earned user trust is validated against the project column.
@@ -1024,13 +1025,66 @@ project or project-local file that has a `[tui]` table is an error.
 | `theme` | The colour theme: `dark-ansi`, `light-ansi`, `dark`, `light`, `dark-daltonized` or `light-daltonized`. `/theme` writes it. See [Terminal setup](terminal.md#colours). | `dark-ansi` |
 | `screen_reader` | Turns on screen-reader mode. `--ax-screen-reader` turns it on and `FONTAINE_AX_SCREEN_READER=0` keeps it off over this setting. See [Terminal setup](terminal.md#screen-reader-mode). | `false` |
 | `show_reasoning` | Shows the model's reasoning in the conversation: it streams live, then folds to a few rows once it settles, and `/expand thinking` prints it in full. `false` hides it. See [Terminal UI](tui.md#model-reasoning). | `true` |
+| `editor_mode` | How the input box edits text: `emacs` (readline-style, the default) or `vim` (modal INSERT/NORMAL; see [Vim input mode](tui.md#vim-input-mode)). `/vim` toggles it live and saves the choice. | `emacs` |
 
 ```toml
 [tui]
 theme = "dark"
 screen_reader = false
 show_reasoning = true
+editor_mode = "vim"
 ```
+
+### `[keybindings]`
+
+Maps keystrokes onto the TUI's global actions, so the keys above the input do what you want. It
+is personal configuration: only your user file and `--settings` may set it, a `[keybindings]`
+table in a project file is an error, and an unknown action, an unknown key or a rebind of a
+reserved key fails to load with exit code 2 naming the entry.
+
+Each entry is `"<keystroke>" = "<action>"`; the empty string unbinds the keystroke:
+
+```toml
+[keybindings]
+"ctrl+t" = "todos"   # this key now opens the task list…
+"ctrl+o" = ""        # …and this one does nothing
+"f2"     = "cycle_mode"
+```
+
+A keystroke is modifiers (`ctrl`, `alt` — `meta` is an alias — and `shift`) then a key name:
+`enter`, `tab`, `backtab`, `esc`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`,
+`pagedown`, `backspace`, `delete`, `insert`, `space`, `plus` or a single character, `f1`–`f24`
+included; names read case-insensitively (`Ctrl+Shift+T` and `ctrl+shift+t` are the same key).
+One keystroke per entry — chords (space-separated sequences) are not supported. Binding a
+keystroke that already triggers an action replaces that action's use of the key; several keys may
+trigger one action. A bare printable key (such as `"a"`) bound to an action can no longer be
+typed into the input. Changes apply on the next launch; `/keybindings` prints the effective table
+and the file to edit.
+
+`ctrl+c` (`interrupt`) and `ctrl+d` (`quit`) are reserved: they cannot be rebound or unbound, so
+interrupting and quitting always work. Terminal-aliased keys are worth knowing about: many
+terminals deliver Tab for Ctrl+I, Enter for Ctrl+M, Backspace for Ctrl+H and Esc for Ctrl+[.
+
+The actions and their default keystrokes:
+
+| Action | Default | What it does |
+|---|---|---|
+| `cycle_mode` | `shift+tab` | Cycle the permission mode; the cycle stays manual → accept edits → plan → auto, no matter the key. |
+| `interrupt` | `ctrl+c` (reserved) | Interrupt a running turn; quit when idle. |
+| `quit` | `ctrl+d` (reserved) | Quit when the input is empty; with text it deletes the character under the cursor. |
+| `agents_panel` | `ctrl+t` | Open or close the agents panel. |
+| `todos` | `ctrl+o` | Expand or collapse the task list. |
+| `reprint` | `ctrl+l` | Redraw the screen from the transcript. |
+| `attach_clipboard` | `ctrl+v` | Attach the clipboard's image. |
+| `history_search` | `ctrl+r` | Search the prompt history. |
+| `history_previous` | `up` | Recall the previous input on the input's first line. |
+| `history_next` | `down` | Walk back forward while recalling; both also move the cursor inside a multi-line input. |
+| `submit` | `enter` | Send the message. |
+| `newline` | `shift+enter`, `alt+enter`, `ctrl+j` | Insert a newline. |
+
+Only the global actions are remappable: an open overlay (approval, question, picker, panel)
+keeps its own keys, and so do the vim cursor keys. Ctrl+P and Ctrl+N remain hardcoded aliases
+of Up and Down.
 
 ## Skill trust
 

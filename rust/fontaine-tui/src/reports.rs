@@ -20,8 +20,10 @@ use fontaine_core::usage_ledger::{Bucket, UsageSource};
 use fontaine_tools::display::compact_count;
 
 use crate::commands::{BUILTINS, MenuEntry, is_builtin};
+use crate::keymap::Keymap;
 use crate::statusbar::mode_label;
 use crate::transcript::truncate;
+use fontaine_core::keybindings::TuiAction;
 
 /// What became of an MCP server at start-up.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,7 +37,42 @@ pub enum McpState {
     NotTrusted,
 }
 
-const KEYS: &str = "shift+tab mode · ctrl+t agents · ctrl+o todos · ctrl+r history · ! shell · @ file · esc interrupt (or end a waiting /loop)";
+/// The tail of `/help`: the key hints, rendered from the effective bindings.
+fn keys_line(keymap: &Keymap) -> String {
+    fn strokes(keymap: &Keymap, action: TuiAction) -> String {
+        keymap
+            .keys_for(action)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("/")
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if !strokes(keymap, TuiAction::CycleMode).is_empty() {
+        parts.push(format!("{} mode", strokes(keymap, TuiAction::CycleMode)));
+    }
+    if !strokes(keymap, TuiAction::AgentsPanel).is_empty() {
+        parts.push(format!(
+            "{} agents",
+            strokes(keymap, TuiAction::AgentsPanel)
+        ));
+    }
+    if !strokes(keymap, TuiAction::Todos).is_empty() {
+        parts.push(format!("{} todos", strokes(keymap, TuiAction::Todos)));
+    }
+    if !strokes(keymap, TuiAction::HistorySearch).is_empty() {
+        parts.push(format!(
+            "{} history",
+            strokes(keymap, TuiAction::HistorySearch)
+        ));
+    }
+    parts.extend([
+        "! shell".to_string(),
+        "@ file".to_string(),
+        "esc interrupt (or end a waiting /loop)".to_string(),
+    ]);
+    parts.join(" · ")
+}
 
 fn command_line(names: &str, hint: Option<&str>, description: &str) -> String {
     match hint {
@@ -45,7 +82,7 @@ fn command_line(names: &str, hint: Option<&str>, description: &str) -> String {
 }
 
 /// `skills` are the menu rows of the user-invocable skills no built-in hides.
-pub fn help(skills: &[MenuEntry]) -> String {
+pub fn help(skills: &[MenuEntry], keymap: &Keymap) -> String {
     let mut out = String::from("commands:");
     for builtin in BUILTINS {
         let names = std::iter::once(builtin.name)
@@ -73,7 +110,7 @@ pub fn help(skills: &[MenuEntry]) -> String {
             );
         }
     }
-    let _ = write!(out, "\n{KEYS}");
+    let _ = write!(out, "\n{}", keys_line(keymap));
     out
 }
 
@@ -868,7 +905,7 @@ mod tests {
             description: "Review a pull request".into(),
             aliases: vec![],
         };
-        let text = help(&[skill]);
+        let text = help(&[skill], &Keymap::default());
         for builtin in BUILTINS {
             assert!(text.contains(&format!("/{}", builtin.name)), "{text}");
         }
@@ -883,7 +920,30 @@ mod tests {
         let (skills, keys) = rest.split_once("\nshift+tab").unwrap();
         assert!(skills.contains("/review [pr] — Review a pull request"));
         assert!(keys.contains("esc interrupt"));
-        assert!(!help(&[]).contains("skills:"));
+        assert!(!help(&[], &Keymap::default()).contains("skills:"));
+    }
+
+    #[test]
+    fn the_keys_line_renders_the_effective_bindings() {
+        let text = help(&[], &Keymap::default());
+        assert!(
+            text.contains(
+                "shift+tab mode · ctrl+t agents · ctrl+o todos · ctrl+r history · ! shell · @ file"
+            ),
+            "{text}"
+        );
+        let keymap = Keymap::resolve(
+            &[
+                ("f2".to_string(), "agents_panel".to_string()),
+                ("ctrl+t".to_string(), String::new()),
+            ]
+            .into_iter()
+            .collect(),
+        )
+        .unwrap();
+        let text = help(&[], &keymap);
+        assert!(text.contains("f2 agents"), "{text}");
+        assert!(!text.contains("ctrl+t"), "{text}");
     }
 
     #[test]
