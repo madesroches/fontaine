@@ -6,7 +6,7 @@
 ## Overview
 Add one report of the models each configured account offers, and surface it twice from the same
 code: a `fontaine models [<account>]` subcommand for scripts and CI (#254), and a read-only
-`list_models` tool an agent can call instead of grepping the config directory (#393). Both
+`models` tool an agent can call instead of grepping the config directory (#393). Both
 render a single `ModelReport` built from `Switcher::listings`, so per-account timeouts and failure entries behave
 as in the `/model` picker; Ollama `name:tag` matching comes from each provider's `lists`, and
 credentials are excluded structurally rather than filtered.
@@ -71,7 +71,7 @@ calls `switcher.listings(..., only)`, passing `Some((&main_ref, &main_listing))`
 message (`fontaine-core/src/models.rs:445-446`) and exits 2 (`EXIT_CONFIG`); a listing failure for an account prints its error chain and still
 exits 0 unless every requested account failed (exit 1 then, so scripts notice).
 
-**Tool** (`fontaine-tools/src/list_models.rs`): `ListModelsTool { source: Arc<dyn ModelSource> }`
+**Tool** (`fontaine-tools/src/models_tool.rs`): `ModelsTool { source: Arc<dyn ModelSource> }`
 with args `{ account?: string }`. `ModelSource::report(account) -> BoxFuture<'_, Result<String,
 String>>` (like `SkillSource`, `fontaine-tools/src/skill.rs:15-18`) is implemented in
 `fontaine-core` by an adapter built in `Parts` holding the shared switcher (`p.setup.switcher:
@@ -82,66 +82,78 @@ time) and the guardian ref taken at call time as `ModelRef::parse(p.state.guardi
 runtime's listing cache, then the same `ModelReport::build`/`render_text`; the tool marks the
 session's live roles. An unknown account returns an error naming the known accounts; when the switcher is `None`,
 `report` returns `Err("models cannot be listed in this session")`.
-Registered unconditionally in `extension_tools` for the main agent, and added to the static
-`explore` and `worker` arrays (`fontaine-agents/src/registry.rs:170-174, 186-199`), which already
-hold conditional tools such as `lsp` since `toolset()` intersects with the parent's tools, so
-subagents receive it (read-only, so the child toolset still takes the read-only spawn fast
-path).
-Descriptor row: `list_models`, `RiskClass::ReadOnly`, `path_free: true`, `Destructive::Never`,
-`Specifier::None`, no Claude name.
+Registered unconditionally in `extension_tools` for the main agent only. It is NOT added to the
+built-in `explore` and `worker` arrays (`fontaine-agents/src/registry.rs:170-174, 186-199`): the
+built-in tiers stay free of network-touching tools, so their read-only spawn fast path is
+unchanged; a custom agent can still list it in its `tools`.
+The name avoids `list`, a word `choke_point.rs:231-238` bans in tool names (the CLI stays
+`fontaine models`).
+Descriptor row: `models`, `RiskClass::ReadOnly`, `path_free: true`, `Destructive::Never`,
+`Specifier::None`, empty Claude-name list (Claude Code has no counterpart). ReadOnly rather
+than Arbitrary because #393 needs the call to run in `auto` without a guardian escalation, and
+Arbitrary tools (`websearch`) are always guardian-judged. The tool's only I/O is the listing
+request to endpoints the user configured, with no agent-chosen host, URL or credential in the
+arguments or output. The descriptor test `names_are_unique_rule_names` gains an explicit
+`FONTAINE_ONLY: &[&str] = &["models"]` exemption: the assertion becomes
+`d.claude.is_empty() == FONTAINE_ONLY.contains(&d.name)`, so every other row still needs a Claude
+name and the exemption cannot go stale.
 
 ## Implementation Steps
 1. `fontaine-core/src/model_report.rs`: types, `build`, `render_text`, `to_json`; export from
    `lib.rs`.
-2. `fontaine-tools/src/list_models.rs`: `ModelSource` trait + `ListModelsTool`; register module.
-3. `fontaine-tools/src/descriptor.rs`: add the `list_models` row (both the static table and the
-   mirrored test table, whose pinned length goes 26 -> 27, `descriptor.rs:405`).
-4. `fontaine-core/src/agent/build.rs`: add `ListModelsTool` to `extension_tools`; implement
+2. `fontaine-tools/src/models_tool.rs`: `ModelSource` trait + `ModelsTool`; register module.
+3. `fontaine-tools/src/descriptor.rs`: add the `models` row (both the static table and the
+   mirrored test table, whose pinned length goes 26 -> 27, `descriptor.rs:405`), and add the
+   `FONTAINE_ONLY` exemption to `names_are_unique_rule_names` (`descriptor.rs:337`).
+4. `fontaine-core/src/agent/build.rs`: add `ModelsTool` to `extension_tools`; implement
    `ModelSource` for the adapter over `Parts` described above.
-5. `fontaine-agents/src/registry.rs`: add `list_models` to the built-in `explore` and `worker`
-   static tool arrays.
-6. `fontaine-core/tests/choke_point.rs`: add `list_models` to the extras list, and add
-   `ListModelsTool` with a stub `ModelSource` to `extension_asking` (:112-149).
-7. `fontaine/tests/headless_smoke.rs`: add `list_models` to the exact tool list (~:59-79).
+5. (removed: `models` stays out of the built-in `explore` and `worker` tiers.)
+6. `fontaine-core/tests/choke_point.rs`: add `models` to the extras list, and add
+   `ModelsTool` with a stub `ModelSource` to `extension_asking` (:112-149).
+7. `fontaine/tests/headless_smoke.rs`: add `models` to the exact tool list (~:59-79).
 8. `fontaine/src/cli.rs`: `Command::Models(ModelsArgs { account, format })`.
 9. `fontaine/src/models_cmd.rs` + `lib.rs` dispatch.
 10. Append dated lines at the end of `### Tools` under `## Decisions` in
-    `tasks/fontaine_harness_plan.md`: `list_models` is a Fontaine-only tool, and its read-only fast
-    path (it touches only user-scope accounts' listing endpoints, no agent-chosen host, no
-    credentials in output).
+    `tasks/fontaine_harness_plan.md`: `models` is a Fontaine-only tool (no Claude name, exempt
+    in the descriptor test), ReadOnly + path-free so it takes the fast path in every mode: its
+    only network I/O is the listing request to user-configured account endpoints, no
+    agent-chosen host, no credentials in output. Unlike `todo_write` (no network) it is kept out
+    of the built-in `explore`/`worker` tiers.
 11. Docs and changelog (below).
 
 ## Files to Modify
-- new: `fontaine-core/src/model_report.rs`, `fontaine-tools/src/list_models.rs`,
+- new: `fontaine-core/src/model_report.rs`, `fontaine-tools/src/models_tool.rs`,
   `fontaine/src/models_cmd.rs`
 - `fontaine-core/src/lib.rs`, `fontaine-core/src/agent/build.rs`,
   `fontaine-core/tests/choke_point.rs`, `fontaine-tools/src/lib.rs`,
-  `fontaine-tools/src/descriptor.rs`, `fontaine-agents/src/registry.rs`,
-  `fontaine/src/cli.rs`, `fontaine/src/lib.rs`, `fontaine/tests/headless_smoke.rs`
+  `fontaine-tools/src/descriptor.rs`, `fontaine-agents/src/registry.rs` (test only), `fontaine/src/cli.rs`, `fontaine/src/lib.rs`, `fontaine/tests/headless_smoke.rs`
 - `tasks/fontaine_harness_plan.md`
 - `docs/tools.md` (incl. :110), `docs/configuration.md` (incl. :633), `docs/permissions.md`
   (incl. :245), `CHANGELOG.md`
 
 ## Decisions
-- 2026-11-02 Claude Code has no model-listing tool (only `/model`); `list_models` is a Fontaine
+- 2026-11-02 Claude Code has no model-listing tool (only `/model`); `models` is a Fontaine
   addition, scoped to the models usable by configured accounts, never credentials or endpoints.
+- 2026-11-02 AFK: tool named `models` (not `list_models`): `choke_point.rs` bans the word `list` in tool names; the CLI stays `fontaine models`.
+- 2026-11-02 AFK: the `models` descriptor row has an empty Claude-name list and the descriptor test gets an explicit `FONTAINE_ONLY` exemption (`claude.is_empty() == FONTAINE_ONLY.contains(name)`) rather than a fabricated Claude alias, so no existing check is weakened.
+- 2026-11-02 AFK: `models` is ReadOnly + path_free (fast path in every mode; #393 needs auto to run it unattended, which Arbitrary would break), but is kept out of the built-in `explore`/`worker` tiers so the read-only spawn fast path gains no network tool.
 - 2026-11-02 Ollama `/api/show` `tools` capability is out of this change: it needs a per-model
   request the pickers do not make, so it would be a second listing path. Tracked as follow-up.
 - 2026-11-02 The CLI takes `--format text|json` (matching `auto-mode`) instead of issue #254's
   `--json`.
 
 ## Documentation
-- `docs/tools.md`: the `list_models` tool and its output shape; add it to the tool list (:110).
+- `docs/tools.md`: the `models` tool and its output shape; add it to the tool list (:110).
 - `docs/configuration.md#model-discovery`: `fontaine models [<account>] [--format=json]` (`fontaine --model <ref> models`
   to override the main model), exit codes 2 and 1; add the tool to the list at :633.
-- `docs/permissions.md`: `list_models` among read-only path-free tools (:245).
+- `docs/permissions.md`: `models` among read-only path-free tools (:245), noting it is the one such tool that makes a network call (to configured account endpoints only); the spawn-fast-path sentence (:80-81) says "a network tool (`webfetch`, `websearch`)" and the built-in tiers do not include `models`.
 - `CHANGELOG.md`: one line covering the subcommand and the tool.
 
 ## Testing Strategy
 - Unit (`model_report`): role marking for main/guardian, validated flag, Ollama `name:tag` ids
   kept intact, `ollama/llama3` marks the `llama3:latest` row, failed account keeps an error row, text and JSON golden output, nothing but the
   listed fields can appear in JSON.
-- Unit (`list_models`): args reject unknown fields.
+- Unit (`models`): args reject unknown fields.
 - Unit (`ModelSource` adapter, in `fontaine-core` beside the other adapters' tests): unknown account errors naming the
   known accounts; a `None` switcher returns `Err("models cannot be listed in this session")`; roles are read live at
   call time (e.g. after the main model is replaced).
@@ -150,5 +162,6 @@ Descriptor row: `list_models`, `RiskClass::ReadOnly`, `path_free: true`, `Destru
   all-failed case), since `Sandbox::compatible` sets `models=["scripted"]`
   (`fontaine/tests/common/mod.rs:603-607`); `fontaine models` and `--format=json` against it;
   unknown account exits 2; no accounts configured exits 2; all-failed exits 1.
-- Descriptor table test and choke-point test cover the risk class; a permissions test asserts
-  the tool takes the read-only fast path in `auto` and for a read-only subagent toolset.
+- Descriptor table test (with the `FONTAINE_ONLY` exemption) and choke-point test cover the risk
+  class; a permissions test asserts the tool takes the read-only fast path in `auto`; a registry
+  test asserts the built-in `explore` and `worker` toolsets exclude `models`.
