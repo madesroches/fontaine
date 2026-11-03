@@ -167,9 +167,12 @@ rendering.
 3. `App`: `statusline` state and verdict ring (app.rs); feed the ring in both `Ui::on_event`
    and `Ui::on_agent_event` in `rust/fontaine-tui/src/ui/turn.rs`, before the transcript
    consumes each event, when a `SessionEvent::Decision` carries a `guardian_verdict`.
-4. Status-line trigger handler + select arm + `soonest_tick` entry (ui/mod.rs); build the
-   payload inline in `Ui::run` (wire session id, guardian label, ledger, `context_usage()`) and
-   spawn only the script execution as a `'static` task over owned data.
+4. Status-line trigger handler + select arm + `soonest_tick` entry (ui/mod.rs); add the
+   channel and state fields to `Ui` in `rust/fontaine-tui/src/lib.rs`, initialize them in
+   `drive()`, and mirror them in the test-only constructor in
+   `rust/fontaine-tui/src/ui/tests.rs`; build the payload inline in `Ui::run` (wire session id,
+   guardian label, ledger, `context_usage()`) and spawn only the script execution as a `'static`
+   task over owned data.
 5. `statusbar::render`: custom-line branch with guardian-off badge and width truncation; remove
    the running hint; keep the idle hint. Update the existing hint tests and add custom-line
    tests. Also update `rust/fontaine-tui/tests/goal.rs:239-240` to wait for a surviving
@@ -199,7 +202,9 @@ rendering.
   surviving running-state signal
 - `rust/fontaine-tui/tests/statusline.rs` — new integration test driving `Ui::run` on a
   `TestBackend` to assert config-to-bar wiring and the no-stall property
+- `rust/fontaine-tui/src/lib.rs` — `Ui` status-line channel/state fields; initialized in `drive()`
 - `rust/fontaine-tui/src/ui/mod.rs` — supervisor task, select arm, tick
+- `rust/fontaine-tui/src/ui/tests.rs` — test-only `Ui` constructor mirrors the new fields
 - `tasks/fontaine_harness_plan.md` — append the dated TUI Decisions line superseding the
   2026-11-01 running-hint entry
 - `docs/tui.md`, `docs/configuration.md`, `CHANGELOG.md`,
