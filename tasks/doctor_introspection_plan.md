@@ -81,6 +81,9 @@ tested with constructed values. Sections:
    with its first rejected key (`Scope` with key, reason and hint) or its `Parse`/`Read` error;
    the scope walker stops at the first rejection per file, so not every key is listed.
    `diagnose` reuses the existing per-file parse and scope walker (no second copy of the policy).
+   `LayerDiagnosis` carries any per-file `ConfigError` (`Parse`, `Scope`, `Invalid`, `Read`). A
+   workspace canonicalize failure gives one `Fail` finding with the project and project-local rows
+   marked "not checked" while the user and `--settings` rows are still diagnosed.
    A project-local file loaded as project scope shows its `ProjectDemotion` reason in its row.
    When `config::load` succeeds the layers are read from `Config::scopes`. When it fails,
    `diagnose` supplies the rows, and `load`'s own `ConfigError` (rendered with
@@ -91,10 +94,10 @@ tested with constructed values. Sections:
 3. **Effective settings**: iterate `config_catalog::KEYS`, keeping rows whose `slots()` is
    non-empty (all rows with `--all`): effective value and source label via
    `KeyRow::source_label`. `Config::sources` is not iterated for rows, since its leaf paths
-   (`accounts.foo.kind`) never match Map-shaped catalog rows, which are prefixes. Leaf paths in
-   `sources` that match no catalog row, exactly or by prefix, print the raw source label only.
+   (`accounts.foo.kind`) never match Map-shaped catalog rows, which are prefixes.
    The `Running` values (`config_catalog.rs:13-19`) are filled with theme and effort from config,
-   and main/guardian model from the resolved models of the Guardian and models section. Secrets:
+   and main/guardian model from the resolved models of the Guardian and models section;
+   `Running.guardian_model` is `Some` only when `guardian_choice == Pinned`, as `/config` does. Secrets:
    values come only from the catalog renderers (`/config` already shows them), never raw TOML, so
    no credential can appear; a test asserts an account key and env value do not.
 4. **Trust**: workspace root trusted or not, `trust.toml` readable or the `unreadable` reason,
@@ -104,24 +107,39 @@ tested with constructed values. Sections:
 5. **Guardian and models**: resolved main model, guardian model as `Ready` /
    `Unavailable { reference, reason }` with `guardian_choice` (`Pinned`/`Default`/`MainFallback`),
    guardian profile, composition: "validated at load" when `load` succeeded, else its
-   `ConfigError`. Reuses `models::resolve` bounded by `LISTING_TIMEOUT` (`bounded` moves from
+   `ConfigError`. A `models::resolve` `Err` becomes a `Fail` finding rendered with its chain and the
+   guardian is shown as not resolved (do not copy `models_cmd.rs`'s eprintln-and-continue). The
+   `Err` cases: no main model (`models.rs:546-551`); no credential, listing failure or unknown
+   model (`:508-523`); pinned guardian with unknown account or model (`:565`, `:625-638`). Each
+   `Models.notices` entry (e.g. `MainFallback`) is a `Warn` in this section.
+   Reuses `models::resolve` bounded by `LISTING_TIMEOUT` (`bounded` moves from
    `models_cmd.rs` to a `timeout` helper in `fontaine/src/lib.rs`). Relies on `resolve`:
    reachability is not checked for a static-list main account or the guardian account
    (`models.rs:511-533`).
 6. **MCP servers**: each `Config::mcp_servers` entry: origin scope, transport kind, approval
    state, and connection state `connected (N tools)` / `failed: <chain>` / `not started: <why>`.
    The probe gate follows `AgentRuntime::mcp_plan` (`agent/mcp.rs:101-134`): user and plugin
-   servers always start; a project or project-local server (without user trust) is skipped when
-   project executables are off (`trust::is_trusted`) and otherwise needs `server_approved`
-   against `server_digest`, the interactive rule with no prompt. So `doctor` never runs
-   unaccepted repository code. Before this and the extensions section, doctor runs
+   servers always start; any project or project-local server is skipped without workspace trust
+   (`trust::is_trusted`); repository-defined ones (Project slot, or project-local without user
+   trust) also need `server_approved` against `server_digest` (`agent/mcp.rs:115-125`; user trust
+   only affects `needs_approval`). This is the interactive rule with no prompt, so `doctor` never
+   runs unaccepted repository code. Before this and the extensions section, doctor runs
    `plugins::load_installed` + `config.apply_plugins` (so plugin servers appear) but not
-   `plugin_auto_update::apply_staged`, which writes. A probe uses a small counting sink
-   (`AtomicUsize`, drops the tools) and a 10 s timeout, and calls `connection.close().await`
-   before returning, since the tools hold `Arc` clones of the connection.
+   `plugin_auto_update::apply_staged`, which writes. A `load_installed`/`apply_plugins` error
+   (e.g. a server-name collision, `plugins.rs:472-481`) is a `Fail` finding and plugin servers and
+   rows are skipped; `contributions.warnings` and `config.lsp_table().warnings`
+   (`lib.rs:746-759`) are shown as `Warn`. A probe uses a small counting sink that `store`s
+   `tools.len()` in both `add_managed_tools` and `reconcile_managed_tools` (so a list change does
+   not double count) and returns an empty token map; the count is of registered tools
+   (`GuardedSink` drops unusable names first). The probe has a 10 s timeout and closes with
+   `connected.connection.close().await` (there is no `close` on `Connected` itself) so doctor
+   waits for a clean shutdown before exiting.
 7. **Instructions, hooks, skills**: instruction files loaded via the existing instructions loader
    (path and origin, in load order), hook counts per event and scope, skills count with the
-   warnings `extensions::load` returns (plugin skip, skill-trust read, trust mismatch). The
+   warnings `extensions::load` returns (plugin skip, skill-trust read, trust mismatch). An
+   `ExtensionError` from `extensions::load` (`extensions.rs:499-516`; stops at the first bad file)
+   becomes a `Fail` finding naming the file, with skills and agents listed as not loaded;
+   `servers` and `contributions.dirs` from the plugin load are passed in. The
    instructions `Sources`/`Scope` (roots, home, deny rules) come from a helper extracted out of
    session setup (`lib.rs` ~638-661, 778-782; `agent/setup.rs` ~358-370).
 8. **Memory**: see below. Needs no `Config`: it uses `canonicalize(cwd)` with
@@ -135,27 +153,35 @@ level):
 
 - store directory missing: `Ok` (nothing saved yet); store is a symlink or not a directory: `Fail`
   (matches `ensure_dir`'s refusal).
-- `MEMORY.md` unreadable or not UTF-8: `Fail`.
+- `MEMORY.md` is a link or not a regular file (`memory::load` refuses it, `memory.rs:108-116`):
+  `Fail`. Unreadable or not UTF-8: `Fail`; the UTF-8 check runs on the same capped prefix `load`
+  reads (`MAX_INDEX_BYTES + 1`), so a char cut at the cap is accepted (`:127-147`).
 - index over `MAX_INDEX_LINES` / `MAX_INDEX_BYTES` (what `load` truncates): `Warn`, with how many
   lines are beyond the cap and so never reach the prompt.
 - **Dangling entry**: an index line links to a relative `*.md` whose target does not exist on
-  disk: `Fail`, naming line number and target. A link to an existing file that `memory::files`
-  does not load (it reads only the top level and skips directories) is a `Warn`.
+  disk (`symlink_metadata` reports missing): `Fail`, naming line number and target. A target
+  that exists but is not loaded by `memory::files` (a directory or nested path, or a link, which
+  `files` skips, `:201-206`) is a `Warn`, naming "is a link" explicitly for links.
 - **Orphan file**: a topic file that no index line links to: `Warn`.
 - **Duplicate entry**: two index lines link to the same file: `Warn`.
-- **Escaping link**: a link target with `..`, an absolute path, or a scheme: `Warn` (not followed,
-  never read).
-- Links inside fenced code blocks are ignored; external `http(s)` links are ignored.
+- **Escaping link**: `http(s)` links are ignored; any other scheme, a `..` or an absolute target
+  is `Warn` (not followed, never read).
+- Links inside fenced code blocks are ignored.
 
 Link extraction is a small Markdown inline-link scan (`[text](target)`, optional `#fragment`
-stripped), not regex over tool arguments. The store checked is the one for the current primary
-root (`memory::dir(data_dir, root)`); `[memory] auto = false` still checks an existing store
-and notes that auto memory is off. `doctor` never writes, repairs or deletes.
+stripped), not regex over tool arguments; fences use the helpers in
+`fontaine-core/src/instructions/markdown.rs:13-30` (`opening_fence`/`closes_fence`, made
+`pub(crate)`) rather than a second fence parser. The store checked is the one for the current
+primary root (`memory::dir(data_dir, root)`); `[memory] auto = false` still checks an existing
+store. The "auto memory is off" note appears only when config loaded; otherwise the section still
+checks the store and says the auto setting is unknown. `doctor` never writes, repairs or deletes.
 
 ### Dispatch module
 
 New `rust/fontaine/src/doctor_cmd.rs` (`run(cli, args, host) -> ExitCode`), like `models_cmd.rs`:
 builds a current-thread runtime, assembles sections, prints text or JSON, returns the exit code.
+It receives the debug `sink` (`run(cli, args, host, sink)`) and runs dirs resolution and
+load/diagnose inside `telemetry::with_debug_only(sink, ..)`.
 `DoctorArgs { format: FormatArgs, connect: Toggle, all: bool }` in `cli.rs`.
 
 ## Implementation Steps
@@ -168,16 +194,21 @@ builds a current-thread runtime, assembles sections, prints text or JSON, return
    still shown.
 2. `memory.rs`: add `check` and `MemoryFinding`. Unit-test every case above.
 3. `agent/mcp.rs`: extract `mcp_plan`'s filter/digest and `connect_mcp`'s `ServerSpec` building
-   (`mcp.rs:138-209`) into free functions over `&Config`; add a deny-all `ToolGate`/`Guard` for the
-   probe (see `fontaine-mcp/tests/common/mod.rs:67-75`, `fontaine-tools/src/guarded.rs:50-60`).
-   Extract the instructions `Sources`/`Scope` helper from session setup.
+   (`connect_mcp` spans `mcp.rs:138-200`) into free functions over `&Config`, e.g.
+   `mcp_plan(config, root, data_dir, project_executables, confirm)` and
+   `server_spec(config, name, root) -> Option<ServerSpec>`; make `server_digest` visible. Connect
+   needs `config.loaded_network(None)` and an env lookup. Add a deny-all `ToolGate`/`Guard` for
+   the probe (see `fontaine-mcp/tests/common/mod.rs:67-75`, `fontaine-tools/src/guarded.rs:50-60`).
+   Extract the instructions `Sources`/`Scope` helper from session setup. Make `opening_fence` /
+   `closes_fence` in `instructions/markdown.rs` `pub(crate)`.
 4. `doctor_report.rs`: report types, text and JSON rendering, section builders that take plain
    inputs (config sources, trust facts, resolved models, probe results, memory findings).
 5. Move `bounded` to a `timeout` helper in `fontaine/src/lib.rs`; `models_cmd.rs` uses it.
 6. `cli.rs`: `Command::Doctor(DoctorArgs)`. `lib.rs`: extract `resolve_dirs` and
    `load_params(cli, host, &dirs)` from `load_config`; dispatch after `DebugSink::open`.
-7. `doctor_cmd.rs`: gather live facts (load or diagnose, trust, `models::resolve`, MCP probe with
-   the counting sink, instructions/hooks/skills), call section builders, print, exit code.
+7. `doctor_cmd.rs`: gather live facts (load or diagnose inside `telemetry::with_debug_only`, trust,
+   `models::resolve`, plugin load, MCP probe with the counting sink, instructions/hooks/skills
+   passing plugin `servers` and `contributions.dirs`), call section builders, print, exit code.
 8. Integration test through the binary (see Testing).
 9. Docs, parity matrix row, CHANGELOG, plan Decisions.
 
@@ -229,11 +260,11 @@ Unit tests (no live APIs):
   sections when config did not load, with load's own error as a `Fail`; no secret values in
   settings rows.
 - MCP section: not-started reasons for untrusted/unapproved servers (pure function of trust
-  facts); a connected/failed row from a constructed probe result. The in-process MCP probe test
-  is a library-level test of the extracted probe function (binary tests run a child process and
-  cannot reach an in-process server); the stdio spawn path is covered by the existing MCP tests.
+  facts); a connected/failed row from a constructed probe result.
 
 Integration test through the `fontaine` binary, using the existing headless test harness with a
 temp config dir and a wiremock `GET /models` openai-compatible account as in
 `rust/fontaine/tests/models_cmd.rs`: a project file with a user-only key yields exit 1 with the
-key named; a clean setup yields exit 0 and valid JSON.
+key named; a clean setup yields exit 0 and valid JSON. An MCP case configures the existing
+example `repo_mcp_server` (3 tools; `fontaine/tests/project_executables.rs:31-60`) as a user-scope
+server and asserts "connected (3 tools)".
