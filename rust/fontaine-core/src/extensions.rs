@@ -16,6 +16,7 @@ use crate::effort::Effort;
 use crate::frontmatter::{self, Document, Value};
 use crate::permission_rules::{Rule, parse_rule};
 use crate::plugins::{PluginDir, rewrite_mcp_reference};
+use crate::skill_trust::{self, TrustState, TrustedSkills};
 
 pub const SKILLS_DIR: &str = "skills";
 pub const SKILL_FILE: &str = "SKILL.md";
@@ -71,9 +72,14 @@ pub struct Skill {
     pub user_invocable: bool,
     /// Kept out of the skill list and refused by the `skill` tool; only the user runs it.
     pub disable_model_invocation: bool,
-    /// Rules the skill lends to the agent that runs it for the rest of the turn. Empty for a
-    /// project skill: a repository cannot approve calls.
+    /// Rules the skill lends to the agent that runs it for the rest of the turn without any
+    /// trust. Empty for a project or plugin skill: neither can approve calls on its own.
     pub allowed_tools: Vec<Rule>,
+    /// Every `allowed-tools` entry the file declares, whatever its scope. Honoured only for a
+    /// skill the user trusted.
+    pub declared_tools: Vec<Rule>,
+    /// `sha256:<hex>` of the file as loaded, which the trust record pins.
+    pub digest: String,
     pub scope: Scope,
     pub path: PathBuf,
 }
@@ -92,9 +98,15 @@ pub struct Extensions {
     pub skills: Vec<Skill>,
     pub agent_types: Vec<AgentType>,
     pub output_styles: Vec<OutputStyle>,
+    /// What the user trusted, read when the session started.
+    pub trusted: TrustedSkills,
 }
 
 impl Extensions {
+    pub fn trust_state(&self, skill: &Skill) -> TrustState {
+        self.trusted.state(&skill.name, skill.scope, &skill.digest)
+    }
+
     pub fn skill(&self, name: &str) -> Option<&Skill> {
         self.skills.iter().find(|skill| skill.name == name)
     }
@@ -212,6 +224,11 @@ fn first_line(body: &str) -> String {
 }
 
 fn read_document(path: &Path) -> Result<Document, ExtensionError> {
+    read_document_text(path).map(|(doc, _)| doc)
+}
+
+/// The parsed file with the text it was parsed from, so a digest covers exactly what was read.
+fn read_document_text(path: &Path) -> Result<(Document, String), ExtensionError> {
     let fail = |message: String| ExtensionError {
         file: path.to_path_buf(),
         message,
@@ -222,11 +239,12 @@ fn read_document(path: &Path) -> Result<Document, ExtensionError> {
             fontaine_tools::error_chain::chain(&e)
         ))
     })?;
-    frontmatter::parse(&text).map_err(fail)
+    let doc = frontmatter::parse(&text).map_err(fail)?;
+    Ok((doc, text))
 }
 
 fn load_skill(path: &Path, default_name: &str, scope: Scope) -> Result<Skill, ExtensionError> {
-    let doc = read_document(path)?;
+    let (doc, text) = read_document_text(path)?;
     let fail = |message: String| ExtensionError {
         file: path.to_path_buf(),
         message,
@@ -240,13 +258,15 @@ fn load_skill(path: &Path, default_name: &str, scope: Scope) -> Result<Skill, Ex
     }
     model_of(&doc).map_err(fail)?;
     let allowed = map_tool_list(&doc, "allowed-tools").map_err(fail)?;
-    let allowed_tools = match (scope, allowed) {
-        (Scope::User, Some(entries)) => entries
-            .iter()
-            .map(|entry| parse_rule(entry).expect("validated when the definition was loaded"))
-            .collect(),
-        // Validated above; a repository's or a plugin's skill cannot approve anything.
-        _ => Vec::new(),
+    let declared_tools: Vec<Rule> = allowed
+        .iter()
+        .flatten()
+        .map(|entry| parse_rule(entry).expect("validated when the definition was loaded"))
+        .collect();
+    // A repository's or a plugin's skill cannot approve anything unless the user trusts it.
+    let allowed_tools = match scope {
+        Scope::User => declared_tools.clone(),
+        Scope::Project | Scope::Plugin => Vec::new(),
     };
     let flag = |key: &str, default: bool| {
         doc.flag(key)
@@ -270,6 +290,8 @@ fn load_skill(path: &Path, default_name: &str, scope: Scope) -> Result<Skill, Ex
         disable_model_invocation: flag("disable-model-invocation", false)?,
         body: doc.body.clone(),
         allowed_tools,
+        declared_tools,
+        digest: skill_trust::digest_of(text.as_bytes()),
         scope,
         path: path.to_path_buf(),
         name,
@@ -486,7 +508,38 @@ pub fn load(params: &mut LoadParams<'_>) -> Result<Extensions, ExtensionError> {
     }
     load_scope(project.as_path(), Scope::Project, params.servers, &mut out)?;
     out.skills.sort_by(|a, b| a.name.cmp(&b.name));
+    let (trusted, unreadable) = skill_trust::load(params.config_dir);
+    warnings.extend(unreadable);
+    out.trusted = trusted;
+    warnings.extend(trust_warnings(&out));
     Ok(out)
+}
+
+/// What the user should hear about the trust record against the skills that loaded: a record for
+/// a project skill that is ignored, and a trusted skill whose file changed since.
+fn trust_warnings(extensions: &Extensions) -> Vec<String> {
+    let mut out = Vec::new();
+    for skill in &extensions.skills {
+        if extensions.trusted.record(&skill.name).is_none() {
+            continue;
+        }
+        match (skill.scope, extensions.trust_state(skill)) {
+            (Scope::Project, _) => out.push(format!(
+                "skill-trust.toml trusts `{}`, which is a project skill: a repository's skill is never trusted, so the record is ignored",
+                skill.name
+            )),
+            (Scope::Plugin, TrustState::Stale) => out.push(format!(
+                "skill {0} changed since you trusted it; its allowed-tools are off until /skills trust {0}",
+                skill.name
+            )),
+            (_, TrustState::Stale) => out.push(format!(
+                "skill {0} changed since you trusted it; its trust note for the guardian is off until /skills trust {0}",
+                skill.name
+            )),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn load_scope(

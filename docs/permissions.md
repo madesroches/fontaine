@@ -349,6 +349,12 @@ PowerShell command. Without an allow rule or hook, every call prompts in `manual
 
   A deleter with a plain, literal target inside the workspace is not critical. Targets on other
   providers (`HKLM:`, `Env:`, `Cert:`) are not file deletes and are left to the guardian.
+- **Trusted skills.** A plugin skill you [trusted](extensions.md#trusted-skills) lends its specific
+  `allowed-tools` as allows for the turn, after the floor, deny and ask rules and hooks. Its
+  wildcard shell rules (`Bash(git *)`, a bare `Bash`) are not allows in any mode: they reach the
+  guardian as an `active_skill` line (see [the guardian's request](guardian.md#what-the-guardian-sees)),
+  while your own `shell(git *)` allow rule stays an allow. Skills in your own skills directory keep
+  lending all their rules. Neither goes to a subagent.
 - **Skills and restrictions.** A skill's `!` lines run through `shell` only, so a subagent whose
   tools are only `powershell` has nothing to run them with. A restriction that names `shell`, such
   as `shell(git *)`, does not constrain `powershell`; name `powershell` to allow or forbid it.

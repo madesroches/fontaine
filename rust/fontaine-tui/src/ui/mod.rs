@@ -412,6 +412,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::Queue(_)
                 | Action::Command { .. }
                 | Action::GuardianOff(_)
+                | Action::SkillTrust(_)
                 | Action::SetupReview(_)
                 | Action::SetupComposition(_) => {}
             }
@@ -655,6 +656,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Break(()) => Break(()),
                 Continue(()) => Continue(CommandOutcome::Done),
             },
+            Command::Skills(argument) if !argument.is_empty() => {
+                match self.skills_command(runtime, &argument).await {
+                    Break(()) => Break(()),
+                    Continue(()) => Continue(CommandOutcome::Done),
+                }
+            }
             Command::AutoModeSetup => match self.auto_mode_setup(runtime).await {
                 Break(()) => Break(()),
                 Continue(()) => Continue(CommandOutcome::Done),
@@ -873,10 +880,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     runtime.project_executables(),
                 ));
             }
-            Command::Skills => {
+            Command::Skills(_) => {
                 self.app
                     .transcript
-                    .notice(reports::skills(&runtime.extensions().skills));
+                    .notice(reports::skills(runtime.extensions()));
             }
             Command::Plugins => self.plugins(runtime),
             Command::Mcp(argument) => self.mcp(runtime, argument),

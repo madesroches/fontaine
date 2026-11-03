@@ -57,7 +57,7 @@ pub struct World {
     pub work: PathBuf,
     pub extra: PathBuf,
     pub user_config: PathBuf,
-    config_dir: PathBuf,
+    pub config_dir: PathBuf,
     pub data: PathBuf,
     home: PathBuf,
     pub mock: MockCompletionModel,

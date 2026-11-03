@@ -28,10 +28,11 @@ Files in these directories:
 |---|---|
 | `<config dir>/config.toml` | The user settings file. |
 | `<config dir>/plugins.toml` | The [plugin and marketplace](plugins.md) registry, written by the `fontaine plugin` CLI and by the [plugin auto-update](plugins.md#auto-update) pass. It is not a settings file. |
+| `<config dir>/skill-trust.toml` | The skills whose `allowed-tools` you trusted, each pinned to a digest of the skill file (see [Skill trust](#skill-trust)). Written by `fontaine plugin trust` and `/skills trust`; not a settings file, and not the workspace `trust.toml`. |
 | `<data dir>/trust.toml` | Workspace trust record (see [Workspace trust](#workspace-trust)). |
 | `<data dir>/credentials.toml` | Stored API keys (see [Credentials](#credentials)). |
 | `<data dir>/auto_mode/<project>/environment.json` | The project facts `fontaine auto-mode setup` collected for the [guardian](guardian.md#project-environment) (setup also writes `[guardian.composition]` to the user settings file when you accept its [offer](guardian.md#setting-up-the-composition)). Readable by the current user only; the agent's file tools cannot write it unprompted. |
-| `<config dir>/config.lock`, `<config dir>/plugins.lock`, `<data dir>/trust.lock`, `<data dir>/credentials.lock` | Empty lock files beside the files they guard. Sessions hold one while they edit that file, so concurrent edits do not overwrite each other, and briefly while they read the settings or trust file, so a read waits for an edit in progress; safe to delete when no session is running. |
+| `<config dir>/config.lock`, `<config dir>/plugins.lock`, `<config dir>/skill-trust.lock`, `<data dir>/trust.lock`, `<data dir>/credentials.lock` | Empty lock files beside the files they guard. Sessions hold one while they edit that file, so concurrent edits do not overwrite each other, and briefly while they read the settings or trust file, so a read waits for an edit in progress; safe to delete when no session is running. |
 | `<data dir>/history.jsonl` | What you submitted in the terminal UI, for Up and Ctrl-R recall (see [History](tui.md#history)). Readable by the current user only. |
 | `<data dir>/plugin-update.stamp` | When the [plugin auto-update](plugins.md#auto-update) pass last ran, so it runs at most once a day. |
 | `<data dir>/plugin-updates.jsonl` | One JSON line for each plugin or marketplace update the pass staged, held or failed. Readable by the current user only. |
@@ -1030,6 +1031,26 @@ theme = "dark"
 screen_reader = false
 show_reasoning = true
 ```
+
+## Skill trust
+
+Which skills have had their [`allowed-tools` honoured](extensions.md#trusted-skills) is kept in
+`<config dir>/skill-trust.toml`, outside every repository and apart from the workspace
+`trust.toml`. `fontaine plugin trust` and the terminal UI's `/skills trust` write it; nothing in a
+project scope can read it into a grant. A record for a project skill is ignored with a warning.
+
+```toml skill-trust.toml
+[[skill]]
+name = "dev-skills:pr"          # the composed name /skills shows
+digest = "sha256:9f2c5a0e"      # of the skill file's bytes, frontmatter and body
+tools = ["shell(git *)"]        # the trusted version's allowed-tools
+commands = ["!git status"]      # the trusted version's `!` lines
+```
+
+`tools` and `commands` are kept so a later change can be shown as a difference. The file is
+atomically replaced under `skill-trust.lock` and readable by the current user only. An unreadable
+or unparseable file trusts nothing and is reported once at start; `plugin trust` and `untrust`
+refuse to overwrite it.
 
 ## Workspace trust
 

@@ -175,6 +175,20 @@ pub enum PluginAction {
     AutoUpdate(AutoUpdateArgs),
     /// List installed plugins
     List(FormatArgs),
+    /// Honour a skill's allowed-tools: `<plugin>:<skill>`, a skill in your skills directory, or a plugin name for every skill it has now
+    Trust(TrustArgs),
+    /// Stop honouring a trusted skill's allowed-tools (or every trusted skill of a plugin)
+    Untrust(NameArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct TrustArgs {
+    /// A skill name as `/skills` shows it, or an installed plugin's name
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// Record without asking; the details are still printed
+    #[arg(long)]
+    pub yes: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -229,7 +243,7 @@ pub struct MarketplaceAddArgs {
 
 #[derive(Args, Debug, Clone)]
 pub struct NameArgs {
-    /// A plugin name, or `name@marketplace` for install
+    /// A plugin name, `name@marketplace` for install, or a skill name for untrust
     #[arg(value_name = "NAME")]
     pub name: String,
 }

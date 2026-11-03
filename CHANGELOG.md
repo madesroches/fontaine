@@ -236,6 +236,19 @@ All notable changes are recorded here. The format follows
   model thinks at its own default. A level the model or its endpoint cannot take (including any
   generic `openai-compatible` gateway) is left out of the request with a one-time warning. The
   guardian keeps thinking off whatever the level; the key is user scope only (#53).
+- Trusted skills (#379). `fontaine plugin trust <skill|plugin>` (and `untrust`) and the terminal
+  UI's `/skills trust <name>` record that you want a skill's `allowed-tools` honoured, pinned to a
+  digest of the skill file in the new `<config dir>/skill-trust.toml`. A trusted plugin skill's
+  specific rules (a shell command with no wildcard, and non-shell tools) act as allows for the turn,
+  after the floor, your deny and ask rules and hooks. Its wildcard shell rules (`Bash(git *)`, a
+  bare `Bash`) are never an allow in any mode: the guardian gets an `active_skill` line naming the
+  skill and the classes it declares, and its prompt treats them as your intent for routine steps
+  only. A skill file that changed suspends its grants (and a notice says so) until you trust the new
+  version, shown as a difference of `allowed-tools` and `!` commands. Project skills can never be
+  trusted, a headless run never asks (an untrusted plugin skill lends nothing and warns once), and
+  a trust applies from the next session start. `/skills` marks each skill's trust state. Eval cases
+  for the new guardian context are in `evals/dataset/skills.jsonl`; the live Haiku eval is run by a
+  maintainer.
 
 #### Guardian
 

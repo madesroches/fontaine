@@ -69,6 +69,12 @@ pub enum Record {
     GuardianOff {
         off: bool,
     },
+    /// The human trusted a skill's `allowed-tools` at one version of its file in the TUI. The
+    /// CLI's `plugin trust` writes no record.
+    SkillTrust {
+        name: String,
+        digest: String,
+    },
     Approval {
         tool: String,
         agent: String,
@@ -510,6 +516,7 @@ impl LedgerView {
             },
             Record::ModeChange { .. }
             | Record::GuardianOff { .. }
+            | Record::SkillTrust { .. }
             | Record::Approval { .. }
             | Record::Grant { .. }
             | Record::Resumed { .. }

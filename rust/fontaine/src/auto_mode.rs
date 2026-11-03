@@ -317,7 +317,7 @@ async fn critique_models(
     }
 }
 
-fn confirm(question: &str) -> bool {
+pub(crate) fn confirm(question: &str) -> bool {
     eprint!("{question} [y/N] ");
     let _ = std::io::stderr().flush();
     let mut answer = String::new();

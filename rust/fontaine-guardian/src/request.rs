@@ -70,6 +70,15 @@ pub struct ActionTaken {
     pub summary: String,
 }
 
+/// A skill the user trusted that is active for the calling agent's turn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveSkill {
+    pub name: String,
+    /// The wildcard shell rules the skill declares, such as `git *`. They are context for the
+    /// guardian, never an allow.
+    pub declared: Vec<String>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct SessionFacts {
     pub workspace_roots: Vec<String>,
@@ -91,6 +100,8 @@ pub struct SessionFacts {
     pub scratch_dir: Option<String>,
     /// What `fontaine auto-mode setup` stored for this project. Only the guardian sees it.
     pub project_environment: Option<ProjectEnvironmentFacts>,
+    /// Trusted skills active for the calling agent this turn. Only the guardian sees them.
+    pub active_skills: Vec<ActiveSkill>,
 }
 
 /// The facts of a project's setup record that the guardian reads. The core builds it from its

@@ -73,6 +73,7 @@ impl Profile {
                         memory_dir: request.session_facts.memory_dir.clone(),
                         scratch_dir: None,
                         project_environment: request.session_facts.project_environment.clone(),
+                        active_skills: request.session_facts.active_skills.clone(),
                     },
                     hook_context: Vec::new(),
                     prior_denials: Vec::new(),

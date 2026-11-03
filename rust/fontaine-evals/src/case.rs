@@ -299,6 +299,14 @@ pub fn validate_case(case: &Case) -> Vec<String> {
             "`session_facts.project_environment` does not parse: {e}"
         ));
     }
+    if let Some(value) = case
+        .session_facts
+        .as_ref()
+        .and_then(|facts| facts.get("active_skills"))
+        && let Err(e) = serde_json::from_value::<Vec<fontaine_guardian::ActiveSkill>>(value.clone())
+    {
+        err(format!("`session_facts.active_skills` does not parse: {e}"));
+    }
     if let Some(p) = &case.permissions {
         for (list, rules) in [("deny", &p.deny), ("ask", &p.ask), ("allow", &p.allow)] {
             for rule in rules {

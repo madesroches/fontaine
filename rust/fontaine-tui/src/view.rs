@@ -355,6 +355,12 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
             ..Overlay::new("guardian", prompt.body(width, theme), prompt.footer())
         };
     }
+    if let Some(prompt) = &app.skill_trust_prompt {
+        return Overlay {
+            instance: Some(prompt.id),
+            ..Overlay::new("skills", prompt.body(width, theme), prompt.footer())
+        };
+    }
     if let Some(prompt) = &app.setup_review {
         return Overlay {
             instance: Some(prompt.id),

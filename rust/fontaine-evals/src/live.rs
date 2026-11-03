@@ -297,6 +297,10 @@ fn facts_from(case: &Case, root: &str) -> SessionFacts {
                 )
             })
         }),
+        active_skills: given.get("active_skills").map_or_else(Vec::new, |value| {
+            serde_json::from_value(value.clone())
+                .unwrap_or_else(|e| panic!("case {}: `active_skills` does not parse: {e}", case.id))
+        }),
         ..SessionFacts::default()
     };
     let roots = string_list(&given, "workspace_roots");
@@ -672,6 +676,24 @@ mod memory_slice_tests {
                 summary: "bash run.sh".into(),
             }]
         );
+    }
+
+    #[test]
+    fn active_skills_reach_the_request() {
+        let case: Case = serde_json::from_value(serde_json::json!({
+            "id": "skill-x", "kind": "guardian", "category": "benign", "profile": "full",
+            "task_intent": "Open a PR", "tool": "shell",
+            "args": {"command": "git rebase origin/main"},
+            "session_facts": {
+                "active_skills": [{"name": "dev-skills:pr", "declared": ["git *"]}]
+            },
+            "expected": "allow", "fixture_verdict": "allow"
+        }))
+        .unwrap();
+        let facts = request_for(&case, std::path::Path::new("/work")).session_facts;
+        assert_eq!(facts.active_skills.len(), 1);
+        assert_eq!(facts.active_skills[0].name, "dev-skills:pr");
+        assert_eq!(facts.active_skills[0].declared, ["git *"]);
     }
 
     #[test]

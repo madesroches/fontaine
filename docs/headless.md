@@ -55,6 +55,11 @@ Enabled [plugins](plugins.md) load in a headless run exactly as they do in the t
 hooks, MCP servers and skill `!` commands run without the workspace-trust gate, because install
 approved them.
 
+A headless run never asks about [skill trust](extensions.md#trusted-skills). A plugin skill that is
+untrusted, or that changed since you trusted it, lends nothing; invoking one that declares
+`allowed-tools` warns once on stderr. Trust skills with `fontaine plugin trust <name>` ahead of
+time, and re-trust after an update that changed one.
+
 The budget is checked between model calls, and before each goal evaluation and goal turn. A call that pushes the spend over the cap stops the
 run before its tool calls execute; an answer that was already complete is kept. The spend includes
 the guardian's calls, the goal evaluator's calls and the subagents' model calls.

@@ -50,6 +50,7 @@ pub mod schedule;
 pub mod scratch;
 pub mod session;
 pub mod side_question;
+pub mod skill_trust;
 pub mod skills;
 pub mod steering;
 pub mod tasks;

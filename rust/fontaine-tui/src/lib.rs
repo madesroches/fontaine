@@ -29,6 +29,7 @@ pub mod screen;
 pub mod server_prompt;
 pub mod setup;
 pub mod setup_prompt;
+pub mod skill_trust_prompt;
 pub mod spinner;
 pub mod statusbar;
 pub mod theme;

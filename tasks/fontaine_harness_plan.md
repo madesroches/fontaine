@@ -421,7 +421,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-21: Unknown config keys and sections are a config error (exit 2) (Claude Code ignores them): a misspelled `[permisions]` must not silently drop deny rules.
 - 2026-10-21: `--settings` takes a TOML file path only (Claude Code also accepts an inline JSON string): TOML has no unambiguous inline top-level form.
 - 2026-10-21: Deviation — config trust asymmetry is looser than Claude Code on the deny side: project repos may add deny/ask rules (Claude Code ignores the project `autoMode` block); reason: deny-side additions can only tighten.
-- 2026-10-21: Deviation — shared project settings cannot hold allow rules, a project hook's `allow` and a project skill's `allowed-tools` are ignored; reason: project scope can only tighten.
+- 2026-10-21: Deviation — shared project settings cannot hold allow rules, a project hook's `allow` and a project skill's `allowed-tools` are ignored; reason: project scope can only tighten. Amended 2026-11-03 (#379): a project skill can never be trusted either; a record for one in `skill-trust.toml` is ignored with a warning.
 - 2026-10-21: Settings scope stack managed (reserved) > CLI > project-local > project > user (Claude Code parity). Deviation: endpoint/credential keys (`[accounts.*]`, `[telemetry]` except `enabled = false`) are never read from project-local; reason: a file in the repo must not redirect session data.
 - 2026-10-21: Deviation — project and project-local scopes may set `default_mode` to `manual` or `dontAsk` only; `plan` (its guardian leg can loosen a manual user) and `acceptEdits` (a repo must not auto-approve edits) are stricter than Claude Code, and `auto` is rejected from project-local too (Claude Code parity).
 - 2026-10-21: Directories come from the `dirs` crate, overridable by `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR`; credentials at `<data dir>/credentials.toml`, owner-only (`design/platforms.md`).
@@ -470,7 +470,10 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 ### Extensibility
 
 - 2026-10-28: Plugin hooks' `allow`/`retry` never count and plugin skills/agents follow project
-  permission rules, even though install is a user action (stricter than Claude Code).
+  permission rules, even though install is a user action (stricter than Claude Code). Amended
+  2026-11-03 (#379): `fontaine plugin trust` (and `/skills trust`) is the way back to parity for a
+  plugin skill's `allowed-tools`, per skill and pinned to a digest of the skill file; hooks and
+  agent files stay tighten-only.
 - 2026-10-28: Installs, updates and marketplace changes are CLI commands only; the TUI gets a
   read-only `/plugins`. No interactive marketplace browser in v1. Amended 2026-10-31 (#283): the
   one exception is the background auto-update pass below, which stages revisions the user already
@@ -558,6 +561,30 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   session, and the pass holds the registry lock only to record, never through git network work.
 - 2026-11-01: A hook payload's `cwd` stays the workspace root (`docs/hooks.md`) where Claude Code's
   follows the shell's `cd`; the tracked directory is visible to hooks as `tool_input.cwd` (#26).
+- 2026-11-03 (#379): Skill trust is per skill, with `trust <plugin>` as shorthand for the skills the
+  plugin has at that time; reason: a trusted skill must not vouch for the other skills of its plugin.
+- 2026-11-03 (#379): Trust is pinned to a digest of the skill file, not the plugin pin, and a
+  changed file suspends the grants (a plugin skill's `allowed-tools` go off, a user skill falls back
+  to its untrusted behaviour) until the user acknowledges the new version in the terminal UI;
+  headless never re-acknowledges, so an untrusted or stale plugin skill lends nothing there and warns
+  once; reason: the plugin pin changes with unrelated files and auto-update can change a skill's body
+  with no approval step.
+- 2026-11-03 (#379): Trust lives in `<config dir>/skill-trust.toml`, not `plugins.toml`; reason:
+  `plugins.toml` is rewritten by auto-update and tied to the plugin lifecycle, and a separate file
+  also covers user-directory skills and survives uninstall.
+- 2026-11-03 AFK (#379): A trusted skill's wildcard shell rules (any `Bash(<prog> *)`, bare `Bash`) are
+  guardian context (`active_skill`), never skill grants in any mode, and only its specific rules are
+  allows; reason: `is_broad_code_execution` does not classify `git *` as broad and `plan` does not
+  suspend broad rules, so reusing it would allow `git push --force origin main` unguarded; the global
+  classifier is left unchanged.
+- 2026-11-03 AFK (#379): A skill trust or untrust takes effect at the next session start, and the
+  `/skills trust` dialog says so; reason: `Extensions` is immutable behind an `Arc`.
+- 2026-11-03 AFK (#379): Confirming `/skills trust` appends a `Record::SkillTrust` ledger and audit
+  entry, while the CLI `trust`/`untrust` is unaudited like plugin install; reason: an interactive
+  grant of tool permissions belongs in the record, as `Record::Approval` and `Record::GuardianOff` are.
+- 2026-11-03 AFK (#379): CLI `trust`/`untrust` enumerate skills with the real config dir, a
+  nonexistent sentinel `project_root` and `plugins::load_installed`; reason: user-directory skills
+  must be found while project files are never read.
 
 ### Guardian
 

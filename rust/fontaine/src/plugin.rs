@@ -9,13 +9,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fontaine_core::dirs::{self, Dirs};
-use fontaine_core::extensions;
+use fontaine_core::extensions::{self, Scope};
 use fontaine_core::notice::Notice;
 use fontaine_core::plugins::{
     self, Catalog, CatalogPlugin, CatalogSource, InstalledPlugin, MarketplaceEntry, PluginContext,
     Registry, checkout_dir, content_hash, marketplace_dir, registry_path, staged_dir,
     valid_plugin_name,
 };
+use fontaine_core::skill_trust;
 use uuid::Uuid;
 
 use crate::cli::{
@@ -52,6 +53,8 @@ pub fn run(args: &PluginArgs, host: &Host) -> ExitCode {
         PluginAction::Disable(args) => set_enabled(&dirs, &args.name, false),
         PluginAction::AutoUpdate(args) => set_plugin_auto_update(&dirs, &args.name, args.setting),
         PluginAction::List(format) => list(&dirs, host, format.format),
+        PluginAction::Trust(args) => trust(&dirs, host, &args.name, args.yes),
+        PluginAction::Untrust(args) => untrust(&dirs, &args.name),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -1247,6 +1250,174 @@ pub(crate) fn set_enabled(dirs: &Dirs, name: &str, enabled: bool) -> Result<(), 
     println!(
         "plugin `{name}` is now {}",
         if enabled { "enabled" } else { "disabled" }
+    );
+    Ok(())
+}
+
+/// The skills `trust` can name: the user directory's and those of installed, enabled plugins.
+/// The project root is a path that holds nothing, so a repository's files are never read.
+fn trustable_skills(
+    dirs: &Dirs,
+    host: &Host,
+) -> Result<(extensions::Extensions, Vec<String>), String> {
+    let none = dirs.config.join(".fontaine-skill-trust-enumeration");
+    let contributions = plugins::load_installed(&dirs.config, &plugin_context(&*host.env, &none))
+        .map_err(|e| e.to_string())?;
+    let plugin_names = contributions.dirs.iter().map(|d| d.name.clone()).collect();
+    let mut warnings = Vec::new();
+    let extensions = extensions::load(&mut extensions::LoadParams {
+        config_dir: &dirs.config,
+        project_root: &none,
+        servers: &[],
+        plugins: &contributions.dirs,
+        warnings: &mut warnings,
+    })
+    .map_err(|e| e.to_string())?;
+    print_warnings_of(&contributions.warnings);
+    print_warnings_of(&warnings);
+    Ok((extensions, plugin_names))
+}
+
+/// The skills a name stands for: the skill itself, or every skill an installed plugin has.
+fn named_skills<'a>(
+    extensions: &'a extensions::Extensions,
+    plugin_names: &[String],
+    name: &str,
+) -> Result<Vec<&'a extensions::Skill>, String> {
+    let skill = extensions
+        .skill(name)
+        .filter(|skill| skill.scope != Scope::Project);
+    let is_plugin = plugin_names.iter().any(|plugin| plugin == name);
+    match (skill, is_plugin) {
+        (Some(_), true) => fail(format!(
+            "`{name}` is both an installed plugin and a skill; name the skill as `<plugin>:{name}` or rename the skill"
+        )),
+        (Some(skill), false) => Ok(vec![skill]),
+        (None, true) => {
+            let prefix = format!("{name}:");
+            let skills: Vec<_> = extensions
+                .skills
+                .iter()
+                .filter(|skill| skill.scope == Scope::Plugin && skill.name.starts_with(&prefix))
+                .collect();
+            if skills.is_empty() {
+                return fail(format!("plugin `{name}` has no skills"));
+            }
+            Ok(skills)
+        }
+        (None, false) => fail(format!(
+            "no skill or installed plugin named `{name}`; trust takes a skill name as `/skills` shows it, or the name of an installed, enabled plugin"
+        )),
+    }
+}
+
+fn print_trust_details(skill: &extensions::Skill) {
+    let (specific, wildcard) = skill_trust::split_tools(skill);
+    println!("skill {}", skill.name);
+    println!("  file: {}", skill.path.display());
+    println!("  digest: {}", skill.digest);
+    let list = |label: &str, rules: &[String]| {
+        if rules.is_empty() {
+            println!("  {label}: (none)");
+        } else {
+            println!("  {label}: {}", rules.join(", "));
+        }
+    };
+    if skill.scope == Scope::User {
+        list("allowed-tools (already allowed, trusted or not)", &specific);
+        list(
+            "wildcard shell rules (already allowed too; trust only adds the guardian note)",
+            &wildcard,
+        );
+    } else {
+        list("allowed-tools that become allows", &specific);
+        list(
+            "wildcard shell rules (guardian context only, never an allow)",
+            &wildcard,
+        );
+    }
+    let commands = skill_trust::command_lines(&skill.body);
+    if commands.is_empty() {
+        println!("  commands it runs: (none)");
+    } else {
+        println!("  commands it runs:");
+        for command in commands {
+            println!("    {command}");
+        }
+    }
+}
+
+fn trust(dirs: &Dirs, host: &Host, name: &str, yes: bool) -> Result<(), String> {
+    use std::io::IsTerminal;
+    let (extensions, plugin_names) = trustable_skills(dirs, host)?;
+    let skills = named_skills(&extensions, &plugin_names, name)?;
+    for skill in &skills {
+        print_trust_details(skill);
+    }
+    if !yes {
+        if !std::io::stdin().is_terminal() {
+            return fail(
+                "refusing to trust without a terminal to confirm on; pass --yes to record without asking",
+            );
+        }
+        let question = match skills.as_slice() {
+            [only] => format!("Honour the allowed-tools of {}?", only.name),
+            many => format!("Honour the allowed-tools of these {} skills?", many.len()),
+        };
+        if !crate::auto_mode::confirm(&question) {
+            return fail("not trusted");
+        }
+    }
+    skill_trust::trust(
+        &dirs.config,
+        skills
+            .iter()
+            .map(|skill| skill_trust::record_of(skill))
+            .collect(),
+    )
+    .map_err(|e| e.to_string())?;
+    println!(
+        "trusted {} skill(s); this takes effect at the next session start",
+        skills.len()
+    );
+    Ok(())
+}
+
+fn untrust(dirs: &Dirs, name: &str) -> Result<(), String> {
+    let (trusted, unreadable) = skill_trust::load(&dirs.config);
+    if let Some(message) = unreadable {
+        return fail(message);
+    }
+    let prefix = format!("{name}:");
+    let is_plugin = trusted
+        .records()
+        .iter()
+        .any(|record| record.name.starts_with(&prefix));
+    let is_skill = trusted.records().iter().any(|record| record.name == name);
+    if is_skill && is_plugin {
+        return fail(format!(
+            "`{name}` is both a plugin and a skill; name the skill as `<plugin>:{name}` or rename the skill"
+        ));
+    }
+    let names: Vec<String> = trusted
+        .records()
+        .iter()
+        .filter(|record| {
+            if is_plugin {
+                record.name.starts_with(&prefix)
+            } else {
+                record.name == name
+            }
+        })
+        .map(|record| record.name.clone())
+        .collect();
+    if names.is_empty() {
+        return fail(format!("no trusted skill or plugin named `{name}`"));
+    }
+    skill_trust::untrust(&dirs.config, &names).map_err(|e| e.to_string())?;
+    println!(
+        "untrusted {} skill(s); this takes effect at the next session start",
+        names.len()
     );
     Ok(())
 }

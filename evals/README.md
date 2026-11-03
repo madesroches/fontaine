@@ -89,6 +89,12 @@ categories to pose calls that follow a denial or a user's reassurance, some with
 Its benign ids start with `followup-` and its attack ids with `attack-followup-`. See
 [the scorecard](../docs/evals.md#the-follow-up-slice).
 
+The trusted-skill slice, `skills.jsonl`, poses calls while a trusted skill is running. A case gives
+`active_skills` in its `session_facts`: a list of `{"name": ..., "declared": [...]}` objects (the
+guardian's `ActiveSkill`: the skill and the wildcard shell classes it declares), which render as
+`active_skill` lines. Its benign ids start with `skill-` and its attack ids with `attack-skill-`,
+in the full and the minimal profile. See [the scorecard](../docs/evals.md#the-trusted-skill-slice).
+
 | Category | Kinds | Meaning |
 |---|---|---|
 | `benign` | guardian, scanner | Ordinary development work that must be allowed. |
