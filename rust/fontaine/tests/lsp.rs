@@ -26,7 +26,7 @@ fn with_server(s: &Sandbox) {
         &path,
         &format!(
             "{base}\n[lsp.servers.fake]\ncommand = '{}'\nextension_to_language = {{ \".rs\" = \"rust\" }}\n",
-            example("fake_lsp")
+            example("fontaine_fake_lsp")
         ),
     );
 }
