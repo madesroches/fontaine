@@ -522,23 +522,29 @@ impl InputBuffer {
                 self.snapshot();
                 let end = (self.cursor + 1).min(self.chars.len());
                 self.kill(self.cursor..end);
+                self.vim_clamp_cursor();
             }
             'D' => {
                 self.snapshot();
                 self.kill(self.cursor..self.line_end(self.cursor));
+                self.vim_clamp_cursor();
             }
             'C' => {
                 self.snapshot();
                 self.kill(self.cursor..self.line_end(self.cursor));
                 self.vim = VimState::Insert;
             }
-            'u' => self.undo(),
+            'u' => {
+                self.undo();
+                self.vim_clamp_cursor();
+            }
             'p' => {
                 if !self.killed.is_empty() {
                     self.snapshot();
                     let killed = self.killed.clone();
                     let at = (self.cursor + 1).min(self.chars.len());
                     self.replace_range(at, at, &killed);
+                    self.vim_clamp_cursor();
                 }
             }
             'i' => self.vim_insert_at(self.cursor),
@@ -605,6 +611,8 @@ impl InputBuffer {
                     self.kill(range);
                     if change {
                         self.vim = VimState::Insert;
+                    } else {
+                        self.vim_clamp_cursor();
                     }
                 }
             }
@@ -1138,7 +1146,7 @@ mod tests {
         assert_eq!(b.text(), "ab");
         b.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
         b.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
-        assert_eq!(b.text(), "zb");
+        assert_eq!(b.text(), "az");
         // $ and G land on the last character of their target line, not past it.
         let mut b = vim_at("ab\ncd", 0);
         normal(&mut b);
