@@ -111,3 +111,13 @@ async fn every_account_failing_exits_1_and_prints_the_error() {
         out.stdout
     );
 }
+
+#[tokio::test]
+async fn an_unresolved_main_model_warns_and_marks_no_role() {
+    let server = serving(&["alpha", "beta"]).await;
+    let s = sandbox(&server.uri(), "live/gamma");
+    let out = s.run(&["models"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert!(!out.stdout.contains("[main]"), "{}", out.stdout);
+    assert!(out.stderr.contains("no roles are marked"), "{}", out.stderr);
+}
