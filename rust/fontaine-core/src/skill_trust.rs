@@ -139,11 +139,7 @@ pub fn diff_lines(before: &[String], after: &[String]) -> Vec<String> {
 }
 
 pub fn digest_of(bytes: &[u8]) -> String {
-    let hex: String = Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    format!("sha256:{hex}")
+    format!("sha256:{}", crate::checkpoint::hex(&Sha256::digest(bytes)))
 }
 
 /// Schema check for `skill-trust.toml` text, used by the docs check.

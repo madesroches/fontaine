@@ -16,19 +16,21 @@ use serde_json::json;
 
 use crate::extensions::{Extensions, Scope, Skill};
 use crate::gate::{SessionState, TrustedSkillNote};
-use crate::permission_rules::Rule;
+use crate::permission_rules::{Rule, is_broad_code_execution};
 use crate::skill_trust::TrustState;
 
 /// Whether a declared rule names a whole class of shell commands: a shell-class tool with no
-/// specifier, or one with a `*` in it. A trusted skill's such rules are guardian context, not
-/// allows, because even a program the broad-code-execution list does not name (`git`) can do
-/// damage a skill's purpose does not need.
+/// specifier, or one with a `*` in it, or any rule the broad-code-execution list flags (a bare
+/// `PowerShell` or `agent`). A trusted skill's such rules are guardian context, not allows,
+/// because even a program that list does not name (`git`) can do damage a skill's purpose does
+/// not need.
 pub fn is_wildcard_shell(rule: &Rule) -> bool {
-    is_shell_class(&rule.tool)
-        && rule
-            .specifier
-            .as_deref()
-            .is_none_or(|specifier| specifier.contains('*'))
+    is_broad_code_execution(rule)
+        || is_shell_class(&rule.tool)
+            && rule
+                .specifier
+                .as_deref()
+                .is_none_or(|specifier| specifier.contains('*'))
 }
 
 /// Splits an argument string into words the way a shell would: whitespace separates, and single
@@ -266,7 +268,11 @@ impl SkillRuntime {
                 .declared_tools
                 .iter()
                 .filter(|rule| is_wildcard_shell(rule))
-                .map(|rule| rule.specifier.clone().unwrap_or_else(|| rule.tool.clone()))
+                .map(|rule| match &rule.specifier {
+                    Some(specifier) => specifier.clone(),
+                    None if is_shell_class(&rule.tool) => "*".to_string(),
+                    None => rule.tool.clone(),
+                })
                 .collect();
             if !declared.is_empty() {
                 self.state.note_trusted_skill(

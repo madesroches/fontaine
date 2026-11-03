@@ -1273,6 +1273,8 @@ fn trustable_skills(
         warnings: &mut warnings,
     })
     .map_err(|e| e.to_string())?;
+    print_warnings_of(&contributions.warnings);
+    print_warnings_of(&warnings);
     Ok((extensions, plugin_names))
 }
 
@@ -1379,10 +1381,26 @@ fn untrust(dirs: &Dirs, name: &str) -> Result<(), String> {
         return fail(message);
     }
     let prefix = format!("{name}:");
+    let is_plugin = trusted
+        .records()
+        .iter()
+        .any(|record| record.name.starts_with(&prefix));
+    let is_skill = trusted.records().iter().any(|record| record.name == name);
+    if is_skill && is_plugin {
+        return fail(format!(
+            "`{name}` is both a plugin and a skill; name the skill as `<plugin>:{name}` or rename the skill"
+        ));
+    }
     let names: Vec<String> = trusted
         .records()
         .iter()
-        .filter(|record| record.name == name || record.name.starts_with(&prefix))
+        .filter(|record| {
+            if is_plugin {
+                record.name.starts_with(&prefix)
+            } else {
+                record.name == name
+            }
+        })
         .map(|record| record.name.clone())
         .collect();
     if names.is_empty() {

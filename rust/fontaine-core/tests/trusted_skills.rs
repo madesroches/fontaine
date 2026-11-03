@@ -214,6 +214,10 @@ async fn wildcard_rules_are_context_for_the_guardian_never_an_allow() {
         (Plan, "Bash(git *)"),
         (Auto, "Bash"),
         (Manual, "Bash(git *)"),
+        (Plan, "PowerShell"),
+        (Manual, "PowerShell"),
+        (Plan, "Agent"),
+        (Manual, "Agent"),
     ] {
         let s = setup(mode, "");
         let text = plugin_skill_text(tools);
@@ -232,6 +236,9 @@ async fn wildcard_rules_are_context_for_the_guardian_never_an_allow() {
         let notes = s.rig.state.trusted_skill_notes(ROOT_AGENT);
         assert_eq!(notes.len(), 1, "{mode:?} {tools}");
         assert_eq!(notes[0].name, PLUGIN_SKILL);
+        if tools == "Bash" {
+            assert_eq!(notes[0].declared, ["*"]);
+        }
 
         for command in ["git rebase origin/main", "git push --force origin main"] {
             s.rig.approver.answer(Answer::Deny { feedback: None });
