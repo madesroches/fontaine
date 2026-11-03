@@ -1001,6 +1001,15 @@ impl PermissionPipeline {
                 .unwrap_or_else(|| "it needs the user's approval".to_string()),
             forced: false,
         };
+        // The tree's own messaging and board reach nothing outside it, and every call its agents
+        // make is gated, so no mode needs a verdict or a prompt for them (`dontAsk` included, or an
+        // unattended team run could never talk).
+        if fontaine_tools::descriptor::is_coordination(tool) {
+            return Verdict::Allow {
+                tier: Tier::Coordination,
+                rule: None,
+            };
+        }
         // Every call the child makes is gated on its own way out and its mode is never looser
         // than the parent's, so judging the spawn's prompt with a model would only repeat that
         // coverage, at the point the user just asked for the spawn. Plan mode allows it too:

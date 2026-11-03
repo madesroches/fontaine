@@ -182,7 +182,7 @@ can message its parent, its subagents, its siblings and `main`. The message is q
 recipient reads it at its next turn marked with the sender's name and id and as untrusted data, never as an
 instruction from you. The sender gets `{"status": "queued"}`, or the error `agent not running` for a
 target that has finished or was killed. A teammate that is [idle](#agent-teams) is the one exception:
-the message wakes it. `send_message` is `arbitrary` like `agent`, so it is gated the same way.
+the message wakes it. `send_message` reaches only agents of the same tree, so it is never guardian-judged and never prompts: it runs in every mode at the `coordination` tier, after your deny and ask rules and hooks.
 
 Only the main conversation can use `ask_user_question`. The built-in types do not have it, and a
 type that names it (or that names no tools, and so inherits every tool of its parent) is accepted
@@ -244,7 +244,7 @@ The board is the shared list the team claims work from. It is separate from the 
 | Tool | Class | Does |
 |---|---|---|
 | `board_show` | read-only | Lists every task, or shows one by `id`, with status, owner and blockers. |
-| `board_update` | `arbitrary`, gated like `send_message` | `create` (`title`, optional `description` and `blocked_by`), `claim`, `complete` and `release` (`id`). |
+| `board_update` | `arbitrary`, runs at the `coordination` tier like `send_message` | `create` (`title`, optional `description` and `blocked_by`), `claim`, `complete` and `release` (`id`). |
 
 - **Claiming is atomic.** A task can be claimed only while it is pending, has no owner and every task
   that blocks it is completed. Of two simultaneous claims exactly one wins. `blocked_by` must name
@@ -258,9 +258,10 @@ The board is the shared list the team claims work from. It is separate from the 
   them to an agent they are fenced and labelled with their author, and they are never the guardian's
   idea of what you asked for.
 - **Permissions.** `board_show` is read-only, so it takes the read-only fast path; a subagent type
-  that holds only read-only tools and `board_show` still takes the read-only spawn fast path.
-  `board_update` is `arbitrary`: `manual` and `acceptEdits` ask, `auto` and `plan` send it to the
-  guardian, and a `deny` or `ask` rule on `board_update` applies first. It has no fast path.
+  that holds only read-only tools, `board_show` and the coordination tools still takes the
+  read-only spawn fast path. `board_update` writes only the session's own `tasks.json` and runs your
+  `task_completed` hooks, so every mode runs it at the `coordination` tier with no guardian verdict
+  and no prompt; a `deny` or `ask` rule on `board_update` applies first. It has no fast path.
   The built-in `worker` type gets both tools and `explore` gets `board_show` when teams are on; a
   type of yours has them only if its `tools` names them (or names none), and `fork` inherits what
   its parent has. An `explore` teammate therefore cannot claim or complete tasks; the `agent` result

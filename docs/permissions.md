@@ -16,8 +16,8 @@ run (`fontaine -p`) starts in `manual`, as Claude Code's `-p` starts in `default
 | `manual` | The human is asked. |
 | `acceptEdits` | `write`, `edit` and `notebook_edit` inside the workspace roots run; everything else asks. |
 | `plan` | No edit ever runs: `write`, `edit` and `notebook_edit` are blocked outright. Other consequential calls (write-capable or unparsed `shell`, `webfetch`, `websearch`, every MCP call, reads outside the roots) go to the guardian, as in `auto`. |
-| `dontAsk` | Denied. Only calls that are pre-approved run. |
-| `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. Edits to tracked, new and session-created files and file-tool writes into scratch, and every `agent` spawn (step 7 below), skip it. |
+| `dontAsk` | Denied, except `send_message` and `board_update`. Only other calls that are pre-approved run. |
+| `auto` | The [guardian](guardian.md) decides: allow, deny with a reason, or ask you. Edits to tracked, new and session-created files and file-tool writes into scratch, every `agent` spawn and the coordination tools `send_message` and `board_update` (step 7 below), skip it. |
 
 In the terminal UI, `/permissions` shows the mode and the effective rules with the scope each came
 from, including session and always grants; in `auto` it marks the broad allow rules that mode sets
@@ -76,8 +76,8 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    from nobody (the model is told to use its best judgment). Your typed "Other" answers count as
    intent for the guardian; the options you pick do not.
    An `agent` call whose child can only read takes this step too: Fontaine computes the child's
-   toolset, and when every tool in it is read-only (plus `send_message`; `board_show` is
-   read-only, `board_update` is not), the spawn runs without
+   toolset, and when every tool in it is read-only (plus the coordination tools `send_message` and `board_update`; `board_show` is
+   read-only), the spawn runs without
    the guardian or a prompt, in every mode. `worker`, `fork` and any type whose set holds `agent`,
    `shell`, a write tool, a network tool or an MCP tool do not qualify. A `deny` or `ask` rule on
    `agent` and a hook still act first, and each call the child makes goes through the whole
@@ -125,7 +125,9 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    pausing. Turn them off with
    [`auto_tracked_edits` and `auto_scratch_writes`](configuration.md#permissions); project scope
    may only switch them off.
-7. **The mode**, as in the table above. An `agent` spawn that did not take step 4 is never judged
+7. **The mode**, as in the table above. `send_message` and `board_update` come first: they reach
+   only agents of the same tree, whose own calls are gated, so they run in every mode, `dontAsk`
+   included, with no guardian verdict and no prompt (`tier = coordination`). An `agent` spawn that did not take step 4 is never judged
    by the guardian: `auto` and `plan` allow it (`tier = spawn`), `manual` and `acceptEdits` ask you
    and `dontAsk` denies it. Every call the child makes is gated on its own, and the child's mode is
    never looser than its parent's, so judging the spawn's prompt would repeat that coverage. In
@@ -141,7 +143,7 @@ tool, a SHA-256 digest of the arguments (never the arguments), the `tier` that d
 to a prompt adds a second record with `tier = human`. The same record is projected to the
 `tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree. The
 `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
-`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `allow_rule`, `mode`, `screen`,
+`read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`,
 `guardian`, `dont_ask`, `plan_block` and `human`. A guardian decision also records the guardian model and profile, its
 verdict, confidence, whether the verdict came from the cache, how long the guardian took, the
 `verdict_transport` it was asked on (`tool`, a forced `submit` call, or `schema`, for an Ollama
@@ -177,15 +179,16 @@ allows a `monitor` by itself, so allow one with `monitor(tail *)` or let the gua
 
 ## Agent teams
 
-With `[agents] teams` on (the default) the [task board](agents.md#the-task-board) adds two tools and no new
-tier. `board_show` is read-only and names no path, so it takes the read-only fast path in every
-mode. `board_update` is an `arbitrary` tool, and always a destructive call for the guardian like
-`send_message` (so a low-confidence allow is denied): `manual` and `acceptEdits` ask, `auto` and
-`plan` send it to the guardian, and a `deny` or `ask` rule naming `board_update` (a hook too) runs
-first in every mode. It has no fast path, no specifier and no spawn tier. Waking an idle teammate
-with `send_message` is gated like any message, and each call the woken teammate makes passes the
-whole pipeline. A subagent type holding `board_show` can still take the read-only spawn fast path;
-one holding `board_update` is a state-changing spawn.
+With `[agents] teams` on (the default) the [task board](agents.md#the-task-board) adds two tools. `board_show` is read-only and names no path, so it takes the read-only fast path in every
+mode. `board_update` is a coordination tool like `send_message`: it writes only the session's own
+`tasks.json` and runs your `task_completed` hooks, so in every mode it runs at `tier = coordination` with
+no guardian verdict and no prompt. A `deny` or `ask` rule naming `board_update` (a hook too) runs
+first in every mode. It has no fast path and no specifier. Waking an idle teammate
+with `send_message` is likewise unjudged, and each call the woken teammate makes passes the
+whole pipeline. So in `manual`, `acceptEdits` and `dontAsk` agents can message and wake each other
+without a prompt to you; spend is bounded only by the session and subagent budgets, which are
+unset by default. A subagent type holding `board_show` or `board_update` can still take the read-only
+spawn fast path when the rest of its tools are read-only.
 
 ## Scheduled prompts
 
@@ -397,5 +400,5 @@ recursive search reaches (`grep -r KEY .`, or the `grep` tool over a directory, 
 path, so `grep .env README.md` may ask or be judged: this errs toward caution.
 
 A pre-classified call is audited with `tier = tier05`. In `auto` these calls, the read-only
-fast path (a read-only spawn included; a secret file read is not part of it), every other `agent` spawn and the [tracked and scratch edits](#the-pipeline) are the only guardian skips earned without a grant of yours; an out-of-scope read such
+fast path (a read-only spawn included; a secret file read is not part of it), every other `agent` spawn, the coordination tools and the [tracked and scratch edits](#the-pipeline) are the only guardian skips earned without a grant of yours; an out-of-scope read such
 as `ls ../`, anything the pre-classifier cannot fully parse, and every MCP tool go to the guardian.

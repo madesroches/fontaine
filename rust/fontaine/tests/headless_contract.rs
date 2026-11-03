@@ -24,6 +24,24 @@ fn result_of(lines: &[Value]) -> &Value {
     lines.iter().rev().find(|l| l["type"] == "result").unwrap()
 }
 
+#[test]
+fn the_schema_tier_enum_is_exactly_the_tier_names() {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/schemas/headless-v1.schema.json");
+    let schema: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let listed: Vec<&str> = schema["$defs"]["tier"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let names: Vec<&str> = fontaine_core::tier::Tier::ALL
+        .iter()
+        .map(|t| t.as_str())
+        .collect();
+    assert_eq!(listed, names);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn json_output_is_one_result_object_matching_the_schema() {
     let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;

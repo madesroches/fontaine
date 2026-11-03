@@ -1,5 +1,5 @@
-//! The task board's two tools. `board_show` only reads; `board_update` changes the board, so it
-//! is an `Arbitrary` tool like `send_message` and passes the same permission checks.
+//! The task board's two tools. `board_show` only reads; `board_update` changes the board and is
+//! a coordination tool like `send_message`, which skips the guardian at the `coordination` tier.
 
 use std::sync::Arc;
 

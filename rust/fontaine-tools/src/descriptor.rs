@@ -51,6 +51,15 @@ pub fn is_shell_class(name: &str) -> bool {
     find(name).is_some_and(ToolDescriptor::shell_class)
 }
 
+/// Tools that only reach agents of the same tree: every call those agents make is gated on its
+/// own, so the permission gate lets these through without a guardian verdict or a prompt.
+const COORDINATION: [&str; 2] = ["send_message", "board_update"];
+
+/// Whether the tool named `name` is an agent-coordination tool.
+pub fn is_coordination(name: &str) -> bool {
+    COORDINATION.contains(&name)
+}
+
 const fn row(
     name: &'static str,
     risk: RiskClass,
