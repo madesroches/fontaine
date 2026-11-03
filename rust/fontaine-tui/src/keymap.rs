@@ -27,9 +27,10 @@ impl std::error::Error for KeymapError {}
 #[derive(Clone, Debug)]
 pub struct Keymap {
     bindings: BTreeMap<Keystroke, TuiAction>,
-    /// The keystrokes the user supplied, which win over defaults and mark their action
-    /// "overridden" in the `/keybindings` report.
-    overridden: BTreeSet<Keystroke>,
+    /// Actions the user's entries touched: the ones they bound and the ones displaced or
+    /// unbound in the process, each marked "overridden" in the `/keybindings` report even
+    /// when no keystroke of theirs currently names the action.
+    overridden: BTreeSet<TuiAction>,
 }
 
 /// The built-in table: one entry per default keystroke. `newline` answers to three keys.
@@ -69,13 +70,18 @@ impl Keymap {
                 })?;
             match action {
                 Some(action) => {
+                    if let Some(displaced) = bindings.get(&key) {
+                        overridden.insert(*displaced);
+                    }
                     bindings.insert(key, action);
+                    overridden.insert(action);
                 }
                 None => {
-                    bindings.remove(&key);
+                    if let Some(displaced) = bindings.remove(&key) {
+                        overridden.insert(displaced);
+                    }
                 }
             }
-            overridden.insert(key);
         }
         Ok(Keymap {
             bindings,
@@ -100,11 +106,10 @@ impl Keymap {
             .collect()
     }
 
-    /// Whether `action`'s binding came from the user rather than the defaults.
+    /// Whether `action`'s binding came from the user rather than the defaults, including
+    /// actions the user unbound or whose keystroke a user binding displaced.
     pub fn is_overridden(&self, action: TuiAction) -> bool {
-        self.keys_for(action)
-            .iter()
-            .any(|stroke| self.overridden.contains(stroke))
+        self.overridden.contains(&action)
     }
 
     /// One row per action with any binding, in action order: the action, its keystrokes as
@@ -185,6 +190,23 @@ mod tests {
             keymap.lookup(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
             None
         );
+    }
+
+    #[test]
+    fn an_unbound_or_displaced_action_still_reports_as_overridden() {
+        let keymap = map(&[("ctrl+t", ""), ("f2", "todos")]);
+        // Unbound by the user: no keystroke names it, yet it is the user's doing.
+        assert!(keymap.is_overridden(TuiAction::AgentsPanel));
+        // Bound to a new key by the user, while its default key also still triggers it.
+        assert!(keymap.is_overridden(TuiAction::Todos));
+        // Never touched: the default binding stands and reports as a default.
+        assert!(!keymap.is_overridden(TuiAction::Reprint));
+        let agents = keymap
+            .rows()
+            .into_iter()
+            .find(|(action, _, _)| *action == TuiAction::AgentsPanel)
+            .expect("agents_panel row");
+        assert!(agents.1.is_empty() && agents.2);
     }
 
     #[test]

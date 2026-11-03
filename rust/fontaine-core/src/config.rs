@@ -2463,7 +2463,19 @@ impl Config {
             self.env.insert(k.clone(), v.clone());
         }
         for (k, v) in s.keybindings.iter().flatten() {
-            self.keybindings.insert(k.clone(), v.clone());
+            // Spellings that parse to the same keystroke (`ctrl+t`, `Ctrl+T`) are one
+            // binding: store the canonical form so a higher-precedence layer replaces the
+            // entry instead of coexisting with it and winning by map iteration order.
+            let canonical = crate::keybindings::parse_keystroke(k)
+                .map(|stroke| stroke.format())
+                .unwrap_or_else(|_| k.clone());
+            self.keybindings.retain(|existing, _| {
+                crate::keybindings::parse_keystroke(existing)
+                    .map(|stroke| stroke.format())
+                    .unwrap_or_else(|_| existing.clone())
+                    != canonical
+            });
+            self.keybindings.insert(canonical, v.clone());
         }
     }
 }
@@ -3208,6 +3220,32 @@ mod tests {
         assert_eq!(rules.allow, s(&["only mine"]));
         assert_eq!(rules.hard_deny.len(), DEFAULT_HARD_DENY.len() + 1);
         assert_eq!(rules.hard_deny[0], DEFAULT_HARD_DENY[0]);
+    }
+
+    #[test]
+    fn keybindings_merge_canonically_so_the_higher_layer_wins() {
+        let user = super::Settings {
+            keybindings: Some(
+                [("ctrl+t".to_string(), "todos".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        let cli = super::Settings {
+            keybindings: Some(
+                [("Ctrl+T".to_string(), "reprint".to_string())]
+                    .into_iter()
+                    .collect(),
+            ),
+            ..Default::default()
+        };
+        let mut config = super::Config::defaults(std::path::PathBuf::from("."));
+        config.apply(&user, super::Slot::User, super::Column::User);
+        config.apply(&cli, super::Slot::Cli, super::Column::Cli);
+        // The equivalent spelling from the higher-precedence layer replaces, not coexists.
+        assert_eq!(config.keybindings.len(), 1);
+        assert_eq!(config.keybindings["ctrl+t"], "reprint");
     }
 
     #[test]

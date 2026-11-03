@@ -106,6 +106,10 @@ impl InputBuffer {
 
     pub fn take(&mut self) -> String {
         self.cursor = 0;
+        // A taken buffer is a fresh prompt: back in Insert, with no undo history, so `u`
+        // cannot reach back into the submitted message.
+        self.vim = VimState::Insert;
+        self.undo.clear();
         std::mem::take(&mut self.chars).into_iter().collect()
     }
 
@@ -306,6 +310,7 @@ impl InputBuffer {
     pub fn esc_leaves_insert(&mut self) -> bool {
         if self.mode == EditorMode::Vim && matches!(self.vim, VimState::Insert) {
             self.vim = VimState::Normal { pending: None };
+            self.vim_clamp_cursor();
             true
         } else {
             false
@@ -387,7 +392,7 @@ impl InputBuffer {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
-            KeyCode::Esc => self.vim = VimState::Normal { pending: None },
+            KeyCode::Esc => return self.esc_leaves_insert(),
             KeyCode::Char(c) if !control && !alt => self.insert(c),
             KeyCode::Char('d') if control => self.delete(),
             KeyCode::Char('h') if control => self.backspace(),
@@ -414,7 +419,11 @@ impl InputBuffer {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
-            KeyCode::Esc => return false,
+            KeyCode::Esc => {
+                // Esc cancels a pending operator but still belongs to the App-level keymap.
+                self.vim = VimState::Normal { pending: None };
+                return false;
+            }
             KeyCode::Char(c) if !control && !alt => return self.vim_normal_char(c),
             KeyCode::Char(_) => return false,
             KeyCode::Left => {
@@ -447,7 +456,18 @@ impl InputBuffer {
     fn vim_motion(&mut self, motion: impl FnOnce(&mut Self)) -> bool {
         self.vim = VimState::Normal { pending: None };
         motion(self);
+        self.vim_clamp_cursor();
         true
+    }
+
+    /// Normal-mode cursor bounds: on a non-empty line the cursor stays on a character,
+    /// never on the insertion point past it; an empty line holds it at the line's start.
+    fn vim_clamp_cursor(&mut self) {
+        let start = self.line_start(self.cursor);
+        let end = self.line_end(self.cursor);
+        if end > start && self.cursor >= end {
+            self.cursor = end - 1;
+        }
     }
 
     /// Enter Insert at `pos`, the shared tail of `i` and `a`.
@@ -463,19 +483,40 @@ impl InputBuffer {
             return self.vim_operator(op, c);
         }
         match c {
-            'h' => self.left(),
-            'l' => self.right(),
-            'j' => self.down(),
-            'k' => self.up(),
+            'h' => {
+                self.left();
+                self.vim_clamp_cursor();
+            }
+            'l' => {
+                self.right();
+                self.vim_clamp_cursor();
+            }
+            'j' => {
+                self.down();
+                self.vim_clamp_cursor();
+            }
+            'k' => {
+                self.up();
+                self.vim_clamp_cursor();
+            }
             '0' => self.home(),
-            '$' => self.end(),
-            'w' => self.word_right(),
+            '$' => {
+                self.end();
+                self.vim_clamp_cursor();
+            }
+            'w' => {
+                self.cursor = self.vim_word_next();
+                self.vim_clamp_cursor();
+            }
             'b' => self.word_left(),
             'e' => self.cursor = self.vim_word_end(),
             'd' => self.vim_pending(PendingOp::Delete),
             'c' => self.vim_pending(PendingOp::Change),
             'g' => self.vim_pending(PendingOp::G),
-            'G' => self.buffer_end(),
+            'G' => {
+                self.buffer_end();
+                self.vim_clamp_cursor();
+            }
             'r' => self.vim_pending(PendingOp::Replace),
             'x' => {
                 self.snapshot();
@@ -511,11 +552,13 @@ impl InputBuffer {
                 self.vim = VimState::Insert;
             }
             'o' => {
+                self.snapshot();
                 self.end();
                 self.insert('\n');
                 self.vim = VimState::Insert;
             }
             'O' => {
+                self.snapshot();
                 self.home();
                 self.insert('\n');
                 self.up();
@@ -546,9 +589,9 @@ impl InputBuffer {
             PendingOp::Delete | PendingOp::Change => {
                 let change = op == PendingOp::Change;
                 let range = match c {
-                    'd' if !change => Some(self.line_range()),
+                    'd' if !change => Some(self.line_delete_range()),
                     'c' if change => Some(self.line_range()),
-                    'w' => Some(self.cursor..self.vim_word_delete_end()),
+                    'w' => Some(self.cursor..self.vim_word_next()),
                     'b' => Some(
                         self.word_start_before(self.cursor, char::is_alphanumeric)..self.cursor,
                     ),
@@ -573,22 +616,40 @@ impl InputBuffer {
         self.vim = VimState::Normal { pending: Some(op) };
     }
 
-    /// The current line's whole span, what `dd`/`cc` delete.
+    /// The current line's content span, what `cc` replaces and `dd` leaves behind on the
+    /// neighbor line's side of the newline.
     fn line_range(&self) -> Range<usize> {
         self.line_start(self.cursor)..self.line_end(self.cursor)
     }
 
-    /// Where `dw` ends: the next word's end plus the separators after it, like vim's
-    /// exclusive word motion.
-    fn vim_word_delete_end(&self) -> usize {
-        let mut end = self.word_end_after(self.cursor, char::is_alphanumeric);
-        while end < self.chars.len()
-            && self.chars[end] != '\n'
-            && !self.chars[end].is_alphanumeric()
-        {
-            end += 1;
+    /// What `dd` removes: the line plus one newline (trailing when there is one, else the
+    /// leading one), so the surrounding lines join instead of an empty line remaining.
+    fn line_delete_range(&self) -> Range<usize> {
+        let start = self.line_start(self.cursor);
+        let end = self.line_end(self.cursor);
+        if end < self.chars.len() {
+            start..end + 1
+        } else if start > 0 {
+            start - 1..end
+        } else {
+            start..end
         }
-        end
+    }
+
+    /// Where `w` lands: the start of the next word, separators skipped. On a separator
+    /// already, only the separators go by, so `dw` from one never eats the next word.
+    fn vim_word_next(&self) -> usize {
+        let len = self.chars.len();
+        let mut pos = self.cursor.min(len);
+        if pos < len && self.chars[pos].is_alphanumeric() {
+            while pos < len && self.chars[pos].is_alphanumeric() {
+                pos += 1;
+            }
+        }
+        while pos < len && !self.chars[pos].is_alphanumeric() {
+            pos += 1;
+        }
+        pos
     }
 
     /// Where `e` lands: the last character of the word under the cursor, or of the next word.
@@ -899,28 +960,28 @@ mod tests {
         for _ in 0..2 {
             b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
         }
-        assert_eq!(b.cursor(), 7);
+        assert_eq!(b.cursor(), 8);
         b.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
         assert_eq!(b.cursor(), 4);
         b.handle_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE));
         assert_eq!(b.cursor(), 6);
         b.handle_key(KeyEvent::new(KeyCode::Char('$'), KeyModifiers::NONE));
-        assert_eq!(b.cursor(), 13);
-        b.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
         assert_eq!(b.cursor(), 12);
+        b.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 11);
         b.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
-        assert_eq!(b.cursor(), 13);
+        assert_eq!(b.cursor(), 12);
         // j and k walk the lines; k on the first line stays put, j clamps the column.
         b.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
-        assert_eq!(b.cursor_position(), (0, 13));
+        assert_eq!(b.cursor_position(), (0, 12));
         b.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
-        assert_eq!(b.cursor_position(), (1, 4));
-        // gg and G jump across the buffer.
+        assert_eq!(b.cursor_position(), (1, 3));
+        // gg and G jump across the buffer, G landing on the last character.
         b.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
         b.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
         assert_eq!(b.cursor(), 0);
         b.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
-        assert_eq!(b.cursor(), b.text().chars().count());
+        assert_eq!(b.cursor(), b.text().chars().count() - 1);
     }
 
     #[test]
@@ -984,6 +1045,121 @@ mod tests {
         assert_eq!(b.text(), "one two");
         b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
         assert_eq!(b.text(), "one two");
+    }
+
+    #[test]
+    fn vim_w_goes_to_the_next_word_start_and_dw_stays_exclusive() {
+        let mut b = vim_at("one two three", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 4);
+        b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 8);
+        // `dw` from a separator removes only the separators, never the following word.
+        let mut b = vim_at("one two three", 3);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "onetwo three");
+    }
+
+    #[test]
+    fn vim_dd_removes_the_line_with_its_newline_while_cc_keeps_the_line() {
+        // First line: the trailing newline goes with it.
+        let mut b = vim_at("one\ntwo", 1);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "two");
+        // Last line: the leading newline goes with it.
+        let mut b = vim_at("one\ntwo", 4);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "one");
+        // cc replaces only the line's content.
+        let mut b = vim_at("one\ntwo", 1);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "\ntwo");
+        assert!(matches!(b.vim, VimState::Insert));
+    }
+
+    #[test]
+    fn vim_o_and_o_take_the_undo_snapshot_the_other_edits_do() {
+        let mut b = vim("one\ntwo");
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "one\ntwo");
+        assert!(matches!(b.vim, VimState::Normal { .. }));
+
+        let mut b = vim("one\ntwo");
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "one\ntwo");
+    }
+
+    #[test]
+    fn vim_esc_cancels_a_pending_operator_without_consuming_the_key() {
+        let mut b = vim_at("one two", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(!b.handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
+        assert!(matches!(b.vim, VimState::Normal { pending: None }));
+        // The operator is gone: `w` only moves.
+        b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "one two");
+        assert_eq!(b.cursor(), 4);
+    }
+
+    #[test]
+    fn vim_normal_keeps_the_cursor_on_a_character() {
+        // Leaving Insert after typing lands on the last character, so x and r have one.
+        let mut b = vim("abc");
+        normal(&mut b);
+        assert_eq!(b.cursor(), 2);
+        b.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "ab");
+        b.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "zb");
+        // $ and G land on the last character of their target line, not past it.
+        let mut b = vim_at("ab\ncd", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('$'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 1);
+        b.handle_key(KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE));
+        assert_eq!(b.cursor(), 4);
+        // l stops at the last character instead of the insertion point.
+        for _ in 0..5 {
+            b.handle_key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE));
+        }
+        assert_eq!(b.cursor(), 4);
+        // An empty line holds the cursor at its start.
+        let mut b = vim_at("ab\n\ncd", 3);
+        normal(&mut b);
+        assert_eq!(b.cursor(), 3);
+    }
+
+    #[test]
+    fn take_resets_the_vim_mode_and_the_undo_stack() {
+        let mut b = vim_at("one two", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(b.take(), "two");
+        assert!(matches!(b.vim, VimState::Insert));
+        // The submitted message is not undoable in the fresh prompt.
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "");
     }
 
     #[test]

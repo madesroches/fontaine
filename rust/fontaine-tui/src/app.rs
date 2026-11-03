@@ -1051,6 +1051,9 @@ impl App {
             && !key.modifiers.contains(KeyModifiers::ALT)
             && !self.covered()
             && self.search.is_none()
+            // An explicit binding of Ctrl+P/Ctrl+N wins over the Up/Down alias; only the
+            // unbound keys fall through to the alias.
+            && mapped.is_none()
         {
             let code = if key.code == KeyCode::Char('p') {
                 KeyCode::Up
@@ -1131,7 +1134,10 @@ impl App {
             self.last_esc = Some(now);
             return Action::None;
         }
-        if control && key.code == KeyCode::Char('d') && self.input.is_empty() {
+        // Quit fires on an empty input under whichever keystroke names it (Ctrl+D is
+        // reserved, so `mapped` is its binding too). With text, Ctrl+D alone falls through
+        // to the input's delete-char; any other quit key does nothing.
+        if mapped == Some(TuiAction::Quit) && self.input.is_empty() {
             return if self.running {
                 Action::None
             } else {
@@ -2411,6 +2417,43 @@ mod tests {
         assert_eq!(ctrl(&mut app, 'd'), Action::Quit);
         app.running = true;
         assert_eq!(ctrl(&mut app, 'd'), Action::None);
+    }
+
+    #[test]
+    fn a_rebound_quit_key_quits_only_on_an_empty_input() {
+        let mut app = app();
+        app.keymap = Keymap::resolve(
+            &[("f2".to_string(), "quit".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        type_text(&mut app, "abc");
+        assert_eq!(press(&mut app, KeyCode::F(2)), Action::None);
+        assert_eq!(app.input.text(), "abc");
+        app.input.take();
+        assert_eq!(press(&mut app, KeyCode::F(2)), Action::Quit);
+        app.running = true;
+        assert_eq!(press(&mut app, KeyCode::F(2)), Action::None);
+    }
+
+    #[test]
+    fn an_explicit_ctrl_p_binding_wins_over_the_up_alias() {
+        let mut app = app();
+        app.keymap = Keymap::resolve(
+            &[("ctrl+p".to_string(), "submit".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        type_text(&mut app, "hi");
+        assert_eq!(ctrl(&mut app, 'p'), Action::Submit("hi".into(), Vec::new()));
+        // Unbound, Ctrl+P keeps its Up alias.
+        let mut plain = self::app();
+        plain.history.push("older");
+        type_text(&mut plain, "draft");
+        ctrl(&mut plain, 'p');
+        assert_eq!(plain.input.text(), "older");
     }
 
     #[test]

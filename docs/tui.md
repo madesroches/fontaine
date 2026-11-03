@@ -174,7 +174,7 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one. While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
 | Esc twice in quick succession when idle with an empty input | Opens the `/rewind` picker; see [Checkpoints and /rewind](checkpoints.md). Any other meaning of Esc above wins first. Off while a subagent's transcript is on screen. |
-| Ctrl-C (`interrupt`), or Ctrl-D on an empty input (`quit`), when idle | Quit. Both keys are reserved: they cannot be rebound or unbound. With text in the input, Ctrl-D deletes the character under the cursor in both editing modes. |
+| Ctrl-C (`interrupt`), or Ctrl-D on an empty input (`quit`), when idle | Quit. Both keys are reserved: they cannot be rebound or unbound. With text in the input, Ctrl-D deletes the character under the cursor in Emacs mode and in vim's Insert state. |
 | PageUp, PageDown | Scroll the command or diff in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/B/F/H/D | Move by character or line and delete a character. Ctrl-H is Backspace, Ctrl-D is Delete. |
 | Ctrl-Left, Ctrl-Right, Alt-Left, Alt-Right, Alt-B, Alt-F | Move by word. A word is a run of letters and digits, so `/`, `.` and `_` separate words. |

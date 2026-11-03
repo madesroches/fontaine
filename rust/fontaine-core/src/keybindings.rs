@@ -176,10 +176,17 @@ pub fn parse_keystroke(text: &str) -> Result<Keystroke, KeystrokeError> {
         _ => return Err(KeystrokeError::UnknownKey(key_name.to_string())),
     };
     // `shift+tab` parses to `BackTab` so the default `cycle_mode` binding round-trips; the
-    // shift stays implied by the code, not in the modifier set.
+    // shift stays implied by the code, not in the modifier set. The same holds for an
+    // explicit `backtab`, which `matches` also delivers without SHIFT.
     if code == KeyCode::Tab && modifiers.contains(KeyModifiers::SHIFT) {
         return Ok(Keystroke {
             code: KeyCode::BackTab,
+            modifiers: modifiers - KeyModifiers::SHIFT,
+        });
+    }
+    if code == KeyCode::BackTab {
+        return Ok(Keystroke {
+            code,
             modifiers: modifiers - KeyModifiers::SHIFT,
         });
     }
@@ -405,6 +412,21 @@ mod tests {
         assert_eq!(k.code, KeyCode::BackTab);
         assert!(!k.modifiers.contains(KeyModifiers::SHIFT));
         assert_eq!(k.format(), "shift+tab");
+    }
+
+    #[test]
+    fn shift_backtab_normalizes_like_shift_tab() {
+        let k = parse_keystroke("shift+backtab").unwrap();
+        assert_eq!(k.code, KeyCode::BackTab);
+        assert!(!k.modifiers.contains(KeyModifiers::SHIFT));
+        assert!(matches(
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+            k
+        ));
+        assert!(matches(
+            KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            k
+        ));
     }
 
     #[test]
