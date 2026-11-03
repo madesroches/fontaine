@@ -224,8 +224,9 @@ rendering.
   no priced calls, no quota, guardian verdict ring empty/full); the runner against real local
   shell snippets — echo round-trip, first-line selection, ANSI stripping, non-zero exit keeps
   the previous line, timeout (a `sleep` past the limit) keeps the previous line, empty stdout
-  falls back. The tests get a shell the way production does — via `GitBash::discover` threaded
-  into the test spawns — and skip rather than fail when no shell is available; no network.
+  falls back. The tests get a shell the way production does — on Windows via
+  `GitBash::discover`, otherwise plain `sh` — and skip only if that shell spawn itself fails;
+  no network.
 - Unit (`statusbar.rs`): custom line renders with the guardian-off badge ahead of it; long lines
   truncate to the row; no custom line → built-in bar unchanged; running state shows no
   interrupt hint and no dangling separator; idle hint intact.
