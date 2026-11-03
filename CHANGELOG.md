@@ -623,7 +623,9 @@ All notable changes are recorded here. The format follows
   always work. The section is user/CLI scope only, validates every entry at load (exit 2 naming
   the offender), applies on the next launch, and `/keybindings` prints the effective table —
   each action, its keystrokes, and whether the binding is yours or a default — plus the file to
-  edit. The status bar and `/help` hints render from the effective bindings (#49).
+  edit. The status bar and `/help` hints render from the effective bindings (#49). A binding
+  now matches its exact modifiers, so Ctrl+Enter, which used to submit, and Shift+Alt+Enter,
+  which used to insert a newline, do nothing unless you bind them.
 - The input box has a vim mode: `[tui] editor_mode = "vim"` or `/vim` (which saves the choice)
   switches the message box to modal INSERT/NORMAL editing. Esc leaves Insert without ever
   interrupting, Normal takes the usual motions and operators (`h l 0 $ w b e j k gg G`,

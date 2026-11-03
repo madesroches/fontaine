@@ -470,6 +470,12 @@ impl InputBuffer {
         }
     }
 
+    /// True when the cursor has no character of its own to act on: an empty line, whose
+    /// cursor sits on the newline, or the end of the buffer.
+    fn vim_on_empty_line(&self) -> bool {
+        self.line_start(self.cursor) == self.line_end(self.cursor)
+    }
+
     /// Enter Insert at `pos`, the shared tail of `i` and `a`.
     fn vim_insert_at(&mut self, pos: usize) {
         self.cursor = pos.min(self.chars.len());
@@ -519,10 +525,12 @@ impl InputBuffer {
             }
             'r' => self.vim_pending(PendingOp::Replace),
             'x' => {
-                self.snapshot();
-                let end = (self.cursor + 1).min(self.chars.len());
-                self.kill(self.cursor..end);
-                self.vim_clamp_cursor();
+                if !self.vim_on_empty_line() {
+                    self.snapshot();
+                    let end = (self.cursor + 1).min(self.chars.len());
+                    self.kill(self.cursor..end);
+                    self.vim_clamp_cursor();
+                }
             }
             'D' => {
                 self.snapshot();
@@ -542,13 +550,24 @@ impl InputBuffer {
                 if !self.killed.is_empty() {
                     self.snapshot();
                     let killed = self.killed.clone();
-                    let at = (self.cursor + 1).min(self.chars.len());
+                    let at = if self.vim_on_empty_line() {
+                        self.cursor
+                    } else {
+                        (self.cursor + 1).min(self.chars.len())
+                    };
                     self.replace_range(at, at, &killed);
                     self.vim_clamp_cursor();
                 }
             }
             'i' => self.vim_insert_at(self.cursor),
-            'a' => self.vim_insert_at(self.cursor + 1),
+            'a' => {
+                let at = if self.vim_on_empty_line() {
+                    self.cursor
+                } else {
+                    self.cursor + 1
+                };
+                self.vim_insert_at(at);
+            }
             'A' => {
                 self.end();
                 self.vim = VimState::Insert;
@@ -587,9 +606,11 @@ impl InputBuffer {
                 }
             }
             PendingOp::Replace => {
-                self.snapshot();
-                if let Some(slot) = self.chars.get_mut(self.cursor) {
-                    *slot = c;
+                if !self.vim_on_empty_line() {
+                    self.snapshot();
+                    if let Some(slot) = self.chars.get_mut(self.cursor) {
+                        *slot = c;
+                    }
                 }
             }
             PendingOp::Delete | PendingOp::Change => {
@@ -1163,6 +1184,33 @@ mod tests {
         let mut b = vim_at("ab\n\ncd", 3);
         normal(&mut b);
         assert_eq!(b.cursor(), 3);
+    }
+
+    #[test]
+    fn vim_x_r_a_and_p_stay_on_an_empty_line() {
+        let key = |b: &mut InputBuffer, c: char| {
+            b.handle_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        };
+        let empty = || {
+            let mut b = vim_at("ab\n\ncd", 3);
+            normal(&mut b);
+            b
+        };
+        let mut b = empty();
+        key(&mut b, 'x');
+        assert_eq!(b.text(), "ab\n\ncd");
+        let mut b = empty();
+        key(&mut b, 'r');
+        key(&mut b, 'z');
+        assert_eq!(b.text(), "ab\n\ncd");
+        let mut b = empty();
+        key(&mut b, 'a');
+        key(&mut b, 'z');
+        assert_eq!(b.text(), "ab\nz\ncd");
+        let mut b = empty();
+        b.killed = "Q".to_string();
+        key(&mut b, 'p');
+        assert_eq!(b.text(), "ab\nQ\ncd");
     }
 
     #[test]
