@@ -56,7 +56,8 @@ the config excludes.
   `up`/`down`/`left`/`right`, `home`, `end`, `pageup`, `pagedown`, `backspace`, `delete`,
   `space`, single chars). `shift+tab` parses to `BackTab` so the existing Shift+Tab default
   round-trips.
-- `enum TuiAction` — the remappable, component-level actions (defaults in parentheses):
+- `enum TuiAction` — the remappable, component-level actions (defaults in parentheses);
+  all action names are `snake_case`, matching every other config identifier Fontaine defines:
   `cycle_mode` (shift+tab), `interrupt` (ctrl+c — see Reserved below), `quit` (ctrl+d),
   `agents_panel` (ctrl+t), `todos` (ctrl+o), `reprint` (ctrl+l), `attach_clipboard`
   (ctrl+v), `history_search` (ctrl+r), `history_previous` (up / ctrl+p),
@@ -68,20 +69,22 @@ the config excludes.
   `keys_for(&self, action: TuiAction) -> Vec<Keystroke>` (for the hint strings).
 - **Unbind**: the empty string as the action value removes that keystroke's default binding
   (`"ctrl+t" = ""`). There is no TOML null; `""` is the unbind marker.
-- **Reserved**: `ctrl+c` and `ctrl+d` may not be rebound to another action or unbound
-  (interrupt/quit must always work); `validate_values` rejects them with a `ConfigError`.
+- **Reserved**: `ctrl+c` may not be rebound or unbound (interrupt must always work). `ctrl+d`
+  may not be rebound or unbound, but the `quit` action fires only on an empty input; when the
+  input buffer has text, Ctrl+D stays the input layer's `delete-char` (`input.rs` / `docs/tui.md`).
+  `validate_values` rejects reserved rebinds with a `ConfigError`.
   Terminal-aliased keys (`ctrl+i` = Tab, `ctrl+m` = Enter, `ctrl+h` = Backspace, `ctrl+[` =
   Esc) are documented, not specially rejected.
-- **Conflict rule**: last write wins per keystroke within one file; across files the existing
-  merge order applies (map-valued keys merge per key, higher precedence file wins per key).
-  Binding a keystroke that already maps to another action replaces it.
+- **Conflict rule**: TOML does not allow duplicate keys in one table, so duplicate keystrokes
+  in a single file are a parse error; across files the existing merge order applies (map-valued
+  keys merge per key, higher precedence file wins per key). Binding a keystroke that already
+  maps to another action replaces it.
 
 ### Config plumbing (`fontaine-core`)
 
-- `KeybindingsSection { pub bindings: Option<BTreeMap<String, String>> }`
-  (`deny_unknown_fields`); `Settings.keybindings: Option<KeybindingsSection>`; merged
-  `Config.keybindings: BTreeMap<String, String>` (empty = all defaults), merged per key in
-  `apply`.
+- `Settings.keybindings: Option<BTreeMap<String, String>>` directly, like the existing
+  `[env]` field; merged `Config.keybindings: BTreeMap<String, String>` (empty = all
+  defaults), merged per key in `apply`.
 - `[tui] editor_mode: Option<EditorMode>`; `enum EditorMode { Emacs (default), Vim }`
   (kebab-case serde). Merged `Tui.editor_mode: EditorMode`.
 - `validate_values`: parse every keystroke key and action value of `[keybindings]`
@@ -93,9 +96,8 @@ the config excludes.
   existing `tui` rule's coverage (the `tui` row is section-wide; verify the schema-node
   choke-point test passes).
 - `config_catalog.rs`: read-only rows (`keybindings` summarized as count/overrides,
-  `tui.editor_mode` showing the value). `tui.editor_mode` is writable through `/config`
-  only if the catalog's scalar-set path already handles enums cheaply; otherwise read-only
-  and set by `/vim` (below) — decide at implementation, both are in-spirit.
+  `tui.editor_mode` showing the value). `tui.editor_mode` is writable through `/config` via
+  `Edit::Choice(emacs/vim/unset)`, matching how `tui.theme` uses `Edit::Choice(theme_choices)`.
 
 ### Dispatch changes (`fontaine-tui`)
 
@@ -106,6 +108,19 @@ the config excludes.
   untouched — overlays keep their own keys, and keymap lookup happens only at the points
   where the hardcoded arms run today. `is_cycle_key` is deleted; cycle detection becomes
   `lookup(key) == Some(TuiAction::CycleMode)`.
+- **History keys (`history_previous` / `history_next`)**: keymap lookup substitutes only the
+  guarded history arms — `Up` on the first line and `Down` while navigating history on the
+  last line. The first-line/last-line conditions stay in `App::message_key`; agent-list focus
+  on the last line and in-buffer cursor movement remain hardcoded in the input path.
+  Unbinding `history_previous`/`history_next` leaves those cursor roles intact.
+- **Ctrl+P / Ctrl+N aliases**: `App::handle_key` translates Ctrl+P/Ctrl+N into synthetic
+  Up/Down events before dispatch, so they are hardcoded aliases of the Up/Down keys rather
+  than separate default bindings. Unbinding `history_previous`/`history_next` therefore
+  affects Ctrl+P/Ctrl+N as well.
+- **Esc in vim Insert**: when vim Insert is active, `App::handle_key` offers `Esc` to the
+  input first. The input consumes it and switches to Normal, so the App-level Esc arms
+  (close palette, interrupt, cancel wakeup, double-Esc rewind) only see `Esc` from Normal
+  state (or from emacs mode).
 - **Mode-cycling constraint**: the rebound key returns the same `Action::CycleMode` and goes
   through `Ui::cycle_mode` → `statusbar::next_mode` exactly like Shift+Tab. There is no path
   from a keybinding to an arbitrary `PermissionMode`, so a binding cannot jump straight to
@@ -122,9 +137,9 @@ the config excludes.
 - `handle_key` branches on mode: `Emacs` keeps today's arms verbatim (they become the
   `Emacs` arm — no behavior change); `Vim` dispatches by `vim` state.
 - **Insert**: printable chars insert; `Esc` → Normal (consumed — it never triggers
-  interrupt/cancel from Insert); Backspace/Delete/arrows/Home/End work as today; Ctrl+keys
-  fall through (return `false`) so the App-level keymap sees them, matching Claude Code's
-  "most Ctrl+key shortcuts pass through vim mode".
+  interrupt/cancel from Insert; see Dispatch changes above); Backspace/Delete/arrows/Home/End
+  work as today; Ctrl+keys fall through (return `false`) so the App-level keymap sees them,
+  matching Claude Code's "most Ctrl+key shortcuts pass through vim mode".
 - **Normal**: motions `h l 0 $ w b e`, `gg`/`G` (buffer start/end), operators with motion
   or doubled: `d`/`c` + (`w b e $ 0`), `dd`, `cc`, `D`, `C`, `x`, `r<char>`, `i a A I o O`,
   `p` (yank ring paste after cursor). Yank/delete fill the existing `killed` slot. Operator
@@ -154,8 +169,8 @@ the config excludes.
 1. `fontaine-core/src/keybindings.rs`: `Keystroke` parse/format, `TuiAction` +
    `FromStr`/`Display`, reserved-key list. Unit tests for parsing (case, modifiers,
    `shift+tab`→BackTab, unknown key/action, reserved detection).
-2. `config.rs`: `KeybindingsSection`, `EditorMode`, `Settings`/`Config`/`defaults`/`apply`
-   wiring, `validate_values` for `[keybindings]` and `tui.editor_mode`.
+2. `config.rs`: `Settings.keybindings` (direct map), `EditorMode`, `Settings`/`Config`/
+   `defaults`/`apply` wiring, `validate_values` for `[keybindings]` and `tui.editor_mode`.
    `config_scope.rs` rule row; `config_catalog.rs` rows. Keep the schema-node and catalog
    choke-point tests green; add scope tests (project file with `[keybindings]` exits 2).
 3. `fontaine-tui/src/keymap.rs`: default table, `Keymap::resolve`, `lookup`, `keys_for`.
@@ -238,18 +253,14 @@ Modal editing feel and real-terminal key delivery are not unit-testable:
    type text, Esc → NORMAL, `bbdw` edits a word, `A` appends, `u` restores, Enter submits,
    status bar shows the vim state. Expected: each behaves as vim users expect; no terminal
    rendering glitches in the input area.
-2. With `[keybindings] "ctrl+m-note" …` replaced by a real entry such as
-   `"ctrl+g" = "cycle_mode"`: Ctrl-G cycles the mode and the status bar hint shows the new
-   key; Shift+Tab no longer cycles if explicitly unbound (`"shift+tab" = ""`).
+2. With `[keybindings] "ctrl+g" = "cycle_mode"` in the user config: Ctrl-G cycles the mode
+   and the status bar hint shows the new key; Shift+Tab no longer cycles if explicitly unbound
+   (`"shift+tab" = ""`).
 3. `cargo run -p fontaine -- -p hi` (headless) with a `[keybindings]` section in the project
    file exits 2 naming the scope violation. (Automatable as a smoke test if cheap; the
    manual run also confirms the error text reads well.)
 
 ## Open Questions
 
-- Exact action-name spelling for the public config surface (proposed: snake_case as above).
 - Does `/keybindings` printing a table suffice, or should it offer to open the user config
   in `$EDITOR` (there is precedent in the `/memory` editor launch)?
-- Should `ctrl+p`/`ctrl+n` remain hardcoded aliases of `history_previous`/`history_next`
-  (they are today), or become second default entries for those actions (so unbinding Up/Down
-  doesn't affect them)?
