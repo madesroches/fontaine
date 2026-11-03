@@ -240,6 +240,12 @@ fn apply_event(transcript: &mut Transcript, runtime: &AgentRuntime, event: Sessi
     }
 }
 
+fn push_verdict(app: &mut App, event: &SessionEvent) {
+    if let SessionEvent::Decision(record) = event {
+        app.push_verdict(record);
+    }
+}
+
 impl<R: FnMut(&mut App)> Ui<R> {
     /// Brings the provider's search tool in line with the mode and rules now in force, which a
     /// mode switch or a session rule may have changed since the agent was built.
@@ -873,6 +879,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             &event,
             SessionEvent::ToolResult { tool, .. } if tool == "todo_write"
         );
+        push_verdict(&mut self.app, &event);
         self.app.turn_tokens.observe(&event);
         apply_event(&mut self.app.transcript, runtime, event);
         if todos_changed {
@@ -896,6 +903,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
     fn on_agent_event(&mut self, runtime: &AgentRuntime, (agent, event): (String, AgentViewEvent)) {
         // What the human typed to the agent reached it before this event happened.
         self.show_delivered_to(runtime, &agent);
+        if let AgentViewEvent::Event(ref e) = event {
+            push_verdict(&mut self.app, e);
+        }
         let transcript = &mut self.app.view_of(agent).transcript;
         match event {
             AgentViewEvent::Prompt(text) => transcript.user(text),

@@ -56,6 +56,7 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         fontaine_core::quota::QuotaPoller::new(),
         fontaine_core::quota::QuotaPoller::new(),
     ];
+    let (result_tx, result_rx) = tokio::sync::mpsc::unbounded_channel();
     Ui {
         app: App::new(PermissionMode::Manual, "m".into()),
         input: unbounded_channel().1,
@@ -80,6 +81,13 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         quota_rx: [quota[0].subscribe(), quota[1].subscribe()],
         quota,
         quota_warned: Default::default(),
+        statusline_tx: None,
+        statusline_rx: None,
+        statusline_result_tx: result_tx,
+        statusline_result_rx: result_rx,
+        statusline_script: None,
+        statusline_running: false,
+        statusline_last_run: None,
     }
 }
 

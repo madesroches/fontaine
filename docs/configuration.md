@@ -117,6 +117,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[memory] auto` | no | no | yes |
 | `[goal]` keys | no | no | yes |
 | `[shell] max_timeout_secs` | no | no | yes |
+| `[statusline]` | no | no | no |
 | `[checkpoints]` keys | no | no | no |
 | `[plugins] auto_update` | no | no | no |
 | `[shell_preclassifier] allow_extra` | no | yes | yes |
@@ -640,6 +641,28 @@ scanner_command = "/usr/local/bin/injection-scan"
 `/model` and `/guardian-model` in the terminal UI write `[model] model` and `[guardian] model` to
 the user file for you. When a higher scope also sets the key, the choice is still saved to the user
 file, and the notice names the scope that wins from the next launch.
+
+### `[statusline]`
+
+A user-defined command that draws the terminal UI status bar in place of the built-in hint
+segment. It runs arbitrary code, so it is accepted from the user file only: project,
+project-local and `--settings` files are refused.
+
+| Key | Meaning | Default |
+|---|---|---|
+| `command` | The shell command; when absent or empty the feature is off. | unset |
+| `refresh_interval_secs` | Re-run the command while idle, at least 1. | unset |
+
+The command receives one JSON object on stdin and its first stdout line (ANSI escapes stripped)
+is shown in the bar. It is killed after 5 seconds, and any non-zero exit, timeout or empty output
+keeps the previous good line. See [Custom status line](tui.md#custom-status-line) for the full JSON
+contract.
+
+```toml
+[statusline]
+command = "jq -r '.mode'"
+refresh_interval_secs = 10
+```
 
 ### `[permissions]`
 

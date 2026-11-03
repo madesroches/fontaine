@@ -940,6 +940,16 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-31: A terminal resize purges the scrollback and rewrites the transcript at the new size, instead of ratatui's inline resize, which erases from the viewport top and which tmux turns into a stale copy of the live area in history (fixes #279); Claude Code's resize behavior was not verified. The refusal of an unknown slash name or `/loop` mid-turn is a transient status-line hint, not a transcript notice, so repeated Enters add no history.
 - 2026-10-31: Model reasoning is shown in the transcript by default, folded once settled, and `[tui] show_reasoning = false` hides it; Claude Code keeps thinking out of the main transcript (Ctrl-O transcript view), not re-verified with `claude -p`.
 - 2026-11-01: `esc to interrupt` stays in the status bar (minus `working`) while the spinner row shows; moving it into the row would lose it whenever the row is hidden for a waiting prompt (#355).
+- 2026-11-03: The built-in bar's running hint `esc to interrupt · shift+tab mode` is removed
+  outright; it is not relocated elsewhere in the UI. The idle hint stays as is (#48).
+- 2026-11-03: The guardian-off warning badge renders even when a custom status line is active,
+  because it reports a security-relevant state the user must not lose by configuring a script (#48).
+- 2026-11-03: First stdout line only, ANSI escapes stripped; multi-line and colored output are
+  deferred, because the Fontaine bar is one row of styled spans and full ANSI/OSC support needs
+  an ANSI-to-span parser dependency (#48).
+- 2026-11-03: Added a 300 ms minimum interval between status-line script runs for draw-coalesced
+  triggers, tracked in `Ui` status-line state alongside the in-flight flag; startup and
+  `refresh_interval_secs` timer triggers bypass it (#48).
 - 2026-11-01: No working spinner in screen-reader (linear) mode; it is animation with nothing to announce, and settled-only output is the rule there as for `thinking:` (#355).
 - 2026-11-01: The working spinner uses a breathing-dot glyph (`·∙•●•∙`, ASCII `.oO0Oo`) with a drifting hue instead of Claude Code's star glyphs; `⬤` is excluded because terminals draw it wider than the other frames (#355).
 - 2026-11-01: The spinner label is the fixed `Working…`, not Claude Code's rotating verb list; the issue asks for an activity indicator, not verb variety (#355).

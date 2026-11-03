@@ -45,7 +45,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fontaine_core::agent::{AgentRuntime, AgentSetup, EnvLookup};
 use fontaine_core::config::PermissionMode;
@@ -54,6 +54,7 @@ use fontaine_core::notice::{Notice, Severity};
 use fontaine_core::permissions::{
     Answer, ApprovalRequest, Approver, GuardianUnavailable, UnavailableChoice,
 };
+use fontaine_core::statusline::{StatuslineScript, StatuslineState};
 use fontaine_tools::ask_user::{Question, QuestionReply};
 use fontaine_tools::kills::KILL_SETTLE;
 use futures::future::BoxFuture;
@@ -264,6 +265,26 @@ struct Ui<R> {
     /// Accounts whose quota failure was already reported, so a poller re-pointed by a credential
     /// rebuild does not repeat it.
     quota_warned: std::collections::HashSet<String>,
+    /// Sends a request to run the configured status-line command. Drained in the run loop.
+    statusline_tx: Option<tokio::sync::mpsc::UnboundedSender<StatuslineTrigger>>,
+    statusline_rx: Option<tokio::sync::mpsc::UnboundedReceiver<StatuslineTrigger>>,
+    /// Receives the result of a status-line command run.
+    statusline_result_tx: tokio::sync::mpsc::UnboundedSender<Option<StatuslineState>>,
+    statusline_result_rx: tokio::sync::mpsc::UnboundedReceiver<Option<StatuslineState>>,
+    /// The configured status-line script, when `[statusline] command` is set.
+    statusline_script: Option<StatuslineScript>,
+    /// Whether a status-line run is in flight.
+    statusline_running: bool,
+    /// When the last status-line run started, for the draw-trigger minimum interval.
+    statusline_last_run: Option<Instant>,
+}
+
+/// Why the status-line command should run.
+pub enum StatuslineTrigger {
+    /// Startup or the refresh timer: not subject to the draw debounce.
+    Scheduled,
+    /// A draw happened while no run was in flight.
+    Draw,
 }
 
 /// Runs the interface until the user quits or `input` closes. `render` is called with the
@@ -325,6 +346,17 @@ pub async fn drive(
         fontaine_core::quota::QuotaPoller::new(),
         fontaine_core::quota::QuotaPoller::new(),
     ];
+    let (statusline_tx, statusline_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (statusline_result_tx, statusline_result_rx) = tokio::sync::mpsc::unbounded_channel();
+    let statusline_script = runtime.config.statusline.command.as_ref().map(|command| {
+        StatuslineScript::new(
+            command,
+            runtime.scrub_env().to_vec(),
+            fontaine_core::tools::subprocess_env(&runtime.config),
+            runtime.git_bash().clone(),
+            runtime.state.scope().primary().to_path_buf(),
+        )
+    });
     let mut ui = Ui {
         app: App::new(mode, model),
         input,
@@ -349,6 +381,13 @@ pub async fn drive(
         quota_rx: [quota[0].subscribe(), quota[1].subscribe()],
         quota,
         quota_warned: Default::default(),
+        statusline_tx: statusline_script.is_some().then_some(statusline_tx),
+        statusline_rx: statusline_script.is_some().then_some(statusline_rx),
+        statusline_result_tx,
+        statusline_result_rx,
+        statusline_script,
+        statusline_running: false,
+        statusline_last_run: None,
     };
     ui.app.theme = theme;
     // Config validation has parsed and scope-checked every entry, so a resolve failure here

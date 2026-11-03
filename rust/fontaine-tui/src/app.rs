@@ -6,8 +6,10 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use fontaine_core::audit::DecisionRecord;
 use fontaine_core::config::PermissionMode;
 use fontaine_core::permissions::{Answer, ApprovalRequest, UnavailableChoice};
+use fontaine_core::statusline::{RecentVerdict, StatuslineState};
 use fontaine_core::steering::Queued;
 use fontaine_core::turn::SessionEvent;
 use fontaine_tools::ask_user::{Question, QuestionReply};
@@ -235,6 +237,10 @@ pub struct App {
     pub scheduled: usize,
     /// The active goal's age and whether it waits for the user, for the status bar.
     pub goal: Option<(std::time::Duration, bool)>,
+    /// The last good line produced by a configured `[statusline]` command, if any.
+    pub statusline: Option<StatuslineState>,
+    /// Last gate decisions carrying a guardian verdict, oldest first, capped at 5.
+    recent_verdicts: std::collections::VecDeque<RecentVerdict>,
     /// Where the main agent's next shell call starts, for the status bar. Empty until the
     /// first draw.
     pub cwd: PathBuf,
@@ -378,6 +384,8 @@ impl App {
             running_agents: 0,
             scheduled: 0,
             goal: None,
+            statusline: None,
+            recent_verdicts: std::collections::VecDeque::new(),
             cwd: PathBuf::new(),
             branch: None,
             home: None,
@@ -639,6 +647,22 @@ impl App {
 
     pub fn on_event(&mut self, event: SessionEvent) {
         self.transcript.on_event(event);
+    }
+
+    /// Records a decision that carried a guardian verdict for the custom status line payload.
+    pub fn push_verdict(&mut self, record: &DecisionRecord) {
+        if record.guardian_verdict.is_none() {
+            return;
+        }
+        if self.recent_verdicts.len() >= 5 {
+            self.recent_verdicts.pop_front();
+        }
+        self.recent_verdicts.push_back(RecentVerdict::from(record));
+    }
+
+    /// The recent verdicts, oldest first, for the status-line payload.
+    pub fn recent_verdicts(&self) -> Vec<RecentVerdict> {
+        self.recent_verdicts.iter().cloned().collect()
     }
 
     /// Shows the approval, or queues it behind the one the human is answering.

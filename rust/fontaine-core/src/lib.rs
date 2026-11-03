@@ -53,6 +53,7 @@ pub mod session;
 pub mod side_question;
 pub mod skill_trust;
 pub mod skills;
+pub mod statusline;
 pub mod steering;
 pub mod tasks;
 pub mod tier;

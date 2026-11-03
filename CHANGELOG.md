@@ -8,6 +8,16 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+#### TUI
+
+- Custom status line (`[statusline]` in the user settings file): a shell command that receives
+  JSON session data on stdin and whose first stdout line replaces the built-in status bar's hint
+  segment. Includes `refresh_interval_secs`, a 5-second timeout, ANSI escape stripping, and a
+  JSON contract matching Claude Code's field names where Fontaine has the data plus
+  Fontaine-specific fields (#48).
+- The built-in status bar no longer shows `esc to interrupt · shift+tab mode` while the main turn
+  runs; the running state is indicated by the spinner row and an empty hint segment.
+
 #### Permissions
 
 - A `write`, `edit` or `notebook_edit` naming a path outside every workspace root is adjudicated

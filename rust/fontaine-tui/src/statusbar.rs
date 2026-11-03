@@ -189,16 +189,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     // Only while the turn runs: some paths clear `running` without settling the turn.
     let refusal = app.refusal.as_deref().filter(|_| app.running);
     let hint = if let Some(text) = refusal {
-        text.to_string()
+        Some(text.to_string())
     } else if let Some(text) = &app.attach_notice {
-        text.clone()
+        Some(text.clone())
     } else if let Some(text) = &viewed_state {
-        text.clone()
+        Some(text.clone())
     } else if app.running {
-        match cycle_hint(app) {
-            Some(cycle) => format!("esc to interrupt · {cycle}"),
-            None => "esc to interrupt".to_string(),
-        }
+        None
     } else {
         let mut parts = Vec::new();
         if let Some(cycle) = cycle_hint(app) {
@@ -213,7 +210,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             parts.push(format!("{keys} agents"));
         }
         parts.push("/exit".to_string());
-        parts.join(" · ")
+        Some(parts.join(" · "))
     };
     let agents = match app.running_agents {
         0 => String::new(),
@@ -250,28 +247,77 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     let effort = app
         .effort
         .map_or_else(String::new, |level| format!(" · effort {level}"));
-    spans.push(Span::styled(
-        format!("{}· {}", location(app), app.model),
-        dim,
-    ));
-    for (text, warn) in app
-        .usage
-        .iter()
-        .filter_map(|usage| quota_segment(usage, app.usage_as_of))
-    {
-        let style = if warn {
-            Style::default().fg(app.theme.warning)
-        } else {
-            dim
+
+    if let Some(statusline) = &app.statusline {
+        spans.push(Span::styled(
+            format!("{}· {}", location(app), app.model),
+            dim,
+        ));
+        for (text, warn) in app
+            .usage
+            .iter()
+            .filter_map(|usage| quota_segment(usage, app.usage_as_of))
+        {
+            let style = if warn {
+                Style::default().fg(app.theme.warning)
+            } else {
+                dim
+            };
+            spans.push(Span::styled(format!(" · {text}"), style));
+        }
+        spans.push(Span::styled(
+            format!("{effort}{agents}{scheduled}{goal} · "),
+            dim,
+        ));
+        let custom = truncate_row(
+            &statusline.line,
+            area.width.saturating_sub(width_used(&spans)),
+        );
+        spans.push(Span::styled(custom, dim));
+    } else {
+        spans.push(Span::styled(
+            format!("{}· {}", location(app), app.model),
+            dim,
+        ));
+        for (text, warn) in app
+            .usage
+            .iter()
+            .filter_map(|usage| quota_segment(usage, app.usage_as_of))
+        {
+            let style = if warn {
+                Style::default().fg(app.theme.warning)
+            } else {
+                dim
+            };
+            spans.push(Span::styled(format!(" · {text}"), style));
+        }
+        let trailer = match hint {
+            Some(h) => format!("{effort}{agents}{scheduled}{goal} · {h}"),
+            None => format!("{effort}{agents}{scheduled}{goal}"),
         };
-        spans.push(Span::styled(format!(" · {text}"), style));
+        spans.push(Span::styled(trailer, dim));
     }
-    spans.push(Span::styled(
-        format!("{effort}{agents}{scheduled}{goal} · {hint}"),
-        dim,
-    ));
     let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// The displayed width of the spans already assembled, in columns.
+fn width_used(spans: &[Span<'_>]) -> u16 {
+    spans.iter().map(|s| s.width() as u16).sum()
+}
+
+/// Cuts `text` to fit in the remaining `width`, adding a leading ellipsis when truncated.
+fn truncate_row(text: &str, width: u16) -> String {
+    let width = usize::from(width);
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= width {
+        return text.to_string();
+    }
+    if width <= 1 {
+        return "…".to_string();
+    }
+    let kept: String = chars[(chars.len() - (width - 1))..].iter().collect();
+    format!("…{kept}")
 }
 
 #[cfg(test)]
@@ -400,12 +446,13 @@ mod tests {
     }
 
     #[test]
-    fn the_running_hint_offers_interrupt_without_the_word_working() {
+    fn the_running_state_leaves_the_hint_segment_empty_and_has_no_trailing_separator() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.running = true;
         let text = bar(&app);
-        assert!(text.contains("esc to interrupt · shift+tab mode"), "{text}");
-        assert!(!text.contains("working"), "{text}");
+        assert!(!text.contains("esc to interrupt"), "{text}");
+        assert!(!text.contains("shift+tab mode"), "{text}");
+        assert!(text.trim_end().ends_with('m'), "{text}");
     }
 
     #[test]
@@ -633,5 +680,48 @@ mod tests {
             ]
         );
         assert_eq!(next_mode(PermissionMode::DontAsk), PermissionMode::Manual);
+    }
+
+    #[test]
+    fn a_custom_line_replaces_the_built_in_hint() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+            line: "CUSTOM".into(),
+        });
+        let text = bar(&app);
+        assert!(text.contains("CUSTOM"), "{text}");
+        assert!(!text.contains("/add-dir"), "{text}");
+    }
+
+    #[test]
+    fn a_custom_line_keeps_the_guardian_off_badge_first() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.guardian_off = true;
+        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+            line: "custom".into(),
+        });
+        let text = bar(&app);
+        let guardian_pos = text.find("guardian off").expect("guardian badge");
+        let custom_pos = text.find("custom").expect("custom line");
+        assert!(guardian_pos < custom_pos);
+    }
+
+    #[test]
+    fn a_long_custom_line_is_truncated_from_the_left() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+            line: "a".repeat(200),
+        });
+        let text = bar(&app);
+        assert!(text.contains('…'), "{text}");
+        assert!(!text.contains(&"a".repeat(200)), "{text}");
+    }
+
+    #[test]
+    fn truncate_row_keeps_short_text_and_ellipsizes_long_ones() {
+        assert_eq!(truncate_row("hi", 10), "hi");
+        assert_eq!(truncate_row("hello world", 5), "…world");
+        assert_eq!(truncate_row("x", 1), "x");
+        assert_eq!(truncate_row("xy", 1), "…");
     }
 }
