@@ -862,6 +862,17 @@ pub fn write_for(root: &Path, seen: &Seen) -> Write {
     }
 }
 
+/// The unconfined external-write fallback: the gate has already adjudicated the resolved
+/// target, so nothing here re-checks containment.
+pub fn write_external(primary: &Path, seen: &Seen) -> Write {
+    Write {
+        base: Some(primary.to_path_buf()),
+        confine: false,
+        seen: seen.clone(),
+        ..Write::default()
+    }
+}
+
 pub fn edit_for(root: &Path, seen: &Seen) -> Edit {
     Edit {
         base: Some(root.to_path_buf()),
@@ -871,10 +882,30 @@ pub fn edit_for(root: &Path, seen: &Seen) -> Edit {
     }
 }
 
+/// The unconfined external-write fallback for `edit`.
+pub fn edit_external(primary: &Path, seen: &Seen) -> Edit {
+    Edit {
+        base: Some(primary.to_path_buf()),
+        confine: false,
+        seen: seen.clone(),
+        ..Edit::default()
+    }
+}
+
 pub fn notebook_edit_for(root: &Path, seen: &Seen) -> NotebookEdit {
     NotebookEdit {
         base: Some(root.to_path_buf()),
         confine: true,
+        seen: seen.clone(),
+        ..NotebookEdit::default()
+    }
+}
+
+/// The unconfined external-write fallback for `notebook_edit`.
+pub fn notebook_edit_external(primary: &Path, seen: &Seen) -> NotebookEdit {
+    NotebookEdit {
+        base: Some(primary.to_path_buf()),
+        confine: false,
         seen: seen.clone(),
         ..NotebookEdit::default()
     }
@@ -1074,27 +1105,34 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
                 search: search_external(primary),
             },
         )),
-        register(GuardedTool::per_root(
+        register(GuardedTool::per_root_with_write_fallback(
             scope.clone(),
             risk_of(Write::NAME),
             guard.clone(),
             |root| WriteTool {
                 write: write_for(root, &seen),
             },
+            |primary| WriteTool {
+                write: write_external(primary, &seen),
+            },
         )),
-        register(GuardedTool::per_root(
+        register(GuardedTool::per_root_with_write_fallback(
             scope.clone(),
             risk_of(Edit::NAME),
             guard.clone(),
             |root| EditTool {
                 edit: edit_for(root, &seen),
             },
+            |primary| EditTool {
+                edit: edit_external(primary, &seen),
+            },
         )),
-        register(GuardedTool::per_root(
+        register(GuardedTool::per_root_with_write_fallback(
             scope.clone(),
             risk_of(NotebookEdit::NAME),
             guard.clone(),
             |root| notebook_edit_for(root, &seen),
+            |primary| notebook_edit_external(primary, &seen),
         )),
         register(
             GuardedTool::per_root(

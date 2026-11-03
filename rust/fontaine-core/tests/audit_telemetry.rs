@@ -20,6 +20,10 @@ fn calls() -> Vec<(&'static str, Value)> {
     vec![
         ("read", json!({"path": "a.txt"})),
         ("read", json!({"path": "../outside.txt"})),
+        (
+            "write",
+            json!({"path": "../outside-write.txt", "content": "x"}),
+        ),
         ("write", json!({"path": "n.txt", "content": "x"})),
         ("write", json!({"path": ".git/config", "content": "x"})),
         ("shell", json!({"command": "ls"})),
@@ -160,6 +164,54 @@ async fn an_approved_external_read_records_the_resolved_target() {
         "path": outside.join("x.txt").to_str().unwrap()
     }));
     let written_digest = fontaine_core::audit::args_digest(&json!({"path": "../outside/x.txt"}));
+    let records = rig.audit();
+    let record = records
+        .iter()
+        .find(|r| r.tier == fontaine_core::tier::Tier::Human)
+        .expect("the human's allow record");
+    assert_eq!(record.args_digest, resolved_digest);
+    assert_ne!(record.args_digest, written_digest);
+}
+
+#[tokio::test]
+async fn an_approved_external_write_records_the_resolved_target() {
+    let rig = Rig::new(Manual);
+    let outside = rig.world.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(matches!(
+        rig.check("write", json!({"path": "../outside/x.txt", "content": "x"}))
+            .await,
+        fontaine_tools::gate::GateDecision::Allow { .. }
+    ));
+
+    // The action record names the resolved path, and the audit digest is the resolved
+    // arguments', not the written alias'.
+    let records: Vec<_> = rig
+        .session
+        .ledger
+        .read()
+        .unwrap()
+        .into_iter()
+        .map(|e| e.record)
+        .collect();
+    let action = records.iter().find_map(|r| match r {
+        fontaine_core::ledger::Record::Action { tool, paths, .. } if tool == "write" => {
+            Some(paths.clone())
+        }
+        _ => None,
+    });
+    assert_eq!(
+        action,
+        Some(vec![outside.join("x.txt").display().to_string()]),
+        "{records:?}"
+    );
+    let resolved_digest = fontaine_core::audit::args_digest(&json!({
+        "path": outside.join("x.txt").to_str().unwrap(),
+        "content": "x",
+    }));
+    let written_digest =
+        fontaine_core::audit::args_digest(&json!({"path": "../outside/x.txt", "content": "x"}));
     let records = rig.audit();
     let record = records
         .iter()

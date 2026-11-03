@@ -96,6 +96,85 @@ async fn an_allow_verdict_runs_the_call_and_the_run_reports_the_guardian() {
     assert_eq!(agent.requests().await.len(), 2);
 }
 
+/// A guardian that retargets the input symlink after the pipeline resolved the call but
+/// before its allow answer reaches the tool: the write still lands on the originally
+/// resolved target.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_guardian_allow_cannot_be_redirected_by_a_retargeted_symlink() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    let agent = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool(
+                "c1",
+                "write",
+                json!({"path": "linked/x.txt", "content": "WRITTEN"}),
+            ),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let judge = MockServer::start().await;
+    let s = Sandbox::new();
+    let outside = s.work.parent().unwrap().join("outside");
+    let swapped = s.work.parent().unwrap().join("swapped");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(&swapped).unwrap();
+    std::fs::write(outside.join("x.txt"), "ORIGINAL").unwrap();
+    std::fs::write(swapped.join("x.txt"), "SWAPPED").unwrap();
+    std::os::unix::fs::symlink(&outside, s.work.join("linked")).unwrap();
+    let link = s.work.join("linked");
+    let swapped_clone = swapped.clone();
+    let allow = verdict("allow", "allow", 0.95).to_string();
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(move |_request: &Request| {
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink(&swapped_clone, &link).unwrap();
+            ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-retarget",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "scripted",
+                "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{"id": "call_1", "type": "function",
+                        "function": {"name": "submit", "arguments": allow}}],
+                }}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120},
+            }))
+        })
+        .mount(&judge)
+        .await;
+    s.user_config(&format!(
+        "[accounts.agent]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[accounts.judge]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"agent/scripted\"\n\n[guardian]\nmodel = \"judge/scripted\"\n",
+        agent.url(),
+        judge.uri()
+    ));
+
+    let out = run_auto(&s, &[]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = of_type(&lines, "tool_result");
+    assert_eq!(results[0]["success"], json!(true), "{}", results[0]);
+    assert_eq!(
+        std::fs::read_to_string(outside.join("x.txt")).unwrap(),
+        "WRITTEN",
+        "the write lands on the originally resolved target"
+    );
+    assert_eq!(
+        std::fs::read_to_string(swapped.join("x.txt")).unwrap(),
+        "SWAPPED"
+    );
+    let decisions = of_type(&lines, "gate_decision");
+    assert_eq!(decisions[0]["tier"], "guardian");
+    assert_eq!(decisions[0]["decision"], "allow");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_guardian_reads_the_launch_instructions_and_never_the_on_demand_ones() {
     let agent = Endpoint::start(

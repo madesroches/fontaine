@@ -46,14 +46,18 @@ pub struct DiffPreview {
 }
 
 /// The diff `tool` would make with `args`, or `None` when there is nothing to show: another
-/// tool, a path outside the roots, a file that cannot be read as UTF-8 within the limit, or
-/// edits the tool itself would refuse.
+/// tool, a file that cannot be read as UTF-8 within the limit, or edits the tool itself
+/// would refuse. A path outside every root resolves the way the tool opens it, so an
+/// approved external write keeps its review surface.
 pub fn preview(tool: &str, args: &Value, scope: &Scope) -> Option<DiffPreview> {
     let path = args.get("path")?.as_str()?;
     if !matches!(tool, "edit" | "write" | "notebook_edit") {
         return None;
     }
-    let (_, resolved) = scope.find(path).ok()?;
+    let (_, resolved) = match scope.find(path) {
+        Ok(found) => found,
+        Err(_) => (0, scope.resolved(path)),
+    };
     let before = read_text(&resolved);
     let change = match tool {
         "edit" => {
@@ -300,13 +304,20 @@ mod tests {
         let ok = edit("a.txt", &[("one", "1")]);
         assert!(preview("read", &ok, &scope).is_none());
         assert!(preview("edit", &edit("missing.txt", &[("a", "b")]), &scope).is_none());
-        assert!(preview("edit", &edit("/etc/hostname", &[("a", "b")]), &scope).is_none());
+        assert!(
+            preview(
+                "edit",
+                &edit("/nonexistent-fontaine-eval/hostname", &[("a", "b")]),
+                &scope
+            )
+            .is_none()
+        );
         assert!(preview("edit", &edit("bin.dat", &[("a", "b")]), &scope).is_none());
         assert!(preview("edit", &edit("big.txt", &[("Z", "Y")]), &scope).is_none());
         assert!(preview("edit", &edit("a.txt", &[("absent", "b")]), &scope).is_none());
         assert!(preview("edit", &edit("a.txt", &[("one", "one")]), &scope).is_none());
         assert!(preview("edit", &json!({"path": "a.txt"}), &scope).is_none());
-        let outside = json!({"path": "/etc/hostname", "content": "x"});
+        let outside = json!({"path": "/nonexistent-fontaine-eval/hostname", "content": ""});
         assert!(preview("write", &outside, &scope).is_none());
         let huge = "x".repeat(PREVIEW_MAX_BYTES as usize + 1);
         assert!(preview("write", &json!({"path": "a.txt", "content": huge}), &scope).is_none());
@@ -365,6 +376,26 @@ mod tests {
         assert_eq!(p.lines.len(), PREVIEW_MAX_LINES);
         assert_eq!(p.added, 300);
         assert_eq!(p.hidden, 100);
+    }
+
+    #[test]
+    fn an_external_edit_previews_the_resolved_targets_diff() {
+        let (dir, scope) = setup();
+        let ext = tempfile::tempdir().unwrap();
+        let outside = ext.path().canonicalize().unwrap().join("x.txt");
+        std::fs::write(&outside, "one\ntwo\n").unwrap();
+        let p = preview(
+            "edit",
+            &edit(outside.to_str().unwrap(), &[("two", "2")]),
+            &scope,
+        )
+        .unwrap();
+        assert_eq!((p.added, p.removed), (1, 1));
+        assert_eq!(kinds(&p, DiffKind::Removed), [(Some(2), None, "two")]);
+        // The external file is untouched: the preview only reads.
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "one\ntwo\n");
+        drop(ext);
+        drop(dir);
     }
 
     #[test]

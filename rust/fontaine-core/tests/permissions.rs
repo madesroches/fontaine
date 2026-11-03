@@ -100,7 +100,37 @@ async fn the_mode_and_risk_class_matrix() {
         (
             "write",
             write_args("../outside.txt"),
-            [(Deny, Mode), (Deny, Mode), (Deny, PlanBlock), (Deny, Dont)],
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, PlanBlock),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "edit",
+            edit_args("../outside.txt"),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, PlanBlock),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "notebook_edit",
+            notebook_args("../outside.ipynb"),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, PlanBlock),
+                (Deny, Dont),
+            ],
+        ),
+        (
+            "lsp",
+            json!({"operation": "hover", "path": "../outside.txt", "line": 1, "character": 1}),
+            [(Deny, Mode), (Deny, Mode), (Deny, Mode), (Deny, Dont)],
         ),
         (
             "shell",
@@ -381,6 +411,171 @@ async fn external_reads_follow_the_mode_matrix_and_never_take_a_fast_path() {
     assert!(!allowed(&d));
     assert!(denied_message(&d).contains("headless"));
     assert_eq!(rig.audit()[0].tier, Mode);
+}
+
+#[tokio::test]
+async fn external_writes_follow_the_mode_matrix_and_never_take_a_fast_path() {
+    use Decision::{Allow, Deny, Prompt};
+    use Tier::{DontAsk as Dont, Guardian, Mode, PlanBlock};
+    let args = write_args("../outside.txt");
+
+    // An external write follows the ordinary pipeline per mode, exactly like an external
+    // read: it asks in the interactive modes, is plan-blocked, and denies in dontAsk.
+    // acceptEdits never auto-allows it: the auto-allow requires a located in-root path.
+    let cases: Vec<(PermissionMode, (Decision, Tier))> = vec![
+        (Manual, (Prompt, Mode)),
+        (AcceptEdits, (Prompt, Mode)),
+        (Plan, (Deny, PlanBlock)),
+        (DontAsk, (Deny, Dont)),
+    ];
+    for (mode, want) in cases {
+        let rig = Rig::new(mode);
+        let got = first(&rig, "write", args.clone()).await;
+        assert_eq!(got, want, "in {mode:?}");
+    }
+
+    // With a working guardian, auto judges it at the guardian tier, never a fast path:
+    // an external path cannot be a tracked_edit or a scratch_write.
+    let fake = common::pipeline::fake_guardian(common::pipeline::allow_verdict());
+    let rig = Rig::with(
+        Options::new(fontaine_core::config::PermissionMode::Auto).guardian(fake.guardian.clone()),
+    );
+    let got = first(&rig, "write", args.clone()).await;
+    assert_eq!(got, (Allow, Guardian));
+    assert!(
+        !rig.audit()
+            .iter()
+            .any(|r| r.tier == Tier::ReadOnlyFastPath || r.tier == Tier::Tier05)
+    );
+
+    // Headless turns the prompt into a denial, as for any other call.
+    let rig = Rig::with(Options::new(Manual).headless());
+    let d = rig.check("write", args.clone()).await;
+    assert!(!allowed(&d));
+    assert!(denied_message(&d).contains("headless"));
+    assert_eq!(rig.audit()[0].tier, Mode);
+
+    // The in-root write fast paths are unchanged: acceptEdits auto-allows, auto keeps
+    // judging untracked files, and the read fast path still never names a write.
+    let rig = Rig::new(AcceptEdits);
+    assert_eq!(
+        first(&rig, "write", write_args("new.txt")).await,
+        (Allow, Mode)
+    );
+}
+
+#[tokio::test]
+async fn external_writes_keep_the_floor_and_their_preapproved_tiers() {
+    // A deny rule anchored at the external path wins, whatever the mode.
+    for mode in MODES {
+        let rig =
+            Rig::with(Options::new(mode).settings("[permissions]\ndeny = [\"write(//*)\"]\n"));
+        let d = rig.check("write", write_args("../outside.txt")).await;
+        assert!(!allowed(&d), "{mode:?}");
+        assert_eq!(rig.audit()[0].tier, Tier::DenyRule, "{mode:?}");
+    }
+
+    // An ask rule forces the human even in auto, and denies in dontAsk.
+    let fake = common::pipeline::fake_guardian(common::pipeline::allow_verdict());
+    let rig = Rig::with(
+        Options::new(fontaine_core::config::PermissionMode::Auto)
+            .guardian(fake.guardian.clone())
+            .settings("[permissions]\nask = [\"write(//*)\"]\n"),
+    );
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(allowed(
+        &rig.check("write", write_args("../outside.txt")).await
+    ));
+    assert_eq!(rig.approver.asked(), 1);
+    assert_eq!(fake.calls(), 0);
+
+    // A user allow rule runs the call at the allow_rule tier, with the resolved target
+    // as the execution arguments; the guardian is never asked.
+    let rig =
+        Rig::with(Options::new(DontAsk).settings("[permissions]\nallow = [\"write(//*)\"]\n"));
+    match rig.check("write", write_args("../outside.txt")).await {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            let path = args["path"].as_str().unwrap();
+            assert!(std::path::Path::new(path).is_absolute(), "{args}");
+            assert!(path.ends_with("outside.txt"), "{args}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(rig.audit()[0].tier, Tier::AllowRule);
+}
+
+#[tokio::test]
+async fn malformed_external_write_arguments_are_an_argument_error_after_the_floor() {
+    // Plan blocks every edit before the arguments are read, as it does for readable ones.
+    for mode in [Manual, AcceptEdits, DontAsk] {
+        let fake = common::pipeline::fake_guardian(common::pipeline::allow_verdict());
+        let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
+        for args in [json!({"path": 3}), json!({}), json!("a.txt")] {
+            let d = rig.check("write", args.clone()).await;
+            assert!(!allowed(&d), "{args} {mode:?}");
+            let message = denied_message(&d);
+            assert!(message.contains("arguments could not be read"), "{message}");
+            assert_eq!(
+                rig.audit().last().unwrap().tier,
+                Tier::Mode,
+                "{args} {mode:?}"
+            );
+        }
+        assert_eq!(fake.calls(), 0, "{mode:?}: the guardian never sees them");
+        assert_eq!(rig.approver.asked(), 0, "{mode:?}: neither does a human");
+    }
+    let rig = Rig::with(Options::new(Plan));
+    let d = rig.check("write", json!({"path": 3})).await;
+    assert!(!allowed(&d));
+    assert!(denied_message(&d).contains("plan mode"), "{d:?}");
+    // A deny rule still precedes the argument error.
+    let rig = Rig::with(Options::new(Manual).settings("[permissions]\ndeny = [\"write\"]\n"));
+    let d = rig.check("write", json!({"path": 3})).await;
+    assert!(!allowed(&d));
+    assert_eq!(rig.audit()[0].tier, Tier::DenyRule);
+}
+
+/// An approver that retargets the symlink after the pipeline has resolved the call, so an
+/// approval granted mid-decision cannot redirect the write to the new target.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_approval_cannot_redirect_an_external_write_by_retargeting_the_symlink() {
+    let retargeting = Arc::new(Retargeting {
+        link: std::sync::Mutex::new(None),
+        new_target: std::sync::Mutex::new(None),
+        requests: std::sync::Mutex::new(Vec::new()),
+    });
+    let mut options = Options::new(Manual);
+    options.approver = Some(retargeting.clone());
+    let rig = Rig::with(options);
+    let outside = rig.world.root.join("outside");
+    let swapped = rig.world.root.join("swapped");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(&swapped).unwrap();
+    std::fs::write(outside.join("note.txt"), "ORIGINAL").unwrap();
+    std::fs::write(swapped.join("note.txt"), "SWAPPED").unwrap();
+    std::os::unix::fs::symlink(&outside, rig.work().join("linked")).unwrap();
+    retargeting.aim(rig.work().join("linked"), swapped);
+
+    match rig.check("write", write_args("linked/note.txt")).await {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                write_args(outside.join("note.txt").to_str().unwrap()),
+                "the allowed arguments stay with the resolved target"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    // The approval prompt itself showed the resolved target.
+    let request = retargeting.requests.lock().unwrap()[0].clone();
+    assert!(
+        request
+            .summary
+            .contains(outside.join("note.txt").to_str().unwrap()),
+        "{}",
+        request.summary
+    );
 }
 
 #[cfg(unix)]
@@ -985,15 +1180,30 @@ async fn the_ledger_gets_an_action_or_denial_for_every_decision() {
 #[tokio::test]
 async fn an_out_of_scope_file_call_says_why_and_how_to_fix_it() {
     let rig = Rig::with(Options::new(Manual).headless());
-    // A read outside the roots now follows the ordinary pipeline: headless, its prompt
-    // becomes a denial.
-    let d = rig.check("read", json!({"path": "../outside.txt"})).await;
-    let message = denied_message(&d);
-    assert!(message.contains("needs the user's approval"), "{message}");
-    assert!(message.contains("headless"), "{message}");
+    // An out-of-root file call now follows the ordinary pipeline: headless, its prompt
+    // becomes a denial, for a read exactly as for a write.
+    for (tool, args) in [
+        ("read", json!({"path": "../outside.txt"})),
+        ("write", write_args("../outside.txt")),
+        ("edit", edit_args("../outside.txt")),
+        ("notebook_edit", notebook_args("../outside.ipynb")),
+    ] {
+        let d = rig.check(tool, args).await;
+        let message = denied_message(&d);
+        assert!(
+            message.contains("needs the user's approval"),
+            "{tool}: {message}"
+        );
+        assert!(message.contains("headless"), "{tool}: {message}");
+    }
 
-    // A write outside the roots keeps the containment denial with its guidance.
-    let d = rig.check("write", write_args("../outside.txt")).await;
+    // `lsp` keeps the containment denial with its guidance.
+    let d = rig
+        .check(
+            "lsp",
+            json!({"operation": "hover", "path": "../outside.txt", "line": 1, "character": 1}),
+        )
+        .await;
     let message = denied_message(&d);
     assert!(message.contains("outside the workspace roots"), "{message}");
     assert!(message.contains("/add-dir"), "{message}");
@@ -1039,8 +1249,18 @@ async fn a_protected_file_name_in_the_scratch_root_still_hits_the_floor() {
 async fn an_out_of_roots_denial_names_the_scratch_directory() {
     let rig = Rig::with(Options::new(Manual).headless().scratch());
     let outside = rig.world.root.join("outside.txt");
+    // Only `lsp` keeps the containment denial; it still points at the scratch directory
+    // and /add-dir.
     let d = rig
-        .check("write", write_args(&outside.display().to_string()))
+        .check(
+            "lsp",
+            json!({
+                "operation": "hover",
+                "path": outside.display().to_string(),
+                "line": 1,
+                "character": 1,
+            }),
+        )
         .await;
     let message = denied_message(&d);
     let scratch = rig.scratch.clone().unwrap();
@@ -1376,8 +1596,13 @@ async fn a_shell_write_to_the_memory_store_takes_the_ordinary_shell_path() {
 #[tokio::test]
 async fn the_out_of_scope_error_points_at_the_memory_directory() {
     let rig = Rig::with(Options::new(Manual).memory());
-    // Only writes keep the containment denial; it still points at the memory directory.
-    let d = rig.check("write", write_args("/etc/hostname")).await;
+    // Only `lsp` keeps the containment denial; it still points at the memory directory.
+    let d = rig
+        .check(
+            "lsp",
+            json!({"operation": "hover", "path": "/etc/hostname", "line": 1, "character": 1}),
+        )
+        .await;
     let message = denied_message(&d);
     let memory = rig.memory.as_ref().unwrap().display().to_string();
     assert!(message.contains(&memory), "{message}");

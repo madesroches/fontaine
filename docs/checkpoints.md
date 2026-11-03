@@ -80,8 +80,10 @@ A fork (`/branch`, `--fork-session`) copies the directory with the rest of the s
 can rewind to the same prompts; `--resume` reopens it. After `/clear` earlier prompts can no longer
 be rewound to.
 
-Before anything is written back, each path is checked again: it must be inside the workspace roots
-now, and neither the file nor any directory above it may be a symbolic link. Saved contents are
+Before anything is written back, each path is checked again: it must resolve the way it did when
+its pre-image was captured — a file inside the roots, with neither the file nor any directory
+above it a symbolic link, or a pre-image captured outside every root by an approved external
+write, which resolves through the scope at its recorded resolved path. Saved contents are
 checked against their hash. Anything that fails is reported and left alone.
 
 ## Settings

@@ -91,9 +91,17 @@ async fn a_shell_command_and_a_path_outside_the_workspace_go_to_the_guardian() {
     rig.check("shell", json!({"command": "touch a.txt"})).await;
     assert_eq!(last_tier(&rig), Tier::Guardian);
     assert_eq!(fake.calls(), 1);
-    let outside = rig.check("write", write_args("/etc/fontaine-test")).await;
-    assert!(!allowed(&outside));
+    // An external write is judged by the guardian like any other unapproved call, never
+    // a fast path: the guardian allows this one.
+    let outside_dir = tempfile::tempdir().unwrap();
+    let target = outside_dir.path().join("fontaine-test.txt");
+    assert!(allowed(
+        &rig.check("write", write_args(&target.to_string_lossy()))
+            .await
+    ));
+    assert_eq!(last_tier(&rig), Tier::Guardian);
     assert_ne!(last_tier(&rig), Tier::TrackedEdit);
+    assert_eq!(fake.calls(), 2);
 }
 
 #[tokio::test]
@@ -258,7 +266,7 @@ async fn a_shell_command_on_scratch_and_the_setting_off_go_to_the_guardian() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_link_out_of_scratch_is_judged_by_its_target() {
-    let (rig, _fake) = repo_rig(&["a.txt"], "", true);
+    let (rig, fake) = repo_rig(&["a.txt"], "", true);
     let scratch = rig.scratch.clone().unwrap();
     std::os::unix::fs::symlink(rig.work().join("a.txt"), scratch.join("link")).unwrap();
     rig.check("edit", edit_args(&scratch.join("link").to_string_lossy()))
@@ -267,11 +275,14 @@ async fn a_link_out_of_scratch_is_judged_by_its_target() {
     let outside = tempfile::tempdir().unwrap();
     write(&outside.path().join("t.txt"), "a");
     std::os::unix::fs::symlink(outside.path().join("t.txt"), scratch.join("out")).unwrap();
-    let d = rig
-        .check("edit", edit_args(&scratch.join("out").to_string_lossy()))
-        .await;
-    assert!(!allowed(&d));
-    assert_ne!(last_tier(&rig), Tier::ScratchWrite);
+    // The link resolves outside every root: the call is guardian-judged, never a
+    // scratch_write fast path.
+    assert!(allowed(
+        &rig.check("edit", edit_args(&scratch.join("out").to_string_lossy()))
+            .await
+    ));
+    assert_eq!(last_tier(&rig), Tier::Guardian);
+    assert_eq!(fake.calls(), 1);
 }
 
 #[tokio::test]

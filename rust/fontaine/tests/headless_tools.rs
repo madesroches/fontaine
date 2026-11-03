@@ -225,6 +225,330 @@ async fn an_external_read_allowed_by_a_user_rule_executes_at_the_allow_rule_tier
     assert_eq!(decisions[0]["decision"], "allow");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn an_out_of_scope_write_is_denied_and_creates_nothing() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool(
+                "c1",
+                "write",
+                json!({"path": "../outside.txt", "content": "TOP-SECRET"}),
+            ),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s
+        .headless(&["--output-format", "stream-json", "write it"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = tool_results(&lines);
+    assert_eq!(results[0]["success"], json!(false));
+    let text = results[0]["text"].as_str().unwrap();
+    // An unapproved external write would prompt; headless turns that into a denial.
+    assert!(text.contains("denied"), "{text}");
+    assert!(text.contains("needs the user's approval"), "{text}");
+    let target = s.work.parent().unwrap().join("outside.txt");
+    assert!(!target.exists(), "nothing is created");
+
+    let decisions: Vec<_> = lines
+        .iter()
+        .filter(|l| l["type"] == "gate_decision")
+        .collect();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["decision"], "deny");
+    assert_eq!(decisions[0]["tier"], "mode");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_auto_guardian_allow_writes_an_external_file_the_user_asked_for() {
+    let agent = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool(
+                "c1",
+                "write",
+                json!({"path": "../deps/notes.txt", "content": "meeting notes"}),
+            ),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let judge = Endpoint::start(
+        Wire::Chat,
+        vec![Turn::tool("g1", "submit", verdict("allow", "allow", 0.95))],
+    )
+    .await;
+    let s = auto_sandbox(&agent, &judge);
+    let deps = s.work.parent().unwrap().join("deps");
+    std::fs::create_dir_all(&deps).unwrap();
+
+    let out = s
+        .run(&[
+            "-p",
+            "--permission-mode",
+            "auto",
+            "--output-format",
+            "stream-json",
+            "save my notes to ../deps/notes.txt",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = tool_results(&lines);
+    assert_eq!(results[0]["success"], json!(true), "{}", results[0]);
+    assert_eq!(
+        std::fs::read_to_string(deps.join("notes.txt")).unwrap(),
+        "meeting notes"
+    );
+
+    // The decision is the guardian's, and the guardian saw the resolved external target
+    // and the user's own ask.
+    let decisions: Vec<_> = lines
+        .iter()
+        .filter(|l| l["type"] == "gate_decision")
+        .collect();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["tier"], "guardian");
+    assert_eq!(decisions[0]["decision"], "allow");
+    let asked = judge.requests().await;
+    assert_eq!(asked.len(), 1);
+    let escaped = serde_json::to_string(&deps.join("notes.txt").display().to_string()).unwrap();
+    assert!(
+        asked[0]
+            .to_string()
+            .contains(&escaped[1..escaped.len() - 1]),
+        "the guardian request names the resolved target"
+    );
+    assert!(
+        asked[0].to_string().contains("notes.txt"),
+        "the user's ask reaches the guardian"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_external_write_allowed_by_a_user_rule_executes_at_the_allow_rule_tier() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool(
+                "c1",
+                "write",
+                json!({"path": "../deps/notes.txt", "content": "x"}),
+            ),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let deps = s.work.parent().unwrap().join("deps");
+    std::fs::create_dir_all(&deps).unwrap();
+    s.user_config(&format!(
+        "[accounts.mock]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"mock/scripted\"\n\n[permissions]\nallow = [\"write(//*)\"]\n",
+        endpoint.url()
+    ));
+
+    let out = s
+        .headless(&["--output-format", "stream-json", "write it"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = tool_results(&lines);
+    assert_eq!(results[0]["success"], json!(true), "{}", results[0]);
+    assert!(deps.join("notes.txt").exists());
+    let decisions: Vec<_> = lines
+        .iter()
+        .filter(|l| l["type"] == "gate_decision")
+        .collect();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["tier"], "allow_rule");
+    assert_eq!(decisions[0]["decision"], "allow");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_auto_external_write_the_user_did_not_ask_for_is_denied_by_the_guardian() {
+    let agent = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool(
+                "c1",
+                "write",
+                json!({"path": "../deps/notes.txt", "content": "x"}),
+            ),
+            Turn::text("I could not write it"),
+        ],
+    )
+    .await;
+    // The scripted guardian denies under the out-of-root-write rule: nothing in the
+    // user's own messages asked for this write.
+    let judge = Endpoint::start(
+        Wire::Chat,
+        vec![Turn::tool(
+            "g1",
+            "submit",
+            verdict("deny", "Safety Bypass", 0.97),
+        )],
+    )
+    .await;
+    let s = auto_sandbox(&agent, &judge);
+    let deps = s.work.parent().unwrap().join("deps");
+    std::fs::create_dir_all(&deps).unwrap();
+
+    let out = s
+        .run(&[
+            "-p",
+            "--permission-mode",
+            "auto",
+            "--output-format",
+            "stream-json",
+            "just organize the project",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = tool_results(&lines);
+    assert_eq!(results[0]["success"], json!(false));
+    let text = results[0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("Denied by guardian: [Safety Bypass]"),
+        "{text}"
+    );
+    assert!(!deps.join("notes.txt").exists());
+    let decisions: Vec<_> = lines
+        .iter()
+        .filter(|l| l["type"] == "gate_decision")
+        .collect();
+    assert_eq!(decisions[0]["tier"], "guardian");
+    assert_eq!(decisions[0]["decision"], "deny");
+    assert_eq!(decisions[0]["rule"], "Safety Bypass");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn dontask_denies_an_external_write_and_creates_nothing() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool(
+                "c1",
+                "write",
+                json!({"path": "../outside.txt", "content": "x"}),
+            ),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    let out = s
+        .run(&[
+            "-p",
+            "--permission-mode",
+            "dontAsk",
+            "--output-format",
+            "stream-json",
+            "write it",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = tool_results(&lines);
+    assert_eq!(results[0]["success"], json!(false));
+    assert!(!s.work.parent().unwrap().join("outside.txt").exists());
+    let decisions: Vec<_> = lines
+        .iter()
+        .filter(|l| l["type"] == "gate_decision")
+        .collect();
+    assert_eq!(decisions[0]["tier"], "dont_ask");
+    assert_eq!(decisions[0]["decision"], "deny");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_protected_external_write_prompts_in_manual_and_is_guardian_judged_in_auto() {
+    let home = tempfile::tempdir().unwrap();
+    let home = std::fs::canonicalize(home.path()).unwrap();
+    let bashrc = home.join(".bashrc");
+    std::fs::write(&bashrc, "export ORIGINAL=1\n").unwrap();
+
+    // In manual mode the protected-path floor forces a prompt; headless, that prompt is
+    // a denial that names the protected location.
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool(
+                "c1",
+                "write",
+                json!({"path": bashrc.to_str().unwrap(), "content": "x"}),
+            ),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let mut s = Sandbox::compatible(&endpoint.url());
+    s.set_env("HOME", home.to_str().unwrap());
+    let out = s
+        .headless(&["--output-format", "stream-json", "update my shell rc"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let decisions: Vec<_> = lines
+        .iter()
+        .filter(|l| l["type"] == "gate_decision")
+        .collect();
+    assert_eq!(decisions[0]["decision"], "deny");
+    assert_eq!(decisions[0]["tier"], "protected_path");
+    assert_eq!(
+        std::fs::read_to_string(&bashrc).unwrap(),
+        "export ORIGINAL=1\n"
+    );
+
+    // In auto the same call is guardian-judged: an allow runs it at the guardian tier.
+    let agent = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool(
+                "c1",
+                "write",
+                json!({"path": bashrc.to_str().unwrap(), "content": "export EDITED=2\n"}),
+            ),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let judge = Endpoint::start(
+        Wire::Chat,
+        vec![Turn::tool("g1", "submit", verdict("allow", "allow", 0.95))],
+    )
+    .await;
+    let mut s = auto_sandbox(&agent, &judge);
+    s.set_env("HOME", home.to_str().unwrap());
+    let out = s
+        .run(&[
+            "-p",
+            "--permission-mode",
+            "auto",
+            "--output-format",
+            "stream-json",
+            "update my shell rc",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results = tool_results(&lines);
+    assert_eq!(results[0]["success"], json!(true), "{}", results[0]);
+    assert_eq!(
+        std::fs::read_to_string(&bashrc).unwrap(),
+        "export EDITED=2\n"
+    );
+    let decisions: Vec<_> = lines
+        .iter()
+        .filter(|l| l["type"] == "gate_decision")
+        .collect();
+    assert_eq!(decisions[0]["tier"], "guardian");
+    assert_eq!(decisions[0]["decision"], "allow");
+}
+
 /// A sandbox with a sibling directory `extra` holding `shared.txt`, for tests that script the
 /// absolute path of a file in it.
 fn sandbox_with_extra_root() -> (Sandbox, std::path::PathBuf) {

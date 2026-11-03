@@ -101,9 +101,11 @@ pipeline before the model sees it:
    |      arguments) or deny with a reason         |
    |   2. on allow: the tool instance of the root  |
    |      that holds the call's path; an approved  |
-   |      out-of-root read of read/ls/glob/grep    |
-   |      goes to the unconfined read-only         |
-   |      fallback instance instead                |
+   |      out-of-root file call goes to the        |
+   |      unconfined fallback instance of its tool |
+   |      (read-only for read/ls/glob/grep, a      |
+   |      write fallback for write/edit/           |
+   |      notebook_edit)                           |
    |   3. result pipeline                          |
    +----------------------------------------------+
         |
@@ -115,10 +117,11 @@ A deny goes back to the model as the tool result and the run goes on. The regist
 session start (and rebuilt between turns by `/add-dir`); each file tool and `shell` has one confined
 instance per workspace root, and `webfetch` has one; `websearch` joins only when a backend is configured.
 Beside the per-root instances, `read`, `ls`, `glob` and `grep` carry one unconfined, read-only
-fallback instance based at the primary root. It serves only a call whose resolved target lies
+fallback instance based at the primary root, and `write`, `edit` and `notebook_edit` carry one
+unconfined write fallback each. A fallback serves only a call whose resolved target lies
 outside every root, only after the gate has allowed it, and it consumes the resolved absolute
 arguments the pipeline normalized — so approval and execution cannot drift to two spellings of
-one target. Write tools and `shell` have no fallback and stay confined. The session's scratch directory
+one target. `shell` has no fallback and stays confined. The session's scratch directory
 (`scratch`) is created beside the session and appended to the roots, so it needs no special case
 here; it is removed when the session ends. MCP tools join the registry as their servers
 connect, wrapped by the same gate. A subagent gets a copy of the registry cut down to its type's

@@ -20,7 +20,7 @@ use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::lock::lock;
 use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
 use fontaine_tools::risk::RiskClass;
-use fontaine_tools::scope::{Scope, ScopeError, is_external_read};
+use fontaine_tools::scope::{Scope, ScopeError, is_external_read, is_external_write};
 use futures::future::BoxFuture;
 use serde_json::Value;
 use tracing::Instrument;
@@ -799,13 +799,18 @@ impl PermissionPipeline {
                 );
             }
         }
-        if matches!(tool, "edit" | "write" | "notebook_edit")
+        if cx.arg_error.is_none()
+            && matches!(tool, "edit" | "write" | "notebook_edit")
             && let Some(found) =
                 floor::protected_path(&scope, home, &self.state.protected_dirs, args)
         {
-            // In `auto` the guardian takes the place of the forced prompt, but only for a path
-            // the file tool can reach at all; the others are refused below.
-            if mode == PermissionMode::Auto && scope.locate(tool, args).is_ok() {
+            // In `auto` the guardian takes the place of the forced prompt. An in-root path
+            // is one the file tool can reach at all; an external one has a write fallback
+            // that can, and both leave the protection policy to the floor in the asking
+            // modes and to the guardian in `auto`.
+            if mode == PermissionMode::Auto
+                && (scope.locate(tool, args).is_ok() || is_external_write(tool))
+            {
                 return Verdict::Guardian;
             }
             return self.would_prompt(
@@ -819,8 +824,8 @@ impl PermissionPipeline {
             );
         }
 
-        // Unusable out-of-root read arguments end here, after the floor: they are never put
-        // to a human or the guardian.
+        // Unusable out-of-root file arguments end here, after the floor: they are never
+        // put to a human or the guardian.
         if let Some(why) = &cx.arg_error {
             return Verdict::Deny {
                 tier: Tier::Mode,
@@ -961,8 +966,15 @@ impl PermissionPipeline {
         }
 
         let outside = match &located {
-            // Model-facing text; the scope error has no source.
-            Err(e) if call.risk != RiskClass::Arbitrary && !is_external_read(tool) => {
+            // Model-facing text; the scope error has no source. The containment hard deny
+            // survives only for tools with no external route (`lsp`); an out-of-root write
+            // follows the mode like an out-of-root read, and `shell`/`powershell` are
+            // `Arbitrary` and never reach this branch.
+            Err(e)
+                if call.risk != RiskClass::Arbitrary
+                    && !is_external_read(tool)
+                    && !is_external_write(tool) =>
+            {
                 let mut why = match &self.state.scratch {
                     Some(scratch) => format!(
                         "{e}; file tools work inside the workspace roots only. Put temporary files in the session scratch directory {} (or add a root with /add-dir)",
@@ -1057,13 +1069,15 @@ impl PermissionPipeline {
         }
     }
 
-    /// The execution arguments of an out-of-root read: the target resolved once, after the
-    /// hooks, so an approval and the call it approves cannot drift to two spellings of one
-    /// target and a symlink retargeted mid-decision cannot redirect the call. In-root calls
-    /// and every other tool pass through unchanged; malformed or unresolvable read arguments
-    /// become an argument error the floor still gets to precede.
-    fn normalize_external_read(&self, tool: &str, judged: &Value) -> (Value, Option<String>) {
-        if !is_external_read(tool) {
+    /// The execution arguments of an out-of-root file call: the target resolved once,
+    /// after the hooks, so an approval and the call it approves cannot drift to two
+    /// spellings of one target and a symlink retargeted mid-decision cannot redirect the
+    /// call. In-root calls and every other tool pass through unchanged; malformed or
+    /// unresolvable external arguments become an argument error the floor still gets to
+    /// precede.
+    fn normalize_external(&self, tool: &str, judged: &Value) -> (Value, Option<String>) {
+        let route = is_external_read(tool) || is_external_write(tool);
+        if !route {
             return (judged.clone(), None);
         }
         let scope = self.state.scope();
@@ -1071,13 +1085,17 @@ impl PermissionPipeline {
             ScopeError::Unreadable(why) => Some(why.clone()),
             ScopeError::OutOfScope(_) => None,
         };
-        match scope.locate(tool, judged) {
-            Ok(_) => (judged.clone(), None),
-            Err(ScopeError::OutOfScope(_)) => match scope.external_read(tool, judged) {
-                Ok(normalized) => (normalized, None),
-                Err(failed) => (judged.clone(), unusable(&failed)),
-            },
-            Err(error @ ScopeError::Unreadable(_)) => (judged.clone(), unusable(&error)),
+        let normalized = |scope: &Scope| match scope.locate(tool, judged) {
+            Ok(_) => Ok(judged.clone()),
+            Err(ScopeError::OutOfScope(_)) if is_external_read(tool) => {
+                scope.external_read(tool, judged)
+            }
+            Err(ScopeError::OutOfScope(_)) => scope.external_write(tool, judged),
+            Err(error @ ScopeError::Unreadable(_)) => Err(error),
+        };
+        match normalized(&scope) {
+            Ok(args) => (args, None),
+            Err(failed) => (judged.clone(), unusable(&failed)),
         }
     }
 
@@ -1400,12 +1418,15 @@ impl PermissionPipeline {
         // guardian. Children are never loosened by it, and no call from an unregistered agent
         // reaches it.
         if call.agent == fontaine_tools::gate::ROOT_AGENT && self.state.guardian_off() {
-            // The call still executes the resolved form of an out-of-root read, as every
-            // allow does; nothing else of the pipeline runs.
+            // The call still executes the resolved form of an out-of-root file call, as
+            // every allow does; nothing else of the pipeline runs.
             let scope = self.state.scope();
             let args = match scope.locate(call.tool, call.args) {
                 Err(ScopeError::OutOfScope(_)) if is_external_read(call.tool) => scope
                     .external_read(call.tool, call.args)
+                    .unwrap_or_else(|_| call.args.clone()),
+                Err(ScopeError::OutOfScope(_)) if is_external_write(call.tool) => scope
+                    .external_write(call.tool, call.args)
                     .unwrap_or_else(|_| call.args.clone()),
                 _ => call.args.clone(),
             };
@@ -1430,7 +1451,7 @@ impl PermissionPipeline {
             .updated_input
             .clone()
             .unwrap_or_else(|| call.args.clone());
-        let (args, arg_error) = self.normalize_external_read(call.tool, &judged);
+        let (args, arg_error) = self.normalize_external(call.tool, &judged);
         let cx = CallCtx {
             call: &call,
             digest: args_digest(&args),

@@ -151,10 +151,29 @@ fn the_external_read_fallbacks_are_unconfined_but_based_at_the_primary_root() {
     let search = builtins::search_external(&root);
     assert!(!search.confine);
     assert_eq!(search.base.as_deref(), Some(root.as_path()));
-    // Writes never have a fallback: every write factory stays confined.
+    // The in-root write factories stay confined; their unconfined fallbacks are separate.
     assert!(builtins::write_for(&root, &seen).confine);
     assert!(builtins::edit_for(&root, &seen).confine);
     assert!(builtins::notebook_edit_for(&root, &seen).confine);
+}
+
+#[test]
+fn the_external_write_fallbacks_are_unconfined_but_based_at_the_primary_root() {
+    let d = Dirs::new();
+    let root = d.dir("work");
+    let seen = Seen::default();
+    // The fallback an approved out-of-root write executes on: unconfined, because the
+    // gate already adjudicated the resolved target, and sharing the registry's `Seen` so
+    // read-before-edit tracking holds.
+    let write = builtins::write_external(&root, &seen);
+    assert!(!write.confine);
+    assert_eq!(write.base.as_deref(), Some(root.as_path()));
+    let edit = builtins::edit_external(&root, &seen);
+    assert!(!edit.confine);
+    assert_eq!(edit.base.as_deref(), Some(root.as_path()));
+    let notebook = builtins::notebook_edit_external(&root, &seen);
+    assert!(!notebook.confine);
+    assert_eq!(notebook.base.as_deref(), Some(root.as_path()));
 }
 
 #[tokio::test]

@@ -865,15 +865,19 @@ fn is_symlink(path: &Path) -> bool {
 }
 
 /// Why `path` must not be touched by a restore, if it must not. The manifest is trusted data
-/// from disk, not a permission: the path has to be inside the workspace now, and no link may lead
-/// the write elsewhere.
+/// from disk, not a permission: the path has to resolve the way it did when it was captured,
+/// and no link may lead the write elsewhere. A pre-image captured outside every root (an
+/// approved external write) resolves through the scope instead of being refused: the manifest
+/// is trusted, and the restore writes exactly the recorded resolved path.
 fn refusal_for(path: &Path, scope: &Scope, memory_root: Option<&Path>) -> Option<Refusal> {
     if in_memory(memory_root, path) {
         return Some(Refusal::Memory);
     }
     let text = path.to_string_lossy();
-    let Ok((root, resolved)) = scope.find(&text) else {
-        return Some(Refusal::OutOfScope);
+    let found = scope.find(&text);
+    let resolved = match &found {
+        Ok((_, resolved)) => resolved.clone(),
+        Err(_) => scope.resolved(&text),
     };
     if path_key(&resolved.to_string_lossy()) != path_key(&text) {
         return Some(Refusal::Symlink);
@@ -881,13 +885,20 @@ fn refusal_for(path: &Path, scope: &Scope, memory_root: Option<&Path>) -> Option
     if is_symlink(path) {
         return Some(Refusal::Symlink);
     }
-    let root = &scope.roots()[root];
-    let linked = path
-        .ancestors()
-        .skip(1)
-        .take_while(|ancestor| *ancestor != root.as_path())
-        .any(is_symlink);
-    linked.then_some(Refusal::Symlink)
+    // The ancestor-symlink check walks up to the root that holds the path; an external
+    // pre-image has no holding root, and its recorded path was resolved when captured.
+    if let Ok((root, _)) = found {
+        let root = &scope.roots()[root];
+        let linked = path
+            .ancestors()
+            .skip(1)
+            .take_while(|ancestor| *ancestor != root.as_path())
+            .any(is_symlink);
+        if linked {
+            return Some(Refusal::Symlink);
+        }
+    }
+    None
 }
 
 enum Deletion {

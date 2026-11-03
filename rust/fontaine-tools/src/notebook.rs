@@ -1356,6 +1356,37 @@ mod tests {
             assert!(wrong.to_string().contains(".ipynb"), "{wrong}");
         }
 
+        /// An approved external notebook write runs on the unconfined write fallback, at
+        /// the resolved absolute target the gate allowed; the confined instance refuses
+        /// the same path.
+        #[tokio::test]
+        async fn an_external_notebook_write_runs_on_the_unconfined_fallback() {
+            let rig = Rig::new();
+            let dir = tempfile::tempdir().unwrap();
+            let outside = std::fs::canonicalize(dir.path()).unwrap().join("n.ipynb");
+            std::fs::write(&outside, nb(5)).unwrap();
+            let outside = outside.to_string_lossy().into_owned();
+            // The fallback shares the rig's `Seen`: a read marks the file seen for the
+            // edit, exactly as in-root.
+            let read = ReadView {
+                read: crate::builtins::read_external(&rig.root, &rig.seen),
+            };
+            read.call(&mut ToolContext::new(), ReadArgs::new(&outside))
+                .await
+                .unwrap();
+            let fallback = crate::builtins::notebook_edit_external(&rig.root, &rig.seen);
+            let reply = fallback
+                .call(&mut ToolContext::new(), replace(&outside))
+                .await
+                .unwrap();
+            assert!(reply.contains("Replaced the source of cell 1"), "{reply}");
+            let disk = Notebook::parse(&std::fs::read_to_string(&outside).unwrap()).unwrap();
+            assert_eq!(disk.cells()[1]["source"], json!(["new"]));
+            // The confined instance of the same tool refuses the external path.
+            let err = rig.edit(replace(&outside)).await.unwrap_err();
+            assert!(err.to_string().contains("outside"), "{err}");
+        }
+
         #[tokio::test]
         async fn a_notebook_over_the_seen_limit_counts_as_not_read() {
             let rig = Rig::new();

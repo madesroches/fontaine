@@ -26,9 +26,14 @@ fn child(rig: &Rig, own: Ladder) -> String {
 async fn guardian_off_runs_a_denied_call_and_is_recorded() {
     let rig = Rig::new(PermissionMode::Manual);
 
+    // Unapproved, the external write is put to the human, who declines it.
     let before = rig.audit().len();
     assert!(!allowed(&rig.check("write", write_outside()).await));
-    assert_eq!(rig.last_first(before).decision, Decision::Deny);
+    assert!(
+        rig.audit()[before..]
+            .iter()
+            .any(|r| r.decision == Decision::Deny)
+    );
 
     rig.state.set_guardian_off(true);
     assert!(rig.state.guardian_off());
@@ -86,6 +91,38 @@ async fn guardian_off_normalizes_an_external_read_and_runs_no_floor_or_hooks() {
     match rig.check("read", json!({"path": 3})).await {
         fontaine_tools::gate::GateDecision::Allow { args } => {
             assert_eq!(args, json!({"path": 3}));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn guardian_off_normalizes_an_external_write_and_runs_no_floor_or_hooks() {
+    let rig = Rig::new(PermissionMode::Manual);
+
+    rig.state.set_guardian_off(true);
+    // The escape hatch applies the same execution normalization as every other allow, with
+    // no hooks and no floor.
+    let resolved = rig.world.root.join("outside.txt");
+    match rig.check("write", write_outside()).await {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                json!({"path": resolved.to_str().unwrap(), "content": "x"})
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    let record = rig.audit().last().cloned().expect("a record");
+    assert_eq!(
+        (record.decision, record.tier),
+        (Decision::Allow, Tier::GuardianOff)
+    );
+
+    // A malformed external write falls back to the raw arguments: the tool refuses them.
+    match rig.check("write", json!({"path": 3, "content": "x"})).await {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(args, json!({"path": 3, "content": "x"}));
         }
         other => panic!("{other:?}"),
     }

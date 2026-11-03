@@ -88,14 +88,17 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
               PreToolUse hook `allow` → Allow (no guardian), audit `tier = allow_rule` / `hook`;
               in `auto`, broad code-execution rules and hooks are suspended (§Permission rules);
               in `plan`, edit-class calls never get here
-           5b. file WRITE tool (`write`/`edit`/`notebook_edit`) with a path outside every root → Deny with
-              the per-session scratch directory and the `/add-dir` hint (the write tools are confined to the roots, so an approved call
-              would still be refused); never reaches the prompt. An out-of-root READ
-              (`read`/`ls`/`glob`/`grep`) does not stop here: it falls through to the mode (step 6
-              asks in manual/acceptEdits, step 7 asks the guardian in auto, step 8 denies in
-              dontAsk), pre-approved calls run at the step-5a tiers, and an allowed call executes
-              on the tool's unconfined read-only fallback instance (below). An external
-              path never becomes a root: no write reach, no fast path, no instruction discovery.
+           5b. a call whose path `Scope::locate` cannot place, for a tool with no external
+              route — today only `lsp` among the file tools (`shell`/`powershell` are
+              `Arbitrary` and never reach this branch) → Deny with the per-session scratch
+              directory and the `/add-dir` hint; never reaches the prompt. An out-of-root READ
+              (`read`/`ls`/`glob`/`grep`) and an out-of-root WRITE (`write`/`edit`/
+              `notebook_edit`) do not stop here: they fall through to the mode (step 6 asks in
+              manual/acceptEdits, step 7 asks the guardian in auto, step 8 denies in dontAsk),
+              pre-approved calls run at the step-5a tiers, and an allowed call executes on the
+              tool's unconfined fallback instance (below; read-only for the read tools, a write
+              fallback for the write tools). An external path never becomes a root: no write
+              reach of its own, no fast path, no instruction discovery.
            6. mode == manual/acceptEdits → human prompt (acceptEdits: auto-allow edits in workdir)
            7. mode == auto → the composed guardian (`fontaine_guardian::composition::adjudicate`):
               the Rune script of `[guardian.composition]` (the `screen` preset by default) over
@@ -138,13 +141,16 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 instance per root, built by `make(root)`, and a call is served by the instance of the root that
 holds its path. Beside them, each of the four read-only file tools registers one unconfined,
 read-only fallback instance based at the primary root through a dedicated routing mode
-(`per_root_with_fallback`). The fallback is reached only when strict `Scope::locate` answers
-`OutOfScope` and only after the gate has returned `Allow` — it validates the normalized arguments'
-absolute external shape (`external_shape`, no file system access) and consumes them as they are,
-never re-resolving the original symlink. `write`, `edit`, `notebook_edit` and `shell` register no
-fallback and keep strict per-root routing. The fallback is an execution capability only: the gate
-remains the single choke point, the four registrations keep their explicit `ReadOnly` risk class,
-and an external path is added to no root list.
+(`per_root_with_fallback`), and each write tool (`write`, `edit`, `notebook_edit`) registers one
+unconfined write fallback through `per_root_with_write_fallback`, sharing the registry's `Seen`
+so read-before-edit tracking holds. The fallback is reached only when strict `Scope::locate`
+answers `OutOfScope` and only after the gate has returned `Allow` — it validates the normalized
+arguments' absolute external shape (`external_shape` / `external_write_shape`, no file system
+access) and consumes them as they are, never re-resolving the original symlink. `shell` registers
+no fallback and keeps strict per-root routing. The fallback is an execution capability only: the
+gate remains the single choke point, the registrations keep their descriptor risk classes
+(`ReadOnly` for the read fallbacks, `WorkspaceWrite` for the write fallbacks), and an external
+path is added to no root list.
 
 **Protected paths** (step 2, last floor check): applies to the edit-class tools `edit` and `write`
 — the only registered tools that write structurally (`delete`/`move` are not registered; shell writes
