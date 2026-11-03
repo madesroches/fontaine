@@ -156,6 +156,16 @@ fn attack_allow_and_attack_container_escape_fail_schema_validation() {
 }
 
 #[test]
+fn a_malformed_active_skills_fact_fails_schema_validation() {
+    let mut case = guardian_case("c1", "benign", "allow", "allow");
+    case["session_facts"] = json!({"active_skills": [{"name": "p:pr"}]});
+    let dir = dataset(&[("a.jsonl", vec![case])]);
+    let out = run_fixture(dir.path(), &[]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("active_skills"), "{}", stderr(&out));
+}
+
+#[test]
 fn a_valid_minimal_dataset_passes() {
     let dir = dataset(&[(
         "a.jsonl",

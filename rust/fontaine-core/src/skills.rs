@@ -5,6 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use fontaine_tools::descriptor::is_shell_class;
 use fontaine_tools::gate::AgentId;
 use fontaine_tools::jobs::NoPromote;
 use fontaine_tools::lock::lock;
@@ -14,7 +15,21 @@ use rig_core::tool::{DynamicTool, ToolContext};
 use serde_json::json;
 
 use crate::extensions::{Extensions, Scope, Skill};
-use crate::gate::SessionState;
+use crate::gate::{SessionState, TrustedSkillNote};
+use crate::permission_rules::Rule;
+use crate::skill_trust::TrustState;
+
+/// Whether a declared rule names a whole class of shell commands: a shell-class tool with no
+/// specifier, or one with a `*` in it. A trusted skill's such rules are guardian context, not
+/// allows, because even a program the broad-code-execution list does not name (`git`) can do
+/// damage a skill's purpose does not need.
+pub fn is_wildcard_shell(rule: &Rule) -> bool {
+    is_shell_class(&rule.tool)
+        && rule
+            .specifier
+            .as_deref()
+            .is_none_or(|specifier| specifier.contains('*'))
+}
 
 /// Splits an argument string into words the way a shell would: whitespace separates, and single
 /// or double quotes keep a word together.
@@ -214,6 +229,57 @@ impl SkillRuntime {
         }
     }
 
+    /// Lends `skill`'s rules to `agent` for the turn. An untrusted user skill lends all of its
+    /// rules, as it always has. A plugin skill lends nothing until the user trusts this version
+    /// of the file, and then only its specific rules; the wildcard shell rules of a trusted skill
+    /// are never an allow in any mode and reach the guardian as context instead.
+    fn lend_rules(&self, skill: &Skill, agent: &str) {
+        let trusted = self.extensions.trust_state(skill) == TrustState::Trusted;
+        match skill.scope {
+            Scope::User => {
+                if !skill.allowed_tools.is_empty() {
+                    self.state
+                        .grant_skill_rules(agent, skill.allowed_tools.clone());
+                }
+            }
+            Scope::Plugin if trusted => {
+                let specific = skill
+                    .declared_tools
+                    .iter()
+                    .filter(|rule| !is_wildcard_shell(rule))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if !specific.is_empty() {
+                    self.state.grant_skill_rules(agent, specific);
+                }
+            }
+            Scope::Plugin => {
+                if !skill.declared_tools.is_empty() {
+                    let stale = self.extensions.trust_state(skill) == TrustState::Stale;
+                    self.state.warn_skill_not_trusted(&skill.name, stale);
+                }
+            }
+            Scope::Project => {}
+        }
+        if trusted {
+            let declared: Vec<String> = skill
+                .declared_tools
+                .iter()
+                .filter(|rule| is_wildcard_shell(rule))
+                .map(|rule| rule.specifier.clone().unwrap_or_else(|| rule.tool.clone()))
+                .collect();
+            if !declared.is_empty() {
+                self.state.note_trusted_skill(
+                    agent,
+                    TrustedSkillNote {
+                        name: skill.name.clone(),
+                        declared,
+                    },
+                );
+            }
+        }
+    }
+
     /// The text of skill `name` for `agent`: arguments substituted first, then its commands
     /// run, and its `allowed-tools` lent to `agent` until the turn ends. `by_model` is a call
     /// of the `skill` tool, which cannot reach a skill that is only for the user.
@@ -246,10 +312,7 @@ impl SkillRuntime {
                 "the skill `{name}` is for the user to run with /{name}; it cannot be loaded by the model"
             ));
         }
-        if !skill.allowed_tools.is_empty() {
-            self.state
-                .grant_skill_rules(agent, skill.allowed_tools.clone());
-        }
+        self.lend_rules(skill, agent);
         let body = substitute(&skill.body, arguments);
         let mut out = String::new();
         for part in parts(&body) {

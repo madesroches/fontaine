@@ -8,6 +8,7 @@ mod model;
 mod reports;
 mod rewind;
 mod session;
+mod skills;
 mod workspace;
 
 pub(crate) use memory::Launcher;

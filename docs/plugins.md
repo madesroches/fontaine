@@ -204,7 +204,8 @@ auto-update <name> no` opt out one entry; `yes` removes the override. A manual `
 
 Installed plugin content is third-party, so it loads under tighten-only rules:
 
-- its `allow` never counts, and its skills cannot lend `allowed-tools`;
+- its `allow` never counts, and its skills cannot lend `allowed-tools` until you
+  [trust the skill](#trusting-a-skill);
 - its agent files can only narrow: no model, no `permissionMode: inherit`, and only tools the
   session has (including the plugin's own MCP servers);
 - its deny/ask rules and guardian deny-side additions apply; nothing else may touch permissions
@@ -214,6 +215,16 @@ Installed plugin content is third-party, so it loads under tighten-only rules:
   install approved them, in the terminal UI and headless runs alike;
 - an [automatic update](#auto-update) keeps that approval: it never applies a revision that adds or
   changes a hook command, server, skill `!` command, referenced variable or script.
+
+### Trusting a skill
+
+Install approves a plugin's executables, not what its skills may do. `fontaine plugin trust
+<plugin>:<skill>` (or `trust <plugin>` for the skills it has now) is the separate step that honours
+a skill's `allowed-tools`, pinned to that version of the skill file; `fontaine plugin untrust
+<name>` takes it back. A skill the plugin adds later, or changes on update, is untrusted until you
+trust it again. A skill's body can change on an auto-update without a prompt, which is why the
+trust is pinned to a digest and not to the plugin. What trust does, and what it does not, is in
+[Trusted skills](extensions.md#trusted-skills).
 
 ## Namespacing
 

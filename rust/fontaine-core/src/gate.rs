@@ -29,6 +29,7 @@ use crate::permission_rules::{
 use crate::permissions::Approver;
 use crate::preview::DiffPreview;
 use crate::project_env::{self, ProjectEnvironment};
+use crate::tier::Tier;
 use crate::turn::SessionEvent;
 use crate::usage_ledger::{Bucket, UsageLedger, UsageSource};
 
@@ -284,6 +285,13 @@ impl Sink {
     }
 }
 
+/// A trusted skill active for an agent: its name and the wildcard shell rules it declares.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrustedSkillNote {
+    pub name: String,
+    pub declared: Vec<String>,
+}
+
 pub struct SessionState {
     pub session_id: String,
     pub ledger: Arc<Ledger>,
@@ -317,6 +325,9 @@ pub struct SessionState {
     retries: Mutex<Vec<RetryApproval>>,
     usage: UsageLedger,
     skill_grants: Mutex<HashMap<String, Vec<SourcedRule>>>,
+    skill_notes: Mutex<HashMap<String, Vec<TrustedSkillNote>>>,
+    /// Skills the human was told lend nothing, so a session says it once per skill.
+    skill_warned: Mutex<HashSet<String>>,
     child_restrictions: Mutex<HashMap<String, ChildRestrictions>>,
     current_calls: Mutex<HashMap<String, String>>,
     decisions: UnboundedSender<DecisionRecord>,
@@ -371,6 +382,8 @@ impl SessionState {
             retries: Mutex::default(),
             usage: UsageLedger::default(),
             skill_grants: Mutex::default(),
+            skill_notes: Mutex::default(),
+            skill_warned: Mutex::default(),
             child_restrictions: Mutex::default(),
             current_calls: Mutex::new(HashMap::new()),
             decisions,
@@ -482,6 +495,44 @@ impl SessionState {
             return;
         }
         self.append(Record::GuardianOff { off });
+        self.record_session_event(
+            "guardian",
+            serde_json::json!({ "off": off }),
+            Tier::GuardianOff,
+            if off { "guardian_off" } else { "guardian_on" },
+            if off {
+                "guardian disabled"
+            } else {
+                "guardian enabled"
+            },
+        );
+    }
+
+    /// The human trusted `skill` at `digest` in the terminal: recorded in the ledger and the
+    /// audit log, as an approval is.
+    pub fn record_skill_trust(&self, skill: &str, digest: &str) {
+        self.append(Record::SkillTrust {
+            name: skill.to_string(),
+            digest: digest.to_string(),
+        });
+        self.record_session_event(
+            "skill_trust",
+            serde_json::json!({ "name": skill, "digest": digest }),
+            Tier::Human,
+            "skill_trust",
+            &format!("skill {skill} trusted at {digest}"),
+        );
+    }
+
+    /// An audit entry for something the human did to the session rather than a tool call.
+    fn record_session_event(
+        &self,
+        tool: &str,
+        args: serde_json::Value,
+        tier: Tier,
+        rule: &str,
+        explanation: &str,
+    ) {
         crate::permissions::record_decision(
             self,
             &DecisionRecord {
@@ -490,12 +541,12 @@ impl SessionState {
                 agent_id: ROOT_AGENT.to_string(),
                 agent_name: None,
                 tool_use_id: None,
-                tool: "guardian".to_string(),
-                args_digest: args_digest(&serde_json::json!({ "off": off })),
+                tool: tool.to_string(),
+                args_digest: args_digest(&args),
                 original_args_digest: None,
-                tier: crate::tier::Tier::GuardianOff,
+                tier,
                 decision: Decision::Allow,
-                rule: Some(if off { "guardian_off" } else { "guardian_on" }.to_string()),
+                rule: Some(rule.to_string()),
                 confidence: None,
                 guardian_model: None,
                 latency_ms: 0,
@@ -518,11 +569,7 @@ impl SessionState {
                 guardian_dropped_priced: None,
                 permission_mode: self.mode().as_str().to_string(),
                 headless: false,
-                explanation: Some(if off {
-                    "guardian disabled".to_string()
-                } else {
-                    "guardian enabled".to_string()
-                }),
+                explanation: Some(explanation.to_string()),
             },
         );
     }
@@ -686,9 +733,44 @@ impl SessionState {
             .unwrap_or_default()
     }
 
+    /// Tells the guardian, for `agent` until the turn ends, that a skill the user trusted is
+    /// active and declares wildcard shell rules. Context only: it allows nothing.
+    pub fn note_trusted_skill(&self, agent: &str, note: TrustedSkillNote) {
+        let mut notes = lock(&self.skill_notes, "skill notes");
+        let held = notes.entry(agent.to_string()).or_default();
+        if !held.contains(&note) {
+            held.push(note);
+        }
+    }
+
+    pub fn trusted_skill_notes(&self, agent: &str) -> Vec<TrustedSkillNote> {
+        lock(&self.skill_notes, "skill notes")
+            .get(agent)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Tells the human, once per skill, that `skill` declares `allowed-tools` the session does not
+    /// honour because the user has not trusted this version of it.
+    pub fn warn_skill_not_trusted(&self, skill: &str, stale: bool) {
+        if !lock(&self.skill_warned, "skill warning").insert(skill.to_string()) {
+            return;
+        }
+        let why = if stale {
+            format!(
+                "changed since you trusted it; run /skills trust {skill} to honour its allowed-tools again"
+            )
+        } else {
+            format!("is not trusted; `fontaine plugin trust {skill}` makes its allowed-tools count")
+        };
+        self.approver
+            .warn(&format!("skill {skill} declares allowed-tools but {why}"));
+    }
+
     /// A user turn ended: the rules skills lent for it end too.
     pub fn end_turn(&self) {
         lock(&self.skill_grants, "skill grants").clear();
+        lock(&self.skill_notes, "skill notes").clear();
     }
 
     pub fn set_child_restrictions(&self, agent: &str, restrictions: ChildRestrictions) {

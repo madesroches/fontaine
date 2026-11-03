@@ -28,7 +28,7 @@ does not know is ignored, so files written for Claude Code load.
 |---|---|
 | `name` | The skill's name; the directory name when absent. Letters, digits, `-` and `_`. |
 | `description` | One line listed in the system prompt, so the model knows when to load the skill. The first line of the body when absent. |
-| `allowed-tools` | Rules lent to the agent while the skill is active; see below. |
+| `allowed-tools` | Rules lent to the agent while the skill is active; see below. A plugin skill's count only after you [trust](#trusted-skills) it. |
 | `disable-model-invocation` | `true` keeps the skill out of the model's skill list and refuses the `skill` tool; only you run it, as `/name`. |
 | `user-invocable` | `false` hides the skill from the `/` menu and from `/name`; only the model loads it. Default `true`. |
 | `argument-hint` | Shown after the name in the `/` menu, such as `[issue-number]`. |
@@ -143,7 +143,48 @@ allowed-tools: Bash(cargo test), Read
 They act like allow rules (after the floor and the mode, suspended in `auto` if broad) from the
 moment the skill is loaded until the end of that user turn, whether it was loaded by `/name` or by
 the `skill` tool. They belong to the invoking agent only: a subagent it starts does not get them. A
-repository's skill cannot approve calls, so its `allowed-tools` is checked and then ignored.
+repository's skill cannot approve calls, so its `allowed-tools` is checked and then ignored, and
+it can never be trusted. A [plugin](plugins.md) skill's `allowed-tools` is checked and ignored
+until you trust it.
+
+### Trusted skills
+
+Trusting a skill says that you have read its `allowed-tools` and want them honoured. It is for
+your own skills and for plugin skills, whose `allowed-tools` would otherwise be ignored, so a
+step the skill documents does not stall an unattended run.
+
+```
+fontaine plugin trust dev-skills:pr       # one skill, named as /skills shows it
+fontaine plugin trust dev-skills          # every skill the installed plugin has now
+fontaine plugin untrust dev-skills:pr
+```
+
+`trust` prints each skill's digest, its `allowed-tools` split as below, and the `!` commands it
+runs, then asks for confirmation. Without a terminal it refuses unless you pass `--yes`, which
+skips only the question. In the terminal UI, `/skills trust <name>` shows the same and asks. A
+trust or untrust applies from the next session start. The record is
+`<config dir>/skill-trust.toml`, [described here](configuration.md#skill-trust).
+
+While the record matches the skill file, for the agent that runs the skill and until the end of
+that user turn:
+
+- a **specific** rule (a shell command with no wildcard such as `Bash(git status)`, and every
+  non-shell tool such as `Read`) acts as an allow, after the floor, your deny and ask rules and
+  hooks, like any other allow rule;
+- a **wildcard** shell rule (`Bash(git *)`, `Bash(npm run *)`, a bare `Bash`) is never an allow, in
+  any mode. The [guardian](guardian.md#trusted-skills) is told that the skill is running and which
+  classes of command it declares, so a routine step of that class is easier to allow, while a
+  force-push or a delete is still judged on its own.
+
+A skill in your own skills directory keeps lending all of its rules as before, trusted or not;
+trusting it adds the note for the guardian.
+
+The record pins the skill file by digest. When the file changes (an edit, or a plugin
+[update](plugins.md#auto-update)), the trust is suspended: a plugin skill's `allowed-tools` are
+off, a skill of yours falls back to the behaviour above without the guardian note, and a notice at
+the next start says so. Run `/skills trust <name>` to see what changed and trust the new version.
+`/skills` marks each skill `(trusted)` or `(changed (re-trust))`. A headless run never asks: a
+changed or untrusted plugin skill that declares `allowed-tools` lends nothing and warns once.
 
 ## Agent files
 

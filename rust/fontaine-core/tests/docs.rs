@@ -94,6 +94,9 @@ fn every_toml_block_validates() {
                 Some("trust.toml") => validate_trust_toml(&fence.body),
                 Some("credentials.toml") => validate_credentials_toml(&fence.body),
                 Some("plugins.toml") => validate_plugins_toml(&fence.body),
+                Some("skill-trust.toml") => {
+                    fontaine_core::skill_trust::validate_skill_trust_toml(&fence.body)
+                }
                 None => {
                     validate_settings(&fence.body, &page, Column::User).map_err(|e| e.to_string())
                 }

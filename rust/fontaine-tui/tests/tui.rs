@@ -2270,3 +2270,56 @@ async fn cost_lists_the_guardian_row_with_the_calls_the_guardian_made() {
     .await;
     assert_eq!(w.guardian_calls(), 1);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn skills_trust_asks_first_and_records_the_digest_in_the_file_and_the_ledger() {
+    let w = World::new(vec![]);
+    let skill = w.config_dir.join("skills/mine/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(
+        &skill,
+        "---\ndescription: mine\nallowed-tools: Bash(git *), Bash(git status)\n---\nRun !`git log`.\n",
+    )
+    .unwrap();
+    let record = w.config_dir.join("skill-trust.toml");
+    w.run(|ui| async move {
+        idle(&ui).await;
+
+        ui.send("/skills trust mine");
+        ui.wait_for_live_prompt("Honour the allowed-tools of mine?")
+            .await;
+        ui.press(KeyCode::Char('n'));
+        ui.wait_for("trust not recorded").await;
+
+        ui.send("/skills trust mine");
+        ui.wait_for_live_prompt("Honour the allowed-tools of mine?")
+            .await;
+        let live = ui.live();
+        assert!(live.contains("next session start"), "{live}");
+        assert!(live.contains("never an allow"), "{live}");
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for("count from the next session start").await;
+
+        // The running session's view does not change.
+        ui.send("/skills");
+        ui.wait_for("mine — mine [user]").await;
+        assert!(!ui.screen().contains("(trusted)"), "{}", ui.screen());
+    })
+    .await;
+    let text = std::fs::read_to_string(&record).unwrap();
+    assert!(
+        text.contains("name = \"mine\"") && text.contains("digest = \"sha256:"),
+        "{text}"
+    );
+    assert!(text.contains("!git log"), "{text}");
+    assert!(
+        w.ledger_text().contains("skill_trust"),
+        "{}",
+        w.ledger_text()
+    );
+    assert!(
+        w.audit().iter().any(|r| r["tool"] == "skill_trust"),
+        "{:?}",
+        w.audit()
+    );
+}

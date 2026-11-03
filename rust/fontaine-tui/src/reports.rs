@@ -9,12 +9,13 @@ use std::time::SystemTime;
 use fontaine_agents::registry::TypeOrigin;
 use fontaine_core::config::{Hook, Hooks, McpServer, Origin, PermissionMode, Slot};
 use fontaine_core::context::ContextUsage;
-use fontaine_core::extensions::{Extensions, Scope, Skill};
+use fontaine_core::extensions::{Extensions, Scope};
 use fontaine_core::gate::Rules;
 use fontaine_core::instructions::{MemoryEntry, MemoryKind};
 use fontaine_core::ledger::LedgerRecap;
 use fontaine_core::permission_rules::SourcedRule;
 use fontaine_core::plugins::Registry;
+use fontaine_core::skill_trust::TrustState;
 use fontaine_core::usage_ledger::{Bucket, UsageSource};
 use fontaine_tools::display::compact_count;
 
@@ -261,11 +262,12 @@ pub fn hooks(
     sections.join("\n")
 }
 
-pub fn skills(skills: &[Skill]) -> String {
-    if skills.is_empty() {
+pub fn skills(extensions: &Extensions) -> String {
+    if extensions.skills.is_empty() {
         return "no skills loaded".to_string();
     }
-    skills
+    extensions
+        .skills
         .iter()
         .map(|skill| {
             let scope = match skill.scope {
@@ -285,6 +287,11 @@ pub fn skills(skills: &[Skill]) -> String {
             }
             if skill.user_invocable && is_builtin(&skill.name) {
                 let _ = write!(line, " (hidden by /{})", skill.name);
+            }
+            match extensions.trust_state(skill) {
+                TrustState::Trusted => line.push_str(" (trusted)"),
+                TrustState::Stale => line.push_str(" (changed (re-trust))"),
+                TrustState::Untrusted => {}
             }
             line
         })
@@ -731,6 +738,7 @@ pub fn context(usage: &ContextUsage, all: bool) -> String {
 mod tests {
     use super::*;
     use fontaine_core::config::{Origin, Slot};
+    use fontaine_core::extensions::Skill;
     use fontaine_core::permission_rules::{RuleSource, parse_rule};
 
     fn recap_input(recap: &LedgerRecap) -> RecapInput<'_> {
@@ -826,6 +834,8 @@ mod tests {
             user_invocable: true,
             disable_model_invocation: false,
             allowed_tools: Vec::new(),
+            declared_tools: Vec::new(),
+            digest: format!("sha256:{name}"),
             scope,
             path: PathBuf::new(),
         }
@@ -1169,16 +1179,53 @@ mod tests {
 
     #[test]
     fn skills_carry_their_scope_and_markers() {
-        assert_eq!(skills(&[]), "no skills loaded");
+        assert_eq!(skills(&Extensions::default()), "no skills loaded");
         let mut model_only = skill("internal", Scope::Project);
         model_only.user_invocable = false;
         let mut you_only = skill("deploy", Scope::User);
         you_only.disable_model_invocation = true;
-        let text = skills(&[model_only, you_only, skill("status", Scope::User)]);
+        let extensions = Extensions {
+            skills: vec![model_only, you_only, skill("status", Scope::User)],
+            ..Extensions::default()
+        };
         assert_eq!(
-            text,
+            skills(&extensions),
             "internal — does it [project] (model only)\ndeploy — does it [user] (you only)\nstatus — does it [user] (hidden by /status)"
         );
+    }
+
+    #[test]
+    fn skills_show_their_trust_state() {
+        let mut extensions = Extensions {
+            skills: vec![
+                skill("p:fresh", Scope::Plugin),
+                skill("p:old", Scope::Plugin),
+                skill("p:new", Scope::Plugin),
+            ],
+            ..Extensions::default()
+        };
+        let record = |name: &str, digest: &str| fontaine_core::skill_trust::TrustRecord {
+            name: name.into(),
+            digest: digest.into(),
+            tools: Vec::new(),
+            commands: Vec::new(),
+        };
+        extensions.trusted = fontaine_core::skill_trust::TrustedSkills::from_file(
+            fontaine_core::skill_trust::TrustFile {
+                skill: vec![
+                    record("p:fresh", "sha256:p:fresh"),
+                    record("p:old", "sha256:earlier"),
+                ],
+            },
+        );
+        let text = skills(&extensions);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].ends_with("[plugin p] (trusted)"), "{text}");
+        assert!(
+            lines[1].ends_with("[plugin p] (changed (re-trust))"),
+            "{text}"
+        );
+        assert!(lines[2].ends_with("[plugin p]"), "{text}");
     }
 
     fn usage() -> ContextUsage {

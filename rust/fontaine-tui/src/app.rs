@@ -31,6 +31,7 @@ use crate::resume_picker::{ResumeKey, ResumePicker};
 use crate::rewind::{RewindKey, RewindPicker};
 use crate::server_prompt::ServerPrompt;
 use crate::setup_prompt::{CompositionPrompt, SetupReviewPrompt};
+use crate::skill_trust_prompt::SkillTrustPrompt;
 use crate::theme::Theme;
 use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
@@ -109,6 +110,8 @@ pub enum Action {
     OpenPicker(ModelSlot),
     /// The human answered the `/guardian-disable` confirmation.
     GuardianOff(bool),
+    /// The human answered the `/skills trust` confirmation.
+    SkillTrust(bool),
     /// The human answered the `/auto-mode-setup` review of the scan's proposals.
     SetupReview(bool),
     /// The human answered the `/auto-mode-setup` offer of the guardian composition; `None`
@@ -196,6 +199,7 @@ pub struct App {
     pub server: Option<ServerPrompt>,
     /// The `/guardian-disable` confirmation while it is open.
     pub guardian_off_prompt: Option<GuardianOffPrompt>,
+    pub skill_trust_prompt: Option<SkillTrustPrompt>,
     /// The `/auto-mode-setup` review of the repository scan's proposals while it is open.
     pub setup_review: Option<SetupReviewPrompt>,
     /// The `/auto-mode-setup` offer of the guardian composition while it is open.
@@ -269,6 +273,7 @@ pub struct App {
     approvals_opened: u64,
     servers_opened: u64,
     guardian_off_opened: u64,
+    skill_trust_opened: u64,
     setup_review_opened: u64,
     setup_composition_opened: u64,
     questions_opened: u64,
@@ -357,6 +362,7 @@ impl App {
             todos: TodoPanel::default(),
             server: None,
             guardian_off_prompt: None,
+            skill_trust_prompt: None,
             setup_review: None,
             setup_composition: None,
             usage: Vec::new(),
@@ -395,6 +401,7 @@ impl App {
             approvals_opened: 0,
             servers_opened: 0,
             guardian_off_opened: 0,
+            skill_trust_opened: 0,
             setup_review_opened: 0,
             setup_composition_opened: 0,
             questions_opened: 0,
@@ -686,6 +693,12 @@ impl App {
         self.guardian_off_prompt = Some(prompt);
     }
 
+    pub fn begin_skill_trust(&mut self, mut prompt: SkillTrustPrompt) {
+        self.skill_trust_opened += 1;
+        prompt.id = self.skill_trust_opened;
+        self.skill_trust_prompt = Some(prompt);
+    }
+
     pub fn begin_setup_review(&mut self, mut prompt: SetupReviewPrompt) {
         self.setup_review_opened += 1;
         prompt.id = self.setup_review_opened;
@@ -769,6 +782,8 @@ impl App {
                     || self.unavailable.is_some()
                     || self.server.is_some()
                     || self.guardian_off_prompt.is_some()
+                    || self.skill_trust_prompt.is_some()
+                    || self.skill_trust_prompt.is_some()
                     || self.setup_review.is_some()
                     || self.setup_composition.is_some()
                     || self.models.is_some()
@@ -888,6 +903,15 @@ impl App {
                 Some(answer) => {
                     self.guardian_off_prompt = None;
                     Action::GuardianOff(answer)
+                }
+                None => Action::None,
+            };
+        }
+        if let Some(prompt) = &mut self.skill_trust_prompt {
+            return match prompt.handle_key(key) {
+                Some(answer) => {
+                    self.skill_trust_prompt = None;
+                    Action::SkillTrust(answer)
                 }
                 None => Action::None,
             };

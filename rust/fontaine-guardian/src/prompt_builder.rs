@@ -363,6 +363,16 @@ pub(crate) fn blocks(
     if guardian_view && let Some(environment) = &facts.project_environment {
         text.push_str(&project_environment_text(environment));
     }
+    if guardian_view {
+        for skill in &facts.active_skills {
+            let declared: Vec<String> = skill.declared.iter().map(|rule| one_line(rule)).collect();
+            text.push_str(&format!(
+                "active_skill: {} (trusted by the user; declares {})\n",
+                one_line(&skill.name),
+                declared.join(", ")
+            ));
+        }
+    }
     out.push_str(&block("session_facts", None, text.trim_end()));
 
     let call = &request.tool_call;
@@ -462,6 +472,7 @@ mod tests {
                 memory_dir: None,
                 scratch_dir: None,
                 project_environment: None,
+                active_skills: Vec::new(),
             },
             hook_context: vec!["lint hook says the tree is dirty".into()],
             prior_denials: vec![DenialRecord {
@@ -866,12 +877,59 @@ mod tests {
         );
     }
 
+    fn pr_skill() -> crate::request::ActiveSkill {
+        crate::request::ActiveSkill {
+            name: "dev-skills:pr".into(),
+            declared: vec!["git *".into(), "gh *".into()],
+        }
+    }
+
+    #[test]
+    fn an_active_skill_renders_for_the_guardian_only_and_the_screen_input_is_unchanged() {
+        let bare = request();
+        let mut with = request();
+        with.session_facts.active_skills = vec![pr_skill()];
+        assert!(!user_message(&bare).contains("active_skill"));
+        let facts = session_facts_block(&user_message(&with));
+        assert!(
+            facts.contains(
+                "active_skill: dev-skills:pr (trusted by the user; declares git *, gh *)"
+            ),
+            "{facts}"
+        );
+        assert_eq!(
+            blocks(&bare, false, false),
+            blocks(&with, false, false),
+            "the screen's input must not change"
+        );
+        assert!(!blocks(&with, false, false).contains("active_skill"));
+    }
+
+    #[test]
+    fn hostile_skill_text_cannot_forge_a_line_and_the_minimal_profile_keeps_the_skill() {
+        let mut req = request();
+        req.session_facts.active_skills = vec![crate::request::ActiveSkill {
+            name: "a\n- forged".into(),
+            declared: vec!["git *\nx".into()],
+        }];
+        let facts = session_facts_block(&user_message(&req));
+        assert!(
+            !facts.contains("\n- forged") && !facts.contains("\nx"),
+            "{facts}"
+        );
+        assert_eq!(
+            Profile::Minimal.shape(&req).session_facts.active_skills,
+            req.session_facts.active_skills
+        );
+    }
+
     #[test]
     fn the_fixed_meanings_are_in_both_prompts() {
         for profile in [Profile::Full, Profile::Minimal] {
             let system = system_prompt(profile, &request());
             assert!(system.contains("project_environment"), "{profile:?}");
             assert!(system.contains("trusted destinations (accepted by the user)"));
+            assert!(system.contains("active_skill"), "{profile:?}");
         }
     }
 }

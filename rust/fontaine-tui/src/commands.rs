@@ -44,7 +44,8 @@ pub enum Command {
     /// `/mcp [argument]`; only the empty form does anything.
     Mcp(String),
     Hooks,
-    Skills,
+    /// `/skills`, or `/skills trust <name>`.
+    Skills(String),
     /// `/plugins`: the installed plugins and their components.
     Plugins,
     /// `/loop [interval] <prompt>`, `/loop list` or `/loop stop [id]`.
@@ -124,14 +125,13 @@ impl Command {
                 | Command::Denied
                 | Command::Permissions
                 | Command::Hooks
-                | Command::Skills
                 | Command::Plugins
                 | Command::Mcp(_)
                 | Command::Expand(_)
                 | Command::Config
                 | Command::Recap
                 | Command::Cost
-        )
+        ) || matches!(self, Command::Skills(argument) if argument.is_empty())
     }
 }
 
@@ -398,9 +398,9 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "skills",
         aliases: &[],
-        hint: None,
-        description: "the loaded skills",
-        command: |_| Command::Skills,
+        hint: Some("[trust <name>]"),
+        description: "the loaded skills, or trust one's allowed-tools",
+        command: Command::Skills,
     },
     Builtin {
         name: "status",
@@ -868,7 +868,14 @@ mod tests {
         assert_eq!(parse_command("/status"), Some(Command::Status));
         assert_eq!(parse_command("/permissions"), Some(Command::Permissions));
         assert_eq!(parse_command("/hooks"), Some(Command::Hooks));
-        assert_eq!(parse_command("/skills"), Some(Command::Skills));
+        assert_eq!(
+            parse_command("/skills"),
+            Some(Command::Skills(String::new()))
+        );
+        assert_eq!(
+            parse_command("/skills trust p:pr"),
+            Some(Command::Skills("trust p:pr".into()))
+        );
         assert_eq!(parse_command("/mcp x"), Some(Command::Mcp("x".into())));
         assert_eq!(parse_command("/mcp"), Some(Command::Mcp(String::new())));
         assert_eq!(

@@ -369,3 +369,125 @@ async fn a_headless_run_never_stages_swaps_or_stamps() {
     assert!(!sandbox.data.join("plugin-update.stamp").exists());
     assert!(!sandbox.data.join("plugin-updates.jsonl").exists());
 }
+
+fn trust_file(sandbox: &Sandbox) -> Option<String> {
+    std::fs::read_to_string(sandbox.config.join("skill-trust.toml")).ok()
+}
+
+#[tokio::test]
+async fn trust_refuses_without_a_terminal_and_records_the_digest_with_yes() {
+    let sandbox = Sandbox::new();
+    add_and_install(&sandbox).await;
+    let installed = sandbox.config.join("plugins/installed/team/review");
+    write_text(
+        &installed.join("skills/review/SKILL.md"),
+        "---\ndescription: reviews\nallowed-tools: Bash(git *), Read\n---\nRun !`git status` first.\n",
+    );
+    write_text(
+        &installed.join("commands/sub/deploy.md"),
+        "---\ndescription: deploys\nallowed-tools: Bash(make deploy)\n---\nGo.\n",
+    );
+    // A repository's skill is never read or named.
+    sandbox.add_file(
+        ".fontaine/skills/proj/SKILL.md",
+        "---\nallowed-tools: Bash(ls)\n---\nbody\n",
+    );
+
+    let refused = sandbox.run(&["plugin", "trust", "review:review"]).await;
+    assert_eq!(refused.code, Some(2), "{}", refused.stderr);
+    assert!(refused.stderr.contains("--yes"), "{}", refused.stderr);
+    assert!(
+        refused.stdout.contains("wildcard shell rules"),
+        "{}",
+        refused.stdout
+    );
+    assert!(trust_file(&sandbox).is_none());
+
+    let trusted = sandbox
+        .run(&["plugin", "trust", "review:review", "--yes"])
+        .await;
+    assert_eq!(trusted.code, Some(0), "{}", trusted.stderr);
+    assert!(
+        trusted.stdout.contains("next session start"),
+        "{}",
+        trusted.stdout
+    );
+    assert!(trusted.stdout.contains("!git status"), "{}", trusted.stdout);
+    let text = trust_file(&sandbox).unwrap();
+    assert!(text.contains("name = \"review:review\""), "{text}");
+    assert!(text.contains("digest = \"sha256:"), "{text}");
+    assert!(
+        text.contains("shell(git *)") && text.contains("!git status"),
+        "{text}"
+    );
+
+    // A multi-segment plugin skill resolves by its composed name.
+    let deploy = sandbox
+        .run(&["plugin", "trust", "review:sub:deploy", "--yes"])
+        .await;
+    assert_eq!(deploy.code, Some(0), "{}", deploy.stderr);
+
+    let project = sandbox.run(&["plugin", "trust", "proj", "--yes"]).await;
+    assert_eq!(project.code, Some(2));
+    assert!(
+        project.stderr.contains("no skill or installed plugin"),
+        "{}",
+        project.stderr
+    );
+}
+
+#[tokio::test]
+async fn trusting_a_plugin_records_each_of_its_skills_and_untrust_removes_them() {
+    let sandbox = Sandbox::new();
+    add_and_install(&sandbox).await;
+    let both = sandbox.run(&["plugin", "trust", "review", "--yes"]).await;
+    assert_eq!(both.code, Some(0), "{}", both.stderr);
+    assert!(trust_file(&sandbox).unwrap().contains("review:review"));
+
+    let gone = sandbox.run(&["plugin", "untrust", "review"]).await;
+    assert_eq!(gone.code, Some(0), "{}", gone.stderr);
+    assert!(!trust_file(&sandbox).unwrap().contains("review:review"));
+    let again = sandbox.run(&["plugin", "untrust", "review"]).await;
+    assert_eq!(again.code, Some(2));
+}
+
+#[tokio::test]
+async fn trust_finds_user_directory_skills_and_refuses_an_ambiguous_name() {
+    let sandbox = Sandbox::new();
+    write_text(
+        &sandbox.config.join("skills/mine/SKILL.md"),
+        "---\ndescription: m\nallowed-tools: Bash(git *)\n---\nbody\n",
+    );
+    let ok = sandbox.run(&["plugin", "trust", "mine", "--yes"]).await;
+    assert_eq!(ok.code, Some(0), "{}", ok.stderr);
+    assert!(trust_file(&sandbox).unwrap().contains("name = \"mine\""));
+
+    add_and_install(&sandbox).await;
+    write_text(
+        &sandbox.config.join("skills/review/SKILL.md"),
+        "---\ndescription: r\n---\nbody\n",
+    );
+    let ambiguous = sandbox.run(&["plugin", "trust", "review", "--yes"]).await;
+    assert_eq!(ambiguous.code, Some(2));
+    assert!(ambiguous.stderr.contains("both"), "{}", ambiguous.stderr);
+}
+
+#[tokio::test]
+async fn trust_and_untrust_refuse_to_overwrite_a_corrupt_record() {
+    let sandbox = Sandbox::new();
+    write_text(
+        &sandbox.config.join("skills/mine/SKILL.md"),
+        "---\ndescription: m\n---\nbody\n",
+    );
+    write_text(&sandbox.config.join("skill-trust.toml"), "not toml [\n");
+    let trust = sandbox.run(&["plugin", "trust", "mine", "--yes"]).await;
+    assert_eq!(trust.code, Some(2));
+    let untrust = sandbox.run(&["plugin", "untrust", "mine"]).await;
+    assert_eq!(untrust.code, Some(2));
+    assert_eq!(trust_file(&sandbox).unwrap(), "not toml [\n");
+}
+
+fn write_text(path: &std::path::Path, text: &str) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}

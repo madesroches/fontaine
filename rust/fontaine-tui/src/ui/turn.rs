@@ -683,6 +683,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::EditQueued
                 | Action::Server(_)
                 | Action::GuardianOff(_)
+                | Action::SkillTrust(_)
                 | Action::SetupReview(_)
                 | Action::SetupComposition(_)
                 | Action::CancelWakeup => {}
@@ -830,6 +831,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Action::Submit(..)
                         | Action::Shell(_)
                         | Action::GuardianOff(_)
+                        | Action::SkillTrust(_)
                         | Action::SetupReview(_)
                         | Action::SetupComposition(_)
                         | Action::CancelWakeup => {}

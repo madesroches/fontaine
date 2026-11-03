@@ -26,10 +26,10 @@ pub use cache::TTL as CACHE_TTL;
 pub use guardian::{Adjudication, EXTRACTOR_RETRIES, Guardian, Settings, WireIds};
 pub use profile::{FULL_PROMPT, MINIMAL_PROMPT, Profile};
 pub use request::{
-    ACTIONS_TAKEN, ActionTaken, AdjudicationRequest, DenialRecord, EnvFileFacts, PreExistence,
-    ProjectEnvironmentFacts, Protection, RECENT_USER_MESSAGES, RemoteEnvironment, ScanFindings,
-    SessionFacts, TASK_INTENT_CHARS, ToolCallSummary, TouchedPath, Visibility, task_intent,
-    trailing_chars,
+    ACTIONS_TAKEN, ActionTaken, ActiveSkill, AdjudicationRequest, DenialRecord, EnvFileFacts,
+    PreExistence, ProjectEnvironmentFacts, Protection, RECENT_USER_MESSAGES, RemoteEnvironment,
+    ScanFindings, SessionFacts, TASK_INTENT_CHARS, ToolCallSummary, TouchedPath, Visibility,
+    task_intent, trailing_chars,
 };
 pub use rule_label::RuleLabel;
 pub use rules::{EnvironmentConfig, List, RuleConfig};

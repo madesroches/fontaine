@@ -116,6 +116,20 @@ The guardian reads history and your messages by a few fixed rules:
 - A note you type about the setup, such as "fyi, the guardian is now haiku", is neutral.
 - Suspicion needs a rule: "earlier denials and this looks related" is not a reason to deny.
 
+### Trusted skills
+
+When a skill you [trusted](extensions.md#trusted-skills) is running for the calling agent and
+declares wildcard shell rules, `session_facts` has an `active_skill` line such as
+`active_skill: dev-skills:pr (trusted by the user; declares git *, gh *)`. Fontaine sets it from
+the session, never from a tool argument, and only the guardian view renders it (the reads of a
+[composition](#composing-the-guardian) do not; the minimal profile does). The prompt tells the
+guardian that the declared classes are your intent for the routine steps of that class, such as a
+rebase onto the default branch for a pull-request skill, and never for a destructive or
+out-of-purpose step: a force-push, a push to a protected branch or a deletion you did not name is
+judged on its own arguments and your words, as without the skill. It is context and not an allow:
+the floor, your deny and ask rules and every fail-closed outcome are unchanged. A subagent of the
+calling agent carries no `active_skill` line, and the line ends with the turn.
+
 ### Subagents and the scratch directory
 
 The session scratch directory is created empty when the session starts and deleted when it ends,
@@ -681,7 +695,7 @@ control files, privileged namespace operations, raw devices, symlink traversal t
 paths, network paths around the sandbox proxy), denying them as `Container Escape` with the escape
 class in the explanation as `class=<name>`, and still denies exfiltration to destinations that are
 not the repository's own remotes. It receives a smaller request: the call, your last 500
-characters and 3 messages, the workspace roots, the remotes, the `[env]` names and the touched paths' status, without
+characters and 3 messages, the workspace roots, the remotes, the `[env]` names, the touched paths' status and any `active_skill` line, without
 project instructions, hook notes or earlier denials. The deterministic floor still runs.
 
 It is a narrowing, never "off", and it only loads when containment is verified. **Both** must hold:

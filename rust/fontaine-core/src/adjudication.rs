@@ -4,7 +4,7 @@
 
 use fontaine_agents::registry::AgentTypes;
 use fontaine_guardian::{
-    ACTIONS_TAKEN, ActionTaken, AdjudicationRequest, DenialRecord, PreExistence,
+    ACTIONS_TAKEN, ActionTaken, ActiveSkill, AdjudicationRequest, DenialRecord, PreExistence,
     RECENT_USER_MESSAGES, SessionFacts, TASK_INTENT_CHARS, ToolCallSummary, TouchedPath,
     task_intent,
 };
@@ -244,6 +244,7 @@ fn facts(
             .project_environment
             .as_ref()
             .map(crate::project_env::to_facts),
+        active_skills: Vec::new(),
     }
 }
 
@@ -288,7 +289,7 @@ pub fn build(
             view: &view,
         },
     );
-    let session_facts = facts(
+    let mut session_facts = facts(
         &view,
         &scope,
         state.memory_root.as_deref(),
@@ -296,6 +297,15 @@ pub fn build(
         tool,
         args,
     );
+    // Keyed by the caller, so a subagent of the invoking agent carries none.
+    session_facts.active_skills = state
+        .trusted_skill_notes(caller)
+        .into_iter()
+        .map(|note| ActiveSkill {
+            name: note.name,
+            declared: note.declared,
+        })
+        .collect();
     let denials_from = view.denials.len().saturating_sub(PRIOR_DENIALS);
     AdjudicationRequest {
         task_intent: task_intent(&intent, TASK_INTENT_CHARS),
