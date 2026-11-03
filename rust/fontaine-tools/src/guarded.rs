@@ -38,6 +38,11 @@ enum Routing {
     /// read-only file tools register this route, and only after the gate has allowed the
     /// call with the resolved arguments.
     PerRootWithFallback(Arc<Scope>),
+    /// One instance per workspace root, plus one unconfined write fallback at the end of
+    /// the instance list for a call whose path lies outside every root. Only the three
+    /// write tools register this route, and only after the gate has allowed the call with
+    /// the resolved arguments.
+    PerRootWithWriteFallback(Arc<Scope>),
 }
 
 /// What the gate and the result pipeline are shared with.
@@ -89,6 +94,29 @@ impl<T: Tool> GuardedTool<T> {
         GuardedTool {
             instances: scope.roots().iter().map(|root| make(root)).collect(),
             routing: Routing::PerRoot(scope),
+            risk,
+            guard,
+            pre_gate: None,
+        }
+    }
+
+    /// A write tool with one confined instance per root of `scope` plus one unconfined
+    /// fallback based at the primary root, built by `make_fallback`. A call whose path lies
+    /// outside every root goes to the fallback, with the resolved arguments the pipeline
+    /// normalized: the fallback validates their absolute external shape but does not touch
+    /// the file system again.
+    pub fn per_root_with_write_fallback(
+        scope: Arc<Scope>,
+        risk: RiskClass,
+        guard: Guard,
+        make: impl Fn(&std::path::Path) -> T,
+        make_fallback: impl FnOnce(&std::path::Path) -> T,
+    ) -> Self {
+        let mut instances: Vec<T> = scope.roots().iter().map(|root| make(root)).collect();
+        instances.push(make_fallback(scope.primary()));
+        GuardedTool {
+            instances,
+            routing: Routing::PerRootWithWriteFallback(scope),
             risk,
             guard,
             pre_gate: None,
@@ -173,6 +201,18 @@ impl<T: Tool> GuardedTool<T> {
                 }
                 Err(e) => return Err(ToolExecutionError::refused(e.to_string())),
             },
+            Routing::PerRootWithWriteFallback(scope) => match scope.locate(T::NAME, &args) {
+                Ok(located) => located,
+                Err(crate::scope::ScopeError::OutOfScope(_)) => {
+                    crate::scope::external_write_shape(T::NAME, &args)
+                        .map_err(|e| ToolExecutionError::refused(e.to_string()))?;
+                    crate::scope::Located {
+                        root: self.instances.len() - 1,
+                        args,
+                    }
+                }
+                Err(e) => return Err(ToolExecutionError::refused(e.to_string())),
+            },
         };
         let typed: T::Args = serde_json::from_value(located.args.clone()).map_err(|e| {
             ToolExecutionError::invalid_args(format!("failed to parse tool arguments: {e}"))
@@ -207,8 +247,11 @@ impl<T: Tool> GuardedTool<T> {
     /// Saves the file the call names, when this tool is one whose edits are kept. `located`
     /// already holds the path the tool will open; capture failures never stop the call.
     async fn capture(&self, context: &ToolContext, located: &Value) -> Option<Box<dyn Capture>> {
-        let scope = match &self.routing {
-            Routing::PerRoot(scope) | Routing::PerRootWithFallback(scope) => scope,
+        let (scope, external_route) = match &self.routing {
+            Routing::PerRoot(scope) => (scope, false),
+            Routing::PerRootWithFallback(scope) | Routing::PerRootWithWriteFallback(scope) => {
+                (scope, true)
+            }
             Routing::One => return None,
         };
         let pre_images = self.guard.pre_images.clone()?;
@@ -217,7 +260,14 @@ impl<T: Tool> GuardedTool<T> {
         }
         let agent = agent_of(context).ok()?;
         let path = located.get("path")?.as_str()?;
-        let (_, resolved) = scope.find(path).ok()?;
+        // A call the fallback instance serves names the resolved target already; a call
+        // the strict routing refused cannot reach here without the gate's allow, so an
+        // unresolved path on an external route is resolved the way the tool will open it.
+        let (_, resolved) = match scope.find(path) {
+            Ok(found) => found,
+            Err(_) if external_route => (0, scope.resolved(path)),
+            Err(_) => return None,
+        };
         match rig_tools::blocking(move || Ok(pre_images.before(&agent, T::NAME, &resolved))).await {
             Ok(capture) => capture,
             Err(e) => {

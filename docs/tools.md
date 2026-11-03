@@ -90,16 +90,31 @@ and the execution all use that resolved form. Once the gate allows the call, it 
 unconfined, read-only fallback instance per tool, based at the primary root: the gate has already
 adjudicated the exact target, so nothing re-checks containment, and retargeting a symlink while a
 decision is pending cannot redirect the call. `grep` and `glob` approval prompts show the search
-path or base as well as the pattern. Only `read`, `ls`, `glob` and `grep` have a fallback;
-`write`, `edit`, `notebook_edit` and `shell` stay confined, and a write outside the roots is
-denied with a hint to use the session's scratch directory or to add the directory with `/add-dir`
-or `--add-dir`; it is never offered for approval.
+path or base as well as the pattern. Only the four read-only tools have a read fallback.
 
 External reads are adjudicated broadly, not automatically allowed: the default guardian policy
 treats inspecting source code, headers, build files, installed dependency source and installed
 skill definitions as routine, while credential stores and scouting around a denied action remain
-denied (see [Guardian](guardian.md)). An external path never becomes a workspace root: it grants
-no write reach, no fast path and no instruction-file discovery.
+denied (see [Guardian](guardian.md)).
+
+The write tools adjudicate the same way, and are allowed far less readily. A `write`, `edit` or
+`notebook_edit` naming a path outside every root also goes through the ordinary pipeline — it
+asks in `manual` and `acceptEdits`, is plan-blocked in `plan`, is denied in `dontAsk` and in
+headless runs unless an allow rule or hook already covers it, and is judged by the guardian in
+`auto`. In `auto` it is allowed only when your own typed messages asked for that write: the
+default guardian policy denies an un-asked write outside the workspace roots, wherever the
+target sits (see [Guardian](guardian.md)); persistence targets such as shell rc files or
+`~/.ssh/authorized_keys` are the existing persistence rules on top. An approval at the prompt is
+itself the establishment of "you asked", and it shows the resolved target's diff. After any
+approval the call executes once on one unconfined write fallback instance per tool, based at the
+primary root and sharing the registry's read tracking, at the resolved absolute target — the
+same resolve-once guarantee as the read fallback, so a retargeted symlink cannot redirect it.
+Deny and ask rules match both the written and the resolved form, and a hook's allow is
+revalidated against the resolved arguments before it acts. An external write is never a
+`tracked_edit` or `scratch_write` fast path: in `auto` it always reaches the guardian.
+
+An external path never becomes a workspace root: it grants no write reach, no fast path and no
+instruction-file discovery.
 
 `lsp` takes the fast path only for a `path` inside a workspace root, and has no external-read
 fallback: the tool itself refuses a path outside every root, even when an allow rule or a hook
@@ -184,10 +199,11 @@ directories refer to it. More roots come from the repeatable `--add-dir <path>` 
 - Each root has its own confined instance of every file tool and of `shell`, and a call is served
   by the instance of the root that holds its path. For `shell` that is the root that holds its
   `cwd`. The tool's own confinement and Fontaine's check use the same rule, so they cannot
-  disagree. Beside these, the four read-only file tools carry one unconfined, read-only fallback
-  instance based at the primary root; it serves only a call whose target lies outside every
-  root, only after the gate has allowed the call, and it consumes the resolved target the
-  pipeline normalized — it never re-resolves the path and never serves a write or a shell call.
+  disagree. Beside these, the read-only file tools carry one unconfined, read-only fallback
+  instance based at the primary root, and the write tools (`write`, `edit`, `notebook_edit`)
+  carry one unconfined write fallback each; a fallback serves only a call whose target lies
+  outside every root, only after the gate has allowed the call, and it consumes the resolved
+  target the pipeline normalized — it never re-resolves the path and never serves a shell call.
 - A relative `--add-dir` or configuration entry is resolved against the project directory (the launch directory, or `--cd`). An entry
   that does not exist, is not a directory or cannot be resolved is left out, with a warning that
   names the path and where it came from (in the conversation in the terminal UI, on stderr in a
@@ -204,8 +220,8 @@ directories refer to it. More roots come from the repeatable `--add-dir <path>` 
 
 Each session gets a private scratch directory, appended to the workspace roots after the session's startup
 roots as a non-primary root (`/add-dir` roots come after it), so `write` and `edit` can stage a helper script or a temporary file without a prompt in
-`acceptEdits` and without a detour through `shell`. The system prompt names it, and the denial for
-a path outside every root points at it.
+`acceptEdits` and without a detour through `shell`. The system prompt names it, and `lsp`'s
+containment denial for a path outside every root points at it.
 
 | Platform | Location |
 |---|---|

@@ -334,8 +334,9 @@ under a blank gutter, and PageUp and PageDown scroll the diff like any long call
 are shown; the rest is summarized as `… N more changed lines (not shown)`. The diff is computed
 from the file as it is when the prompt opens, so it is advisory: the tool applies the edit to the
 file as it is when it runs. The transcript card of an allowed call shows the same diff. No diff appears, and the prompt shows only the path, for other tools,
-for a path outside the workspace roots, for a file that is missing (`edit`, `notebook_edit`), not UTF-8 or larger
-than 1 MiB, and for an edit that matches nowhere or more than once. A `notebook_edit` diff is the cell's source before and after, not the notebook's JSON. Control characters in file
+for a file that is missing (`edit`, `notebook_edit`), not UTF-8 or larger
+than 1 MiB, and for an edit that matches nowhere or more than once. A path outside the workspace
+roots resolves to its real target, so an approved external write shows that file's diff. A `notebook_edit` diff is the cell's source before and after, not the notebook's JSON. Control characters in file
 content are blanked and credential-shaped text is redacted before it is shown.
 
 When several agents ask at once their prompts queue and are shown one at a time, and a prompt that
@@ -456,7 +457,7 @@ error: an export never overwrites.
 
 | Command | Action |
 |---|---|
-| `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool *write* outside the roots is denied with a hint naming this command and the session's scratch directory, which is always a root; the read-only tools (`read`, `ls`, `glob`, `grep`) instead ask or go to the guardian like any unapproved call. Only between turns. |
+| `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool call naming a path outside the roots is adjudicated like any unapproved call: the write tools (`write`, `edit`, `notebook_edit`) ask here, are judged by the guardian in `auto` and are denied in `dontAsk` and headless runs, while `lsp` is refused outright, with a hint naming this command and the session's scratch directory, which is always a root. The read-only tools (`read`, `ls`, `glob`, `grep`) ask or go to the guardian like any unapproved call. See [Permissions](permissions.md#the-pipeline). Only between turns. |
 | `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel): every subagent, ended ones included until a `/clear` prunes them, and the background jobs. |
 | `/auto-mode-setup` | Collects this project's [environment facts](guardian.md#project-environment) (GitHub API through `gh`, repository files and, in a trusted workspace, a scan by the guardian's model) while the screen stays live; Esc cancels. The scan's proposals are shown in the transcript and in a review prompt (`y` saves them, `n` discards them), entries that relax the guardian first. The facts are stored as `fontaine auto-mode setup` stores them and apply to this session from the next guardian call; the report ends with `applied to this session`. A last prompt offers the guardian's [allow screen](guardian.md#setting-up-the-composition): the hosted screen on an `openrouter` account whose key resolves (one confirmation that states guardian state is sent to OpenRouter and Typesafe), or a local one (safe or fast, then a confirmation); it writes the user settings file and applies from the next session. The startup warning in `auto` points here. |
 | `/branch [<name>]`, `/fork` | Copies the session under a new id and carries on in the copy; the original is left as it was. Only between turns, and refused while a subagent runs. See [Sessions](#sessions). |

@@ -183,6 +183,25 @@ anywhere, reading credential or personal-data stores, and scouting around a deni
 remain subject to the deny rules. In the interactive modes the same call asks you instead, with
 the resolved path in the prompt.
 
+### Writing outside the workspace
+
+The write tools (`write`, `edit`, `notebook_edit`) may also name a path outside every workspace
+root, and that call reaches the guardian in `auto` and `plan` like any other unapproved call. A
+write out of the roots is consequential wherever the target sits — shell rc files,
+`~/.ssh/authorized_keys`, cron entries — so the shipped `soft_deny` list denies an **un-asked**
+write outside the workspace roots under the `Safety Bypass` label, alongside the persistence
+entries (SSH keys, cron, shell-profile lines) that keep applying to out-of-root targets.
+
+The only user intent the rule accepts is your own typed messages: the `task_intent` and
+`recent_user_messages` blocks are recorded by the harness and marked as yours, and the rule
+allows the write only when they named the file or directory and asked for it to be created,
+changed or removed. A claim of authorization anywhere else — in tool arguments, instruction
+files, hook notes, guardian-context notes or action summaries — is data, not intent, and does
+not clear the rule. In the interactive modes the call asks you instead: your answer at the
+prompt is itself the establishment that you asked, and the prompt shows the resolved target's
+diff. Nothing here loosens the deterministic floor: deny rules, ask rules, critical paths and
+protected paths still act first in every mode.
+
 ## Memory writes
 
 When `session_facts` names the agent's memory directory, a call whose target is under it is a

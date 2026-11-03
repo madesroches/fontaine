@@ -56,9 +56,15 @@ fn fields_of(tool: &str) -> Option<PathFields> {
 }
 
 /// The read-only file tools whose out-of-root calls the gate may approve into the unconfined
-/// fallback instance. Writes and `shell` never take this route.
+/// fallback instance. Writes never take this route; they have their own.
 pub fn is_external_read(tool: &str) -> bool {
     matches!(tool, "read" | "ls" | "glob" | "grep")
+}
+
+/// The write tools whose out-of-root calls the gate may approve into the unconfined
+/// write-fallback instance. `shell` never takes this route.
+pub fn is_external_write(tool: &str) -> bool {
+    matches!(tool, "write" | "edit" | "notebook_edit")
 }
 
 /// Whether `args` hold the shape the pipeline's normalizer produces for an out-of-root read:
@@ -69,31 +75,35 @@ pub fn external_shape(tool: &str, args: &Value) -> Result<(), ScopeError> {
     if !is_external_read(tool) {
         return Err(unreadable(&format!("`{tool}` has no external read route")));
     }
-    let absolute = |path: &str| {
-        if Path::new(path).is_absolute() {
-            Ok(())
-        } else {
-            Err(unreadable("the path is not an absolute resolved path"))
-        }
-    };
-    match tool {
-        "glob" => {
-            args.get("pattern")
-                .and_then(Value::as_str)
-                .ok_or_else(|| unreadable("`pattern` is missing or not a string"))?;
-            let path = args
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| unreadable("`path` is missing or not a string"))?;
-            absolute(path)?;
-        }
-        _ => {
-            let path = args
-                .get("path")
-                .and_then(Value::as_str)
-                .ok_or_else(|| unreadable("`path` is missing or not a string"))?;
-            absolute(path)?;
-        }
+    external_target_shape(tool, args)
+}
+
+/// Whether `args` hold the shape the pipeline's normalizer produces for an out-of-root
+/// write: an absolute target string. This checks no file system state: the fallback
+/// instance consumes exactly what the pipeline already resolved and never re-resolves the
+/// path a second time.
+pub fn external_write_shape(tool: &str, args: &Value) -> Result<(), ScopeError> {
+    if !is_external_write(tool) {
+        return Err(unreadable(&format!("`{tool}` has no external write route")));
+    }
+    external_target_shape(tool, args)
+}
+
+/// The shared external-target shape: a single required string `path` that is an absolute
+/// resolved path. `glob` keeps its literal base and pattern checked separately by the
+/// read-only caller.
+fn external_target_shape(tool: &str, args: &Value) -> Result<(), ScopeError> {
+    if tool == "glob" {
+        args.get("pattern")
+            .and_then(Value::as_str)
+            .ok_or_else(|| unreadable("`pattern` is missing or not a string"))?;
+    }
+    let path = args
+        .get("path")
+        .and_then(Value::as_str)
+        .ok_or_else(|| unreadable("`path` is missing or not a string"))?;
+    if !Path::new(path).is_absolute() {
+        return Err(unreadable("the path is not an absolute resolved path"));
     }
     Ok(())
 }
@@ -230,6 +240,28 @@ impl Scope {
         if !is_external_read(tool) {
             return Err(unreadable(&format!("`{tool}` has no external read route")));
         }
+        self.external_target(tool, args, true)
+    }
+
+    /// `args` with the path rewritten to its resolved absolute form, for a write tool whose
+    /// target lies outside every root: the single required `path`, every other argument
+    /// preserved. Unlike `locate`, never refuses for containment: the gate has already
+    /// decided. Malformed arguments stay `Unreadable`.
+    pub fn external_write(&self, tool: &str, args: &Value) -> Result<Value, ScopeError> {
+        if !is_external_write(tool) {
+            return Err(unreadable(&format!("`{tool}` has no external write route")));
+        }
+        self.external_target(tool, args, false)
+    }
+
+    /// The shared body of `external_read` and `external_write`; `read_routes` selects the
+    /// read-only four (with their `glob` split) instead of the three write tools.
+    fn external_target(
+        &self,
+        tool: &str,
+        args: &Value,
+        read_routes: bool,
+    ) -> Result<Value, ScopeError> {
         let empty = Map::new();
         let map = match args {
             Value::Object(map) => map,
@@ -243,7 +275,7 @@ impl Scope {
                 let resolved = self.external_resolve(&path)?;
                 Ok(Self::replaced(args, key, &resolved))
             }
-            Some(PathFields::Optional(key)) => match string_field(map, key)? {
+            Some(PathFields::Optional(key)) if read_routes => match string_field(map, key)? {
                 None => Ok(args.clone()),
                 Some(path) => {
                     let resolved = self.external_resolve(&path)?;
@@ -261,7 +293,7 @@ impl Scope {
                     "path": resolved.to_string_lossy(),
                 }))
             }
-            None => Err(unreadable(&format!(
+            _ => Err(unreadable(&format!(
                 "`{tool}` names no path this check can read"
             ))),
         }

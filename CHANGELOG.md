@@ -8,6 +8,23 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+#### Permissions
+
+- A `write`, `edit` or `notebook_edit` naming a path outside every workspace root is adjudicated
+  through the normal permission pipeline instead of being refused for containment (#269). It asks
+  in `manual` and `acceptEdits` (the approval itself establishes that you asked, and the prompt
+  shows the resolved target's diff), is plan-blocked in `plan`, is denied in `dontAsk` and in
+  headless runs unless an allow rule or a hook already covers it, and is judged by the guardian in
+  `auto` — where an un-asked external write is denied under the `Safety Bypass` label, and only
+  your own typed messages count as having asked for it. Deny and ask rules match both the written
+  and the resolved form; the protected-path floor reaches the guardian for external writes in
+  `auto` exactly as for in-root ones. After any approval the call executes once, at the resolved
+  absolute target, on a new unconfined write-fallback instance per write tool — the read tools'
+  resolve-once guarantee, now for writes. External writes never earn the `tracked_edit` or
+  `scratch_write` fast paths, record no new audit tier, and an external path still grants no write
+  reach of its own and never becomes a root. The containment hard denial survives only for `lsp`;
+  `shell`/`powershell` working directories are unchanged.
+
 #### Guardian
 
 - The `screen` preset of `[guardian.composition]` can read on a hosted model: `typesafe/jev-1.14`

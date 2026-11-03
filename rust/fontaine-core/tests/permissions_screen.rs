@@ -429,6 +429,37 @@ async fn a_screen_allow_of_an_external_read_returns_the_resolved_target() {
 }
 
 #[tokio::test]
+async fn a_screen_allow_of_an_external_write_returns_the_resolved_target() {
+    let server = clear().await;
+    let slow = slow_denier().await;
+    let rig = rig(slow.guardian.clone(), false, allowing_stage(&server, false));
+    let outside = rig.world.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    match rig
+        .check("write", json!({"path": "../outside/x.txt", "content": "x"}))
+        .await
+    {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                json!({
+                    "path": outside.join("x.txt").to_str().unwrap(),
+                    "content": "x",
+                }),
+                "the screen's allow carries the resolved target"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_dropped(&slow).await;
+    let record = &rig.audit()[0];
+    assert_eq!(
+        (record.tier, record.decision),
+        (Tier::Screen, Decision::Allow)
+    );
+}
+
+#[tokio::test]
 async fn steering_in_the_arguments_sends_the_call_to_the_guardian() {
     let server = reads(0.9999, 0.9999999, 0.2).await;
     let fake = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));

@@ -387,8 +387,10 @@ fn a_new_epoch_hides_everything_before_it_and_restarts_the_numbers() {
 }
 
 #[test]
-fn a_path_outside_the_workspace_is_refused() {
+fn a_captured_external_pre_image_restores_at_its_recorded_path() {
     let r = rig();
+    // The pre-image of an approved external write: captured at the resolved target, the
+    // path the manifest records and the restore writes.
     let outside = r.work.parent().unwrap().join("outside.txt");
     std::fs::write(&outside, "v0").unwrap();
     r.store.begin_turn(0, "one", 0);
@@ -396,10 +398,39 @@ fn a_path_outside_the_workspace_is_refused() {
     std::fs::write(&outside, "v1").unwrap();
     capture.unwrap().finish(true);
     let plan = r.store.plan(1, &r.scope()).unwrap();
-    assert_eq!(plan.files[0].step, Step::Refused(Refusal::OutOfScope));
+    assert!(
+        matches!(plan.files[0].step, Step::Restore { .. }),
+        "{plan:?}"
+    );
     let report = r.store.restore_code(&plan, &r.scope(), false);
-    assert_eq!(report.not_restorable.len(), 1);
-    assert_eq!(read(&outside), "v1");
+    assert_eq!(report.restored, vec![outside.clone()]);
+    assert_eq!(read(&outside), "v0");
+
+    // A manifest entry whose resolution no longer matches its recorded path (a link
+    // retargeted after capture) is refused rather than followed.
+    #[cfg(unix)]
+    {
+        let swapped = r.work.parent().unwrap().join("swapped");
+        std::fs::create_dir_all(&swapped).unwrap();
+        std::fs::write(swapped.join("linked.txt"), "v0").unwrap();
+        std::os::unix::fs::symlink(&swapped, r.work.join("linked")).unwrap();
+        let alias = r.work.join("linked").join("linked.txt");
+        r.store.begin_turn(1, "two", 0);
+        let capture = StoreCapture(r.store.clone()).before("root", "write", &alias);
+        std::fs::write(&alias, "v1").unwrap();
+        capture.unwrap().finish(true);
+        let other = r.work.parent().unwrap().join("other");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::remove_file(r.work.join("linked")).unwrap();
+        std::os::unix::fs::symlink(&other, r.work.join("linked")).unwrap();
+        let plan = r.store.plan(2, &r.scope()).unwrap();
+        let file = plan
+            .files
+            .iter()
+            .find(|f| f.path.ends_with("linked.txt"))
+            .unwrap();
+        assert_eq!(file.step, Step::Refused(Refusal::Symlink), "{plan:?}");
+    }
 }
 
 #[cfg(unix)]

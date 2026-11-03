@@ -337,6 +337,123 @@ fn an_external_read_resolves_a_workspace_symlink_to_its_real_target() {
 }
 
 #[test]
+fn external_writes_resolve_the_path_to_an_absolute_form() {
+    let d = Dirs::new();
+    let root = d.dir("work");
+    let outside = d.dir("outside");
+    let s = scope(&root, &[]);
+    let resolved = outside.join("x.txt").to_str().unwrap().to_string();
+
+    // Relative, parent-relative and absolute spellings of one target normalize the same,
+    // and every non-path argument is preserved.
+    for (tool, args) in [
+        ("write", json!({"path": "../outside/x.txt", "content": "x"})),
+        (
+            "write",
+            json!({"path": resolved, "content": "x", "append": true}),
+        ),
+        (
+            "edit",
+            json!({"path": "../outside/x.txt", "edits": [{"old_text": "a", "new_text": "b"}]}),
+        ),
+        (
+            "notebook_edit",
+            json!({"path": "../outside/x.ipynb", "cell_id": "c", "new_source": "x"}),
+        ),
+    ] {
+        let normalized = s.external_write(tool, &args).unwrap();
+        let path = normalized["path"].as_str().unwrap();
+        assert!(
+            std::path::Path::new(path).is_absolute(),
+            "{tool} {args} -> {normalized}"
+        );
+        for key in args.as_object().unwrap().keys() {
+            if key != "path" {
+                assert_eq!(normalized[key], args[key], "{tool} {key}");
+            }
+        }
+    }
+    let write = s
+        .external_write(
+            "write",
+            &json!({"path": "../outside/x.txt", "content": "x"}),
+        )
+        .unwrap();
+    assert_eq!(write, json!({"path": resolved, "content": "x"}));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_external_write_resolves_a_workspace_symlink_to_its_real_target() {
+    let d = Dirs::new();
+    let root = d.dir("work");
+    let outside = d.dir("outside");
+    std::fs::write(outside.join("x.txt"), "x").unwrap();
+    link(&outside, &root.join("linked"));
+    let s = scope(&root, &[]);
+    let normalized = s
+        .external_write("write", &json!({"path": "linked/x.txt", "content": "y"}))
+        .unwrap();
+    assert_eq!(
+        normalized,
+        json!({"path": outside.join("x.txt").to_str().unwrap(), "content": "y"})
+    );
+}
+
+#[test]
+fn external_writes_reject_malformed_arguments() {
+    let d = Dirs::new();
+    let s = scope(&d.dir("work"), &[]);
+    for (tool, args) in [
+        ("write", json!({})),
+        ("write", json!({"path": 3})),
+        ("write", json!("a")),
+        ("edit", json!({"edits": []})),
+        ("notebook_edit", json!({"path": ["/etc"], "cell_id": "c"})),
+    ] {
+        assert!(
+            matches!(
+                s.external_write(tool, &args),
+                Err(ScopeError::Unreadable(_))
+            ),
+            "{tool} {args}"
+        );
+    }
+    // Only the three write tools have the route.
+    let hostname = d.dir("outside").join("hostname");
+    for tool in ["read", "ls", "glob", "grep", "shell", "lsp", "webfetch"] {
+        assert!(
+            matches!(
+                s.external_write(tool, &json!({"path": hostname.to_str().unwrap()})),
+                Err(ScopeError::Unreadable(_))
+            ),
+            "{tool}"
+        );
+    }
+}
+
+#[test]
+fn the_external_write_shape_check_validates_normalized_arguments_only() {
+    use fontaine_tools::scope::external_write_shape;
+    let d = Dirs::new();
+    let dir = d.dir("outside");
+    let dir = dir.to_str().unwrap();
+    let file = format!("{dir}/hostname");
+    for tool in ["write", "edit", "notebook_edit"] {
+        assert!(external_write_shape(tool, &json!({"path": file})).is_ok());
+        assert!(external_write_shape(tool, &json!({"path": "relative"})).is_err());
+        assert!(external_write_shape(tool, &json!({"path": 3})).is_err());
+        assert!(external_write_shape(tool, &json!({})).is_err());
+    }
+    assert!(external_write_shape("read", &json!({"path": file})).is_err());
+    assert!(external_write_shape("shell", &json!({"path": file})).is_err());
+    // No file system state is consulted: a missing absolute path is still well formed.
+    assert!(
+        external_write_shape("write", &json!({"path": format!("{dir}/no/such/place")})).is_ok()
+    );
+}
+
+#[test]
 fn external_reads_reject_malformed_arguments() {
     let d = Dirs::new();
     let s = scope(&d.dir("work"), &[]);
@@ -647,16 +764,16 @@ async fn an_allowed_external_read_is_not_redirected_by_a_late_retarget() {
     assert!(text(&read).contains("ORIGINAL"), "{}", text(&read));
 }
 
-/// The gate is the choke point: a denied external read executes nothing, and no write or
-/// shell instance has any external route.
+/// The gate is the choke point: a denied external call executes nothing, whatever fallback
+/// instance could serve it.
 #[tokio::test]
-async fn a_denied_gate_executes_no_external_call_and_writes_stay_confined() {
+async fn a_denied_gate_executes_no_external_call() {
     let d = Dirs::new();
     let root = d.dir("work");
     let tree = ExternalTree::new();
     let outside = tree.base.to_str().unwrap();
 
-    // A gate that denies leaves every fallback unreachable: the read tools see the same
+    // A gate that denies leaves every fallback unreachable: the file tools see the same
     // refusal as any other denied call.
     struct DenyAll;
     impl fontaine_tools::gate::ToolGate for DenyAll {
@@ -677,6 +794,18 @@ async fn a_denied_gate_executes_no_external_call_and_writes_stay_confined() {
         ("ls", json!({"path": outside})),
         ("grep", json!({"pattern": "x", "path": outside})),
         ("glob", json!({"pattern": format!("{outside}/*.md")})),
+        (
+            "write",
+            json!({"path": format!("{outside}/written.txt"), "content": "x"}),
+        ),
+        (
+            "edit",
+            json!({"path": format!("{outside}/README.md"), "edits": [{"old_text": "a", "new_text": "b"}]}),
+        ),
+        (
+            "notebook_edit",
+            json!({"path": format!("{outside}/nb.ipynb"), "cell_id": "c", "new_source": "x"}),
+        ),
     ] {
         let refused = call(&tools, tool, args).await;
         assert!(refused.is_err(), "{tool}");
@@ -686,30 +815,151 @@ async fn a_denied_gate_executes_no_external_call_and_writes_stay_confined() {
             refused
         );
     }
+    assert!(!tree.base.join("written.txt").exists());
 
-    // Write tools and shell have no fallback: an external target is refused at execution
-    // even with an allowing gate.
+    // `shell` still has no external route: an outside cwd is refused at execution even
+    // with an allowing gate.
     let gate = Arc::new(AllowAll::default());
     let tools = registry(&env_with(scope(&root, &[]), gate));
-    let target = tree.base.join("written.txt");
-    for (tool, args) in [
-        (
-            "write",
-            json!({"path": target.to_str().unwrap(), "content": "x"}),
-        ),
-        (
-            "edit",
-            json!({"path": target.to_str().unwrap(), "edits": [{"old_text": "a", "new_text": "b"}]}),
-        ),
-        (
-            "notebook_edit",
-            json!({"path": target.to_str().unwrap(), "cell_id": "c", "new_source": "x"}),
-        ),
-        ("shell", json!({"command": "pwd", "cwd": outside})),
-    ] {
-        assert!(call(&tools, tool, args).await.is_err(), "{tool}");
+    assert!(
+        call(&tools, "shell", json!({"command": "pwd", "cwd": outside}))
+            .await
+            .is_err()
+    );
+}
+
+/// An allowed external write runs through the write fallback on the resolved target: the
+/// three write tools create and modify a temporary external file, a notebook included,
+/// and a workspace symlink resolving outside is followed to its real target.
+#[tokio::test]
+async fn an_allowed_external_write_executes_on_the_write_fallback() {
+    let d = Dirs::new();
+    let root = d.dir("work");
+    let s = scope(&root, &[]);
+    let gate = Arc::new(common::Adjudicated {
+        scope: s.clone(),
+        seen: Default::default(),
+    });
+    let tools = registry(&env_with(s.clone(), gate.clone()));
+    let tree = ExternalTree::new();
+
+    // `write` creates the file at the resolved target; a parent-relative spelling
+    // normalizes to the same place.
+    let rel_out = d.dir("outside");
+    let target = rel_out.join("written.txt");
+    call(
+        &tools,
+        "write",
+        json!({"path": "../outside/written.txt", "content": "hi"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "hi");
+
+    // `edit` modifies it after a read, through the fallback built on the shared `Seen`:
+    // read-before-edit tracking holds for the external target exactly as in-root.
+    let read = call(&tools, "read", json!({"path": target.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert!(text(&read).contains("hi"));
+    call(
+        &tools,
+        "edit",
+        json!({"path": target.to_str().unwrap(), "edits": [{"old_text": "hi", "new_text": "bye"}]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "bye");
+
+    // `notebook_edit` reaches an external notebook.
+    let nb = tree.base.join("nb.ipynb");
+    call(
+        &tools,
+        "write",
+        json!({"path": nb.to_str().unwrap(), "content": min_notebook()}),
+    )
+    .await
+    .unwrap();
+    call(
+        &tools,
+        "notebook_edit",
+        json!({"path": nb.to_str().unwrap(), "cell_id": "c1", "new_source": "2 + 2"}),
+    )
+    .await
+    .unwrap();
+    let read = call(&tools, "read", json!({"path": nb.to_str().unwrap()}))
+        .await
+        .unwrap();
+    assert!(text(&read).contains("2 + 2"), "{}", text(&read));
+
+    // The gate saw the model's spelling; the tool ran on the resolved target.
+    let seen = gate.seen.lock().unwrap();
+    assert!(seen.iter().any(|(tool, args)| {
+        tool == "write"
+            && args["path"].as_str().is_some_and(|p| {
+                p.contains("written.txt") && !std::path::Path::new(p).is_absolute()
+            })
+    }));
+}
+
+/// A symlink retargeted after the gate allowed the write cannot redirect the call: the
+/// write fallback consumes the resolved arguments without a second resolution.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_allowed_external_write_is_not_redirected_by_a_late_retarget() {
+    let d = Dirs::new();
+    let root = d.dir("work");
+    let s = scope(&root, &[]);
+    let outside = d.dir("outside");
+    let swapped = d.dir("swapped");
+    std::fs::write(outside.join("x.txt"), "ORIGINAL").unwrap();
+    std::fs::write(swapped.join("x.txt"), "SWAPPED").unwrap();
+    link(&outside, &root.join("linked"));
+
+    // The gate resolves, then retargets, then allows: what the pipeline guarantees by
+    // normalizing before the decision.
+    struct ResolveThenRetarget {
+        scope: Arc<Scope>,
+        link: std::path::PathBuf,
+        new_target: std::path::PathBuf,
     }
-    assert!(!target.exists());
+    impl fontaine_tools::gate::ToolGate for ResolveThenRetarget {
+        fn check<'a>(
+            &'a self,
+            call: fontaine_tools::gate::CallView<'a>,
+        ) -> futures::future::BoxFuture<'a, fontaine_tools::gate::GateDecision> {
+            Box::pin(async move {
+                let allowed = self
+                    .scope
+                    .external_write(call.tool, call.args)
+                    .expect("a resolvable external write");
+                std::fs::remove_file(&self.link).unwrap();
+                std::os::unix::fs::symlink(&self.new_target, &self.link).unwrap();
+                fontaine_tools::gate::GateDecision::Allow { args: allowed }
+            })
+        }
+    }
+    let gate = Arc::new(ResolveThenRetarget {
+        scope: s.clone(),
+        link: root.join("linked"),
+        new_target: swapped.clone(),
+    });
+    let tools = registry(&env_with(s, gate));
+    call(
+        &tools,
+        "write",
+        json!({"path": "linked/x.txt", "content": "WRITTEN"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(outside.join("x.txt")).unwrap(),
+        "WRITTEN"
+    );
+    assert_eq!(
+        std::fs::read_to_string(swapped.join("x.txt")).unwrap(),
+        "SWAPPED"
+    );
 }
 
 fn text_err(
@@ -833,6 +1083,42 @@ mod windows {
             assert!(
                 matches!(
                     s.external_read("read", &json!({ "path": path })),
+                    Err(ScopeError::Unreadable(_))
+                ),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn external_writes_translate_msys_paths_and_reject_untranslatable_ones() {
+        let d = Dirs::new();
+        let root = d.dir("work");
+        let other = d.dir("other");
+        std::fs::write(other.join("a.txt"), "a").unwrap();
+        let s = scope(&root, &[]);
+        let other_plain = plain(&other);
+        let (drive, rest) = other_plain.split_once(':').unwrap();
+        let msys = format!(
+            "/{}{}/a.txt",
+            drive.to_ascii_lowercase(),
+            rest.replace('\\', "/")
+        );
+        // An MSYS spelling of an external path normalizes to the Windows absolute form.
+        let normalized = s
+            .external_write("write", &json!({"path": msys, "content": "x"}))
+            .unwrap();
+        assert!(
+            normalized["path"].as_str().unwrap().contains(':'),
+            "{normalized}"
+        );
+        assert_eq!(normalized["content"], json!("x"));
+        // Untranslatable paths are an argument error, never a resolvable raw string for
+        // another interpreter to read.
+        for path in ["/etc/passwd", "/usr/bin/sh"] {
+            assert!(
+                matches!(
+                    s.external_write("write", &json!({"path": path, "content": "x"})),
                     Err(ScopeError::Unreadable(_))
                 ),
                 "{path}"

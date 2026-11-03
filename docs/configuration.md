@@ -663,8 +663,12 @@ additional_directories = ["/home/me/shared-libs"]
 
 The workspace is an ordered set of roots: the primary root, then every `--add-dir <path>` and every
 `additional_directories` entry. File tools *write* a path that lies inside any root, and `shell`
-working directories stay inside them; the four read-only file tools (`read`, `ls`, `glob`, `grep`)
-may also inspect paths outside the roots, each through the normal permission decision (see
+working directories stay inside them; every file tool — the four read-only ones (`read`, `ls`,
+`glob`, `grep`) and the write tools (`write`, `edit`, `notebook_edit`) — may also name a path
+outside the roots, each call adjudicated through the normal permission decision: it asks in the
+asking modes, is judged by the guardian in `auto` (an un-asked external write is denied; see
+[Guardian](guardian.md#writing-outside-the-workspace)) and is denied in `dontAsk` and headless
+runs unless an allow rule or hook already covers it (see
 [Permissions](permissions.md#the-pipeline)). A relative entry
 is resolved against the project directory (the launch directory, or `--cd`). An entry that does not exist, is not a directory or
 cannot be resolved is left out, with a warning naming the path and whether it came from

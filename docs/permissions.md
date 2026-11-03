@@ -82,28 +82,35 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    `shell`, a write tool, a network tool or an MCP tool do not qualify. A `deny` or `ask` rule on
    `agent` and a hook still act first, and each call the child makes goes through the whole
    pipeline. A spawn of any other type is handled at step 7.
-   A file-tool *write* (`write`, `edit`, `notebook_edit`) that names a path outside every root
-   is denied, with a hint naming the session's scratch directory and `/add-dir`: the write tools
-   are confined to the roots, so an approval could never make the call run. The scratch
+   The scratch
    directory is an ordinary root (see [Tools](tools.md#the-scratch-directory)): this step and the
    floor treat a path in it like one in the workspace, and `shell` treats it like any root:
    read-only commands whose operands are inside it take the pre-classifier fast path, and other
-   commands go through the guardian as usual. Claude Code prompts for a write outside the workspace; Fontaine denies
-   it and offers the scratch directory instead.
+   commands go through the guardian as usual.
 
    An out-of-root **read** by `read`, `ls`, `glob` or `grep` is not denied here: it falls through
-   to the same steps as any other call nobody pre-approved. After the hooks, the target is
-   resolved once — symlinks followed — and that resolved absolute path is what the approval
-   prompt, the guardian and the execution all use, so retargeting a symlink mid-decision cannot
-   redirect an approved call, and deny and ask rules still match the path as written. In
-   `manual` and `acceptEdits` it asks; in `auto` and `plan` the guardian decides; in `dontAsk`
-   and in headless runs it is denied. An allow rule or a hook written for the resolved path runs
+   to the same steps as any other call nobody pre-approved. An out-of-root **write** by
+   `write`, `edit` or `notebook_edit` falls through the same way — adjudicated, not
+   automatically allowed. After the hooks, the target is resolved once — symlinks followed —
+   and that resolved absolute path is what the approval prompt, the guardian and the execution
+   all use, so retargeting a symlink mid-decision cannot redirect an approved call, and deny
+   and ask rules still match the path as written. In `manual` and `acceptEdits` an external
+   write asks (that approval is itself the establishment that you asked for it, and the prompt
+   shows the resolved target's diff); in `plan` it is plan-blocked like every edit; in `auto`
+   the guardian decides, allowing it only when your own typed messages asked for that write;
+   in `dontAsk` and in headless runs it is denied unless an allow rule or hook already covers
+   it. An allow rule or a hook written for the resolved path runs
    it at the `allow_rule` or `hook` tier; it is never audited as `read_only_fast_path` or
-   `tier05`. Malformed arguments (a missing or non-string path) are an immediate argument
-   error after the floor: never a prompt, never the guardian. Execution uses one unconfined,
-   read-only fallback instance per tool, reached only after the gate allows the call; writes
-   and `shell` have no such route (see [Tools](tools.md#workspace-roots)). An external path does
-   not become a root: it grants no write reach, no fast path and no instruction-file discovery.
+   `tier05`, and in `auto` it never takes the `tracked_edit` or `scratch_write` fast paths:
+   the fast paths require a path the scope can place. Malformed arguments (a missing or
+   non-string path) are an immediate argument
+   error after the floor: never a prompt, never the guardian. Execution uses one unconfined
+   fallback instance per tool, reached only after the gate allows the call — read-only for the
+   four read tools, a write fallback for the three write tools; `shell` has no such route (see
+   [Tools](tools.md#workspace-roots)). A protected path outside the roots (a shell rc file,
+   `~/.ssh/authorized_keys`) is handled by the floor like an in-root one: it asks in the asking
+   modes and reaches the guardian in `auto`. An external path does
+   not become a root: it grants no write reach of its own, no fast path and no instruction-file discovery.
 4. **Shell pre-classifier**, below.
 5. **Allow rules**, below.
 6. **Edits that skip the guardian (`auto` only).** After the floor and the hooks, a `write`,

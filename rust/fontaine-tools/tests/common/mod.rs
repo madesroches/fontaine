@@ -34,8 +34,8 @@ impl ToolGate for AllowAll {
     }
 }
 
-/// A gate that adjudicates out-of-root reads the way the permission pipeline does: the
-/// target is resolved once and the allow carries the normalized arguments. Everything
+/// A gate that adjudicates out-of-root file calls the way the permission pipeline does:
+/// the target is resolved once and the allow carries the normalized arguments. Everything
 /// else is denied, so no fallback capability is reachable without an allow.
 pub struct Adjudicated {
     pub scope: Arc<Scope>,
@@ -52,8 +52,19 @@ impl ToolGate for Adjudicated {
             let allowed = match self.scope.locate(call.tool, call.args) {
                 Ok(_) => Some(call.args.clone()),
                 Err(fontaine_tools::scope::ScopeError::OutOfScope(_)) => {
+                    // The read-only normalizer cannot serve a write; the write-capable
+                    // one cannot serve a read, so the two fallback registrations stay
+                    // disjoint.
                     fontaine_tools::scope::Scope::external_read(&self.scope, call.tool, call.args)
                         .ok()
+                        .or_else(|| {
+                            fontaine_tools::scope::Scope::external_write(
+                                &self.scope,
+                                call.tool,
+                                call.args,
+                            )
+                            .ok()
+                        })
                 }
                 Err(_) => None,
             };

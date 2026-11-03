@@ -163,6 +163,128 @@ async fn an_external_read_reaches_the_guardian_and_runs_with_the_resolved_target
 }
 
 #[tokio::test]
+async fn an_external_write_reaches_the_guardian_and_runs_with_the_resolved_target() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "");
+    let outside = rig.world.root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+
+    // A workspace symlink lets the model name the file with an alias.
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&outside, rig.work().join("linked")).unwrap();
+    #[cfg(unix)]
+    let written = write_args("linked/new.txt");
+    #[cfg(not(unix))]
+    let written = write_args(&outside.join("new.txt").to_str().unwrap().to_string());
+
+    match rig.check("write", written.clone()).await {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert_eq!(
+                args,
+                write_args(outside.join("new.txt").to_str().unwrap()),
+                "the guardian's allow carries the resolved target"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(fake.calls(), 1);
+    let record = last(&rig);
+    assert_eq!(
+        (record.decision, record.tier),
+        (Decision::Allow, Tier::Guardian)
+    );
+    assert!(
+        !rig.audit().iter().any(|r| [
+            Tier::TrackedEdit,
+            Tier::ScratchWrite,
+            Tier::ReadOnlyFastPath,
+            Tier::Tier05,
+        ]
+        .contains(&r.tier)),
+        "an external write is never a fast path"
+    );
+
+    // The guardian's request names the resolved external target as a touched path.
+    let sent: String = fake
+        .mock
+        .requests()
+        .iter()
+        .map(|r| format!("{r:?}"))
+        .collect();
+    // `sent` is Debug output, which escapes a Windows path's backslashes.
+    let target = format!("{:?}", outside.join("new.txt").display().to_string());
+    assert!(sent.contains(&target[1..target.len() - 1]), "{sent}");
+
+    // dontAsk denies the same call: no guardian, no pre-approval.
+    let strict = Rig::with(Options::new(DontAsk).guardian(fake.guardian.clone()));
+    let absolute = write_args(outside.join("new.txt").to_str().unwrap());
+    let d = strict.check("write", absolute).await;
+    assert!(!allowed(&d));
+    assert_eq!(last(&strict).tier, Tier::DontAsk);
+    assert!(!outside.join("new.txt").exists());
+}
+
+#[tokio::test]
+async fn an_external_write_denied_by_the_guardian_never_runs() {
+    let fake = fake_guardian(deny_verdict());
+    let rig = auto_rig(&fake, "");
+    let outside = rig.world.root.join("outside.txt");
+    let d = rig
+        .check("write", write_args(outside.to_str().unwrap()))
+        .await;
+    let message = denied_message(&d);
+    assert!(
+        message.starts_with("Denied by guardian: [Download+Execute] "),
+        "{message}"
+    );
+    assert!(!outside.exists());
+    let record = last(&rig);
+    assert_eq!(
+        (record.decision, record.tier),
+        (Decision::Deny, Tier::Guardian)
+    );
+}
+
+#[tokio::test]
+async fn an_external_write_allowed_by_a_rule_skips_the_guardian() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "[permissions]\nallow = [\"write(//*)\"]\n");
+    let outside = rig.world.root.join("outside.txt");
+    let d = rig
+        .check("write", write_args(outside.to_str().unwrap()))
+        .await;
+    assert!(allowed(&d));
+    assert_eq!(last(&rig).tier, Tier::AllowRule);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
+async fn a_human_retry_of_an_external_write_matches_the_resolved_digest() {
+    let fake = fake_guardian(deny_verdict());
+    let rig = auto_rig(&fake, "");
+    let args = write_args("../outside.txt");
+    assert!(!allowed(&rig.check("write", args.clone()).await));
+    assert_eq!(rig.state.denied_calls().len(), 1);
+
+    // The retry grant is keyed by the resolved digest; the identical written call
+    // normalizes identically and matches it, and the allow carries the resolved target.
+    rig.state.approve_retry(0).unwrap();
+    match rig.check("write", args.clone()).await {
+        fontaine_tools::gate::GateDecision::Allow { args } => {
+            assert!(
+                args["path"].as_str().unwrap().ends_with("outside.txt")
+                    && std::path::Path::new(args["path"].as_str().unwrap()).is_absolute()
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        (last(&rig).decision, last(&rig).tier),
+        (Decision::Allow, Tier::Human)
+    );
+}
+
+#[tokio::test]
 async fn an_external_read_allowed_by_a_rule_skips_the_guardian() {
     let fake = fake_guardian(allow_verdict());
     let rig = auto_rig(&fake, "[permissions]\nallow = [\"read(//*)\"]\n");
@@ -294,15 +416,49 @@ async fn protected_paths_go_to_the_guardian_in_auto_and_prompt_elsewhere() {
 }
 
 #[tokio::test]
-async fn a_protected_path_outside_the_roots_keeps_its_prompt_in_auto() {
+async fn a_protected_path_outside_the_roots_is_guardian_judged_in_auto() {
     let fake = fake_guardian(allow_verdict());
     let home = tempfile::tempdir().unwrap();
     let home = std::fs::canonicalize(home.path()).unwrap();
     let mut options = Options::new(Auto).guardian(fake.guardian.clone());
     options.home = Some(home.clone());
     let rig = Rig::with(options);
-    // `~/.bashrc` is protected and outside every workspace root. The guardian takes the place of
-    // the prompt only where the file tools could act on its answer.
+    // `~/.bashrc` is protected and outside every workspace root: exactly like an in-root
+    // protected write, the floor leaves it to the guardian in `auto`.
+    let d = rig
+        .check(
+            "write",
+            write_args(&home.join(".bashrc").display().to_string()),
+        )
+        .await;
+    assert!(allowed(&d));
+    assert_eq!(fake.calls(), 1);
+    assert_eq!(last(&rig).tier, Tier::Guardian);
+    assert_eq!(rig.approver.asked(), 0);
+
+    // The asking modes keep the protected-path forced prompt.
+    manual_home_prompt(&home).await;
+
+    // dontAsk denies it.
+    let mut options = Options::new(DontAsk).guardian(fake.guardian.clone());
+    options.home = Some(home.clone());
+    let dont_ask = Rig::with(options);
+    let d = dont_ask
+        .check(
+            "write",
+            write_args(&home.join(".bashrc").display().to_string()),
+        )
+        .await;
+    assert!(!allowed(&d));
+    assert_eq!(last(&dont_ask).tier, Tier::ProtectedPath);
+}
+
+async fn manual_home_prompt(home: &std::path::Path) {
+    let fake = fake_guardian(allow_verdict());
+    let mut options = Options::new(Manual).guardian(fake.guardian.clone());
+    options.home = Some(home.to_path_buf());
+    let rig = Rig::with(options);
+    rig.approver.answer(Answer::Deny { feedback: None });
     let d = rig
         .check(
             "write",
