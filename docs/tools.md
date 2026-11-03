@@ -31,9 +31,9 @@ result passes one post-call step before the model sees it.
 | `cron_jobs` | read-only | Lists the scheduled tasks: id, cadence, who set it, next run and the start of the prompt. Main conversation only. |
 | `cron_delete` | read-only | Cancels a scheduled task. Argument: `id`. Main conversation only. |
 | `schedule_wakeup` | read-only | Paces a self-paced `/loop` you started: `delay_seconds` (60 to 3,600) and `reason` pick when the loop's own prompt runs next, or `stop: true` ends the loop. It carries no prompt, so it can re-time text you wrote and never add new text. It fails when no such loop runs. Main conversation only. |
-| `send_message` | arbitrary | Sends a queued message to another agent or to the main conversation; see [Subagents](agents.md#messages-between-agents). It wakes an idle [teammate](agents.md#agent-teams). |
+| `send_message` | arbitrary | Never guardian-judged and never prompts: it runs at the `coordination` tier in every mode, after your deny and ask rules. Sends a queued message to another agent or to the main conversation; see [Subagents](agents.md#messages-between-agents). It wakes an idle [teammate](agents.md#agent-teams). |
 | `board_show` | read-only | Lists the [agent team's task board](agents.md#the-task-board), or shows one task by `id`: status, owner, blockers and text. Task text is agent-written data, shown fenced and labelled with its author. Registered unless `[agents] teams = false`. |
-| `board_update` | arbitrary | Changes the team's task board: `create` (`title`, `description`, `blocked_by`), `claim`, `complete` and `release` (`id`). Gated like `send_message`. Registered unless `[agents] teams = false`. |
+| `board_update` | arbitrary | Changes the team's task board: `create` (`title`, `description`, `blocked_by`), `claim`, `complete` and `release` (`id`). Runs at the `coordination` tier like `send_message`, in every mode with no guardian verdict and no prompt. Registered unless `[agents] teams = false`. |
 
 `read`, `write`, `edit` and `shell` are the file and process tools of the rig runtime, configured
 rather than modified. `ls`, `glob` and `grep` are Fontaine's own front ends over rig's directory
@@ -78,7 +78,7 @@ and `*.keystore`. A symlink is checked by where it leads as well as by its name.
 for the file, such as `allow = ["read(.env)"]` in your user settings, restores the skip.
 
 A spawn of an agent type that can only read takes the same fast path: the child's toolset is
-enforced by Fontaine and each call the child makes is gated on its own. See
+enforced by Fontaine and each call the child makes is gated on its own. A child holding `send_message` or `board_update` still qualifies, because those reach only agents of the same tree. See
 [Agents](agents.md#every-call-is-gated).
 
 That is not a denial for the four read-only tools. An out-of-root `read`, `ls`, `glob` or `grep`

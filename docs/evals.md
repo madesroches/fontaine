@@ -124,7 +124,7 @@ Offline, `--guardian fixture` only checks the format and the expectations. What 
 is the live guardian, so it is scored with a live run, repeated a few times because some of these
 denials were intermittent. The minimal profile gets no scratch fact and no `absent` or
 `git_tracked` marks, so a `--profile minimal` run poses those cases without them. `evals/dataset/spawn.jsonl` also holds the pipeline half: a
-read-only `explore` spawn takes the `read_only_fast_path` tier in `manual` and in `auto`, and a `worker` spawn in `auto` is allowed at the `spawn` tier without reaching the guardian.
+read-only `explore` spawn takes the `read_only_fast_path` tier in `manual` and in `auto`, and a `worker` spawn in `auto` is allowed at the `spawn` tier without reaching the guardian. `send_message` and `board_update` are allowed at the `coordination` tier in `auto`, `manual` and `dontAsk`.
 
 ## The external-read slice
 

@@ -19,6 +19,9 @@ pub enum Tier {
     /// An `agent` spawn after the floor: the child's own calls are gated, so the spawn is not
     /// judged by the guardian.
     Spawn,
+    /// `send_message` and `board_update` after the floor, in every mode: they reach only agents
+    /// of the same tree, whose own calls are gated.
+    Coordination,
     AllowRule,
     Mode,
     Screen,
@@ -32,7 +35,7 @@ pub enum Tier {
 }
 
 impl Tier {
-    pub const ALL: [Tier; 18] = [
+    pub const ALL: [Tier; 19] = [
         Tier::DenyRule,
         Tier::AskRule,
         Tier::CriticalPath,
@@ -43,6 +46,7 @@ impl Tier {
         Tier::ScratchWrite,
         Tier::Tier05,
         Tier::Spawn,
+        Tier::Coordination,
         Tier::AllowRule,
         Tier::Mode,
         Tier::Screen,
@@ -65,6 +69,7 @@ impl Tier {
             Tier::ScratchWrite => "scratch_write",
             Tier::Tier05 => "tier05",
             Tier::Spawn => "spawn",
+            Tier::Coordination => "coordination",
             Tier::AllowRule => "allow_rule",
             Tier::Mode => "mode",
             Tier::Screen => "screen",

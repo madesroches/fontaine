@@ -34,6 +34,7 @@
         "scratch_write",
         "tier05",
         "spawn",
+        "coordination",
         "allow_rule",
         "mode",
         "screen",

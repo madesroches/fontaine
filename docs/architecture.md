@@ -147,6 +147,7 @@ decision before anything else sees it:
     tracked edit (file tool on a tracked, new or session-created file in the primary root) -> allow
  6b. any other `agent` spawn (never guardian-judged): auto / plan allow (`spawn`), manual / acceptEdits
     ask, dontAsk denies
+ 6c. `send_message` / `board_update` (never guardian-judged): allow in every mode (`coordination`)
  7. the mode: manual / acceptEdits / plan ask, dontAsk denies, auto asks the guardian
     |
     v

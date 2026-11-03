@@ -69,8 +69,8 @@ fn status(existence: Existence) -> PreExistence {
 /// Whether the child of an `agent` call can change state, from the same toolset `AgentTool` gives
 /// it. `None` when the type is unknown: the call then fails on its own.
 ///
-/// The answer is false only when every tool is read-only and non-destructive, or is
-/// `send_message`, which reaches only agents of the same tree whose calls are all gated. A tool
+/// The answer is false only when every tool is read-only and non-destructive, or is a
+/// coordination tool, which reaches only agents of the same tree whose calls are all gated. A tool
 /// missing from the descriptor table (every MCP tool) counts as state-changing, and so does an
 /// unknown parent toolset (`parent_tools` is `None`: never set, which a type that inherits it
 /// would otherwise resolve to nothing). A toolset that is known and empty can change nothing.
@@ -84,7 +84,7 @@ pub fn spawn_changes_state(
     let name = args.get("agent_type")?.as_str()?;
     let tools = types.get(name)?.toolset(parent_tools.unwrap_or_default());
     let read_only = |tool: &String| {
-        tool == "send_message"
+        descriptor::is_coordination(tool)
             || descriptor::find(tool).is_some_and(|d| {
                 d.risk == RiskClass::ReadOnly && d.destructive == Destructive::Never
             })
@@ -558,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn a_toolset_with_board_show_is_read_only_and_one_with_board_update_is_not() {
+    fn a_toolset_with_only_read_only_and_coordination_tools_is_read_only() {
         let mut types = AgentTypes::builtin();
         types.enable_teams();
         let all: Vec<&str> = fontaine_tools::descriptor::names().collect();
@@ -573,6 +573,10 @@ mod tests {
         );
         assert_eq!(
             spawn(&types, &["read", "board_update"], "worker"),
+            Some(false)
+        );
+        assert_eq!(
+            spawn(&types, &["read", "shell", "board_update"], "worker"),
             Some(true)
         );
         assert_eq!(

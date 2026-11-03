@@ -1,7 +1,7 @@
 //! The tools that make agents a model can use: `agent` starts a subagent and `send_message`
 //! talks to one, and with teams on `board_show` and `board_update` work the shared task board.
-//! The first two and `board_update` are ordinary `Arbitrary` tools behind the permission
-//! pipeline; the checks here only decide whether a request can be served at all.
+//! `send_message` and `board_update` skip the guardian at the `coordination` tier and `agent`
+//! at the `spawn` tier; the checks here only decide whether a request can be served at all.
 
 use std::sync::Arc;
 

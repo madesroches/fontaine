@@ -1162,26 +1162,52 @@ fn board_create() -> Value {
     json!({"action": "create", "title": "write the parser"})
 }
 
+fn coordination_calls() -> [(&'static str, Value); 2] {
+    [
+        ("send_message", json!({"to": "worker", "message": "hello"})),
+        ("board_update", board_create()),
+    ]
+}
+
 #[tokio::test]
-async fn board_update_asks_in_manual_and_accept_edits_like_send_message() {
-    for mode in [Manual, AcceptEdits] {
-        let fake = fake_guardian(allow_verdict());
-        let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
-        rig.approver.answer(Answer::AllowOnce);
-        assert!(allowed(&rig.check("board_update", board_create()).await));
-        assert_eq!(rig.approver.asked(), 1, "{mode:?}");
-        assert_eq!(fake.calls(), 0);
+async fn coordination_tools_run_in_every_mode_with_no_verdict_and_no_prompt() {
+    for mode in [Manual, AcceptEdits, Plan, DontAsk, Auto] {
+        for (tool, args) in coordination_calls() {
+            let fake = fake_guardian(allow_verdict());
+            let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
+            assert!(allowed(&rig.check(tool, args).await), "{tool} {mode:?}");
+            assert_eq!(last(&rig).tier, Tier::Coordination, "{tool} {mode:?}");
+            assert_eq!(fake.calls(), 0, "{tool} {mode:?}");
+            assert_eq!(rig.approver.asked(), 0, "{tool} {mode:?}");
+        }
     }
 }
 
 #[tokio::test]
-async fn board_update_is_guardian_judged_in_auto_and_plan_with_no_fast_path() {
-    for mode in [Auto, Plan] {
-        let fake = fake_guardian(allow_verdict());
-        let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
-        assert!(allowed(&rig.check("board_update", board_create()).await));
-        assert_eq!(fake.calls(), 1, "{mode:?}");
-        assert_eq!(last(&rig).tier, Tier::Guardian);
+async fn a_deny_or_ask_rule_on_a_coordination_tool_still_wins() {
+    for (tool, args) in coordination_calls() {
+        for mode in [Manual, Auto] {
+            let fake = fake_guardian(allow_verdict());
+            let rig = Rig::with(
+                Options::new(mode)
+                    .guardian(fake.guardian.clone())
+                    .settings(&format!("[permissions]\ndeny = [\"{tool}\"]\n")),
+            );
+            assert!(!allowed(&rig.check(tool, args.clone()).await), "{tool}");
+            assert_eq!(fake.calls(), 0);
+            assert_ne!(last(&rig).tier, Tier::Coordination, "{tool}");
+
+            let fake = fake_guardian(allow_verdict());
+            let rig = Rig::with(
+                Options::new(mode)
+                    .guardian(fake.guardian.clone())
+                    .settings(&format!("[permissions]\nask = [\"{tool}\"]\n")),
+            );
+            rig.approver.answer(Answer::AllowOnce);
+            assert!(allowed(&rig.check(tool, args.clone()).await), "{tool}");
+            assert_eq!(rig.approver.asked(), 1, "{tool} {mode:?}");
+            assert_ne!(last(&rig).tier, Tier::Coordination, "{tool}");
+        }
     }
 }
 
