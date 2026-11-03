@@ -140,6 +140,21 @@ pub enum Command {
     Plugin(PluginArgs),
     /// List the models each configured account offers
     Models(ModelsArgs),
+    /// Check the setup: config layers, trust, models, MCP servers and memory
+    Doctor(DoctorArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct DoctorArgs {
+    #[command(flatten)]
+    pub format: FormatArgs,
+    /// Start each MCP server the session would start and count its tools; `--connect=no`
+    /// skips the probe
+    #[arg(long, value_enum, default_value_t = Toggle::Yes, value_name = "yes|no")]
+    pub connect: Toggle,
+    /// Also list the settings no layer set
+    #[arg(long)]
+    pub all: bool,
 }
 
 #[derive(Args, Debug, Clone)]

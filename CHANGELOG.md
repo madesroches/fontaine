@@ -8,6 +8,17 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+#### CLI
+
+- `fontaine doctor [--format text|json] [--connect yes|no] [--all]`: a read-only check of the
+  settings layers (each one's load state, including a project key the scope policy refused, without
+  stopping at the first failure), the effective value of each set key and the layer that won,
+  workspace trust, guardian and model availability, MCP server state (started and counted unless
+  `--connect=no`, and never for a repository server a session would not start), instruction files,
+  hooks and skills, and whether the auto-memory index agrees with the files in the store. It exits
+  1 when a check fails. `fontaine -p doctor` now runs the subcommand (a prompt exactly equal to a
+  subcommand name does); `fontaine -p -- doctor` sends "doctor" as a literal prompt (#57).
+
 #### TUI
 
 - Custom status line (`[statusline]` in the user settings file): a shell command that receives

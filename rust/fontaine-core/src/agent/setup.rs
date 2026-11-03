@@ -17,7 +17,6 @@ use fontaine_tools::jobs::{JobNote, JobSink};
 use fontaine_tools::kills::KillSwitches;
 use fontaine_tools::lsp::DiagnosticsStage;
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
-use fontaine_tools::scope::Scope;
 use fontaine_tools::shell_cwd::ShellCwd;
 use rig_agent::tool::server::{ToolServer, ToolServerHandle};
 
@@ -355,18 +354,15 @@ pub(super) fn session_state(
     tree: &Arc<AgentTree>,
     agent_types: &Arc<AgentTypes>,
 ) -> Arc<SessionState> {
-    let scope = Arc::new(Scope::new(
-        setup.roots[0].clone(),
-        setup.roots[1..].iter().cloned(),
-    ));
     let permissions = &setup.config.permissions;
     let (environment, rules) = setup.config.effective_auto_mode();
-    let sources = Sources::new(
+    let sources = Sources::for_launch(
         setup.config_dir.clone(),
         setup.home.clone(),
-        scope.clone(),
+        &setup.roots,
         permissions.deny.iter().map(|r| r.rule.clone()).collect(),
     );
+    let scope = sources.scope.clone();
     let launch = instructions::load(&sources);
     let telemetry = &setup.config.telemetry;
     Arc::new(SessionState::new(StateParams {

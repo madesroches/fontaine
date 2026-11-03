@@ -5,7 +5,8 @@ use std::path::Path;
 
 use common::{World, write};
 use fontaine_core::config::{
-    AccountKind, Column, ConfigError, GuardianProfile, PermissionMode, ThemeName, parse_settings,
+    self, AccountKind, Column, ConfigError, GuardianProfile, PermissionMode, ThemeName,
+    parse_settings,
 };
 use fontaine_core::permission_rules::SourcedRule;
 
@@ -2275,4 +2276,110 @@ fn team_hooks_union_across_scopes_and_a_project_one_may_be_declared() {
     assert_eq!(c.hooks.task_completed.len(), 2);
     assert_eq!(c.hooks.teammate_idle.len(), 1);
     assert!(c.hooks.teammate_idle[0].origin.is_project());
+}
+
+// --- diagnose ---
+
+fn diagnose(w: &World, settings: Option<&Path>) -> Vec<config::LayerDiagnosis> {
+    config::diagnose(&config::LoadParams {
+        launch_dir: &w.work,
+        config_dir: &w.config,
+        data_dir: &w.data,
+        settings_file: settings,
+        cli_rules: Default::default(),
+        env: &common::no_env,
+    })
+}
+
+fn failure(layer: &config::LayerDiagnosis) -> &ConfigError {
+    match &layer.outcome {
+        config::LayerOutcome::Failed(e) => e,
+        other => panic!("{} should have failed: {other:?}", layer.slot.label()),
+    }
+}
+
+#[test]
+fn diagnose_reports_every_failing_layer_with_its_own_first_error() {
+    let w = World::new();
+    w.user_file("bogus = 1\n");
+    w.project_file("[permissions]\ndefault_mode = \"auto\"\n");
+    let layers = diagnose(&w, None);
+    let labels: Vec<_> = layers.iter().map(|l| l.slot.label()).collect();
+    assert_eq!(labels, ["user", "project", "project-local"]);
+    assert!(matches!(failure(&layers[0]), ConfigError::Parse { .. }));
+    match failure(&layers[1]) {
+        ConfigError::Scope { key, reason, .. } => {
+            assert_eq!(key, "permissions.default_mode");
+            assert!(!reason.is_empty());
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(layers[2].outcome, config::LayerOutcome::Absent));
+}
+
+#[test]
+fn diagnose_still_shows_a_good_file_after_a_bad_one() {
+    let w = World::new();
+    w.user_file("bogus = 1\n");
+    w.local_file("[permissions]\ndeny = [\"shell(rm)\"]\n");
+    let cli = w.cli_file("[agents]\nmax_parallel = 3\n");
+    let layers = diagnose(&w, Some(&cli));
+    assert!(matches!(failure(&layers[0]), ConfigError::Parse { .. }));
+    assert!(matches!(layers[1].outcome, config::LayerOutcome::Absent));
+    assert!(matches!(layers[2].outcome, config::LayerOutcome::Loaded));
+    assert!(matches!(layers[3].outcome, config::LayerOutcome::Loaded));
+    assert_eq!(layers[3].slot.label(), "cli");
+}
+
+#[test]
+fn diagnose_names_the_path_of_a_parse_error() {
+    let w = World::new();
+    w.project_file("this is not toml");
+    let layers = diagnose(&w, None);
+    match failure(&layers[1]) {
+        ConfigError::Parse { path, .. } => {
+            assert_eq!(path, &w.work.join(".fontaine/settings.toml"));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn diagnose_reports_a_missing_settings_file_as_a_read_error() {
+    let w = World::new();
+    let missing = w.root.join("nope.toml");
+    let layers = diagnose(&w, Some(&missing));
+    assert!(matches!(
+        failure(layers.last().unwrap()),
+        ConfigError::Read { .. }
+    ));
+}
+
+#[test]
+fn diagnose_gives_a_demoted_local_file_its_reason() {
+    let w = World::new();
+    w.local_file("[permissions]\ndefault_mode = \"auto\"\n");
+    let layers = diagnose(&w, None);
+    let local = &layers[2];
+    assert!(local.demotion.is_some());
+    assert!(matches!(
+        failure(local),
+        ConfigError::Scope {
+            column: Column::Project,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn layers_from_a_loaded_config_follow_the_diagnosis_order() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file("[agents]\nmax_parallel = 2\n");
+    let c = w.load().unwrap();
+    let layers = config::LayerDiagnosis::from_scopes(&c, &w.data);
+    let labels: Vec<_> = layers.iter().map(|l| l.slot.label()).collect();
+    assert_eq!(labels, ["managed", "user", "project", "project-local"]);
+    assert!(matches!(layers[1].outcome, config::LayerOutcome::Loaded));
+    assert!(matches!(layers[2].outcome, config::LayerOutcome::Absent));
 }

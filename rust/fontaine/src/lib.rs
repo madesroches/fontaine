@@ -1,5 +1,6 @@
 mod auto_mode;
 pub mod cli;
+mod doctor_cmd;
 pub mod headless;
 mod models_cmd;
 mod plugin;
@@ -78,6 +79,28 @@ fn usage(message: impl std::fmt::Display) -> ExitCode {
     ExitCode::from(usage_code(message))
 }
 
+fn resolve_dirs(host: &Host) -> Result<Dirs, ConfigError> {
+    dirs::resolve(
+        &*host.env,
+        host.default_config_dir.clone(),
+        host.default_data_dir.clone(),
+    )
+}
+
+fn load_params<'a>(cli: &'a Cli, host: &'a Host, dirs: &'a Dirs) -> LoadParams<'a> {
+    LoadParams {
+        launch_dir: &host.cwd,
+        config_dir: &dirs.config,
+        data_dir: &dirs.data,
+        settings_file: cli.settings.as_deref(),
+        cli_rules: CliRules {
+            allow: &cli.allowed_tools,
+            deny: &cli.disallowed_tools,
+        },
+        env: &*host.env,
+    }
+}
+
 /// Loads the settings, and the directories they come from.
 fn load_config(
     cli: &Cli,
@@ -85,27 +108,50 @@ fn load_config(
     sink: Option<&DebugSink>,
 ) -> Result<(Config, Dirs), ConfigError> {
     telemetry::with_debug_only(sink, || {
-        let dirs = dirs::resolve(
-            &*host.env,
-            host.default_config_dir.clone(),
-            host.default_data_dir.clone(),
-        )?;
-        let params = LoadParams {
-            launch_dir: &host.cwd,
-            config_dir: &dirs.config,
-            data_dir: &dirs.data,
-            settings_file: cli.settings.as_deref(),
-            cli_rules: CliRules {
-                allow: &cli.allowed_tools,
-                deny: &cli.disallowed_tools,
-            },
-            env: &*host.env,
-        };
-        let config = config::load(&params)?;
+        let dirs = resolve_dirs(host)?;
+        let config = config::load(&load_params(cli, host, &dirs))?;
         let stack: Vec<String> = config.scopes.iter().map(ToString::to_string).collect();
         tracing::debug!(scope_stack = ?stack, workspace = %config.workspace.display(), "config loaded");
         Ok::<_, ConfigError>((config, dirs))
     })
+}
+
+/// The workspace roots: the project directory and the directories added by flag and settings.
+fn resolve_roots(cli: &Cli, config: &Config, host: &Host) -> workspace::Roots {
+    let added = cli
+        .add_dir
+        .iter()
+        .map(|dir| (RootSource::Flag, dir.clone()))
+        .chain(
+            config
+                .permissions
+                .additional_directories
+                .iter()
+                .map(|dir| (RootSource::Settings, PathBuf::from(dir))),
+        );
+    workspace::resolve(&config.workspace, &host.cwd, added)
+}
+
+/// The user's home directory, canonical when it can be.
+fn home_dir(host: &Host) -> Option<PathBuf> {
+    (host.env)(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(::dirs::home_dir)
+        .map(|path| std::fs::canonicalize(&path).unwrap_or(path))
+}
+
+/// Cuts a call off after `limit`; a stalled endpoint must not hang a command that has no
+/// timeout of its own.
+async fn timeout<T, E: std::error::Error + 'static>(
+    limit: std::time::Duration,
+    fut: impl Future<Output = Result<T, E>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    match tokio::time::timeout(limit, fut).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(Box::new(e)),
+        Err(elapsed) => Err(Box::new(elapsed)),
+    }
 }
 
 /// The name `--name` asks for, validated.
@@ -266,6 +312,11 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             return ExitCode::from(EXIT_CONFIG);
         }
     };
+
+    // Doctor loads the settings itself, so that a failure to load is part of what it reports.
+    if let Some(cli::Command::Doctor(args)) = &cli.command {
+        return doctor_cmd::run(&cli, args, &host, sink.as_ref());
+    }
 
     let (mut config, dirs) = match load_config(&cli, &host, sink.as_ref()) {
         Ok(loaded) => loaded,
@@ -647,18 +698,7 @@ fn prepare_session(
     let git_bash = git_bash(host)?;
     let powershell = powershell(host);
 
-    let added = cli
-        .add_dir
-        .iter()
-        .map(|dir| (RootSource::Flag, dir.clone()))
-        .chain(
-            config
-                .permissions
-                .additional_directories
-                .iter()
-                .map(|dir| (RootSource::Settings, PathBuf::from(dir))),
-        );
-    let mut roots = workspace::resolve(&config.workspace, &host.cwd, added);
+    let mut roots = resolve_roots(cli, config, host);
     let mut warnings: Vec<Notice> = roots
         .warnings
         .iter()
@@ -777,11 +817,7 @@ fn prepare_session(
             .iter()
             .map(|warning| Notice::warning(warning.clone(), None)),
     );
-    let home = (host.env)(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(::dirs::home_dir)
-        .map(|path| std::fs::canonicalize(&path).unwrap_or(path));
+    let home = home_dir(host);
     let prep = SessionPrep {
         session,
         roots: roots.roots,
@@ -1141,5 +1177,17 @@ mod trust_tests {
         })
         .unwrap();
         assert_eq!(trust_summary(&config).hooks, 2);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_stalled_call_is_cut_off() {
+        let stalled = std::future::pending::<Result<(), std::fmt::Error>>();
+        let result = timeout(std::time::Duration::from_millis(10), stalled).await;
+        assert!(result.is_err());
     }
 }
