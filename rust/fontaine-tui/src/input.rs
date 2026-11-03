@@ -591,7 +591,7 @@ impl InputBuffer {
                 let range = match c {
                     'd' if !change => Some(self.line_delete_range()),
                     'c' if change => Some(self.line_range()),
-                    'w' => Some(self.cursor..self.vim_word_next()),
+                    'w' => Some(self.cursor..self.vim_word_next().min(self.line_end(self.cursor))),
                     'b' => Some(
                         self.word_start_before(self.cursor, char::is_alphanumeric)..self.cursor,
                     ),
@@ -1061,6 +1061,15 @@ mod tests {
         b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
         b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
         assert_eq!(b.text(), "onetwo three");
+    }
+
+    #[test]
+    fn vim_dw_on_the_last_word_of_a_line_keeps_the_newline() {
+        let mut b = vim_at("one\ntwo", 0);
+        normal(&mut b);
+        b.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE));
+        assert_eq!(b.text(), "\ntwo");
     }
 
     #[test]

@@ -158,7 +158,10 @@ pub fn parse_keystroke(text: &str) -> Result<Keystroke, KeystrokeError> {
         "pageup" => KeyCode::PageUp,
         "pagedown" => KeyCode::PageDown,
         "insert" | "ins" => KeyCode::Insert,
-        name if name.starts_with('f') => {
+        name if name.len() > 1
+            && name.starts_with('f')
+            && name[1..].bytes().all(|b| b.is_ascii_digit()) =>
+        {
             let n: u8 = name[1..]
                 .parse()
                 .map_err(|_| KeystrokeError::UnknownKey(key_name.to_string()))?;
@@ -404,6 +407,13 @@ mod tests {
             a.modifiers
                 .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
         );
+    }
+
+    #[test]
+    fn letter_f_is_a_key_not_a_function_key() {
+        let k = parse_keystroke("ctrl+f").unwrap();
+        assert_eq!(k.code, KeyCode::Char('f'));
+        assert_eq!(parse_keystroke("f5").unwrap().code, KeyCode::F(5));
     }
 
     #[test]
