@@ -237,6 +237,8 @@ load/diagnose inside `telemetry::with_debug_only(sink, ..)`.
 - 2026-11-03: the MCP probe gate follows `mcp_plan` with no prompt.
 - 2026-11-03: `config::load` stays fail-fast and fail-closed for sessions; only `diagnose` collects every layer's error.
 - 2026-11-03: finding levels: guardian `Unavailable` and unreadable/malformed `trust.toml` are `Fail`; untrusted workspace and MCP probe `failed` are `Warn`; MCP `not started` and instruction/hook/skill/count rows are `Ok`.
+- 2026-11-03: AFK: per-finding levels follow the conservative rule: only conditions that stop a session from working as configured (guardian `Unavailable`, `models::resolve` `Err`, unreadable/malformed `trust.toml`, config/plugin/memory load failures) are `Fail` and drive the non-zero exit; everything else (untrusted workspace, MCP probe `failed`, model notices) is `Warn`.
+- 2026-11-03: AFK: doctor adds no reachability probe of its own for a static-models main account or the guardian account (no extra network call); it relies on `models::resolve`.
 
 ## Documentation
 
