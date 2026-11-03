@@ -178,8 +178,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Some(row) if row.name != *id => format!("{} ({id})", row.name),
             _ => id.clone(),
         };
-        let cycle = cycle_hint(app).unwrap_or_default();
-        format!("viewing {who} · {state} · ↓ then Enter on main to go back · {cycle}")
+        let mut parts = vec![
+            format!("viewing {who}"),
+            state,
+            "↓ then Enter on main to go back".to_string(),
+        ];
+        parts.extend(cycle_hint(app));
+        parts.join(" · ")
     });
     // Only while the turn runs: some paths clear `running` without settling the turn.
     let refusal = app.refusal.as_deref().filter(|_| app.running);

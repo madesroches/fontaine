@@ -1057,12 +1057,13 @@ A keystroke is modifiers (`ctrl`, `alt` — `meta` is an alias — and `shift`) 
 included; names read case-insensitively (`Ctrl+Shift+T` and `ctrl+shift+t` are the same key).
 One keystroke per entry — chords (space-separated sequences) are not supported. Binding a
 keystroke that already triggers an action replaces that action's use of the key; several keys may
-trigger one action. Changes apply on the next launch; `/keybindings` prints the effective table
+trigger one action. A bare printable key (such as `"a"`) bound to an action can no longer be
+typed into the input. Changes apply on the next launch; `/keybindings` prints the effective table
 and the file to edit.
 
 `ctrl+c` (`interrupt`) and `ctrl+d` (`quit`) are reserved: they cannot be rebound or unbound, so
 interrupting and quitting always work. Terminal-aliased keys are worth knowing about: many
-terminals deliver Tab for Ctrl+I, Enter for Ctrl+M, Backspace for Ctrl+H and Esc for Ctrl+[`.
+terminals deliver Tab for Ctrl+I, Enter for Ctrl+M, Backspace for Ctrl+H and Esc for Ctrl+[.
 
 The actions and their default keystrokes:
 
