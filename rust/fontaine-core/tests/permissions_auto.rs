@@ -175,7 +175,7 @@ async fn an_external_write_reaches_the_guardian_and_runs_with_the_resolved_targe
     #[cfg(unix)]
     let written = write_args("linked/new.txt");
     #[cfg(not(unix))]
-    let written = write_args(&outside.join("new.txt").to_str().unwrap().to_string());
+    let written = write_args(outside.join("new.txt").to_str().unwrap());
 
     match rig.check("write", written.clone()).await {
         fontaine_tools::gate::GateDecision::Allow { args } => {
