@@ -103,7 +103,7 @@ tested with constructed values. Sections:
    no credential can appear; a test asserts an account key and env value do not.
 4. **Trust**: workspace root trusted or not (untrusted = `Warn`), `trust.toml` readable or the
    `unreadable` reason (unreadable or malformed = `Fail`),
-   project executables (hooks, MCP, skill commands) will load or not, per-server approval state.
+   project executables (hooks, MCP, skill commands) will load or not.
    Headless and interactive outcomes are stated separately: headless starts every server;
    interactive prompts for unapproved project servers.
 5. **Guardian and models**: resolved main model, guardian model as `Ready` /
@@ -138,11 +138,13 @@ tested with constructed values. Sections:
    `connected.connection.close().await` (there is no `close` on `Connected` itself) so doctor
    waits for a clean shutdown before exiting.
 7. **Instructions, hooks, skills**: instruction files loaded via the existing instructions loader
-   (path and origin, in load order), hook counts per event and scope, skills count with the
+   (path and origin, in load order), hook counts per event and scope (from `config.hooks`), skills count with the
    warnings `extensions::load` returns (plugin skip, skill-trust read, trust mismatch). An
    `ExtensionError` from `extensions::load` (`extensions.rs:499-516`; stops at the first bad file)
    becomes a `Fail` finding naming the file, with skills and agents listed as not loaded; instruction,
-   hook, skill and count rows are `Ok`;
+   hook, skill and count rows are `Ok`; project-scope hook and skill-command rows carry the
+   load state from the Trust section: headless = loaded; interactive = loaded only when the workspace
+   is trusted, else "not loaded (workspace not trusted)", as the TUI /hooks report does;
    `servers` and `contributions.dirs` from the plugin load are passed in. The
    instructions `Sources`/`Scope` (roots, home, deny rules) come from a helper extracted out of
    session setup (`lib.rs` ~638-661, 778-782; `agent/setup.rs` ~358-370).
