@@ -7,7 +7,7 @@ use fontaine_core::config::Config;
 use fontaine_core::dirs::Dirs;
 use fontaine_core::model_report::ModelReport;
 use fontaine_core::models::{
-    self, ModelRef, ResolveParams, Switcher, known_accounts, validated_models,
+    self, LISTING_TIMEOUT, ModelRef, ResolveParams, Switcher, known_accounts, validated_models,
 };
 use fontaine_tools::error_chain::chain;
 
@@ -54,13 +54,16 @@ async fn build_report(
     dirs: &Dirs,
     host: &Host,
 ) -> ModelReport {
-    let resolved = models::resolve(&ResolveParams {
-        config,
-        data_dir: &dirs.data,
-        env: &*host.env,
-        model_override: cli.model.as_deref(),
-        session_id: None,
-    })
+    let resolved = bounded(
+        LISTING_TIMEOUT,
+        models::resolve(&ResolveParams {
+            config,
+            data_dir: &dirs.data,
+            env: &*host.env,
+            model_override: cli.model.as_deref(),
+            session_id: None,
+        }),
+    )
     .await;
     let switcher = Switcher::new(config.clone(), dirs.data.clone(), shared_env(host), None);
     let only = args.account.clone().map(|name| vec![name]);
@@ -80,7 +83,7 @@ async fn build_report(
         Err(e) => {
             eprintln!(
                 "fontaine: warning: no roles are marked, the main model did not resolve: {}",
-                chain(e)
+                chain(&**e)
             );
             (switcher.listings(None, only.as_deref()).await, None, None)
         }
@@ -91,4 +94,29 @@ async fn build_report(
         guardian.as_ref(),
         &validated_models(),
     )
+}
+
+/// `resolve` lists the main account without a limit of its own, and a stalled endpoint must not
+/// hang the command.
+async fn bounded<T, E: std::error::Error + 'static>(
+    limit: std::time::Duration,
+    fut: impl Future<Output = Result<T, E>>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    match tokio::time::timeout(limit, fut).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(Box::new(e)),
+        Err(elapsed) => Err(Box::new(elapsed)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_stalled_call_is_cut_off() {
+        let stalled = std::future::pending::<Result<(), std::fmt::Error>>();
+        let result = bounded(std::time::Duration::from_millis(10), stalled).await;
+        assert!(result.is_err());
+    }
 }
