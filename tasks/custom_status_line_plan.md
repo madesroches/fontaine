@@ -172,10 +172,16 @@ rendering.
    spawn only the script execution as a `'static` task over owned data.
 5. `statusbar::render`: custom-line branch with guardian-off badge and width truncation; remove
    the running hint; keep the idle hint. Update the existing hint tests and add custom-line
-   tests.
-6. Docs: `docs/tui.md` (the feature and its JSON contract), `docs/configuration.md`
-   (`[statusline]`, user-only), `CHANGELOG.md`. Flip the parity row in
-   `research/research-claude-code-parity.md` (line 383) to shipped.
+   tests. Also update `rust/fontaine-tui/tests/goal.rs:239-240` to wait for a surviving
+   running-state signal (e.g. the `◎ goal` segment or the `Working…` spinner label) instead of
+   `esc to interrupt`.
+6. Docs: `docs/tui.md` (the feature and its JSON contract; also update the existing status-bar
+   paragraph at line 137 to describe the hint-less running state: empty hint segment, no trailing
+   separator), `docs/configuration.md` (`[statusline]`, user-only), `CHANGELOG.md`. Flip the parity
+   row in `research/research-claude-code-parity.md` (line 383) to shipped.
+7. Master plan `## Decisions` → TUI: append a dated 2026-11-03 line referencing #48 recording that
+   the running hint is removed outright, superseding the 2026-11-01 entry that kept it while the
+   spinner showed.
 
 ## Files to Modify
 
@@ -189,7 +195,11 @@ rendering.
 - `rust/fontaine-tui/src/app.rs` — status line state and verdict ring
 - `rust/fontaine-tui/src/ui/turn.rs` — feed the verdict ring from `SessionEvent::Decision`
 - `rust/fontaine-tui/src/statusbar.rs` — custom-line rendering, hint removal (with tests)
+- `rust/fontaine-tui/tests/goal.rs` — replace the `wait_for("esc to interrupt")` anchor with a
+  surviving running-state signal
 - `rust/fontaine-tui/src/ui/mod.rs` — supervisor task, select arm, tick
+- `tasks/fontaine_harness_plan.md` — append the dated TUI Decisions line superseding the
+  2026-11-01 running-hint entry
 - `docs/tui.md`, `docs/configuration.md`, `CHANGELOG.md`,
   `research/research-claude-code-parity.md`
 
