@@ -390,7 +390,7 @@ mod tests {
         }
     }
 
-    fn view(windows: Vec<QuotaWindow>, _now: SystemTime) -> AccountUsage {
+    fn view(windows: Vec<QuotaWindow>) -> AccountUsage {
         usage(UsageRole::Main, windows)
     }
 
@@ -399,7 +399,7 @@ mod tests {
         let now = SystemTime::now();
         let day = 86_400;
         let segment = |ratio, reset| {
-            quota_segment(&view(vec![window("month", ratio, reset, now)], now), now)
+            quota_segment(&view(vec![window("month", ratio, reset, now)]), now)
                 .unwrap()
                 .0
         };
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn a_reset_in_the_past_shows_no_time_left() {
         let now = SystemTime::now();
-        let mut v = view(vec![window("month", 0.2, None, now)], now);
+        let mut v = view(vec![window("month", 0.2, None, now)]);
         v.quota.as_mut().unwrap().windows[0].reset_at = Some(now - Duration::from_secs(60));
         assert_eq!(quota_segment(&v, now).unwrap().0, "kimi 20%");
     }
@@ -428,13 +428,10 @@ mod tests {
         let now = SystemTime::now();
         let shown = |ratio| {
             quota_segment(
-                &view(
-                    vec![
-                        window("month", 0.16, Some(86_400), now),
-                        window("5h", ratio, None, now),
-                    ],
-                    now,
-                ),
+                &view(vec![
+                    window("month", 0.16, Some(86_400), now),
+                    window("5h", ratio, None, now),
+                ]),
                 now,
             )
             .unwrap()
@@ -450,13 +447,10 @@ mod tests {
         let now = SystemTime::now();
         let warns = |month, hot| {
             quota_segment(
-                &view(
-                    vec![
-                        window("month", month, None, now),
-                        window("5h", hot, None, now),
-                    ],
-                    now,
-                ),
+                &view(vec![
+                    window("month", month, None, now),
+                    window("5h", hot, None, now),
+                ]),
                 now,
             )
             .unwrap()
@@ -474,17 +468,19 @@ mod tests {
         app.effort = Some(fontaine_core::effort::Effort::High);
         assert!(!bar(&app).contains("kimi"), "{}", bar(&app));
         let now = SystemTime::now();
-        app.usage = vec![view(
-            vec![window("month", 0.16, Some(29 * 86_400 + 5), now)],
+        app.usage = vec![view(vec![window(
+            "month",
+            0.16,
+            Some(29 * 86_400 + 5),
             now,
-        )];
+        )])];
         app.usage_as_of = now;
         let text = bar(&app);
         assert!(
             text.contains("· m · kimi 16% · 29d left · effort high ·"),
             "{text}"
         );
-        app.usage = vec![view(vec![], now)];
+        app.usage = vec![view(vec![])];
         assert!(!bar(&app).contains("kimi"), "{}", bar(&app));
     }
 
@@ -530,7 +526,7 @@ mod tests {
         app.effort = Some(fontaine_core::effort::Effort::High);
         let now = SystemTime::now();
         app.usage = vec![
-            view(vec![window("month", 0.16, None, now)], now),
+            view(vec![window("month", 0.16, None, now)]),
             usage(UsageRole::Guardian, vec![window("month", 0.8, None, now)]),
         ];
         let text = bar(&app);

@@ -3,10 +3,27 @@
 
 mod common;
 
+use std::path::Path;
+
 use common::{Endpoint, Sandbox, Turn, Wire};
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
+
+fn validator() -> jsonschema::Validator {
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/schemas/headless-v1.schema.json");
+    let schema: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    jsonschema::validator_for(&schema).unwrap()
+}
+
+fn assert_valid(value: &Value) {
+    let errors: Vec<String> = validator()
+        .iter_errors(value)
+        .map(|e| format!("{} at {}", e, e.instance_path()))
+        .collect();
+    assert!(errors.is_empty(), "{value}\n{}", errors.join("\n"));
+}
 
 async fn serve_usages(endpoint: &Endpoint, status: u16, month: f64) {
     Mock::given(method("GET"))
@@ -40,6 +57,7 @@ async fn result_of(s: &Sandbox) -> (Value, String) {
         .into_iter()
         .find(|l| l["type"] == "result")
         .expect("a result event");
+    assert_valid(&result);
     (result, out.stderr)
 }
 
@@ -123,4 +141,55 @@ async fn a_guardian_on_the_main_account_is_not_reported_twice() {
     let entries = result["account_usage"].as_array().expect("one entry");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["role"], "main");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_fetch_warns_once_per_account_across_turns() {
+    let agent = Endpoint::start(
+        Wire::Chat,
+        vec![Turn::text("first answer"), Turn::text("second answer")],
+    )
+    .await;
+    let judge = Endpoint::start(Wire::Chat, vec![]).await;
+    serve_usages(&agent, 500, 0.1).await;
+    let s = Sandbox::new();
+    s.user_config(&config(&agent, &judge, true, false));
+    let stdin: String = ["first question", "second question"]
+        .iter()
+        .map(|q| {
+            format!(
+                "{}\n",
+                json!({"type": "user", "message": {"role": "user", "content": q}})
+            )
+        })
+        .collect();
+    let out = s
+        .run_with_stdin(
+            &[
+                "-p",
+                "--input-format",
+                "stream-json",
+                "--output-format",
+                "stream-json",
+            ],
+            &stdin,
+        )
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let results: Vec<&Value> = lines.iter().filter(|l| l["type"] == "result").collect();
+    assert_eq!(results.len(), 2);
+    for result in results {
+        assert_valid(result);
+        assert_eq!(
+            result["account_usage"],
+            json!([{"role": "main", "account": "agent", "label": "kimi"}])
+        );
+    }
+    assert_eq!(
+        out.stderr.matches("could not read the kimi quota").count(),
+        1,
+        "{}",
+        out.stderr
+    );
 }
