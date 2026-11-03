@@ -84,7 +84,7 @@ extensions beside them:
 | `model.id`, `model.display_name` | the main model reference string for both fields; Fontaine has no separate models-table label |
 | `cwd`, `workspace.current_dir` | `App.cwd` (both set, as Claude does) |
 | `workspace.project_dir` | the session's primary workspace root |
-| `workspace.added_dirs` | non-primary workspace roots, `[]` when none |
+| `workspace.added_dirs` | user-added workspace roots: the scope roots minus the primary root, the memory root, and the per-session scratch dir; `[]` when none |
 | `session_id` | `runtime.session.id` |
 | `version` | the `fontaine` bin crate's `CARGO_PKG_VERSION` |
 | `effort.level` | `App.effort` when set; key omitted otherwise |
@@ -93,7 +93,7 @@ extensions beside them:
 | `guardian.off` | `App.guardian_off` |
 | `recent_verdicts` | last 5 gate decisions carrying a `guardian_verdict`: `{tool, decision, rule, guardian_verdict}`, oldest first |
 | `account_usage` | `App.usage` mapped through `AccountUsage::json()` (main and guardian entries) |
-| `context_window.used_percentage` | `ContextUsage::total()` as a percentage of the window, rounded; `0` before the first API response. Key omitted when the catalog has no window size for the model (`ContextUsage.window` is `None`). Only `used_percentage` — Fontaine's per-layer accounting does not split into Claude's `total_input_tokens`/`current_usage` shape |
+| `context_window.used_percentage` | `ContextUsage::total()` as a percentage of the window, rounded. Key omitted when the catalog has no window size for the model (`ContextUsage.window` is `None`). Only `used_percentage` — Fontaine's per-layer accounting does not split into Claude's `total_input_tokens`/`current_usage` shape |
 | `cost.total_cost_usd` | session total across all non-Guardian `UsageLedger` buckets (`Main`, `Subagent`, `Goal`, `Compaction`, `SideQuestion`); key omitted when none has a priced call yet |
 
 Absent data is omitted (or `null`) rather than guessed, following `AccountUsage::json()`'s rule.
