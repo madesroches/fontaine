@@ -510,6 +510,13 @@ pub const KEYS: &[KeyRow] = &[
     row!("shell_preclassifier.allow_extra", List, |c, _| entries(
         c.shell_preclassifier_allow_extra.len()
     )),
+    row!("statusline.command", Scalar, |c, _| opt(c
+        .statusline
+        .command
+        .as_deref())),
+    row!("statusline.refresh_interval_secs", Scalar, |c, _| opt(c
+        .statusline
+        .refresh_interval_secs)),
     row!("telemetry.enabled", Scalar, |c, _| c
         .telemetry
         .enabled

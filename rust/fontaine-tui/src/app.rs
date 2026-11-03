@@ -6,8 +6,10 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use fontaine_core::audit::DecisionRecord;
 use fontaine_core::config::PermissionMode;
 use fontaine_core::permissions::{Answer, ApprovalRequest, UnavailableChoice};
+use fontaine_core::statusline::{RecentVerdict, StatuslineState};
 use fontaine_core::steering::Queued;
 use fontaine_core::turn::SessionEvent;
 use fontaine_tools::ask_user::{Question, QuestionReply};
@@ -235,6 +237,10 @@ pub struct App {
     pub scheduled: usize,
     /// The active goal's age and whether it waits for the user, for the status bar.
     pub goal: Option<(std::time::Duration, bool)>,
+    /// The last good line produced by a configured `[statusline]` command, if any.
+    pub statusline: Option<StatuslineState>,
+    /// Last gate decisions carrying a guardian verdict, oldest first, capped at 5.
+    recent_verdicts: std::collections::VecDeque<RecentVerdict>,
     /// Where the main agent's next shell call starts, for the status bar. Empty until the
     /// first draw.
     pub cwd: PathBuf,
@@ -378,6 +384,8 @@ impl App {
             running_agents: 0,
             scheduled: 0,
             goal: None,
+            statusline: None,
+            recent_verdicts: std::collections::VecDeque::new(),
             cwd: PathBuf::new(),
             branch: None,
             home: None,
@@ -639,6 +647,22 @@ impl App {
 
     pub fn on_event(&mut self, event: SessionEvent) {
         self.transcript.on_event(event);
+    }
+
+    /// Records a decision that carried a guardian verdict for the custom status line payload.
+    pub fn push_verdict(&mut self, record: &DecisionRecord) {
+        if record.guardian_verdict.is_none() {
+            return;
+        }
+        if self.recent_verdicts.len() >= 5 {
+            self.recent_verdicts.pop_front();
+        }
+        self.recent_verdicts.push_back(RecentVerdict::from(record));
+    }
+
+    /// The recent verdicts, oldest first, for the status-line payload.
+    pub fn recent_verdicts(&self) -> Vec<RecentVerdict> {
+        self.recent_verdicts.iter().cloned().collect()
     }
 
     /// Shows the approval, or queues it behind the one the human is answering.
@@ -1607,6 +1631,78 @@ mod tests {
 
     fn app() -> App {
         App::new(PermissionMode::Manual, "m".into())
+    }
+
+    fn decision(
+        tool: &str,
+        guardian_verdict: Option<&str>,
+    ) -> fontaine_core::audit::DecisionRecord {
+        fontaine_core::audit::DecisionRecord {
+            ts: "t".into(),
+            session_id: "s".into(),
+            agent_id: "a".into(),
+            agent_name: None,
+            tool_use_id: None,
+            tool: tool.into(),
+            args_digest: "d".into(),
+            original_args_digest: None,
+            tier: fontaine_core::tier::Tier::Guardian,
+            decision: fontaine_core::audit::Decision::Allow,
+            rule: Some("rule".into()),
+            confidence: None,
+            guardian_model: None,
+            latency_ms: 0,
+            guardian_profile: None,
+            guardian_verdict: guardian_verdict.map(Into::into),
+            guardian_cache_hit: None,
+            verdict_transport: None,
+            guardian_latency_ms: None,
+            fail_closed_reason: None,
+            screen_risk: None,
+            screen_allow_risk: None,
+            screen_steering: None,
+            screen_scores: None,
+            screen_model: None,
+            screen_outcome: None,
+            screen_latency_ms: None,
+            guardian_dropped_input_tokens: None,
+            guardian_dropped_provider: None,
+            guardian_dropped_model: None,
+            guardian_dropped_priced: None,
+            permission_mode: "manual".into(),
+            headless: false,
+            explanation: None,
+        }
+    }
+
+    #[test]
+    fn a_decision_with_a_guardian_verdict_enters_the_ring() {
+        let mut app = app();
+        app.push_verdict(&decision("shell", Some("allow")));
+        let verdicts = app.recent_verdicts();
+        assert_eq!(verdicts.len(), 1);
+        assert_eq!(verdicts[0].tool, "shell");
+        assert_eq!(verdicts[0].guardian_verdict, "allow");
+    }
+
+    #[test]
+    fn a_decision_without_a_guardian_verdict_is_skipped() {
+        let mut app = app();
+        app.push_verdict(&decision("shell", None));
+        assert!(app.recent_verdicts().is_empty());
+    }
+
+    #[test]
+    fn the_verdict_ring_caps_at_five() {
+        let mut app = app();
+        for i in 0..7 {
+            app.push_verdict(&decision(&format!("tool-{i}"), Some("allow")));
+        }
+        let tools: Vec<String> = app.recent_verdicts().into_iter().map(|v| v.tool).collect();
+        assert_eq!(
+            tools,
+            vec!["tool-2", "tool-3", "tool-4", "tool-5", "tool-6"]
+        );
     }
 
     fn dialog_on_key_screen() -> ProviderDialog {

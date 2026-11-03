@@ -743,6 +743,13 @@ pub struct ShellSection {
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct StatuslineSection {
+    pub command: Option<String>,
+    pub refresh_interval_secs: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ShellPreclassifierSection {
     pub allow_extra: Option<Vec<String>>,
 }
@@ -965,6 +972,7 @@ pub struct Settings {
     pub goal: Option<GoalSection>,
     pub shell: Option<ShellSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
+    pub statusline: Option<StatuslineSection>,
     pub telemetry: Option<TelemetrySection>,
     pub websearch: Option<WebsearchSection>,
     pub env: Option<BTreeMap<String, EnvValue>>,
@@ -1429,6 +1437,20 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
                 );
             }
         }
+    }
+    if let Some(sl) = &s.statusline
+        && sl.refresh_interval_secs == Some(0)
+    {
+        return bad("statusline.refresh_interval_secs", "must be at least 1");
+    }
+    if let Some(sl) = &s.statusline
+        && sl.refresh_interval_secs.is_some()
+        && sl.command.as_deref().is_none_or(|c| c.trim().is_empty())
+    {
+        return bad(
+            "statusline.refresh_interval_secs",
+            "requires statusline.command",
+        );
     }
     if let Some(t) = &s.telemetry
         && t.endpoint.as_deref() == Some("")
@@ -1933,6 +1955,13 @@ pub struct Shell {
     pub max_timeout_secs: u64,
 }
 
+/// The merged `[statusline]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Statusline {
+    pub command: Option<String>,
+    pub refresh_interval_secs: Option<u64>,
+}
+
 /// The merged `[tui]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Tui {
@@ -1985,6 +2014,7 @@ pub struct Config {
     pub goal: Goal,
     pub shell: Shell,
     pub shell_preclassifier_allow_extra: Vec<String>,
+    pub statusline: Statusline,
     pub telemetry: Telemetry,
     pub websearch: Websearch,
     pub tui: Tui,
@@ -2110,6 +2140,10 @@ impl Config {
                 max_timeout_secs: DEFAULT_SHELL_MAX_TIMEOUT_SECS,
             },
             shell_preclassifier_allow_extra: Vec::new(),
+            statusline: Statusline {
+                command: None,
+                refresh_interval_secs: None,
+            },
             tui: Tui {
                 theme: ThemeName::default(),
                 screen_reader: None,
@@ -2390,6 +2424,14 @@ impl Config {
                 &mut self.shell_preclassifier_allow_extra,
                 sp.allow_extra.as_deref(),
             );
+        }
+        if let Some(sl) = &s.statusline {
+            if let Some(v) = &sl.command {
+                self.statusline.command = Some(v.clone());
+            }
+            if let Some(v) = sl.refresh_interval_secs {
+                self.statusline.refresh_interval_secs = Some(v);
+            }
         }
         if let Some(tel) = &s.telemetry {
             let t = &mut self.telemetry;
@@ -3246,6 +3288,20 @@ mod tests {
         // The equivalent spelling from the higher-precedence layer replaces, not coexists.
         assert_eq!(config.keybindings.len(), 1);
         assert_eq!(config.keybindings["ctrl+t"], "reprint");
+    }
+
+    #[test]
+    fn statusline_refresh_requires_a_command() {
+        let check = |text: &str| {
+            super::validate_settings(
+                text,
+                std::path::Path::new("config.toml"),
+                super::Column::User,
+            )
+        };
+        assert!(check("[statusline]\nrefresh_interval_secs = 5\n").is_err());
+        assert!(check("[statusline]\ncommand = \" \"\nrefresh_interval_secs = 5\n").is_err());
+        assert!(check("[statusline]\ncommand = \"date\"\nrefresh_interval_secs = 5\n").is_ok());
     }
 
     #[test]

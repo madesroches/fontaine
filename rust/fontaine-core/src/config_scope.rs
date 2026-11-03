@@ -128,6 +128,8 @@ const GOAL: &str =
     "goal turns run unattended, so only the user file or --settings sets how long they may run";
 const SHELL: &str =
     "how long a model's shell command may block or run is set only in the user file or --settings";
+const STATUSLINE: &str =
+    "the status line command runs arbitrary code, so only the user file may set it";
 const AUTO_EDITS: &str = "only `false` may be set here: a repository cannot widen what `auto` lets through without a guardian verdict";
 const TELEMETRY: &str = "only `enabled = false` may be set here";
 
@@ -194,6 +196,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_trust("agents", TIGHTEN),
     Rule::user_trust("context", TIGHTEN),
     Rule::user_trust("shell_preclassifier", TIGHTEN),
+    Rule::user_only("statusline", STATUSLINE),
     Rule::if_project_local("telemetry.enabled", is_false, TELEMETRY),
     Rule::user_or_cli("telemetry.backend", TELEMETRY),
     Rule::user_or_cli("telemetry.endpoint", TELEMETRY),
@@ -576,6 +579,7 @@ mod tests {
             "[shell_preclassifier]\nallow_extra = [\"tree\"]\n",
             None,
         ),
+        ("statusline", "[statusline]\ncommand = \"echo hi\"\n", None),
         (
             "telemetry.enabled",
             "[telemetry]\nenabled = false\n",

@@ -612,6 +612,11 @@ impl AgentRuntime {
         &self.setup.scrub_env
     }
 
+    /// Git Bash, used to run shell commands and hooks on Windows.
+    pub fn git_bash(&self) -> &Option<GitBash> {
+        &self.setup.git_bash
+    }
+
     /// The roots the completion and ledger file indexes scan: the workspace, not the memory
     /// store, whose files are notes rather than project files.
     fn indexed_roots(&self) -> Vec<PathBuf> {

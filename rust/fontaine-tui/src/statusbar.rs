@@ -188,17 +188,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
     });
     // Only while the turn runs: some paths clear `running` without settling the turn.
     let refusal = app.refusal.as_deref().filter(|_| app.running);
-    let hint = if let Some(text) = refusal {
-        text.to_string()
-    } else if let Some(text) = &app.attach_notice {
-        text.clone()
-    } else if let Some(text) = &viewed_state {
-        text.clone()
+    let message = refusal
+        .map(str::to_string)
+        .or_else(|| app.attach_notice.clone())
+        .or_else(|| viewed_state.clone());
+    let hint = if message.is_some() {
+        message.clone()
     } else if app.running {
-        match cycle_hint(app) {
-            Some(cycle) => format!("esc to interrupt · {cycle}"),
-            None => "esc to interrupt".to_string(),
-        }
+        None
     } else {
         let mut parts = Vec::new();
         if let Some(cycle) = cycle_hint(app) {
@@ -213,7 +210,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             parts.push(format!("{keys} agents"));
         }
         parts.push("/exit".to_string());
-        parts.join(" · ")
+        Some(parts.join(" · "))
     };
     let agents = match app.running_agents {
         0 => String::new(),
@@ -266,12 +263,56 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         };
         spans.push(Span::styled(format!(" · {text}"), style));
     }
-    spans.push(Span::styled(
-        format!("{effort}{agents}{scheduled}{goal} · {hint}"),
-        dim,
-    ));
+    // The custom line replaces the static hint but never a message the user must see.
+    if let (Some(statusline), None) = (&app.statusline, &message) {
+        spans.push(Span::styled(
+            format!("{effort}{agents}{scheduled}{goal} · "),
+            dim,
+        ));
+        let custom = truncate_row(
+            &statusline.line,
+            area.width.saturating_sub(width_used(&spans)),
+        );
+        spans.push(Span::styled(custom, dim));
+    } else {
+        let trailer = match hint {
+            Some(h) => format!("{effort}{agents}{scheduled}{goal} · {h}"),
+            None => format!("{effort}{agents}{scheduled}{goal}"),
+        };
+        spans.push(Span::styled(trailer, dim));
+    }
     let line = Line::from(spans);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// The displayed width of the spans already assembled, in columns.
+fn width_used(spans: &[Span<'_>]) -> u16 {
+    spans.iter().map(|s| s.width() as u16).sum()
+}
+
+/// Cuts `text` to fit in the remaining `width`, adding a leading ellipsis when truncated.
+fn truncate_row(text: &str, width: u16) -> String {
+    let cw = |c: char| Span::raw(c.to_string()).width();
+    let width = usize::from(width);
+    let total: usize = text.chars().map(cw).sum();
+    if total <= width {
+        return text.to_string();
+    }
+    if width <= 1 {
+        return "…".to_string();
+    }
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for c in text.chars().rev() {
+        let w = cw(c);
+        if used + w > width - 1 {
+            break;
+        }
+        used += w;
+        kept.push(c);
+    }
+    kept.reverse();
+    format!("…{}", kept.into_iter().collect::<String>())
 }
 
 #[cfg(test)]
@@ -282,8 +323,21 @@ mod tests {
     use fontaine_core::quota::{Quota, QuotaWindow};
 
     use super::*;
+
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+
+    #[test]
+    fn truncate_row_keeps_short_text_and_cuts_by_display_width() {
+        assert_eq!(truncate_row("hi", 10), "hi");
+        assert_eq!(truncate_row("hello world", 5), "…orld");
+        assert_eq!(truncate_row("x", 1), "x");
+        assert_eq!(truncate_row("xy", 1), "…");
+        assert_eq!(truncate_row("日本語日本語", 12), "日本語日本語");
+        let cut = truncate_row("日本語日本語", 6);
+        assert_eq!(cut, "…本語");
+        assert!(Span::raw(cut).width() <= 6);
+    }
 
     fn bar(app: &App) -> String {
         let mut terminal = Terminal::new(TestBackend::new(120, 1)).unwrap();
@@ -400,12 +454,13 @@ mod tests {
     }
 
     #[test]
-    fn the_running_hint_offers_interrupt_without_the_word_working() {
+    fn the_running_state_leaves_the_hint_segment_empty_and_has_no_trailing_separator() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.running = true;
         let text = bar(&app);
-        assert!(text.contains("esc to interrupt · shift+tab mode"), "{text}");
-        assert!(!text.contains("working"), "{text}");
+        assert!(!text.contains("esc to interrupt"), "{text}");
+        assert!(!text.contains("shift+tab mode"), "{text}");
+        assert!(text.trim_end().ends_with('m'), "{text}");
     }
 
     #[test]
@@ -633,5 +688,54 @@ mod tests {
             ]
         );
         assert_eq!(next_mode(PermissionMode::DontAsk), PermissionMode::Manual);
+    }
+
+    #[test]
+    fn a_custom_line_replaces_the_built_in_hint() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+            line: "CUSTOM".into(),
+        });
+        let text = bar(&app);
+        assert!(text.contains("CUSTOM"), "{text}");
+        assert!(!text.contains("/add-dir"), "{text}");
+    }
+
+    #[test]
+    fn a_message_replaces_the_custom_line() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+            line: "CUSTOM".into(),
+        });
+        app.attach_notice = Some("NOTICE".into());
+        let text = bar(&app);
+        assert!(
+            text.contains("NOTICE") && !text.contains("CUSTOM"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_custom_line_keeps_the_guardian_off_badge_first() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.guardian_off = true;
+        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+            line: "custom".into(),
+        });
+        let text = bar(&app);
+        let guardian_pos = text.find("guardian off").expect("guardian badge");
+        let custom_pos = text.find("custom").expect("custom line");
+        assert!(guardian_pos < custom_pos);
+    }
+
+    #[test]
+    fn a_long_custom_line_is_truncated_from_the_left() {
+        let mut app = App::new(PermissionMode::Manual, "m".into());
+        app.statusline = Some(fontaine_core::statusline::StatuslineState {
+            line: "a".repeat(200),
+        });
+        let text = bar(&app);
+        assert!(text.contains('…'), "{text}");
+        assert!(!text.contains(&"a".repeat(200)), "{text}");
     }
 }

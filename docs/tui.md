@@ -137,7 +137,47 @@ and agent counts, and the guardian's is dropped before the main one.
 While a [subagent's transcript](#the-agent-list-and-the-agent-view) is on screen the bar's key hint
 is about that agent: `viewing agent-3 · working · ↓ then Enter on main to go back · shift+tab mode`,
 with the agent's own state (`working`, how it ended, or `no longer listed`) in place of the main
-turn's. While the main turn runs the hint is `esc to interrupt · shift+tab mode`.
+turn's. While the main turn runs the hint segment is empty, so the bar shows only the mode, directory,
+model, quota, effort, agents, scheduled tasks and goal segments.
+
+### Custom status line
+
+A `[statusline]` command in your user settings replaces the built-in bar's hint area with its own
+output. The command receives one JSON object on stdin and the first line of its stdout (ANSI
+escape sequences stripped) is shown after the mode, directory, model, quota, effort, agents,
+scheduled tasks and goal segments. Any non-zero exit, timeout after five seconds, or empty output
+keeps the previous good line; with none yet, the built-in rendering is used. While a refusal, attach notice or
+viewed-agent message is showing, it takes the custom line's place.
+
+```toml
+[statusline]
+command = "jq -r '.mode'"
+refresh_interval_secs = 10
+```
+
+The JSON payload has the same field names as Claude Code's status line where Fontaine has the
+data, plus Fontaine extensions:
+
+| Field | Value |
+|---|---|
+| `model.id`, `model.display_name` | The main model reference |
+| `cwd` | The shell's current directory |
+| `workspace.current_dir` | Same as `cwd` |
+| `workspace.project_dir` | The primary workspace root |
+| `workspace.added_dirs` | Additional workspace roots, excluding the memory root and session scratch dir |
+| `session_id` | The session id |
+| `version` | The Fontaine version |
+| `effort.level` | The reasoning effort, when set |
+| `mode` | `manual`, `acceptEdits`, `plan`, `auto` or `dontAsk` |
+| `guardian.model` | The live guardian's label, or `null` when unavailable |
+| `guardian.off` | Whether the guardian is disabled for this session |
+| `recent_verdicts` | Last 5 gate decisions with a guardian verdict: `{tool, decision, rule, guardian_verdict}` |
+| `account_usage` | Main and guardian account usage windows, in the same shape as headless output |
+| `context_window.used_percentage` | Context used as a percentage of the model's window, when known |
+| `cost.total_cost_usd` | Session total cost across all non-guardian sources, when any call was priced |
+
+The `[statusline]` section is accepted only in the user file; it cannot be set from project,
+project-local or `--settings` files, because the command runs arbitrary code.
 
 While the conversation on screen is working, a spinner row sits between the task list and the
 message box: a breathing-dot glyph whose colour drifts, the label `Working…` with a highlight

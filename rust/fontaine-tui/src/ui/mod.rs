@@ -22,7 +22,7 @@ use crate::resume_picker::ResumePicker;
 use crate::ui::schedule::IDLE_POLL;
 use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
 use crate::{Action, App, Command, Prompt, Ui, parse_command};
-use crate::{reports, statusbar};
+use crate::{StatuslineTrigger, reports, statusbar};
 use fontaine_core::agent::{AgentRuntime, Delivered, MessageRefusal};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::goal::{GoalArg, first_turn_prompt, parse_goal_arg};
@@ -32,6 +32,8 @@ use fontaine_core::notice::Notice;
 use fontaine_core::prompt;
 use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
 use fontaine_core::session;
+use fontaine_core::statusline::{self, StatuslineState};
+use fontaine_core::usage_ledger::UsageSource;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::lock::read_recovering;
@@ -42,6 +44,9 @@ const LIST_TICK: Duration = Duration::from_secs(1);
 
 /// How often the spinner redraws while it shows.
 const TICK: Duration = Duration::from_millis(crate::spinner::FRAME_MS);
+
+/// Minimum time between draw-coalesced status-line script runs.
+const STATUSLINE_DEBOUNCE: Duration = Duration::from_millis(300);
 
 /// The shortest of the waits that apply: the spinner's tick while it shows, and the caller's own.
 fn soonest_tick(app: &App, waits: &[Option<Duration>]) -> Option<Duration> {
@@ -95,7 +100,173 @@ impl<R: FnMut(&mut App)> Ui<R> {
         // The completion index is advisory: a stale list only misses a suggestion.
         let files = read_recovering(&runtime.files).clone();
         self.app.set_files(files);
+        self.trigger_statusline(StatuslineTrigger::Draw);
         (self.render)(&mut self.app);
+    }
+
+    fn trigger_statusline(&mut self, trigger: StatuslineTrigger) {
+        let Some(tx) = &self.statusline_tx else {
+            return;
+        };
+        let is_draw = matches!(trigger, StatuslineTrigger::Draw);
+        let redraw_of_result = is_draw && std::mem::take(&mut self.statusline_result_redraw);
+        let debounced = is_draw
+            && self
+                .statusline_last_run
+                .is_some_and(|t| t.elapsed() < STATUSLINE_DEBOUNCE);
+        if self.statusline_running || debounced {
+            if is_draw && !redraw_of_result {
+                self.statusline_dirty = true;
+            }
+            return;
+        }
+        if is_draw {
+            self.statusline_dirty = false;
+        }
+        let _ = tx.send(trigger);
+    }
+
+    /// The status-line refresh timer, when configured.
+    fn statusline_tick(&self, runtime: &AgentRuntime) -> Option<Duration> {
+        // A scheduled trigger is a no-op without a script or mid-run, so a zero tick there
+        // would spin the loop.
+        if self.statusline_script.is_none() || self.statusline_running {
+            return None;
+        }
+        let since = self
+            .statusline_last_run
+            .map_or(Duration::MAX, |t| t.elapsed());
+        // The trailing run owed for a dropped draw trigger; waking only once the debounce
+        // has passed keeps it from spinning.
+        let owed = self
+            .statusline_dirty
+            .then(|| STATUSLINE_DEBOUNCE.saturating_sub(since));
+        let scheduled = runtime
+            .config
+            .statusline
+            .refresh_interval_secs
+            .map(|secs| Duration::from_secs(secs).saturating_sub(since));
+        [owed, scheduled].into_iter().flatten().min()
+    }
+
+    /// Builds the status-line payload from live state.
+    async fn build_statusline_payload(&self, runtime: &AgentRuntime) -> statusline::Payload {
+        let app = &self.app;
+        let model = app.model.clone();
+        let cwd = app.cwd.clone();
+        let project_dir = app.primary_root.clone();
+        let added_dirs: Vec<String> = runtime
+            .state
+            .scope()
+            .roots()
+            .iter()
+            .skip(1)
+            .filter(|root| {
+                Some(root.as_path()) != runtime.state.scratch.as_deref()
+                    && Some(root.as_path()) != runtime.state.memory_root.as_deref()
+            })
+            .map(|root| root.display().to_string())
+            .collect();
+        let session_id = runtime.session.id.clone();
+        let version = env!("CARGO_PKG_VERSION").to_string();
+        let effort = app.effort;
+        let mode = app.mode;
+        let guardian = runtime.state.guardian();
+        let guardian_model = guardian
+            .unavailable_reason()
+            .is_none()
+            .then(|| guardian.label().to_string());
+        let guardian_off = app.guardian_off;
+        let recent_verdicts = app.recent_verdicts();
+        let account_usage = app.usage.clone();
+        let context = match runtime.context_usage().await {
+            Ok(usage) => (Some(usage.total()), usage.window),
+            Err(_) => (None, None),
+        };
+        let usage_ledger = runtime.state.usage_ledger();
+        let cost_total_usd = UsageSource::ALL
+            .iter()
+            .filter(|s| **s != UsageSource::Guardian)
+            .filter_map(|s| usage_ledger.bucket(*s).cost_usd)
+            .reduce(|a, b| a + b);
+        statusline::build_payload(
+            model,
+            &cwd,
+            &project_dir,
+            added_dirs,
+            session_id,
+            version,
+            effort,
+            mode,
+            guardian_model,
+            guardian_off,
+            recent_verdicts,
+            account_usage,
+            context.0,
+            context.1,
+            cost_total_usd,
+        )
+    }
+
+    /// Runs the configured command with the given payload, publishing the result back to
+    /// `app.statusline`. Spawns a `'static` task so the run loop never awaits the script.
+    fn run_statusline(&mut self, payload: statusline::Payload) {
+        if self.statusline_running {
+            return;
+        }
+        let Some(script) = self.statusline_script.clone() else {
+            return;
+        };
+        let result_tx = self.statusline_result_tx.clone();
+        self.statusline_running = true;
+        self.statusline_dirty = false;
+        self.statusline_last_run = Some(std::time::Instant::now());
+        tokio::spawn(async move {
+            let line = script
+                .run(&payload)
+                .await
+                .map(|line| StatuslineState { line });
+            let _ = result_tx.send(line);
+        });
+    }
+
+    /// Applies finished status-line results if any arrived. Returns true when a new line
+    /// landed, so the caller can redraw before parking in the select.
+    fn finish_statusline(&mut self) -> bool {
+        let mut landed = false;
+        while let Ok(line) = self.statusline_result_rx.try_recv() {
+            self.statusline_running = false;
+            self.statusline_result_redraw = true;
+            // Debounce from the finish: a slow script must not retrigger on the redraw
+            // its own result causes.
+            self.statusline_last_run = Some(std::time::Instant::now());
+            if let Some(line) = line {
+                self.app.statusline = Some(line);
+                landed = true;
+            }
+        }
+        landed
+    }
+
+    /// Drains queued status-line triggers and returns whether at least one was pending.
+    fn drain_statusline_triggers(&mut self) -> bool {
+        let rx = match &mut self.statusline_rx {
+            Some(rx) => rx,
+            None => return false,
+        };
+        let mut due = false;
+        while let Ok(trigger) = rx.try_recv() {
+            due = true;
+            if matches!(trigger, StatuslineTrigger::Draw)
+                && self
+                    .statusline_last_run
+                    .is_some_and(|t| t.elapsed() < STATUSLINE_DEBOUNCE)
+            {
+                due = false;
+                self.statusline_dirty = true;
+            }
+        }
+        due
     }
 
     /// Points each role's poller at its account's quota source and takes the last snapshots.
@@ -284,6 +455,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     pub(crate) async fn run(&mut self, runtime: &mut AgentRuntime, launch_dir: &Path) {
+        self.trigger_statusline(StatuslineTrigger::Scheduled);
         let tree = runtime.state.agents().clone();
         loop {
             // Registered before the tree is read: a child that finishes between the read and
@@ -332,8 +504,20 @@ impl<R: FnMut(&mut App)> Ui<R> {
             // are shown without anything else happening.
             self.draw(runtime);
             let list_tick = self.app.agent_list.counts_time().then_some(LIST_TICK);
-            let tick = soonest_tick(&self.app, &[tick, list_tick]);
+            let statusline_tick = self.statusline_tick(runtime);
+            let tick = soonest_tick(&self.app, &[tick, list_tick, statusline_tick]);
+            if self.finish_statusline() {
+                // A run finished between wakeups: redraw now rather than parking with an
+                // undrawn line.
+                continue;
+            }
+            if self.drain_statusline_triggers() {
+                let payload = self.build_statusline_payload(runtime).await;
+                self.run_statusline(payload);
+            }
             let [main_quota, guardian_quota] = &mut self.quota_rx;
+            let mut statusline_rx = self.statusline_rx.as_mut();
+            let statusline_result_rx = &mut self.statusline_result_rx;
             let action = tokio::select! {
                 input = self.input.recv() => match input {
                     Some(input) => self.app.handle_input(input),
@@ -347,6 +531,27 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.on_agent_events(runtime, first);
                     Action::None
                 }
+                Some(_trigger) = async {
+                    match statusline_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let payload = self.build_statusline_payload(runtime).await;
+                    self.run_statusline(payload);
+                    Action::None
+                }
+                // A finished run wakes the loop so its line lands in the bar without
+                // waiting for an unrelated event.
+                Some(line) = statusline_result_rx.recv() => {
+                    self.statusline_running = false;
+                    self.statusline_result_redraw = true;
+                    self.statusline_last_run = Some(std::time::Instant::now());
+                    if let Some(line) = line {
+                        self.app.statusline = Some(line);
+                    }
+                    Action::None
+                }
                 _ = &mut changed => Action::None,
                 _ = &mut display => Action::None,
                 Ok(()) = main_quota.changed() => Action::None,
@@ -358,6 +563,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     }
                 } => Action::None,
             };
+            self.finish_statusline();
+            if matches!(action, Action::None)
+                && statusline_tick.is_some_and(|t| t == Duration::ZERO)
+            {
+                self.trigger_statusline(StatuslineTrigger::Scheduled);
+            }
             match action {
                 Action::Quit => return,
                 Action::CycleMode => self.cycle_mode(runtime),
