@@ -2088,10 +2088,11 @@ async fn auto_mode_setup_stores_the_facts_and_applies_them_to_the_session() {
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("/auto-mode-setup");
-        // The report line carries the stored path, so a long temp dir wraps the phrase across rows.
-        let unwrapped = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        // The report line carries the stored path, so a long temp dir wraps the phrase across rows,
+        // even mid-word.
+        let unwrapped = |s: &str| s.split_whitespace().collect::<String>();
         ui.wait_until("`applied to this session`", |s| {
-            unwrapped(s).contains("applied to this session")
+            unwrapped(s).contains("appliedtothissession")
         })
         .await;
         let screen = ui.screen();
