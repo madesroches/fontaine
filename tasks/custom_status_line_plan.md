@@ -18,39 +18,40 @@ configuration is by editing the user config file.
 
 ## Current State
 
-- `rust/fontaine-tui/src/statusbar.rs:191-256` renders the one-row built-in bar: mode label,
+- `rust/fontaine-tui/src/statusbar.rs:143-226` renders the one-row built-in bar: mode label,
   guardian-off badge, `· dir (branch) · model`, quota segments, effort/agents/scheduled/goal
   segments, and a trailing hint. The running-state hint is `esc to interrupt · shift+tab mode`
-  (statusbar.rs:238); the idle hint lists slash commands (statusbar.rs:240).
+  (statusbar.rs:171); the idle hint lists slash commands (statusbar.rs:173).
 - The bar is drawn from exactly one call site, `rust/fontaine-tui/src/view.rs:212`, in a row of
-  fixed height 1 (view.rs:208). Nothing else depends on the row's content.
-- `App` (`rust/fontaine-tui/src/app.rs:147-291`) already holds model, mode, effort, cwd, branch,
+  fixed height 1 (view.rs:195). Nothing else depends on the row's content.
+- `App` (`rust/fontaine-tui/src/app.rs:147-280`) already holds model, mode, effort, cwd, branch,
   usage (`Vec<AccountUsage>`), `guardian_off`, and running state. It has no session id, no
   guardian model name, no cost/context figures, and no retained verdicts.
-- `AccountUsage::json()` (`rust/fontaine-core/src/quota.rs:76-104`) is the reserved shared
+- `AccountUsage::json()` (`rust/fontaine-core/src/quota.rs:74-102`) is the reserved shared
   serialization for this feature ("shared by headless output and the custom status line"); the
   usage-window plan earmarked it to embed under `account_usage` in this payload.
-- Guardian verdicts arrive as `SessionEvent::Decision` and reach `App::on_event`
-  (app.rs:640-642) but nothing retains them. `DecisionRecord`
-  (`rust/fontaine-core/src/audit.rs:49-83`) carries `tool`, `decision`, `rule`,
+- Guardian verdicts arrive as `SessionEvent::Decision` and reach `Ui::on_event` → `apply_event`
+  in `rust/fontaine-tui/src/ui/turn.rs`; `App::on_event` exists but is not on the production
+  path, so nothing retains them. `DecisionRecord`
+  (`rust/fontaine-core/src/audit.rs:49-131`) carries `tool`, `decision`, `rule`,
   `guardian_verdict`, `guardian_model`.
-- Hook execution (`rust/fontaine-core/src/user_hooks.rs:65-115`, `HookProcess::run`) is the
+- Hook execution (`rust/fontaine-core/src/user_hooks.rs:65-121`, `HookProcess::run`) is the
   established pattern for running a user command: `sh -c` via `fontaine_tools::git_bash`, stdin
   JSON, scrubbed env plus `[env]`, `FONTAINE_PROJECT_DIR`, callers enforce timeout with
   `tokio::time::timeout`.
 - Config: one `Option<…Section>` field per `[section]` in `Settings`
-  (config.rs:919-944); scope rules are one `Rule` per dotted key in
-  `rust/fontaine-core/src/config_scope.rs:108-206`, failing closed on keys with no row, with a
+  (config.rs:921-944); scope rules are one `Rule` per dotted key in
+  `rust/fontaine-core/src/config_scope.rs:144-209`, failing closed on keys with no row, with a
   required `SNIPPETS` entry per row and schema tests tying `RULES` to the schemars schema.
-- Cost: `UsageLedger` (`rust/fontaine-core/src/usage_ledger.rs:34-112`), reachable via
+- Cost: `UsageLedger` (`rust/fontaine-core/src/usage_ledger.rs:87-112`), reachable via
   `runtime.state.usage_ledger()`, holds per-source `Bucket { cost_usd, … }` and `total()`.
-- Context: `ContextUsage` (`rust/fontaine-core/src/context.rs:17-59`, `total()`) is computed
+- Context: `ContextUsage` (`rust/fontaine-core/src/context.rs:17-55`, `total()`) is computed
   on demand by `runtime.context_usage().await`; not cached in `App`.
 - Session id: `runtime.session.id` (`rust/fontaine-core/src/session.rs:175-176`); headless
   threads it through every event.
-- The TUI loop `Ui::run` (`rust/fontaine-tui/src/ui/mod.rs:286-408`) is a `tokio::select!` over
+- The TUI loop `Ui::run` (`rust/fontaine-tui/src/ui/mod.rs:286-420`) is a `tokio::select!` over
   input, approvals, agent events, quota watchers (ui/mod.rs:336-353) and `soonest_tick`
-  (ui/mod.rs:46-53); idle with nothing pending is `std::future::pending()` (ui/mod.rs:354-359).
+  (ui/mod.rs:47-54); idle with nothing pending is `std::future::pending()` (ui/mod.rs:354-359).
 
 ## Design
 
@@ -80,7 +81,7 @@ extensions beside them:
 
 | Field | Source |
 | - | - |
-| `model.id`, `model.display_name` | the main model reference string; `display_name` is the models-table label when resolvable, else the reference |
+| `model.id`, `model.display_name` | the main model reference string for both fields; Fontaine has no separate models-table label |
 | `cwd`, `workspace.current_dir` | `App.cwd` (both set, as Claude does) |
 | `workspace.project_dir` | the session's primary workspace root |
 | `workspace.added_dirs` | non-primary workspace roots, `[]` when none |
@@ -92,7 +93,7 @@ extensions beside them:
 | `guardian.off` | `App.guardian_off` |
 | `recent_verdicts` | last 5 gate decisions carrying a `guardian_verdict`: `{tool, decision, rule, guardian_verdict}`, oldest first |
 | `account_usage` | `App.usage` mapped through `AccountUsage::json()` (main and guardian entries) |
-| `context_window.used_percentage` | `ContextUsage::total()` as a percentage of the window, rounded; `0` before the first API response. Only `used_percentage` — Fontaine's per-layer accounting does not split into Claude's `total_input_tokens`/`current_usage` shape |
+| `context_window.used_percentage` | `ContextUsage::total()` as a percentage of the window, rounded; `0` before the first API response. Key omitted when the catalog has no window size for the model (`ContextUsage.window` is `None`). Only `used_percentage` — Fontaine's per-layer accounting does not split into Claude's `total_input_tokens`/`current_usage` shape |
 | `cost.total_cost_usd` | main-model `UsageLedger` bucket `cost_usd`; key omitted when no priced call yet |
 
 Absent data is omitted (or `null`) rather than guessed, following `AccountUsage::json()`'s rule.
@@ -119,9 +120,9 @@ New module `rust/fontaine-core/src/statusline.rs`:
 ### TUI integration
 
 - `App` gains `statusline: Option<StatuslineState>` (last good line + generation) and a
-  fixed-size (5) ring of recent verdict records, fed in `App::on_event` from
-  `SessionEvent::Decision` (app.rs:640-642) — records with `guardian_verdict: None` are skipped.
-  The payload builder reads the ring.
+  fixed-size (5) ring of recent verdict records. The ring is fed in `Ui::on_event` /
+  `apply_event` in `rust/fontaine-tui/src/ui/turn.rs` from `SessionEvent::Decision` — records
+  with `guardian_verdict: None` are skipped. The payload builder reads the ring.
 - `Ui::run` spawns one supervisor task when `[statusline]` is configured, following the
   `QuotaPoller` pattern: a trigger channel plus a result channel, with a new `select!` arm for
   results (ui/mod.rs:337-359). Triggers: once at startup; then a coalesced trigger from
@@ -146,12 +147,16 @@ path — `context_usage()` and the ledger read never block rendering.
 ## Implementation Steps
 
 1. Config: add `StatuslineSection` to `Settings` and a value-shape check that
-   `refresh_interval_secs >= 1` when set (config.rs); add `Rule::user_only("statusline", …)`
-   and its `SNIPPETS` entry (config_scope.rs).
+   `refresh_interval_secs >= 1` when set (config.rs); add a `statusline` field to the merged
+   `Config` struct (e.g. `StatuslineConfig { command: Option<String>, refresh_interval_secs: Option<u64> }`),
+   initialize it in `Config::defaults`, and copy `Settings.statusline` into it in `Config::apply`
+   (config.rs); add `Rule::user_only("statusline", …)` and its `SNIPPETS` entry (config_scope.rs).
 2. `fontaine-core/src/statusline.rs`: `StatuslineScript` runner (env posture copied from
    `HookProcess::run`), payload builder struct + serialization, ANSI stripping, generation
    handling. Unit tests in-module.
-3. `App`: `statusline` state, verdict ring, `SessionEvent::Decision` feed (app.rs).
+3. `App`: `statusline` state and verdict ring (app.rs); feed the ring in `Ui::on_event` /
+   `apply_event` in `rust/fontaine-tui/src/ui/turn.rs` when a `SessionEvent::Decision` carries
+   a `guardian_verdict`.
 4. Supervisor task + select arm + `soonest_tick` entry (ui/mod.rs); wire session id, guardian
    label, ledger, `context_usage()` into the payload build.
 5. `statusbar::render`: custom-line branch with guardian-off badge and width truncation; remove
@@ -163,10 +168,12 @@ path — `context_usage()` and the ledger read never block rendering.
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/config.rs` — `StatuslineSection`, `Settings.statusline`, value check
+- `rust/fontaine-core/src/config.rs` — `StatuslineSection`, `Settings.statusline`, `Config.statusline`,
+  `Config::defaults` initialization, `Config::apply` copy, value check
 - `rust/fontaine-core/src/config_scope.rs` — user-only rule + snippet
 - `rust/fontaine-core/src/statusline.rs` — new: runner, payload, ANSI strip (with tests)
-- `rust/fontaine-tui/src/app.rs` — status line state, verdict ring, Decision feed
+- `rust/fontaine-tui/src/app.rs` — status line state and verdict ring
+- `rust/fontaine-tui/src/ui/turn.rs` — feed the verdict ring from `SessionEvent::Decision`
 - `rust/fontaine-tui/src/statusbar.rs` — custom-line rendering, hint removal (with tests)
 - `rust/fontaine-tui/src/ui/mod.rs` — supervisor task, select arm, tick
 - `docs/tui.md`, `docs/configuration.md`, `CHANGELOG.md`,
@@ -208,7 +215,8 @@ path — `context_usage()` and the ledger read never block rendering.
   no priced calls, no quota, guardian verdict ring empty/full); the runner against real local
   shell snippets — echo round-trip, first-line selection, ANSI stripping, non-zero exit keeps
   the previous line, timeout (a `sleep` past the limit) keeps the previous line, empty stdout
-  falls back. These spawn `sh` locally only; no network.
+  falls back. The tests get a shell the way production does — via `GitBash::discover` threaded
+  into the test spawns — and skip rather than fail when no shell is available; no network.
 - Unit (`statusbar.rs`): custom line renders with the guardian-off badge ahead of it; long lines
   truncate to the row; no custom line → built-in bar unchanged; running state shows no
   interrupt hint and no dangling separator; idle hint intact.
@@ -225,13 +233,7 @@ path — `context_usage()` and the ledger read never block rendering.
 1. Add to the user config: `[statusline] command = "echo AFK-TEST $(pwd)"` and run
    `cargo run -p fontaine` in a repo. Expected: the bottom bar shows `AFK-TEST <dir>` instead of
    the built-in segments, and still shows `⚠ guardian off` after `/guardian-disable`.
-2. While a turn runs, watch the bar: the built-in `esc to interrupt` hint never appears (with
-   the config removed, the running bar shows no hint segment at all).
-3. Set `command = "sleep 10"` — the bar keeps the previous line and the UI never stalls.
-   Not automated because these need a real terminal and the interactive loop; breakage is
-   immediately visible to anyone running the TUI.
+2. Set `command = "sleep 10"` — the UI never stalls. The previous-line behavior is covered by
+   the runner unit test. Not automated because this needs a real terminal and the interactive
+   loop; breakage is immediately visible to anyone running the TUI.
 
-## Open Questions
-
-- None blocking. The `model.display_name` source (models-table label vs raw reference) is left
-  to implementation: use the label when the models table resolves one, else the reference.
