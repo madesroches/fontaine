@@ -141,7 +141,8 @@ the config excludes.
 ### Vim mode (`input.rs`)
 
 - `InputBuffer` gains `mode: EditorMode` and `vim: VimState` where
-  `enum VimState { Insert, Normal }` (Insert is the start state; Visual is out of scope).
+  `enum VimState { Insert, Normal { pending: Option<PendingOp> } }` (Insert is the
+  start state; Visual is out of scope).
 - `handle_key` branches on mode: `Emacs` keeps today's arms verbatim (they become the
   `Emacs` arm — no behavior change); `Vim` dispatches by `vim` state.
 - **Insert**: printable chars insert; `Esc` → Normal (consumed — it never triggers
@@ -175,8 +176,10 @@ the config excludes.
 ## Implementation Steps
 
 1. `fontaine-core/src/keybindings.rs`: `Keystroke` parse/format, `TuiAction` +
-   `FromStr`/`Display`, reserved-key list. Unit tests for parsing (case, modifiers,
-   `shift+tab`→BackTab, unknown key/action, reserved detection).
+   `FromStr`/`Display`, reserved-key list. Add `crossterm.workspace = true` to
+   `rust/fontaine-core/Cargo.toml` so `KeyCode`/`KeyModifiers` are available in
+   `fontaine-core`. Unit tests for parsing (case, modifiers, `shift+tab`→BackTab,
+   unknown key/action, reserved detection).
 2. `config.rs`: `Settings.keybindings` (direct map), `EditorMode`, `Settings`/`Config`/
    `defaults`/`apply` wiring, `validate_values` for `[keybindings]` and `tui.editor_mode`.
    `config_scope.rs` rule row; `config_catalog.rs` rows. Add a `keybindings` snippet to
@@ -198,8 +201,9 @@ the config excludes.
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/keybindings.rs` (new), `config.rs`, `config_scope.rs`,
-  `config_catalog.rs`, `user_config.rs` (only if `/vim` needs a new setter shape)
+- `rust/fontaine-core/src/keybindings.rs` (new), `Cargo.toml`, `config.rs`,
+  `config_scope.rs`, `config_catalog.rs`, `user_config.rs` (only if `/vim` needs a
+  new setter shape)
 - `rust/fontaine-tui/src/keymap.rs` (new), `app.rs`, `input.rs`, `statusbar.rs`,
   `reports.rs`, `lib.rs`, `ui/mod.rs`, `ui/commands/` (new `vim.rs`, `keybindings.rs` +
   registration)
