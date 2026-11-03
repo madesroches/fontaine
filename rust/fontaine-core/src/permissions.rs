@@ -799,7 +799,8 @@ impl PermissionPipeline {
                 );
             }
         }
-        if matches!(tool, "edit" | "write" | "notebook_edit")
+        if cx.arg_error.is_none()
+            && matches!(tool, "edit" | "write" | "notebook_edit")
             && let Some(found) =
                 floor::protected_path(&scope, home, &self.state.protected_dirs, args)
         {

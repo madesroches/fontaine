@@ -2,9 +2,9 @@
 
 mod common;
 
-use common::pipeline::{Options, Rig};
+use common::pipeline::{Options, Rig, allow_verdict, allowed, denied_message, fake_guardian};
 use fontaine_core::audit::Decision;
-use fontaine_core::config::PermissionMode::Manual;
+use fontaine_core::config::PermissionMode::{Auto, Manual};
 use fontaine_core::tier::Tier;
 use serde_json::{Value, json};
 
@@ -80,6 +80,28 @@ async fn path_rules_resolve_junctions() {
             .1,
         Tier::DenyRule
     );
+}
+
+#[tokio::test]
+async fn an_untranslatable_protected_external_write_is_an_argument_error_not_a_prompt() {
+    // `/home/user/.bashrc` is untranslatable on Windows: normalization sets an argument
+    // error, and the protected-path floor must not get ahead of the argument-error deny.
+    let fake = fake_guardian(allow_verdict());
+    for mode in [Manual, Auto] {
+        let rig = Rig::with(Options::new(mode).guardian(fake.guardian.clone()));
+        let d = rig
+            .check(
+                "write",
+                json!({ "path": "/home/user/.bashrc", "content": "x" }),
+            )
+            .await;
+        assert!(!allowed(&d), "{mode:?}");
+        let message = denied_message(&d);
+        assert!(message.contains("arguments could not be read"), "{message}");
+        assert_eq!(rig.audit().last().unwrap().tier, Tier::Mode, "{mode:?}");
+        assert_eq!(fake.calls(), 0, "{mode:?}: the guardian never sees it");
+        assert_eq!(rig.approver.asked(), 0, "{mode:?}: neither does a human");
+    }
 }
 
 #[tokio::test]
