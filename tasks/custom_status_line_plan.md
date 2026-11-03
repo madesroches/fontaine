@@ -94,7 +94,7 @@ extensions beside them:
 | `recent_verdicts` | last 5 gate decisions carrying a `guardian_verdict`: `{tool, decision, rule, guardian_verdict}`, oldest first |
 | `account_usage` | `App.usage` mapped through `AccountUsage::json()` (main and guardian entries) |
 | `context_window.used_percentage` | `ContextUsage::total()` as a percentage of the window, rounded; `0` before the first API response. Key omitted when the catalog has no window size for the model (`ContextUsage.window` is `None`). Only `used_percentage` — Fontaine's per-layer accounting does not split into Claude's `total_input_tokens`/`current_usage` shape |
-| `cost.total_cost_usd` | main-model `UsageLedger` bucket `cost_usd`; key omitted when no priced call yet |
+| `cost.total_cost_usd` | session total across all non-Guardian `UsageLedger` buckets (`Main`, `Subagent`, `Goal`, `Compaction`, `SideQuestion`); key omitted when none has a priced call yet |
 
 Absent data is omitted (or `null`) rather than guessed, following `AccountUsage::json()`'s rule.
 `transcript_path` is deliberately not included: Fontaine's transcript layout differs and nothing
@@ -126,9 +126,11 @@ New module `rust/fontaine-core/src/statusline.rs`:
   skipped. The payload builder reads the ring.
 - `Ui::run` handles status-line triggers when `[statusline]` is configured, following the
   `QuotaPoller` ownership shape: a dedicated task publishes through a channel that a new
-  `select!` arm consumes (ui/mod.rs:337-359). Triggers: once at startup; then a coalesced
-  trigger from `Ui::draw` (skipped while a run is in flight — that is the debounce); plus the
-  `refresh_interval_secs` timer folded into `soonest_tick` when configured. The payload is
+  `select!` arm consumes (ui/mod.rs:337-359). The handler drains the channel with `try_recv`
+  after each wakeup so that triggers queued while `Ui::run` is not active — during `turn()`,
+  `serve_while()`, and `serve_modal()` — coalesce into at most one run. Triggers: once at
+  startup; then from `Ui::draw` (skipped while a run is in flight — that is the debounce); plus
+  the `refresh_interval_secs` timer folded into `soonest_tick` when configured. The payload is
   assembled inline in the `Ui::run` trigger handler (awaiting `context_usage()`, reading the
   ledger, session id, guardian label) and handed to a `'static` spawned task that runs the
   script and publishes `(line, generation)`; `Ui::draw` copies the result into
@@ -178,6 +180,7 @@ rendering.
   `Config::defaults` initialization, `Config::apply` copy, value check
 - `rust/fontaine-core/src/config_scope.rs` — user-only rule + snippet
 - `rust/fontaine-core/src/statusline.rs` — new: runner, payload, ANSI strip (with tests)
+- `rust/fontaine-core/src/lib.rs` — `pub mod statusline;`
 - `rust/fontaine-tui/src/app.rs` — status line state and verdict ring
 - `rust/fontaine-tui/src/ui/turn.rs` — feed the verdict ring from `SessionEvent::Decision`
 - `rust/fontaine-tui/src/statusbar.rs` — custom-line rendering, hint removal (with tests)
