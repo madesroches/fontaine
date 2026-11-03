@@ -129,8 +129,9 @@ New module `rust/fontaine-core/src/statusline.rs`:
   `select!` arm consumes (ui/mod.rs:337-359). The handler drains the channel with `try_recv`
   after each wakeup so that triggers queued while `Ui::run` is not active — during `turn()`,
   `serve_while()`, and `serve_modal()` — coalesce into at most one run. Triggers: once at
-  startup; then from `Ui::draw` (skipped while a run is in flight — that is the debounce); plus
-  the `refresh_interval_secs` timer folded into `soonest_tick` when configured. The payload is
+  startup; then from `Ui::draw` (skipped while a run is in flight and gated by a 300 ms minimum
+  interval since the last run start — that is the debounce); plus the
+  `refresh_interval_secs` timer folded into `soonest_tick` when configured. The payload is
   assembled inline in the `Ui::run` trigger handler (awaiting `context_usage()`, reading the
   ledger, session id, guardian label) and handed to a `'static` spawned task that runs the
   script and publishes `line`; `Ui::draw` copies it into
@@ -172,7 +173,8 @@ rendering.
    `drive()`, and mirror them in the test-only constructor in
    `rust/fontaine-tui/src/ui/tests.rs`; build the payload inline in `Ui::run` (wire session id,
    guardian label, ledger, `context_usage()`) and spawn only the script execution as a `'static`
-   task over owned data.
+   task over owned data. Include a `last_run_start: Option<Instant>` field and enforce the 300 ms
+   draw-trigger minimum interval in the handler.
 5. `statusbar::render`: custom-line branch with guardian-off badge and width truncation; remove
    the running hint; keep the idle hint. Update the existing hint tests and add custom-line
    tests. Also update `rust/fontaine-tui/tests/goal.rs:239-240` to wait for a surviving
@@ -213,9 +215,10 @@ rendering.
 ## Trade-offs
 
 - **Draw-coalesced triggers** vs Claude's exact trigger list (new assistant message, mode
-  change, vim toggle, …): Fontaine's draw already funnels those events; drawing while a run is
-  in flight is the only coordination needed. Slightly more runs than Claude's list, bounded by
-  the in-flight skip.
+  change, vim toggle, …): Fontaine's draw already funnels those events; a run is skipped when
+  one is already in flight, and a 300 ms minimum interval since the last run start prevents
+  idle-loop draws from re-triggering back-to-back runs. Slightly more runs than Claude's list
+  when events are bursty, but no hot loop at idle.
 - **Fixed 5 s timeout** vs a config knob: matches hooks' fixed default in spirit, keeps the
   section to two keys.
 
@@ -228,6 +231,11 @@ rendering.
 - 2026-11-03: First stdout line only, ANSI escapes stripped; multi-line and colored output are
   deferred, because the Fontaine bar is one row of styled spans and full ANSI/OSC support needs
   an ANSI-to-span parser dependency.
+- AFK: 2026-11-03: Added a 300 ms minimum interval between status-line script runs for
+  draw-coalesced triggers, tracked in `Ui` status-line state alongside the in-flight flag;
+  startup and `refresh_interval_secs` timer triggers bypass it. Chosen as the smallest
+  conservative fix for the idle-loop review item, consistent with Claude Code's 300 ms debounce
+  and the plan's event-driven design. User away.
 
 ## Testing Strategy
 
