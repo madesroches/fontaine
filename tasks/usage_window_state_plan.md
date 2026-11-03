@@ -39,10 +39,14 @@ pub enum UsageRole { Main, Guardian }
 pub struct AccountUsage {
     pub role: UsageRole,
     pub account: String,                 // config account name
-    pub label: String,                   // QuotaSource::name(), e.g. "kimi"; account name if no source
-    pub quota: Option<Quota>,            // None: provider gives no data, or not fetched yet
+    pub label: String,                   // QuotaSource::name(), e.g. "kimi"
+    pub quota: Option<Quota>,            // None: fetch failed, or no data yet
 }
 ```
+
+Only an account with a quota source gets an `AccountUsage`; a failed fetch or no data yet gives an
+entry with `quota: None` (JSON without `windows`). An account without a source gets no entry, in
+every surface.
 
 `AccountUsage::json()` is the single serialisation (fields: `role`, `account`, `label`,
 `windows[{label, used_percentage, resets_at}]`). Per window it follows Claude Code's status-line
@@ -54,11 +58,17 @@ values are omitted, not null-filled with guesses.
 
 `Ui` owns a second `QuotaPoller` for the guardian. `sync_quota` becomes `sync_usage` and loops over
 `[(Main, models.main), (Guardian, live guardian)]`, each with its own poller, receiver
-and `quota_warned` entry. The guardian's quota source comes from live gate state, not
-`models.guardian` (which `retry_guardian`/`use_guardian` do not update): match
-`runtime.state.guardian()` on `GuardianModel::Ready(h)` and take `h.quota`, as headless already
-reads it. A missing or `Unavailable` guardian points the guardian poller at `None` and yields no
-entry. Screen/composition models are out of scope. When the guardian's account equals the main account (same
+and `quota_warned` entry. The guardian's quota source is not on the gate state
+(`GateState::guardian()` returns the built `Arc<Guardian>`, which carries no handle or quota, and
+`build_guardian_telling` drops `handle.quota`), and `models.guardian` is stale after
+`retry_guardian`/`use_guardian`. So `AgentRuntime::install_guardian` (the one path `install_main`,
+`retry_guardian` and `use_guardian` all go through) records the live guardian's account and quota
+source in a new interior-mutable slot on `AgentRuntime`, beside the `llm_scanner` slot:
+`Arc<RwLock<Option<(String, Arc<dyn QuotaSource>)>>>`, set from `GuardianModel::Ready(h)` (account
+`h.reference.account`, source `h.quota`) and `None` for `Unavailable` or a handle without a source.
+It is initialised at runtime construction from `models.guardian`, and read through
+`AgentRuntime::guardian_quota()`; `sync_usage` calls it on every sync, so a retry or switch repoints
+the poller. A guardian with no slot value points the guardian poller at `None` and yields no entry. Screen/composition models are out of scope. When the guardian's account equals the main account (same
 `reference.account`), the guardian poller is pointed at `None` so one account is never polled or
 shown twice. The event loop wakes on both receivers. The decisions of `sync_usage` (which source each poller
 points at, same-account dedupe, building the entries) live in a pure function `usage_targets` over
@@ -87,33 +97,37 @@ decides the drop order (render has no width logic).
 - `result` event gains `account_usage: [AccountUsage::json…]` for Main and Guardian, fetched once
   with the 10 s source timeout (no background poller in headless), only right before a `result`
   event is actually emitted: per turn for stream-json, once for json, never for text. The sources
-  are `runtime.models.main.quota` and, for the guardian, `runtime.models.guardian` matched on
-  `GuardianModel::Ready(h)` → `h.quota` (headless.rs:349 reads it there; only the TUI re-installs
-  guardians, so it is reliable in headless). When the guardian's `reference.account` equals main's,
+  are `runtime.models.main.quota` and, for the guardian, `AgentRuntime::guardian_quota()` (the same
+  slot the TUI reads; headless.rs currently reads `runtime.models.guardian` only for `is_none()`
+  in `init_event`). When the guardian's `reference.account` equals main's,
   fetch once and emit only the Main entry (the TUI's same-account rule). Main and
   guardian are fetched concurrently (join) and awaited before the sync `result_event` call, with
-  the result passed in. A failed or absent fetch yields an entry without `windows`; a fetch failure
+  the result passed in. A failed fetch, or no data yet, yields an entry without `windows`; a fetch failure
   is reported through `runtime.approver().warn`, once per account, with the warned-account set kept
   across the prompt loop.
-- Omitted entirely when neither account has a quota source.
+- The field is omitted entirely when neither account has a quota source; an account without one has no entry.
 - Documented in `docs/headless.md` alongside the `usage` object.
 
 ### Custom status line (#48)
 
 Not implemented here (the feature does not exist). `AccountUsage::json` is the contract #48's
 status-line JSON embeds under `account_usage`; this plan adds the line to the master plan's
-`## Decisions` (Headless subsection) as part of step 6.
+`## Decisions` (Headless subsection) as part of step 7.
 
 ## Implementation Steps
 
 1. `fontaine-core/src/quota.rs`: add `UsageRole`, `AccountUsage`, `AccountUsage::json`. Unit tests.
 2. `fontaine-tui/src/app.rs`: replace `quota` with `usage: Vec<AccountUsage>` and `usage_as_of`.
-3. `fontaine-tui/src/ui/mod.rs`: second poller + `sync_usage` over the pure `usage_targets`; same-account dedupe; wake on both
+3. `fontaine-core/src/agent/models.rs` (+ `agent.rs`/`agent/setup.rs` for the field): add the
+   guardian quota slot on `AgentRuntime`, set in `install_guardian`, initialised from
+   `models.guardian`, with `guardian_quota()`. Unit test: install a Ready guardian with a source,
+   then an Unavailable one, and the slot follows.
+4. `fontaine-tui/src/ui/mod.rs`: second poller + `sync_usage` over the pure `usage_targets`; same-account dedupe; wake on both
    receivers; per-account first-failure warning.
-4. `fontaine-tui/src/statusbar.rs`: `QuotaView` removed, `quota_segment(&AccountUsage, now)`; guardian segment with threshold, placed after the main quota span
+5. `fontaine-tui/src/statusbar.rs`: `QuotaView` removed, `quota_segment(&AccountUsage, now)`; guardian segment with threshold, placed after the main quota span
    and before effort; update existing tests.
-5. `fontaine/src/headless.rs`: one-shot fetch and `account_usage` in `result_event`.
-6. Docs: `docs/tui.md` (Subscription quota section; line 109, the status-bar sentence "the model (followed by the account's subscription quota…" names only the main quota), `docs/headless.md` (result fields),
+6. `fontaine/src/headless.rs`: one-shot fetch and `account_usage` in `result_event`.
+7. Docs: `docs/tui.md` (Subscription quota section; line 109, the status-bar sentence "the model (followed by the account's subscription quota…" names only the main quota), `docs/headless.md` (result fields),
    `docs/configuration.md` (quota is described as status-bar-only at lines 167, 191);
    `docs/schemas/headless-v1.schema.json` (`result.account_usage`, additive, stays v1); in
    `docs/tui.md` lines ~123-124, the "hidden when the main model is on an account without quota"
@@ -123,6 +137,7 @@ status-line JSON embeds under `account_usage`; this plan adds the line to the ma
 ## Files to Modify
 
 - `rust/fontaine-core/src/quota.rs`
+- `rust/fontaine-core/src/agent/models.rs`, `agent/setup.rs`, `agent.rs` (guardian quota slot)
 - `rust/fontaine-tui/src/app.rs`, `ui/mod.rs`, `statusbar.rs`, `ui/tests.rs`
 - `rust/fontaine-tui/src/lib.rs` (`Ui` fields `quota`/`quota_rx`/`quota_warned`, lines 259-263,
   321-345)
@@ -146,11 +161,16 @@ status-line JSON embeds under `account_usage`; this plan adds the line to the ma
 - 2026-11-02 The custom status line is deferred to #48; only the shared JSON shape ships here.
 - 2026-11-02 `account_usage` windows use Claude Code's `rate_limits` field names and units
   (`used_percentage` 0-100, `resets_at` epoch seconds); the per-role `account_usage` grouping is a
-  Fontaine addition, recorded in the master plan's Decisions (Headless subsection) in step 6.
+  Fontaine addition, recorded in the master plan's Decisions (Headless subsection) in step 7.
 - 2026-11-02 `account_usage` carries `windows` as a labelled array, not Claude Code's keyed
   `rate_limits` object: Kimi's windows (month/code/7d/5h) do not map onto Claude Code's fixed keys.
 - 2026-11-02 This plan covers only `QuotaSource` endpoints (Kimi); header-derived usage (e.g.
   Anthropic rate-limit headers) goes to a follow-up issue.
+- 2026-11-02 AFK: the guardian's quota source is recorded by `install_guardian` in a slot on
+  `AgentRuntime` (like `llm_scanner`), read by both TUI and headless; `GateState::guardian()`
+  carries no quota and `models.guardian` is stale after retry/switch, so neither can be the source.
+- 2026-11-02 AFK: only an account with a quota source gets an `AccountUsage` entry; a failed fetch or
+  no data yet gives an entry without `windows`; no label fallback to the account name.
 - 2026-11-02 Paused-state rendering and JSON fields ship with #115; this plan does not build them.
 
 ## Documentation
@@ -165,7 +185,8 @@ status-line JSON embeds under `account_usage`; this plan adds the line to the ma
   no data → nothing).
 - Unit: the pure `usage_targets` function (existing tui test helpers cannot drive `Ui::sync_usage`)
   with fake `QuotaSource`s for both roles: source choice per role, same-account dedupe, a repoint
-  to the same account, entry building.
+  to the same account, entry building (a role with no source yields no entry; a source with no data
+  yet yields an entry with `quota: None`).
 - Integration through `fontaine -p --output-format stream-json` with a wiremock `/usages`
   endpoint: `result.account_usage` contains main and guardian entries; none when no source.
   Failure here would be silent for scripts consuming the JSON, so it is automated.
