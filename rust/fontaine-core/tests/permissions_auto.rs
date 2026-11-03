@@ -1245,6 +1245,15 @@ async fn a_hook_deny_or_ask_on_a_coordination_tool_still_wins() {
 }
 
 #[tokio::test]
+async fn models_takes_the_read_only_fast_path_in_auto() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = auto_rig(&fake, "");
+    assert!(allowed(&rig.check("models", json!({})).await));
+    assert_eq!(last(&rig).tier, Tier::ReadOnlyFastPath);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
 async fn board_show_takes_the_read_only_fast_path_in_auto() {
     let fake = fake_guardian(allow_verdict());
     let rig = auto_rig(&fake, "");

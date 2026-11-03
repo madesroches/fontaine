@@ -28,6 +28,7 @@ pub mod instructions;
 pub mod ledger;
 pub mod managed_search;
 pub mod memory;
+pub mod model_report;
 pub mod models;
 pub mod native_search;
 pub mod notice;

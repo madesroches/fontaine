@@ -27,6 +27,7 @@ use fontaine_tools::ask_user::{AskUserTool, Question, QuestionReply, QuestionSou
 use fontaine_tools::descriptor::{TOOLS, find};
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::guarded::Guard;
+use fontaine_tools::models_tool::{ModelSource, ModelsTool};
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, registered_risk};
 use fontaine_tools::schedule::{
@@ -64,6 +65,14 @@ struct NoSkills;
 impl SkillSource for NoSkills {
     fn load<'a>(&'a self, _: &'a str, _: &'a str) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async { Err("no skills".to_string()) })
+    }
+}
+
+struct NoModels;
+
+impl ModelSource for NoModels {
+    fn report<'a>(&'a self, _: Option<&'a str>) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async { Err("no models".to_string()) })
     }
 }
 
@@ -131,6 +140,9 @@ fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
             source: Arc::new(NoSkills),
         }),
         ExtensionTool::new(ask_user),
+        ExtensionTool::new(ModelsTool {
+            source: Arc::new(NoModels),
+        }),
         ExtensionTool::new(TodoTool {
             store: Arc::new(NoTodos),
         }),
@@ -208,6 +220,7 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "cron_jobs",
         "cron_delete",
         "schedule_wakeup",
+        "models",
     ]
     .into_iter()
     .collect();

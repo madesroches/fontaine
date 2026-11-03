@@ -12,6 +12,7 @@ pub mod jobs;
 pub mod kills;
 pub mod lock;
 pub mod lsp;
+pub mod models_tool;
 pub mod names;
 pub mod notebook;
 pub mod powershell;

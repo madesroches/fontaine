@@ -296,6 +296,14 @@ pub static TOOLS: &[ToolDescriptor] = &[
         Specifier::None,
         &["ScheduleWakeup"],
     ),
+    row(
+        "models",
+        RiskClass::ReadOnly,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &[],
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static ToolDescriptor> {
@@ -322,6 +330,9 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
+    /// Tools Claude Code has no counterpart for.
+    const FONTAINE_ONLY: &[&str] = &["models"];
+
     #[test]
     fn names_are_unique_rule_names() {
         let mut seen = BTreeSet::new();
@@ -334,7 +345,12 @@ mod tests {
                 "{} is not a valid rule name",
                 d.name
             );
-            assert!(!d.claude.is_empty(), "{} has no Claude Code name", d.name);
+            assert_eq!(
+                d.claude.is_empty(),
+                FONTAINE_ONLY.contains(&d.name),
+                "{} needs a Claude Code name unless it is Fontaine-only",
+                d.name
+            );
         }
         let aliases: Vec<_> = claude_names().collect();
         let unique: BTreeSet<_> = aliases.iter().collect();
@@ -402,7 +418,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 26] = [
+        let expected: [Pinned; 27] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             (
                 "job_output",
@@ -568,6 +584,7 @@ mod tests {
                 S::None,
                 &["ScheduleWakeup"],
             ),
+            ("models", R::ReadOnly, true, D::Never, S::None, &[]),
         ];
         let actual: Vec<_> = TOOLS
             .iter()

@@ -56,6 +56,7 @@ async fn the_mode_and_risk_class_matrix() {
             json!({"todos": [{"content": "a", "status": "pending"}]}),
             [(Allow, ReadOnlyFastPath); 4],
         ),
+        ("models", json!({}), [(Allow, ReadOnlyFastPath); 4]),
         (
             "read",
             json!({"path": "../outside.txt"}),

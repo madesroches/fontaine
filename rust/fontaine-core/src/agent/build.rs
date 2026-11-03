@@ -12,6 +12,7 @@ use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::kills::KillSwitches;
 use fontaine_tools::lsp::LspTool;
+use fontaine_tools::models_tool::ModelsTool;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::schedule::{
     CronCreateTool, CronDeleteTool, CronJobsTool, ScheduleStore, ScheduleWakeupTool,
@@ -22,7 +23,7 @@ use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext};
 use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
 
-use super::Setup;
+use super::{SessionModels, Setup};
 use crate::checkpoint::StoreCapture;
 use crate::child_runner::{CoreChildRunner, CoreWake, LedgerWindow};
 use crate::config::Config;
@@ -30,7 +31,7 @@ use crate::fork_context::ParentContextHook;
 use crate::gate::SessionState;
 use crate::instructions::{self, InstructionStage, Loaded, Sources};
 use crate::memory;
-use crate::models::Models;
+use crate::models::{ModelRef, Models};
 use crate::native_search;
 use crate::permissions::{Approver, PermissionPipeline};
 use crate::prompt::{self, PromptParts};
@@ -233,6 +234,16 @@ fn extension_tools(
             store: Arc::new(ReportedTodos {
                 todos: p.session.todos().clone(),
                 approver: p.approver.clone(),
+            }),
+        }),
+        ExtensionTool::new(ModelsTool {
+            source: Arc::new(SessionModels {
+                switcher: p.setup.switcher.clone(),
+                main: p.runner.context.main.clone(),
+                guardian: {
+                    let state = p.state.clone();
+                    Arc::new(move || ModelRef::parse(state.guardian().label()))
+                },
             }),
         }),
     ];

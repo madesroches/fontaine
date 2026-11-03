@@ -74,6 +74,7 @@ async fn the_registered_tools_are_advertised_to_the_model() {
         "send_message",
         "ask_user_question",
         "todo_write",
+        "models",
         "board_show",
         "board_update",
     ];
