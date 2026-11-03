@@ -371,7 +371,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_stdout_falls_back() {
-        let result = script("echo -n").run(&payload()).await;
+        let result = script("printf ''").run(&payload()).await;
         assert_eq!(result, None);
     }
 
