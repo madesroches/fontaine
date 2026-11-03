@@ -197,6 +197,8 @@ rendering.
 - `rust/fontaine-tui/src/statusbar.rs` — custom-line rendering, hint removal (with tests)
 - `rust/fontaine-tui/tests/goal.rs` — replace the `wait_for("esc to interrupt")` anchor with a
   surviving running-state signal
+- `rust/fontaine-tui/tests/statusline.rs` — new integration test driving `Ui::run` on a
+  `TestBackend` to assert config-to-bar wiring and the no-stall property
 - `rust/fontaine-tui/src/ui/mod.rs` — supervisor task, select arm, tick
 - `tasks/fontaine_harness_plan.md` — append the dated TUI Decisions line superseding the
   2026-11-01 running-hint entry
@@ -222,14 +224,6 @@ rendering.
   deferred, because the Fontaine bar is one row of styled spans and full ANSI/OSC support needs
   an ANSI-to-span parser dependency.
 
-## Documentation
-
-- `docs/tui.md`: new section — the feature, the `[statusline]` config, the full JSON contract
-  (Claude-compatible fields + Fontaine extensions), the fallback behavior.
-- `docs/configuration.md`: the `[statusline]` section with its user-only scope restriction.
-- `CHANGELOG.md` entry under Unreleased.
-- `research/research-claude-code-parity.md`: row 383 flipped from `missing` to shipped.
-
 ## Testing Strategy
 
 - Unit (`statusline.rs`): payload JSON shape — field presence/absence across states (no effort,
@@ -247,16 +241,8 @@ rendering.
   `refresh_interval_secs = 0` is rejected by the value check.
 - Unit (`app.rs`): a `SessionEvent::Decision` with a guardian verdict enters the ring; one
   without is skipped; the ring caps at 5.
-- No live API, network, or terminal required at any tier. End-to-end wiring (config → task →
-  bar) is covered by the manual step below because the existing TUI test harness drives widgets,
-  not the `Ui::run` loop.
-
-## Manual Verification
-
-1. Add to the user config: `[statusline] command = "echo AFK-TEST $(pwd)"` and run
-   `cargo run -p fontaine` in a repo. Expected: the bottom bar shows `AFK-TEST <dir>` instead of
-   the built-in segments, and still shows `⚠ guardian off` after `/guardian-disable`.
-2. Set `command = "sleep 10"` — the UI never stalls. The previous-line behavior is covered by
-   the runner unit test. Not automated because this needs a real terminal and the interactive
-   loop; breakage is immediately visible to anyone running the TUI.
+- Integration (`rust/fontaine-tui/tests/statusline.rs`): `World::with_config("[statusline]\ncommand = \"echo AFK-TEST\"")`
+  drives the real `Ui::run` loop on a `TestBackend`, asserts `ui.wait_for("AFK-TEST")`, and runs a
+  `sleep` script while asserting the TUI does not stall.
+- No live API, network, or terminal required at any tier.
 
