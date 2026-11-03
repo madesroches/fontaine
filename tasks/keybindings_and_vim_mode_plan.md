@@ -75,7 +75,8 @@ the config excludes.
   (`"ctrl+t" = ""`). There is no TOML null; `""` is the unbind marker.
 - **Reserved**: `ctrl+c` may not be rebound or unbound (interrupt must always work). `ctrl+d`
   may not be rebound or unbound, but the `quit` action fires only on an empty input; when the
-  input buffer has text, Ctrl+D stays the input layer's `delete-char` (`input.rs` / `docs/tui.md`).
+  input buffer has text, Ctrl+D stays the input layer's `delete-char` in both Emacs and Vim
+  Insert (`input.rs` / `docs/tui.md`).
   `validate_values` rejects reserved rebinds with a `ConfigError`.
   Terminal-aliased keys (`ctrl+i` = Tab, `ctrl+m` = Enter, `ctrl+h` = Backspace, `ctrl+[` =
   Esc) are documented, not specially rejected.
@@ -107,8 +108,12 @@ the config excludes.
 
 ### Dispatch changes (`fontaine-tui`)
 
-- `App` gains `keymap: Keymap` and `editor_mode: EditorMode`, injected where `Ui` builds
-  `App` from `runtime.config` (`lib.rs` ~328); default in `App::new` for tests.
+- `App` gains `keymap: Keymap`, injected where `Ui` builds `App` from `runtime.config`
+  (`lib.rs` ~328); default in `App::new` for tests. `InputBuffer` is the single home of
+  `EditorMode`/`VimState`; the App-level Esc offer reads `self.input.mode` and `self.input.vim`
+  to decide whether Esc switches vim Insert→Normal or falls through. Overlay buffers
+  (`approval.rs` feedback, `question.rs` Other field) keep `InputBuffer::default()` and therefore
+  stay Emacs.
 - `App::handle_key` / `message_key`: replace the hardcoded global arms with
   `self.keymap.lookup(key)` → match on `TuiAction`. The overlay priority chain is
   untouched — overlays keep their own keys, and keymap lookup happens only at the points
@@ -147,8 +152,10 @@ the config excludes.
   `Emacs` arm — no behavior change); `Vim` dispatches by `vim` state.
 - **Insert**: printable chars insert; `Esc` → Normal (consumed — it never triggers
   interrupt/cancel from Insert; see Dispatch changes above); Backspace/Delete/arrows/Home/End
-  work as today; Ctrl+keys fall through (return `false`) so the App-level keymap sees them,
-  matching Claude Code's "most Ctrl+key shortcuts pass through vim mode".
+  work as today; `Ctrl+D`, `Ctrl+H`, and `Ctrl+W` stay the input layer's editing keys
+  (`delete-char`, `backspace`, `delete-word-back`) and are consumed by the buffer. All other
+  Ctrl+keys fall through (return `false`) so the App-level keymap sees them, matching Claude
+  Code's "most Ctrl+key shortcuts pass through vim mode".
 - **Normal**: motions `h l 0 $ w b e`, `gg`/`G` (buffer start/end), operators with motion
   or doubled: `d`/`c` + (`w b e $ 0`), `dd`, `cc`, `D`, `C`, `x`, `r<char>`, `i a A I o O`,
   `p` (yank ring paste after cursor). Yank/delete fill the existing `killed` slot. Operator
@@ -166,9 +173,10 @@ the config excludes.
 ### Slash commands
 
 - `/vim` — toggles `[tui] editor_mode` in the user config via
-  `user_config.rs::set_config_value`, applies to the running session immediately, and prints
-  the new state (same live-vs-next-launch reporting pattern as `/config` changes; here it
-  can apply live since the mode is read from `App` each keypress).
+  `user_config.rs::set_config_value`, applies to the running session immediately by setting
+  the mode on `App.input`, and prints the new state (same live-vs-next-launch reporting pattern
+  as `/config` changes; here it can apply live because the mode is read from the input buffer
+  on each keypress). Overlay input buffers remain Emacs.
 - `/keybindings` — prints the full action table: action, effective keystroke(s), and whether
   each is default or overridden (from `Keymap`), plus the path of the user config file to
   edit. No interactive editor UI.
@@ -189,11 +197,12 @@ the config excludes.
    naming the scope violation.
 3. `fontaine-tui/src/keymap.rs`: default table, `Keymap::resolve`, `lookup`, `keys_for`.
    Unit tests: override, unbind, conflict replacement, reserved rejection surfacing.
-4. `app.rs` / `ui/mod.rs` / `lib.rs`: inject `Keymap` + `EditorMode`, replace hardcoded
-   global arms with `lookup`, render hints from `keys_for`. Keep overlay dispatch order.
+4. `app.rs` / `ui/mod.rs` / `lib.rs`: inject `Keymap`; make `InputBuffer` the home of
+   `EditorMode`/`VimState`. Replace hardcoded global arms with `lookup`, render hints from
+   `keys_for`. Keep overlay dispatch order.
 5. `input.rs`: `EditorMode` branch, `VimState` machine, pending-op handling, undo stack.
    Unit tests per motion/operator, Insert→Normal Esc consumption, Normal Esc fall-through,
-   undo restore, Ctrl fall-through in Insert.
+   undo restore, Ctrl+D/H/W consumed and remaining Ctrl fall-through in Insert.
 6. Slash commands `/vim` and `/keybindings` (follow the existing command registration
    pattern under `ui/commands/`).
 7. Status bar vim indicator + hint rendering.
@@ -207,7 +216,10 @@ the config excludes.
 - `rust/fontaine-tui/src/keymap.rs` (new), `app.rs`, `input.rs`, `statusbar.rs`,
   `reports.rs`, `lib.rs`, `ui/mod.rs`, `ui/commands/` (new `vim.rs`, `keybindings.rs` +
   registration)
-- `docs/tui.md`, `docs/configuration.md`, `tasks/fontaine_harness_plan.md` (Decisions)
+- `docs/tui.md`, `docs/configuration.md`, `tasks/fontaine_harness_plan.md` (Decisions),
+  `CHANGELOG.md` (`### Added` entry under `[Unreleased]` citing #49),
+  `research/research-claude-code-parity.md` (row 384: flip customizable keybindings/vim mode
+  from `missing | backlog` to `done/partial`)
 
 ## Trade-offs
 
@@ -245,6 +257,9 @@ the config excludes.
 - `tasks/fontaine_harness_plan.md` Decisions: record the deviations from Claude Code —
   TOML `[keybindings]` section instead of `keybindings.json`, no hot reload, no chord
   support, no per-overlay contexts — each dated with a one-line reason.
+- `CHANGELOG.md`: add an `### Added` entry under `[Unreleased]` citing #49.
+- `research/research-claude-code-parity.md`: update row 384 to mark customizable keybindings
+  and vim mode as `done/partial`.
 
 ## Testing Strategy
 
