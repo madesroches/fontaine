@@ -256,8 +256,9 @@ struct Ui<R> {
     launcher: ui::Launcher,
     /// Set by `/resume` and `/branch`: the session the caller starts once this one has ended.
     switch: Option<SessionTarget>,
-    quota: fontaine_core::quota::QuotaPoller,
-    quota_rx: tokio::sync::watch::Receiver<fontaine_core::quota::QuotaSnapshot>,
+    /// One poller per role, main first: the two accounts can differ.
+    quota: [fontaine_core::quota::QuotaPoller; 2],
+    quota_rx: [tokio::sync::watch::Receiver<fontaine_core::quota::QuotaSnapshot>; 2],
     /// Accounts whose quota failure was already reported, so a poller re-pointed by a credential
     /// rebuild does not repeat it.
     quota_warned: std::collections::HashSet<String>,
@@ -318,7 +319,10 @@ pub async fn drive(
         })
     });
     let theme = Theme::preset(runtime.config.tui.theme);
-    let quota = fontaine_core::quota::QuotaPoller::new();
+    let quota = [
+        fontaine_core::quota::QuotaPoller::new(),
+        fontaine_core::quota::QuotaPoller::new(),
+    ];
     let mut ui = Ui {
         app: App::new(mode, model),
         input,
@@ -340,7 +344,7 @@ pub async fn drive(
         suspend,
         launcher,
         switch: None,
-        quota_rx: quota.subscribe(),
+        quota_rx: [quota[0].subscribe(), quota[1].subscribe()],
         quota,
         quota_warned: Default::default(),
     };

@@ -52,7 +52,10 @@ fn the_spinner_tick_wins_only_while_it_shows() {
 }
 
 fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
-    let quota = fontaine_core::quota::QuotaPoller::new();
+    let quota = [
+        fontaine_core::quota::QuotaPoller::new(),
+        fontaine_core::quota::QuotaPoller::new(),
+    ];
     Ui {
         app: App::new(PermissionMode::Manual, "m".into()),
         input: unbounded_channel().1,
@@ -74,7 +77,7 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         suspend: crate::no_suspend(),
         launcher: crate::ui::Launcher::Sh,
         switch: None,
-        quota_rx: quota.subscribe(),
+        quota_rx: [quota[0].subscribe(), quota[1].subscribe()],
         quota,
         quota_warned: Default::default(),
     }
@@ -453,4 +456,108 @@ fn a_failing_quota_warns_once_per_account() {
     assert!(super::warn_once(&mut warned, "kimi"));
     assert!(!super::warn_once(&mut warned, "kimi"));
     assert!(super::warn_once(&mut warned, "other"));
+}
+
+mod usage {
+    use std::sync::Arc;
+
+    use fontaine_core::RuntimeError;
+    use fontaine_core::quota::{Quota, QuotaSource, QuotaWindow, UsageRole};
+    use futures::future::BoxFuture;
+
+    use crate::ui::{usage_entries, usage_targets};
+
+    #[derive(Debug)]
+    struct Fake(&'static str);
+
+    impl QuotaSource for Fake {
+        fn name(&self) -> &str {
+            self.0
+        }
+
+        fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>> {
+            Box::pin(async { Err(RuntimeError::new("unused")) })
+        }
+    }
+
+    fn source(name: &'static str) -> Arc<dyn QuotaSource> {
+        Arc::new(Fake(name))
+    }
+
+    fn quota(ratio: f64) -> Quota {
+        Quota {
+            windows: vec![QuotaWindow {
+                label: "month".into(),
+                used_ratio: ratio,
+                reset_at: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn each_role_points_at_its_own_account_source() {
+        let (a, b) = (source("a"), source("b"));
+        let [main, guardian] = usage_targets([
+            (UsageRole::Main, "one", Some(&a)),
+            (UsageRole::Guardian, "two", Some(&b)),
+        ]);
+        assert!(Arc::ptr_eq(main.unwrap().source, &a));
+        let guardian = guardian.unwrap();
+        assert!(Arc::ptr_eq(guardian.source, &b));
+        assert_eq!(guardian.account, "two");
+    }
+
+    #[test]
+    fn the_guardian_on_the_main_account_is_not_polled_again() {
+        let a = source("a");
+        let [main, guardian] = usage_targets([
+            (UsageRole::Main, "one", Some(&a)),
+            (UsageRole::Guardian, "one", Some(&a)),
+        ]);
+        assert!(main.is_some());
+        assert!(guardian.is_none());
+    }
+
+    #[test]
+    fn a_guardian_repointed_to_the_main_account_loses_its_target() {
+        let (a, b) = (source("a"), source("b"));
+        let apart = usage_targets([
+            (UsageRole::Main, "one", Some(&a)),
+            (UsageRole::Guardian, "two", Some(&b)),
+        ]);
+        assert!(apart[1].is_some());
+        let same = usage_targets([
+            (UsageRole::Main, "one", Some(&a)),
+            (UsageRole::Guardian, "one", Some(&a)),
+        ]);
+        assert!(same[1].is_none());
+    }
+
+    #[test]
+    fn a_role_without_a_source_has_no_target_or_entry() {
+        let a = source("a");
+        let targets = usage_targets([
+            (UsageRole::Main, "one", None),
+            (UsageRole::Guardian, "two", Some(&a)),
+        ]);
+        assert!(targets[0].is_none());
+        let entries = usage_entries(&targets, [None, Some(quota(0.5))]);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].role, UsageRole::Guardian);
+        assert_eq!(entries[0].label, "a");
+    }
+
+    #[test]
+    fn a_source_with_no_data_yet_has_an_entry_without_a_quota() {
+        let (a, b) = (source("a"), source("b"));
+        let targets = usage_targets([
+            (UsageRole::Main, "one", Some(&a)),
+            (UsageRole::Guardian, "two", Some(&b)),
+        ]);
+        let entries = usage_entries(&targets, [None, Some(quota(0.2))]);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].account, "one");
+        assert!(entries[0].quota.is_none());
+        assert_eq!(entries[1].quota, Some(quota(0.2)));
+    }
 }

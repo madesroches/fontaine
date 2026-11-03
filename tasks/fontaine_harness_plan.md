@@ -652,6 +652,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-30 (user, supersedes the 2026-10-21 1000-call cap): A turn, headless or interactive, and every subagent run has no model-call limit unless `--max-turns` sets one, as in Claude Code; rig's limit is set to `usize::MAX` when none is given, since unset it allows one call. The token and cost budgets bound a run; no per-spawn turn limit (#326).
 - 2026-10-30 (supersedes the 2026-10-25 line that kept cache fields on `usage.main` only): `usage.guardian`, `subagents` and `goal` carry `cache_read_input_tokens` and `cache_creation_input_tokens`, and `usage_bucket` in `headless-v1.schema.json` requires them on every bucket, so a cache that does nothing is visible there; additive within `v1` (#331).
 - 2026-10-31: Headless `stream-json` omits model reasoning though Claude Code's carries thinking blocks; reason: kept out of machine output by choice (#344).
+- 2026-11-02 (#116): `result.account_usage` groups usage windows per role (`main`, `guardian`) as `{role, account, label, windows[]}`, a Fontaine addition; each window uses Claude Code's `rate_limits` field names and units (`used_percentage` 0-100, `resets_at` epoch seconds) but is a labelled array, not Claude Code's keyed object, because Kimi's windows (month, code, 7d, 5h) do not map onto its fixed keys. `AccountUsage::json` is the shape the custom status line (#48) embeds under `account_usage`. Additive within `v1`.
 
 ### MCP
 

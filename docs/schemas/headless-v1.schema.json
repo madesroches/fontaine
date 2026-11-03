@@ -263,6 +263,30 @@
                 "goal": { "$ref": "#/$defs/usage_bucket" }
               }
             },
+            "account_usage": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["role", "account", "label"],
+                "properties": {
+                  "role": { "enum": ["main", "guardian"] },
+                  "account": { "type": "string" },
+                  "label": { "type": "string" },
+                  "windows": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": ["label", "used_percentage"],
+                      "properties": {
+                        "label": { "type": "string" },
+                        "used_percentage": { "type": "integer", "minimum": 0, "maximum": 100 },
+                        "resets_at": { "type": "integer", "minimum": 0 }
+                      }
+                    }
+                  }
+                }
+              }
+            },
             "goal": {
               "type": "object",
               "required": ["condition", "status", "evaluations", "reason"],

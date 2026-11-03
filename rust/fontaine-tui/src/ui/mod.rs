@@ -10,6 +10,7 @@ mod turn;
 
 use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::agent_list;
@@ -29,6 +30,7 @@ use fontaine_core::instructions;
 use fontaine_core::ledger::Record;
 use fontaine_core::notice::Notice;
 use fontaine_core::prompt;
+use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
 use fontaine_core::session;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::ROOT_AGENT;
@@ -63,7 +65,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .completion
             .spec()
             .is_some_and(|spec| spec.input.image);
-        self.sync_quota(runtime);
+        self.sync_usage(runtime);
         self.app.prune_closed();
         self.app.home = runtime.home().map(Path::to_path_buf);
         self.app.set_cwd(&runtime.shell_cwd());
@@ -96,32 +98,39 @@ impl<R: FnMut(&mut App)> Ui<R> {
         (self.render)(&mut self.app);
     }
 
-    /// Points the poller at the main model's quota source and takes its last snapshot.
-    fn sync_quota(&mut self, runtime: &AgentRuntime) {
-        let source = runtime.models.main.quota.as_ref();
-        self.quota.point(source);
-        let snapshot = self.quota_rx.borrow_and_update().clone();
-        if source.is_none() {
-            self.app.quota = None;
-            return;
-        }
-        if let Some(error) = &snapshot.error
-            && warn_once(
-                &mut self.quota_warned,
+    /// Points each role's poller at its account's quota source and takes the last snapshots.
+    fn sync_usage(&mut self, runtime: &AgentRuntime) {
+        let guardian = runtime.guardian_quota();
+        let targets = usage_targets([
+            (
+                UsageRole::Main,
                 &runtime.models.main.reference.account,
-            )
-        {
-            runtime.approver().warn(&format!(
-                "could not read the {} quota: {}",
-                snapshot.name,
-                chain(error.as_ref())
-            ));
+                runtime.models.main.quota.as_ref(),
+            ),
+            (
+                UsageRole::Guardian,
+                guardian.as_ref().map_or("", |(account, _)| account),
+                guardian.as_ref().map(|(_, source)| source),
+            ),
+        ]);
+        let mut quotas = [None, None];
+        for (i, target) in targets.iter().enumerate() {
+            self.quota[i].point(target.as_ref().map(|t| t.source));
+            let snapshot = self.quota_rx[i].borrow_and_update().clone();
+            let Some(target) = target else { continue };
+            if let Some(error) = &snapshot.error
+                && warn_once(&mut self.quota_warned, target.account)
+            {
+                runtime.approver().warn(&format!(
+                    "could not read the {} quota: {}",
+                    snapshot.name,
+                    chain(error.as_ref())
+                ));
+            }
+            quotas[i] = snapshot.quota;
         }
-        self.app.quota = snapshot.quota.map(|quota| crate::app::QuotaView {
-            name: snapshot.name,
-            quota,
-            as_of: SystemTime::now(),
-        });
+        self.app.usage = usage_entries(&targets, quotas);
+        self.app.usage_as_of = SystemTime::now();
     }
 
     /// The list below the status line, from the tree as it stands now.
@@ -324,6 +333,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.draw(runtime);
             let list_tick = self.app.agent_list.counts_time().then_some(LIST_TICK);
             let tick = soonest_tick(&self.app, &[tick, list_tick]);
+            let [main_quota, guardian_quota] = &mut self.quota_rx;
             let action = tokio::select! {
                 input = self.input.recv() => match input {
                     Some(input) => self.app.handle_input(input),
@@ -339,7 +349,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 _ = &mut changed => Action::None,
                 _ = &mut display => Action::None,
-                Ok(()) = self.quota_rx.changed() => Action::None,
+                Ok(()) = main_quota.changed() => Action::None,
+                Ok(()) = guardian_quota.changed() => Action::None,
                 () = async {
                     match tick {
                         Some(wait) => tokio::time::sleep(wait).await,
@@ -936,6 +947,54 @@ fn agent_label(runtime: &AgentRuntime, id: &str) -> String {
     } else {
         format!("{name} ({id})")
     }
+}
+
+/// A role, its account name and the quota source of its model, if any.
+type UsageInput<'a> = (UsageRole, &'a str, Option<&'a Arc<dyn QuotaSource>>);
+
+/// A role's account and the source its poller is pointed at.
+struct UsageTarget<'a> {
+    role: UsageRole,
+    account: &'a str,
+    source: &'a Arc<dyn QuotaSource>,
+}
+
+/// What each role's poller points at, main first: a role without a source gets none, and the
+/// guardian gets none when it is on the main account, so one account is never polled or shown
+/// twice.
+fn usage_targets<'a>(inputs: [UsageInput<'a>; 2]) -> [Option<UsageTarget<'a>>; 2] {
+    let main_account = inputs[0].2.map(|_| inputs[0].1);
+    inputs.map(|(role, account, source)| {
+        if role == UsageRole::Guardian && main_account == Some(account) {
+            return None;
+        }
+        source.map(|source| UsageTarget {
+            role,
+            account,
+            source,
+        })
+    })
+}
+
+/// One entry per target; `quotas` holds each poller's last good value, `None` while there is
+/// none.
+fn usage_entries(
+    targets: &[Option<UsageTarget<'_>>; 2],
+    quotas: [Option<Quota>; 2],
+) -> Vec<AccountUsage> {
+    targets
+        .iter()
+        .zip(quotas)
+        .filter_map(|(target, quota)| {
+            let target = target.as_ref()?;
+            Some(AccountUsage {
+                role: target.role,
+                account: target.account.to_string(),
+                label: target.source.name().to_string(),
+                quota,
+            })
+        })
+        .collect()
 }
 
 /// A failing quota is reported once per account, not on every redraw or re-point.

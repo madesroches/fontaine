@@ -369,3 +369,56 @@ async fn clear_is_refused_while_a_report_is_undelivered() {
     ));
     assert!(built.runtime.state.agents().has_notifications(ROOT_AGENT));
 }
+
+#[derive(Debug)]
+struct NoQuota;
+
+impl fontaine_core::quota::QuotaSource for NoQuota {
+    fn name(&self) -> &str {
+        "fake"
+    }
+
+    fn fetch(
+        &self,
+    ) -> futures::future::BoxFuture<
+        '_,
+        Result<fontaine_core::quota::Quota, fontaine_core::RuntimeError>,
+    > {
+        Box::pin(async { Err(fontaine_core::RuntimeError::new("unused")) })
+    }
+}
+
+#[tokio::test]
+async fn the_guardian_quota_slot_follows_install_guardian() {
+    use fontaine_core::config::AccountKind;
+    use fontaine_core::models::{GuardianModel, ModelHandle, ModelRef};
+    use rig_core::test_utils::{MockCompletionModel, MockTurn};
+
+    let world = World::new();
+    let built = build(&world, Manual, Vec::new(), false);
+    let mut handle = ModelHandle::new(
+        ModelRef::parse("moon/m").unwrap(),
+        AccountKind::named("openai-compatible"),
+        MockCompletionModel::from_turns(vec![MockTurn::text("x")]).into(),
+    );
+    handle.quota = Some(Arc::new(NoQuota));
+
+    built
+        .runtime
+        .install_guardian(&GuardianModel::Ready(handle.clone()));
+    let (account, source) = built.runtime.guardian_quota().expect("a source");
+    assert_eq!(account, "moon");
+    assert_eq!(source.name(), "fake");
+
+    handle.quota = None;
+    built
+        .runtime
+        .install_guardian(&GuardianModel::Ready(handle));
+    assert!(built.runtime.guardian_quota().is_none());
+
+    built.runtime.install_guardian(&GuardianModel::Unavailable {
+        reference: ModelRef::parse("moon/m").unwrap(),
+        reason: "gone".into(),
+    });
+    assert!(built.runtime.guardian_quota().is_none());
+}
