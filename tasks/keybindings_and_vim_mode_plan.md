@@ -156,8 +156,10 @@ the config excludes.
   (`delete-char`, `backspace`, `delete-word-back`) and are consumed by the buffer. All other
   Ctrl+keys fall through (return `false`) so the App-level keymap sees them, matching Claude
   Code's "most Ctrl+key shortcuts pass through vim mode".
-- **Normal**: motions `h l 0 $ w b e`, `gg`/`G` (buffer start/end), operators with motion
-  or doubled: `d`/`c` + (`w b e $ 0`), `dd`, `cc`, `D`, `C`, `x`, `r<char>`, `i a A I o O`,
+- **Normal**: motions `h l 0 $ w b e`, `j`/`k` (line down/up via the buffer's existing
+  `up()`/`down()`), `gg`/`G` (buffer start/end); arrow keys keep their cursor-movement
+  role in Normal. Operators with motion or doubled: `d`/`c` + (`w b e $ 0`), `dd`,
+  `cc`, `D`, `C`, `x`, `r<char>`, `i a A I o O`,
   `p` (yank ring paste after cursor). Yank/delete fill the existing `killed` slot. Operator
   pending state (`d`, `c`, `g`, `r` prefixes) lives in `VimState` as a small pending-op
   field; an unrecognized follow-up key cancels the pending op and is otherwise ignored.
@@ -179,7 +181,7 @@ the config excludes.
   on each keypress). Overlay input buffers remain Emacs.
 - `/keybindings` — prints the full action table: action, effective keystroke(s), and whether
   each is default or overridden (from `Keymap`), plus the path of the user config file to
-  edit. No interactive editor UI.
+  edit. No interactive editor UI and no `$EDITOR` launch — viewing only.
 
 ## Implementation Steps
 
@@ -248,6 +250,18 @@ the config excludes.
 
 (Review-round and implementation outcomes land here.)
 
+- AFK: `Keystroke` keeps crossterm's `KeyCode`/`KeyModifiers` in `fontaine-core` (already
+  a workspace-pinned `=0.29.0` dep): one small pinned terminal-types dependency in core is
+  less surface than a duplicated string-only keystroke model in core plus a conversion
+  layer in the TUI.
+- AFK: vim Normal gains `j`/`k` line motions on `InputBuffer`'s existing `up()`/`down()`
+  and arrow keys keep cursor movement in Normal — closing the gap with the "multi-line
+  behaves the same in both modes" promise rather than shipping dead keys vim users hit
+  immediately in multi-line drafts.
+- AFK: `/keybindings` prints the action table and the user-config path only; no `$EDITOR`
+  launch — the issue asks for visibility and configurability, not in-app editing, and the
+  smaller surface still satisfies it.
+
 ## Documentation
 
 - `docs/tui.md`: rework the Keys table to name actions, document defaults, add a vim-mode
@@ -285,8 +299,3 @@ Modal editing feel and real-terminal key delivery are not unit-testable:
    type text, Esc → NORMAL, `bbdw` edits a word, `A` appends, `u` restores, Enter submits,
    status bar shows the vim state. Expected: each behaves as vim users expect; no terminal
    rendering glitches in the input area.
-
-## Open Questions
-
-- Does `/keybindings` printing a table suffice, or should it offer to open the user config
-  in `$EDITOR` (there is precedent in the `/memory` editor launch)?
