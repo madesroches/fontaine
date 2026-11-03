@@ -1323,11 +1323,19 @@ fn print_trust_details(skill: &extensions::Skill) {
             println!("  {label}: {}", rules.join(", "));
         }
     };
-    list("allowed-tools that become allows", &specific);
-    list(
-        "wildcard shell rules (guardian context only, never an allow)",
-        &wildcard,
-    );
+    if skill.scope == Scope::User {
+        list("allowed-tools (already allowed, trusted or not)", &specific);
+        list(
+            "wildcard shell rules (already allowed too; trust only adds the guardian note)",
+            &wildcard,
+        );
+    } else {
+        list("allowed-tools that become allows", &specific);
+        list(
+            "wildcard shell rules (guardian context only, never an allow)",
+            &wildcard,
+        );
+    }
     let commands = skill_trust::command_lines(&skill.body);
     if commands.is_empty() {
         println!("  commands it runs: (none)");

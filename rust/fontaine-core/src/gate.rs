@@ -758,7 +758,7 @@ impl SessionState {
         }
         let why = if stale {
             format!(
-                "changed since you trusted it; run /skills trust {skill} to honour its allowed-tools again"
+                "changed since you trusted it; run `/skills trust {skill}` or `fontaine plugin trust {skill}` to honour its allowed-tools again"
             )
         } else {
             format!("is not trusted; `fontaine plugin trust {skill}` makes its allowed-tools count")

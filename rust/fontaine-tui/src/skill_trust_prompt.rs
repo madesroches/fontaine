@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use fontaine_core::extensions::Skill;
+use fontaine_core::extensions::{Scope, Skill};
 use fontaine_core::skill_trust::{self, TrustRecord};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Modifier, Style};
@@ -100,15 +100,24 @@ pub fn describe(skill: &Skill, previous: Option<&TrustRecord>) -> Vec<String> {
             );
         }
         None => {
+            let user = skill.scope == Scope::User;
             section(
                 &mut out,
-                "allowed-tools that become allows for the turn:",
+                if user {
+                    "allowed-tools already allowed for the turn, trusted or not:"
+                } else {
+                    "allowed-tools that become allows for the turn:"
+                },
                 specific.iter().map(|rule| format!("  {rule}")).collect(),
                 "(none)",
             );
             section(
                 &mut out,
-                "wildcard shell rules, shown to the guardian as context and never an allow:",
+                if user {
+                    "wildcard shell rules, already allowed too; trust only shows them to the guardian as context:"
+                } else {
+                    "wildcard shell rules, shown to the guardian as context and never an allow:"
+                },
                 wildcard.iter().map(|rule| format!("  {rule}")).collect(),
                 "(none)",
             );
@@ -143,7 +152,6 @@ fn section(out: &mut Vec<String>, heading: &str, lines: Vec<String>, empty: &str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fontaine_core::extensions::Scope;
     use fontaine_core::permission_rules::parse_rule;
     use std::time::Duration;
 
@@ -177,6 +185,22 @@ mod tests {
         assert!(lines.contains("never an allow:\n  shell(git *)"), "{lines}");
         assert!(lines.contains("  !git log"), "{lines}");
         assert!(lines.contains("next session start"), "{lines}");
+    }
+
+    #[test]
+    fn a_user_skills_wildcards_are_not_called_never_an_allow() {
+        let mut user = skill(&["shell(git *)", "shell(git status)"], "");
+        user.scope = Scope::User;
+        let lines = describe(&user, None).join("\n");
+        assert!(!lines.contains("never an allow"), "{lines}");
+        assert!(
+            lines.contains("already allowed too; trust only shows them to the guardian"),
+            "{lines}"
+        );
+        assert!(
+            lines.contains("trusted or not:\n  shell(git status)"),
+            "{lines}"
+        );
     }
 
     #[test]

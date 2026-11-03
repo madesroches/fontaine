@@ -2296,7 +2296,7 @@ async fn skills_trust_asks_first_and_records_the_digest_in_the_file_and_the_ledg
             .await;
         let live = ui.live();
         assert!(live.contains("next session start"), "{live}");
-        assert!(live.contains("never an allow"), "{live}");
+        assert!(live.contains("already allowed too"), "{live}");
         ui.press(KeyCode::Char('y'));
         ui.wait_for("count from the next session start").await;
 
