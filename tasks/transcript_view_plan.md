@@ -49,8 +49,11 @@ untouched.
 
 ### The view
 
-- `App::transcript_view: Option<TranscriptView>` with `scroll: usize` (rows above the tail) and
-  follow-the-tail behaviour while `scroll == 0`, so a streaming reply stays in view.
+- `App::transcript_view: Option<TranscriptView>` with `scroll: usize` (row offset from the top),
+  `max_scroll: Cell<usize>` and a clamp, as `approval.rs` does (`scroll` :70, `max_scroll` :72, clamp
+  :102, applied via `Paragraph::scroll` as in `view.rs:601-608`). The view follows the tail only
+  while it is at the bottom (offset == max): content growth re-pins it to the new max, so a
+  streaming reply stays in view; a scrolled-up window stays put as entries are appended.
 - `Transcript::verbose_lines(width, theme) -> Vec<Line>` renders `shown()`'s entries with the
   full forms: tool cards via `tool_lines(.., full = true)`, the whole kept reasoning (clipped
   form; with `show_reasoning` off it stays hidden), everything else as `entry_lines`. It skips
@@ -60,7 +63,7 @@ untouched.
   full call. The view shows the entries of the agent being viewed (`shown()`), so it works inside a
   subagent view too.
 - `view.rs` adds an overlay `"transcript"`: body is the visible window of `verbose_lines` sized by
-  `body_rows`, footer `Up/Down PgUp/PgDn scroll · Home/End · Ctrl-O, Esc or q close`. The overlay
+  `body_rows`, footer `Up/Down PgUp/PgDn scroll · Home/End · Esc or q close`. The overlay
   counts in `covered()` so typing, history and completion are suppressed while open (the input
   box stays; confirm by observation); `screen.rs` sets `committed_under_overlay` for it as for
   the agents panel, so closing it leaves the last message on screen (the #296 behaviour).
@@ -72,10 +75,11 @@ untouched.
   approval prompt or question takes the overlay slot; like the agents panel, the view stays open
   under it and returns once it is answered, and the open arm keeps the `!typing_reason` gate.
   Ctrl+C is reserved and maps to `TuiAction::Interrupt`, whose arm (`app.rs:890-899`) sits at the
-  top of `handle_key`, before every overlay block: that arm closes the view, when it is open and
-  there is no approval/question, and returns `Action::None` (no Interrupt/Quit), as its
-  `close_palette` branch does, consuming
-  `committed_under_overlay` as the other close paths do.
+  top of `handle_key`, before every overlay block: that arm first checks
+  `transcript_view.is_some() && approval.is_none() && questions.is_empty()`, ahead of the existing
+  `!self.covered() && self.close_palette()` check (`app.rs:891-893`), and then closes the view and
+  returns `Action::None` (no Interrupt/Quit), consuming
+  `committed_under_overlay` as the other close paths do; it does not go through `close_palette`.
 - Ignored while the agents panel has the keys, as Ctrl-O was.
 
 ### Full denial reasons
@@ -124,8 +128,8 @@ keep it out of the main transcript while a subagent view is open.
    gains the empty-list notice via `shown_mut()`), the early-return key block after the
    agents-panel block and before the Esc arms, gated on no approval/question; closing consumes
    `committed_under_overlay` and re-prints, as the agents-panel close arms (`app.rs:1051`,
-   `:1060`) do. The `Interrupt` arm (`app.rs:890-899`) also closes the view (same gate and same
-   consumption) and returns `Action::None`, as its `close_palette` branch does. Update the test at `app.rs:3164`,
+   `:1060`) do. The `Interrupt` arm (`app.rs:890-899`) also closes the view (checked first, before
+   the `close_palette` check, same gate and same consumption) and returns `Action::None`. Update the test at `app.rs:3164`,
    `ctrl_o_toggles_the_task_list_unless_the_agents_panel_has_the_keys`: switch it to `alt+t`,
    rename it, and add a twin for the transcript key.
 6. `view.rs`: overlay + footer (same order as the key block); add the transcript view to the
@@ -183,8 +187,11 @@ keep it out of the main transcript while a subagent view is open.
   `/transcript` printing the entries once.
 - `CHANGELOG.md`: an `[Unreleased]` entry.
 - `docs/configuration.md`: `transcript` action row, `todos` default `alt+t`, example rebind.
-- Plan Decisions: replace the 2026-10-25 "Ctrl-O and `/todos` both toggle the task panel" line to
-  say `alt+t` and `/todos`; add a 2026-11-04 line for the transcript view and the move; amend the
+- Plan Decisions: replace the 2026-10-25 "Ctrl-O and `/todos` both toggle the task panel" line
+  (`tasks/fontaine_harness_plan.md:830`, under `### Tools`) to say `alt+t` and `/todos`, and amend its
+  "(`/todos` does not print)" to cover the empty-list `no tasks` notice; amend the :948 2026-10-31
+  reasoning decision that cites Claude Code's "Ctrl-O transcript view" as lacking in Fontaine to say
+  Fontaine's Ctrl-O view now shows the full kept reasoning; add a 2026-11-04 line for the transcript view and the move; amend the
   2026-10-26 verdict-reason deviation to say the reason is inline and also complete in the view;
   mark the `tasks/fontaine_harness_plan.md:932` line ("No key is rebound for tool cards; Ctrl-O
   stays the task list, ...") superseded by the new 2026-11-04 line, which goes at the end of the
@@ -197,7 +204,7 @@ keep it out of the main transcript while a subagent view is open.
 - Unit (`transcript`): `verbose_lines` shows every row of a long multi-line command, the whole
   output, the full reasoning, and the full multi-line denial reason; an `Expanded` entry and a
   stale pending row are not duplicated; collapsed rendering of the same denial stays one line.
-- Unit (`transcript_view`): scroll clamp at both ends, follow-the-tail at `scroll == 0`.
+- Unit (`transcript_view`): scroll clamp at both ends, follow-the-tail while at the bottom, and a scrolled-up window stays put as entries are appended.
 - Unit (`transcript`): `Decision` Deny followed by `guardian_denied` with the pending row already
   committed leaves the original `Entry::Tool` holding the `[rule] explanation` status, and
   `verbose_lines` shows it rather than the agent-facing note.
