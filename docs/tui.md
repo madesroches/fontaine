@@ -917,8 +917,9 @@ model's reasoning, and the whole reason behind each denial, where the transcript
 rows. Messages, replies, notices and errors appear as usual. It shows the entries of the
 conversation on screen, so inside a subagent's transcript it shows that agent's.
 
-The view is drawn in the live area above the message box, like the agents panel, and does not touch
-the terminal's scrollback; closing it leaves the screen as it was. It opens at the end of the
+The view is drawn in the live area above the message box, like the agents panel. Closing a view that
+was tall enough to push the transcript into scrollback writes the transcript again, and that
+rewrite erases the scrollback first, as Ctrl-L does. It opens at the end of the
 conversation and follows it while you stay at the bottom, so a streaming reply stays in view;
 scrolling up holds the window where it is as entries are added, and scrolling back to the bottom
 follows again.

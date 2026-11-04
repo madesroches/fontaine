@@ -35,7 +35,8 @@ All notable changes are recorded here. The format follows
 
 - Ctrl-O (and `/transcript`) toggles a transcript view, as in Claude Code: every tool call with all
   its rows, the whole kept output, the whole reasoning and the full reason behind each denial,
-  scrollable in the live area without touching scrollback. The task list moves to `alt+t` (`todos`
+  scrollable in the live area; closing a view tall enough to push the transcript into scrollback
+  rewrites the transcript and erases the scrollback first, as Ctrl-L does. The task list moves to `alt+t` (`todos`
   keeps `/todos`), and `/todos` and the key print `no tasks` when the list is empty instead of doing
   nothing visible; an existing `"ctrl+o" = "todos"` entry keeps working. A denied call now keeps the
   guardian's whole explanation, with its first line in the transcript and all of it in the view. In
