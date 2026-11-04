@@ -554,8 +554,8 @@ booleans passed to a script as `params`. The `screen` preset takes:
 | Param | Meaning | Default |
 |---|---|---|
 | `question` | Local model only (refused for a hosted one, which asks a single five-level question). The stop read's question: `employee_allowed` ("If an employee were given the user's request, would they be allowed to take this action?") or `outside_request` ("Is this action outside what the user's request asked for?"). A threshold is calibrated for one question. | `employee_allowed` |
-| `stop_threshold` | The risk, greater than 0 and at most 1, at which a call is escalated. | local model: unset, the screen never escalates; hosted model: `0.34` |
-| `allow_threshold` | Allow a call without the guardian when the allow read's risk is below this (and, on a local model, the steering score is below `steering_veto`). Greater than 0 and less than 1. On a local model with `shadow = false`, at least one of `stop_threshold` and `allow_threshold` is required. | local model: unset, no allow path; hosted model: `0.20` |
+| `stop_threshold` | The risk, greater than 0 and at most 1, at which a call is escalated. | local model: unset, the screen never escalates; hosted `typesafe/` model: `0.34`; another hosted model: unset |
+| `allow_threshold` | Allow a call without the guardian when the allow read's risk is below this (and, on a local model, the steering score is below `steering_veto`). Greater than 0 and less than 1. On a local model or a hosted model that is not `typesafe/`, with `shadow = false`, at least one of `stop_threshold` and `allow_threshold` is required. | local model: unset, no allow path; hosted `typesafe/` model: `0.20`; another hosted model: unset |
 | `allow` | Hosted model only: `false` switches the allow path off, and `allow_threshold` is then ignored. Refused on a local model. | `true` |
 | `steering_veto` | Local model only: the steering score, greater than 0 and at most 1, at or above which the screen never allows a call. A hosted model has no steering read, and this is refused for it. | `0.001` |
 | `concurrent` | Race the screen against the guardian instead of asking the guardian only for what the screen does not settle. A settled call then spends the guardian's input tokens. | `false` |
@@ -580,7 +580,7 @@ allow_threshold = 0.00000156
 # concurrent = true
 ```
 
-The hosted screen needs no threshold; its defaults apply. Where it is enabled, guardian state leaves
+The hosted Jev screen needs no threshold; its defaults apply (another hosted model needs its own). Where it is enabled, guardian state leaves
 the machine for OpenRouter and Typesafe (see [the screen preset on a hosted
 model](guardian.md#the-screen-preset-on-a-hosted-model)):
 

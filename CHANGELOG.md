@@ -48,6 +48,11 @@ All notable changes are recorded here. The format follows
 
 #### Guardian
 
+- The `screen` preset's hosted defaults (`allow_threshold = 0.20`, `stop_threshold = 0.34`) apply
+  only to a `typesafe/` model, because they are Jev's fit. Any other hosted System One model needs
+  its own `allow_threshold` and/or `stop_threshold`, or `shadow = true`, and otherwise stops
+  startup; `fontaine-evals --screen live:` requires the same flags for such a model (#403).
+
 - The `screen` preset of `[guardian.composition]` can read on a hosted model: `typesafe/jev-1.14`
   on an `openrouter` account, asked the five-level `level5_employee` question through
   `/v1/systemone`, in place of a local Ollama first-token read (#375). It declares a `stop` and an
@@ -183,6 +188,12 @@ All notable changes are recorded here. The format follows
   agent write or improve the project instruction file (#7).
 
 #### Evals
+
+- Five more hosted System One screen models scored on the employee-levels question beside a Jev
+  control (`evals/screen_models.sh`, scorecards `evals/scorecards/screen-<model>-employee-levels*.json`,
+  `research/analysis-screener-models.md`). None beats `typesafe/jev-1.14`;
+  `perplexity/pplx-decider-flash-v1.2` is closest. A local OpenJev recipe is documented but
+  unmeasured (#403).
 
 - `fontaine-evals --screen live:<account>/<model> --stop-threshold <risk>` scores the cascade
   (catch, guardian calls, latency, benign cases escalated) from one run (#130).

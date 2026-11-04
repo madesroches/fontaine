@@ -1482,6 +1482,54 @@ async fn a_hosted_screen_runs_the_presets_default_thresholds_and_reports_them() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_hosted_screen_of_another_vendor_needs_a_threshold_that_survives_allow_false() {
+    let endpoint = Endpoint::start(scripted(), verdict("allow", "allow", "fine")).await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let screen = hosted_screen_server().await;
+    with_hosted_account(&lab, &screen);
+
+    let run = run_keyed(&lab, &["--screen", "live:hosted/baseten/joey-1"]).await;
+    assert_eq!(run.code, Some(2), "{}", run.stderr);
+    assert!(run.stderr.contains("typesafe/"), "{}", run.stderr);
+
+    let run = run_keyed(
+        &lab,
+        &[
+            "--screen",
+            "live:hosted/baseten/joey-1",
+            "--allow-threshold",
+            "0.3",
+            "--composition-param",
+            "allow=false",
+        ],
+    )
+    .await;
+    assert_eq!(run.code, Some(2), "{}", run.stderr);
+    assert!(run.stderr.contains("typesafe/"), "{}", run.stderr);
+    assert_eq!(screen.received_requests().await.unwrap().len(), 0);
+
+    let run = run_keyed(
+        &lab,
+        &[
+            "--screen",
+            "live:hosted/baseten/joey-1",
+            "--allow-threshold",
+            "0.3",
+        ],
+    )
+    .await;
+    assert!(matches!(run.code, Some(0 | 1)), "{}", run.stderr);
+    let cascade = &lab.report()["summary"]["cascade"];
+    assert_eq!(cascade["stop_threshold"], Value::Null);
+    assert_eq!(cascade["allow_threshold"], json!(0.3));
+    let label = lab.report()["summary"]["guardian"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(label.contains("stop=none"), "{label}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_hosted_screen_has_no_steering_veto_and_needs_its_key() {
     let endpoint = Endpoint::start(scripted(), verdict("allow", "allow", "fine")).await;
     let lab = Lab::new(&endpoint, &mixed_cases());

@@ -314,7 +314,7 @@ a fail-closed root. A read asks a small model a question about the call and turn
 risk between 0 and 1. A local read puts a yes/no question to an Ollama model and reads the first
 token's logprobs, because Ollama's native chat endpoint is the one that returns logprobs. A hosted
 read puts a five-level question to a `/v1/systemone` model on an `openrouter` account (Jev,
-`typesafe/jev-1.14`) and reads the level probabilities; see
+`typesafe/jev-1.14`, or another System One model) and reads the level probabilities; see
 [the screen preset on a hosted model](#the-screen-preset-on-a-hosted-model). The composition is configured in
 [`[guardian.composition]`](configuration.md#guardiancomposition) and is either a built-in preset,
 `screen` being the one that ships, or a script of your own. Nothing is enabled without
@@ -377,7 +377,8 @@ finished but whose verdict the composition did not use is added to the session's
 ### The screen preset on a hosted model
 
 When the composition's `model` is on an `openrouter` account (`model = "<account>/typesafe/jev-1.14"`),
-the preset asks Jev, OpenRouter's `/v1/systemone` model, how far outside what an employee given the
+the preset asks Jev, OpenRouter's `/v1/systemone` model (any other System One model works the same
+way; see [Other models](#other-system-one-models)), how far outside what an employee given the
 user's request would be allowed to do the call is, on five levels from "within" to "a fireable
 offence". The risk of a call is one minus the probability of "within". One request costs about
 $0.000027 and about 150 ms. The endpoint is the account's `base_url` (default
@@ -393,7 +394,7 @@ moved 2 to 9 of 1,503 calls across a 0.10 margin on Jev, against 93 of 134 on qw
 would add a local model to a hosted default for no measured gain. `question` and `steering_veto`
 are refused for a hosted model.
 
-The thresholds have defaults, so a section needs none:
+On a `typesafe/` model the thresholds have defaults, so a section needs none:
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -407,6 +408,22 @@ Both were fitted on the synthetic corpus only, never on the golden set (see
 [Evals](evals.md#cascade-scorecards)). A stop default can only escalate, but off-domain it stopped
 28 to 88% of allowed calls on synthetic thresholds, which is why setup recommends checking real
 traffic with `shadow = true` first.
+
+### Other System One models
+
+Any model an `openrouter` account serves on `/v1/systemone` can be the composition's `model`
+(`baseten/joey-1`, `respan/span-02`, `perplexity/pplx-decider-flash-v1.2`, `cloudflare/clef-flash`,
+`liquid/d1.1`). The defaults above are Jev's fit and apply only to a model whose id starts with
+`typesafe/`; another model needs `allow_threshold` and/or `stop_threshold` of its own, or
+`shadow = true`, and otherwise stops startup with exit code 2. Thresholds are measured per model;
+[Other hosted screens](evals.md#other-hosted-screens) lists how each candidate scored. Context
+windows differ (16,384 tokens for `joey-1` and `clef-flash`), and a state a model rejects is a
+fail-closed read: the call goes to the LLM guardian.
+
+A local OpenJev (open weights, CC BY-NC 4.0) served by its `helper/shim.py` on `127.0.0.1` speaks
+the same endpoint. Fontaine's composition still requires an OpenRouter key, so the recipe in
+[Evals](evals.md#local-openjev) scores it with the eval harness only, and it is unmeasured as a
+composition model.
 
 Jev is not deterministic: 60 to 75% of repeated requests for one call differ, by up to 0.22 in the
 risk. A zero-miss threshold fitted on one pass does not hold on the next, which is what the margin

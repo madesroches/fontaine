@@ -1437,6 +1437,54 @@ fn an_ollama_preset_still_needs_a_threshold_when_enforced_and_a_hosted_one_does_
     Composition::compile(jev_spec(&[], false), vec![]).unwrap();
 }
 
+fn other_hosted_spec(params: &[(&'static str, Param)], shadow: bool) -> CompositionSpec {
+    CompositionSpec {
+        model: "or/baseten/joey-1".into(),
+        ..jev_spec(params, shadow)
+    }
+}
+
+#[test]
+fn a_hosted_model_other_than_typesafe_needs_its_own_threshold_when_enforced() {
+    let error = Composition::compile(other_hosted_spec(&[], false), vec![])
+        .err()
+        .unwrap();
+    assert!(error.message.contains("or/baseten/joey-1"), "{error}");
+    assert!(error.message.contains("per model"), "{error}");
+    for param in ["stop_threshold", "allow_threshold"] {
+        Composition::compile(other_hosted_spec(&[(param, number(0.3))], false), vec![]).unwrap();
+    }
+    Composition::compile(other_hosted_spec(&[], true), vec![]).unwrap();
+}
+
+#[test]
+fn allow_false_with_only_an_allow_threshold_is_no_threshold_on_another_hosted_model() {
+    let error = Composition::compile(
+        other_hosted_spec(
+            &[
+                ("allow", Param::Bool(false)),
+                ("allow_threshold", number(0.3)),
+            ],
+            false,
+        ),
+        vec![],
+    )
+    .err()
+    .unwrap();
+    assert!(error.message.contains("per model"), "{error}");
+    Composition::compile(
+        other_hosted_spec(
+            &[
+                ("allow", Param::Bool(false)),
+                ("stop_threshold", number(0.3)),
+            ],
+            false,
+        ),
+        vec![],
+    )
+    .unwrap();
+}
+
 #[test]
 fn a_question_must_match_its_models_backend() {
     let compile = |question, backend| {
