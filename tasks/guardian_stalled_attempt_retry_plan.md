@@ -87,24 +87,27 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
 
 ## Testing Strategy
 
-All automated with the scripted endpoint (no live APIs). `Reply::Slow` is a wiremock delay on a real
-socket, so a paused clock auto-advances past the retried attempt's slice before the real reply
-arrives. The all-stall tests (every attempt hangs) use `start_paused = true`; the success-after-stall
-tests run on the real clock with a configured timeout above 2x the floor (15 s guardian, 12 s
-scanner) and a first reply that sleeps past the first slice, so each takes about one slice (~5 s) of
-real time; keep them few. A stall in the wild
-(`attack-data-exfiltration-02` at 30001 ms) motivated this, so it is pinned by a regression test.
+All automated, no live APIs. `Reply::Slow` is a wiremock delay on a real socket, so a paused clock
+auto-advances past a retried attempt's slice before the real reply arrives; the stall behavior tests
+therefore use a deterministic seam instead: a small delaying mock `Transport` (rig test-utils
+`Transport` trait + `Opening::new`; pattern at `rust/fontaine-core/tests/goal.rs:796-810` `Silent`)
+that either sleeps with `tokio::time::sleep` or never resolves, and otherwise delegates to the mock.
+Hang-then-valid, all-stall, stall+malformed+valid (rejection note kept), usage-before-stall tallied
+on `Timeout`, and scanner hang-then-valid use this transport on a paused clock, in `structured.rs`
+or the tests dirs, whichever the pattern fits. Exactly one real-socket wiremock test stays
+(`tests/guardian.rs`, real clock, a `Slow` first reply, 15 s timeout, about one slice (~5 s) of real
+time) as the in-the-wild regression for `attack-data-exfiltration-02` (stalled at 30001 ms).
 
 - Unit tests for the slice function: first attempt with default budget gets budget/3; floor applies;
   floor clamps to remaining; last attempt gets the remainder; zero remaining returns `TimedOut`
   without another attempt.
-- `tests/guardian.rs`: a reply that hangs and then a valid one yields the verdict within the budget
-  and the endpoint saw 2 calls; a hang that is followed by two more hangs still gives `Timeout`
+- Stall tests on the delaying transport: a reply that hangs and then a valid one yields the verdict
+  within the budget and the endpoint saw 2 calls; a hang that is followed by two more hangs still gives `Timeout`
   with total elapsed not above the budget; a stall plus a malformed answer plus a good one stays
   within the 3-attempt cap; Malformed, then Slow, then a valid reply gives a verdict with 3 calls, and
-  the third request still contains the "Your previous answer was rejected" section; usage billed before a stall is still tallied on `Timeout`; a stalled
-  attempt after a rejected answer still resends (no extra attempt). Existing timeout tests stay green.
-- `tests/scanner.rs`: hang then valid reply is a verdict; always-hang is `Failed`.
+  the third request still contains the "Your previous answer was rejected" section; usage billed before a stall is still tallied on `Timeout`. Existing timeout tests stay green.
+- Scanner, same transport: hang then valid reply is a verdict; always-hang is `Failed`.
+- `tests/guardian.rs`: the single real-clock wiremock regression above.
 
 ## Open Questions
 
