@@ -58,9 +58,10 @@ warn-through-`Approver` failure handling:
   same process starts a new journal, and `load_async` of an empty log is an empty `Ok` so
   `append_messages` keeps working), and record the input length from `RunStart.history`. Returns `RunStartAction::Continue`.
 - `on_completion_call`: append the not-yet-journaled tail of `history[input_len..] + prompt`
-  (exactly the committed messages) to the journal. The prompt is journaled by the first call.
+  (exactly the committed messages) to the journal. The prompt is journaled by the first call. It does nothing when the scratchpad holds no input
+  length, as settle does.
 - `on_run_settled`: on `Response`, truncate the journal to empty as above. On `Error`, load `<id>`
-  and truncate only if it holds input length + `messages.len()` messages (rig-memory changes some
+  and truncate only if `load_async(<id>).messages().len() == input_len + messages.len()` (`input_len` = `RunStart.history.len()`; settled messages include the prompt) (rig-memory changes some
   messages on load, e.g. image encodings, so equality is unreliable); otherwise keep the journal
   and say so in the warning. When no input length was recorded (a memory-load failure settles
   `Error` before `on_run_start`) the hook leaves the journal alone. `RecoveryHook` is registered
@@ -85,12 +86,11 @@ an empty journal means "none" and no marker is written. Otherwise its messages f
 chosen from `AgentSummary.running`: "run in progress at export" when running, "run interrupted"
 otherwise. "_No completed runs at export time._" is printed only when the journal is empty too. A fork child's
 `<id>` is seeded with the parent's context before its first run, so its export shows the seeded
-context, then the marker and the journal. `load_async` already tolerates a torn tail. A live
+context, then the marker and the journal. A live
 agent's journal is emptied at settle, except when the stream is dropped without settling (a
 spent budget, the kill-grace timeout): the journal then survives for an agent in the same process
 too and `/export` shows it the same way. The existing "completed runs only" note applies except
-that the export may include the journal of the run in progress. The index note "running at export;
-its file holds completed runs only" (`export.rs` ~378-380) and its test (~602) are updated to match.
+that the export may include the journal of the run in progress.
 
 Scope: subagents only (the issue).
 
@@ -102,6 +102,8 @@ Scope: subagents only (the issue).
 3. `fontaine-core/src/export.rs`: pass the journal into `render_agent_file` and append it after the
    agent's log, with the marker picked from `AgentSummary.running`; the empty-journal case is
    unchanged; update the index note for a running agent and its test.
+   The `render_agent_file` calls in `export.rs` unit tests (~610, ~627) pass an empty journal, and
+   the test at ~702 asserting the empty-transcript text is updated.
    Also update the stale doc comments in `export.rs`: the `running` field (~line 69, "holds
    completed runs only"), the index doc (~362-364), and "A log with no completed runs says so"
    (~393-394), which now also needs an empty journal.
@@ -113,7 +115,8 @@ Scope: subagents only (the issue).
 - `rust/fontaine-core/src/child_runner.rs`
 - `rust/fontaine-core/src/export.rs`
 - `rust/fontaine-core/tests/agent_pipeline.rs` (`mod killed`)
-- `docs/agents.md`, `docs/tui.md` (export note), `CHANGELOG.md`
+- `docs/agents.md`, `docs/tui.md` (export note), `docs/architecture.md` (session `logs/` listing),
+  `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (Decisions, Agents)
 
 ## Decisions
@@ -133,8 +136,13 @@ Scope: subagents only (the issue).
   grace never settles, so its in-flight messages live in the journal, which `/export` shows.
 - `docs/tui.md` export paragraph (line ~546): a running or killed agent's export includes its
   in-flight run.
+- `docs/architecture.md` (~lines 190-193, the session `logs/` listing): name the `<id>.inflight`
+  journal (log file `agent-<n>.inflight.jsonl`) beside `agent-<n>.jsonl`, and say it is written
+  as a run progresses and emptied when the run settles.
 - `CHANGELOG.md` under Unreleased → Fixed: subagent transcripts survive a killed process (#404).
-- Add the Decisions line above to the master plan's Agents subsection.
+- Master plan's Agents subsection, one line: 2026-11-03: a subagent's in-flight messages go to a
+  separate `<id>.inflight` log, emptied at settle and shown by `/export`, because rig's final save
+  refuses a log that moved under it.
 
 ## Testing Strategy
 
@@ -144,8 +152,8 @@ methods with constructed events:
 - journal holds prompt, assistant and tool-result messages in order after each `on_completion_call`;
 - journal is truncated to empty on `Response` and on `Error` settle, and on error the messages are
   in `<id>`;
-- on `Error` settle where the reloaded `<id>` does not hold input length + `messages.len()`
-  messages, the journal is kept and a warning is raised;
+- on `Error` settle where `load_async(<id>).messages().len() != input_len + messages.len()`
+  (`input_len` = `RunStart.history.len()`; settled messages include the prompt), the journal is kept and a warning is raised;
 - a stale journal is truncated at run start;
 - a torn journal still loads (extends `a_torn_log_remains_readable`);
 - a store failure warns once and the run continues.
@@ -153,7 +161,7 @@ methods with constructed events:
 Integration test in `rust/fontaine-core/tests/agent_pipeline.rs` `mod killed`, using
 `HeldTransport`/`build_held`: the script is a shell tool turn then a text turn. Wait on `seen`
 twice and release once, holding the second request. While the run is pending, assert
-`load_async(store, "agent-1.inflight")` holds the prompt, the assistant tool-call turn and its tool
+`child_log(&built, "agent-1.inflight")` (the helper in `agent_pipeline.rs` ~1112) holds the prompt, the assistant tool-call turn and its tool
 result (no kill, no `wait_report`), then call
 `export_session(&built.runtime.session, built.runtime.state.agents(), path)` and assert those
 appear after the in-progress marker. This pins the bug in #404 at the tier that reproduces it (a
