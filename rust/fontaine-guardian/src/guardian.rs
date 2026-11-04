@@ -15,14 +15,16 @@ use crate::profile::Profile;
 use crate::prompt_builder::{Rendered, render, with_schema_answer};
 use crate::request::AdjudicationRequest;
 use crate::structured::{
-    self, ModeResolver, Notifier, Options, OutputMode, OutputProbe, Tally, lacks_tool_support,
+    self, ModeResolver, Notifier, Options, OutputMode, OutputProbe, RunError, Tally,
+    lacks_tool_support,
 };
 use crate::verdict::{AuditLabel, Decision, FailClosed, Verdict};
 
 const TARGET: &str = "fontaine::telemetry";
 
-/// Retries after a malformed answer or a provider error, per adjudication. A malformed answer's
-/// retry carries the reason it was rejected; a provider error's is plain. Other users of rig's
+/// Retries after a malformed answer, a provider error or a stalled attempt, per adjudication. A
+/// malformed answer's retry carries the reason it was rejected; a provider error's or a stall's
+/// is plain. Other users of rig's
 /// `ExtractorBuilder::retries` (`goal.rs`) get plain retries.
 pub const EXTRACTOR_RETRIES: usize = 2;
 /// Also the cap of the critique reply.
@@ -274,25 +276,23 @@ impl Guardian {
 
         let spent = Tally::default();
         let options = Options {
+            budget: self.settings.timeout,
             retries: EXTRACTOR_RETRIES,
             max_tokens: MAX_TOKENS,
             additional_params: self.additional_params.as_ref(),
             rejection: Some(crate::verdict::rejection_note),
         };
-        let extraction = tokio::time::timeout(
-            self.settings.timeout,
-            structured::run::<Verdict>(
-                model,
-                mode,
-                &rendered.system,
-                rendered.user,
-                options,
-                &spent,
-            ),
+        let extraction = structured::run::<Verdict>(
+            model,
+            mode,
+            &rendered.system,
+            rendered.user,
+            options,
+            &spent,
         )
         .await;
         match extraction {
-            Err(_) => finish(Outcome::FailClosed(
+            Err(RunError::TimedOut) => finish(Outcome::FailClosed(
                 FailClosed::Timeout,
                 format!(
                     "the guardian did not answer within {} seconds",
@@ -300,7 +300,7 @@ impl Guardian {
                 ),
                 spent.total(),
             )),
-            Ok(Err(StructuredOutputError::Prompt(error))) => {
+            Err(RunError::Failed(StructuredOutputError::Prompt(error))) => {
                 tracing::warn!(error = %error, "the guardian model call failed");
                 let explanation = if lacks_tool_support(&error) {
                     format!(
@@ -315,7 +315,7 @@ impl Guardian {
                     spent.total(),
                 ))
             }
-            Ok(Err(error)) => {
+            Err(RunError::Failed(error)) => {
                 tracing::warn!(error = %error, "the guardian's answer could not be used");
                 finish(Outcome::FailClosed(
                     FailClosed::Unparseable,
@@ -323,7 +323,7 @@ impl Guardian {
                     spent.total(),
                 ))
             }
-            Ok(Ok(verdict)) => {
+            Ok(verdict) => {
                 if self.settings.cache {
                     self.cache
                         .lock()

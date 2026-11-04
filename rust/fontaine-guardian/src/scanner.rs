@@ -19,7 +19,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Instrument;
 
 use crate::prompt_builder::neutralize;
-use crate::structured::{self, ModeResolver, Notifier, Options, OutputMode, OutputProbe, Tally};
+use crate::structured::{
+    self, ModeResolver, Notifier, Options, OutputMode, OutputProbe, RunError, Tally,
+};
 
 #[cfg(feature = "pg2")]
 mod pg2;
@@ -158,6 +160,7 @@ impl LlmScanner {
             OutputMode::Schema => format!("{LLM_PROMPT}\n\n{SCHEMA_ANSWER}"),
         };
         let options = Options {
+            budget: self.timeout,
             retries: 1,
             max_tokens: MAX_TOKENS,
             additional_params: self.additional_params.as_ref(),
@@ -171,17 +174,18 @@ impl LlmScanner {
             user_message(tool, content),
             options,
             &spent,
-        );
-        match tokio::time::timeout(self.timeout, extraction).await {
-            Err(_) => failed(format!(
+        )
+        .await;
+        match extraction {
+            Err(RunError::TimedOut) => failed(format!(
                 "the scanner did not answer within {} seconds",
                 self.timeout.as_secs()
             )),
-            Ok(Err(error)) => {
+            Err(RunError::Failed(error)) => {
                 tracing::warn!(error = %error, "the scanner model gave no usable verdict");
                 failed(format!("the scanner model gave no usable verdict: {error}"))
             }
-            Ok(Ok(reported)) => reported.into_scan(),
+            Ok(reported) => reported.into_scan(),
         }
     }
 }

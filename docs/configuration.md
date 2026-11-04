@@ -515,7 +515,7 @@ Keys of the guardian that judges tool calls in `auto` mode and in the consequent
 |---|---|---|
 | `model` | The guardian model as `<account>/<model>`; it may use a different account than `[model]`. A model named here is pinned: it is never substituted when it is unavailable. | unset: the top-ranked validated model your accounts offer, else the main model |
 | `profile` | `full` or `minimal`. `minimal` narrows the guardian for containers and only loads when `--in-container` is given and a runtime probe finds a container; otherwise `full` runs, with a notice. It never turns the guardian off. | `full` |
-| `timeout_secs` | Time allowed for one verdict, retries included; at least 1. On expiry the call is denied. | `30` |
+| `timeout_secs` | Time allowed for one verdict, retries included; at least 1. An attempt that stalls is dropped and retried within it, and on expiry the call is denied. The first attempt may use all but 10 seconds of it (for timeouts of 15 seconds or more; each retry gets at least 5 seconds when that much remains), so a slow model needs more than its worst answer time plus 10. | `30` |
 | `confidence_threshold` | Between 0 and 1. An allow below it on a destructive call is turned into a deny. | `0.7` |
 | `cache` | Whether verdicts are cached for 60 seconds. | `true` |
 | `scanner` | Tool-result scanner: `off`, `pg2`, `llm` or `command`; it is the only switch. User file only. [Scanning tool results](guardian.md#scanning-tool-results) explains each. `pg2` needs a build with the `pg2` feature, which release binaries have; elsewhere it is a configuration error. | `off` |
@@ -524,7 +524,7 @@ Keys of the guardian that judges tool calls in `auto` mode and in the consequent
 | `scanner_hf_token_env` | Name of the environment variable holding the Hugging Face token the `pg2` download uses. The variable is always removed from `shell` and hook environments, whatever `scanner` is. User file only. | `HF_TOKEN` |
 
 The `llm` scanner uses the guardian's model, so it follows `model`. `timeout_secs` bounds each scan
-of every scanner type, and the `pg2` model load at startup.
+of every scanner type (the `llm` scanner retries a stalled attempt within it), and the `pg2` model load at startup.
 
 #### `[guardian.composition]`
 

@@ -164,7 +164,24 @@ impl AgentHook for Tally {
     }
 }
 
+/// The least a retry after a stalled attempt is given, so a short `timeout` is not cut into
+/// slices too small to answer.
+const ATTEMPT_FLOOR: Duration = Duration::from_secs(5);
+
+/// Why [`run`] gave no answer.
+// Boxing would only move rig's large error behind a pointer the callers immediately unwrap.
+#[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
+pub(crate) enum RunError {
+    /// The budget ran out: the last attempt stalled, or nothing was left to start another with.
+    TimedOut,
+    Failed(StructuredOutputError),
+}
+
 pub(crate) struct Options<'a> {
+    /// The ceiling on the whole call, retries included. Each attempt gets a slice of what is
+    /// left, so one that never answers is dropped and retried instead of using it all.
+    pub budget: Duration,
     /// Attempts after the first, so a call is made at most `1 + retries` times.
     pub retries: usize,
     pub max_tokens: u64,
@@ -191,8 +208,9 @@ fn retry_message(original: &str, note: &str) -> String {
 ///
 /// The retry loop is here, not in rig, because rig resends the same prompt and drops the error:
 /// the model never learns why its answer was rejected. Each retry carries only the latest
-/// attempt's note, and only a rejected answer earns one; the error of the last attempt is what
-/// comes back.
+/// attempt's note, and only a rejected answer earns one; a stalled attempt retries with the
+/// message it carried, keeping the earlier rejection note. The error of the last attempt is what
+/// comes back, or [`RunError::TimedOut`] when the budget ended the call.
 // rig's error type is large, and the callers match on it as it comes.
 #[allow(clippy::result_large_err)]
 pub(crate) async fn run<T>(
@@ -202,20 +220,42 @@ pub(crate) async fn run<T>(
     user_message: String,
     options: Options<'_>,
     spent: &Tally,
-) -> Result<T, StructuredOutputError>
+) -> Result<T, RunError>
 where
     T: JsonSchema + DeserializeOwned + Serialize + Send + Sync + 'static,
 {
+    let started = tokio::time::Instant::now();
     let mut message = user_message.clone();
     let mut attempt = 0;
     loop {
-        let error = match attempt_once::<T>(model, mode, preamble, &message, &options, spent).await
-        {
-            Ok(output) => return Ok(output),
-            Err(error) => error,
+        let remaining = options.budget.saturating_sub(started.elapsed());
+        let attempts_left = 1 + options.retries - attempt;
+        let Some(slice) = attempt_slice(remaining, attempts_left) else {
+            return Err(RunError::TimedOut);
+        };
+        let attempted = tokio::time::timeout(
+            slice,
+            attempt_once::<T>(model, mode, preamble, &message, &options, spent),
+        )
+        .await;
+        let error = match attempted {
+            Ok(Ok(output)) => return Ok(output),
+            Ok(Err(error)) => error,
+            Err(_) => {
+                if attempt >= options.retries {
+                    return Err(RunError::TimedOut);
+                }
+                attempt += 1;
+                tracing::warn!(
+                    attempt,
+                    slice_secs = slice.as_secs_f64(),
+                    "the structured answer stalled; retrying"
+                );
+                continue;
+            }
         };
         if attempt >= options.retries {
-            return Err(error);
+            return Err(RunError::Failed(error));
         }
         attempt += 1;
         tracing::warn!(attempt, error = %error, "the structured answer failed; retrying");
@@ -276,6 +316,20 @@ where
     }
 }
 
+/// How long the next attempt may take, or `None` when nothing is left. It keeps the remainder
+/// minus a floor for each later attempt, so a model that is merely slow still answers on the
+/// first; the last attempt gets everything that is left.
+fn attempt_slice(remaining: Duration, attempts_left: usize) -> Option<Duration> {
+    if remaining.is_zero() {
+        return None;
+    }
+    let later = u32::try_from(attempts_left.saturating_sub(1)).unwrap_or(u32::MAX);
+    let slice = remaining
+        .saturating_sub(ATTEMPT_FLOOR.saturating_mul(later))
+        .max(ATTEMPT_FLOOR);
+    Some(slice.min(remaining))
+}
+
 /// Whether a failed run is the provider refusing a request because the model has no tool
 /// support. Read from the typed response (status and body), not from rendered error text.
 pub(crate) fn lacks_tool_support(error: &PromptError) -> bool {
@@ -292,5 +346,51 @@ pub(crate) fn lacks_tool_support(error: &PromptError) -> bool {
                     .is_some_and(|response| response.body.contains(REFUSAL))
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn secs(n: u64) -> Duration {
+        Duration::from_secs(n)
+    }
+
+    #[test]
+    fn the_first_attempt_keeps_the_budget_minus_a_floor_per_retry() {
+        assert_eq!(attempt_slice(secs(30), 3), Some(secs(20)));
+        assert_eq!(attempt_slice(secs(10), 2), Some(secs(5)));
+        assert_eq!(attempt_slice(secs(5), 1), Some(secs(5)));
+    }
+
+    #[test]
+    fn a_slow_but_working_answer_fits_the_first_attempt() {
+        assert!(attempt_slice(secs(30), 3).is_some_and(|slice| slice >= secs(18)));
+    }
+
+    #[test]
+    fn a_short_budget_still_gives_the_floor() {
+        assert_eq!(attempt_slice(secs(12), 3), Some(secs(5)));
+    }
+
+    #[test]
+    fn the_floor_is_clamped_to_what_is_left() {
+        assert_eq!(attempt_slice(secs(3), 3), Some(secs(3)));
+        assert_eq!(
+            attempt_slice(Duration::from_millis(300), 3),
+            Some(Duration::from_millis(300))
+        );
+    }
+
+    #[test]
+    fn the_last_attempt_gets_the_remainder() {
+        assert_eq!(attempt_slice(secs(17), 1), Some(secs(17)));
+    }
+
+    #[test]
+    fn nothing_left_is_none() {
+        assert_eq!(attempt_slice(Duration::ZERO, 3), None);
+        assert_eq!(attempt_slice(Duration::ZERO, 1), None);
     }
 }

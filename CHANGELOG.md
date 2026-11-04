@@ -8,6 +8,10 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- A guardian or `llm` scanner call that never answers is now dropped and retried within
+  `[guardian] timeout_secs` instead of using all of it and being denied as a timeout; the timeout
+  stays the ceiling and the denial stays fail-closed; a model needing more than about 20 s per
+  answer at the default timeout now needs a larger `timeout_secs` (#310).
 - `fontaine plugin marketplace list` now shows both the number of plugins the catalog offers and the
   number installed from it (`3 offered, 0 installed`), so it agrees with `marketplace add` instead of
   reporting the installed count alone (#280).
