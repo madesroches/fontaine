@@ -38,9 +38,9 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
   `tokio::time::timeout` and the paused test clock agree) and, before each attempt, computes
   `remaining = budget.saturating_sub(elapsed)` (when zero, return `TimedOut` without starting another attempt) and `attempts_left = 1 + retries - attempt`. The attempt's
   timeout is `min(remaining, max(remaining / attempts_left, ATTEMPT_FLOOR))`, with
-  `ATTEMPT_FLOOR = 5 s`. With the defaults (30 s, 3 attempts) that is 10 s for the first attempt;
+  `ATTEMPT_FLOOR = 5 s`. The slice function returns `Option<Duration>`, `None` meaning out of budget (zero remaining), and `run` returns `TimedOut` on `None`. With the defaults (30 s, 3 attempts) that is 10 s for the first attempt;
   the last attempt always gets all that is left, and a floor that exceeds `remaining` is clamped to it.
-- An attempt that hits its timeout counts as a used attempt. If attempts remain and budget is left,
+- An attempt that hits its timeout counts as a used attempt and logs a `tracing::warn!` carrying the attempt number and the slice that ran out. If attempts remain and budget is left,
   retry with the same message the stalled attempt carried (a stall adds no new note; the previous note is kept).
   Otherwise return the timeout.
 - The error type changes from `StructuredOutputError` to a new `pub(crate) enum RunError { TimedOut,
@@ -56,8 +56,8 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
 ## Implementation Steps
 
 1. `structured.rs`: add `budget` to `Options`, `ATTEMPT_FLOOR`, `RunError`, and the per-attempt
-   timeout logic in `run`; extract the slice computation into a small pure function.
-2. `guardian.rs`: pass `budget: self.settings.timeout`, remove the outer `timeout`, map `RunError`.
+   timeout logic in `run`; extract the slice computation into a small pure function. Update the `run` doc (a stall keeps the earlier rejection note; only a rejected answer earns a new one) and add a doc for the new `budget` field.
+2. `guardian.rs`: pass `budget: self.settings.timeout`, remove the outer `timeout`, map `RunError`. Update the `EXTRACTOR_RETRIES` doc: retries also cover a stalled attempt.
 3. `scanner.rs`: same for `LlmScanner::run` (`budget: self.timeout`).
 4. Tests (below), docs, CHANGELOG entry under `### Fixed`.
 
@@ -66,7 +66,8 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
 - `rust/fontaine-guardian/src/structured.rs`
 - `rust/fontaine-guardian/src/guardian.rs`
 - `rust/fontaine-guardian/src/scanner.rs`
-- `rust/fontaine-guardian/tests/guardian.rs`, `rust/fontaine-guardian/tests/scanner.rs`
+- `rust/fontaine-guardian/tests/guardian.rs`, `rust/fontaine-guardian/tests/scanner.rs`,
+  `rust/fontaine-guardian/tests/common/mod.rs`
 - `docs/guardian.md`, `docs/configuration.md`
 - `CHANGELOG.md`
 
@@ -92,14 +93,17 @@ auto-advances past a retried attempt's slice before the real reply arrives; the 
 therefore use a deterministic seam instead: a small delaying mock `Transport` (rig test-utils
 `Transport` trait + `Opening::new`; pattern at `rust/fontaine-core/tests/goal.rs:796-810` `Silent`)
 that either sleeps with `tokio::time::sleep` or never resolves, and otherwise delegates to the mock.
+It lives in `rust/fontaine-guardian/tests/common/mod.rs`; the wrapper calls the inner `MockRuntime`
+before it sleeps or hangs, so the stalled request is recorded (hence "endpoint saw 2 calls").
 Hang-then-valid, all-stall, stall+malformed+valid (rejection note kept), usage-before-stall tallied
-on `Timeout`, and scanner hang-then-valid use this transport on a paused clock, in `structured.rs`
-or the tests dirs, whichever the pattern fits. Exactly one real-socket wiremock test stays
+on `Timeout`, and scanner hang-then-valid are integration tests using this transport on a paused
+clock (`Guardian::new` / `LlmScanner::new` take a public `DynModel`); `structured.rs` keeps only the
+slice-function unit tests. Exactly one real-socket wiremock test stays
 (`tests/guardian.rs`, real clock, a `Slow` first reply, 15 s timeout, about one slice (~5 s) of real
 time) as the in-the-wild regression for `attack-data-exfiltration-02` (stalled at 30001 ms).
 
 - Unit tests for the slice function: first attempt with default budget gets budget/3; floor applies;
-  floor clamps to remaining; last attempt gets the remainder; zero remaining returns `TimedOut`
+  floor clamps to remaining; last attempt gets the remainder; zero remaining returns `None`, and `run` returns `TimedOut`
   without another attempt.
 - Stall tests on the delaying transport: a reply that hangs and then a valid one yields the verdict
   within the budget and the endpoint saw 2 calls; a hang that is followed by two more hangs still gives `Timeout`
