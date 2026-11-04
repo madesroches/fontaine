@@ -37,10 +37,10 @@ committed by the run in progress (the prompt onward), so it never conflicts with
 save of `<agent-id>`.
 
 ```
-run start      ──► journal reset, record input length
+run start      ──► record input length and carried journal count (journal not reset)
 completion call──► append the not-yet-journaled tail of history[input_len..] + prompt
-settle OK ──► (engine saved <id>) ──► journal truncated to empty
-settle Err──► RecoveryHook appends to <id> ──► journal truncated to empty if <id> holds those messages
+settle OK ──► (engine saved <id>) ──► journal cut back to the messages carried in at run start (empty normally)
+settle Err──► RecoveryHook appends to <id> ──► journal cut back likewise if <id> holds those messages
 SIGKILL   ──► journal stays; export reads <id> then <id>.inflight
 ```
 
@@ -53,21 +53,24 @@ warn-through-`Approver` failure handling:
   scratchpad (rig's per-run `Scratchpad`, created fresh each run), set at `on_run_start`: hook
   methods take `&self` and one child agent serves many runs (prompts, idle-agent messages,
   retries), so a reused agent starts each run clean.
-- `on_run_start`: truncate any stale journal to empty via `replace_log_async(<id>.inflight, len, b"")`,
-  skipped when already empty (rig-memory's `AsyncStore` cannot remove a log; a resumed run in the
-  same process starts a new journal, and `load_async` of an empty log is an empty `Ok` so
-  `append_messages` keeps working), and record the input length from `RunStart.history`. Returns `RunStartAction::Continue`.
+- `on_run_start`: record the input length from `RunStart.history` and the journal's current message
+  count as `carried` (0 for an empty or absent journal). A non-empty journal is one a previous
+  Error settle deliberately kept because `<id>` lacked those messages; it is never truncated here,
+  and the run appends after it. (rig-memory's `AsyncStore` cannot remove a log, and `load_async` of
+  an empty log is an empty `Ok` so `append_messages` keeps working.) Returns `RunStartAction::Continue`.
 - `on_completion_call`: append the not-yet-journaled tail of `history[input_len..] + prompt`
   (exactly the committed messages) to the journal. The prompt is journaled by the first call. It does nothing when the scratchpad holds no input
   length, as settle does.
-- `on_run_settled`: on `Response`, truncate the journal to empty as above. On `Error`, load `<id>`
-  and truncate only if `load_async(<id>).messages().len() == input_len + messages.len()` (`input_len` = `RunStart.history.len()`; settled messages include the prompt) (rig-memory changes some
+- `on_run_settled`: on `Response`, cut the journal back to its first `carried` messages (empty when
+  `carried` is 0) via `replace_log_async(<id>.inflight, len, <those messages>)`, so earlier kept
+  messages survive and this run's, now in `<id>`, are not shown twice. On `Error`, load `<id>`
+  and cut the journal back to `carried` only if `load_async(<id>).messages().len() == input_len + messages.len()` (`input_len` = `RunStart.history.len()`; settled messages include the prompt) (rig-memory changes some
   messages on load, e.g. image encodings, so equality is unreliable); otherwise keep the journal
   and say so in the warning. When no input length was recorded (a memory-load failure settles
   `Error` before `on_run_start`) the hook leaves the journal alone. `RecoveryHook` is registered
   before it, so its append to `<id>` lands first; it only warns on failure and shares no state.
 
-Gap: a kill loses the last assistant turn whose tools are still running, together with that
+Gap, accepted and not covered: a kill loses the last assistant turn whose tools are still running, together with that
 batch's results; they reach the journal only at the next `on_completion_call`.
 
 Every append is one `append_messages` call to the journal log (the existing helper: load, extend,
@@ -126,6 +129,12 @@ Scope: subagents only (the issue).
 - 2026-11-03: SIGTERM-only flush declined: does not cover SIGKILL/OOM.
 - 2026-11-03: journal from `on_completion_call`, not `on_model_turn_finished`/`on_outcome`: neither
   sees exactly the committed messages.
+- 2026-11-03: AFK: a journal kept by an Error settle (because `<id>` lacks the run's messages) is
+  carried through the next run (not truncated at `on_run_start`, kept at settle, shown by `/export`)
+  rather than discarded, so a kill-or-failure never loses messages the journal already held; chosen
+  as the option that loses nothing with no new mechanism beyond the journal.
+- 2026-11-03: AFK: the last assistant turn whose tools are running, plus that batch's results, stay
+  lost on a kill; accepted and documented, no provisional uncommitted record added.
 
 ## Documentation
 
@@ -150,11 +159,12 @@ Unit tests in `turn_recovery.rs` against `MemoryStore`/`DirStore`, driven by cal
 methods with constructed events:
 
 - journal holds prompt, assistant and tool-result messages in order after each `on_completion_call`;
-- journal is truncated to empty on `Response` and on `Error` settle, and on error the messages are
+- journal is cut back to empty on `Response` and on `Error` settle, and on error the messages are
   in `<id>`;
+- a journal kept by an `Error` settle survives the next run's start and its settle: the next run
+  appends after it, and after settling the journal holds exactly the kept messages;
 - on `Error` settle where `load_async(<id>).messages().len() != input_len + messages.len()`
   (`input_len` = `RunStart.history.len()`; settled messages include the prompt), the journal is kept and a warning is raised;
-- a stale journal is truncated at run start;
 - a torn journal still loads (extends `a_torn_log_remains_readable`);
 - a store failure warns once and the run continues.
 
