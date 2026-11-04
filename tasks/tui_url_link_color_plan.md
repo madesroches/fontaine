@@ -18,7 +18,7 @@ call rows and reasoning are deliberately not linkified.
   (`Modifier::empty()`), so link text renders as plain text and the target is dropped. Bare URLs are
   `Event::Text`; pulldown-cmark does not autolink them. `<https://x>` autolinks do arrive as
   `Tag::Link`. `markdown::rows` takes `glyphs` but no theme; callers are `transcript.rs`
-  (`stable_rows`, `assistant_rows`, `entry_lines`).
+  (`stable_rows`, `assistant_rows`).
 - `transcript.rs` `plain_rows` renders the unstable streaming tail as unstyled wrapped text;
   `tool_lines` renders tool output rows.
 - Wrapping (`wrap_spans`) is per-char and keeps each char's style, so a style applied to a span
@@ -26,8 +26,8 @@ call rows and reasoning are deliberately not linkified.
 
 ## Design
 1. **Theme token.** Add `pub link: Color` to `Theme`, documented "URLs and markdown link text".
-   Values per preset, matching Claude Code's blue-ish link convention while staying distinct from
-   `user` (cyan/blue) where practical:
+   Values per preset, matching Claude Code's blue-ish link convention. The link shares the blue family with
+   `user`, harmless because user rows are never linkified and the underline sets links apart:
    - dark-ansi: `Color::LightBlue`; light-ansi: `Color::Blue`
    - dark: `rgb(120, 170, 255)`; light: `rgb(0, 70, 190)`
    - dark-daltonized: `rgb(102, 178, 255)`; light-daltonized: `rgb(0, 70, 190)` with daltonized
@@ -102,6 +102,8 @@ call rows and reasoning are deliberately not linkified.
   every theme.
 - `docs/tui.md` (~line 370, links render "as their text"): say links are coloured and underlined, and
   bare URLs too.
+- `docs/tui.md` (~line 37, tool output "dim behind a `│` gutter"): say URLs in tool and `!` shell
+  output are drawn in the link colour, underlined.
 - `CHANGELOG.md`: entry under Unreleased > Added > TUI.
 
 ## Testing Strategy
