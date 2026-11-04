@@ -58,7 +58,8 @@ OpenJev can sit behind the preset, and (optionally) a different default model.
 For each model run the employee-levels scorer on the current dataset, two repeats (the project
 already notes repeated Jev answers differ by up to 0.22; a repeat is a separate run with a `-r2`
 suffix on the scorecard name), and write
-`evals/scorecards/screen-<model-slug>-employee-levels.json`. Jev is re-scored in the same session
+`evals/scorecards/screen-<model-slug>-employee-levels.json`. The slug drops the account/vendor
+prefix (`joey-1`, `span-02`), with `-r2` appended for the second repeat. Jev is re-scored in the same session
 as the control, since model versions move (`typesafe/jev-1.14-20261014` may have been re-pinned).
 Compare on the scorecard measures already used in `research/analysis-jev-openrouter.md`: AUROC for
 must-not-clear vs allow, `t_allow` (zero-missed-attack threshold) and the share of benign cases it
@@ -90,6 +91,10 @@ Let an `openrouter`-kind account with a loopback `base_url` run without a key:
   sends no bearer header and `key_may_travel` is enforced only when keyed; only
   `check_composition_credentials` in `config.rs` and `build_reader` in `agent/setup.rs` need the
   loopback exception); a non-loopback endpoint keeps today's error.
+- The exception goes in `screen_key` (`rust/fontaine-core/src/config.rs` ~L1655-1678), which both
+  `check_composition_credentials` and `build_reader` call.
+- Setup-offer detection (`detect_hosted`, `composition_offer.rs`) is intentionally unchanged: a
+  keyless loopback account is never auto-offered and must be configured by hand.
 - A remote host without a key stays an exit-2 error, so nothing becomes keyless by accident.
 - No new account kind: the existing kind already means "a System One endpoint at `base_url`".
 
@@ -104,7 +109,16 @@ Today `rust/fontaine-guardian/src/composition/preset.rs` applies the Jev thresho
 (`JEV_ALLOW_THRESHOLD = 0.20`, `JEV_STOP_THRESHOLD = 0.34`) to any hosted System One model; the
 "there is no default" error is Ollama-only. Change it so the Jev defaults apply only when the model
 id starts with `typesafe/`; any other hosted model must set `allow_threshold` and/or
-`stop_threshold`, or keep `shadow = true`, with the same error as the Ollama path.
+`stop_threshold`, or keep `shadow = true`, with the same error as the Ollama path, whose text (`preset.rs` ~L203) should name the model and
+say thresholds are measured per model. The `typesafe/` requirement applies only when the model is
+known (non-empty, the compile path): `check_preset_params` (`composition/mod.rs`, used by
+`config.rs` and `composition_offer.rs`) resolves with an empty model and skips it, so parameter
+validation does not reject on the empty id.
+
+`rust/fontaine-evals/src/runner.rs` (~L606-616) hard-codes the Jev defaults for any `--screen live:`
+model: apply the same `typesafe/`-only defaults there, require explicit `--stop-threshold` and/or
+`--allow-threshold` for other models, and update the `--screen` and threshold help text
+(~L104-122), which says an `openrouter` account runs the preset defaults.
 
 ## Implementation Steps
 
@@ -129,6 +143,7 @@ id starts with `typesafe/`; any other hosted model must set `allow_threshold` an
   passages to fix: `docs/guardian.md` ~L378-381 (key required; sent only over https or loopback) and
   ~L310, `docs/evals.md` ~L315 (hosted screen described as Jev-specific)
 - `rust/fontaine-guardian/src/composition/preset.rs` and its tests (Design 5), `docs/configuration.md`
+- `rust/fontaine-evals/src/runner.rs` (Design 5: defaults and `--screen` help text)
 - `CHANGELOG.md`
 - Conditional (Design 3): `rust/fontaine-core/src/config.rs`, `rust/fontaine-core/src/agent/setup.rs`,
   `rust/fontaine-core/src/composition_offer.rs`, their tests, and `docs/configuration.md`
@@ -150,7 +165,7 @@ id starts with `typesafe/`; any other hosted model must set `allow_threshold` an
   Flash-9B on Qwen3.5-9B); the plan uses Flash-9B.
 - 2026-11-03 The maintainer authorized live hosted benchmarks up to $3 in total with the key in
   `~/open_router_key`; every scorer run passes `--screen-max-cost-usd` so the sum of caps stays
-  under $3 (at ~$0.00003 a call, 258 cases x 2 repeats x 6 models is about $0.10 per model).
+  under $3 (at ~$0.00003 a call, 258 cases x 2 repeats x 6 models is about $0.016 per model).
 - 2026-11-03 No code change is needed to score the hosted models: all five answer the
   employee-levels request in the shape the parser already reads.
 - 2026-11-03 AFK: the Jev threshold defaults apply only when the model id starts with `typesafe/`;
@@ -173,7 +188,10 @@ id starts with `typesafe/`; any other hosted model must set `allow_threshold` an
   non-loopback account with no key is still exit 2; `key_may_travel` behavior is unchanged. Composition
   and accounts stay user-only (already enforced in `config_scope.rs`). Implementation step 6: a
   `typesafe/` model gets the Jev defaults; another hosted model with neither threshold and
-  `shadow = false` is rejected, and with a threshold or `shadow = true` is accepted.
+  `shadow = false` is rejected, and with a threshold or `shadow = true` is accepted. The hosted-one assertion in `an_ollama_preset_still_needs_a_threshold_when_enforced_and_a_hosted_one_does_not`,
+  `rust/fontaine-guardian/tests/composition.rs` (~L1430-1440), is split into a `typesafe/` case (no
+  thresholds accepted) and a non-typesafe case (rejected, error names the model); the
+  empty-model `check_preset_params` path stays accepted.
 
 ## Manual Verification
 
