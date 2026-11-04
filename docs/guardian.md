@@ -243,12 +243,15 @@ Fontaine's code, not the model, decides what happens when there is no usable ver
 |---|---|---|
 | No credential, unknown account, or the pinned model is unavailable | deny, rule `GuardianUnavailable` | `unavailable` |
 | Provider error, dropped stream, connection reset or a closed socket | deny, rule `GuardianUnavailable` | `error` |
-| No answer within `[guardian] timeout_secs` (default 30, retries included) | deny, rule `Timeout` | `timeout` |
+| No answer within `[guardian] timeout_secs` (default 30, retries included; an attempt that stalls is dropped and retried inside it) | deny, rule `Timeout` | `timeout` |
 | Malformed, schema-invalid or out-of-enum verdict after two retries | deny, rule `Unparseable` | `unparseable` |
 | An allow on a **destructive** call with confidence below `confidence_threshold` (default 0.7) | deny, rule `LowConfidence` | `low_confidence` |
 
-The retry budget is two retries, shared between malformed answers and provider errors, and the last
-failure names the denial. A malformed verdict is retried with a note saying why it was rejected,
+The retry budget is two retries, shared between malformed answers, provider errors and stalled
+attempts, and the last failure names the denial. Each attempt gets a slice of `timeout_secs`: the
+first may use all but 10 seconds of it and each retry at least 5, so a call that never answers is
+retried instead of using the whole timeout, while `timeout_secs` stays the ceiling. A slow model
+therefore needs a `timeout_secs` above its worst answer time plus 10 seconds. A malformed verdict is retried with a note saying why it was rejected,
 written by Fontaine and never quoting the model's own text; if it still fails it is denied as
 `unparseable`. A deny verdict is never softened. The destructive class is derived from the call by
 Fontaine, structurally, never from the label the guardian chose: a call is destructive when it
@@ -763,7 +766,8 @@ records the verdict and the latency, never the content.
 | `llm` | The guardian's model, in a short separate conversation with its own prompt. The result sits inside an untrusted block. A malformed answer, an error or a timeout leaves the result unscanned and suspect. |
 | `command` | A program of your own (`scanner_command`). See [the contract](configuration.md#bring-your-own-scanner). |
 
-Each scan is bounded by `[guardian] timeout_secs`. `pg2` is in the release binaries; a source build
+Each scan is bounded by `[guardian] timeout_secs`; a scan attempt that stalls is dropped and retried
+once within it. `pg2` is in the release binaries; a source build
 needs `cargo build --features pg2`, and `scanner = "pg2"` in a build without it is a configuration
 error (exit code 2).
 

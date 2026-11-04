@@ -11,9 +11,14 @@ use fontaine_guardian::{
     ToolCallSummary,
 };
 use rig_core::DynModel;
+use rig_core::Model;
+use rig_core::completion::CompletionRequest;
+use rig_core::driver::{Exchange, Opening, Transport};
 use rig_core::operation::Completion;
 use rig_core::providers::openai::OpenAIConfig;
 use rig_core::providers::openai::wire::{Auth, Dialect};
+use rig_core::test_utils::{MockCompletionModel, MockScript, MockTurn};
+use rig_core::wire::Wire;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -191,4 +196,84 @@ pub fn settings() -> Settings {
 
 pub fn shared(guardian: Guardian) -> Arc<Guardian> {
     Arc::new(guardian)
+}
+
+/// What a request on a [`Stalling`] model comes to.
+#[derive(Clone, Copy, Debug)]
+pub enum Step {
+    /// The scripted turn answers at once.
+    Answer,
+    /// The reply never arrives.
+    Hang,
+    /// The scripted turn answers after this long.
+    Sleep(Duration),
+}
+
+/// A scripted model whose replies can stall on the tokio clock, so a paused clock sees exactly
+/// the stall it was told about. A stalled request still consumes its scripted turn and is
+/// recorded, so a turn must stand in for it. Requests past the last step are answered.
+pub struct Stalling {
+    pub model: DynModel<Completion>,
+    mock: MockCompletionModel,
+}
+
+impl Stalling {
+    pub fn new(turns: Vec<MockTurn>, steps: Vec<Step>) -> Stalling {
+        let mock = MockCompletionModel::from_turns(turns);
+        let transport = Delaying {
+            inner: mock.transport.clone(),
+            steps: Arc::new(steps),
+            next: Arc::new(AtomicUsize::new(0)),
+        };
+        let model = Model::new(MockScript::new("stalling"), transport).into();
+        Stalling { model, mock }
+    }
+
+    pub fn requests(&self) -> Vec<CompletionRequest> {
+        self.mock.requests()
+    }
+
+    pub fn calls(&self) -> usize {
+        self.mock.request_count()
+    }
+
+    pub fn guardian(&self, settings: Settings) -> Guardian {
+        Guardian::new(self.model.clone(), "mock/stalling", settings)
+    }
+}
+
+#[derive(Clone)]
+struct Delaying {
+    inner: rig_core::test_utils::MockRuntime,
+    steps: Arc<Vec<Step>>,
+    next: Arc<AtomicUsize>,
+}
+
+impl Transport<MockScript> for Delaying {
+    fn send(
+        &self,
+        payload: <MockScript as Wire>::Payload,
+        exchange: Exchange,
+    ) -> Opening<<MockScript as Wire>::Frame> {
+        let opening = self.inner.send(payload, exchange);
+        let at = self.next.fetch_add(1, Ordering::SeqCst);
+        match self.steps.get(at).copied().unwrap_or(Step::Answer) {
+            Step::Answer => opening,
+            Step::Hang => Opening::new(std::future::pending()),
+            Step::Sleep(delay) => Opening::new(async move {
+                tokio::time::sleep(delay).await;
+                opening.await
+            }),
+        }
+    }
+}
+
+/// A scripted turn in which the model calls `submit` with `arguments`.
+pub fn submit_turn(arguments: Value) -> MockTurn {
+    MockTurn::tool_call("call_1", "submit", arguments)
+}
+
+/// A turn that stands in for a request that stalls: its reply is never read.
+pub fn unread_turn() -> MockTurn {
+    MockTurn::text("unread")
 }

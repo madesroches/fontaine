@@ -2,7 +2,10 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Endpoint, Reply, allow, deny, guardian_at, request, settings, verdict};
+use common::{
+    Endpoint, Reply, Stalling, Step, allow, deny, guardian_at, request, settings, submit_turn,
+    unread_turn, verdict,
+};
 use fontaine_guardian::{
     AuditLabel, Decision, FailClosed, Guardian, PreExistence, Profile, RuleLabel, Settings,
     TouchedPath, WireIds,
@@ -338,6 +341,142 @@ async fn a_guardian_that_does_not_answer_in_time_is_denied_as_a_timeout() {
     let result = guardian.adjudicate(&request("ls", false)).await;
     assert_eq!(names(&result), (Decision::Deny, "Timeout"));
     assert_eq!(result.fail_closed, Some(FailClosed::Timeout));
+}
+
+fn malformed_with_usage() -> rig_core::test_utils::MockTurn {
+    let mut usage = rig_core::completion::Usage::default();
+    usage.input_tokens = Some(100);
+    usage.output_tokens = Some(20);
+    usage.total_tokens = Some(120);
+    submit_turn(serde_json::json!({"decision": "maybe"})).with_usage(usage)
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stalled_attempt_is_retried_within_the_timeout() {
+    let model = Stalling::new(
+        vec![unread_turn(), submit_turn(allow(0.99))],
+        vec![Step::Hang, Step::Answer],
+    );
+    let guardian = model.guardian(settings());
+    let started = tokio::time::Instant::now();
+    let result = guardian.adjudicate(&request("ls", false)).await;
+    assert_eq!(result.decision, Decision::Allow);
+    assert_eq!(model.calls(), 2);
+    assert!(started.elapsed() <= Duration::from_secs(30));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_slow_but_working_answer_fits_the_first_attempt() {
+    let model = Stalling::new(
+        vec![submit_turn(allow(0.99))],
+        vec![Step::Sleep(Duration::from_secs(18))],
+    );
+    let result = model
+        .guardian(settings())
+        .adjudicate(&request("ls", false))
+        .await;
+    assert_eq!(result.decision, Decision::Allow);
+    assert_eq!(model.calls(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn attempts_that_all_stall_end_as_a_timeout_within_the_budget() {
+    let model = Stalling::new(
+        vec![unread_turn(), unread_turn(), unread_turn()],
+        vec![Step::Hang, Step::Hang, Step::Hang],
+    );
+    let started = tokio::time::Instant::now();
+    let result = model
+        .guardian(settings())
+        .adjudicate(&request("ls", false))
+        .await;
+    assert_eq!(names(&result), (Decision::Deny, "Timeout"));
+    assert_eq!(result.fail_closed, Some(FailClosed::Timeout));
+    assert_eq!(model.calls(), 3);
+    assert!(started.elapsed() <= Duration::from_secs(30));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stall_a_malformed_answer_and_a_good_one_stay_within_the_attempt_cap() {
+    let model = Stalling::new(
+        vec![
+            unread_turn(),
+            submit_turn(serde_json::json!({"decision": "maybe"})),
+            submit_turn(allow(0.99)),
+        ],
+        vec![Step::Hang],
+    );
+    let result = model
+        .guardian(settings())
+        .adjudicate(&request("ls", false))
+        .await;
+    assert_eq!(result.decision, Decision::Allow);
+    assert_eq!(model.calls(), 3);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stall_keeps_the_rejection_note_of_the_earlier_answer() {
+    let model = Stalling::new(
+        vec![
+            submit_turn(serde_json::json!({"decision": "maybe"})),
+            unread_turn(),
+            submit_turn(allow(0.99)),
+        ],
+        vec![Step::Answer, Step::Hang],
+    );
+    let result = model
+        .guardian(settings())
+        .adjudicate(&request("ls", false))
+        .await;
+    assert_eq!(result.decision, Decision::Allow);
+    let requests = model.requests();
+    assert_eq!(requests.len(), 3);
+    let rejected = "Your previous answer was rejected";
+    assert!(!format!("{:?}", requests[0]).contains(rejected));
+    assert!(format!("{:?}", requests[1]).contains(rejected));
+    assert!(format!("{:?}", requests[2]).contains(rejected));
+}
+
+#[tokio::test(start_paused = true)]
+async fn usage_billed_before_a_stall_is_tallied_on_the_timeout() {
+    let model = Stalling::new(
+        vec![malformed_with_usage(), unread_turn(), unread_turn()],
+        vec![Step::Answer, Step::Hang, Step::Hang],
+    );
+    let result = model
+        .guardian(settings())
+        .adjudicate(&request("ls", false))
+        .await;
+    assert_eq!(result.fail_closed, Some(FailClosed::Timeout));
+    assert_eq!(result.usage.input_tokens, Some(100));
+}
+
+#[tokio::test]
+async fn no_budget_means_no_attempt() {
+    let endpoint = Endpoint::start(vec![Reply::Verdict(allow(0.99))]).await;
+    let guardian = endpoint.guardian(Settings {
+        timeout: Duration::ZERO,
+        ..settings()
+    });
+    let result = guardian.adjudicate(&request("ls", false)).await;
+    assert_eq!(result.fail_closed, Some(FailClosed::Timeout));
+    assert_eq!(endpoint.calls().await, 0);
+}
+
+#[tokio::test]
+async fn a_reply_stalled_on_a_real_socket_is_retried_and_answered() {
+    let endpoint = Endpoint::start(vec![
+        Reply::Slow(Duration::from_secs(60), allow(0.99)),
+        Reply::Verdict(allow(0.99)),
+    ])
+    .await;
+    let guardian = endpoint.guardian(Settings {
+        timeout: Duration::from_secs(15),
+        ..settings()
+    });
+    let result = guardian.adjudicate(&request("ls", false)).await;
+    assert_eq!(result.decision, Decision::Allow);
+    assert_eq!(endpoint.calls().await, 2);
 }
 
 #[tokio::test]

@@ -2,7 +2,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{Endpoint, Reply, model_at};
+use common::{Endpoint, Reply, Stalling, Step, model_at, submit_turn, unread_turn};
 use fontaine_guardian::{LlmScanner, Scan, Scanner};
 use serde_json::{Value, json};
 
@@ -247,4 +247,27 @@ async fn additional_params_reach_the_scanner_body_only_when_set() {
     let sent = endpoint.requests().await.remove(0);
     assert_eq!(sent["thinking"]["type"], "disabled", "{sent}");
     assert_eq!(sent["tool_choice"], "required");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_scan_that_stalls_once_is_retried_and_answered() {
+    let model = Stalling::new(
+        vec![unread_turn(), submit_turn(answer("clean", "fine"))],
+        vec![Step::Hang],
+    );
+    let scanner = LlmScanner::new(model.model.clone(), Duration::from_secs(30), true);
+    assert_eq!(scanner.scan("shell", "build ok").await, Scan::Clean);
+    assert_eq!(model.calls(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_scan_that_always_stalls_fails() {
+    let model = Stalling::new(
+        vec![unread_turn(), unread_turn()],
+        vec![Step::Hang, Step::Hang],
+    );
+    let scanner = LlmScanner::new(model.model.clone(), Duration::from_secs(30), true);
+    let scan = scanner.scan("shell", "build ok").await;
+    assert!(failed(&scan), "{scan:?}");
+    assert_eq!(model.calls(), 2);
 }
