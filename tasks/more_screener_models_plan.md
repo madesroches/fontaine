@@ -171,6 +171,7 @@ model: apply the same `typesafe/`-only defaults there, require explicit `--stop-
 - 2026-11-03 AFK: the Jev threshold defaults apply only when the model id starts with `typesafe/`;
   any other hosted model must set both thresholds or leave `shadow = true` (chosen conservatively:
   an allow path on another model with unmeasured thresholds would loosen the guardian).
+- AFK: 2026-11-03 Hardware for the local OpenJev is unknown; the OpenJev run (Implementation step 3) is attempted only on a CUDA GPU (vLLM) or Apple-silicon Mac (MLX) that is available; otherwise the doc records the recipe as unmeasured and Design 3 is not built.
 
 ## Documentation
 
@@ -199,8 +200,3 @@ model: apply the same `typesafe/`-only defaults there, require explicit `--stop-
    response carries `answers.q.probabilities.within`. Not automated because it needs a GPU and
    the 9B weights.
 2. Run the scorer against it (`--screen-url http://127.0.0.1:3000`) and check fail-closed is 0.
-
-## Open Questions
-
-- What hardware will run the local OpenJev (CUDA GPU with vLLM, or an Apple-silicon Mac with MLX)?
-  The 6 GB GTX 1060 noted in `docs/evals.md` cannot hold the Flash-9B Q4_K_M under vLLM.
