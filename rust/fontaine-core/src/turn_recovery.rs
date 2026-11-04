@@ -371,9 +371,8 @@ mod tests {
         let pad = Scratchpad::default();
         let input = [user("old"), Arc::new(Message::assistant("older"))];
         hook.start(&pad, input.len()).await;
-        let mut history = input.to_vec();
+        let history = input.to_vec();
         hook.call(&pad, &history, &Message::user("new")).await;
-        history.push(user("new"));
         let lines = journal(&store).await;
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert!(lines[0].contains("new"));

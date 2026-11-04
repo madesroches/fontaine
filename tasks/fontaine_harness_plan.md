@@ -407,7 +407,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-02: No tmux split-pane display and no per-teammate model beyond what `agent` already has; both are Claude Code display or ergonomics features outside #40.
 - 2026-11-02 (user): Deviation — once the team board has tasks, all completed, and no teammate is running, idle teammates are retired (ended `done`, off the agent list) instead of staying idle until killed; reason: a finished team should not linger in the list, and a later task spawns a fresh teammate.
 - 2026-11-03: A subagent's in-flight messages go to a separate `<id>.inflight` log, emptied at settle and shown by `/export`, because rig's final save refuses a log that moved under it.
-- 2026-11-03: A journal kept by an `Error` settle (the agent's log lacks the run's messages) is carried through the next run rather than discarded; the journal is cut back to the byte length of its whole lines at run start (`replace_log_async` takes raw bytes, so the prefix is exact), so nothing already journaled is lost.
+- 2026-11-03: A journal kept by an `Error` settle (the agent's log lacks the run's messages) is carried through the next run rather than discarded; the journal is cut back at settle to the whole-line byte length recorded at run start (`replace_log_async` takes raw bytes, so the prefix is exact), so nothing already journaled is lost.
 - 2026-11-03: A kill loses the last assistant turn whose tools are still running, with that batch's results; accepted, no provisional record of uncommitted messages.
 
 ### Build and release
