@@ -69,10 +69,12 @@ untouched.
   so a rebound `transcript` key closes it. The early-return key block sits after the agents-panel
   block and before the Esc arms (running-turn interrupt, double-Esc), and applies only when
   `approval.is_none() && questions.is_empty()`; `view::overlay` uses the same order, so an
-  approval prompt or question takes the overlay slot and the view reopens nowhere automatically.
+  approval prompt or question takes the overlay slot; like the agents panel, the view stays open
+  under it and returns once it is answered, and the open arm keeps the `!typing_reason` gate.
   Ctrl+C is reserved and maps to `TuiAction::Interrupt`, whose arm (`app.rs:890-899`) sits at the
   top of `handle_key`, before every overlay block: that arm closes the view, when it is open and
-  there is no approval/question, before it returns Interrupt/Quit, consuming
+  there is no approval/question, and returns `Action::None` (no Interrupt/Quit), as its
+  `close_palette` branch does, consuming
   `committed_under_overlay` as the other close paths do.
 - Ignored while the agents panel has the keys, as Ctrl-O was.
 
@@ -112,7 +114,8 @@ keep it out of the main transcript while a subagent view is open.
    only in the collapsed `tool_lines` path and the collapsed arm of `linear.rs` (`:276`); the
    `Expanded` arm (`linear.rs:322`) prints the whole reason split on `'\n'`; add `verbose_lines`.
 3a. `transcript.rs`: `settle` and `guardian_denied` write the new status to every `Entry::Tool`
-   with that id, so the original (pending row already in scrollback) holds the final state:
+   sharing the id of the entry `find_tool` returned (not the raw `id` argument: `apply_event`
+   passes `""` when `tool_use_id` is absent and `find_tool` then falls back to the tool name), so the original (pending row already in scrollback) holds the final state:
    `apply_event` (`ui/turn.rs:217-240`) runs `on_event(Decision)` first, which settles the original
    and pushes a follow-up copy, then `guardian_denied`, whose `find_tool` searches from the end
    (`transcript.rs:376-386`) and would otherwise reach only the follow-up copy.
@@ -122,7 +125,7 @@ keep it out of the main transcript while a subagent view is open.
    agents-panel block and before the Esc arms, gated on no approval/question; closing consumes
    `committed_under_overlay` and re-prints, as the agents-panel close arms (`app.rs:1051`,
    `:1060`) do. The `Interrupt` arm (`app.rs:890-899`) also closes the view (same gate and same
-   consumption) before returning Interrupt/Quit. Update the test at `app.rs:3164`,
+   consumption) and returns `Action::None`, as its `close_palette` branch does. Update the test at `app.rs:3164`,
    `ctrl_o_toggles_the_task_list_unless_the_agents_panel_has_the_keys`: switch it to `alt+t`,
    rename it, and add a twin for the transcript key.
 6. `view.rs`: overlay + footer (same order as the key block); add the transcript view to the
@@ -148,9 +151,9 @@ keep it out of the main transcript while a subagent view is open.
 - `rust/fontaine-tui/src/{keymap,app,transcript,view,screen,commands,linear,reports,lib}.rs`,
   `rust/fontaine-tui/src/ui/mod.rs`, new `rust/fontaine-tui/src/transcript_view.rs`,
   `rust/fontaine-tui/tests/todos.rs`
-- `docs/tui.md` (keys table :227, example :237, `/expand` text ~:48-64 and :577 gets a pointer,
+- `docs/tui.md` (keys table :227, example :238, `/expand` text ~:48-64 and :577 gets a pointer,
   `/todos` :603, task panel :897, new "The transcript view" section), `docs/configuration.md`
-  (:1075 example, :1102 action table), `docs/terminal.md`, `CHANGELOG.md` `[Unreleased]`
+  (:1074 example, :1102 action table), `docs/terminal.md` (`alt+t` in the "Option as Meta on macOS" paragraph, ~:93-101, since Option+t types a character otherwise), `CHANGELOG.md` `[Unreleased]`
 - `tasks/fontaine_harness_plan.md` Decisions
 
 ## Trade-offs
@@ -200,7 +203,7 @@ keep it out of the main transcript while a subagent view is open.
   `verbose_lines` shows it rather than the agent-facing note.
 - Unit (`app`): the key opens and closes the view; Esc, `q` and Ctrl-C (through the `Interrupt`
   arm, with no Interrupt/Quit returned) close it; typing is ignored while
-  open; the key is ignored while the agents panel is open; an approval request takes precedence;
+  open; the key is ignored while the agents panel is open; an approval request takes precedence and the view is still open after the approval closes;
   the todos key still toggles and an empty list yields the `no tasks` notice (in the viewed
   subagent's transcript when one is open).
 - Screen (`screen.rs` with `TestBackend`): opening over a tall transcript leaves the last message
