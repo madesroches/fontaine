@@ -611,9 +611,10 @@ ignores the escape leaves the clipboard unchanged without reporting an error.
 ## Context
 
 `/clear` empties the model's context. The session carries on: the same id, ledger, audit log,
-grants and permission mode. The transcript is emptied and the screen and the terminal's scrollback are
-erased, as Ctrl-L does (screen-reader mode keeps its history), and so is the guardian's view of what you have asked, which starts again
-from the next message you send; the files, actions and denials it knows about are kept.
+grants and permission mode. The transcript is emptied and the screen and the terminal's
+scrollback are erased, as Ctrl-L does (screen-reader mode keeps its history), and so is the
+guardian's view of what you have asked, which starts again from the next message you send; the
+files, actions and denials it knows about are kept.
 [`/rewind`](checkpoints.md) trims the guardian's view the same way for the prompts it takes back. The old
 conversation cannot be resumed: `--resume` reopens the empty one. `/clear` is refused while a
 subagent is running or its report is waiting to be delivered, since the subagent's calls are judged against what you asked; wait for it
