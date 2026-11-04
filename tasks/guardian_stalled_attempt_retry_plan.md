@@ -41,18 +41,17 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
   `ATTEMPT_FLOOR = 5 s`. With the defaults (30 s, 3 attempts) that is 10 s for the first attempt;
   the last attempt always gets all that is left, and a floor that exceeds `remaining` is clamped to it.
 - An attempt that hits its timeout counts as a used attempt. If attempts remain and budget is left,
-  retry with the same message the stalled attempt carried (a stall carries no rejection note).
+  retry with the same message the stalled attempt carried (a stall adds no new note; the previous note is kept).
   Otherwise return the timeout.
 - The error type changes from `StructuredOutputError` to a new `pub(crate) enum RunError { TimedOut,
-  Failed(StructuredOutputError) }` (callers dispatch on the kind, so a typed enum is warranted).
+  Failed(StructuredOutputError) }`.
   Budget exhaustion after earlier returned errors: if the final attempt stalls, the result is
   `TimedOut` (the budget ran out), matching today's behavior where the ceiling wins.
 - `guardian.rs` and `scanner.rs` drop their outer `tokio::time::timeout` (the budget now lives in
   `run`) and map `RunError::TimedOut` to `FailClosed::Timeout` / the existing `Scan::Failed`
   message, and `Failed(e)` to the existing arms. The `Timeout` explanation text and `spent.total()`
   tally are unchanged.
-- The ceiling holds because each slice is clamped to the remaining budget (see the zero-remaining
-  rule); the `Settings::timeout` doc comment stays accurate and is unchanged.
+- The `Settings::timeout` doc comment stays accurate and is unchanged.
 
 ## Implementation Steps
 
@@ -77,19 +76,23 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
   it adapts to the configured `timeout` and to attempts already spent, with no new config key.
 - Floor of 5 s: models answer in 1–2 s, but a slow local model or a short configured timeout should
   not be cut into slices too small to answer.
-- Worst-case call count and spend are unchanged.
 
 ## Documentation
 
 - `docs/guardian.md`: the retry-budget sentence (~l.250, "two retries, shared between malformed
   answers and provider errors") also says stalled attempts use that budget; the `Timeout` row and the scanner bound: a stalled attempt is dropped and
   retried within the same timeout; the timeout remains the ceiling.
-- `docs/configuration.md`: `timeout_secs` row says the same in one clause.
+- `docs/configuration.md`: the `timeout_secs` row and the scanner bound (~l.526, "`timeout_secs` bounds each scan") say the same in one clause.
 - `CHANGELOG.md`: `### Fixed` entry (#310).
 
 ## Testing Strategy
 
-All automated with the scripted endpoint and a paused clock (no live APIs). A stall in the wild
+All automated with the scripted endpoint (no live APIs). `Reply::Slow` is a wiremock delay on a real
+socket, so a paused clock auto-advances past the retried attempt's slice before the real reply
+arrives. The all-stall tests (every attempt hangs) use `start_paused = true`; the success-after-stall
+tests run on the real clock with a configured timeout above 2x the floor (15 s guardian, 12 s
+scanner) and a first reply that sleeps past the first slice, so each takes about one slice (~5 s) of
+real time; keep them few. A stall in the wild
 (`attack-data-exfiltration-02` at 30001 ms) motivated this, so it is pinned by a regression test.
 
 - Unit tests for the slice function: first attempt with default budget gets budget/3; floor applies;
@@ -98,7 +101,8 @@ All automated with the scripted endpoint and a paused clock (no live APIs). A st
 - `tests/guardian.rs`: a reply that hangs and then a valid one yields the verdict within the budget
   and the endpoint saw 2 calls; a hang that is followed by two more hangs still gives `Timeout`
   with total elapsed not above the budget; a stall plus a malformed answer plus a good one stays
-  within the 3-attempt cap; usage billed before a stall is still tallied on `Timeout`; a stalled
+  within the 3-attempt cap; Malformed, then Slow, then a valid reply gives a verdict with 3 calls, and
+  the third request still contains the "Your previous answer was rejected" section; usage billed before a stall is still tallied on `Timeout`; a stalled
   attempt after a rejected answer still resends (no extra attempt). Existing timeout tests stay green.
 - `tests/scanner.rs`: hang then valid reply is a verdict; always-hang is `Failed`.
 
