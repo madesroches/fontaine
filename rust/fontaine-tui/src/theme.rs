@@ -78,6 +78,8 @@ pub struct Theme {
     pub spinner: Color,
     /// The `!` input border.
     pub shell: Color,
+    /// URLs and markdown link text.
+    pub link: Color,
 }
 
 impl Default for Theme {
@@ -105,6 +107,7 @@ impl Theme {
                 mode_plan: Color::Cyan,
                 mode_auto: Color::Yellow,
                 shell: Color::Magenta,
+                link: Color::LightBlue,
             },
             ThemeName::LightAnsi => Theme {
                 user: Color::Blue,
@@ -118,6 +121,7 @@ impl Theme {
                 mode_plan: Color::Blue,
                 mode_auto: Color::Magenta,
                 shell: Color::Magenta,
+                link: Color::Blue,
             },
             ThemeName::Dark => Theme {
                 user: rgb(122, 180, 232),
@@ -131,6 +135,7 @@ impl Theme {
                 mode_plan: rgb(72, 150, 140),
                 mode_auto: rgb(255, 193, 7),
                 shell: rgb(253, 93, 177),
+                link: rgb(120, 170, 255),
             },
             ThemeName::Light => Theme {
                 user: rgb(0, 95, 175),
@@ -144,6 +149,7 @@ impl Theme {
                 mode_plan: rgb(0, 102, 102),
                 mode_auto: rgb(150, 108, 30),
                 shell: rgb(255, 0, 135),
+                link: rgb(0, 70, 190),
             },
             ThemeName::DarkDaltonized => Theme {
                 user: rgb(122, 180, 232),
@@ -157,6 +163,7 @@ impl Theme {
                 mode_plan: rgb(72, 150, 140),
                 mode_auto: rgb(255, 204, 0),
                 shell: rgb(253, 93, 177),
+                link: rgb(102, 178, 255),
             },
             ThemeName::LightDaltonized => Theme {
                 user: rgb(0, 95, 175),
@@ -170,6 +177,7 @@ impl Theme {
                 mode_plan: rgb(0, 102, 102),
                 mode_auto: rgb(150, 108, 30),
                 shell: rgb(255, 0, 135),
+                link: rgb(0, 70, 190),
             },
         }
     }

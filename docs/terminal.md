@@ -116,7 +116,8 @@ Every colour in the interface comes from a theme. Six are built in:
 The `-ansi` themes follow whatever palette the terminal is set to and need no truecolor support.
 The others use fixed RGB values, which a terminal without truecolor approximates badly or not at
 all. The daltonized themes show a finished tool call in blue and a failed or denied one in orange,
-which readers with red-green colour blindness can tell apart.
+which readers with red-green colour blindness can tell apart. URLs and link text use an underlined
+blue in every theme.
 
 Choose one with `/theme <name>`, which applies at once and saves `[tui] theme` to your user
 settings file, or by writing the key yourself:

@@ -35,7 +35,8 @@ as pending, and its card (outcome, output, diff) follows after it once it settle
 A call that has finished shows more than its one line. A command that is multi-line or wider than
 the screen is shown under the `•` row, folded to three rows with `… (+N rows)` for the rest. The
 tool's output follows, dim behind a `│` gutter: the last ten rows, with `… N earlier rows` when
-more were cut. An `edit`, `write` or `notebook_edit` call shows its diff instead (a `path  +added -removed` header,
+more were cut. URLs in tool output and in `!` shell output are drawn in the link colour,
+underlined. An `edit`, `write` or `notebook_edit` call shows its diff instead (a `path  +added -removed` header,
 then up to 20 lines in the same form as the approval prompt, with `… N more changed lines`), for
 every allowed call, not only the ones you were asked about. A failed call keeps its `✗ failed:`
 reason on the first row and shows its output. `read` and `todo_write` calls and calls with empty
@@ -367,7 +368,8 @@ history then lasts for the session only.
 
 The transcript renders the markdown in the assistant's replies:
 
-- `**bold**`, `*italic*` and `` `code` `` (code is shown bold), and links as their text;
+- `**bold**`, `*italic*` and `` `code` `` (code is shown bold), and links as their text, coloured and underlined, as are bare
+  `http://` and `https://` URLs;
 - headings, bold, with a first-level heading also underlined;
 - bullet and numbered lists, nested by indent, wrapped under their text;
 - fenced code blocks, dimmed and indented two spaces, kept verbatim;

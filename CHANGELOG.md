@@ -34,6 +34,9 @@ All notable changes are recorded here. The format follows
   segment. Includes `refresh_interval_secs`, a 5-second timeout, ANSI escape stripping, and a
   JSON contract matching Claude Code's field names where Fontaine has the data plus
   Fontaine-specific fields (#48).
+- URLs are drawn in a distinct link colour, underlined, in assistant replies (bare `http(s)://`
+  URLs and markdown link text), tool output and `!` shell output; the colour is a new `link` token
+  in every theme (#206).
 - The built-in status bar no longer shows `esc to interrupt · shift+tab mode` while the main turn
   runs; the running state is indicated by the spinner row and an empty hint segment.
 

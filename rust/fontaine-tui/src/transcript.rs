@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::commands::ExpandTarget;
 use crate::diff::diff_rows;
 use crate::input::wrap;
-use crate::markdown;
+use crate::markdown::{self, link_spans};
 use crate::theme::{Glyphs, Theme};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -679,7 +679,7 @@ impl Transcript {
         for settled in self.commit_entries(Cut::Rows(width)) {
             match (settled.entry, settled.end) {
                 (Entry::Assistant { text, .. }, Some(_)) => {
-                    let rows = stable_rows(text, settled.skip, width, glyphs);
+                    let rows = stable_rows(text, settled.skip, width, glyphs, link_style(theme));
                     out.extend(rows.into_iter().map(|(line, _)| line));
                 }
                 (entry, _) => entry_lines(entry, width, settled.skip, theme, glyphs, &mut out),
@@ -740,7 +740,7 @@ impl Transcript {
                     width,
                     rows: budget,
                 }
-                .rows(text, self.committed_chars, self.glyphs);
+                .rows(text, self.committed_chars, self.glyphs, link_style(theme));
                 if let Some((_, end)) = rows.last() {
                     self.committed_chars = *end;
                     out.extend(rows.into_iter().map(|(line, _)| line));
@@ -797,11 +797,17 @@ pub(crate) enum Cut {
 
 impl Cut {
     /// The rows a budgeted cut releases.
-    fn rows(self, text: &str, from: usize, glyphs: Glyphs) -> Vec<(Line<'static>, usize)> {
+    fn rows(
+        self,
+        text: &str,
+        from: usize,
+        glyphs: Glyphs,
+        link: Style,
+    ) -> Vec<(Line<'static>, usize)> {
         let Cut::Budget { width, rows } = self else {
             return Vec::new();
         };
-        let mut all = assistant_rows(text, from, width, true, glyphs);
+        let mut all = assistant_rows(text, from, width, true, glyphs, link);
         all.pop();
         let mut keep = rows.min(all.len());
         // A rendered block's rows share one end offset, and the cursor must not land inside it.
@@ -815,11 +821,11 @@ impl Cut {
     /// The char offset in `text` that a commit starting at `from` runs to.
     fn end(self, text: &str, from: usize, glyphs: Glyphs) -> usize {
         match self {
-            Cut::Rows(width) => stable_rows(text, from, width, glyphs)
+            Cut::Rows(width) => stable_rows(text, from, width, glyphs, Style::default())
                 .last()
                 .map_or(from, |(_, end)| *end),
             Cut::Budget { .. } => self
-                .rows(text, from, glyphs)
+                .rows(text, from, glyphs, Style::default())
                 .last()
                 .map_or(from, |(_, end)| *end),
             Cut::Lines => text
@@ -899,9 +905,16 @@ fn row(prefix: &str, style: Style, body_style: Style, piece: String) -> Line<'st
     ])
 }
 
+/// How URLs and link text are drawn: the link colour, underlined so colour is not the only cue.
+fn link_style(theme: &Theme) -> Style {
+    Style::default()
+        .fg(theme.link)
+        .add_modifier(Modifier::UNDERLINED)
+}
+
 /// Plain wrapped rows of `text` from char offset `from`, each with the char offset just past
 /// it (including the `'\n'` that ends its line). Offsets are what survive a change of width.
-fn plain_rows(text: &str, from: usize, width: usize) -> Vec<(Line<'static>, usize)> {
+fn plain_rows(text: &str, from: usize, width: usize, link: Style) -> Vec<(Line<'static>, usize)> {
     let rest: String = text.chars().skip(from).collect();
     let width = width.max(1);
     let mut rows = Vec::new();
@@ -915,7 +928,8 @@ fn plain_rows(text: &str, from: usize, width: usize) -> Vec<(Line<'static>, usiz
             if i == last && lines.peek().is_some() {
                 offset += 1;
             }
-            rows.push((row("", Style::default(), Style::default(), piece), offset));
+            let spans = link_spans(&piece, Style::default(), link);
+            rows.push((Line::from(spans), offset));
         }
     }
     rows
@@ -928,10 +942,11 @@ fn stable_rows(
     from: usize,
     width: usize,
     glyphs: Glyphs,
+    link: Style,
 ) -> Vec<(Line<'static>, usize)> {
     let end = markdown::stable_end(text);
     if from < end {
-        markdown::rows(text, from, end, width, glyphs)
+        markdown::rows(text, from, end, width, glyphs, link)
     } else {
         Vec::new()
     }
@@ -946,16 +961,17 @@ fn assistant_rows(
     width: usize,
     streaming: bool,
     glyphs: Glyphs,
+    link: Style,
 ) -> Vec<(Line<'static>, usize)> {
     if streaming {
         let end = markdown::stable_end(text);
-        let mut rows = stable_rows(text, from, width, glyphs);
-        rows.extend(plain_rows(text, from.max(end), width));
+        let mut rows = stable_rows(text, from, width, glyphs, link);
+        rows.extend(plain_rows(text, from.max(end), width, link));
         return rows;
     }
     let len = text.chars().count();
     let mut rows = if from < len {
-        markdown::rows(text, from, len, width, glyphs)
+        markdown::rows(text, from, len, width, glyphs, link)
     } else {
         Vec::new()
     };
@@ -983,7 +999,7 @@ fn entry_lines(
             out.push(Line::default());
         }
         Entry::Assistant { text, streaming } => {
-            let rows = assistant_rows(text, skip, width, *streaming, glyphs);
+            let rows = assistant_rows(text, skip, width, *streaming, glyphs, link_style(theme));
             out.extend(rows.into_iter().map(|(line, _)| line));
         }
         Entry::Tool { .. } => tool_lines(entry, width, false, theme, glyphs, out),
@@ -1019,7 +1035,7 @@ fn entry_lines(
             prefixed(&format!("! {command}"), width, "", dim, out);
             for line in output.trim_end().split('\n') {
                 for piece in wrap(line, width) {
-                    out.push(Line::styled(piece, dim));
+                    out.push(Line::from(link_spans(&piece, dim, link_style(theme))));
                 }
             }
             out.push(Line::default());
@@ -1263,25 +1279,32 @@ fn tool_lines(
             .sum();
         let skipped = if full { 0 } else { before + hidden };
         let rows = &rows[if full { 0 } else { hidden }..];
-        let mut push = |text: &str| {
-            out.push(Line::from(vec![
-                Span::styled(format!("  {gutter}"), dim),
-                Span::styled(text.to_string(), dim),
-            ]));
+        let link = link_style(theme);
+        let mut push = |text: &str, linkify: bool| {
+            let mut spans = vec![Span::styled(format!("  {gutter}"), dim)];
+            if linkify {
+                spans.extend(link_spans(text, dim, link));
+            } else {
+                spans.push(Span::styled(text.to_string(), dim));
+            }
+            out.push(Line::from(spans));
         };
         if skipped > 0 {
             cut = true;
-            push(&format!("… {skipped} earlier rows"));
+            push(&format!("… {skipped} earlier rows"), false);
         }
         for row in rows {
-            push(row);
+            push(row, true);
         }
         if output.clipped {
             if full {
-                push(&format!(
-                    "… clipped: only the first and last {} KiB of the output are kept",
-                    OUTPUT_KEEP_BYTES / 2048
-                ));
+                push(
+                    &format!(
+                        "… clipped: only the first and last {} KiB of the output are kept",
+                        OUTPUT_KEEP_BYTES / 2048
+                    ),
+                    false,
+                );
             } else {
                 cut = true;
             }
@@ -2665,5 +2688,94 @@ mod tests {
             t.entries.last(),
             Some(Entry::Expanded(card)) if matches!(**card, Entry::Tool { .. })
         ));
+    }
+
+    fn link_theme() -> Theme {
+        Theme {
+            link: ratatui::style::Color::Rgb(1, 2, 3),
+            ..theme()
+        }
+    }
+
+    /// The text of the spans drawn in the theme's link colour, per row.
+    fn colored(lines: &[Line<'static>], theme: &Theme) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .filter(|s| s.style.fg == Some(theme.link))
+                    .map(|s| s.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_settled_reply_colors_its_urls_with_the_theme_link_colour() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        t.on_event(SessionEvent::Assistant(
+            "see https://a.io/x and [docs](https://a.io/d)".into(),
+        ));
+        let lines = t.lines(60, &theme);
+        assert_eq!(
+            colored(&lines, &theme),
+            vec!["https://a.io/x".to_string() + "docs"]
+        );
+        assert_eq!(text(&lines)[0], "see https://a.io/x and docs",);
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::UNDERLINED)
+                    && s.style.fg == Some(theme.link))
+        );
+    }
+
+    #[test]
+    fn a_streaming_tail_colors_its_urls() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        delta(&mut t, "tail https://a.io/s");
+        let lines = t.live_lines(60, &theme);
+        assert_eq!(colored(&lines, &theme), vec!["https://a.io/s"]);
+        assert_eq!(text(&lines), vec!["tail https://a.io/s"]);
+    }
+
+    #[test]
+    fn tool_output_urls_are_colored_and_stay_dim() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        result_with(&mut t, "a", "shell", true, "see https://a.io/o.\n");
+        let lines = t.lines(60, &theme);
+        assert_eq!(colored(&lines, &theme)[1], "https://a.io/o");
+        assert_eq!(text(&lines)[1], "  │ see https://a.io/o.");
+        let url = lines[1]
+            .spans
+            .iter()
+            .find(|s| s.style.fg == Some(theme.link))
+            .expect("url span");
+        assert!(url.style.add_modifier.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn shell_output_urls_are_colored() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        t.shell("curl".into(), "https://a.io/sh\n".into(), Some(0));
+        let lines = t.lines(60, &theme);
+        assert_eq!(colored(&lines, &theme)[1], "https://a.io/sh");
+    }
+
+    #[test]
+    fn call_rows_notices_and_errors_are_not_linkified() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        t.error("failed https://a.io/e");
+        t.notice("see https://a.io/n");
+        let lines = t.lines(60, &theme);
+        assert!(colored(&lines, &theme).iter().all(String::is_empty));
     }
 }
