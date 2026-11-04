@@ -466,31 +466,23 @@ fn marketplace_list(dirs: &Dirs) -> Result<(), String> {
         {
             Ok(catalog) => Some(catalog.plugins.len()),
             Err(e) => {
-                eprintln!("fontaine: marketplace `{}`: {e}", marketplace.name);
+                eprintln!("fontaine: warning: marketplace `{}`: {e}", marketplace.name);
                 None
             }
         };
-        println!(
-            "{}",
-            marketplace_line(marketplace, offered, installed, marketplace.auto_update)
-        );
+        println!("{}", marketplace_line(marketplace, offered, installed));
     }
     Ok(())
 }
 
 /// One `marketplace list` line. `offered` is `None` when the catalog could not be read, which must
 /// not look like an empty catalog.
-fn marketplace_line(
-    entry: &MarketplaceEntry,
-    offered: Option<usize>,
-    installed: usize,
-    auto_update: Option<bool>,
-) -> String {
+fn marketplace_line(entry: &MarketplaceEntry, offered: Option<usize>, installed: usize) -> String {
     let counts = match offered {
         Some(n) => format!("{n} offered, {installed} installed"),
         None => format!("catalog unreadable, {installed} installed"),
     };
-    let marker = if auto_update == Some(false) {
+    let marker = if entry.auto_update == Some(false) {
         " — auto-update off"
     } else {
         ""
@@ -1610,19 +1602,19 @@ mod tests {
 
     #[test]
     fn marketplace_line_shows_offered_and_installed() {
-        let line = marketplace_line(&entry(), Some(3), 1, None);
+        let line = marketplace_line(&entry(), Some(3), 1);
         assert!(line.ends_with("— 3 offered, 1 installed"), "{line}");
     }
 
     #[test]
     fn marketplace_line_shows_a_fresh_marketplace_as_offering_with_none_installed() {
-        let line = marketplace_line(&entry(), Some(3), 0, None);
+        let line = marketplace_line(&entry(), Some(3), 0);
         assert!(line.ends_with("— 3 offered, 0 installed"), "{line}");
     }
 
     #[test]
     fn marketplace_line_does_not_pass_an_unreadable_catalog_off_as_empty() {
-        let line = marketplace_line(&entry(), None, 2, None);
+        let line = marketplace_line(&entry(), None, 2);
         assert!(
             line.ends_with("— catalog unreadable, 2 installed"),
             "{line}"
@@ -1632,11 +1624,22 @@ mod tests {
 
     #[test]
     fn marketplace_line_appends_the_auto_update_marker() {
-        let line = marketplace_line(&entry(), Some(1), 0, Some(false));
+        let line = marketplace_line(
+            &MarketplaceEntry {
+                auto_update: Some(false),
+                ..entry()
+            },
+            Some(1),
+            0,
+        );
         assert!(
             line.ends_with("— 1 offered, 0 installed — auto-update off"),
             "{line}"
         );
-        assert!(!marketplace_line(&entry(), Some(1), 0, Some(true)).contains("auto-update"));
+        let on = MarketplaceEntry {
+            auto_update: Some(true),
+            ..entry()
+        };
+        assert!(!marketplace_line(&on, Some(1), 0).contains("auto-update"));
     }
 }
