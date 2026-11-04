@@ -20,7 +20,7 @@ fontaine doctor [--format text|json] [--connect yes|no] [--all]
 A prompt that is exactly `doctor` runs the subcommand under `fontaine -p`; write
 `fontaine -p -- doctor` to send "doctor" as a literal prompt. The global flags that shape a
 session (`--settings`, `--model`, `--effort`, `--cd`, `--add-dir`, `--allowed-tools`,
-`--disallowed-tools`) apply, so the report describes the session those flags would start.
+`--disallowed-tools`, `--in-container`) apply, so the report describes the session those flags would start.
 
 ## Exit code
 

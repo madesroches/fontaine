@@ -53,7 +53,7 @@ impl Finding {
         Finding::new(Level::Ok, subject, detail)
     }
 
-    fn warn(subject: impl Into<String>, detail: impl Into<String>) -> Finding {
+    pub fn warn(subject: impl Into<String>, detail: impl Into<String>) -> Finding {
         Finding::new(Level::Warn, subject, detail)
     }
 
@@ -511,7 +511,12 @@ pub fn extensions_section(facts: &ExtensionFacts) -> Section {
         findings.push(Finding::ok("hooks", "none"));
     }
     for hook in &facts.hooks {
-        let detail = if hook.project {
+        let detail = if hook.project && hook.event == "teammate_idle" {
+            format!(
+                "{} ({}); never run (a repository may not define teammate_idle hooks)",
+                hook.count, hook.scope
+            )
+        } else if hook.project {
             format!("{} ({}); {project_state}", hook.count, hook.scope)
         } else {
             format!("{} ({})", hook.count, hook.scope)
@@ -604,7 +609,10 @@ fn memory_finding(found: &MemoryFinding) -> Finding {
                 format!("line {line} links to {target}, which is not a topic file in the store")
             },
         ),
-        OrphanFile { file } => Finding::warn(file, "no index line links to this file"),
+        OrphanFile { file } => Finding::warn(
+            file,
+            "no index line within the prompt cap links to this file",
+        ),
         DuplicateEntry { target, lines } => {
             let lines: Vec<String> = lines.iter().map(ToString::to_string).collect();
             Finding::warn(
@@ -913,6 +921,12 @@ mod tests {
                     count: 1,
                 },
                 HookCount {
+                    event: "teammate_idle",
+                    scope: "project",
+                    project: true,
+                    count: 1,
+                },
+                HookCount {
                     event: "pre_tool_use",
                     scope: "user",
                     project: false,
@@ -930,7 +944,9 @@ mod tests {
                 .detail
                 .contains("not loaded (workspace not trusted)")
         );
-        assert!(!s.findings[2].detail.contains("interactive"));
+        assert!(s.findings[2].detail.contains("never run"));
+        assert!(!s.findings[2].detail.contains("loaded"));
+        assert!(!s.findings[3].detail.contains("interactive"));
         let skills = s.findings.iter().find(|f| f.subject == "skills").unwrap();
         assert_eq!(skills.level, Level::Fail);
         assert!(

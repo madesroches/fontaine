@@ -50,6 +50,7 @@ async fn a_clean_setup_exits_0_with_valid_json_and_a_ready_guardian() {
     assert_eq!(out.code, Some(0), "{}\n{}", out.stdout, out.stderr);
     let report = report(&out);
     assert_eq!(report["failed"], false);
+    assert_eq!(finding(&report, "Trust", "workspace")["level"], "warn");
     let titles: Vec<&str> = report["sections"]
         .as_array()
         .unwrap()
@@ -103,15 +104,6 @@ async fn a_project_key_the_scope_refuses_exits_1_and_is_named() {
         out.stdout
     );
     assert!(out.stdout.contains("Memory"), "{}", out.stdout);
-}
-
-#[tokio::test]
-async fn an_untrusted_workspace_is_only_a_warning() {
-    let s = sandbox();
-    let out = s.run(&["doctor", "--format=json"]).await;
-    assert_eq!(out.code, Some(0), "{}", out.stderr);
-    let report = report(&out);
-    assert_eq!(finding(&report, "Trust", "workspace")["level"], "warn");
 }
 
 #[tokio::test]

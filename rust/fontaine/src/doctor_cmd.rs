@@ -6,12 +6,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fontaine_core::agent::{mcp_plan, probe_server, server_spec};
-use fontaine_core::config::{self, Config, GuardianProfile, Hook, LayerDiagnosis, Slot};
+use fontaine_core::config::{self, Config, Hook, LayerDiagnosis, Slot};
 use fontaine_core::config_catalog::Running;
+use fontaine_core::containment;
 use fontaine_core::dirs::Dirs;
 use fontaine_core::doctor_report::{
-    self as report, DoctorReport, ExtensionFacts, GuardianFact, HookCount, McpGate, McpRow,
-    McpState, ModelFacts, ProjectExecutables, Section, SkillCounts, TrustFacts,
+    self as report, DoctorReport, ExtensionFacts, Finding, GuardianFact, HookCount, McpGate,
+    McpRow, McpState, ModelFacts, ProjectExecutables, Section, SkillCounts, TrustFacts,
 };
 use fontaine_core::extensions::{self, Scope};
 use fontaine_core::instructions::{self, Sources};
@@ -19,6 +20,7 @@ use fontaine_core::memory;
 use fontaine_core::models::{self, GuardianChoice, GuardianModel, LISTING_TIMEOUT, ResolveParams};
 use fontaine_core::plugins::{self, PluginContributions};
 use fontaine_core::trust;
+use fontaine_guardian::Profile;
 use fontaine_tools::error_chain::chain;
 
 use crate::cli::{Cli, DoctorArgs, ReportFormat, Toggle};
@@ -149,13 +151,24 @@ async fn build_report(
             }
         }),
     }));
-    sections.push(report::models_section(
+    let contained = containment::resolve(
+        config.guardian.profile,
+        cli.in_container,
+        containment::detect(),
+    );
+    let mut models_section = report::models_section(
         resolved.as_ref().map(model_facts).map_err(|e| chain(&**e)),
-        match config.guardian.profile {
-            GuardianProfile::Full => "full",
-            GuardianProfile::Minimal => "minimal",
+        match contained.profile {
+            Profile::Full => "full",
+            Profile::Minimal => "minimal",
         },
-    ));
+    );
+    if let Some(notice) = contained.notice {
+        models_section
+            .findings
+            .push(Finding::warn("notice", notice.headline));
+    }
+    sections.push(models_section);
     sections.push(mcp_section(&config, &dirs, host, args, trusted).await);
     sections.push(extensions_section(
         cli,
