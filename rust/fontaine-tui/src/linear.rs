@@ -1253,10 +1253,7 @@ mod tests {
         rig.app.running = true;
         rig.render();
         rig.app
-            .begin_server(crate::server_prompt::ServerPrompt::new(
-                "github".into(),
-                "d".into(),
-            ));
+            .begin_server(crate::server_prompt::new("github", "d"));
         let out = rig.render();
         assert!(
             out.contains('\x07') && out.contains("MCP server:"),
@@ -1291,7 +1288,7 @@ mod tests {
         rig.app.running = true;
         rig.render();
         rig.app
-            .begin_setup_review(crate::setup_prompt::SetupReviewPrompt::new("r".into(), 1));
+            .begin_setup_review(crate::setup_prompt::new("r".into(), 1));
         let out = rig.render();
         assert!(
             out.contains('\x07') && out.contains("auto-mode setup:"),
@@ -1315,9 +1312,7 @@ mod tests {
             path: "/c/pr/SKILL.md".into(),
         };
         rig.app
-            .begin_skill_trust(crate::skill_trust_prompt::SkillTrustPrompt::new(
-                &skill, None,
-            ));
+            .begin_skill_trust(crate::skill_trust_prompt::new(&skill, None));
         let out = rig.render();
         assert!(out.contains('\x07'), "{out:?}");
 
@@ -1364,11 +1359,7 @@ mod tests {
         rig.app.running = true;
         rig.render();
         for name in ["github", "linear"] {
-            rig.app
-                .begin_server(crate::server_prompt::ServerPrompt::new(
-                    name.into(),
-                    "d".into(),
-                ));
+            rig.app.begin_server(crate::server_prompt::new(name, "d"));
             let out = rig.render();
             assert!(
                 out.contains('\x07') && out.contains("MCP server:"),

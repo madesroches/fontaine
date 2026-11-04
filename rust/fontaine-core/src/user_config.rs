@@ -480,24 +480,10 @@ mod tests {
     }
 
     fn account(kind: &str, base_url: Option<&str>) -> Account {
-        Account {
-            kind: crate::config::AccountKind::named(kind),
-            api_key_env: None,
-            base_url: base_url.map(str::to_string),
-            models: None,
-            wires: None,
-            context_tokens: None,
-            prompt_caching: None,
-            cache_ttl: None,
-            quota: None,
-            think: None,
-            https_proxy: None,
-            http_proxy: None,
-            no_proxy: None,
-            ca_bundle: None,
-            client_cert: None,
-            client_key: None,
-        }
+        Account::new(
+            crate::config::AccountKind::named(kind),
+            base_url.map(str::to_string),
+        )
     }
 
     #[test]

@@ -130,6 +130,60 @@ pub struct DecisionRecord {
     pub explanation: Option<String>,
 }
 
+impl DecisionRecord {
+    /// A record with only what every decision states; the caller sets the optional fields it
+    /// owns. There is deliberately no `Default`: a record must always say its tier and decision,
+    /// and a default decision would be a fail-open hazard.
+    #[allow(clippy::too_many_arguments)] // 8 inputs; every one is required
+    pub fn new(
+        session_id: String,
+        agent_id: String,
+        tool: String,
+        args_digest: String,
+        tier: Tier,
+        decision: Decision,
+        permission_mode: String,
+        headless: bool,
+    ) -> DecisionRecord {
+        DecisionRecord {
+            ts: now_rfc3339(),
+            session_id,
+            agent_id,
+            agent_name: None,
+            tool_use_id: None,
+            tool,
+            args_digest,
+            original_args_digest: None,
+            tier,
+            decision,
+            rule: None,
+            confidence: None,
+            guardian_model: None,
+            latency_ms: 0,
+            guardian_profile: None,
+            guardian_verdict: None,
+            guardian_cache_hit: None,
+            verdict_transport: None,
+            guardian_latency_ms: None,
+            fail_closed_reason: None,
+            screen_risk: None,
+            screen_allow_risk: None,
+            screen_steering: None,
+            screen_scores: None,
+            screen_model: None,
+            screen_latency_ms: None,
+            screen_outcome: None,
+            guardian_dropped_input_tokens: None,
+            guardian_dropped_provider: None,
+            guardian_dropped_model: None,
+            guardian_dropped_priced: None,
+            permission_mode,
+            headless,
+            explanation: None,
+        }
+    }
+}
+
 /// SHA-256 over the canonical JSON of `args`, lowercase hex.
 pub fn args_digest(args: &Value) -> String {
     // Canonicalization of a `Value` cannot fail; fall back to the plain form rather than skip
@@ -221,6 +275,49 @@ mod tests {
         assert_eq!(rfc3339(0, 0), "1970-01-01T00:00:00.000Z");
         assert_eq!(rfc3339(1_709_210_096, 7), "2024-02-29T12:34:56.007Z");
         assert_eq!(rfc3339(951_782_400, 0), "2000-02-29T00:00:00.000Z");
+    }
+
+    #[test]
+    fn a_new_record_leaves_every_optional_field_empty() {
+        let r = DecisionRecord::new(
+            "s".into(),
+            "root".into(),
+            "read".into(),
+            "d".into(),
+            Tier::ReadOnlyFastPath,
+            Decision::Allow,
+            "manual".into(),
+            true,
+        );
+        assert_eq!(r.latency_ms, 0);
+        assert!(r.headless);
+        assert_eq!((r.session_id.as_str(), r.agent_id.as_str()), ("s", "root"));
+        assert!(
+            r.agent_name.is_none()
+                && r.tool_use_id.is_none()
+                && r.original_args_digest.is_none()
+                && r.rule.is_none()
+                && r.confidence.is_none()
+                && r.guardian_model.is_none()
+                && r.guardian_profile.is_none()
+                && r.guardian_verdict.is_none()
+                && r.guardian_cache_hit.is_none()
+                && r.verdict_transport.is_none()
+                && r.guardian_latency_ms.is_none()
+                && r.fail_closed_reason.is_none()
+                && r.screen_risk.is_none()
+                && r.screen_allow_risk.is_none()
+                && r.screen_steering.is_none()
+                && r.screen_scores.is_none()
+                && r.screen_model.is_none()
+                && r.screen_latency_ms.is_none()
+                && r.screen_outcome.is_none()
+                && r.guardian_dropped_input_tokens.is_none()
+                && r.guardian_dropped_provider.is_none()
+                && r.guardian_dropped_model.is_none()
+                && r.guardian_dropped_priced.is_none()
+                && r.explanation.is_none()
+        );
     }
 
     #[test]

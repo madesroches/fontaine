@@ -413,6 +413,28 @@ pub const DEFAULT_OLLAMA_CONTEXT_TOKENS: u32 = 16384;
 const MIN_OLLAMA_CONTEXT_TOKENS: u32 = 2048;
 
 impl Account {
+    /// An account of `kind` with every other setting unset.
+    pub fn new(kind: AccountKind, base_url: Option<String>) -> Account {
+        Account {
+            kind,
+            api_key_env: None,
+            base_url,
+            models: None,
+            wires: None,
+            context_tokens: None,
+            think: None,
+            prompt_caching: None,
+            cache_ttl: None,
+            quota: None,
+            https_proxy: None,
+            http_proxy: None,
+            no_proxy: None,
+            ca_bundle: None,
+            client_cert: None,
+            client_key: None,
+        }
+    }
+
     /// The network keys this account sets itself.
     pub fn network(&self) -> NetworkSettings {
         NetworkSettings {
@@ -3559,24 +3581,10 @@ mod tests {
     }
 
     fn openrouter(base_url: Option<&str>) -> Account {
-        Account {
-            kind: AccountKind::named("openrouter"),
-            api_key_env: None,
-            base_url: base_url.map(str::to_owned),
-            models: None,
-            wires: None,
-            context_tokens: None,
-            think: None,
-            prompt_caching: None,
-            cache_ttl: None,
-            quota: None,
-            https_proxy: None,
-            http_proxy: None,
-            no_proxy: None,
-            ca_bundle: None,
-            client_cert: None,
-            client_key: None,
-        }
+        Account::new(
+            AccountKind::named("openrouter"),
+            base_url.map(str::to_owned),
+        )
     }
 
     #[test]

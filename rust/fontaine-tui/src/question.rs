@@ -9,8 +9,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use tokio::sync::oneshot;
 
+use crate::confirm_prompt::ANSWER_GRACE;
 use crate::input::{InputBuffer, wrap};
-use crate::server_prompt::ANSWER_GRACE;
 use crate::theme::Theme;
 
 pub const OTHER_PROMPT: &str = "Other: ";

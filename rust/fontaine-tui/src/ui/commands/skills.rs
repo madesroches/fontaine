@@ -4,7 +4,7 @@ use fontaine_core::agent::AgentRuntime;
 use fontaine_core::extensions::Scope;
 use fontaine_core::skill_trust::{self, TrustState};
 
-use crate::skill_trust_prompt::SkillTrustPrompt;
+use crate::skill_trust_prompt;
 use crate::{Action, Ui};
 
 impl<R: FnMut(&mut crate::App)> Ui<R> {
@@ -42,7 +42,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .notice(format!("`{name}` is already trusted at this version"));
             return ControlFlow::Continue(());
         }
-        self.app.begin_skill_trust(SkillTrustPrompt::new(
+        self.app.begin_skill_trust(skill_trust_prompt::new(
             skill,
             extensions.trusted.record(name),
         ));

@@ -1134,6 +1134,22 @@ async fn every_decision_appends_an_audit_record_with_the_schema_fields() {
 }
 
 #[tokio::test]
+async fn a_childs_record_names_the_agent_and_times_the_call() {
+    use fontaine_agents::mode::Ladder;
+    let rig = Rig::new(Manual);
+    let id = rig
+        .agents
+        .reserve("root", "worker", "m", Vec::new(), Ladder::Manual)
+        .unwrap();
+    std::fs::write(rig.work().join("a.txt"), "a").unwrap();
+    rig.check_as(&id, "read", json!({"path": "a.txt"})).await;
+    let record = rig.audit().pop().expect("a record");
+    assert_eq!(record.agent_id, id);
+    assert_eq!(record.agent_name.as_deref(), Some("worker"));
+    assert!(record.latency_ms < 60_000, "{}", record.latency_ms);
+}
+
+#[tokio::test]
 async fn a_human_answer_adds_a_second_record_with_tier_human() {
     let rig = Rig::new(Manual);
     rig.approver.answer(Answer::AllowOnce);

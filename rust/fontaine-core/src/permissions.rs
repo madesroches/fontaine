@@ -26,7 +26,7 @@ use serde_json::Value;
 use tracing::Instrument;
 
 use crate::adjudication::{self, action_summary};
-use crate::audit::{Decision, DecisionRecord, args_digest, now_rfc3339};
+use crate::audit::{Decision, DecisionRecord, args_digest};
 use crate::config::PermissionMode;
 use crate::destructive::touched_paths;
 use crate::floor::{self, CriticalEnv};
@@ -1187,46 +1187,27 @@ impl PermissionPipeline {
         rule: Option<String>,
         explanation: Option<String>,
     ) -> DecisionRecord {
-        DecisionRecord {
-            ts: now_rfc3339(),
-            session_id: self.state.session_id.clone(),
-            agent_id: cx.call.agent.to_string(),
-            agent_name: self
-                .state
-                .agents()
-                .is_child(cx.call.agent)
-                .then(|| self.state.agents().name_of(cx.call.agent)),
-            tool_use_id: cx.tool_use_id.clone(),
-            tool: cx.call.tool.to_string(),
-            args_digest: cx.digest.clone(),
-            original_args_digest: cx.original_digest.clone(),
+        let mut record = DecisionRecord::new(
+            self.state.session_id.clone(),
+            cx.call.agent.to_string(),
+            cx.call.tool.to_string(),
+            cx.digest.clone(),
             tier,
             decision,
-            rule,
-            confidence: None,
-            guardian_model: None,
-            latency_ms: cx.started.elapsed().as_millis() as u64,
-            guardian_profile: None,
-            guardian_verdict: None,
-            guardian_cache_hit: None,
-            verdict_transport: None,
-            guardian_latency_ms: None,
-            fail_closed_reason: None,
-            screen_risk: None,
-            screen_allow_risk: None,
-            screen_steering: None,
-            screen_scores: None,
-            screen_model: None,
-            screen_latency_ms: None,
-            screen_outcome: None,
-            guardian_dropped_input_tokens: None,
-            guardian_dropped_provider: None,
-            guardian_dropped_model: None,
-            guardian_dropped_priced: None,
-            permission_mode: cx.mode.as_str().to_string(),
-            headless: self.headless,
-            explanation,
-        }
+            cx.mode.as_str().to_string(),
+            self.headless,
+        );
+        record.agent_name = self
+            .state
+            .agents()
+            .is_child(cx.call.agent)
+            .then(|| self.state.agents().name_of(cx.call.agent));
+        record.tool_use_id = cx.tool_use_id.clone();
+        record.original_args_digest = cx.original_digest.clone();
+        record.rule = rule;
+        record.latency_ms = cx.started.elapsed().as_millis() as u64;
+        record.explanation = explanation;
+        record
     }
 
     /// The guardian's part of a record.

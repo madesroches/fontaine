@@ -13,8 +13,8 @@ use ratatui::text::Line;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::accessibility::Source;
+use crate::confirm_prompt::ANSWER_GRACE;
 use crate::linear::{OverlayEcho, flatten_all};
-use crate::server_prompt::ANSWER_GRACE;
 use crate::theme::Theme;
 
 /// What the workspace holds that would run, for the prompt to name.
