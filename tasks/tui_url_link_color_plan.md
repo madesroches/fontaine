@@ -58,8 +58,10 @@ call rows and reasoning are deliberately not linkified.
    same wrap-boundary caveat as the streaming tail.
 5. **Streaming tail.** `plain_rows` runs each wrapped piece through `link_spans`. A URL split by a
    wrap boundary is detected per row (a continuation row has no `http` prefix), so a long URL that
-   wraps loses colour on its continuation rows in the unstable tail only; once the block stabilises
-   it is re-rendered as markdown where `wrap_spans` keeps per-char style. Accepted.
+   wraps loses colour on its continuation rows while it streams. Once the block settles the tail is
+   re-rendered as markdown, where `wrap_spans` keeps per-char style, except rows already committed
+   to scrollback under the row budget (`commit_within`/`Cut::Budget`), which are never re-rendered
+   and keep their uncoloured continuation rows. Accepted.
 6. **Tool output.** `tool_lines` output rows and `Entry::Shell` output rows (transcript.rs
    ~1016-1025) pass through `link_spans` with the same style, applied after wrapping per row, with
    the same wrap-boundary caveat. The link style is patched onto the row style, so URLs in tool
