@@ -53,7 +53,13 @@ untouched.
   `max_scroll: Cell<usize>` and a clamp, as `approval.rs` does (`scroll` :70, `max_scroll` :72, clamp
   :102). `overlay()` computes `max = verbose_lines.len().saturating_sub(body_rows)`, stores it in
   `max_scroll`, and passes only the window sliced by `body_rows` (as the pickers do,
-  `view.rs:390-423`). The view opens pinned to the tail, not at
+  `view.rs:390-423`). `verbose_lines` is expensive (markdown, wrapping, up to 64 KiB of kept
+  output per call) and `overlay()` runs about three times per frame, so `TranscriptView` holds a
+  `RefCell` cache of the rendered lines keyed on (width, viewed agent, a `Transcript` change
+  counter, last-entry length); `overlay()` only slices the cached lines and rebuilds them when the
+  key differs. `Transcript` gains `changes: u64`, bumped by every mutation of `entries` (push,
+  status settle, retire, text append), so no entry diffing is needed; the last-entry length is
+  belt-and-braces for streaming growth. The view opens pinned to the tail, not at
   scroll 0. `view::overlay` takes `&App` and cannot write `scroll`, so following is a
   `follow: Cell<bool>`: set on open and whenever the view is scrolled to the bottom
   (Down/PgDn/End), cleared by any upward scroll. While it is set the window computation resolves
@@ -83,16 +89,20 @@ untouched.
   `AgentsPanel`/`AttachClipboard`/`Todos`/`Reprint` arms (`:1093-1108`), the Esc arms
   (running-turn interrupt, double-Esc, `:1109`) and the vim `esc_leaves_insert` arm (`:1114`), so
   none of them acts while the view is open. It applies only when
-  `approval.is_none() && questions.is_empty()`; `view::overlay` uses the same order, so an
-  approval prompt or question takes the overlay slot; like the agents panel, the view stays open
-  under it and returns once it is answered. The `Transcript` key's open arm sits beside the
+  `view::transcript_has_keys(app)`: the view is open and no overlay ahead of it in
+  `view::overlay`'s precedence (denied, unavailable-guardian, server, guardian-off, skill-trust,
+  setup, pickers, config, providers, agents panel, approval, questions) is open. `view::overlay`
+  uses that same helper at its slot, so key routing and drawing cannot drift; an overlay ahead
+  takes the slot, and like the agents panel the view stays open under it and returns once it is
+  dismissed. The `Transcript` key's open arm sits beside the
   `Todos` mapped arm (`app.rs:1101`) with the `!typing_reason` gate.
   The `agent_list.focused && !control && !self.covered()` arm (`app.rs:1090`) runs before the
   mapped arms and `AgentList::handle_key` drops `alt+t`, so its gate gains `&& mapped.is_none()`
   and mapped global actions reach their arms while the agent list is focused.
   Ctrl+C is reserved and maps to `TuiAction::Interrupt`, whose arm (`app.rs:890-899`) sits at the
   top of `handle_key`, before every overlay block: that arm first checks
-  `transcript_view.is_some() && approval.is_none() && questions.is_empty()`, ahead of the existing
+  `view::transcript_has_keys(app)` (so an overlay above the view, such as the mid-turn
+  unavailable-guardian prompt, leaves Ctrl-C to its normal Interrupt/`close_palette` path), ahead of the existing
   `!self.covered() && self.close_palette()` check (`app.rs:891-893`), and then closes the view and
   returns `Action::None` (no Interrupt/Quit), consuming
   `committed_under_overlay` as the other close paths do; it does not go through `close_palette`.
@@ -116,8 +126,13 @@ new multi-line assertions.
 In linear mode the overlay is not opened. The transcript key and `/transcript` print each shown
 entry once: Tool and Reasoning entries in linear's `Expanded` form (the `Entry::Expanded` arm,
 `linear.rs:298-349`, handles only those two), every other entry in the normal linear `label` form.
-It skips `Entry::Expanded` snapshots and `follow_ups`, as `verbose_lines` does. It is never a
-silent no-op.
+It skips `Entry::Expanded` snapshots and `follow_ups`, as `verbose_lines` does, through one shared
+`Transcript` accessor (`follow_ups` is private today). Mechanism: a one-shot `app.transcript_print`
+flag on `App` (like `app.reprint`), set by the key arm and `/transcript` when `app.linear` is set;
+`Linear::render` consumes it (next to the `reprint` reset at `linear.rs:411`) and prints the
+entries directly, Tool/Reasoning through a helper over `&Entry` that shares the `Expanded` arm's
+wording. Only settled entries print (not streaming or pending ones), so nothing prints twice when
+it later commits. It is never a silent no-op: with nothing settled it prints `no transcript`.
 
 ### Task list
 
@@ -162,9 +177,11 @@ keep it out of the main transcript while a subagent view is open.
    `Command::Transcript` to `runs_mid_turn` (`commands.rs:121-141`) and `"/transcript"` to the test
    `runs_mid_turn_marks_the_immediate_ui_set_and_nothing_else` (`commands.rs:983-1003`), so it acts
    immediately like `/todos`.
-8. `linear.rs`: on the key/command, print each shown entry once: Tool and Reasoning through the
-   `Expanded` form, every other entry through the normal `label` form, skipping `Entry::Expanded`
-   snapshots and `follow_ups`; no overlay.
+8. `linear.rs` / `app.rs` / `transcript.rs`: the key arm and `/transcript` set the one-shot
+   `app.transcript_print` flag when `app.linear` (no overlay opens); `Linear::render` consumes it
+   and prints each settled shown entry once: Tool and Reasoning through a helper over `&Entry` in
+   the `Expanded` wording, every other entry through the normal `label` form, skipping
+   `Entry::Expanded` snapshots and `follow_ups` via the shared `Transcript` accessor.
 9. `reports.rs`: help keys line (`reports.rs:60`: `ctrl+o transcript`, `alt+t todos`) and its test
    at `:931` (new expected keys line). `/keybindings` follows `TuiAction::ALL` automatically
    (`ui/commands/keybindings.rs`); no change.
@@ -202,6 +219,9 @@ keep it out of the main transcript while a subagent view is open.
   The 2026-11-04 `### TUI` line also records each observed difference from Claude Code's view
   (input box kept, dimmed with no cursor, and pastes ignored while the view is open; scroll/close
   keys; anything else seen in tmux).
+- AFK: `verbose_lines` output is cached in `TranscriptView` (RefCell) keyed on width, viewed agent, a `Transcript` change counter and last-entry length, and `overlay()` only slices it, because it runs ~3 times per frame at 80 ms while streaming (most conservative: no per-frame re-render).
+- AFK: screen-reader mode sets a one-shot `app.transcript_print` flag (no overlay) that `Linear::render` consumes to print settled shown entries once (Tool/Reasoning in the `Expanded` wording, others via `label`, skipping `Expanded` snapshots and `follow_ups` through a shared `Transcript` accessor), unsettled entries excluded so nothing prints twice.
+- AFK: the Ctrl-C close of the transcript view and the view's key block are gated on a single helper `view::transcript_has_keys` shared with `view::overlay`'s precedence, so an overlay above the view (e.g. the mid-turn unavailable-guardian prompt) keeps Ctrl-C as Interrupt.
 
 ## Documentation
 
@@ -228,20 +248,25 @@ keep it out of the main transcript while a subagent view is open.
 - Unit (`transcript`): `verbose_lines` shows every row of a long multi-line command, the whole
   output, the full reasoning, and the full multi-line denial reason; an `Expanded` entry and a
   stale pending row are not duplicated; collapsed rendering of the same denial stays one line.
+- Unit (`transcript_view`): the line cache is reused when nothing changed (a second `overlay()`
+  call does not re-render) and rebuilt on width change, viewed-agent change, a new entry and
+  streaming growth of the last entry.
 - Unit (`transcript_view`): the view opens pinned to the tail (following, not at scroll 0), scroll clamp at both ends, `follow` keeps the tail in view as entries grow, an upward scroll clears `follow` so the window stays put as entries are appended, and scrolling back to the bottom resumes following.
 - Unit (`transcript`): `Decision` Deny followed by `guardian_denied` with the pending row already
   committed leaves the original `Entry::Tool` holding the `[rule] explanation` status, and
   `verbose_lines` shows it rather than the agent-facing note.
 - Unit (`app`): the key opens and closes the view; Esc, `q` and Ctrl-C (through the `Interrupt`
-  arm, with no Interrupt/Quit returned) close it; typing is ignored while
+  arm, with no Interrupt/Quit returned) close it, but with an overlay above the view (the
+  unavailable-guardian prompt) open Ctrl-C does not close it and still yields Interrupt; typing is ignored while
   open, and so are Ctrl-T, Ctrl-V, alt+t and Ctrl-L; the key is ignored while the agents panel is open; an approval request takes precedence and the view is still open after the approval closes;
   alt+t toggles the task list while the agent list is focused; the todos key still toggles and an empty list yields the `no tasks` notice (in the viewed
   subagent's transcript when one is open).
 - Screen (`screen.rs` with `TestBackend`): opening over a tall transcript leaves the last message
   in scrollback on close (regression in the style of #296).
-- Linear: the key prints Tool and Reasoning entries once in the `Expanded` form and every other
-  entry in the normal `label` form, skips `Entry::Expanded` snapshots and `follow_ups`, never
-  prints nothing, and opens no overlay.
+- Linear: the key prints settled Tool and Reasoning entries once in the `Expanded` form and every
+  other settled entry in the normal `label` form, skips `Entry::Expanded` snapshots, `follow_ups`
+  and unsettled entries, prints `no transcript` rather than nothing, consumes the one-shot flag
+  (a second render prints nothing more), and opens no overlay.
 
 ## Manual Verification
 
