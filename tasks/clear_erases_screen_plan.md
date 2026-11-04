@@ -40,11 +40,19 @@ No new keybinding or command: Ctrl-L remains the visual-only clear.
    rows to scrollback), the view-switch paragraph (add `/clear` to what erases scrollback) and the
    Context section (the transcript is emptied and the screen and scrollback erased).
 3. `CHANGELOG.md`: entry under Unreleased.
+4. `rust/fontaine-tui/tests/agents.rs`: in
+   `clear_prunes_an_ended_subagent_from_the_agent_list_at_once`, drop the comment "(The lines the
+   cleared conversation wrote stay in scrollback, as they should.)", which is no longer true.
+5. `rust/fontaine-tui/tests/tui.rs`: replace the old scrollback-keeping `/clear` test with the new
+   integration test; add the `screen.rs` TestBackend test (see Testing Strategy).
 
 ## Files to Modify
 - `rust/fontaine-tui/src/ui/commands/context.rs`
 - `docs/tui.md`
 - `CHANGELOG.md`
+- `rust/fontaine-tui/tests/agents.rs`
+- `rust/fontaine-tui/tests/tui.rs`
+- `rust/fontaine-tui/src/screen.rs` (tests module)
 
 ## Trade-offs
 - Screen-only erase keeping scrollback (the issue's first suggestion): needs a second erase
@@ -61,8 +69,11 @@ No new keybinding or command: Ctrl-L remains the visual-only clear.
 `docs/tui.md` (three spots above).
 
 ## Testing Strategy
-- Unit test in `fontaine-tui` for `Ui::clear` (or the nearest existing harness that drives it): after
-  a successful clear, `app.reprint` is true and the transcript holds only the notice.
+- Integration test in `rust/fontaine-tui/tests/tui.rs` (`World`/`Ui` harness; `Ui::clear` takes an
+  `&AgentRuntime`, which the `ui/tests.rs` unit tests do not build): send a message, wait for the
+  reply, `ui.send("/clear")`, wait for "cleared the conversation", then assert `ui.screen()` (live
+  area plus scrollback) holds none of the old conversation's text. It replaces
+  `clear_writes_the_held_conversation_to_scrollback_before_the_notice`, which pins the old behavior.
 - Screen-level test with `TestBackend` (existing reprint tests in `screen.rs`): render a
   conversation, clear the transcript with `reprint` set, render again, and assert the backend's
   screen and scrollback contain no rows of the old conversation.
