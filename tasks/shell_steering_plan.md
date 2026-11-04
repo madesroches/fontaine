@@ -19,7 +19,12 @@ tools.
 - Denial text is the guardian model's own explanation (`Deny`: "say what was blocked and why in
   1-3 sentences", `rust/fontaine-guardian/prompts/guardian_prompt.md`, "What you decide"). No Rust
   code composes the remediation hint, so the suggestion of a shell command is steered only by the
-  prompt, and the prompt currently says nothing about the re-issue path. The minimal profile
+  prompt, and the prompt currently says nothing about the re-issue path. The deny wrapper
+  (`permissions.rs:1871`: "Do not retry it or look for another route to the same effect; tell the
+  user what you could not do."), the scouting rule (`guardian_prompt.md:52`) and the system
+  prompt's "# Denied tool calls" (`system_prompt.md:31-38`: a different tool is not a route around
+  a denial; only a denial blaming the arguments may be corrected once) all stay as they are and
+  bound the new sentence. The minimal profile
   never denies a plain file-search shell call, so only `guardian_prompt.md` changes.
 - `rust/fontaine-tools/src/builtins.rs` (~589-602): the Unix `shell` tool description has no
   redirect to `read`/`glob`/`grep`; the PowerShell variant (~745-746) already has one.
@@ -36,11 +41,17 @@ tools.
    is what to use in a shell pipeline when the tools cannot express it, so human contributors keep
    the original intent.
 2. **Guardian prompt** (`guardian_prompt.md`): add one sentence to the `submit` paragraph
-   (`guardian_prompt.md:118`), next to the existing explanation-content rules — when denying a `shell` call whose purpose is a plain file search or lookup,
-   the explanation names the dedicated read-only tool (`grep`, `glob`, `read`) as the way to
-   re-issue it, and never proposes another shell command. The sentence must not alter any verdict
-   criteria; it only constrains explanation wording. The 1-3 sentence limit stays; nothing in
-   product code parses the explanation (`verdict.rs:82` only trims).
+   (`guardian_prompt.md:118`), next to the existing explanation-content rules. The explanation
+   never proposes a shell command as a way forward. Only when the deny turns on the shell
+   construct itself (a redirection, a compound or unparseable command) and the call's purpose is
+   a plain file search or lookup may it name the dedicated read-only tool (`grep`, `glob`, `read`)
+   instead. When the deny rests on the target or content a rule protects (Secret Exposure, an
+   out-of-workspace path, a prior denial), the explanation names no alternative tool or route at
+   all: it says what was blocked and why. This keeps the sentence consistent with the deny wrapper
+   (`permissions.rs:1871`), the scouting rule (`guardian_prompt.md:52`) and the system prompt's
+   "Denied tool calls". The sentence must not alter any verdict criteria; it only constrains
+   explanation wording. The 1-3 sentence limit stays; nothing in product code parses the
+   explanation (`verdict.rs:82` only trims). The wrapper and system prompt are unchanged.
 3. **Shell tool description** (`builtins.rs`): add one sentence to the Unix `shell` description:
    use `read`/`glob`/`grep`, not `cat`/`find`/`grep`/`rg`.
 4. **Audit** AGENTS.md, `CONTRIBUTING.md`, `README.md`, and `docs/` for other advice that assumes a
@@ -76,13 +87,17 @@ tools.
   rejected — it would need to recognize a search command from shell arguments, and the project
   forbids regex matching on tool arguments. A prompt instruction keeps the guardian the only
   author of the explanation.
+- **Change the `permissions.rs:1871` wrapper** to allow a re-issue hint: rejected — it would
+  loosen the no-other-route rule for every deny reason.
 - **Drop the `rg` line entirely**: rejected — the `.ignore` rationale is still useful for the
   shell fallback.
 
 ## Documentation
 
-`docs/guardian.md`: in "The verdict" (near lines 114-115 and 168), add the new rule: a deny of a
-plain file search names the dedicated read-only tool as the re-issue path. Correct line 168's
+`docs/guardian.md`: in "The verdict" (near lines 114-115 and 168), add the new rule: a deny
+never proposes a shell command, and names a dedicated read-only tool only when the deny turns on
+the shell construct itself (redirection, compound or unparseable command), never when it rests on
+the target or content a rule protects. Correct line 168's
 wrapper description: a deny reaches the agent as `Denied by guardian: [Rule] explanation. Do not
 retry it or look for another route to the same effect; tell the user what you could not do.`
 (`permissions.rs:1871`).
@@ -104,5 +119,10 @@ holds for the Unix shell tool description, so say that the shell tool descriptio
 ## Manual Verification
 
 Spot check: read the explanations of the shell-search deny cases in the live eval output and
-confirm none proposes a shell command. This is not automated because explanation text is model
+confirm none proposes a shell command and that none of the Secret Exposure or out-of-workspace
+denies names an alternative tool. This is not automated because explanation text is model
 output and cannot be asserted deterministically.
+
+## Decisions
+
+- AFK: guardian-prompt sentence limited to never proposing a shell command and naming a read-only tool only when the deny turns on the shell construct itself (not on a protected target or content); permissions.rs:1871 wrapper unchanged, no deny loosened (most conservative option, chosen without the user).
