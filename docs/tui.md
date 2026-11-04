@@ -50,8 +50,10 @@ full as new transcript lines (the whole command, all the retained output and the
 without a number it prints the latest call. Numbers count the session's calls from 1 and are not
 reset by `/clear`, which empties the transcript, so a cleared call is an unknown call. It does not
 touch the model's context. `/expand thinking` does the same for the model's
-[reasoning](#model-reasoning). In screen-reader mode a call is still one labelled line, followed by
-the last ten lines of its output as plain lines and the same `expand:` hint.
+[reasoning](#model-reasoning). To read every call, its whole output and the whole reasoning without
+adding anything to the terminal's scrollback, open the [transcript view](#the-transcript-view). In
+screen-reader mode a call is still one labelled line, followed by the last ten lines of its output
+as plain lines and the same `expand:` hint.
 
 A long command under approval scrolls inside
 half the screen, so the call it asks about stays visible above the input.
@@ -224,7 +226,8 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Ctrl-U, Ctrl-K, Ctrl-Y | Delete to the start or end of the line, and paste the last deleted text back. One entry is kept, and it survives submitting. |
 | Ctrl-L (`reprint`) | Redraw the screen from the transcript, keeping the conversation. Like switching to a subagent, it erases the terminal's scrollback first. Does nothing in screen-reader mode. |
 | Ctrl-T (`agents_panel`) | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. Enter on an agent row there shows its transcript. |
-| Ctrl-O (`todos`) | Expand or collapse the [task list](#the-task-panel). Ignored while the agents panel is open. |
+| Ctrl-O (`transcript`) | Open or close the [transcript view](#the-transcript-view): every call, output, reasoning and denial reason in full. Ignored while the agents panel is open. |
+| Alt-T (`todos`) | Expand or collapse the [task list](#the-task-panel); with no tasks it prints `no tasks`. Ignored while the agents panel is open. Where Alt does not arrive as Escape plus the key, [rebind `todos`](#remapping-the-keys) (on macOS, see [Option as Meta](terminal.md#option-as-meta-on-macos)). |
 | `/` at the start of the input or after a space | Opens the [slash-command menu](#slash-command-menu). |
 
 ### Remapping the keys
@@ -234,8 +237,8 @@ keystroke onto an action, and the empty string unbinds the keystroke:
 
 ```toml
 [keybindings]
-"ctrl+t" = "todos"   # this key now opens the task list…
-"ctrl+o" = ""        # …and this one does nothing
+"ctrl+g" = "todos"   # this key now opens the task list…
+"alt+t" = ""         # …and this one does nothing
 "f2" = "cycle_mode"  # extra keys can trigger any action
 ```
 
@@ -600,7 +603,8 @@ error: an export never overwrites.
 | `/skills [trust <name>]` | Without an argument, lists every loaded [skill](extensions.md#skills) with its scope, marking those only the model can use, those only you can run, those a built-in command hides, and those you have trusted (`trusted`) or trusted before the file changed (`changed (re-trust)`). `trust <name>` opens a dialog that lists the skill's `allowed-tools` (or, for a skill you trusted before, what changed in them and in its `!` commands) and records your trust on `y`, in the session ledger and audit log too. The trust applies from the next session start; the running session's grants and this list do not change. The trust form waits for the turn to end; a [project skill](extensions.md#allowed-tools) cannot be trusted. See [Trusted skills](extensions.md#trusted-skills). |
 | `/status` | Shows the version, the session id, the workspace roots (the scratch directory labelled separately), the permission mode, the main model, the guardian (or why it is unavailable) with its profile, the output style, and how many MCP servers are connected. While the guardian is off it reports that instead of the guardian's model. |
 | `/theme [<name>]` | Without an argument, lists the colour themes, marks the current one and names the file the choice is saved to. With a name, switches to that theme at once and saves it as `[tui] theme` in your user settings file. An unknown name is an error that lists the themes. See [Terminal setup](terminal.md#colours). |
-| `/todos` | Expands or collapses the [task list](#the-task-panel), as Ctrl-O does. |
+| `/todos` | Expands or collapses the [task list](#the-task-panel), as Alt-T does; with no tasks it prints `no tasks`. |
+| `/transcript` | Opens or closes the [transcript view](#the-transcript-view), as Ctrl-O does. Runs immediately, turn or no turn. |
 | `/<skill> [arguments]` | Runs a [skill](extensions.md#slash-commands-and-arguments). |
 
 Typing `/` lists the built-in commands and your user-invocable skills with their argument hints,
@@ -894,7 +898,7 @@ that cannot start is reported in the transcript and skipped.
 ## The task panel
 
 When the model keeps a task list with the [`todo_write` tool](tools.md), it shows above the message
-box. Collapsed it is one line, `Tasks 3/7 · ▶ the item in progress`; expanded (Ctrl-O or `/todos`)
+box. Collapsed it is one line, `Tasks 3/7 · ▶ the item in progress`; expanded (Alt-T or `/todos`)
 it lists every item, marked `[ ]` pending, `[~]` in progress or `[x]` completed. A list taller than
 the screen allows ends with a `+N more` line, and an approval prompt shrinks before the list does.
 The panel is hidden while the list is empty. The transcript still shows each `todo_write` call as a
@@ -904,6 +908,36 @@ from the same room first, so an expanded task list gives way to it when the scre
 The list is the main agent's; a subagent's list is not shown. It is kept with the session, so a
 resumed or forked session shows it again, and `/clear` empties it. In screen-reader mode there is
 no panel: the whole list is printed as plain `[ ]`, `[~]` and `[x]` lines each time it changes.
+
+## The transcript view
+
+Ctrl-O (or `/transcript`) shows the conversation on screen in full: each tool call with every row of
+its command or arguments, all the output Fontaine kept (at most 64 KiB per call), the whole of the
+model's reasoning, and the whole reason behind each denial, where the transcript folds them to a few
+rows. Messages, replies, notices and errors appear as usual. It shows the entries of the
+conversation on screen, so inside a subagent's transcript it shows that agent's.
+
+The view is drawn in the live area above the message box, like the agents panel, and does not touch
+the terminal's scrollback; closing it leaves the screen as it was. It opens at the end of the
+conversation and follows it while you stay at the bottom, so a streaming reply stays in view;
+scrolling up holds the window where it is as entries are added, and scrolling back to the bottom
+follows again.
+
+| Key | Effect |
+|---|---|
+| Up, Down | Scroll by a row. |
+| PageUp, PageDown | Scroll by a page. |
+| Home, End | Jump to the start or the end. |
+| Ctrl-O (`transcript`), Esc, `q`, Ctrl-C | Close the view. Ctrl-C closes it and does not interrupt the turn. |
+
+Other keys are ignored while the view is open: the message box stays on screen, dimmed and without
+a cursor, and typing and pastes do nothing. An approval or a question that arrives takes the view's
+place; the view is still open under it and returns once it is answered. The agents panel and the
+pickers likewise take the keys when they are open. `/transcript` is also accepted mid-turn.
+
+In [screen-reader mode](terminal.md#screen-reader-mode) no view opens: Ctrl-O and `/transcript`
+print every settled entry once, calls and reasoning in their `/expand` form, or `no transcript` when
+there is nothing yet.
 
 ## Scheduled prompts
 

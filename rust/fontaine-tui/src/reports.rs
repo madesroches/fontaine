@@ -57,6 +57,12 @@ fn keys_line(keymap: &Keymap) -> String {
             strokes(keymap, TuiAction::AgentsPanel)
         ));
     }
+    if !strokes(keymap, TuiAction::Transcript).is_empty() {
+        parts.push(format!(
+            "{} transcript",
+            strokes(keymap, TuiAction::Transcript)
+        ));
+    }
     if !strokes(keymap, TuiAction::Todos).is_empty() {
         parts.push(format!("{} todos", strokes(keymap, TuiAction::Todos)));
     }
@@ -928,7 +934,7 @@ mod tests {
         let text = help(&[], &Keymap::default());
         assert!(
             text.contains(
-                "shift+tab mode · ctrl+t agents · ctrl+o todos · ctrl+r history · ! shell · @ file"
+                "shift+tab mode · ctrl+t agents · ctrl+o transcript · alt+t todos · ctrl+r history · ! shell · @ file"
             ),
             "{text}"
         );

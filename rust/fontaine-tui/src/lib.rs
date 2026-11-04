@@ -36,6 +36,7 @@ pub mod statusbar;
 pub mod theme;
 pub mod todo_panel;
 pub mod transcript;
+pub mod transcript_view;
 pub mod trust_prompt;
 mod ui;
 pub mod view;

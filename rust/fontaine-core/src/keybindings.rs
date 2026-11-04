@@ -204,6 +204,7 @@ pub enum TuiAction {
     Quit,
     AgentsPanel,
     Todos,
+    Transcript,
     Reprint,
     AttachClipboard,
     HistorySearch,
@@ -222,6 +223,7 @@ impl TuiAction {
             TuiAction::Quit => "quit",
             TuiAction::AgentsPanel => "agents_panel",
             TuiAction::Todos => "todos",
+            TuiAction::Transcript => "transcript",
             TuiAction::Reprint => "reprint",
             TuiAction::AttachClipboard => "attach_clipboard",
             TuiAction::HistorySearch => "history_search",
@@ -233,12 +235,13 @@ impl TuiAction {
     }
 
     /// Every action, in definition order.
-    pub const ALL: [TuiAction; 12] = [
+    pub const ALL: [TuiAction; 13] = [
         TuiAction::CycleMode,
         TuiAction::Interrupt,
         TuiAction::Quit,
         TuiAction::AgentsPanel,
         TuiAction::Todos,
+        TuiAction::Transcript,
         TuiAction::Reprint,
         TuiAction::AttachClipboard,
         TuiAction::HistorySearch,
@@ -269,6 +272,10 @@ impl TuiAction {
                 modifiers: KeyModifiers::CONTROL,
             },
             TuiAction::Todos => Keystroke {
+                code: KeyCode::Char('t'),
+                modifiers: KeyModifiers::ALT,
+            },
+            TuiAction::Transcript => Keystroke {
                 code: KeyCode::Char('o'),
                 modifiers: KeyModifiers::CONTROL,
             },

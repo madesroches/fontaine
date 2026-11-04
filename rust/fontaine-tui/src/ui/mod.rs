@@ -1076,7 +1076,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             Command::Status => self.status(runtime),
             Command::Theme(name) => self.theme(name),
-            Command::Todos => self.app.todos.toggle(),
+            Command::Todos => self.app.toggle_todos(),
+            Command::Transcript => self.app.toggle_transcript(),
             Command::Agents => self.app.agents = Some(AgentsPanel::new()),
             Command::Denied => {
                 self.app.denied = Some(DeniedList::new(runtime.state.denied_calls()));

@@ -113,6 +113,9 @@ pub struct Transcript {
     pub glyphs: Glyphs,
     /// Whether the model's reasoning is shown; both reasoning events are ignored otherwise.
     pub show_reasoning: bool,
+    /// Bumped by every change to `entries`, so a cache of rendered lines can tell when it is
+    /// stale without comparing entries.
+    changes: u64,
 }
 
 impl Default for Transcript {
@@ -126,6 +129,7 @@ impl Default for Transcript {
             follow_ups: Vec::new(),
             glyphs: Glyphs::default(),
             show_reasoning: true,
+            changes: 0,
         }
     }
 }
@@ -199,18 +203,20 @@ fn clip_middle(safe: String) -> (String, bool) {
     (format!("{}\n{}", &safe[..head], &safe[tail..]), true)
 }
 
-fn first_line(text: &str) -> String {
+pub(crate) fn first_line(text: &str) -> String {
     text.lines().next().unwrap_or("").trim().to_string()
 }
 
 impl Transcript {
     pub fn user(&mut self, text: String) {
+        self.touch();
         self.finish_streaming();
         self.entries.push(Entry::User(text));
     }
 
     /// The one-line marker under a user message that carried an inline file.
     pub fn attached(&mut self, kind: &str, label: &str, size: u64) {
+        self.touch();
         self.finish_streaming();
         self.entries.push(Entry::Attachment(format!(
             "[{kind} attached: {label} · {}]",
@@ -222,6 +228,7 @@ impl Transcript {
     /// in the terminal's scrollback and what was held back moves to `retired` for the screen to
     /// write; a reprint (as `/clear` does) drops both.
     pub fn clear(&mut self) {
+        self.touch();
         let skip = self.committed_chars;
         let held = self.entries.drain(self.committed..);
         for (i, entry) in held.enumerate() {
@@ -237,6 +244,7 @@ impl Transcript {
     /// that was erased. Rows `/clear` retired are gone with the erased screen, and a call's
     /// follow-up line is dropped, since its original now settles in place.
     pub fn recommit(&mut self) {
+        self.touch();
         let mut at = 0;
         let follow_ups = std::mem::take(&mut self.follow_ups);
         self.entries.retain(|_| {
@@ -258,6 +266,7 @@ impl Transcript {
     }
 
     pub fn push_notice(&mut self, notice: Notice) {
+        self.touch();
         self.finish_streaming();
         self.entries.push(Entry::Notice {
             severity: notice.severity,
@@ -267,6 +276,7 @@ impl Transcript {
     }
 
     pub fn shell(&mut self, command: String, output: String, exit_code: Option<i32>) {
+        self.touch();
         self.finish_streaming();
         self.entries.push(Entry::Shell {
             command,
@@ -276,11 +286,24 @@ impl Transcript {
     }
 
     pub fn error(&mut self, text: impl Into<String>) {
+        self.touch();
         self.finish_streaming();
         self.entries.push(Entry::Error(text.into()));
     }
 
+    /// Marks `entries` as changed, for the cache of rendered lines. `pub(crate)` for the one
+    /// caller that moves entries between transcripts directly.
+    pub(crate) fn touch(&mut self) {
+        self.changes += 1;
+    }
+
+    /// How many times `entries` has changed.
+    pub(crate) fn changes(&self) -> u64 {
+        self.changes
+    }
+
     fn finish_streaming(&mut self) {
+        self.touch();
         match self.entries.last_mut() {
             Some(Entry::Assistant { streaming, .. }) => *streaming = false,
             Some(Entry::Reasoning {
@@ -306,6 +329,7 @@ impl Transcript {
     /// Bounds the streaming reasoning buffer and refreshes its safe form. Past twice the kept
     /// size the buffer is made safe and clipped for good, so memory stays bounded while it grows.
     fn refresh_reasoning(&mut self) {
+        self.touch();
         let Some(Entry::Reasoning {
             text,
             live,
@@ -327,6 +351,7 @@ impl Transcript {
     /// already took a settled copy or reached scrollback; with no such card it is a card of its
     /// own, as for a provider that sends no deltas.
     fn settle_reasoning(&mut self, full: String) {
+        self.touch();
         let latest = self
             .entries
             .iter()
@@ -398,11 +423,26 @@ impl Transcript {
     /// be redrawn there, so its outcome is appended as a follow-up line, which later lookups by
     /// id find first.
     fn settle(&mut self, i: usize, new: ToolStatus) {
-        let Entry::Tool { status, .. } = &mut self.entries[i] else {
+        self.touch();
+        let Entry::Tool { status, id, .. } = &mut self.entries[i] else {
             return;
         };
         let written = i < self.committed && *status == ToolStatus::Pending;
-        *status = new;
+        *status = new.clone();
+        // The row in scrollback and its follow-up are one call; whichever a later event reaches
+        // first, the original must end up holding the final state.
+        let id = id.clone();
+        if !id.is_empty() {
+            for entry in &mut self.entries {
+                if let Entry::Tool {
+                    id: other, status, ..
+                } = entry
+                    && *other == id
+                {
+                    *status = new.clone();
+                }
+            }
+        }
         if written {
             let follow_up = self.entries[i].clone();
             self.finish_streaming();
@@ -412,6 +452,7 @@ impl Transcript {
     }
 
     pub fn on_event(&mut self, event: SessionEvent) {
+        self.touch();
         match event {
             SessionEvent::ReasoningDelta(delta) => {
                 if !self.show_reasoning {
@@ -508,7 +549,7 @@ impl Transcript {
                         .or(record.rule)
                         .unwrap_or_else(|| "denied".to_string());
                     if let Some(i) = at {
-                        self.settle(i, ToolStatus::Denied(first_line(&why)));
+                        self.settle(i, ToolStatus::Denied(display_text(why.trim())));
                     }
                 }
             }
@@ -543,13 +584,14 @@ impl Transcript {
         if let Some(i) = at {
             self.settle(
                 i,
-                ToolStatus::Denied(first_line(&format!("[{rule}] {explanation}"))),
+                ToolStatus::Denied(display_text(format!("[{rule}] {explanation}").trim())),
             );
         }
     }
 
     /// Calls that never produced a result because the turn was cut short.
     pub fn interrupt_pending(&mut self) {
+        self.touch();
         self.finish_streaming();
         let pending: Vec<usize> = (0..self.entries.len())
             .filter(|&i| {
@@ -608,9 +650,46 @@ impl Transcript {
             }
         };
         let card = self.entries[at].clone();
+        self.touch();
         self.finish_streaming();
         self.entries.push(Entry::Expanded(Box::new(card)));
         Ok(())
+    }
+
+    /// The entries a full listing shows: not the `/expand` snapshots, which repeat a card, nor
+    /// the follow-up copies of calls whose original holds the final state.
+    pub(crate) fn listed(&self) -> impl Iterator<Item = &Entry> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(i, entry)| {
+                !matches!(entry, Entry::Expanded(_)) && !self.follow_ups.contains(i)
+            })
+            .map(|(_, entry)| entry)
+    }
+
+    /// The size of the newest entry's text, which grows while a reply or reasoning streams.
+    pub(crate) fn last_len(&self) -> usize {
+        match self.entries.last() {
+            Some(Entry::Assistant { text, .. }) => text.len(),
+            Some(Entry::Reasoning { text, live, .. }) => text.len() + live.len(),
+            _ => 0,
+        }
+    }
+
+    /// Every listed entry in its full form: whole calls, whole kept output, whole reasoning and
+    /// whole denial reasons, folding nothing. Reasoning stays hidden while it is switched off.
+    pub fn verbose_lines(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+        let mut out = Vec::new();
+        for entry in self.listed() {
+            match entry {
+                Entry::Tool { .. } => tool_lines(entry, width, true, theme, self.glyphs, &mut out),
+                Entry::Reasoning { .. } if !self.show_reasoning => {}
+                Entry::Reasoning { .. } => reasoning_lines(entry, width, true, &mut out),
+                _ => entry_lines(entry, width, 0, theme, self.glyphs, &mut out),
+            }
+        }
+        out
     }
 
     /// The `n`th latest non-empty assistant entry (1 is the latest). A reply split by a tool
@@ -849,7 +928,7 @@ pub(crate) struct Settled<'a> {
     pub end: Option<usize>,
 }
 
-fn is_settled(entry: &Entry) -> bool {
+pub(crate) fn is_settled(entry: &Entry) -> bool {
     !matches!(
         entry,
         Entry::Assistant {
@@ -1220,6 +1299,7 @@ fn tool_lines(
             Span::styled(format!(" {mark}"), style),
         ]));
         call_rows(out);
+        let why = if full { why.clone() } else { first_line(why) };
         prefixed(&format!("denied: {why}"), width, "    ", style, out);
         return;
     }
@@ -1939,6 +2019,124 @@ mod tests {
         assert!(live.contains("denied: [Rule] no way"), "{live}");
         assert!(live.contains("failed: boom"), "{live}");
         assert!(live.contains("interrupted"), "{live}");
+    }
+
+    fn deny_record(id: &str, explanation: &str) -> fontaine_core::audit::DecisionRecord {
+        serde_json::from_value(serde_json::json!({
+            "ts": "2026-01-01T00:00:00Z",
+            "session_id": "s",
+            "agent_id": "main",
+            "tool_use_id": id,
+            "tool": "shell",
+            "args_digest": "d",
+            "tier": "deny_rule",
+            "decision": "deny",
+            "rule": null,
+            "confidence": null,
+            "guardian_model": null,
+            "latency_ms": 0,
+            "permission_mode": "auto",
+            "headless": false,
+            "explanation": explanation,
+        }))
+        .expect("a decision record")
+    }
+
+    fn shell_call(t: &mut Transcript, id: &str, command: &str) {
+        t.on_event(SessionEvent::ToolCall {
+            id: id.into(),
+            tool: "shell".into(),
+            args: serde_json::json!({ "command": command }),
+        });
+    }
+
+    #[test]
+    fn verbose_lines_show_the_whole_call_output_reasoning_and_denial() {
+        let mut t = Transcript::default();
+        let command = (0..8)
+            .map(|i| format!("echo step{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        shell_call(&mut t, "a", &command);
+        t.on_event(SessionEvent::ToolResult {
+            id: "a".into(),
+            tool: "shell".into(),
+            success: true,
+            text: (0..30)
+                .map(|i| format!("out{i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
+        t.on_event(SessionEvent::Reasoning(
+            (0..12)
+                .map(|i| format!("thought{i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+        shell_call(&mut t, "b", "rm -rf x");
+        t.guardian_denied("b", "shell", "Rule", "first reason\nsecond reason");
+        let all = text(&t.verbose_lines(60, &theme())).join("\n");
+        for i in 0..8 {
+            assert!(all.contains(&format!("echo step{i}")), "{all}");
+        }
+        for i in 0..30 {
+            assert!(all.contains(&format!("out{i}")), "{all}");
+        }
+        for i in 0..12 {
+            assert!(all.contains(&format!("thought{i}")), "{all}");
+        }
+        assert!(all.contains("denied: [Rule] first reason"), "{all}");
+        assert!(all.contains("second reason"), "{all}");
+        assert!(!all.contains("expand:"), "{all}");
+        // Collapsed, the same denial is one line.
+        let collapsed = text(&t.lines(60, &theme())).join("\n");
+        assert!(collapsed.contains("first reason"), "{collapsed}");
+        assert!(!collapsed.contains("second reason"), "{collapsed}");
+    }
+
+    #[test]
+    fn verbose_lines_do_not_repeat_an_expanded_card_or_a_follow_up() {
+        let mut t = Transcript::default();
+        shell_call(&mut t, "a", "ls");
+        assert_eq!(t.commit_within(40, &theme(), 1).len(), 1);
+        result(&mut t, "a", "shell");
+        t.expand(ExpandTarget::Latest).unwrap();
+        let all = text(&t.verbose_lines(60, &theme()));
+        assert_eq!(
+            all.iter().filter(|l| l.contains("• shell")).count(),
+            1,
+            "{all:?}"
+        );
+        assert!(all.iter().any(|l| l.contains('✓')), "{all:?}");
+        assert!(!all.iter().any(|l| l.contains('…')), "{all:?}");
+    }
+
+    #[test]
+    fn reasoning_stays_out_of_the_listing_while_it_is_switched_off() {
+        let mut t = Transcript::default();
+        t.on_event(SessionEvent::Reasoning("pondering".into()));
+        t.show_reasoning = false;
+        let all = text(&t.verbose_lines(60, &theme())).join("\n");
+        assert!(!all.contains("pondering"), "{all}");
+    }
+
+    #[test]
+    fn a_denial_after_its_row_was_committed_leaves_the_original_with_the_guardians_reason() {
+        let mut t = Transcript::default();
+        shell_call(&mut t, "a", "rm x");
+        assert_eq!(t.commit_within(40, &theme(), 1).len(), 1);
+        t.on_event(SessionEvent::Decision(Box::new(deny_record(
+            "a",
+            "agent-facing note",
+        ))));
+        t.guardian_denied("a", "shell", "Rule", "the real reason");
+        assert!(matches!(
+            &t.entries[0],
+            Entry::Tool { status: ToolStatus::Denied(why), .. } if why == "[Rule] the real reason"
+        ));
+        let all = text(&t.verbose_lines(60, &theme())).join("\n");
+        assert!(all.contains("[Rule] the real reason"), "{all}");
+        assert!(!all.contains("agent-facing note"), "{all}");
     }
 
     #[test]

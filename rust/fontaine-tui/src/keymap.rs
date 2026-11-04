@@ -41,7 +41,8 @@ fn defaults() -> Vec<(Keystroke, TuiAction)> {
         ("ctrl+c", TuiAction::Interrupt),
         ("ctrl+d", TuiAction::Quit),
         ("ctrl+t", TuiAction::AgentsPanel),
-        ("ctrl+o", TuiAction::Todos),
+        ("ctrl+o", TuiAction::Transcript),
+        ("alt+t", TuiAction::Todos),
         ("ctrl+l", TuiAction::Reprint),
         ("ctrl+v", TuiAction::AttachClipboard),
         ("ctrl+r", TuiAction::HistorySearch),
@@ -169,6 +170,31 @@ mod tests {
             keymap.lookup(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
             Some(TuiAction::Newline)
         );
+    }
+
+    #[test]
+    fn ctrl_o_opens_the_transcript_and_alt_t_toggles_the_tasks() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            keymap.lookup(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+            Some(TuiAction::Transcript)
+        );
+        assert_eq!(
+            keymap.lookup(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT)),
+            Some(TuiAction::Todos)
+        );
+    }
+
+    #[test]
+    fn rebinding_ctrl_o_to_todos_displaces_the_transcript() {
+        let keymap = map(&[("ctrl+o", "todos")]);
+        assert_eq!(
+            keymap.lookup(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+            Some(TuiAction::Todos)
+        );
+        assert!(keymap.keys_for(TuiAction::Transcript).is_empty());
+        assert!(keymap.is_overridden(TuiAction::Transcript));
+        assert!(keymap.is_overridden(TuiAction::Todos));
     }
 
     #[test]
