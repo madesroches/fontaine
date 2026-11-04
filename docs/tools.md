@@ -42,8 +42,8 @@ listing and search. rig's own `list`, `search`, `delete` and `move` are not regi
 model sees `ls`, `glob` and `grep` instead, and removing or renaming a file goes through `shell`,
 which is an arbitrary tool and so is always gated as one.
 
-The system prompt steers the model toward `ls`, `read`, `glob` and `grep` and away from `cat`,
-`find` and `grep` inside a shell.
+The system prompt and the Unix `shell` tool description steer the model toward `ls`, `read`,
+`glob` and `grep` and away from `cat`, `find` and `grep` inside a shell.
 
 Tools of MCP servers join these at run time, always as arbitrary tools named
 `mcp__<server>__<tool>`; see [MCP servers](mcp.md). `agent`, `send_message`, `board_show` and `board_update` are described in

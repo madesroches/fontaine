@@ -848,6 +848,11 @@ All notable changes are recorded here. The format follows
   a cancelled call cancels its reads and LLM request. Audit records gain `screen_scores`, and
   `fontaine-evals` gains `--composition-script` and `--composition-param` (#137, #136).
 
+- Steering away from the shell for file searches: the guardian's denial explanation never proposes
+  a shell command and names `grep`, `glob` or `read` only when the deny turns on the shell
+  construct itself, the Unix `shell` tool description points at `read`, `glob` and `grep`, and
+  `AGENTS.md` tells agents to search with the `grep` and `glob` tools (#358).
+
 #### Headless
 
 - A turn no longer stops at 1,000 model calls when `--max-turns` is not given; interactive
