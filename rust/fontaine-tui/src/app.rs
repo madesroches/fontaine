@@ -1169,7 +1169,13 @@ impl App {
             self.toggle_todos();
             return Action::None;
         }
-        if mapped == Some(TuiAction::Transcript) && !typing_reason {
+        // An approval or question is drawn over the view, so a toggle would change what the human
+        // cannot see.
+        if mapped == Some(TuiAction::Transcript)
+            && !typing_reason
+            && self.approval.is_none()
+            && self.questions.is_empty()
+        {
             self.toggle_transcript();
             return Action::None;
         }
@@ -3348,11 +3354,21 @@ mod tests {
     }
 
     #[test]
+    fn the_transcript_key_does_not_open_a_view_under_an_approval() {
+        let mut app = app();
+        app.approval = Some(approval());
+        ctrl(&mut app, 'o');
+        assert!(app.transcript_view.is_none());
+    }
+
+    #[test]
     fn an_approval_takes_precedence_and_the_view_is_still_open_after_it_closes() {
         let mut app = app();
         ctrl(&mut app, 'o');
         app.approval = Some(approval());
         assert_eq!(crate::view::overlay(&app, 60, 30, false).title, "approval");
+        ctrl(&mut app, 'o');
+        assert!(app.transcript_view.is_some());
         // The view does not take Esc while the approval is up.
         press(&mut app, KeyCode::Esc);
         assert!(app.transcript_view.is_some());

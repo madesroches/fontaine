@@ -424,7 +424,13 @@ impl Transcript {
     /// id find first.
     fn settle(&mut self, i: usize, new: ToolStatus) {
         self.touch();
-        let Entry::Tool { status, id, .. } = &mut self.entries[i] else {
+        let Entry::Tool {
+            status,
+            id,
+            ordinal,
+            ..
+        } = &mut self.entries[i]
+        else {
             return;
         };
         let written = i < self.committed && *status == ToolStatus::Pending;
@@ -432,12 +438,19 @@ impl Transcript {
         // The row in scrollback and its follow-up are one call; whichever a later event reaches
         // first, the original must end up holding the final state.
         let id = id.clone();
+        let ordinal = *ordinal;
         if !id.is_empty() {
             for entry in &mut self.entries {
+                // A reused provider call id must not reach an unrelated call; the follow-up
+                // is a clone and shares the ordinal.
                 if let Entry::Tool {
-                    id: other, status, ..
+                    id: other,
+                    status,
+                    ordinal: other_ordinal,
+                    ..
                 } = entry
                     && *other == id
+                    && *other_ordinal == ordinal
                 {
                     *status = new.clone();
                 }
@@ -452,7 +465,13 @@ impl Transcript {
     }
 
     pub fn on_event(&mut self, event: SessionEvent) {
-        self.touch();
+        // `settle` counts the changes a denial makes itself.
+        if !matches!(
+            event,
+            SessionEvent::Usage { .. } | SessionEvent::Decision(_)
+        ) {
+            self.touch();
+        }
         match event {
             SessionEvent::ReasoningDelta(delta) => {
                 if !self.show_reasoning {

@@ -28,6 +28,7 @@ struct CacheKey {
     /// Streaming text grows without an event of its own on the counter's other paths.
     last_len: usize,
     show_reasoning: bool,
+    theme: Theme,
 }
 
 #[derive(Default)]
@@ -117,6 +118,7 @@ impl TranscriptView {
             entries: transcript.entries.len(),
             last_len: transcript.last_len(),
             show_reasoning: transcript.show_reasoning,
+            theme: *theme,
         };
         let mut cache = self.cache.borrow_mut();
         if cache.as_ref().is_none_or(|(cached, _)| *cached != key) {

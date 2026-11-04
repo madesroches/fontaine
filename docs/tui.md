@@ -933,7 +933,8 @@ follows again.
 Other keys are ignored while the view is open: the message box stays on screen, dimmed and without
 a cursor, and typing and pastes do nothing. An approval or a question that arrives takes the view's
 place; the view is still open under it and returns once it is answered. The agents panel and the
-pickers likewise take the keys when they are open. `/transcript` is also accepted mid-turn.
+pickers likewise take the keys when they are open. Ctrl-O does nothing while an approval or a question is up, so it neither opens a view
+under it nor closes one that is open. `/transcript` is also accepted mid-turn.
 
 In [screen-reader mode](terminal.md#screen-reader-mode) no view opens: Ctrl-O and `/transcript`
 print every settled entry once, calls and reasoning in their `/expand` form, or `no transcript` when

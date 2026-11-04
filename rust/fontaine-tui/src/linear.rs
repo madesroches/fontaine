@@ -700,7 +700,7 @@ mod tests {
         assert!(!out.contains("earlier lines"), "{out:?}");
         assert!(!out.contains("sleep 9"), "{out:?}");
         assert!(!out.contains("typing"), "{out:?}");
-        assert!(rig.render().is_empty() || !rig.render().contains("you: hi"));
+        assert!(rig.render().is_empty());
     }
 
     #[test]
