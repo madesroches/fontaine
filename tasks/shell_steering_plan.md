@@ -20,7 +20,10 @@ tools.
   1-3 sentences", `rust/fontaine-guardian/prompts/guardian_prompt.md`, "What you decide"). No Rust
   code composes the remediation hint, so the suggestion of a shell command is steered only by the
   prompt, and the prompt currently says nothing about the re-issue path. The minimal profile
-  prompt (`guardian_minimal.md`) shares the same Deny contract.
+  never denies a plain file-search shell call, so only `guardian_prompt.md` changes.
+- `rust/fontaine-tools/src/builtins.rs` (~589-602): the Unix `shell` tool description has no
+  redirect to `read`/`glob`/`grep`; the PowerShell variant (~745-746) already has one.
+  `system_prompt.md:17-26` already steers correctly.
 - `AGENTS.md` is also the model for user-facing project instructions; `docs/` was not found to
   contain advice telling the agent to search through the shell (the `rg` hits in
   `docs/permissions.md` and `docs/guardian.md` describe the classifier, not advice).
@@ -32,35 +35,38 @@ tools.
    they skip gitignored paths and honor `.ignore`. Keep a short note that `rg` (not `grep -r`)
    is what to use in a shell pipeline when the tools cannot express it, so human contributors keep
    the original intent.
-2. **Guardian prompts** (`guardian_prompt.md` and `guardian_minimal.md`): add one sentence to the
-   Deny contract — when denying a `shell` call whose purpose is a plain file search or lookup,
+2. **Guardian prompt** (`guardian_prompt.md`): add one sentence to the `submit` paragraph
+   (`guardian_prompt.md:118`), next to the existing explanation-content rules — when denying a `shell` call whose purpose is a plain file search or lookup,
    the explanation names the dedicated read-only tool (`grep`, `glob`, `read`) as the way to
    re-issue it, and never proposes another shell command. The sentence must not alter any verdict
-   criteria; it only constrains explanation wording. If the prompt's Deny explanation is also
-   parsed elsewhere, keep it within 1-3 sentences.
-3. **Audit** AGENTS.md, `CONTRIBUTING.md`, and `docs/` for other advice that assumes a
+   criteria; it only constrains explanation wording. The 1-3 sentence limit stays; nothing in
+   product code parses the explanation (`verdict.rs:82` only trims).
+3. **Shell tool description** (`builtins.rs`): add one sentence to the Unix `shell` description:
+   use `read`/`glob`/`grep`, not `cat`/`find`/`grep`/`rg`.
+4. **Audit** AGENTS.md, `CONTRIBUTING.md`, `README.md`, and `docs/` for other advice that assumes a
    Bash-as-search harness (`rg`, `find`, `cat`, `head` for reading); fix any found in the same
    way.
 
 ## Implementation Steps
 
 1. Edit `AGENTS.md` "## Other" bullet as in Design 1.
-2. Audit with `rg -n "\brg\b|\bfind\b|\bgrep\b" AGENTS.md CONTRIBUTING.md docs README.md` and fix
+2. Audit with `rg -n "\brg\b|\bfind\b|\bgrep\b|\bcat\b|\bhead\b" AGENTS.md CONTRIBUTING.md docs README.md` and fix
    steering-style hits only.
-3. Add the sentence to `rust/fontaine-guardian/prompts/guardian_prompt.md` and
-   `guardian_minimal.md`.
-4. Update the prompt snapshot (`rust/fontaine-guardian/src/snapshots/…the_defaults_marker_snapshot.snap`)
-   and any other insta snapshot or prompt-hash test that embeds the prompt, via `cargo insta`
-   review (or `INSTA_UPDATE`).
-5. Add a `CHANGELOG.md` entry.
+3. Add the sentence to `rust/fontaine-guardian/prompts/guardian_prompt.md`.
+4. Add the redirect sentence to the Unix `shell` description in
+   `rust/fontaine-tools/src/builtins.rs`.
+5. Update the prompt snapshot
+   (`rust/fontaine-guardian/src/snapshots/fontaine_guardian__prompt_builder__tests__the_defaults_marker_snapshot.snap`)
+   via `cargo insta` review (or `INSTA_UPDATE`).
+6. Add a `CHANGELOG.md` entry.
 
 ## Files to Modify
 
 - `AGENTS.md`
 - `rust/fontaine-guardian/prompts/guardian_prompt.md`
-- `rust/fontaine-guardian/prompts/guardian_minimal.md`
-- `rust/fontaine-guardian/src/snapshots/*` (prompt snapshots)
-- `docs/guardian.md` (describe the denial-wording rule, if the page documents Deny explanations)
+- `rust/fontaine-tools/src/builtins.rs`
+- `rust/fontaine-guardian/src/snapshots/fontaine_guardian__prompt_builder__tests__the_defaults_marker_snapshot.snap`
+- `docs/guardian.md` (see Documentation)
 - `CHANGELOG.md`
 
 ## Trade-offs
@@ -72,20 +78,21 @@ tools.
 - **Drop the `rg` line entirely**: rejected — the `.ignore` rationale is still useful for the
   shell fallback.
 
-## Decisions
-
 ## Documentation
 
-`docs/guardian.md`: one line in the Deny-explanation description if one exists. No other page
-changes.
+`docs/guardian.md`: in "The verdict" (near lines 114-115 and 168), add the new rule: a deny of a
+plain file search names the dedicated read-only tool as the re-issue path. Correct line 168's
+wrapper description: a deny reaches the agent as `Denied by guardian: [Rule] explanation. Do not
+retry it or look for another route to the same effect; tell the user what you could not do.`
+(`permissions.rs:1871`). No other page changes.
 
 ## Testing Strategy
 
 - Snapshot tests covering the prompt text are updated; `cargo test -p fontaine-guardian` passes.
-- A unit test asserting both prompts contain the new re-issue sentence (a bundled-prompt test in
-  `fontaine-guardian`, next to the existing prompt-builder tests).
-- Live guardian eval (`cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian <live
-  profile>`) before done: catch rate and false-deny rate must not regress versus the baseline;
+- Live guardian eval (`cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian
+  live:<account>/<model>`, e.g. `live:work/claude-haiku-5-5`) before done. An unfiltered
+  `--profile full` live run rewrites `rust/fontaine-guardian/data/guardian_models.toml`; discard
+  that file (`git checkout`) unless the prompt change is meant to regenerate it. Pass criteria: catch rate and false-deny rate must not regress versus the baseline;
   golden cases are not edited. Catches a prompt wording change shifting verdicts, which fixtures
   cannot show.
 
@@ -93,8 +100,3 @@ changes.
 
 Not needed: the denial wording is model output and cannot be asserted deterministically; the live
 eval above is the check.
-
-## Open Questions
-
-- Whether `docs/guardian.md` currently documents Deny explanation wording (decide at
-  implementation by reading the page).
