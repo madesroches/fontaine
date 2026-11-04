@@ -22,7 +22,7 @@ so one trigger covers them.
 - Approvals from subagents and the guardian's escalations are queued onto `app.approval` /
   `app.questions` like the main agent's, so they surface through the same overlays.
 - `[tui]` is `TuiSection` / `Tui` in `fontaine-core/src/config.rs` (~L875, ~L1967, merged ~L2210);
-  it is already user-scope only, so a repository cannot enable a notification.
+  it is already settable only from the user file or `--settings`, so a repository cannot enable a notification.
 - Terminal escapes are written straight to stdout elsewhere (`clipboard.rs`, OSC 52 via
   crossterm).
 - Claude Code offers a bell or desktop notification plus a `Notification` hook.
@@ -50,19 +50,20 @@ impl Notifier {
 }
 ```
 
-- `Overlay::needs_answer()` in `view.rs` replaces the `NEEDS_ANSWER` title list in `linear.rs`, so
-  the two renderers share one definition of "waiting for the human" (open/closed: a new prompt
-  declares itself there). It is true for the titles approval, question, MCP server, guardian
+- `Overlay::notify_message() -> Option<&'static str>` in `view.rs` replaces the `NEEDS_ANSWER`
+  title list in `linear.rs`, so the two renderers share one definition of "waiting for the human"
+  (open/closed: a new prompt declares itself there); `linear.rs` uses `.is_some()`. It is `Some`
+  for the titles approval, question, MCP server, guardian
   unavailable, guardian, `auto-mode setup` (opens after a long background scan, when the user has
-  likely switched windows) and `skills` (the skill trust prompt). `linear.rs`'s bell set grows to
+  likely switched windows) and `skills` (the skill trust prompt), each with its message
+  (`Fontaine needs your approval`, `Fontaine has a question`, ...). `linear.rs`'s bell set grows to
   match.
 - `observe` compares `(title, instance)` with the last observed key: a changed key on an overlay
   that needs an answer produces a signal once; closing clears the key, so the next prompt (even
   with the same title) signals again. Repainting the same prompt, scrolling it, or typing into its
   field never re-signals.
 - Sequences: `bell` is `\x07`; `osc9` is `ESC ] 9 ; <text> BEL`; `osc777` is
-  `ESC ] 777 ; notify ; Fontaine ; <text> BEL`. `<text>` comes from a fixed table keyed by title
-  (`Fontaine needs your approval`, `Fontaine has a question`, ...), never from model or tool
+  `ESC ] 777 ; notify ; Fontaine ; <text> BEL`. `<text>` is `notify_message()`'s fixed string, never from model or tool
   output, so no escape can be injected through it.
 - The screen backend owns a `Notifier` and writes the bytes after `end_frame`, outside the
   synchronized-update block, so a bell is not swallowed by the frame.
@@ -72,8 +73,8 @@ impl Notifier {
 ## Implementation Steps
 
 1. `config.rs`: add `NotifyMethod`, the `TuiSection`/`Tui` fields and the merge.
-2. `view.rs`: add `Overlay::needs_answer()` and the title-to-message table; `linear.rs` uses
-   `needs_answer()` and drops `NEEDS_ANSWER`.
+2. `view.rs`: add `Overlay::notify_message()`; `linear.rs` uses `.is_some()` and drops
+   `NEEDS_ANSWER`.
 3. `notify.rs`: `Notifier` as above; wire into `screen.rs` and construct it from `config.tui.notify`
    where the TUI is launched.
 4. `rust/fontaine-core/src/config_catalog.rs`: add a `tui.notify` row with `Edit::Choice`
@@ -86,8 +87,13 @@ impl Notifier {
    with a one-line reason, at the end of the `### TUI` subsection of `## Decisions`: no
    `Notification` hook; key `notify` with values bell/osc9/osc777/off instead of Claude Code's
    `preferredNotifChannel`; no idle notification after a reply finishes; signals immediately
-   instead of after Claude Code's ~6 s without typing.
-7. Docs and changelog (below).
+   instead of after Claude Code's ~6 s without typing; default `bell` instead of Claude Code's
+   terminal-detecting `auto`; generic `osc9`/`osc777` instead of Claude Code's per-terminal
+   `iterm2`/`kitty`/`ghostty` channels; no combined bell+OSC value (Claude Code has
+   `iterm2_with_bell`; add on request).
+7. `research/research-claude-code-parity.md`: mark the "Notifications when input/approval is
+   needed" row (~L386) "shipped (#51)".
+8. Docs and changelog (below).
 
 ## Files to Modify
 
@@ -96,6 +102,7 @@ impl Notifier {
 - `rust/fontaine-core/src/config_catalog.rs`
 - `rust/fontaine-tui/src/app.rs` (`UnavailablePrompt` id)
 - `tasks/fontaine_harness_plan.md` (Decisions)
+- `research/research-claude-code-parity.md` (matrix row)
 - `docs/configuration.md`, `docs/terminal.md`, `docs/tui.md`, `docs/index.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -117,7 +124,7 @@ impl Notifier {
   say so, and the default bell works in tmux through its own bell handling.
 - No bell when a reply finishes in the graphical TUI: the issue asks for pending human prompts
   only.
-- Screen-reader mode ignores `notify`, so those users keep the bell that announces replies.
+- No combined bell+OSC value: Claude Code has `iterm2_with_bell`; add on request.
 
 ## Documentation
 
@@ -138,9 +145,8 @@ Unit tests (`notify.rs`):
 - A prompt signals once across repeated `observe` calls with the same key; a second prompt with
   the same title and a new instance signals again; a closed overlay re-arms.
 - Overlays that do not need an answer (`agents`, `denied`, pickers, `config`) never signal.
-- Each title that `needs_answer()` accepts (approval, question, MCP server, guardian unavailable,
-  guardian, auto-mode setup, skills) has a message in the table (loop over the list), and
-  `linear.rs` rings for the same set.
+- `linear.rs` rings for the same set of titles that `notify_message()` accepts (approval, question,
+  MCP server, guardian unavailable, guardian, auto-mode setup, skills).
 
 Config tests (`config.rs`/`config_scope.rs`): default is `bell`; each value parses; an unknown
 value is a `ConfigError::Parse` at the value's line:column listing the accepted values, modeled on
@@ -156,7 +162,3 @@ opening an approval writes the configured bytes once.
    needs your approval". Why manual: the terminal's rendering of OSC 9 is outside the process.
 2. With `notify = "bell"` in tmux with `monitor-bell on`, the window is flagged when an approval
    opens in a background window.
-
-## Open Questions
-
-- Should `notify` also have a `both` value (bell plus OSC)? Defaulting to no until someone asks.
