@@ -1178,6 +1178,73 @@ mod killed {
         assert!(file.is_file(), "{file:?}");
     }
 
+    async fn journal_len(built: &Built, id: &str) -> usize {
+        rig_memory::load_async(&built.runtime.session.store(), &format!("{id}.inflight"))
+            .await
+            .unwrap()
+            .messages()
+            .len()
+    }
+
+    #[tokio::test]
+    async fn a_run_in_progress_is_journaled_and_exported_and_the_journal_empties_at_settle() {
+        let w = World::new();
+        w.user_file("[permissions]\nallow = [\"agent\", \"shell\"]\n");
+        let (built, seen, release) = build_held(
+            &w,
+            PermissionMode::Manual,
+            vec![spawn_turn("worker", "dig into it"), text_turn("root done")],
+            vec![shell_turn("echo hi"), text_turn("child answer")],
+            None,
+        );
+        root_turn(&built, "start it").await;
+        let wait = std::time::Duration::from_secs(5);
+        tokio::time::timeout(wait, seen.notified())
+            .await
+            .expect("the child's first request");
+        release.notify_one();
+        // The second request is held: the run has committed its prompt, the tool-call turn
+        // and the tool result, and has not settled.
+        tokio::time::timeout(wait, seen.notified())
+            .await
+            .expect("the child's second request");
+        let journal = {
+            let conversation =
+                rig_memory::load_async(&built.runtime.session.store(), "agent-1.inflight")
+                    .await
+                    .unwrap();
+            format!("{:?}", conversation.messages())
+        };
+        assert!(journal.contains("dig into it"), "{journal}");
+        assert!(journal.contains("call-1"), "{journal}");
+        assert!(journal.contains("hi"), "{journal}");
+        assert!(built.runtime.state.agents().report_of("agent-1").is_none());
+
+        let out = w.data.join("export");
+        fontaine_core::export::export_session(
+            &built.runtime.session,
+            built.runtime.state.agents(),
+            &out,
+        )
+        .await
+        .unwrap();
+        let text = std::fs::read_to_string(out.join("agent-1.md")).unwrap();
+        let marker = text
+            .find("_Run in progress at export._")
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(text[marker..].contains("dig into it"), "{text}");
+        assert!(text[marker..].contains("`shell`"), "{text}");
+
+        release.notify_one();
+        let report = wait_report(&built, "agent-1").await;
+        assert_eq!(report.status, ChildStatus::Done);
+        assert_eq!(journal_len(&built, "agent-1").await, 0);
+        let log = child_log(&built, "agent-1").await;
+        assert!(log.contains("dig into it"), "{log}");
+        assert!(log.contains("call-1"), "{log}");
+        assert!(log.contains("child answer"), "{log}");
+    }
+
     #[tokio::test]
     async fn a_kill_during_a_permission_wait_is_refused_at_the_choke_point() {
         let w = World::new();

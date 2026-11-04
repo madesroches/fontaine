@@ -931,6 +931,9 @@ All notable changes are recorded here. The format follows
 
 #### Agents
 
+- A subagent's transcript survives a killed process: its committed messages are journaled to
+  `logs/agent-<n>.inflight.jsonl` as the run progresses and emptied when the run settles, and
+  `/export` shows the journal of a running or interrupted run (#404).
 - `/clear` now prunes ended subagents from the agent list and the agents panel: a cleared
   session starts with an empty agent list, instead of keeping agents that failed, were killed
   or ran out of budget in the last 30 seconds listed. The id counter, the taken names and the

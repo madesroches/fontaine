@@ -190,7 +190,9 @@ Each session keeps two stores, plus a task list, a schedule and a goal file, in 
   by a summary the model wrote. `/clear` empties it. The same directory holds one `agent-<n>.jsonl`
   per subagent, that agent's conversation, kept for the session's life. A run saves on completion,
   and a failed or killed run saves what it committed up to its end, so a log exists for any agent
-  that got at least a prompt off, killed ones included.
+  that got at least a prompt off, killed ones included. Beside each, `agent-<n>.inflight.jsonl`
+  is a journal written as a run progresses and emptied when the run settles, so a killed process
+  still leaves the in-flight run for `/export`.
 - the **session ledger**, `ledger/ledger.jsonl`: an append-only record, written by the harness and
   never by the model. It holds the user's messages verbatim (a message typed while a turn runs is
   recorded when the agent receives it with a tool result, not when it is typed), mode changes, approvals and grants,

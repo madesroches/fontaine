@@ -318,8 +318,13 @@ not independent sessions, which keeps one permission pipeline and one budget tre
 
 A subagent does not keep its conversation in memory: it is written to the session store, one
 `logs/agent-<n>.jsonl` per agent beside the root transcript, and it stays there for the session's
-life. The log is saved when a run ends, so a subagent that is still running has its completed runs
-only on disk; a run that fails keeps what it committed, exactly like the main conversation. The
+life. The log is saved when a run ends; a run that fails keeps what it committed, exactly like the main
+conversation. While a run is in progress its committed messages are also appended, before each
+model call, to a journal beside the log (`logs/agent-<n>.inflight.jsonl`) that is emptied when the
+run settles. A process that is killed mid-run (SIGKILL, the out-of-memory killer) leaves the journal
+behind, and `/export` shows it after the log's completed runs. The last assistant turn whose tools
+were still running, with that batch's results, is not in it: it reaches the journal only at the
+next model call. The
 ledger's `spawned` records anchor agent id continuity: a resumed session mints `agent-<n>` ids past
 the largest one its ledger recorded, so a restarted session never reuses an id whose transcript is
 already on disk. `/export` reads these logs (see [Sessions](tui.md#sessions)); pruning them is
@@ -350,7 +355,8 @@ has written so far (`· writing 4.2k chars`), since its usage only updates when 
 
 Killing a subagent stops it at the next boundary: the in-flight model stream ends before the next
 request, an in-flight tool call or permission wait is cut short at the same gate every call
-passes, and a run that stays wedged past a bounded grace is dropped as before. The row shows
+passes, and a run that stays wedged past a bounded grace is dropped as before. A dropped run never
+settles, so its in-flight messages stay in the journal, which `/export` shows. The row shows
 `killed` immediately; the report and the ledger's `finished` record wait for the run to settle,
 normally within the grace. What the subagent committed up to the kill is kept in its own log,
 `logs/agent-<n>.jsonl` in the session store, so `/export` renders its conversation up to the kill
