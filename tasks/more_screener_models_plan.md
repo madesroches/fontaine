@@ -56,7 +56,8 @@ OpenJev can sit behind the preset, and (optionally) a different default model.
 ### 1. Measure the five hosted models
 
 For each model run the employee-levels scorer on the current dataset, two repeats (the project
-already notes repeated Jev answers differ by up to 0.22), and write
+already notes repeated Jev answers differ by up to 0.22; a repeat is a separate run with a `-r2`
+suffix on the scorecard name), and write
 `evals/scorecards/screen-<model-slug>-employee-levels.json`. Jev is re-scored in the same session
 as the control, since model versions move (`typesafe/jev-1.14-20261014` may have been re-pinned).
 Compare on the scorecard measures already used in `research/analysis-jev-openrouter.md`: AUROC for
@@ -64,9 +65,8 @@ must-not-clear vs allow, `t_allow` (zero-missed-attack threshold) and the share 
 clears, catch rate, fail-closed count, latency p50/p95 and cost. These are measurements, not merge
 blockers: a model that loses is recorded, not hidden.
 
-The write-up is a new section in `research/analysis-jev-improvements.md`'s sibling doc
-`research/analysis-screener-models.md` (analysis docs live in `research/`), with a summary table
-and a `docs/evals.md` "Other hosted screens" subsection holding the commands and the headline
+The write-up is a new doc `research/analysis-screener-models.md`, with a summary table
+and a new `docs/evals.md` "Other hosted screens" subsection (beside "Hosted screen scorecards") holding the commands and the headline
 numbers.
 
 ### 2. Measure OpenJev locally
@@ -85,7 +85,9 @@ Let an `openrouter`-kind account with a loopback `base_url` run without a key:
 
 - `check_composition_credentials` and `build_reader` (`agent/setup.rs`) treat a missing key as
   allowed when `systemone_endpoint(account)` is loopback (`systemone::loopback`), and build
-  `SystemOneSettings` with `api_key: None`; a non-loopback endpoint keeps today's error.
+  `SystemOneSettings` with an empty `Secret` key when no key resolves (the scorer already treats an
+  empty key as keyless: no bearer header, `key_may_travel` enforced only when keyed); a non-loopback
+  endpoint keeps today's error.
 - A remote host without a key stays an exit-2 error, so nothing becomes keyless by accident.
 - No new account kind: the existing kind already means "a System One endpoint at `base_url`".
 - The preset defaults stay Jev's. A local or other model must set `allow_threshold` and
@@ -96,23 +98,20 @@ Let an `openrouter`-kind account with a loopback `base_url` run without a key:
 
 ### 4. Default model (only if a candidate clearly wins)
 
-If a candidate beats Jev on `t_allow` clearing at zero missed attacks, with no worse fail-closed
-rate, across both repeats, open an issue to change `JEV_MODEL` and refit thresholds on the
-synthetic corpus (`jev_synth.py`). Changing the shipped default is out of scope for this plan; the
-measurements feed that decision.
+If a candidate wins at zero missed attacks, open an issue to change `JEV_MODEL` and refit
+thresholds (`research/typed-decision-screen/scripts/jev_synth.py`).
 
 ## Implementation Steps
 
 1. Write a probe-and-run script in `evals/` (shell, not part of CI) that loops the five models plus
-   Jev through the scorer with `--screen-max-cost-usd 1` and a key file path argument; commit it
-   only if it is more than the loop in `docs/evals.md`, otherwise just document the loop.
+   Jev through the scorer with `--screen-max-cost-usd 1` and a key file path argument; document the
+   loop in `docs/evals.md`. Repeats are separate runs with a `-r2` suffix on the scorecard name.
 2. Run the hosted scorecards (two repeats each) with the key in `~/open_router_key`; commit the
    scorecards under `evals/scorecards/`.
 3. Stand up OpenJev Flash-9B locally, run the scorer against it, commit the scorecard.
 4. Write `research/analysis-screener-models.md` and the `docs/evals.md` subsection.
 5. If step 2 is competitive: implement the keyless loopback account (Design 3) with tests.
-6. File the follow-up issue(s) for a default change or per-model threshold fitting.
-7. `CHANGELOG.md` entry; docs updates below.
+6. `CHANGELOG.md` entry; docs updates below.
 
 ## Files to Modify
 
@@ -121,8 +120,7 @@ measurements feed that decision.
 - `docs/evals.md`, `docs/guardian.md` (hosted-screen section: other models, local OpenJev)
 - `CHANGELOG.md`
 - Conditional (Design 3): `rust/fontaine-core/src/config.rs`, `rust/fontaine-core/src/agent/setup.rs`,
-  `rust/fontaine-guardian/src/screen.rs` / `systemone.rs` (optional key), their tests, and
-  `docs/configuration.md`
+  their tests, and `docs/configuration.md`
 
 ## Trade-offs
 
@@ -157,9 +155,8 @@ measurements feed that decision.
 - Measurements are live runs (manual, like every live eval; they are not a CI gate).
 - Step 5 (if built), all unit/integration with wiremock or the fixture reader: a loopback
   `openrouter` account with no key builds a reader and sends no `Authorization` header; a
-  non-loopback account with no key is still exit 2; `key_may_travel` behavior is unchanged; project
-  scope cannot set `base_url` to a loopback address that loosens anything (composition keys stay
-  user-only).
+  non-loopback account with no key is still exit 2; `key_may_travel` behavior is unchanged. Composition
+  and accounts stay user-only (already enforced in `config_scope.rs`).
 
 ## Manual Verification
 
