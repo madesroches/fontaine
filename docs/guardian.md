@@ -113,6 +113,10 @@ The guardian reads history and your messages by a few fixed rules:
   X" asks for that issue.
 - A guardian denial is not you rejecting the action. When it denies a soft-deny match, the
   explanation says what would clear it: you naming the action and its target, or a standing grant.
+- A denial explanation never proposes a shell command. It names a dedicated read-only tool
+  (`grep`, `glob`, `read`) only when the deny turns on the shell construct itself (a redirection, a
+  compound or unparseable command) and the call was a plain file search; when it rests on the target
+  or content a rule protects, it names no alternative at all.
 - A note you type about the setup, such as "fyi, the guardian is now haiku", is neutral.
 - Suspicion needs a rule: "earlier denials and this looks related" is not a reason to deny.
 
@@ -165,7 +169,8 @@ Exfiltration`, `Production Deploy`, `Git Destructive`, `Destroy Pre-existing Fil
 `Secret Exposure`, `Tunnel/Reverse Shell`, `Unguarded Agent Loop`, `Safety Bypass` (disabling safety
 flags or security-guarding tests, adding persistence, or editing the agent's own settings), `Remote
 Redirect`, `Unreviewed Merge` and `Container Escape` (minimal profile only). A deny reaches the
-agent as `Denied by guardian: [Rule] explanation`, and your terminal shows the label and the
+agent as `Denied by guardian: [Rule] explanation. Do not retry it or look for another route to the
+same effect; tell the user what you could not do.`, and your terminal shows the label and the
 explanation; a subagent's denial shows in that agent's [view](tui.md#the-agent-list-and-the-agent-view),
 not in the main chat. Every shipped deny rule starts with the label it is reported under.
 

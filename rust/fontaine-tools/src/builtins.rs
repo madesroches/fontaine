@@ -595,7 +595,8 @@ impl Tool for ShellTool {
              (`npm start`, not `npm start &`). Do not poll with `sleep`: use job_output with \
              wait_secs. Background jobs are for the main agent only: a subagent's command is \
              stopped at its timeout and run_in_background is refused. A command that prints \
-             more than {} MB is killed. Use it to build, test, run programs and use git. Each \
+             more than {} MB is killed. Use it to build, test, run programs and use git; to read or search files use `read`, \
+             `glob` and `grep`, not `cat`, `find`, `grep` or `rg`. Each \
              call starts a fresh `sh`; only the working directory carries over to the next call \
              (a `cd` stays unless it leaves the workspace), not variables or exports. Do not start programs that wait for input, such \
              as editors or pagers. Do not assume a git repository: a failed `git` command ends \
