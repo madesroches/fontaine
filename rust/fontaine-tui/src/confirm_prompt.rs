@@ -184,5 +184,24 @@ mod tests {
             ["Save these 2 proposals from the repository scan?", "a", "b"]
         );
         assert_eq!(rows(setup.footer()), ["y saves them · n discards them"]);
+
+        let skill = fontaine_core::extensions::Skill {
+            name: "p:pr".into(),
+            description: "d".into(),
+            body: String::new(),
+            argument_hint: None,
+            user_invocable: true,
+            disable_model_invocation: false,
+            allowed_tools: Vec::new(),
+            declared_tools: Vec::new(),
+            digest: "sha256:new".into(),
+            scope: fontaine_core::extensions::Scope::User,
+            path: "/c/pr/SKILL.md".into(),
+        };
+        let trust = crate::skill_trust_prompt::new(&skill, None);
+        let body = rows(trust.body(300, &t));
+        assert_eq!(body[0], "Honour the allowed-tools of p:pr?");
+        assert_eq!(body[4], "");
+        assert_eq!(rows(trust.footer()), ["y trusts it · n leaves it as it is"]);
     }
 }

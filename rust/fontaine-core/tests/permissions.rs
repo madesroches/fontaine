@@ -1145,7 +1145,7 @@ async fn a_childs_record_names_the_agent_and_times_the_call() {
     rig.check_as(&id, "read", json!({"path": "a.txt"})).await;
     let record = rig.audit().pop().expect("a record");
     assert_eq!(record.agent_id, id);
-    assert_eq!(record.agent_name.as_deref(), Some("worker"));
+    assert_eq!(record.agent_name.as_deref(), Some("worker-1"));
     assert!(record.latency_ms < 60_000, "{}", record.latency_ms);
 }
 
