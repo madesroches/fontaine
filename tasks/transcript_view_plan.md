@@ -6,7 +6,7 @@
 
 Ctrl-O toggles a transcript view, as in Claude Code: the full, untruncated tool calls (long and
 multi-line commands and arguments), complete tool output, full reasoning, and the full reason behind
-each denial, instead of the capped one-line cards. The task list moves to its own key (`alt+t`) and
+each denial, instead of the capped one-line cards. The task list moves to Ctrl-T, as in Claude Code, and
 keeps `/todos`. Settled lines live in terminal scrollback and cannot be redrawn, so the view is a
 live-area overlay drawn from the in-memory entries, like the agents panel, and leaves scrollback
 untouched.
@@ -42,8 +42,8 @@ untouched.
 
 - New `TuiAction::Transcript` (`transcript` in config), default `ctrl+o`; add to `ALL` (13 actions)
   and `as_str`/`default_keystroke`.
-- `TuiAction::Todos` default becomes `alt+t`. `alt+enter` is already a default, so Alt chords
-  reach the app; a terminal that does not send Alt as Escape-prefix can rebind `todos`. A user's
+- `TuiAction::Todos` default becomes `ctrl+t`; `TuiAction::AgentsPanel` has no default key
+  (`default_keystroke` returns `Option`) and is reached with `/agents`. A user's
   existing `"ctrl+o" = "todos"` entry keeps working through the normal override path.
 - `/transcript` command mirrors the key, as `/todos` does; `/todos` stays.
 
@@ -97,8 +97,7 @@ untouched.
   dismissed. The `Transcript` key's open arm sits beside the
   `Todos` mapped arm (`app.rs:1101`) with the `!typing_reason` gate.
   The `agent_list.focused && !control && !self.covered()` arm (`app.rs:1090`) runs before the
-  mapped arms and `AgentList::handle_key` drops `alt+t`, so its gate gains `&& mapped.is_none()`
-  and mapped global actions reach their arms while the agent list is focused.
+  mapped arms; its `!control` gate already lets the Ctrl chords reach their arms, so it is unchanged.
   Ctrl+C is reserved and maps to `TuiAction::Interrupt`, whose arm (`app.rs:890-899`) sits at the
   top of `handle_key`, before every overlay block: that arm first checks
   `view::transcript_has_keys(app)` (so an overlay above the view, such as the mid-turn
@@ -143,10 +142,10 @@ keep it out of the main transcript while a subagent view is open.
 
 ## Implementation Steps
 
-1. `fontaine-core/src/keybindings.rs`: add `TuiAction::Transcript`; `Todos` default `alt+t`;
+1. `fontaine-core/src/keybindings.rs`: add `TuiAction::Transcript`; `Todos` default `ctrl+t`, `AgentsPanel` default none;
    update `ALL` (length 13), `as_str`, `default_keystroke`.
 2. `fontaine-tui/src/keymap.rs`: defaults table (`defaults()`, not compiler-checked: `ctrl+o` →
-   `Transcript`, `alt+t` → `Todos`) and its tests (override/displacement cases keep passing with
+   `Transcript`, `ctrl+t` → `Todos`, no default for `AgentsPanel`) and its tests (override/displacement cases keep passing with
    the swapped keys).
 3. `transcript.rs`: keep the full denial text, through `display_text`; `first_line` at render
    only in the collapsed `tool_lines` path (`transcript.rs:1223`) and the collapsed arm of
@@ -165,7 +164,7 @@ keep it out of the main transcript while a subagent view is open.
    `committed_under_overlay` and re-prints, as the agents-panel close arms (`app.rs:1051`,
    `:1060`) do. The `Interrupt` arm (`app.rs:890-899`) also closes the view (checked first, before
    the `close_palette` check, same gate and same consumption) and returns `Action::None`. Update the test at `app.rs:3164`,
-   `ctrl_o_toggles_the_task_list_unless_the_agents_panel_has_the_keys`: switch it to `alt+t`,
+   `ctrl_o_toggles_the_task_list_unless_the_agents_panel_has_the_keys`: switch it to `ctrl+t`,
    rename it, and add a twin for the transcript key.
 6. `view.rs`: overlay + footer (same order as the key block); add the transcript view to the
    precedence doc comment on `view::overlay()` (`view.rs:328-333`) at its slot after the
@@ -182,10 +181,10 @@ keep it out of the main transcript while a subagent view is open.
    and prints each settled shown entry once: Tool and Reasoning through a helper over `&Entry` in
    the `Expanded` wording, every other entry through the normal `label` form, skipping
    `Entry::Expanded` snapshots and `follow_ups` via the shared `Transcript` accessor.
-9. `reports.rs`: help keys line (`reports.rs:60`: `ctrl+o transcript`, `alt+t todos`) and its test
+9. `reports.rs`: help keys line (`reports.rs:60`: `ctrl+o transcript`, `ctrl+t todos`; no agents hint) and its test
    at `:931` (new expected keys line). `/keybindings` follows `TuiAction::ALL` automatically
    (`ui/commands/keybindings.rs`); no change.
-10. `tests/todos.rs`: the test at `:38` presses Ctrl+O for tasks; switch it to `alt+t` via
+10. `tests/todos.rs`: the test at `:38` presses Ctrl+O for tasks; switch it to `ctrl+t` via
     `press_with` and rename it.
 11. Docs and Decisions (see below).
 
@@ -197,7 +196,7 @@ keep it out of the main transcript while a subagent view is open.
   `rust/fontaine-tui/tests/todos.rs`
 - `docs/tui.md` (keys table :227, example :238, `/expand` text ~:48-64 and :577 gets a pointer,
   `/todos` :603, task panel :897, new "The transcript view" section), `docs/configuration.md`
-  (:1074 example, :1102 action table), `docs/terminal.md` (`alt+t` in the "Option as Meta on macOS" paragraph, ~:93-101, since Option+t types a character otherwise), `CHANGELOG.md` `[Unreleased]`
+  (:1074 example, :1102 action table), `docs/terminal.md` `CHANGELOG.md` `[Unreleased]`
 - `tasks/fontaine_harness_plan.md` Decisions
 
 ## Trade-offs
@@ -208,14 +207,14 @@ keep it out of the main transcript while a subagent view is open.
   it appends to scrollback and duplicates content; a toggled view leaves scrollback clean.
 - Keep Ctrl-O on tasks and put the view elsewhere: rejected by the issue owner; Claude Code parity
   and the silent no-op both argue for moving the tasks.
-- `alt+t` for tasks over another Ctrl chord (Claude Code binds Ctrl+T to the task checklist, but
-  Ctrl-T is Fontaine's agents panel): the remaining free Ctrl letters collide with readline
-  editing keys the input already honors.
+- Ctrl-T for tasks as in Claude Code, with the agents panel left without a default key (it keeps
+  `/agents`) rather than an Alt chord for tasks: Claude Code binds Alt+T to the thinking toggle.
 
 ## Decisions
 
 - 2026-11-04 (owner comment on #233): the task list gets its own shortcut, not Ctrl-O. Claude
-  Code binds Ctrl+T to the task checklist, but Ctrl-T is Fontaine's agents panel, hence `alt+t`.
+  Code binds Ctrl+T to the task checklist and Fontaine follows it; the agents panel loses its
+  default key and keeps `/agents`.
   The 2026-11-04 `### TUI` line also records each observed difference from Claude Code's view
   (input box kept, dimmed with no cursor, and pastes ignored while the view is open; scroll/close
   keys; anything else seen in tmux).
@@ -226,13 +225,13 @@ keep it out of the main transcript while a subagent view is open.
 ## Documentation
 
 - `docs/tui.md`: key table, `/transcript`, a section describing the view and its keys, task-panel
-  text now naming `alt+t`; a pointer from the `/expand` text to the view.
+  text now naming Ctrl-T; a pointer from the `/expand` text to the view.
 - `docs/terminal.md`: the "Screen-reader mode" section (~:146) describes the key and
   `/transcript` printing the entries once.
 - `CHANGELOG.md`: an `[Unreleased]` entry.
-- `docs/configuration.md`: `transcript` action row, `todos` default `alt+t`, example rebind.
+- `docs/configuration.md`: `transcript` action row, `todos` default `ctrl+t`, `agents_panel` default none, example rebind.
 - Plan Decisions: replace the 2026-10-25 "Ctrl-O and `/todos` both toggle the task panel" line
-  (`tasks/fontaine_harness_plan.md:830`, under `### Tools`) to say `alt+t` and `/todos`, and amend its
+  (`tasks/fontaine_harness_plan.md:830`, under `### Tools`) to say Ctrl-T and `/todos`, and amend its
   "(`/todos` does not print)" to cover the empty-list `no tasks` notice; amend the :948 2026-10-31
   reasoning decision that cites Claude Code's "Ctrl-O transcript view" as lacking in Fontaine to say
   Fontaine's Ctrl-O view now shows the full kept reasoning; add a 2026-11-04 line for the transcript view and the move; amend the
@@ -243,7 +242,7 @@ keep it out of the main transcript while a subagent view is open.
 
 ## Testing Strategy
 
-- Unit (`keybindings`, `keymap`): defaults map `ctrl+o` → transcript and `alt+t` → todos; an
+- Unit (`keybindings`, `keymap`): defaults map `ctrl+o` → transcript and `ctrl+t` → todos, and `agents_panel` has no default key; an
   override of `ctrl+o` to `todos` displaces `transcript` and is reported as overridden.
 - Unit (`transcript`): `verbose_lines` shows every row of a long multi-line command, the whole
   output, the full reasoning, and the full multi-line denial reason; an `Expanded` entry and a
@@ -258,8 +257,8 @@ keep it out of the main transcript while a subagent view is open.
 - Unit (`app`): the key opens and closes the view; Esc, `q` and Ctrl-C (through the `Interrupt`
   arm, with no Interrupt/Quit returned) close it, but with an overlay above the view (the
   unavailable-guardian prompt) open Ctrl-C does not close it and still yields Interrupt; typing is ignored while
-  open, and so are Ctrl-T, Ctrl-V, alt+t and Ctrl-L; the key is ignored while the agents panel is open; an approval request takes precedence and the view is still open after the approval closes;
-  alt+t toggles the task list while the agent list is focused; the todos key still toggles and an empty list yields the `no tasks` notice (in the viewed
+  open, and so are Ctrl-T, Ctrl-V and Ctrl-L; the key is ignored while the agents panel is open; an approval request takes precedence and the view is still open after the approval closes;
+  Ctrl-T toggles the task list while the agent list is focused; the todos key still toggles and an empty list yields the `no tasks` notice (in the viewed
   subagent's transcript when one is open).
 - Screen (`screen.rs` with `TestBackend`): opening over a tall transcript leaves the last message
   in scrollback on close (regression in the style of #296).

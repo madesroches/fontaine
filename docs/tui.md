@@ -225,9 +225,9 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Ctrl-Home, Ctrl-End | Jump to the start or end of the whole input; Home and End stay on the current line. |
 | Ctrl-U, Ctrl-K, Ctrl-Y | Delete to the start or end of the line, and paste the last deleted text back. One entry is kept, and it survives submitting. |
 | Ctrl-L (`reprint`) | Redraw the screen from the transcript, keeping the conversation. Like switching to a subagent, it erases the terminal's scrollback first. Does nothing in screen-reader mode. |
-| Ctrl-T (`agents_panel`) | Open or close the [agents panel](#the-agents-panel), even over an approval prompt. Enter on an agent row there shows its transcript. |
 | Ctrl-O (`transcript`) | Open or close the [transcript view](#the-transcript-view): every call, output, reasoning and denial reason in full. Ignored while the agents panel is open. |
-| Alt-T (`todos`) | Expand or collapse the [task list](#the-task-panel); with no tasks it prints `no tasks`. Ignored while the agents panel is open. Where Alt does not arrive as Escape plus the key, [rebind `todos`](#remapping-the-keys) (on macOS, see [Option as Meta](terminal.md#option-as-meta-on-macos)). |
+| Ctrl-T (`todos`) | Expand or collapse the [task list](#the-task-panel); with no tasks it prints `no tasks`. Ignored while the agents panel is open. |
+| (`agents_panel`, no default key) | Open or close the [agents panel](#the-agents-panel), even over an approval prompt, once you [bind a key](#remapping-the-keys) to it; `/agents` always opens it. Enter on an agent row there shows its transcript. |
 | `/` at the start of the input or after a space | Opens the [slash-command menu](#slash-command-menu). |
 
 ### Remapping the keys
@@ -238,7 +238,7 @@ keystroke onto an action, and the empty string unbinds the keystroke:
 ```toml
 [keybindings]
 "ctrl+g" = "todos"   # this key now opens the task list…
-"alt+t" = ""         # …and this one does nothing
+"ctrl+t" = ""       # …and this one does nothing
 "f2" = "cycle_mode"  # extra keys can trigger any action
 ```
 
@@ -603,7 +603,7 @@ error: an export never overwrites.
 | `/skills [trust <name>]` | Without an argument, lists every loaded [skill](extensions.md#skills) with its scope, marking those only the model can use, those only you can run, those a built-in command hides, and those you have trusted (`trusted`) or trusted before the file changed (`changed (re-trust)`). `trust <name>` opens a dialog that lists the skill's `allowed-tools` (or, for a skill you trusted before, what changed in them and in its `!` commands) and records your trust on `y`, in the session ledger and audit log too. The trust applies from the next session start; the running session's grants and this list do not change. The trust form waits for the turn to end; a [project skill](extensions.md#allowed-tools) cannot be trusted. See [Trusted skills](extensions.md#trusted-skills). |
 | `/status` | Shows the version, the session id, the workspace roots (the scratch directory labelled separately), the permission mode, the main model, the guardian (or why it is unavailable) with its profile, the output style, and how many MCP servers are connected. While the guardian is off it reports that instead of the guardian's model. |
 | `/theme [<name>]` | Without an argument, lists the colour themes, marks the current one and names the file the choice is saved to. With a name, switches to that theme at once and saves it as `[tui] theme` in your user settings file. An unknown name is an error that lists the themes. See [Terminal setup](terminal.md#colours). |
-| `/todos` | Expands or collapses the [task list](#the-task-panel), as Alt-T does; with no tasks it prints `no tasks`. |
+| `/todos` | Expands or collapses the [task list](#the-task-panel), as Ctrl-T does; with no tasks it prints `no tasks`. |
 | `/transcript` | Opens or closes the [transcript view](#the-transcript-view), as Ctrl-O does. Runs immediately, turn or no turn. |
 | `/<skill> [arguments]` | Runs a [skill](extensions.md#slash-commands-and-arguments). |
 
@@ -898,7 +898,7 @@ that cannot start is reported in the transcript and skipped.
 ## The task panel
 
 When the model keeps a task list with the [`todo_write` tool](tools.md), it shows above the message
-box. Collapsed it is one line, `Tasks 3/7 · ▶ the item in progress`; expanded (Alt-T or `/todos`)
+box. Collapsed it is one line, `Tasks 3/7 · ▶ the item in progress`; expanded (Ctrl-T or `/todos`)
 it lists every item, marked `[ ]` pending, `[~]` in progress or `[x]` completed. A list taller than
 the screen allows ends with a `+N more` line, and an approval prompt shrinks before the list does.
 The panel is hidden while the list is empty. The transcript still shows each `todo_write` call as a
@@ -1098,7 +1098,7 @@ not printed yet.
 
 ## The agents panel
 
-`/agents` (or `/tasks`) or Ctrl-T opens the full overview: one row per [subagent](agents.md), ended
+`/agents` (or `/tasks`) opens the full overview: one row per [subagent](agents.md), ended
 ones included until a `/clear` prunes them, and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its name with its id dimmed after it (`survey-tech-debt (agent-3)`), its type, its
 model, its status (`running`, `waiting-on-permission`, `idle`, `done`, `killed`, `budget-exhausted` or
 `failed`; `idle` is a [teammate](agents.md#agent-teams) that finished its turn and waits for work) and what it has used, such as `1.5k tok · $0.0021`; each `/ <cap>` form

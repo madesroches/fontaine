@@ -1142,19 +1142,7 @@ impl App {
             key = KeyEvent::new(code, key.modifiers - KeyModifiers::CONTROL);
             control = false;
         }
-        // Up, Down and Enter are mapped too (history, submit), and the list needs them; only the
-        // global actions with an arm below leave the list.
-        let global = matches!(
-            mapped,
-            Some(
-                TuiAction::AgentsPanel
-                    | TuiAction::AttachClipboard
-                    | TuiAction::Todos
-                    | TuiAction::Transcript
-                    | TuiAction::Reprint
-            )
-        );
-        if self.agent_list.focused && !control && !self.covered() && !global {
+        if self.agent_list.focused && !control && !self.covered() {
             return self.list_key(key);
         }
         if mapped == Some(TuiAction::AgentsPanel) && !typing_reason {
@@ -1886,7 +1874,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ctrl(&mut unbound, 't'), Action::None);
-        assert!(unbound.agents.is_none());
+        assert!(!unbound.todos.expanded);
 
         // Sanity: vim's Esc-switch still reaches the input, not the keymap.
         let mut vim_app = app();
@@ -3237,10 +3225,6 @@ mod tests {
         assert_ne!(selected_name(&app), moved);
     }
 
-    fn alt(app: &mut App, c: char) -> Action {
-        app.handle_input(key(KeyCode::Char(c), KeyModifiers::ALT))
-    }
-
     fn some_todos() -> Vec<fontaine_tools::todo::TodoItem> {
         vec![fontaine_tools::todo::TodoItem {
             content: "write".into(),
@@ -3249,32 +3233,48 @@ mod tests {
     }
 
     #[test]
-    fn alt_t_toggles_the_task_list_unless_the_agents_panel_has_the_keys() {
+    fn ctrl_t_toggles_the_task_list_unless_the_agents_panel_has_the_keys() {
         let mut app = app();
         app.todos.set_items(some_todos());
-        assert_eq!(alt(&mut app, 't'), Action::None);
+        assert_eq!(ctrl(&mut app, 't'), Action::None);
         assert!(app.todos.expanded);
         app.agents = Some(AgentsPanel::new());
-        alt(&mut app, 't');
+        ctrl(&mut app, 't');
         assert!(app.todos.expanded);
         app.agents = None;
-        alt(&mut app, 't');
+        ctrl(&mut app, 't');
         assert!(!app.todos.expanded);
     }
 
     #[test]
-    fn alt_t_toggles_the_task_list_while_the_agent_list_is_focused() {
+    fn ctrl_t_toggles_the_task_list_while_the_agent_list_is_focused() {
         let mut app = app();
         app.todos.set_items(some_todos());
         app.agent_list.focused = true;
-        alt(&mut app, 't');
+        ctrl(&mut app, 't');
         assert!(app.todos.expanded);
+    }
+
+    #[test]
+    fn the_agents_panel_has_no_default_key() {
+        let mut unbound = app();
+        ctrl(&mut unbound, 't');
+        assert!(unbound.agents.is_none());
+        let mut bound = app();
+        bound.keymap = Keymap::resolve(
+            &[("f2".to_string(), "agents_panel".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        press(&mut bound, KeyCode::F(2));
+        assert!(bound.agents.is_some());
     }
 
     #[test]
     fn the_todos_key_says_so_when_there_are_no_tasks() {
         let mut app = app();
-        alt(&mut app, 't');
+        ctrl(&mut app, 't');
         assert!(app.todos.expanded);
         assert_eq!(last_notice(&app), Some("no tasks"));
     }
@@ -3283,7 +3283,7 @@ mod tests {
     fn the_no_tasks_notice_goes_to_the_viewed_agents_transcript() {
         let mut app = app();
         app.view(Some("a1".into()));
-        alt(&mut app, 't');
+        ctrl(&mut app, 't');
         assert!(app.transcript.entries.is_empty());
         assert!(matches!(
             app.shown().entries.last(),
@@ -3336,7 +3336,7 @@ mod tests {
         ctrl(&mut app, 't');
         ctrl(&mut app, 'v');
         ctrl(&mut app, 'l');
-        alt(&mut app, 't');
+        ctrl(&mut app, 't');
         assert!(panels_before && app.agents.is_none());
         assert!(!app.todos.expanded);
         assert!(!app.reprint);

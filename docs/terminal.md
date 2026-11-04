@@ -92,7 +92,7 @@ deletes one character. Use Alt-Backspace or Ctrl-W to delete a word; Alt needs
 
 ## Option as Meta on macOS
 
-Alt+Enter, Alt-T (the task list), Alt-B, Alt-F and Alt-D arrive as `ESC` plus the key only when the terminal sends Option
+Alt+Enter, Alt-B, Alt-F and Alt-D arrive as `ESC` plus the key only when the terminal sends Option
 as Meta:
 
 - **Terminal.app**: Settings, Profiles, Keyboard, tick "Use Option as Meta key".

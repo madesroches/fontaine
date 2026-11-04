@@ -40,9 +40,8 @@ fn defaults() -> Vec<(Keystroke, TuiAction)> {
         ("shift+tab", TuiAction::CycleMode),
         ("ctrl+c", TuiAction::Interrupt),
         ("ctrl+d", TuiAction::Quit),
-        ("ctrl+t", TuiAction::AgentsPanel),
+        ("ctrl+t", TuiAction::Todos),
         ("ctrl+o", TuiAction::Transcript),
-        ("alt+t", TuiAction::Todos),
         ("ctrl+l", TuiAction::Reprint),
         ("ctrl+v", TuiAction::AttachClipboard),
         ("ctrl+r", TuiAction::HistorySearch),
@@ -156,7 +155,14 @@ mod tests {
     fn defaults_cover_every_action() {
         let keymap = Keymap::default();
         for action in TuiAction::ALL {
-            assert!(!keymap.keys_for(action).is_empty(), "{action}");
+            assert_eq!(
+                keymap.keys_for(action).is_empty(),
+                action.default_keystroke().is_none(),
+                "{action}"
+            );
+            if let Some(stroke) = action.default_keystroke() {
+                assert!(keymap.keys_for(action).contains(&stroke), "{action}");
+            }
         }
         assert_eq!(
             keymap.lookup(KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE)),
@@ -173,14 +179,14 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_o_opens_the_transcript_and_alt_t_toggles_the_tasks() {
+    fn ctrl_o_opens_the_transcript_and_ctrl_t_toggles_the_tasks() {
         let keymap = Keymap::default();
         assert_eq!(
             keymap.lookup(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL)),
             Some(TuiAction::Transcript)
         );
         assert_eq!(
-            keymap.lookup(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT)),
+            keymap.lookup(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
             Some(TuiAction::Todos)
         );
     }
@@ -199,14 +205,14 @@ mod tests {
 
     #[test]
     fn an_override_replaces_the_action_of_its_keystroke() {
-        let keymap = map(&[("ctrl+t", "todos")]);
+        let keymap = map(&[("ctrl+t", "agents_panel")]);
         assert_eq!(
             keymap.lookup(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)),
-            Some(TuiAction::Todos)
+            Some(TuiAction::AgentsPanel)
         );
         // The action the keystroke had is left without a key.
-        assert!(keymap.keys_for(TuiAction::AgentsPanel).is_empty());
-        assert!(keymap.is_overridden(TuiAction::Todos));
+        assert!(keymap.keys_for(TuiAction::Todos).is_empty());
+        assert!(keymap.is_overridden(TuiAction::AgentsPanel));
     }
 
     #[test]
@@ -220,19 +226,19 @@ mod tests {
 
     #[test]
     fn an_unbound_or_displaced_action_still_reports_as_overridden() {
-        let keymap = map(&[("ctrl+t", ""), ("f2", "todos")]);
+        let keymap = map(&[("ctrl+t", ""), ("f2", "reprint")]);
         // Unbound by the user: no keystroke names it, yet it is the user's doing.
-        assert!(keymap.is_overridden(TuiAction::AgentsPanel));
-        // Bound to a new key by the user, while its default key also still triggers it.
         assert!(keymap.is_overridden(TuiAction::Todos));
+        // Bound to a new key by the user, while its default key also still triggers it.
+        assert!(keymap.is_overridden(TuiAction::Reprint));
         // Never touched: the default binding stands and reports as a default.
-        assert!(!keymap.is_overridden(TuiAction::Reprint));
-        let agents = keymap
+        assert!(!keymap.is_overridden(TuiAction::Transcript));
+        let todos = keymap
             .rows()
             .into_iter()
-            .find(|(action, _, _)| *action == TuiAction::AgentsPanel)
-            .expect("agents_panel row");
-        assert!(agents.1.is_empty() && agents.2);
+            .find(|(action, _, _)| *action == TuiAction::Todos)
+            .expect("todos row");
+        assert!(todos.1.is_empty() && todos.2);
     }
 
     #[test]
@@ -269,7 +275,7 @@ mod tests {
 
     #[test]
     fn keys_for_renders_as_config_syntax() {
-        let keymap = map(&[("f2", "agents_panel"), ("ctrl+t", "")]);
+        let keymap = map(&[("f2", "agents_panel")]);
         let keys = keymap.keys_for(TuiAction::AgentsPanel);
         assert_eq!(keys, vec![parse_keystroke("f2").unwrap()]);
         assert_eq!(keys[0].to_string(), "f2");

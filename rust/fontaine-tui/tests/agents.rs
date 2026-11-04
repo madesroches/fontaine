@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use common::routed::{Route, Turn, start};
 use common::{Ui, World};
-use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::crossterm::event::KeyCode;
 use serde_json::json;
 
 async fn idle(ui: &Ui) {
@@ -17,8 +17,12 @@ async fn idle(ui: &Ui) {
     .await;
 }
 
-fn ctrl_t(ui: &Ui) {
-    ui.press_with(KeyCode::Char('t'), KeyModifiers::CONTROL);
+/// The panel has no default key, and `/agents` cannot be typed over an approval prompt, so
+/// these worlds bind one.
+const AGENTS_KEY: &str = "\n[keybindings]\n\"f2\" = \"agents_panel\"\n";
+
+fn open_agents(ui: &Ui) {
+    ui.press(KeyCode::F(2));
 }
 
 fn spawn(agent_type: &str, prompt: &str) -> serde_json::Value {
@@ -51,7 +55,9 @@ async fn a_killed_subagents_row_shows_killed_and_its_spend_against_its_budget() 
     .await;
     let w = World::routed(
         &server.uri(),
-        "\n[permissions]\nallow = [\"agent\"]\n\n[agents]\nsubagent_token_budget = 200000\n",
+        &format!(
+            "\n[permissions]\nallow = [\"agent\"]\n\n[agents]\nsubagent_token_budget = 200000\n{AGENTS_KEY}"
+        ),
     );
     w.run(|ui| async move {
         idle(&ui).await;
@@ -59,7 +65,7 @@ async fn a_killed_subagents_row_shows_killed_and_its_spend_against_its_budget() 
         // The child's approval shows who is asking.
         ui.wait_for_prompt("Allow shell (worker-1, agent-1)?").await;
         // The panel opens over the approval and lists the agent as waiting for the human.
-        ctrl_t(&ui);
+        open_agents(&ui);
         ui.wait_for("waiting-on-permission").await;
         let screen = ui.screen();
         assert!(screen.contains("worker-1 (agent-1) worker"), "{screen}");
@@ -113,13 +119,13 @@ async fn parallel_subagents_one_killed_the_others_finish_and_every_call_is_audit
         child(3),
     ])
     .await;
-    let w = World::routed(&server.uri(), ALLOW_AGENT);
+    let w = World::routed(&server.uri(), &format!("{ALLOW_AGENT}{AGENTS_KEY}"));
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("root task");
         // Three children ask the human at once; the asks queue rather than overwrite.
         ui.wait_for_prompt("Allow shell (worker-").await;
-        ctrl_t(&ui);
+        open_agents(&ui);
         ui.wait_until("three rows", |s| {
             ["agent-1", "agent-2", "agent-3"]
                 .iter()
@@ -142,7 +148,7 @@ async fn parallel_subagents_one_killed_the_others_finish_and_every_call_is_audit
             .await;
         }
         ui.wait_for("everyone reported").await;
-        ctrl_t(&ui);
+        open_agents(&ui);
         ui.wait_until("final rows", |s| {
             s.matches("done").count() >= 2 && s.contains("killed")
         })
@@ -409,14 +415,17 @@ async fn killing_a_job_row_stops_its_process_and_tells_the_model() {
         ],
     )])
     .await;
-    let w = World::routed(&server.uri(), "\n[permissions]\nallow = [\"shell\"]\n");
+    let w = World::routed(
+        &server.uri(),
+        &format!("\n[permissions]\nallow = [\"shell\"]\n{AGENTS_KEY}"),
+    );
     let work = w.work.clone();
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("root task");
         ui.wait_for("job started").await;
         idle(&ui).await;
-        ctrl_t(&ui);
+        open_agents(&ui);
         ui.wait_for("Background jobs").await;
         let screen = ui.screen();
         assert!(screen.contains("sleep 120"), "{screen}");
@@ -569,14 +578,14 @@ async fn clear_prunes_an_ended_subagent_from_the_agent_list_at_once() {
         ),
     ])
     .await;
-    let w = World::routed(&server.uri(), ALLOW_AGENT);
+    let w = World::routed(&server.uri(), &format!("{ALLOW_AGENT}{AGENTS_KEY}"));
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("root task");
         ui.wait_for("launched").await;
         ui.wait_for("worker-1 (agent-1)").await;
         ui.wait_for_prompt("Allow shell (worker-1, agent-1)?").await;
-        ctrl_t(&ui);
+        open_agents(&ui);
         ui.wait_for("waiting-on-permission").await;
         ui.press(KeyCode::Char('x'));
         ui.wait_for("killed").await;
@@ -615,12 +624,12 @@ async fn typing_to_a_killed_agent_is_refused_and_the_text_stays() {
         ),
     ])
     .await;
-    let w = World::routed(&server.uri(), ALLOW_AGENT);
+    let w = World::routed(&server.uri(), &format!("{ALLOW_AGENT}{AGENTS_KEY}"));
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("root task");
         ui.wait_for_prompt("Allow shell (worker-1, agent-1)?").await;
-        ctrl_t(&ui);
+        open_agents(&ui);
         ui.wait_for("waiting-on-permission").await;
         ui.press(KeyCode::Char('x'));
         ui.wait_for("killed").await;
@@ -725,7 +734,7 @@ async fn export_with_a_subagent_writes_a_folder_with_the_index_and_transcripts()
         Route::new("dig in", vec![Turn::text("child did the work")]),
     ])
     .await;
-    let w = World::routed(&server.uri(), ALLOW_AGENT);
+    let w = World::routed(&server.uri(), &format!("{ALLOW_AGENT}{AGENTS_KEY}"));
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("root task");

@@ -22,7 +22,7 @@ async fn idle(ui: &Ui) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_task_list_shows_collapsed_and_alt_t_and_todos_expand_it() {
+async fn a_task_list_shows_collapsed_and_ctrl_t_and_todos_expand_it() {
     let w = World::new(vec![
         tool_turn("c1", "todo_write", list()),
         text_turn("planned"),
@@ -35,7 +35,7 @@ async fn a_task_list_shows_collapsed_and_alt_t_and_todos_expand_it() {
         assert!(live.contains("Tasks 1/3 · ▶ write the fix"), "{live}");
         assert!(!live.contains("[~] write the fix"), "{live}");
 
-        ui.press_with(KeyCode::Char('t'), KeyModifiers::ALT);
+        ui.press_with(KeyCode::Char('t'), KeyModifiers::CONTROL);
         ui.wait_until("the expanded list", |s| s.contains("[~] write the fix"))
             .await;
         let live = ui.live();

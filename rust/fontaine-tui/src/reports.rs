@@ -934,7 +934,7 @@ mod tests {
         let text = help(&[], &Keymap::default());
         assert!(
             text.contains(
-                "shift+tab mode · ctrl+t agents · ctrl+o transcript · alt+t todos · ctrl+r history · ! shell · @ file"
+                "shift+tab mode · ctrl+o transcript · ctrl+t todos · ctrl+r history · ! shell · @ file"
             ),
             "{text}"
         );
@@ -950,6 +950,8 @@ mod tests {
         let text = help(&[], &keymap);
         assert!(text.contains("f2 agents"), "{text}");
         assert!(!text.contains("ctrl+t"), "{text}");
+        let text = help(&[], &Keymap::default());
+        assert!(!text.contains(" agents ·"), "{text}");
     }
 
     #[test]

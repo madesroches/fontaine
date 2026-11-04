@@ -251,10 +251,11 @@ impl TuiAction {
         TuiAction::Newline,
     ];
 
-    /// The default keystroke for this action; the TUI's default table adds the two other
+    /// The default keystroke for this action, `None` for an action with no default key
+    /// (`agents_panel`, reached with `/agents`). The TUI's default table adds the two other
     /// `newline` bindings (`shift+enter`, `alt+enter`).
-    pub fn default_keystroke(self) -> Keystroke {
-        match self {
+    pub fn default_keystroke(self) -> Option<Keystroke> {
+        Some(match self {
             TuiAction::CycleMode => Keystroke {
                 code: KeyCode::BackTab,
                 modifiers: KeyModifiers::NONE,
@@ -267,13 +268,10 @@ impl TuiAction {
                 code: KeyCode::Char('d'),
                 modifiers: KeyModifiers::CONTROL,
             },
-            TuiAction::AgentsPanel => Keystroke {
-                code: KeyCode::Char('t'),
-                modifiers: KeyModifiers::CONTROL,
-            },
+            TuiAction::AgentsPanel => return None,
             TuiAction::Todos => Keystroke {
                 code: KeyCode::Char('t'),
-                modifiers: KeyModifiers::ALT,
+                modifiers: KeyModifiers::CONTROL,
             },
             TuiAction::Transcript => Keystroke {
                 code: KeyCode::Char('o'),
@@ -307,7 +305,7 @@ impl TuiAction {
                 code: KeyCode::Char('j'),
                 modifiers: KeyModifiers::CONTROL,
             },
-        }
+        })
     }
 }
 
@@ -496,6 +494,17 @@ mod tests {
     fn action_parsing_round_trips() {
         for action in TuiAction::ALL {
             assert_eq!(TuiAction::from_str(action.as_str()).unwrap(), action);
+        }
+    }
+
+    #[test]
+    fn only_the_agents_panel_has_no_default_key() {
+        for action in TuiAction::ALL {
+            assert_eq!(
+                action.default_keystroke().is_none(),
+                action == TuiAction::AgentsPanel,
+                "{action}"
+            );
         }
     }
 
