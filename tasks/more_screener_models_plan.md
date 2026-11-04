@@ -123,7 +123,7 @@ model: apply the same `typesafe/`-only defaults there, require explicit `--stop-
 ## Implementation Steps
 
 1. Write a probe-and-run script in `evals/` (shell, not part of CI) that loops the five models plus
-   Jev through the scorer with `--screen-max-cost-usd 1` and a key file path argument; document the
+   Jev through the scorer with `--screen-max-cost-usd 0.25` and a key file path argument; document the
    loop in `docs/evals.md`. Repeats are separate runs with a `-r2` suffix on the scorecard name.
 2. Run the hosted scorecards (two repeats each) with the key in `~/open_router_key`; commit the
    scorecards under `evals/scorecards/`.
@@ -169,7 +169,7 @@ model: apply the same `typesafe/`-only defaults there, require explicit `--stop-
 - 2026-11-03 No code change is needed to score the hosted models: all five answer the
   employee-levels request in the shape the parser already reads.
 - 2026-11-03 AFK: the Jev threshold defaults apply only when the model id starts with `typesafe/`;
-  any other hosted model must set both thresholds or leave `shadow = true` (chosen conservatively:
+  any other hosted model must set at least one of `allow_threshold` and `stop_threshold`, or leave `shadow = true` (chosen conservatively:
   an allow path on another model with unmeasured thresholds would loosen the guardian).
 - AFK: 2026-11-03 Hardware for the local OpenJev is unknown; the OpenJev run (Implementation step 3) is attempted only on a CUDA GPU (vLLM) or Apple-silicon Mac (MLX) that is available; otherwise the doc records the recipe as unmeasured and Design 3 is not built.
 

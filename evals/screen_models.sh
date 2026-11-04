@@ -4,7 +4,7 @@
 set -euo pipefail
 
 key_file=${1:?usage: screen_models.sh KEY_FILE [MAX_COST_USD]}
-cap=${2:-1}
+cap=${2:-0.25}
 out=../evals/scorecards
 
 models=(

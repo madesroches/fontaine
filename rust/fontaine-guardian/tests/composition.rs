@@ -1458,6 +1458,34 @@ fn a_hosted_model_other_than_typesafe_needs_its_own_threshold_when_enforced() {
 }
 
 #[test]
+fn allow_false_with_only_an_allow_threshold_is_no_threshold_on_another_hosted_model() {
+    let error = Composition::compile(
+        other_hosted_spec(
+            &[
+                ("allow", Param::Bool(false)),
+                ("allow_threshold", number(0.3)),
+            ],
+            false,
+        ),
+        vec![],
+    )
+    .err()
+    .unwrap();
+    assert!(error.message.contains("per model"), "{error}");
+    Composition::compile(
+        other_hosted_spec(
+            &[
+                ("allow", Param::Bool(false)),
+                ("stop_threshold", number(0.3)),
+            ],
+            false,
+        ),
+        vec![],
+    )
+    .unwrap();
+}
+
+#[test]
 fn a_question_must_match_its_models_backend() {
     let compile = |question, backend| {
         let mut spec = script_spec("pub async fn guardian(call, params) { abstain() }", false);

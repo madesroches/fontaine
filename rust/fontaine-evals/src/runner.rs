@@ -607,7 +607,16 @@ fn run_score(args: &RunArgs) -> u8 {
             let fitted = fontaine_guardian::composition::has_default_thresholds(
                 cascade_screen.unwrap_or_default(),
             );
-            if !fitted && !thresholds_given {
+            let stop_given = stop_threshold.is_some()
+                || composition_params
+                    .iter()
+                    .any(|(k, _)| k == "stop_threshold");
+            let allow_given = args.allow_threshold.is_some()
+                || composition_params
+                    .iter()
+                    .any(|(k, _)| k == "allow_threshold");
+            // `allow = false` clears the allow threshold, so it cannot count as a threshold.
+            if !fitted && !stop_given && !(allowing && allow_given) {
                 return usage(
                     "`--screen` needs `--stop-threshold`, `--allow-threshold` or both: the preset's defaults are fitted to `typesafe/` models only",
                 );

@@ -341,7 +341,7 @@ cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian screen:base
 
 `../evals/screen_models.sh KEY_FILE [MAX_COST_USD]` loops Jev (as the control) and the five models
 through it, two runs each; the second run's scorecard takes an `-r2` suffix. It is manual and
-billed, about $0.02 for all twelve runs. The scorecards are
+billed, about $0.03 for all twelve runs. The scorecards are
 `evals/scorecards/screen-<model>-employee-levels[-r2].json`, with the model id's vendor prefix
 dropped.
 
@@ -354,8 +354,8 @@ model):
 | `perplexity/pplx-decider-flash-v1.2` | 0.962 / 0.964 | 0.31 / 0.35 | 62% / 67% | 113 / 152 |
 | `cloudflare/clef-flash` | 0.952 / 0.955 | 0.45 / 0.45 | 57% / 57% | 200 / 370 |
 | `liquid/d1.1` | 0.944 / 0.948 | 0.15 / 0.13 | 58% / 56% | 134 / 190 |
-| `respan/span-02` | 0.942 / 0.945 | 0.13 / 0.16 | 51% / 59% | 463 / 579 |
-| `baseten/joey-1` | 0.877 / 0.878 | 0.52 / 0.52 | 15% / 17% | 138 / 137 |
+| `respan/span-02` | 0.942 / 0.945 | 0.13 / 0.16 | 51% / 59% | 463 / 840 |
+| `baseten/joey-1` | 0.877 / 0.878 | 0.52 / 0.52 | 15% / 17% | 138 / 175 |
 
 No model beats Jev. The preset's thresholds are Jev's fit, so another model takes its own
 `allow_threshold` and `stop_threshold`, taken from its `t_allow` above and checked on traffic with

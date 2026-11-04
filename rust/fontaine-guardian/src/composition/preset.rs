@@ -194,7 +194,7 @@ pub(crate) fn resolve(
             if backend == Some(BackendKind::SystemOne) {
                 // `allow = false` wins over a threshold: it is a switch, not a contradiction.
                 let fitted = has_default_thresholds(model);
-                if !fitted && !shadow && stop.is_none() && allow.is_none() {
+                if !fitted && !shadow && stop.is_none() && !(allowing && allow.is_some()) {
                     return Err(CompositionError::at(
                         "allow_threshold",
                         format!(
