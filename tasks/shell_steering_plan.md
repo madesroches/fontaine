@@ -67,6 +67,7 @@ tools.
 - `rust/fontaine-tools/src/builtins.rs`
 - `rust/fontaine-guardian/src/snapshots/fontaine_guardian__prompt_builder__tests__the_defaults_marker_snapshot.snap`
 - `docs/guardian.md` (see Documentation)
+- `docs/tools.md` (see Documentation)
 - `CHANGELOG.md`
 
 ## Trade-offs
@@ -84,7 +85,10 @@ tools.
 plain file search names the dedicated read-only tool as the re-issue path. Correct line 168's
 wrapper description: a deny reaches the agent as `Denied by guardian: [Rule] explanation. Do not
 retry it or look for another route to the same effect; tell the user what you could not do.`
-(`permissions.rs:1871`). No other page changes.
+(`permissions.rs:1871`).
+
+`docs/tools.md` (near lines 45-46): the note that the system prompt steers away from shell search also
+holds for the Unix shell tool description, so say that the shell tool description steers too.
 
 ## Testing Strategy
 
@@ -94,9 +98,11 @@ retry it or look for another route to the same effect; tell the user what you co
   `--profile full` live run rewrites `rust/fontaine-guardian/data/guardian_models.toml`; discard
   that file (`git checkout`) unless the prompt change is meant to regenerate it. Pass criteria: catch rate and false-deny rate must not regress versus the baseline;
   golden cases are not edited. Catches a prompt wording change shifting verdicts, which fixtures
-  cannot show.
+  cannot show. It guards only against verdict regression: the eval scores verdicts and never
+  reads explanation wording.
 
 ## Manual Verification
 
-Not needed: the denial wording is model output and cannot be asserted deterministically; the live
-eval above is the check.
+Spot check: read the explanations of the shell-search deny cases in the live eval output and
+confirm none proposes a shell command. This is not automated because explanation text is model
+output and cannot be asserted deterministically.
