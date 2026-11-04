@@ -5,8 +5,16 @@ use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Holds the exclusive lock until dropped.
+/// Holds the exclusive lock until dropped. The drop unlocks explicitly rather than relying on
+/// the close: the lock belongs to the open file description, which a child forked by another
+/// thread shares until its exec, so a bare close can leave the lock held after the guard is gone.
 pub struct FileLock(File);
+
+impl FileLock {
+    pub fn file(&self) -> &File {
+        &self.0
+    }
+}
 
 impl Drop for FileLock {
     fn drop(&mut self) {
@@ -33,12 +41,11 @@ pub fn lock(target: &Path) -> io::Result<FileLock> {
 }
 
 /// Takes the exclusive lock on the lock file at `path` without waiting, creating the file but
-/// not its parent. `None` means another holder has it; the lock lasts as long as the returned
-/// handle stays open.
-pub fn try_lock(path: &Path) -> io::Result<Option<File>> {
+/// not its parent. `None` means another holder has it; the lock lasts until the guard drops.
+pub fn try_lock(path: &Path) -> io::Result<Option<FileLock>> {
     let file = crate::owner_only::open_lock(path)?;
     match file.try_lock() {
-        Ok(()) => Ok(Some(file)),
+        Ok(()) => Ok(Some(FileLock(file))),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
         Err(std::fs::TryLockError::Error(e)) => Err(e),
     }
@@ -108,6 +115,18 @@ mod tests {
         assert!(try_lock(&path).unwrap().is_none());
         drop(held);
         assert!(try_lock(&path).unwrap().is_some());
+    }
+
+    #[test]
+    fn dropping_the_guard_frees_the_lock_while_a_duplicate_handle_is_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.lock");
+        let held = try_lock(&path).unwrap().expect("free lock is taken");
+        // What a child forked by another thread holds until its exec.
+        let inherited = held.file().try_clone().unwrap();
+        drop(held);
+        assert!(try_lock(&path).unwrap().is_some());
+        drop(inherited);
     }
 
     #[test]

@@ -3,12 +3,12 @@
 //! data directories, so the protected-path floor never sees it as Fontaine's own state.
 
 use std::ffi::OsString;
-use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use crate::{file_lock, owner_only};
+use crate::file_lock::{self, FileLock};
+use crate::owner_only;
 
 type Env<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 
@@ -20,7 +20,7 @@ const LOCK_ATTEMPTS: u32 = 10;
 pub struct Scratch {
     dir: PathBuf,
     lock_path: PathBuf,
-    lock: Option<File>,
+    lock: Option<FileLock>,
 }
 
 impl Scratch {
@@ -190,7 +190,7 @@ fn is_sharing_violation(e: &io::Error) -> bool {
     cfg!(windows) && e.raw_os_error() == Some(32)
 }
 
-fn lock_with_retry(path: &Path) -> io::Result<Option<File>> {
+fn lock_with_retry(path: &Path) -> io::Result<Option<FileLock>> {
     for attempt in 0..LOCK_ATTEMPTS {
         if let Some(lock) = file_lock::try_lock(path)? {
             return Ok(Some(lock));
@@ -203,11 +203,11 @@ fn lock_with_retry(path: &Path) -> io::Result<Option<File>> {
 }
 
 #[cfg(unix)]
-fn lock_is_current(lock: &File, path: &Path) -> io::Result<bool> {
+fn lock_is_current(lock: &FileLock, path: &Path) -> io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
     match std::fs::symlink_metadata(path) {
         Ok(on_disk) => {
-            let held = lock.metadata()?;
+            let held = lock.file().metadata()?;
             Ok(on_disk.dev() == held.dev() && on_disk.ino() == held.ino())
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
@@ -216,7 +216,7 @@ fn lock_is_current(lock: &File, path: &Path) -> io::Result<bool> {
 }
 
 #[cfg(not(unix))]
-fn lock_is_current(_lock: &File, path: &Path) -> io::Result<bool> {
+fn lock_is_current(_lock: &FileLock, path: &Path) -> io::Result<bool> {
     // An open lock handle denies deletion on Windows, so the file cannot have been swept.
     Ok(path.exists())
 }
