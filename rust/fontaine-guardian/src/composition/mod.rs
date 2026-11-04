@@ -17,7 +17,9 @@ use rune::{Context, Diagnostics, Source, Sources, Unit, Vm};
 use tracing::Instrument;
 
 pub use eval::ReadRecord;
-pub use preset::{JEV_ALLOW_THRESHOLD, JEV_STOP_THRESHOLD, NAMES as PRESETS, SCREEN};
+pub use preset::{
+    JEV_ALLOW_THRESHOLD, JEV_STOP_THRESHOLD, NAMES as PRESETS, SCREEN, has_default_thresholds,
+};
 
 use eval::EvalCtx;
 use host::{Call, VerdictKind, verdict_of};

@@ -312,7 +312,7 @@ scorecard is
 
 ### Hosted screen scorecards
 
-The hosted screen (`typesafe/jev-1.14` asked the five-level question) is scored with
+The hosted screen (a System One model such as `typesafe/jev-1.14`, asked the five-level question) is scored with
 
 ```
 cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:kimi/kimi-for-coding --screen live:openrouter/typesafe/jev-1.14 --out ../evals/scorecards/cascade-jev-level5-employee-kimi.json
@@ -329,6 +329,62 @@ yet. The `stop_threshold` default of `0.34` is the 5% stop point (`skip 0.30, st
 nondeterminism. Both come from the synthetic corpus alone; the golden set is for scoring them, never
 for fitting them. Because Jev's repeated answers differ by up to 0.22, score a run more than once
 before trusting a zero in `must_not_clear_screen_allowed`.
+
+### Other hosted screens
+
+Five more System One models on OpenRouter answer the same `employee-levels` request as Jev and are
+scored by the same command, from `rust/`:
+
+```
+cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian screen:baseten/joey-1 --screen-url https://openrouter.ai/api --screen-framing employee-levels --screen-api-key-file ~/open_router_key --screen-max-cost-usd 0.3 --out ../evals/scorecards/screen-joey-1-employee-levels.json
+```
+
+`../evals/screen_models.sh KEY_FILE [MAX_COST_USD]` loops Jev (as the control) and the five models
+through it, two runs each; the second run's scorecard takes an `-r2` suffix. It is manual and
+billed, about $0.02 for all twelve runs. The scorecards are
+`evals/scorecards/screen-<model>-employee-levels[-r2].json`, with the model id's vendor prefix
+dropped.
+
+On dataset `f49709411624` (279 guardian cases, two runs each, zero fail-closed reads on every
+model):
+
+| Model | AUROC (run 1 / 2) | `t_allow` | Benign cleared at `t_allow` | p50 / p95 ms |
+|---|---|---|---|---|
+| `typesafe/jev-1.14` (control) | 0.974 / 0.974 | 0.21 / 0.25 | 74% / 78% | 123 / 182 |
+| `perplexity/pplx-decider-flash-v1.2` | 0.962 / 0.964 | 0.31 / 0.35 | 62% / 67% | 113 / 152 |
+| `cloudflare/clef-flash` | 0.952 / 0.955 | 0.45 / 0.45 | 57% / 57% | 200 / 370 |
+| `liquid/d1.1` | 0.944 / 0.948 | 0.15 / 0.13 | 58% / 56% | 134 / 190 |
+| `respan/span-02` | 0.942 / 0.945 | 0.13 / 0.16 | 51% / 59% | 463 / 579 |
+| `baseten/joey-1` | 0.877 / 0.878 | 0.52 / 0.52 | 15% / 17% | 138 / 137 |
+
+No model beats Jev. The preset's thresholds are Jev's fit, so another model takes its own
+`allow_threshold` and `stop_threshold`, taken from its `t_allow` above and checked on traffic with
+`shadow = true`. Every dataset state is under 1,000 tokens, so the 16,384-token limit of `joey-1`
+and `clef-flash` was not exercised; the long-state fail-closed behaviour is unmeasured. The full
+comparison is in [the analysis](../research/analysis-screener-models.md).
+
+### Local OpenJev
+
+OpenJev (`openjev/openjev` on Hugging Face) serves the same `POST /v1/systemone` through
+`helper/shim.py` in front of vLLM (CUDA) or MLX (Apple silicon). The smallest official build is
+`OpenJev-Flash-9B` (Qwen3.5-9B; GGUF Q4_K_M 5.6 GB, MLX 4-bit); there is no 4B build. The 9B needs
+the readout settings from its card:
+
+```
+READOUT_T=1.07 READOUT_NOUL_T=1.074766 READOUT_NOUL_BIAS=0 READOUT_TARGETED=1 READOUT_INSTR_STYLE=pyrepr
+```
+
+With the shim listening on `127.0.0.1:3000`:
+
+```
+cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian screen:openjev --screen-url http://127.0.0.1:3000 --screen-framing employee-levels --out ../evals/scorecards/screen-openjev-employee-levels.json
+```
+
+No key is needed for a loopback `--screen-url`. This recipe is unmeasured: it needs a CUDA GPU with
+room for the weights or an Apple-silicon Mac, and the machine the hosted runs were made on has a
+6 GB GTX 1060 only. The weights are CC BY-NC 4.0 (non-commercial); the helper is Apache-2.0.
+Because the measurement is missing, the `screen` composition does not accept a keyless local
+endpoint: its `openrouter` account still needs a key.
 
 ## Results
 

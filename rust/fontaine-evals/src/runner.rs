@@ -105,8 +105,8 @@ struct RunArgs {
 
     /// Compose a `live:` guardian with the `screen` preset: `live:<account>/<model>`, an `ollama`
     /// or `openrouter` account. On an `ollama` account it needs `--stop-threshold`,
-    /// `--allow-threshold` or both; an `openrouter` account (the hosted Jev screen) runs the
-    /// preset's default thresholds when none is given. With `--composition-script` it only names
+    /// `--allow-threshold` or both; an `openrouter` account runs the
+    /// preset's default thresholds on a `typesafe/` model (Jev) and needs them for any other. With `--composition-script` it only names
     /// the default read model. The scorecard then reports the cascade (catch, guardian calls,
     /// allowed-call latency, benign cases escalated, calls the composition allowed) and leaves the
     /// guardian models file alone
@@ -114,8 +114,8 @@ struct RunArgs {
     screen: Option<String>,
 
     /// The risk at which the screen preset stops a case. A local model has no default, since a
-    /// threshold is only meaningful for the model and question it was calibrated on; the hosted
-    /// screen defaults to the preset's fit
+    /// threshold is only meaningful for the model and question it was calibrated on; a hosted
+    /// `typesafe/` model defaults to the preset's fit
     #[arg(long, value_name = "RISK", requires = "screen")]
     stop_threshold: Option<f64>,
 
@@ -604,14 +604,24 @@ fn run_score(args: &RunArgs) -> u8 {
             let allowing = !composition_params
                 .iter()
                 .any(|(k, v)| k == "allow" && v.as_bool() == Some(false));
-            c.stop_threshold = Some(
-                c.stop_threshold
-                    .unwrap_or(fontaine_guardian::composition::JEV_STOP_THRESHOLD),
+            let fitted = fontaine_guardian::composition::has_default_thresholds(
+                cascade_screen.unwrap_or_default(),
             );
-            c.allow_threshold = allowing.then(|| {
-                c.allow_threshold
-                    .unwrap_or(fontaine_guardian::composition::JEV_ALLOW_THRESHOLD)
-            });
+            if !fitted && !thresholds_given {
+                return usage(
+                    "`--screen` needs `--stop-threshold`, `--allow-threshold` or both: the preset's defaults are fitted to `typesafe/` models only",
+                );
+            }
+            c.stop_threshold = c
+                .stop_threshold
+                .or_else(|| fitted.then_some(fontaine_guardian::composition::JEV_STOP_THRESHOLD));
+            c.allow_threshold = allowing
+                .then(|| {
+                    c.allow_threshold.or_else(|| {
+                        fitted.then_some(fontaine_guardian::composition::JEV_ALLOW_THRESHOLD)
+                    })
+                })
+                .flatten();
             c.steering_veto = None;
         }
         // Only now are the effective thresholds known, and the label must state them.

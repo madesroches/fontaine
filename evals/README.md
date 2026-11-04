@@ -273,7 +273,8 @@ vLLM) could sit in front of the guardian. It lives only in `fontaine-evals`, whi
 screen can reach the permission pipeline. Start the server first, for example `laya-serve`
 (`LAYA_DEVICE=cuda LAYA_PRELOAD=1`), then point `--screen-url` at it. A hosted model works the same
 way: Jev through OpenRouter takes `--screen-url https://openrouter.ai/api` with
-`--screen-api-key-file` and a `--screen-max-cost-usd` cap.
+`--screen-api-key-file` and a `--screen-max-cost-usd` cap. `screen_models.sh` runs Jev and five other
+hosted models through it.
 
 - Each `guardian` case in the `full` profile is posed with the user message the LLM guardian sees
   (same request, same credential redaction and untrusted-block framing), as the `state` of one

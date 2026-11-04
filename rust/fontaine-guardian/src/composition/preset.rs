@@ -19,6 +19,16 @@ pub const JEV_STOP_THRESHOLD: f64 = 0.34;
 /// skip point (0.30) less a 0.10 margin for the model's nondeterminism.
 pub const JEV_ALLOW_THRESHOLD: f64 = 0.20;
 
+/// Whether the Jev threshold defaults fit `model`, a `<account>/<vendor>/<model>` label. They are
+/// fitted to Typesafe's models only; an unknown (empty) model is not rejected, so parameter
+/// validation without a model keeps working.
+pub fn has_default_thresholds(model: &str) -> bool {
+    model.is_empty()
+        || model
+            .split_once('/')
+            .is_some_and(|(_, id)| id.starts_with("typesafe/"))
+}
+
 pub(crate) struct Resolved {
     pub source: &'static str,
     pub reads: BTreeMap<String, Read>,
@@ -183,14 +193,28 @@ pub(crate) fn resolve(
             let allowing = boolean(params, "allow", true)?;
             if backend == Some(BackendKind::SystemOne) {
                 // `allow = false` wins over a threshold: it is a switch, not a contradiction.
-                let allow = allowing.then(|| allow.unwrap_or(JEV_ALLOW_THRESHOLD));
+                let fitted = has_default_thresholds(model);
+                if !fitted && !shadow && stop.is_none() && allow.is_none() {
+                    return Err(CompositionError::at(
+                        "allow_threshold",
+                        format!(
+                            "there is no default for `{model}`, whose thresholds are measured per model; set `allow_threshold` and/or `stop_threshold`, or keep `shadow = true` to log scores first"
+                        ),
+                    ));
+                }
+                let default = |value: f64| fitted.then_some(value);
+                let allow = if allowing {
+                    allow.or(default(JEV_ALLOW_THRESHOLD))
+                } else {
+                    None
+                };
                 return Ok(Resolved {
                     source: include_str!("screen_jev.rn"),
                     reads,
                     params: HashMap::from([
                         (
                             "stop_threshold".to_owned(),
-                            Param::Optional(Some(stop.unwrap_or(JEV_STOP_THRESHOLD))),
+                            Param::Optional(stop.or(default(JEV_STOP_THRESHOLD))),
                         ),
                         ("allow_threshold".to_owned(), Param::Optional(allow)),
                         ("concurrent".to_owned(), Param::Bool(concurrent)),
