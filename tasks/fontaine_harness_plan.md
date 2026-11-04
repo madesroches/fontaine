@@ -978,6 +978,9 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-03: No hot reload of keybindings: they apply at startup like the rest of the config surface (`/config` saves are next-launch too); reason: consistency, and no file watcher exists to reuse (#49).
 - 2026-11-03: No chord support in the keybinding parser: Fontaine has no chord bindings to remap, and a chord engine (pending-prefix state, timeout, prefix reservation) is pure addition; the parser rejects space-separated sequences with a clear error (#49).
 - 2026-11-03: No per-overlay keybinding contexts (Claude Code's 25+): the remappable set is the global/chat action level, and vim keys are not remappable either (same as Claude Code); reason: remapping every overlay's internal keys is disproportionate for a prompt harness (#49).
+- 2026-11-03: URLs and markdown link text are coloured with a theme `link` token and underlined, without OSC 8 hyperlinks (Claude Code 2.1.318 emits OSC 8 around the visible text); links are coloured whether or not the terminal supports hyperlinks, and the underline means they do not rely on colour alone (Claude Code: blue on light / blueBright on dark, no underline) (#206).
+- 2026-11-03: Bare URLs are found by a hand-written scanner, not a regex, because pulldown-cmark does not autolink them and it keeps `fontaine-tui` free of a `regex` dependency; a URL wrapped across rows in the unstable streaming tail, tool output or a raw-source fallback block loses colour on its continuation rows (#206).
+- 2026-11-03: The link colour is not user-overridable: `ThemeName` is a closed set of six presets and custom themes are a separate issue (#206).
 
 ## Open Questions
 

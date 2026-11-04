@@ -2,7 +2,9 @@
 //! the subset renders as its source lines, wrapped plain, exactly as an unrendered reply does,
 //! so the renderer can only ever add formatting, never lose text.
 
-use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{
+    Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd, TextMergeWithOffset,
+};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -253,6 +255,7 @@ pub(crate) fn rows(
     until: usize,
     width: usize,
     glyphs: Glyphs,
+    link: Style,
 ) -> Vec<(Row, usize)> {
     let width = width.max(1);
     let mut out = Vec::new();
@@ -275,7 +278,7 @@ pub(crate) fn rows(
         rest = &rest[used.bytes..];
         base += used.chars;
     }
-    render_region(rest, base, width, glyphs, &mut out);
+    render_region(rest, base, width, glyphs, link, &mut out);
     out
 }
 
@@ -333,7 +336,11 @@ fn parse_blocks(src: &str) -> Vec<Block<'_>> {
     let mut blocks = Vec::new();
     let mut depth = 0usize;
     let mut open: Option<Block<'_>> = None;
-    for (event, range) in Parser::new_ext(src, Options::ENABLE_TABLES).into_offset_iter() {
+    // Without merging, the parser splits a text node at every special byte, which would cut
+    // a URL such as `/_next/` into pieces the scanner cannot see whole.
+    let events =
+        TextMergeWithOffset::new(Parser::new_ext(src, Options::ENABLE_TABLES).into_offset_iter());
+    for (event, range) in events {
         if depth == 0 && matches!(event, Event::Rule) {
             blocks.push(Block {
                 start: range.start,
@@ -374,15 +381,20 @@ struct Chunk {
     end_line: usize,
 }
 
-fn raw_rows(lines: &[SrcLine<'_>], width: usize) -> Vec<Row> {
+fn raw_rows(lines: &[SrcLine<'_>], width: usize, link: Style) -> Vec<Row> {
     lines
         .iter()
         .flat_map(|line| wrap(line.text, width))
-        .map(Line::from)
+        .map(|piece| Line::from(link_spans(&piece, Style::default(), link)))
         .collect()
 }
 
-fn uncovered(lines: &[SrcLine<'_>], range: std::ops::Range<usize>, width: usize) -> Vec<Chunk> {
+fn uncovered(
+    lines: &[SrcLine<'_>],
+    range: std::ops::Range<usize>,
+    width: usize,
+    link: Style,
+) -> Vec<Chunk> {
     range
         .map(|i| {
             let blank = is_blank(lines[i].text);
@@ -390,7 +402,7 @@ fn uncovered(lines: &[SrcLine<'_>], range: std::ops::Range<usize>, width: usize)
                 rows: if blank {
                     vec![Line::default()]
                 } else {
-                    raw_rows(&lines[i..=i], width)
+                    raw_rows(&lines[i..=i], width, link)
                 },
                 blank,
                 end_line: i + 1,
@@ -404,6 +416,7 @@ fn render_region(
     base: usize,
     width: usize,
     glyphs: Glyphs,
+    link: Style,
     out: &mut Vec<(Row, usize)>,
 ) {
     let lines = split_lines(src);
@@ -421,9 +434,9 @@ fn render_region(
         if last < first {
             continue;
         }
-        chunks.extend(uncovered(&lines, next..first, width));
-        let rows = render_block(&block.events, width, glyphs)
-            .unwrap_or_else(|| raw_rows(&lines[first..=last], width));
+        chunks.extend(uncovered(&lines, next..first, width, link));
+        let rows = render_block(&block.events, width, glyphs, link)
+            .unwrap_or_else(|| raw_rows(&lines[first..=last], width, link));
         chunks.push(Chunk {
             rows,
             blank: false,
@@ -431,7 +444,7 @@ fn render_region(
         });
         next = last + 1;
     }
-    chunks.extend(uncovered(&lines, next..lines.len(), width));
+    chunks.extend(uncovered(&lines, next..lines.len(), width, link));
     let total = src.chars().count();
     let mut i = 0;
     while i < chunks.len() {
@@ -453,7 +466,12 @@ fn render_region(
 }
 
 /// `None` is a block this renderer does not draw.
-fn render_block(events: &[Event<'_>], width: usize, glyphs: Glyphs) -> Option<Vec<Row>> {
+fn render_block(
+    events: &[Event<'_>],
+    width: usize,
+    glyphs: Glyphs,
+    link: Style,
+) -> Option<Vec<Row>> {
     let (first, rest) = events.split_first()?;
     let Event::Start(tag) = first else {
         return None;
@@ -461,12 +479,12 @@ fn render_block(events: &[Event<'_>], width: usize, glyphs: Glyphs) -> Option<Ve
     let inner = &rest[..rest.len().saturating_sub(1)];
     match tag {
         Tag::Paragraph => {
-            let mut inline = Inline::default();
+            let mut inline = Inline::new(link);
             inline.feed_all(inner)?;
             Some(into_rows(inline.rows(width, Style::default())))
         }
         Tag::Heading { level, .. } => {
-            let mut inline = Inline::default();
+            let mut inline = Inline::new(link);
             inline.feed_all(inner)?;
             let mut style = Style::default().add_modifier(Modifier::BOLD);
             if matches!(level, pulldown_cmark::HeadingLevel::H1) {
@@ -492,10 +510,10 @@ fn render_block(events: &[Event<'_>], width: usize, glyphs: Glyphs) -> Option<Ve
         }
         Tag::List(start) => {
             let mut at = 0;
-            let rows = list_rows(events, &mut at, *start, width, glyphs)?;
+            let rows = list_rows(events, &mut at, *start, width, glyphs, link)?;
             Some(into_rows(rows))
         }
-        Tag::Table(aligns) => table_rows(inner, aligns, width, glyphs),
+        Tag::Table(aligns) => table_rows(inner, aligns, width, glyphs, link),
         _ => None,
     }
 }
@@ -519,20 +537,44 @@ enum Piece {
 }
 
 /// Flattens the inline events of a block into styled spans.
-#[derive(Default)]
 struct Inline {
     pieces: Vec<Piece>,
-    mods: Vec<Modifier>,
+    mods: Vec<Style>,
+    /// What a link's text, and a bare URL, is drawn with.
+    link: Style,
+    /// How many links enclose the event being fed.
+    in_link: usize,
 }
 
 impl Inline {
+    fn new(link: Style) -> Self {
+        Inline {
+            pieces: Vec::new(),
+            mods: Vec::new(),
+            link,
+            in_link: 0,
+        }
+    }
+
     fn style(&self) -> Style {
-        self.mods
-            .iter()
-            .fold(Style::default(), |s, m| s.add_modifier(*m))
+        self.mods.iter().fold(Style::default(), |s, m| s.patch(*m))
     }
 
     fn text(&mut self, text: &str) {
+        let style = self.style();
+        if self.in_link > 0 {
+            self.pieces
+                .push(Piece::Text(Span::styled(text.to_string(), style)));
+        } else {
+            self.pieces.extend(
+                link_spans(text, style, self.link)
+                    .into_iter()
+                    .map(Piece::Text),
+            );
+        }
+    }
+
+    fn markup(&mut self, text: &str) {
         let span = Span::styled(text.to_string(), self.style());
         self.pieces.push(Piece::Text(span));
     }
@@ -550,16 +592,28 @@ impl Inline {
     /// markup this renderer does not draw.
     fn feed(&mut self, event: &Event<'_>) -> Option<bool> {
         match event {
-            Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) => self.text(t),
+            Event::Text(t) => self.text(t),
+            Event::Html(t) | Event::InlineHtml(t) => self.markup(t),
             Event::Code(t) => {
                 let span = Span::styled(t.to_string(), self.style().add_modifier(Modifier::BOLD));
                 self.pieces.push(Piece::Text(span));
             }
             Event::SoftBreak | Event::HardBreak => self.pieces.push(Piece::Break),
-            Event::Start(Tag::Strong) => self.mods.push(Modifier::BOLD),
-            Event::Start(Tag::Emphasis) => self.mods.push(Modifier::ITALIC),
-            Event::Start(Tag::Link { .. }) => self.mods.push(Modifier::empty()),
-            Event::End(TagEnd::Strong | TagEnd::Emphasis | TagEnd::Link) => {
+            Event::Start(Tag::Strong) => self
+                .mods
+                .push(Style::default().add_modifier(Modifier::BOLD)),
+            Event::Start(Tag::Emphasis) => self
+                .mods
+                .push(Style::default().add_modifier(Modifier::ITALIC)),
+            Event::Start(Tag::Link { .. }) => {
+                self.mods.push(self.link);
+                self.in_link += 1;
+            }
+            Event::End(TagEnd::Link) => {
+                self.mods.pop();
+                self.in_link = self.in_link.saturating_sub(1);
+            }
+            Event::End(TagEnd::Strong | TagEnd::Emphasis) => {
                 self.mods.pop();
             }
             Event::Start(Tag::Image { .. }) | Event::FootnoteReference(_) => return None,
@@ -594,6 +648,74 @@ impl Inline {
             })
             .collect()
     }
+}
+
+/// Splits `text` into spans of `style`, with each bare `http(s)://` URL in `style` patched with
+/// `link`. A URL runs to the next whitespace, minus trailing sentence punctuation and closing
+/// brackets or quotes that have no opener inside it.
+pub(crate) fn link_spans(text: &str, style: Style, link: Style) -> Vec<Span<'static>> {
+    if link == Style::default() {
+        return vec![Span::styled(text.to_string(), style)];
+    }
+    let mut spans = Vec::new();
+    let mut plain_from = 0;
+    let mut at = 0;
+    while let Some(found) = text[at..].find("http") {
+        let start = at + found;
+        at = start + 4;
+        let rest = &text[start..];
+        let scheme = if rest.starts_with("https://") {
+            8
+        } else if rest.starts_with("http://") {
+            7
+        } else {
+            continue;
+        };
+        if text[..start]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        let run = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let len = trim_url(&rest[..run]).len();
+        if len <= scheme {
+            continue;
+        }
+        if plain_from < start {
+            spans.push(Span::styled(text[plain_from..start].to_string(), style));
+        }
+        spans.push(Span::styled(
+            text[start..start + len].to_string(),
+            style.patch(link),
+        ));
+        plain_from = start + len;
+        at = plain_from;
+    }
+    if plain_from < text.len() || spans.is_empty() {
+        spans.push(Span::styled(text[plain_from..].to_string(), style));
+    }
+    spans
+}
+
+fn trim_url(url: &str) -> &str {
+    let mut url = url;
+    while let Some(last) = url.chars().next_back() {
+        let count = |c: char| url.chars().filter(|x| *x == c).count();
+        let unbalanced = match last {
+            '.' | ',' | ';' | ':' | '!' | '?' => true,
+            ')' => count(')') > count('('),
+            ']' => count(']') > count('['),
+            '\'' | '"' => count(last) % 2 == 1,
+            _ => false,
+        };
+        if !unbalanced {
+            break;
+        }
+        url = &url[..url.len() - last.len_utf8()];
+    }
+    url
 }
 
 /// Word-wraps styled text by char count, hard-splitting a word longer than `width`. Wide
@@ -665,6 +787,7 @@ fn list_rows(
     start: Option<u64>,
     width: usize,
     glyphs: Glyphs,
+    link: Style,
 ) -> Option<Vec<Cells>> {
     *at += 1;
     let mut number = start.unwrap_or(1);
@@ -679,7 +802,7 @@ fn list_rows(
                     None => glyphs.bullet.to_string(),
                 };
                 number += 1;
-                let (rows, was_loose) = item_rows(events, at, marker, width, glyphs)?;
+                let (rows, was_loose) = item_rows(events, at, marker, width, glyphs, link)?;
                 loose |= was_loose;
                 items.push(rows);
             }
@@ -706,6 +829,7 @@ fn item_rows(
     marker: String,
     width: usize,
     glyphs: Glyphs,
+    link: Style,
 ) -> Option<(Vec<Cells>, bool)> {
     let pad = marker.chars().count();
     let (marker, pad) = if width > pad + 1 {
@@ -715,7 +839,7 @@ fn item_rows(
     };
     let inner = width - pad;
     let mut rows: Vec<Cells> = Vec::new();
-    let mut inline = Inline::default();
+    let mut inline = Inline::new(link);
     let mut loose = false;
     loop {
         match events.get(*at)? {
@@ -742,7 +866,7 @@ fn item_rows(
                 if !inline.pieces.is_empty() {
                     rows.extend(inline.rows(inner, Style::default()));
                 }
-                rows.extend(list_rows(events, at, *nested, inner, glyphs)?);
+                rows.extend(list_rows(events, at, *nested, inner, glyphs, link)?);
             }
             event => {
                 if !inline.feed(event)? {
@@ -774,10 +898,11 @@ fn table_rows(
     aligns: &[Alignment],
     width: usize,
     glyphs: Glyphs,
+    link: Style,
 ) -> Option<Vec<Row>> {
     let mut table: Vec<Vec<Cells>> = Vec::new();
     let mut row: Vec<Cells> = Vec::new();
-    let mut cell = Inline::default();
+    let mut cell = Inline::new(link);
     for event in events {
         match event {
             Event::Start(Tag::TableHead | Tag::TableRow | Tag::TableCell) => {}
@@ -870,10 +995,17 @@ mod tests {
     use super::*;
 
     fn render(text: &str, width: usize) -> Vec<Row> {
-        rows(text, 0, text.chars().count(), width, Glyphs::UNICODE)
-            .into_iter()
-            .map(|(l, _)| l)
-            .collect()
+        rows(
+            text,
+            0,
+            text.chars().count(),
+            width,
+            Glyphs::UNICODE,
+            Style::default(),
+        )
+        .into_iter()
+        .map(|(l, _)| l)
+        .collect()
     }
 
     fn plain(lines: &[Row]) -> Vec<String> {
@@ -1067,7 +1199,14 @@ mod tests {
     #[test]
     fn table_glyphs_follow_the_glyph_set() {
         let text = "| a | b |\n|---|---|\n| 1 | 2 |\n";
-        let ascii = rows(text, 0, text.chars().count(), 40, Glyphs::ASCII);
+        let ascii = rows(
+            text,
+            0,
+            text.chars().count(),
+            40,
+            Glyphs::ASCII,
+            Style::default(),
+        );
         let lines: Vec<Row> = ascii.into_iter().map(|(l, _)| l).collect();
         assert_eq!(plain(&lines), vec!["a | b", "-----", "1 | 2"]);
     }
@@ -1083,7 +1222,14 @@ mod tests {
     #[test]
     fn a_block_shares_one_end_offset_past_its_blank_lines() {
         let text = "one two\nthree\n\n\nnext";
-        let out = rows(text, 0, text.chars().count(), 4, Glyphs::UNICODE);
+        let out = rows(
+            text,
+            0,
+            text.chars().count(),
+            4,
+            Glyphs::UNICODE,
+            Style::default(),
+        );
         let ends: Vec<usize> = out.iter().map(|(_, e)| *e).collect();
         assert!(ends[..out.len() - 1].iter().all(|e| *e == 16), "{ends:?}");
         assert_eq!(*ends.last().unwrap(), text.chars().count());
@@ -1148,7 +1294,7 @@ mod tests {
         let len = text.chars().count();
         let render_from = |from: usize| {
             plain(
-                &rows(text, from, len, 80, Glyphs::UNICODE)
+                &rows(text, from, len, 80, Glyphs::UNICODE, Style::default())
                     .into_iter()
                     .map(|(l, _)| l)
                     .collect::<Vec<_>>(),
@@ -1164,8 +1310,160 @@ mod tests {
     #[test]
     fn resuming_inside_a_list_fence_does_not_open_a_code_block() {
         let text = "- a\n  ```\n  x\n  y\n  ```\n";
-        let got = rows(text, 10, text.chars().count(), 80, Glyphs::UNICODE);
+        let got = rows(
+            text,
+            10,
+            text.chars().count(),
+            80,
+            Glyphs::UNICODE,
+            Style::default(),
+        );
         let got = plain(&got.into_iter().map(|(l, _)| l).collect::<Vec<_>>());
         assert!(got.iter().all(|l| !l.starts_with("    ")), "{got:?}");
+    }
+
+    fn link() -> Style {
+        Style::default()
+            .fg(ratatui::style::Color::Blue)
+            .add_modifier(Modifier::UNDERLINED)
+    }
+
+    fn linked_rows(text: &str, width: usize) -> Vec<Row> {
+        rows(
+            text,
+            0,
+            text.chars().count(),
+            width,
+            Glyphs::UNICODE,
+            link(),
+        )
+        .into_iter()
+        .map(|(l, _)| l)
+        .collect()
+    }
+
+    /// The text drawn in the link style, per row.
+    fn colored(lines: &[Row]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .filter(|s| s.style.fg == link().fg)
+                    .map(|s| s.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn link_spans_split_a_bare_url_from_its_text() {
+        let spans = link_spans("see https://a.io/x now", Style::default(), link());
+        let got: Vec<(&str, bool)> = spans
+            .iter()
+            .map(|s| (s.content.as_ref(), s.style.fg.is_some()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![("see ", false), ("https://a.io/x", true), (" now", false)]
+        );
+    }
+
+    #[test]
+    fn link_spans_trim_trailing_punctuation_and_unbalanced_brackets() {
+        let url = |text: &str| {
+            link_spans(text, Style::default(), link())
+                .into_iter()
+                .filter(|s| s.style.fg.is_some())
+                .map(|s| s.content.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(url("go to https://a.io."), vec!["https://a.io"]);
+        assert_eq!(url("https://a.io, then"), vec!["https://a.io"]);
+        assert_eq!(url("(see https://a.io/x)"), vec!["https://a.io/x"]);
+        assert_eq!(url("(see https://a.io/x)."), vec!["https://a.io/x"]);
+        assert_eq!(url("\"https://a.io\""), vec!["https://a.io"]);
+        assert_eq!(url("https://a.io/F_(b)"), vec!["https://a.io/F_(b)"]);
+        assert_eq!(
+            url("http://a.io and https://b.io"),
+            vec!["http://a.io", "https://b.io"]
+        );
+    }
+
+    #[test]
+    fn link_spans_ignore_what_is_not_a_url() {
+        for text in ["http://", "https://.", "a.io/x", "xhttps://a.io", "http:/a"] {
+            let spans = link_spans(text, Style::default(), link());
+            assert!(spans.iter().all(|s| s.style.fg.is_none()), "{text}");
+            let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
+            assert_eq!(joined, text);
+        }
+    }
+
+    #[test]
+    fn a_bare_url_in_a_reply_is_colored_and_the_text_is_unchanged() {
+        let text = "visit https://a.io/x, ok\n";
+        let with = linked_rows(text, 40);
+        assert_eq!(colored(&with), vec!["https://a.io/x"]);
+        assert_eq!(plain(&with), plain(&render(text, 40)));
+    }
+
+    #[test]
+    fn markdown_link_text_is_colored_and_the_target_is_not_printed() {
+        let text = "a [the **docs**](https://a.io/d) b\n";
+        let with = linked_rows(text, 40);
+        assert_eq!(plain(&with), vec!["a the docs b"]);
+        assert_eq!(colored(&with), vec!["the docs"]);
+        assert_eq!(plain(&with), plain(&render(text, 40)));
+    }
+
+    #[test]
+    fn an_autolink_is_colored() {
+        let with = linked_rows("<https://a.io/x>\n", 40);
+        assert_eq!(plain(&with), vec!["https://a.io/x"]);
+        assert_eq!(colored(&with), vec!["https://a.io/x"]);
+    }
+
+    #[test]
+    fn a_url_split_into_several_text_events_is_colored_whole() {
+        for url in [
+            "https://en.wikipedia.org/wiki/Foo_(bar)",
+            "https://x.com/_next/a",
+        ] {
+            let text = format!("see {url}\n");
+            let with = linked_rows(&text, 80);
+            assert_eq!(colored(&with), vec![url], "{url}");
+        }
+    }
+
+    #[test]
+    fn code_is_not_linkified() {
+        let text = "`https://a.io` and\n\n```\nhttps://b.io\n```\n";
+        let with = linked_rows(text, 40);
+        assert!(colored(&with).iter().all(String::is_empty), "{with:?}");
+    }
+
+    #[test]
+    fn a_url_in_a_raw_fallback_block_is_colored() {
+        let text = "> quoted https://a.io/q\n";
+        let with = linked_rows(text, 40);
+        assert_eq!(plain(&with), vec!["> quoted https://a.io/q"]);
+        assert_eq!(colored(&with), vec!["https://a.io/q"]);
+    }
+
+    #[test]
+    fn urls_in_lists_and_table_cells_are_colored() {
+        let with = linked_rows("- a https://a.io/l\n", 40);
+        assert_eq!(colored(&with), vec!["https://a.io/l"]);
+        let with = linked_rows("| h |\n|---|\n| https://a.io/t |\n", 40);
+        assert_eq!(colored(&with)[2], "https://a.io/t");
+    }
+
+    #[test]
+    fn a_url_hard_split_across_rows_keeps_its_color_on_every_row() {
+        let with = linked_rows("https://example.com/a/long/path\n", 10);
+        assert!(with.len() > 2);
+        assert!(colored(&with).iter().all(|c| !c.is_empty()), "{with:?}");
+        assert_eq!(colored(&with).concat(), "https://example.com/a/long/path");
     }
 }
