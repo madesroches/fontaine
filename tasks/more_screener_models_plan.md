@@ -79,27 +79,32 @@ Record the same measures, plus the hardware and the readout settings used, so th
 reproducible. The weights licence (CC BY-NC) goes into the doc beside the numbers, as the
 Llama-licence caveat does for PromptGuard 2 in `AGENTS.md`.
 
-### 3. Keyless loopback account (conditional on step 2 showing OpenJev is competitive)
+### 3. Keyless loopback account (if the OpenJev run, Implementation step 3, is competitive)
 
 Let an `openrouter`-kind account with a loopback `base_url` run without a key:
 
 - `check_composition_credentials` and `build_reader` (`agent/setup.rs`) treat a missing key as
   allowed when `systemone_endpoint(account)` is loopback (`systemone::loopback`), and build
-  `SystemOneSettings` with an empty `Secret` key when no key resolves (the scorer already treats an
-  empty key as keyless: no bearer header, `key_may_travel` enforced only when keyed); a non-loopback
-  endpoint keeps today's error.
+  `SystemOneSettings` with an empty `Secret` key when no key resolves (the reader is unchanged:
+  `rust/fontaine-guardian/src/screen.rs` ~L426-440 sets `keyed = !api_key.is_empty()`, so an empty key
+  sends no bearer header and `key_may_travel` is enforced only when keyed; only
+  `check_composition_credentials` in `config.rs` and `build_reader` in `agent/setup.rs` need the
+  loopback exception); a non-loopback endpoint keeps today's error.
 - A remote host without a key stays an exit-2 error, so nothing becomes keyless by accident.
 - No new account kind: the existing kind already means "a System One endpoint at `base_url`".
-- The preset defaults stay Jev's. A local or other model must set `allow_threshold` and
-  `stop_threshold` explicitly or leave `shadow = true`; the existing "no default" error for
-  non-Jev models does not apply because the Jev defaults would silently mis-fit another model, so
-  the defaults apply only when the model id starts with `typesafe/` and any other model needs
-  explicit thresholds (see Open Questions).
 
 ### 4. Default model (only if a candidate clearly wins)
 
 If a candidate wins at zero missed attacks, open an issue to change `JEV_MODEL` and refit
 thresholds (`research/typed-decision-screen/scripts/jev_synth.py`).
+
+### 5. Thresholds for non-`typesafe/` models (unconditional)
+
+Today `rust/fontaine-guardian/src/composition/preset.rs` applies the Jev thresholds
+(`JEV_ALLOW_THRESHOLD = 0.20`, `JEV_STOP_THRESHOLD = 0.34`) to any hosted System One model; the
+"there is no default" error is Ollama-only. Change it so the Jev defaults apply only when the model
+id starts with `typesafe/`; any other hosted model must set `allow_threshold` and/or
+`stop_threshold`, or keep `shadow = true`, with the same error as the Ollama path.
 
 ## Implementation Steps
 
@@ -110,17 +115,23 @@ thresholds (`research/typed-decision-screen/scripts/jev_synth.py`).
    scorecards under `evals/scorecards/`.
 3. Stand up OpenJev Flash-9B locally, run the scorer against it, commit the scorecard.
 4. Write `research/analysis-screener-models.md` and the `docs/evals.md` subsection.
-5. If step 2 is competitive: implement the keyless loopback account (Design 3) with tests.
-6. `CHANGELOG.md` entry; docs updates below.
+5. If the OpenJev run (Implementation step 3) is competitive: implement the keyless loopback
+   account (Design 3) with tests, and check the setup error text in
+   `rust/fontaine-core/src/composition_offer.rs` (~L337) that mentions the OpenRouter key.
+6. Implement the `typesafe/`-only threshold defaults (Design 5) with tests.
+7. `CHANGELOG.md` entry; docs updates below.
 
 ## Files to Modify
 
 - `evals/scorecards/screen-*-employee-levels.json` (new)
 - `research/analysis-screener-models.md` (new)
-- `docs/evals.md`, `docs/guardian.md` (hosted-screen section: other models, local OpenJev)
+- `docs/evals.md`, `docs/guardian.md` (hosted-screen section: other models, local OpenJev); stale
+  passages to fix: `docs/guardian.md` ~L378-381 (key required; sent only over https or loopback) and
+  ~L310, `docs/evals.md` ~L315 (hosted screen described as Jev-specific)
+- `rust/fontaine-guardian/src/composition/preset.rs` and its tests (Design 5), `docs/configuration.md`
 - `CHANGELOG.md`
 - Conditional (Design 3): `rust/fontaine-core/src/config.rs`, `rust/fontaine-core/src/agent/setup.rs`,
-  their tests, and `docs/configuration.md`
+  `rust/fontaine-core/src/composition_offer.rs`, their tests, and `docs/configuration.md`
 
 ## Trade-offs
 
@@ -142,21 +153,27 @@ thresholds (`research/typed-decision-screen/scripts/jev_synth.py`).
   under $3 (at ~$0.00003 a call, 258 cases x 2 repeats x 6 models is about $0.10 per model).
 - 2026-11-03 No code change is needed to score the hosted models: all five answer the
   employee-levels request in the shape the parser already reads.
+- 2026-11-03 AFK: the Jev threshold defaults apply only when the model id starts with `typesafe/`;
+  any other hosted model must set both thresholds or leave `shadow = true` (chosen conservatively:
+  an allow path on another model with unmeasured thresholds would loosen the guardian).
 
 ## Documentation
 
 - `docs/evals.md`: other hosted screens and the local OpenJev recipe, commands and headline numbers.
 - `docs/guardian.md`: that the hosted screen accepts other System One models, that thresholds are
-  per model, and (if step 5 ships) the keyless loopback account.
+  per model with Jev defaults only for `typesafe/` (also `docs/configuration.md`), and (if
+  Implementation step 5 ships) the keyless loopback account.
 - `research/analysis-screener-models.md`: the full comparison.
 
 ## Testing Strategy
 
 - Measurements are live runs (manual, like every live eval; they are not a CI gate).
-- Step 5 (if built), all unit/integration with wiremock or the fixture reader: a loopback
+- Implementation step 5 (if built), all unit/integration with wiremock or the fixture reader: a loopback
   `openrouter` account with no key builds a reader and sends no `Authorization` header; a
   non-loopback account with no key is still exit 2; `key_may_travel` behavior is unchanged. Composition
-  and accounts stay user-only (already enforced in `config_scope.rs`).
+  and accounts stay user-only (already enforced in `config_scope.rs`). Implementation step 6: a
+  `typesafe/` model gets the Jev defaults; another hosted model with neither threshold and
+  `shadow = false` is rejected, and with a threshold or `shadow = true` is accepted.
 
 ## Manual Verification
 
@@ -169,5 +186,3 @@ thresholds (`research/typed-decision-screen/scripts/jev_synth.py`).
 
 - What hardware will run the local OpenJev (CUDA GPU with vLLM, or an Apple-silicon Mac with MLX)?
   The 6 GB GTX 1060 noted in `docs/evals.md` cannot hold the Flash-9B Q4_K_M under vLLM.
-- Should non-Jev models get no default thresholds (explicit required) or per-model benchmark
-  entries like `BENCHMARKS`? Leaning explicit, until a model is measured and chosen.
