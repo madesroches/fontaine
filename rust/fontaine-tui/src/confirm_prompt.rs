@@ -150,13 +150,20 @@ mod tests {
 
     #[test]
     fn a_long_review_is_cut_with_a_pointer_to_the_transcript() {
-        let blocks = (0..40)
-            .map(|i| Block::Text(format!("  - entry {i}")))
-            .collect();
-        let prompt = ConfirmPrompt::new("h".into(), blocks, "f").with_max_rows(14);
+        let review = (0..40)
+            .map(|i| format!("  - entry {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let prompt = crate::setup_prompt::new(review, 40);
         let body = prompt.body(80, &theme());
-        assert_eq!(body.len(), 1 + 14 + 1);
-        assert!(body.last().unwrap().to_string().contains("26 more lines"));
+        let cut = 40 - crate::setup_prompt::BODY_ROWS;
+        assert_eq!(body.len(), 1 + crate::setup_prompt::BODY_ROWS + 1);
+        assert!(
+            body.last()
+                .unwrap()
+                .to_string()
+                .contains(&format!("{cut} more lines"))
+        );
     }
 
     #[test]

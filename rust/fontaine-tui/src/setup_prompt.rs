@@ -15,7 +15,7 @@ use crate::theme::Theme;
 use fontaine_core::composition_offer::{Candidate, Offer, Posture};
 
 /// Rows of proposals the overlay shows; the transcript above it holds the whole review.
-const BODY_ROWS: usize = 14;
+pub(crate) const BODY_ROWS: usize = 14;
 
 /// `Some(true)` from the prompt saves the proposals, `Some(false)` discards them.
 pub fn new(review: String, count: usize) -> ConfirmPrompt {

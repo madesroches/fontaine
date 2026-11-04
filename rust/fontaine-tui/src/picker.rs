@@ -18,8 +18,8 @@ pub(crate) fn step(selected: usize, count: usize, up: bool) -> usize {
 }
 
 /// Applies Backspace or a typed character (shifted is fine, Ctrl and Alt are not) to the filter
-/// and moves the selection back to the first match. Returns whether the key was consumed.
-pub(crate) fn edit_query(query: &mut String, selected: &mut usize, key: &KeyEvent) -> bool {
+/// and moves the selection back to the first match. Other keys leave both untouched.
+pub(crate) fn edit_query(query: &mut String, selected: &mut usize, key: &KeyEvent) {
     match key.code {
         KeyCode::Backspace => {
             query.pop();
@@ -31,10 +31,9 @@ pub(crate) fn edit_query(query: &mut String, selected: &mut usize, key: &KeyEven
         {
             query.push(c);
         }
-        _ => return false,
+        _ => return,
     }
     *selected = 0;
-    true
 }
 
 /// The first of `window` rows to show out of `total`, keeping the selected row near the middle.
@@ -72,29 +71,29 @@ mod tests {
         let mut query = String::new();
         let mut selected = 4;
         let key = |code, mods| KeyEvent::new(code, mods);
-        assert!(edit_query(
+        edit_query(
             &mut query,
             &mut selected,
-            &key(KeyCode::Char('a'), KeyModifiers::SHIFT)
-        ));
+            &key(KeyCode::Char('a'), KeyModifiers::SHIFT),
+        );
         assert_eq!((query.as_str(), selected), ("a", 0));
         selected = 2;
-        assert!(!edit_query(
+        edit_query(
             &mut query,
             &mut selected,
-            &key(KeyCode::Char('b'), KeyModifiers::CONTROL)
-        ));
-        assert!(!edit_query(
+            &key(KeyCode::Char('b'), KeyModifiers::CONTROL),
+        );
+        edit_query(
             &mut query,
             &mut selected,
-            &key(KeyCode::Enter, KeyModifiers::NONE)
-        ));
+            &key(KeyCode::Enter, KeyModifiers::NONE),
+        );
         assert_eq!((query.as_str(), selected), ("a", 2));
-        assert!(edit_query(
+        edit_query(
             &mut query,
             &mut selected,
-            &key(KeyCode::Backspace, KeyModifiers::NONE)
-        ));
+            &key(KeyCode::Backspace, KeyModifiers::NONE),
+        );
         assert_eq!((query.as_str(), selected), ("", 0));
     }
 }
