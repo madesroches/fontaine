@@ -37,8 +37,8 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
 - `run` records `started = tokio::time::Instant::now()` (not std, so the per-attempt
   `tokio::time::timeout` and the paused test clock agree) and, before each attempt, computes
   `remaining = budget.saturating_sub(elapsed)` (when zero, return `TimedOut` without starting another attempt) and `attempts_left = 1 + retries - attempt`. The attempt's
-  timeout is `min(remaining, max(remaining / attempts_left, ATTEMPT_FLOOR))`, with
-  `ATTEMPT_FLOOR = 5 s`. The slice function returns `Option<Duration>`, `None` meaning out of budget (zero remaining), and `run` returns `TimedOut` on `None`. With the defaults (30 s, 3 attempts) that is 10 s for the first attempt;
+  timeout is `min(remaining, max(remaining - (attempts_left - 1) * ATTEMPT_FLOOR, ATTEMPT_FLOOR))`: the first attempt keeps the budget minus a floor reserved for each later attempt, with
+  `ATTEMPT_FLOOR = 5 s`. The slice function returns `Option<Duration>`, `None` meaning out of budget (zero remaining), and `run` returns `TimedOut` on `None`. With the defaults (30 s, 3 attempts) that is 20 s for the first attempt, then 5 s for each retry;
   the last attempt always gets all that is left, and a floor that exceeds `remaining` is clamped to it.
 - An attempt that hits its timeout counts as a used attempt and logs a `tracing::warn!` carrying the attempt number and the slice that ran out. If attempts remain and budget is left,
   retry with the same message the stalled attempt carried (a stall adds no new note; the previous note is kept).
@@ -73,16 +73,19 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
 
 ## Trade-offs
 
-- Equal split of the remaining budget (as the issue suggests) over a fixed per-attempt timeout:
-  it adapts to the configured `timeout` and to attempts already spent, with no new config key.
-- Floor of 5 s: models answer in 1–2 s, but a slow local model or a short configured timeout should
-  not be cut into slices too small to answer.
+- Front-loaded slicing (first attempt gets the budget minus a floor per later attempt) over an
+  equal split: an equal ~10 s slice would time out models that legitimately need 10–25 s per answer
+  (local/qwen3:4b p50 25 s, kimi-for-coding p95 17.5 s, see `docs/evals.md`) on every attempt, a
+  regression from today. It adapts to the configured `timeout` with no new config key. Cost: a
+  retry after a stall gets only the floor (5 s), enough for a fast hosted model, not for a slow one;
+  a model that needs more than `timeout - 2 * floor` (20 s by default) per answer needs a larger `timeout_secs`.
+- Floor of 5 s: a short configured timeout should not be cut into slices too small to answer.
 
 ## Documentation
 
 - `docs/guardian.md`: the retry-budget sentence (~l.250, "two retries, shared between malformed
   answers and provider errors") also says stalled attempts use that budget; the `Timeout` row and the scanner bound: a stalled attempt is dropped and
-  retried within the same timeout; the timeout remains the ceiling.
+  retried within the same timeout; the timeout remains the ceiling. Note that the first attempt may use all but 10 s of the timeout, so a slow model needs a `timeout_secs` above its worst answer time plus 10 s.
 - `docs/configuration.md`: the `timeout_secs` row and the scanner bound (~l.526, "`timeout_secs` bounds each scan") say the same in one clause.
 - `CHANGELOG.md`: `### Fixed` entry (#310).
 
@@ -102,7 +105,7 @@ slice-function unit tests. Exactly one real-socket wiremock test stays
 (`tests/guardian.rs`, real clock, a `Slow` first reply, 15 s timeout, about one slice (~5 s) of real
 time) as the in-the-wild regression for `attack-data-exfiltration-02` (stalled at 30001 ms).
 
-- Unit tests for the slice function: first attempt with default budget gets budget/3; floor applies;
+- Unit tests for the slice function: first attempt with default budget gets 20 s and later ones 5 s; a slow-but-working answer (e.g. 18 s) fits attempt 1; floor applies;
   floor clamps to remaining; last attempt gets the remainder; zero remaining returns `None`, and `run` returns `TimedOut`
   without another attempt.
 - Stall tests on the delaying transport: a reply that hangs and then a valid one yields the verdict
@@ -112,6 +115,10 @@ time) as the in-the-wild regression for `attack-data-exfiltration-02` (stalled a
   the third request still contains the "Your previous answer was rejected" section; usage billed before a stall is still tallied on `Timeout`. Existing timeout tests stay green.
 - Scanner, same transport: hang then valid reply is a verdict; always-hang is `Failed`.
 - `tests/guardian.rs`: the single real-clock wiremock regression above.
+
+## Decisions
+
+- AFK: 2026-11-04: Front-load the slices (first attempt = remaining minus floor per later attempt, 20 s/5 s/5 s at defaults) instead of an equal split, so slow-but-working models still answer on attempt 1; answers needing over timeout minus 2 floors need a larger `timeout_secs`, documented.
 
 ## Open Questions
 
