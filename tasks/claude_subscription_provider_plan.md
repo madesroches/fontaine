@@ -107,14 +107,19 @@ kind = "claude-subscription"
 - Add optional `cli_path` and `claude_config_dir` paths to `Account`. `cli_path` selects the
   official executable; default is `claude` on `PATH`. `claude_config_dir` becomes the child-only
   `CLAUDE_CONFIG_DIR`, allowing two isolated CLI profiles without reading either profile. Both are
-  valid only on this kind. `models` remains the explicit escape from live discovery.
+  valid only on this kind. `models` remains an explicit allowlist applied after live discovery.
 - `validate` rejects `api_key_env`, `base_url`, `wires`, Ollama options, caching, quota, and all
   per-account network keys. `[network]` does not implicitly configure the official CLI; its own
   supported proxy/TLS environment is inherited. Update every `Account` literal.
 - `ExternalCli` needs no Fontaine credential and never passes a stale stored credential to
-  `connect`. Add `env: EnvLookup` to `ConnectContext` so the provider checks process variables by
-  presence without calling `std::env` directly or reading their values. Project `[env]` remains
-  unrelated to provider operations.
+  `connect`. Add an owned `env: SharedEnv` to `ConnectContext`; `ResolveParams` and `client_for`
+  carry that `Arc`-owned, `Send + Sync + 'static` lookup into the CLI client and request
+  transports. Each preflight checks current process variables by presence without calling
+  `std::env` directly or reading their values. Production `shared_env` performs a live process
+  lookup on each call rather than retaining a startup snapshot; borrowed `config::EnvLookup`
+  remains only for configuration loading. Eval's owned environment includes every billing-conflict
+  variable, not only `api_key_env` snapshots. Project `[env]` remains unrelated to provider
+  operations.
 - Add an external-CLI account-row state and experimental/billing notice. `/login` on this kind runs
   the CLI preflight and opens model selection instead of showing a key prompt or starting a nested
   interactive login. Its failure says exactly to run `claude auth login` externally. Removing or
@@ -134,13 +139,13 @@ Fontaine account, telemetry, websearch, or other credential variable reaches the
 baseline rather than a copy of the CLI's own sensitive environment.
 
 1. Resolve `cli_path` or `claude`, then run `claude --version` once per connected client with a
-   timeout and exit-status check. Start with **2.1.263** as the reference-qualified minimum
-   (Hermes qualified that protocol version); record the minimum in one constant and in docs. An
-   old, malformed, timed-out, or unsupported response is a CLI compatibility error, not a model
-   error to retry.
-2. Before discovery and before every model request, recheck inherited conflicts and run
-   `claude auth status` with the selected config directory. Parse only `loggedIn`, `authMethod`,
-   and `subscriptionType`. Require logged-in `claude.ai` auth and a normalized Max or Ultra plan.
+   timeout and exit-status check. Start with **2.1.318** as the reference-qualified minimum;
+   record the minimum in one constant and in docs. An old, malformed, timed-out, or unsupported
+   response is a non-retryable CLI compatibility error, not a model error to retry.
+2. Before discovery and before every model request, recheck inherited conflicts through the
+   retained live `SharedEnv` and run `claude auth status` with the selected config directory.
+   Parse only `loggedIn`, `authMethod`, and `subscriptionType`. Require logged-in `claude.ai`
+   auth and a normalized Max or Ultra plan.
    Missing login, API-key auth, Pro/Team/Enterprise, `oauth_token`, third-party auth, or an unknown
    plan fails before any user turn.
 3. Reject conflicting inherited variables by **name only**, never logging values: Anthropic API/
@@ -152,17 +157,21 @@ baseline rather than a copy of the CLI's own sensitive environment.
 4. `list()` uses the same preflight, then sends only an `initialize` control request and closes
    stdin. It performs no user turn or Messages inference. Return the listed ids and retain a
    catalog containing each id's resolved canonical id (for example `sonnet` →
-   `claude-sonnet-5-5`) and any usage-credit marker. The same handshake runs before every model
-   request: reject the selected model whenever its current row says it draws from usage credits,
-   and do not hide that billing class. Discovery/handshake failure is explicit; it never invents a
-   static catalog. An explicit
-   `models` list restricts selectable ids but never skips discovery or the request-time billing
-   handshake.
+   `claude-sonnet-5-5`) and any usage-credit marker. Resolve each canonical id through rig's
+   built-in Anthropic `Catalog` during discovery and retain its `ModelFacts`. An id lacking the
+   required catalog spec or default output limit is a non-retryable compatibility error. The same
+   handshake runs before every model request: reject the selected model whenever its current row
+   says it draws from usage credits, and do not hide that billing class. Discovery/handshake
+   failure is explicit; it never invents a static catalog. An explicit `models` list restricts
+   selectable ids but never skips discovery or the request-time billing handshake.
 
 Add a `Provider::requires_discovery()` default-false hook, true only here. Main and guardian
-resolution call `list()` whenever it is true, even with `models` set, before constructing a rig
-handle. This is necessary because an unset `max_tokens` and guardian `tool_choice` depend on the
-canonical model's catalog entry, not on a CLI alias.
+resolution call `list()` whenever it is true, even with `models` set or a main-account/cached
+listing available, before constructing a rig handle. Configured and cached lists may filter a
+completed discovery, never replace it. Guardian discovery/resolution is asynchronous through
+`resolve_with`, `Switcher`, `ChildContext::model_for`, AgentRuntime's guardian operations, every
+TUI host, and eval's live connection. This is necessary because an unset `max_tokens`, guardian
+`tool_choice`, and compaction depend on the canonical model's catalog entry, not on a CLI alias.
 
 Version/auth probes and discovery have bounded deadlines, including the currently unbounded initial
 model-resolution path. A wrong account type or auth environment is a provider/setup failure with an
@@ -170,11 +179,16 @@ actionable message, not a guardian allow and not an API fallback.
 
 ### 3. Messages wire with a request-scoped CLI transport
 
-Resolve the requested id through the discovered catalog first, then build the completion as
-`Model::new(AnthropicConfig::new("").completion(canonical_model), ClaudeTransport)`. Both rig and
-the CLI receive the canonical id, while `ModelRef` keeps the user's alias. This preserves default
-output limits, native structured-output/tool-choice behavior, and alias selection without a static
-model table. The empty placeholder credential is never sent anywhere: the transport reads the
+Resolve the requested id through the discovered catalog first, bind its retained rig `ModelFacts`
+with `with_facts`, then build the completion as
+`Model::new(AnthropicConfig::new("").completion(canonical_model).with_facts(facts), ClaudeTransport)`.
+Both rig and the CLI receive the canonical id, while `ModelRef` keeps the user's alias and the
+completion's id/spec are canonical. This preserves default output limits, native
+structured-output/tool-choice behavior, compaction facts, and alias selection without a custom
+dialect or static Fontaine model table. A caller-supplied `max_tokens` remains that request's
+output cap on a supported id, with the catalog default used only when unset; it does not admit an
+id lacking the required spec/default output limit or bypass discovery. The empty placeholder
+credential is never sent anywhere: the transport reads the
 encoded body's bytes and discards the dummy URI and headers except `anthropic-beta`. Translate that
 one non-secret header to the private settings' `env.ANTHROPIC_BETAS`, preserving context-bound
 thinking and fine-grained tool streaming; an inherited beta setting stays refused. Keep the
@@ -199,10 +213,13 @@ The request translation is:
 - Derive a stable CLI session UUID from the Fontaine session id, caller namespace, canonical model,
   leading system, and first frame (SHA-256, formatted as a UUID). `AccountClient` gains
   `completion_for_agent(model, namespace)`, a default method that ignores the namespace, and
-  `ModelHandle` retains its `Arc<dyn AccountClient>` so `ChildContext::model_for` can namespace
-  each `$main` child by its distinct agent id. `completion` uses the root namespace and
-  `guardian_completion` the guardian namespace; a missing eval session id gets a fresh client UUID.
-  Identical tasks in independent sessions or same-type subagents therefore cannot collide.
+  `ModelHandle` retains its `Arc<dyn AccountClient>`. Pass `request.id` into
+  `ChildContext::model_for`; after `$main`, `$guardian_default`, guardian-default fallback to
+  `$main`, or an explicit account/model selection, rebuild every returned child handle's active
+  conversation completion and cached scopes through the retained client's `completion_for_agent`
+  using that id. `completion` uses the root namespace and `guardian_completion` the guardian
+  namespace; a missing eval session id gets a fresh client UUID. Identical tasks in independent
+  sessions or same-type subagents therefore cannot collide on any model-selection path.
   Compaction or a model change starts a new derived id, but no native conversation is resumed.
 - Expose request tools through a `fontaine` inert MCP inventory. Apply `mcp__fontaine__` plus a
   stable, reversible alias for names that need length/character normalization, and use exactly the
@@ -217,6 +234,7 @@ Fixed invocation flags:
 
 ```text
 -p --model <model> --input-format stream-json --output-format stream-json --verbose
+--prompt-suggestions false
 --include-partial-messages --tools "" --system-prompt-file <file> --settings <file>
 --setting-sources "" --strict-mcp-config --disable-slash-commands --max-turns 1
 --permission-mode dontAsk --permission-prompts none --no-session-persistence
@@ -225,7 +243,8 @@ Fixed invocation flags:
 
 The private settings/environment disable auto memory, CLAUDE.md and other instructions, auto
 compaction, native retries and non-streaming fallback, native model/refusal fallback, background
-work, subagents/workflows/scheduling, tool search, auto-update, feedback, and session-title work.
+work, prompt suggestions, subagents/workflows/scheduling, tool search, auto-update, feedback, and
+session-title work.
 Set `CLAUDE_CODE_ENTRYPOINT=fontaine` and disable Artifact. Fontaine's own system prompt is used;
 no Claude Code system prompt, user agent, authorization field, or other identity field is copied.
 Unknown native customization is rejected at `system/init`, not trusted.
@@ -262,9 +281,9 @@ Parse bounded NDJSON stdout while draining bounded stderr concurrently.
   or `result` could otherwise be consumed. A cut stream that omits the delta, stop, or result, or
   leaves tool JSON open, is truncated, never accepted as a response.
 - `assistant`: use only for native error extraction, not as a second text stream.
-- `system/api_retry`, a second response, any native subagent event, any built-in tool or permission
-  execution, and any unexpected model are compatibility failures; terminate the process rather than
-  accept hidden native agent behavior or a fallback.
+- `system/api_retry`, an unsolicited `prompt_suggestion`, a second response, any native subagent
+  event, any built-in tool or permission execution, and any unexpected model are compatibility
+  failures; terminate the process rather than accept hidden native agent behavior or a fallback.
 - `result`: map native errors without echoing raw output. `error_max_turns` is a normal boundary
   only when the decoded response stopped for tool use. A successful result with no complete
   response, contradictory terminal events, or missing/duplicate final state is malformed.
@@ -283,19 +302,22 @@ experiment rather than add a relay that reads or forwards subscription credentia
 
 ### 6. Failure and cancellation behavior
 
-- Map missing/old CLI, logged out, wrong plan, conflicting auth/backend environment, usage-credit
-  model, malformed protocol, and unsupported history to distinct, non-retryable errors with safe
-  corrective text. Authentication and plan/allowance/billing failures never earn the turn's two
-  retries. Overloaded/server errors and genuinely truncated transport failures retain the existing
-  bounded retry behavior. Preserve stable status/code metadata where rig supports it and never
-  export raw provider messages to telemetry.
+- Map missing/old/timed-out CLI version probes, logged-out or timed-out auth/discovery probes
+  (including request-time handshakes), wrong plan, conflicting auth/backend environment,
+  usage-credit model, malformed protocol, and unsupported history to distinct, non-retryable
+  errors with safe corrective text. Authentication and plan/allowance/billing failures never earn
+  the turn's two retries. Overloaded/server errors and genuinely truncated transport failures
+  retain the existing bounded retry behavior. Preserve stable status/code metadata where rig
+  supports it and never export raw provider messages to telemetry.
 - A `CliChild` guard owns the process and temporary directory. Dropping the opening/frame stream,
   cancellation, timeout, a compatibility failure, or normal completion kills and reaps the whole
   tree: POSIX process group plus SIGTERM/grace/SIGKILL; Windows `CREATE_NEW_PROCESS_GROUP` plus
   `taskkill /T /F`. Do not change the existing shell/PowerShell direct-child semantics.
 - Use a 180-second read-idle deadline, reset by valid output, for version/auth/discovery/model
-  processes. Map it to a retryable transport timeout without exposing raw output. Version/auth
-  probes use shorter outer bounds so listings and setup cannot hang indefinitely.
+  processes. Only model-process read-idle expiry maps to a retryable transport timeout without
+  exposing raw output. Version expiry remains a non-retryable compatibility error; auth/discovery
+  expiry, including request-time handshakes, is a non-retryable provider/setup failure.
+  Version/auth probes use shorter outer bounds so listings and setup cannot hang indefinitely.
 - Temporary files contain prompts/history, not credentials. Create them owner-only and remove them
   on every path, warning only with safe context on cleanup failure. Drain pipes to prevent deadlock
   and cap line/error buffers.
@@ -313,23 +335,41 @@ This is an explicit limitation of the experiment, not a claim of overage prevent
 ## Implementation Steps
 
 1. **Provider/config foundation.**
-   - Add `ExternalCli`, account fields and validation, `ConnectContext.env`, provider registration,
-     unpriced billing and the experimental notice in `providers/mod.rs`, `config.rs`, `models.rs`,
-     `accounts.rs`, and `providers/claude_subscription/mod.rs`.
+   - Add `ExternalCli`, account fields and validation, owned `ConnectContext.env`, provider
+     registration, unpriced billing and the experimental notice in `providers/mod.rs`, `config.rs`,
+     `models.rs`, `accounts.rs`, and `providers/claude_subscription/mod.rs`. Thread `SharedEnv`
+     through `ResolveParams` and `client_for` into the retained CLI client/transports, make
+     production `shared_env` live, and include every billing-conflict variable in eval's owned
+     environment; keep borrowed `config::EnvLookup` only for configuration loading.
    - Update account literals and add external-auth rows in core/account/dialog tests.
 2. **CLI preflight and discovery.**
    - Implement `providers/claude_subscription/cli.rs`: resolution, version/auth probes, conflict
-     detection, bounded process launch, and `initialize` model discovery with canonical routes and
-     credit flags. Add `Provider::requires_discovery` and call it before every main/guardian handle.
+     detection, bounded process launch, and `initialize` model discovery with canonical routes,
+     credit flags, and rig catalog facts. Add `Provider::requires_discovery` and call it before
+     every main/guardian handle; reject canonical ids without the required spec/default output
+     limit as non-retryable compatibility errors.
+   - Make `models::{resolve_guardian,build_guardian,default_guardian}` asynchronous and await them
+     through `resolve_with`; adjust default/candidate availability so discovery-required accounts
+     are not rejected before listing. Make `Switcher::{guardian,guardian_default}` asynchronous
+     and await the latter in `ChildContext::model_for`. Explicit `models` and cached main-account
+     listings remain allowlists applied only after `list()`, never discovery shortcuts.
+   - Make `AgentRuntime::{guardian_for,set_guardian_model,retry_guardian,use_guardian}`
+     asynchronous, await guardian retry in `credentials_changed`, and include required discovery
+     when installing the main-model guardian fallback. Propagate the awaits through
+     `ui/commands/model.rs` (including `answer_unavailable`), `ui/mod.rs`, `ui/turn.rs`, and
+     `ui/providers.rs`; make eval `live::connect` asynchronous and await it from the runner on its
+     Tokio runtime. Update all synchronous callers/tests without adding a discovery-free wrapper.
    - Add the external-account flow in `fontaine-tui/src/provider_dialog.rs`, `ui/providers.rs`, and
      setup tests. `/login` gives CLI instructions and runs preflight; it never prompts for a key.
 3. **Request transport and inert inventory.**
    - Implement `providers/claude_subscription/{transport,protocol,inventory}.rs` and the Messages
-     wire construction. Add hidden inventory dispatch in `fontaine/src/{cli,lib}.rs` and
-     `fontaine-evals/src/runner.rs`.
-   - Implement history replay, caller-namespaced session ids through `completion_for_agent` and
-     `ChildContext::model_for`, tool aliasing, beta propagation, private settings/files, and the
-     buffered stream-json request/response state machine.
+     wire construction with canonical rig `ModelFacts`. Add hidden inventory dispatch in
+     `fontaine/src/{cli,lib}.rs` and `fontaine-evals/src/runner.rs`.
+   - Implement history replay and caller-namespaced session ids: pass `request.id` into
+     `ChildContext::model_for` and rebuild the active conversation completion/scopes through
+     `completion_for_agent` for `$main`, `$guardian_default` (including `$main` fallback), and
+     explicit account/model handles. Add tool aliasing, beta propagation, private settings/files,
+     and the buffered stream-json request/response state machine.
 4. **Lifecycle, errors, and usage.**
    - Add process-tree cleanup, read-idle timeout, safe error mapping, native stream decoding, usage
      retention, and compatibility checks. Keep all existing permission/guardian paths unchanged.
@@ -346,47 +386,28 @@ This is an explicit limitation of the experiment, not a claim of overage prevent
 
 - `rust/fontaine-core/src/providers/mod.rs` — registration, external credential policy, context env.
 - `rust/fontaine-core/src/providers/claude_subscription/{mod,cli,transport,protocol,inventory}.rs` — new provider.
-- `rust/fontaine-core/src/{config,models,accounts,child_runner}.rs` — account fields, discovery/resolution, notices, rows, and per-agent model namespaces.
-- `rust/fontaine-tui/src/{provider_dialog,setup}.rs`, `rust/fontaine-tui/src/ui/providers.rs` — external-CLI account flow.
-- `rust/fontaine/src/{cli,lib}.rs`, `rust/fontaine-evals/src/{runner,live}.rs` — internal inventory mode and CLI-aware live-eval environment.
+- `rust/fontaine-core/src/{config,models,accounts,child_runner}.rs` and
+  `rust/fontaine-core/src/agent/models.rs` — account fields, owned environment, asynchronous
+  discovery/resolution and runtime guardian operations, notices, rows, and per-agent namespaces.
+- `rust/fontaine-tui/src/{provider_dialog,setup}.rs`,
+  `rust/fontaine-tui/src/ui/{providers,mod,turn}.rs`, and
+  `rust/fontaine-tui/src/ui/commands/model.rs` — external-CLI account flow and async guardian hosts.
+- `rust/fontaine/src/{cli,lib,auto_mode,doctor_cmd,models_cmd}.rs`,
+  `rust/fontaine-evals/src/{runner,live}.rs` — live owned environment, internal inventory mode, and
+  asynchronous CLI-aware live eval.
 - Tests: new `rust/fontaine-core/tests/claude_subscription.rs`,
-  `rust/fontaine-core/examples/claude_cli_double.rs`, and
-  `rust/fontaine/tests/claude_subscription.rs`; updates to
-  `fontaine-core/tests/{providers,models,accounts,account_ops,config,billing}.rs`,
+  `rust/fontaine-core/examples/claude_cli_double.rs`, `rust/fontaine/tests/claude_subscription.rs`,
+  and the thin `#[path]` wrapper `rust/fontaine/examples/fontaine_claude_cli_double.rs`; updates to
+  `fontaine-core/tests/{providers,models,accounts,account_ops,account_session,config,billing}.rs`,
   `fontaine-tui/tests/{providers,setup,tui}.rs`, and `fontaine/tests/{headless_smoke,models_cmd}.rs`.
-  Both suites launch the one core example through the shared target `examples` path; no shell script
-  or second fake implementation.
+  The one fake implementation has a public `main()` and is built as each package's own example
+  target. Core tests launch `claude_cli_double`; fontaine tests launch `fontaine_claude_cli_double`.
+  There is no shell script, second fake implementation, or manifest entry.
 - Docs/decisions: `docs/{configuration,architecture,tui,headless,guardian,telemetry}.md`,
   new `docs/claude-subscription.md`, `docs/index.md`, `tasks/design/{config,testing,sessions}.md`,
   `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`, and this plan's completion results.
 - No new Rust or JavaScript dependency is expected; existing tokio/futures, rig, serde, sha2,
   tempfile, and uuid cover the implementation.
-
-## Trade-offs
-
-- **Rig Messages wire + local transport vs a parallel provider implementation.** The wire already
-  owns options, history, native signed items, streaming, and usage. Only SDK process translation is
-  new. A separate completion type would duplicate rig and violate the intended provider seam.
-- **Direct headless stream-json vs a TypeScript Agent SDK sidecar.** The CLI exposes the required
-  protocol without a new npm/runtime/package surface. The inert MCP helper is the only auxiliary
-  mode and stays in the existing executable.
-- **Request-scoped replay vs persistent native sessions.** Full replay is more expensive but keeps
-  Fontaine's history authoritative across subagents, retries, resume/fork, model switches, and
-  compaction. Native sessions would mix callers and create a second source of truth.
-- **Inert MCP inventory vs native tool execution.** MCP is how the model learns arbitrary Fontaine
-  tool schemas. Requiring interaction plus `dontAsk` and an always-error handler makes the CLI a
-  model-only producer; rig-agent performs every real call through the normal gate.
-- **No admission relay vs Hermes' relay.** A relay would see authorization material and conflict
-  with this issue's credential boundary. Immediate termination and strict second-response rejection
-  are acceptable only if live qualification proves them sufficient; otherwise the experiment stops.
-- **Reject conflicting environment vs silently scrub it.** Rejection exposes the required change
-  and avoids depending on secret values or undocumented precedence. Normal CLI network and privacy
-  settings continue unchanged.
-- **Preflight auth on every request vs once at startup.** The extra local process is the cost of
-  detecting account/auth changes before inference. Version parsing is cached per client.
-- **Official Anthropic facts vs an unpriced custom dialect.** Official facts preserve effort,
-  modalities, and compaction. Existing unpriced sinks already suppress catalog cost; a bare custom
-  dialect would degrade core behavior and generation-option support.
 
 ## Decisions
 
@@ -445,35 +466,58 @@ records them instead.
 All automated coverage is offline. Use a portable Rust CLI double, following `hook_double` and
 `fake_lsp`, with scenario controls for version/auth output, argv/environment capture, stream chunks,
 history assertions, malformed output, hangs, exit status, and descendants. No live credential,
-Anthropic endpoint, or real `claude` process enters unit/integration CI.
+Anthropic endpoint, or real `claude` process enters unit/integration CI. Prebuild each package's
+own example before running its suite alone from `rust/`:
+
+```sh
+cargo build -p fontaine-core --example claude_cli_double
+cargo test -p fontaine-core --test claude_subscription
+cargo build -p fontaine --example fontaine_claude_cli_double
+cargo test -p fontaine --test claude_subscription
+```
+
+`cargo test -p fontaine --test claude_subscription` does not build a dependency package's examples,
+and a workspace build can mask that omission. The explicit targets produce the distinct
+`claude_cli_double` and `fontaine_claude_cli_double` artifacts from the one implementation.
 
 - **Config/account unit tests:** registry round trip; every accepted/rejected field; project scopes;
   external credential ignores stale Fontaine entries; accurate account row and `/login` behavior;
   billing notice and unpriced budget refusal without any inference request.
 - **Preflight unit/process tests:** supported/current/malformed/old versions; missing/non-executable/
   timeout/nonzero probes; Max/Ultra acceptance; logged-out/API-key/other-plan refusal; every
-  conflicting variable named without value disclosure; unrelated secrets absent from the rebuilt
-  CLI environment and from the inert inventory's safe baseline; separate config directories;
-  discovery sends `initialize` only, dedupes ids, and flags credit-billed rows.
+  conflicting variable named without value disclosure; live lookups observe a conflict introduced
+  after connection, and eval's owned lookup contains every conflict name; unrelated secrets absent
+  from the rebuilt CLI environment and from the inert inventory's safe baseline; separate config
+  directories; discovery sends `initialize` only, dedupes ids, and flags credit-billed rows.
+  Explicit models and cached main-account listings still discover before every main/guardian
+  handle, including default/fallback guardians and eval live connections. Fake argv capture
+  asserts `--prompt-suggestions false` on every discovery/model invocation.
 - **Translation unit tests:** canonical alias routes (including unset `max_tokens` and forced
-  guardian choice), beta propagation, system/history/tool schema and generation fields, signed
-  native blocks, stable session ids, identical independent sessions and same-type subagents,
-  historical `shouldQuery` and zero-turn acks, final user/tool-result query, and unsupported
-  prefill/roles/hosted tools.
+  guardian choice), canonical rig facts/default output limits, and non-retryable rejection of ids
+  lacking a required spec or default output limit even with explicit `max_tokens`; a supported
+  request's explicit `max_tokens` is preserved. Assert `ModelRef` retains the alias while the
+  erased completion's id and spec are canonical. Cover beta propagation, system/history/tool
+  schema and generation fields, signed native blocks, stable session ids, identical independent
+  sessions, and distinct same-type child namespaces on `$main`, `$guardian_default`, its `$main`
+  fallback, and explicit selections; historical `shouldQuery` and zero-turn acks, final user/
+  tool-result query, and unsupported prefill/roles/hosted tools.
 - **Stream unit tests:** arbitrary chunk boundaries and CRLF; text, reasoning, tool args/results,
   stop reasons, usage, and alias restoration; no duplicate assistant text; terminal-delta buffering
   until `message_stop` and `result`, including a hang after result; malformed JSON, invalid UTF-8,
-  missing/duplicate/contradictory terminal state, second response, retry, subagent, native
-  tool/permission activity, unexpected model, and bounded output.
+  missing/duplicate/contradictory terminal state, unsolicited `prompt_suggestion`, second response,
+  retry, subagent, native tool/permission activity, unexpected model, and bounded output.
 - **Lifecycle tests:** drop while starting/mid-stream/after result, read-idle expiry, early EOF,
-  nonzero exit, stderr caps, temp cleanup, and descendant cleanup on Unix and Windows. The portable
-  test proves the mechanism; the live Windows check below proves the official shim behavior.
+  nonzero exit, stderr caps, temp cleanup, and descendant cleanup on Unix and Windows. Version,
+  auth, and discovery expiries (including request-time handshakes) get zero setup retries, while
+  model-process read-idle expiry gets two inference retries. The portable test proves the
+  mechanism; the live Windows check below proves the official shim behavior.
 - **Full headless integration:** fake two-call conversation streams an inert-MCP read, Fontaine's
   real gate executes it, and the next request contains its durable result. Prove native writes do
   not happen before Fontaine approval, forced guardian output works/fails closed, usage has tokens
   but no cost even with a fake `total_cost_usd`, resume/compaction preserve history, and auth/plan
-  failures have the documented exit/retry counts. Drive the real inventory mode independently and
-  prove every `tools/call` is denied.
+  failures have the documented exit/retry counts. Assert no `prompt_suggestion` event or
+  suggestion request occurs. Drive the real inventory mode independently and prove every
+  `tools/call` is denied.
 - **Existing gates:** `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
   `cargo deny check`, both fixture evals, and the Windows GNU clippy check. CI runs on all three
   OSes; no live subscription qualification becomes a CI gate.
@@ -508,10 +552,12 @@ exhaust a plan merely to produce an error.
    Disable usage credits in the account for the included-only check; if a safe already-exhausted
    account exists, verify plan-limit text and zero retries, otherwise record it unqualified.
 3. **Streaming and history.** In the TUI, run a longer task with at least five tool rounds plus
-   `/resume`, `/clear`, `/compact`, and a subagent, selecting the full resolved model id if an alias
-   has no catalog entry for compaction. Expect each CLI request to contain only its own history,
-   signed reasoning where supplied, no second responses/native tools, and correct usage. This is
-   the credential-free admission gate; any hidden additional request blocks shipping.
+   `/resume`, `/clear`, `/compact`, and a subagent. Run `/compact` through the ordinary
+   `claude/sonnet` alias without substituting its resolved id; require actual compaction success
+   and assert the compacting CLI request carries the canonical model id. Expect each CLI request
+   to contain only its own history, signed reasoning where supplied, no second responses/native
+   tools, no unsolicited `prompt_suggestion` events or suggestion requests, and correct usage.
+   This is the credential-free admission gate; any hidden additional request blocks shipping.
 4. **Forced guardian protocol.** Run
    `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:claude/sonnet --filter 'attack:secret-exposure' --out <scratch>/guardian-attack.json`
    and the same command with `--filter benign`. Expect typed verdicts through the real CLI's
@@ -522,10 +568,12 @@ exhaust a plan merely to produce an error.
    run. Expect the CLI and descendants to exit, temp files to be removed, and the next turn to work.
    Repeat on Windows with the official executable form and a path containing spaces/non-ASCII text;
    portable tests cannot establish the official shim's process-tree behavior.
-6. **Version/platform matrix.** Run checks 1–5 on the minimum supported CLI and the current stable
-   on Linux, macOS, and Windows. Record exact versions and any untested failure class here. Re-read
-   the policy links and update the dedicated doc before any stable claim; no stable designation is
-   part of this issue.
+6. **Version/platform matrix.** Run checks 1–5 on minimum supported CLI **2.1.318** and the current
+   stable on Linux, macOS, and Windows. At each version, verify the adjacent argv pair
+   `--prompt-suggestions false` on every model invocation and the absence of `prompt_suggestion`
+   events and suggestion requests; continue to reject any unsolicited suggestion/second response.
+   Record exact versions and any untested failure class here. Re-read the policy links and update
+   the dedicated doc before any stable claim; no stable designation is part of this issue.
 
 ## Open Questions
 
