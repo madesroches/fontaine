@@ -483,7 +483,7 @@ impl<W: Write> Linear<W> {
                 shown.retain(|line| !is_field_line(line, bare));
             }
             let echoed = self.echo.update(overlay.title, overlay.instance, shown);
-            bell |= echoed.opened && overlay.notify_message().is_some();
+            bell |= echoed.opened && overlay.needs_answer();
             lines.extend(echoed.lines);
         }
 
@@ -1297,6 +1297,55 @@ mod tests {
             out.contains('\x07') && out.contains("auto-mode setup:"),
             "{out:?}"
         );
+
+        let mut rig = Rig::new();
+        rig.app.running = true;
+        rig.render();
+        let skill = fontaine_core::extensions::Skill {
+            name: "p:pr".into(),
+            description: "d".into(),
+            body: String::new(),
+            argument_hint: None,
+            user_invocable: true,
+            disable_model_invocation: false,
+            allowed_tools: Vec::new(),
+            declared_tools: Vec::new(),
+            digest: "sha256:new".into(),
+            scope: fontaine_core::extensions::Scope::Plugin,
+            path: "/c/pr/SKILL.md".into(),
+        };
+        rig.app
+            .begin_skill_trust(crate::skill_trust_prompt::SkillTrustPrompt::new(
+                &skill, None,
+            ));
+        let out = rig.render();
+        assert!(out.contains('\x07'), "{out:?}");
+
+        let mut rig = Rig::new();
+        rig.app.running = true;
+        rig.render();
+        let (tx, _rx) = oneshot::channel();
+        rig.app.begin_question(
+            "root".into(),
+            vec![fontaine_tools::ask_user::Question {
+                question: "Which?".into(),
+                header: "Pick".into(),
+                options: vec![
+                    fontaine_tools::ask_user::QuestionOption {
+                        label: "a".into(),
+                        description: "d".into(),
+                    },
+                    fontaine_tools::ask_user::QuestionOption {
+                        label: "b".into(),
+                        description: "d".into(),
+                    },
+                ],
+                multi_select: false,
+            }],
+            tx,
+        );
+        let out = rig.render();
+        assert!(out.contains('\x07'), "{out:?}");
 
         let mut rig = Rig::new();
         rig.app.running = true;

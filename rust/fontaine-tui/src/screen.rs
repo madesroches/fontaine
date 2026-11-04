@@ -1714,9 +1714,6 @@ mod tests {
         })
     }
 
-    /// A row that holds text before a frame and after it must not go blank in between, or a
-    /// terminal that paints what it has read so far flashes. A terminal scroll exposes blank
-    /// rows that the same frame fills, which no write order avoids.
     #[test]
     fn a_pending_approval_appends_the_notification_after_the_frame_once() {
         let mut harness = emulated::Harness::notifying(40, 10, NotifyMethod::Osc9);
@@ -1736,6 +1733,9 @@ mod tests {
         assert!(frame.ends_with("\x1b[?2026l"), "{frame:?}");
     }
 
+    /// A row that holds text before a frame and after it must not go blank in between, or a
+    /// terminal that paints what it has read so far flashes. A terminal scroll exposes blank
+    /// rows that the same frame fills, which no write order avoids.
     #[test]
     fn issue_220_rows_that_keep_their_text_are_never_blanked_mid_frame() {
         let mut harness = emulated::Harness::new(40, 10);

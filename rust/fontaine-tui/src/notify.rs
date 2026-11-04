@@ -37,23 +37,32 @@ impl PromptKind {
 /// Signals once per prompt opening.
 pub(crate) struct Notifier {
     method: NotifyMethod,
-    seen: Option<(PromptKind, u64)>,
+    /// Every prompt signalled while one has been pending, so an answered higher-ranked prompt
+    /// does not re-signal the prompt it covered.
+    seen: Vec<(PromptKind, u64)>,
 }
 
 impl Notifier {
     pub(crate) fn new(method: NotifyMethod) -> Self {
-        Notifier { method, seen: None }
+        Notifier {
+            method,
+            seen: Vec::new(),
+        }
     }
 
-    /// Bytes to write with this frame, if a prompt that needs an answer just opened. A changed
-    /// key signals; `None` clears it, so the next prompt signals even when it is of the same
-    /// kind.
+    /// Bytes to write with this frame, if a prompt that needs an answer just opened. A key not
+    /// seen yet signals; `None` forgets them all, so the next prompt signals even when it is of
+    /// the same kind.
     pub(crate) fn observe(&mut self, pending: Option<(PromptKind, u64)>) -> Option<Vec<u8>> {
-        if pending == self.seen {
+        let Some(key) = pending else {
+            self.seen.clear();
+            return None;
+        };
+        if self.seen.contains(&key) {
             return None;
         }
-        self.seen = pending;
-        let (kind, _) = pending?;
+        self.seen.push(key);
+        let (kind, _) = key;
         let text = kind.message();
         match self.method {
             NotifyMethod::Off => None,
@@ -152,6 +161,20 @@ mod tests {
         let (tx, _rx) = oneshot::channel();
         app.begin_unavailable(unavailable(tx));
         assert_eq!(app.pending_prompt(), Some((PromptKind::Unavailable, 1)));
+    }
+
+    #[test]
+    fn an_approval_does_not_signal_again_after_a_prompt_over_it_is_answered() {
+        let mut app = app();
+        let mut n = Notifier::new(NotifyMethod::Bell);
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(request(), tx);
+        assert!(n.observe(app.pending_prompt()).is_some());
+        let (tx, _rx) = oneshot::channel();
+        app.begin_unavailable(unavailable(tx));
+        assert!(n.observe(app.pending_prompt()).is_some());
+        app.unavailable = None;
+        assert!(n.observe(app.pending_prompt()).is_none());
     }
 
     #[test]

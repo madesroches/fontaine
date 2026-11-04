@@ -331,19 +331,19 @@ impl Overlay {
         }
     }
 
-    /// What a notification says when this overlay waits for the human, or `None` for a panel
-    /// that does not need an answer. Both renderers ask, so they agree on which dialogs those are.
-    pub(crate) fn notify_message(&self) -> Option<&'static str> {
-        match self.title {
-            "approval" => Some("Fontaine needs your approval"),
-            "question" => Some("Fontaine has a question"),
-            "MCP server" => Some("Fontaine needs an MCP server decision"),
-            "guardian unavailable" => Some("The guardian is unavailable"),
-            "guardian" => Some("Fontaine needs your confirmation"),
-            "auto-mode setup" => Some("Auto-mode setup needs your review"),
-            "skills" => Some("Fontaine needs a skill trust decision"),
-            _ => None,
-        }
+    /// Whether this overlay waits for the human, as opposed to a panel that does not need an
+    /// answer. Both renderers ask, so they agree on which dialogs those are.
+    pub(crate) fn needs_answer(&self) -> bool {
+        matches!(
+            self.title,
+            "approval"
+                | "question"
+                | "MCP server"
+                | "guardian unavailable"
+                | "guardian"
+                | "auto-mode setup"
+                | "skills"
+        )
     }
 }
 
