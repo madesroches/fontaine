@@ -51,7 +51,9 @@ untouched.
 
 - `App::transcript_view: Option<TranscriptView>` with `scroll: usize` (row offset from the top),
   `max_scroll: Cell<usize>` and a clamp, as `approval.rs` does (`scroll` :70, `max_scroll` :72, clamp
-  :102, applied via `Paragraph::scroll` as in `view.rs:601-608`). The view follows the tail only
+  :102). `overlay()` computes `max = verbose_lines.len().saturating_sub(body_rows)`, stores it in
+  `max_scroll`, and passes only the window sliced by `body_rows` (as the pickers do,
+  `view.rs:390-423`). The view follows the tail only
   while it is at the bottom (offset == max): content growth re-pins it to the new max, so a
   streaming reply stays in view; a scrolled-up window stays put as entries are appended.
 - `Transcript::verbose_lines(width, theme) -> Vec<Line>` renders `shown()`'s entries with the
@@ -65,15 +67,23 @@ untouched.
 - `view.rs` adds an overlay `"transcript"`: body is the visible window of `verbose_lines` sized by
   `body_rows`, footer `Up/Down PgUp/PgDn scroll · Home/End · Esc or q close`. The overlay
   counts in `covered()` so typing, history and completion are suppressed while open (the input
-  box stays; confirm by observation); `screen.rs` sets `committed_under_overlay` for it as for
+  box stays, dimmed with no cursor, and pastes are ignored: `covered()` side effects,
+  `view.rs:633-638`, `app.rs:819`; confirm by observation). Like the agents panel, the open view
+  counts in `covered()`, so replay of a queued modal command (`serve_modal`, `ui/turn.rs:636`)
+  waits until the view is closed; `screen.rs` sets `committed_under_overlay` for it as for
   the agents panel, so closing it leaves the last message on screen (the #296 behaviour).
 - Keys while open: Up/Down/PgUp/PgDn/Home/End scroll; the `transcript` key, Esc, `q` and Ctrl-C
   close; all other keys are ignored. `TranscriptView::handle_key` takes the mapped `TuiAction`
-  so a rebound `transcript` key closes it. The early-return key block sits after the agents-panel
-  block and before the Esc arms (running-turn interrupt, double-Esc), and applies only when
+  so a rebound `transcript` key closes it. The early-return key block goes immediately after the
+  agents-panel block (`app.rs:1068`), before the questions block (`:1069-1072`), the Ctrl+P/N
+  alias, the `agent_list.focused` `list_key` arm and the mapped
+  `AgentsPanel`/`AttachClipboard`/`Todos`/`Reprint` arms (`:1093-1108`), the Esc arms
+  (running-turn interrupt, double-Esc, `:1109`) and the vim `esc_leaves_insert` arm (`:1114`), so
+  none of them acts while the view is open. It applies only when
   `approval.is_none() && questions.is_empty()`; `view::overlay` uses the same order, so an
   approval prompt or question takes the overlay slot; like the agents panel, the view stays open
-  under it and returns once it is answered, and the open arm keeps the `!typing_reason` gate.
+  under it and returns once it is answered. The `Transcript` key's open arm sits beside the
+  `Todos` mapped arm (`app.rs:1101`) with the `!typing_reason` gate.
   Ctrl+C is reserved and maps to `TuiAction::Interrupt`, whose arm (`app.rs:890-899`) sits at the
   top of `handle_key`, before every overlay block: that arm first checks
   `transcript_view.is_some() && approval.is_none() && questions.is_empty()`, ahead of the existing
@@ -88,9 +98,12 @@ untouched.
 does not go through it today, unlike call/output/reasoning). Its consumers are `tool_lines`
 (`transcript.rs:1173`/`:1176` and the multi-line `prefixed` branch at `:1216-1224`, which when
 collapsed shows only the first line) and `linear.rs:276`/`:322`; the collapsed renderer and linear
-apply `first_line` (`linear.rs:276` is its collapsed arm); the full renderer wraps all of it, and
-`linear.rs:322`, inside the `Expanded` arm, prints the whole reason split on `'\n'`. Tests at `transcript.rs:1939` and
-`linear.rs:1085` are updated to the new stored form.
+apply `first_line` (`linear.rs:276` is its collapsed arm). In `tool_lines` the collapsed
+`first_line` for the Denied branch goes at `transcript.rs:1223` (that branch returns before
+`detail`, `:1173`/`:1176`, is used); the full renderer wraps all of it. `linear.rs:322`, inside the
+`Expanded` arm, goes through `labelled` (`linear.rs:223-231`), which already splits on `'\n'`. The
+tests at `transcript.rs:1939` and `linear.rs:1085` use one-line reasons and pass unchanged; add
+new multi-line assertions.
 
 ### Screen-reader mode
 
@@ -115,8 +128,9 @@ keep it out of the main transcript while a subagent view is open.
    `Transcript`, `alt+t` → `Todos`) and its tests (override/displacement cases keep passing with
    the swapped keys).
 3. `transcript.rs`: keep the full denial text, through `display_text`; `first_line` at render
-   only in the collapsed `tool_lines` path and the collapsed arm of `linear.rs` (`:276`); the
-   `Expanded` arm (`linear.rs:322`) prints the whole reason split on `'\n'`; add `verbose_lines`.
+   only in the collapsed `tool_lines` path (`transcript.rs:1223`) and the collapsed arm of
+   `linear.rs` (`:276`); the `Expanded` arm (`linear.rs:322`) already prints the whole reason split
+   on `'\n'` via `labelled`; add `verbose_lines`.
 3a. `transcript.rs`: `settle` and `guardian_denied` write the new status to every `Entry::Tool`
    sharing the id of the entry `find_tool` returned (not the raw `id` argument: `apply_event`
    passes `""` when `tool_use_id` is absent and `find_tool` then falls back to the tool name), so the original (pending row already in scrollback) holds the final state:
@@ -135,8 +149,11 @@ keep it out of the main transcript while a subagent view is open.
 6. `view.rs`: overlay + footer (same order as the key block); add the transcript view to the
    precedence doc comment on `view::overlay()` (`view.rs:328-333`) at its slot after the
    questions; `screen.rs`: set `committed_under_overlay` for the new overlay.
-7. `commands.rs` / `ui/mod.rs`: `/transcript` command and dispatch; add `Command::Transcript` to
-   `runs_mid_turn` (`commands.rs:121-127`) and `"/transcript"` to the test
+7. `commands.rs` / `ui/mod.rs`: `/transcript` command and dispatch: a BUILTINS row
+   (`commands.rs:432-438`, after `todos`, before `vim`; the table must stay sorted, test
+   `the_table_is_sorted_by_name`) and a `Command::Transcript` arm in `run_immediate_inner` next to
+   `Command::Todos` (`ui/mod.rs:1079`; its `_ => {}` fallthrough would silently ignore it); add
+   `Command::Transcript` to `runs_mid_turn` (`commands.rs:121-141`) and `"/transcript"` to the test
    `runs_mid_turn_marks_the_immediate_ui_set_and_nothing_else` (`commands.rs:983-1003`), so it acts
    immediately like `/todos`.
 8. `linear.rs`: on the key/command, print each shown entry once: Tool and Reasoning through the
@@ -177,7 +194,8 @@ keep it out of the main transcript while a subagent view is open.
 - 2026-11-04 (owner comment on #233): the task list gets its own shortcut, not Ctrl-O. Claude
   Code binds Ctrl+T to the task checklist, but Ctrl-T is Fontaine's agents panel, hence `alt+t`.
   The 2026-11-04 `### TUI` line also records each observed difference from Claude Code's view
-  (input box kept, scroll/close keys, anything else seen in tmux).
+  (input box kept, dimmed with no cursor, and pastes ignored while the view is open; scroll/close
+  keys; anything else seen in tmux).
 
 ## Documentation
 
@@ -192,7 +210,7 @@ keep it out of the main transcript while a subagent view is open.
   "(`/todos` does not print)" to cover the empty-list `no tasks` notice; amend the :948 2026-10-31
   reasoning decision that cites Claude Code's "Ctrl-O transcript view" as lacking in Fontaine to say
   Fontaine's Ctrl-O view now shows the full kept reasoning; add a 2026-11-04 line for the transcript view and the move; amend the
-  2026-10-26 verdict-reason deviation to say the reason is inline and also complete in the view;
+  2026-10-26 verdict-reason deviation (`tasks/fontaine_harness_plan.md:352`, under `### Agents`) to say the reason is inline and also complete in the view;
   mark the `tasks/fontaine_harness_plan.md:932` line ("No key is rebound for tool cards; Ctrl-O
   stays the task list, ...") superseded by the new 2026-11-04 line, which goes at the end of the
   `### TUI` subsection (starts ~:889).
@@ -210,7 +228,7 @@ keep it out of the main transcript while a subagent view is open.
   `verbose_lines` shows it rather than the agent-facing note.
 - Unit (`app`): the key opens and closes the view; Esc, `q` and Ctrl-C (through the `Interrupt`
   arm, with no Interrupt/Quit returned) close it; typing is ignored while
-  open; the key is ignored while the agents panel is open; an approval request takes precedence and the view is still open after the approval closes;
+  open, and so are Ctrl-T, Ctrl-V, alt+t and Ctrl-L; the key is ignored while the agents panel is open; an approval request takes precedence and the view is still open after the approval closes;
   the todos key still toggles and an empty list yields the `no tasks` notice (in the viewed
   subagent's transcript when one is open).
 - Screen (`screen.rs` with `TestBackend`): opening over a tall transcript leaves the last message
