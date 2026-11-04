@@ -27,7 +27,7 @@ call rows and reasoning are deliberately not linkified.
 ## Design
 1. **Theme token.** Add `pub link: Color` to `Theme`, documented "URLs and markdown link text".
    Values per preset, matching Claude Code's blue-ish link convention. The link shares the blue family with
-   `user`, harmless because user rows are never linkified and the underline sets links apart:
+   `user` and sits close to `user`/`success` in hue, which is accepted: user rows are never linkified and the underline, not hue, sets links apart:
    - dark-ansi: `Color::LightBlue`; light-ansi: `Color::Blue`
    - dark: `rgb(120, 170, 255)`; light: `rgb(0, 70, 190)`
    - dark-daltonized: `rgb(102, 178, 255)`; light-daltonized: `rgb(0, 70, 190)` with daltonized
@@ -96,6 +96,7 @@ call rows and reasoning are deliberately not linkified.
 - 2026-11-03: no OSC 8 hyperlinks (Claude Code 2.1.318 emits OSC 8 around the visible text); links are coloured whether or not the terminal supports hyperlinks.
 - 2026-11-03: links are underlined in addition to coloured (Claude Code: blue on light / blueBright on dark, no underline), so they do not rely on colour alone.
 - 2026-11-03: link colour is not user-overridable; `ThemeName` is a closed set of six presets and custom themes are a separate issue.
+- AFK: 2026-11-03: link colours stay in the blue family and may sit close to `user`/`success`/`mode_plan` (as Claude Code's blue/blueBright does); the underline, not hue, sets links apart, so no RGB changes and no "distinct from user" claim.
 
 ## Documentation
 - `docs/terminal.md` `## Colours`: add a sentence that URLs and link text use an underlined blue in
