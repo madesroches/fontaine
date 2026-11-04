@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `fontaine plugin marketplace list` now shows both the number of plugins the catalog offers and the
+  number installed from it (`3 offered, 0 installed`), so it agrees with `marketplace add` instead of
+  reporting the installed count alone (#280).
 - `/clear` now erases the screen and the terminal's scrollback, as Ctrl-L does, so the old
   conversation no longer stays visible above the "cleared the conversation" notice (#207).
 

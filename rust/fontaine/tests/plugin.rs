@@ -39,10 +39,22 @@ async fn the_plugin_cli_installs_lists_updates_and_removes_a_local_marketplace()
 
     let list = sandbox.run(&["plugin", "marketplace", "list"]).await;
     assert!(list.stdout.contains("team"), "{}", list.stdout);
+    assert!(
+        list.stdout.contains("1 offered, 0 installed"),
+        "{}",
+        list.stdout
+    );
 
     let install = sandbox.run(&["plugin", "install", "review@team"]).await;
     assert_eq!(install.code, Some(0), "{}", install.stderr);
     assert!(install.stdout.contains("1 skill(s)"), "{}", install.stdout);
+
+    let list = sandbox.run(&["plugin", "marketplace", "list"]).await;
+    assert!(
+        list.stdout.contains("1 offered, 1 installed"),
+        "{}",
+        list.stdout
+    );
 
     let list = sandbox.run(&["plugin", "list", "--format", "json"]).await;
     let value: serde_json::Value = serde_json::from_str(list.stdout.trim()).unwrap();

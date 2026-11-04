@@ -114,7 +114,7 @@ only change made from inside a running Fontaine is the staged [auto-update](#aut
 | Command | Effect |
 |---|---|
 | `fontaine plugin marketplace add <url-or-path> [--name N]` | Clone (or copy a local dir), pin it, read the catalog, register it under the catalog's `name` (`--name` overrides the registry key). A catalog that does not parse keeps nothing. |
-| `fontaine plugin marketplace list` | Name, url, pin, plugin count. |
+| `fontaine plugin marketplace list` | Name, url, pin, plugins offered by the catalog and plugins installed from it. |
 | `fontaine plugin marketplace update [name]` | Fetch, move the pin to the remote default-branch HEAD, report old and new sha. Installed plugins are not touched: a path-source plugin follows on its next `plugin update` or auto-update. Discards a staged revision of the marketplace. |
 | `fontaine plugin marketplace auto-update <name> yes\|no` | Opts one marketplace out of (or back into) [auto-update](#auto-update). |
 | `fontaine plugin marketplace remove <name>` | Refuses while an installed plugin names it; else drops the clone and the entry. |

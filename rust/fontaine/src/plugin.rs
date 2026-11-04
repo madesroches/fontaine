@@ -462,20 +462,37 @@ fn marketplace_list(dirs: &Dirs) -> Result<(), String> {
             .iter()
             .filter(|p| p.marketplace == marketplace.name)
             .count();
-        let marker = if marketplace.auto_update == Some(false) {
-            " — auto-update off"
-        } else {
-            ""
+        let offered = match read_catalog(&plugins::marketplace_dir(&dirs.config, &marketplace.name))
+        {
+            Ok(catalog) => Some(catalog.plugins.len()),
+            Err(e) => {
+                eprintln!("fontaine: warning: marketplace `{}`: {e}", marketplace.name);
+                None
+            }
         };
-        println!(
-            "{} — {} — pin {} — {} plugin(s){marker}",
-            marketplace.name,
-            marketplace.url,
-            plugins::short_pin(&marketplace.pin),
-            installed
-        );
+        println!("{}", marketplace_line(marketplace, offered, installed));
     }
     Ok(())
+}
+
+/// One `marketplace list` line. `offered` is `None` when the catalog could not be read, which must
+/// not look like an empty catalog.
+fn marketplace_line(entry: &MarketplaceEntry, offered: Option<usize>, installed: usize) -> String {
+    let counts = match offered {
+        Some(n) => format!("{n} offered, {installed} installed"),
+        None => format!("catalog unreadable, {installed} installed"),
+    };
+    let marker = if entry.auto_update == Some(false) {
+        " — auto-update off"
+    } else {
+        ""
+    };
+    format!(
+        "{} — {} — pin {} — {counts}{marker}",
+        entry.name,
+        entry.url,
+        plugins::short_pin(&entry.pin)
+    )
 }
 
 /// How one marketplace update came out.
@@ -1572,5 +1589,57 @@ mod tests {
         assert_eq!(expand_tilde("~/x"), home.join("x").to_string_lossy());
         assert_eq!(expand_tilde("https://x/y"), "https://x/y");
         assert_eq!(expand_tilde("plain"), "plain");
+    }
+
+    fn entry() -> MarketplaceEntry {
+        MarketplaceEntry {
+            name: "team".into(),
+            url: "https://x/team".into(),
+            pin: "0123456789abcdef".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn marketplace_line_shows_offered_and_installed() {
+        let line = marketplace_line(&entry(), Some(3), 1);
+        assert!(line.ends_with("— 3 offered, 1 installed"), "{line}");
+    }
+
+    #[test]
+    fn marketplace_line_shows_a_fresh_marketplace_as_offering_with_none_installed() {
+        let line = marketplace_line(&entry(), Some(3), 0);
+        assert!(line.ends_with("— 3 offered, 0 installed"), "{line}");
+    }
+
+    #[test]
+    fn marketplace_line_does_not_pass_an_unreadable_catalog_off_as_empty() {
+        let line = marketplace_line(&entry(), None, 2);
+        assert!(
+            line.ends_with("— catalog unreadable, 2 installed"),
+            "{line}"
+        );
+        assert!(!line.contains("0 offered"), "{line}");
+    }
+
+    #[test]
+    fn marketplace_line_appends_the_auto_update_marker() {
+        let line = marketplace_line(
+            &MarketplaceEntry {
+                auto_update: Some(false),
+                ..entry()
+            },
+            Some(1),
+            0,
+        );
+        assert!(
+            line.ends_with("— 1 offered, 0 installed — auto-update off"),
+            "{line}"
+        );
+        let on = MarketplaceEntry {
+            auto_update: Some(true),
+            ..entry()
+        };
+        assert!(!marketplace_line(&on, Some(1), 0).contains("auto-update"));
     }
 }
