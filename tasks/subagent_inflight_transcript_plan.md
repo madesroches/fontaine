@@ -7,7 +7,7 @@
 A subagent's conversation reaches `logs/agent-<n>.jsonl` only when its run settles, so a process
 kill (SIGKILL, OOM, systemd-oomd) loses the whole in-flight run. This adds an in-flight journal:
 as the run progresses, the messages it commits are appended to a second log in the agent's store,
-which is discarded when the run settles normally and read by `/export` when it outlives a kill.
+which is emptied when the run settles normally and read by `/export` when it outlives a kill.
 The settle-time save stays the authoritative record.
 
 ## Current State
@@ -41,8 +41,8 @@ save of `<agent-id>`.
 ```
 run start      ──► journal reset, record input length
 completion call──► append the not-yet-journaled tail of history[input_len..] + prompt
-settle OK ──► (engine saved <id>) ──► journal removed
-settle Err──► RecoveryHook appends to <id> ──► journal removed
+settle OK ──► (engine saved <id>) ──► journal truncated to empty
+settle Err──► RecoveryHook appends to <id> ──► journal truncated to empty if <id> holds those messages
 SIGKILL   ──► journal stays; export reads <id> then <id>.inflight
 ```
 
@@ -51,15 +51,19 @@ SIGKILL   ──► journal stays; export reads <id> then <id>.inflight
 An `AgentHook` over an `AsyncStore`, beside `RecoveryHook` and sharing `append_messages` and the
 warn-through-`Approver` failure handling:
 
-- `on_run_start`: remove any stale journal (a previous kill's leftover for this id is superseded
-  because the id is never reused, but a resumed run in the same process starts a new journal),
-  and record the input length from `RunStart.history`. Returns `RunStartAction::Continue`.
+- `on_run_start`: truncate any stale journal to empty via `replace_log_async(<id>.inflight, len, b"")`,
+  skipped when already empty (rig-memory's `AsyncStore` cannot remove a log; a resumed run in the
+  same process starts a new journal, and `load_async` of an empty log is an empty `Ok` so
+  `append_messages` keeps working), and record the input length from `RunStart.history`. Returns `RunStartAction::Continue`.
 - `on_completion_call`: append the not-yet-journaled tail of `history[input_len..] + prompt`
   (exactly the committed messages) to the journal. The prompt is journaled by the first call.
-- `on_model_turn_finished` (optional): may append the last assistant turn while its tools are
-  still running; every other message comes from `on_completion_call`.
-- `on_run_settled`: remove the journal on both outcomes. `RecoveryHook` is registered before it,
-  so the error-path append to `<id>` lands first.
+- `on_run_settled`: on `Response`, truncate the journal to empty as above. On `Error`, load `<id>`
+  and truncate only if `<id>` now ends with `event.messages`; otherwise keep the journal and say
+  so in the warning. `RecoveryHook` is registered before it, so its append to `<id>` lands first;
+  it only warns on failure and shares no state, and `messages` may be `None`.
+
+Gap: a kill loses the last assistant turn whose tools are still running, together with that
+batch's results; they reach the journal only at the next `on_completion_call`.
 
 Every append is one `append_messages` call to the journal log (the existing helper: load, extend,
 `save_async`). That is O(n) per append; acceptable for subagent transcripts, and `DirStore`'s
@@ -69,15 +73,17 @@ fatal, and never change a permission decision. Journal I/O must not block the ki
 
 ### Reading the journal
 
-`export.rs` loads `<id>` and then `<id>.inflight`; `load_async` on a missing log returns an empty
-`Ok`, so an empty loaded journal means "no journal" and no marker is written. Otherwise its
-messages follow a "run interrupted" marker so the export distinguishes them. A fork child's
+`export.rs` loads `<id>` and then `<id>.inflight`, and passes the journal into `render_agent_file`;
+an empty journal means "none" and no marker is written. Otherwise its messages follow a marker
+chosen from `AgentSummary.running`: "run in progress at export" when running, "run interrupted"
+otherwise. "_No completed runs at export time._" is printed only when the journal is empty too. A fork child's
 `<id>` is seeded with the parent's context before its first run, so its export shows the seeded
 context, then the marker and the journal. `load_async` already tolerates a torn tail. A live
-agent's journal is removed at settle, except when the stream is dropped without settling (a
+agent's journal is emptied at settle, except when the stream is dropped without settling (a
 spent budget, the kill-grace timeout): the journal then survives for an agent in the same process
 too and `/export` shows it the same way. The existing "completed runs only" note applies except
-that the export may include the journal of the run in progress.
+that the export may include the journal of the run in progress. The index note "running at export;
+its file holds completed runs only" (`export.rs` ~378-380) and its test (~602) are updated to match.
 
 Scope: subagents only (the issue). `InflightHook` is generic over the store and log, so the root
 could register it later without change.
@@ -87,8 +93,9 @@ could register it later without change.
 1. `fontaine-core/src/turn_recovery.rs`: add `InflightHook<S>` and a `journal_log(id) -> String`
    helper (`"{id}.inflight"`); unit tests below.
 2. `fontaine-core/src/child_runner.rs`: register `InflightHook` after `RecoveryHook`.
-3. `fontaine-core/src/export.rs`: append a present journal after the agent's log, with a marker;
-   the missing-journal case is unchanged.
+3. `fontaine-core/src/export.rs`: pass the journal into `render_agent_file` and append it after the
+   agent's log, with the marker picked from `AgentSummary.running`; the empty-journal case is
+   unchanged; update the index note for a running agent and its test.
 4. Docs and changelog (below).
 
 ## Files to Modify
@@ -117,7 +124,8 @@ could register it later without change.
 ## Documentation
 
 - `docs/agents.md`, "A subagent's conversation": replace "saved when a run ends" with the journal
-  behaviour — an interrupted process leaves the in-flight run's messages, shown by `/export`.
+  behaviour — an interrupted process leaves the in-flight run's messages, shown by `/export`; a kill
+  loses the last assistant turn whose tools are still running, together with that batch's results.
 - `docs/tui.md` export paragraph (line ~546): a running or killed agent's export includes its
   in-flight run.
 - `CHANGELOG.md` under Unreleased → Fixed: subagent transcripts survive a killed process (#404).
@@ -129,14 +137,20 @@ Unit tests in `turn_recovery.rs` against `MemoryStore`/`DirStore`, driven by cal
 methods with constructed events:
 
 - journal holds prompt, assistant and tool-result messages in order after each `on_completion_call`;
-- journal is removed on `Response` and on `Error` settle, and on error the messages are in `<id>`;
-- a stale journal is replaced at run start;
+- journal is truncated to empty on `Response` and on `Error` settle, and on error the messages are
+  in `<id>`;
+- on `Error` settle where `<id>` does not end with `event.messages`, the journal is kept and a
+  warning is raised;
+- a stale journal is truncated at run start;
 - a torn journal still loads (extends `a_torn_log_remains_readable`);
 - a store failure warns once and the run continues.
 
-Integration test in `rust/fontaine-core/tests/agent_pipeline.rs` `mod killed`, reusing
-`build_held`/`child_log`/`wait_report`: the held request stands in for a run that never completes;
-assert `agent-N.inflight` holds the prompt, the first assistant turn and its tool result, and
-that `export_session` renders them. This pins the bug in #404 at the tier that reproduces it
-(a run with no settle). A successful run leaves no `.inflight` file and an unchanged
-`agent-N.jsonl`.
+Integration test in `rust/fontaine-core/tests/agent_pipeline.rs` `mod killed`, using
+`HeldTransport`/`build_held`: the script is a shell tool turn then a text turn. Wait on `seen`
+twice and release once, holding the second request. While the run is pending, assert
+`load_async(store, "agent-1.inflight")` holds the prompt, the assistant tool-call turn and its tool
+result (no kill, no `wait_report`), then call
+`export_session(&built.runtime.session, built.runtime.state.agents(), path)` and assert those
+appear after the in-progress marker. This pins the bug in #404 at the tier that reproduces it (a
+run with no settle). Success case: release both requests, `wait_report`, assert the journal loads
+empty and `agent-1.jsonl` holds the full run.
