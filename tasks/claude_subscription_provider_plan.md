@@ -150,11 +150,19 @@ baseline rather than a copy of the CLI's own sensitive environment.
    visible and prevents a mid-session billing switch. Preserve ordinary CLI opt-outs, proxy/TLS
    settings, and the selected `CLAUDE_CONFIG_DIR`.
 4. `list()` uses the same preflight, then sends only an `initialize` control request and closes
-   stdin. It performs no user turn or Messages inference. Return resolved model ids from the
-   response, deduplicated. The same handshake runs before every model request: reject the selected
-   model whenever its current row says it draws from usage credits, and do not hide that billing
-   class. Discovery/handshake failure is explicit; it never invents a static catalog. An explicit
-   `models` list skips the picker listing, never the request-time billing handshake.
+   stdin. It performs no user turn or Messages inference. Return the listed ids and retain a
+   catalog containing each id's resolved canonical id (for example `sonnet` →
+   `claude-sonnet-5-5`) and any usage-credit marker. The same handshake runs before every model
+   request: reject the selected model whenever its current row says it draws from usage credits,
+   and do not hide that billing class. Discovery/handshake failure is explicit; it never invents a
+   static catalog. An explicit
+   `models` list restricts selectable ids but never skips discovery or the request-time billing
+   handshake.
+
+Add a `Provider::requires_discovery()` default-false hook, true only here. Main and guardian
+resolution call `list()` whenever it is true, even with `models` set, before constructing a rig
+handle. This is necessary because an unset `max_tokens` and guardian `tool_choice` depend on the
+canonical model's catalog entry, not on a CLI alias.
 
 Version/auth probes and discovery have bounded deadlines, including the currently unbounded initial
 model-resolution path. A wrong account type or auth environment is a provider/setup failure with an
@@ -162,11 +170,17 @@ actionable message, not a guardian allow and not an API fallback.
 
 ### 3. Messages wire with a request-scoped CLI transport
 
-Build the completion as `Model::new(AnthropicConfig::new("").completion(model), ClaudeTransport)`.
-The empty placeholder is never sent anywhere: the transport reads only the encoded body's bytes
-and discards the dummy URI and headers. Keep the official Anthropic dialect/facts for model
-capabilities, effort, modalities, context windows, and native replay; the existing `Unpriced`
-filters remove rig's catalog cost at usage/telemetry sinks, as they do for OpenCode Go.
+Resolve the requested id through the discovered catalog first, then build the completion as
+`Model::new(AnthropicConfig::new("").completion(canonical_model), ClaudeTransport)`. Both rig and
+the CLI receive the canonical id, while `ModelRef` keeps the user's alias. This preserves default
+output limits, native structured-output/tool-choice behavior, and alias selection without a static
+model table. The empty placeholder credential is never sent anywhere: the transport reads the
+encoded body's bytes and discards the dummy URI and headers except `anthropic-beta`. Translate that
+one non-secret header to the private settings' `env.ANTHROPIC_BETAS`, preserving context-bound
+thinking and fine-grained tool streaming; an inherited beta setting stays refused. Keep the
+official Anthropic dialect/facts for model capabilities, effort, modalities, context windows, and
+native replay; the existing `Unpriced` filters remove rig's catalog cost at usage/telemetry sinks,
+as they do for OpenCode Go.
 
 Each completion starts a fresh CLI process in an owner-only temporary working directory. It never
 uses `--bare` (which disables subscription OAuth) or native resume/session persistence. Fontaine's
@@ -182,10 +196,14 @@ The request translation is:
   continues. Historical assistant frames carry their native blocks, including signed thinking.
   Only the final nonempty user/tool-result frame queries. Reject assistant prefill, a mid-history
   role the CLI cannot represent, or lossy content instead of silently rewriting it.
-- Derive a stable CLI session UUID from the model, leading system, and first frame (SHA-256,
-  formatted as a UUID). This isolates root, guardian, and subagent histories despite their shared
-  transport and changes naturally when compaction rewrites the beginning or the model changes. No
-  native conversation is resumed.
+- Derive a stable CLI session UUID from the Fontaine session id, caller namespace, canonical model,
+  leading system, and first frame (SHA-256, formatted as a UUID). `AccountClient` gains
+  `completion_for_agent(model, namespace)`, a default method that ignores the namespace, and
+  `ModelHandle` retains its `Arc<dyn AccountClient>` so `ChildContext::model_for` can namespace
+  each `$main` child by its distinct agent id. `completion` uses the root namespace and
+  `guardian_completion` the guardian namespace; a missing eval session id gets a fresh client UUID.
+  Identical tasks in independent sessions or same-type subagents therefore cannot collide.
+  Compaction or a model change starts a new derived id, but no native conversation is resumed.
 - Expose request tools through a `fontaine` inert MCP inventory. Apply `mcp__fontaine__` plus a
   stable, reversible alias for names that need length/character normalization, and use exactly the
   same names in the extra-body tool definitions and inside `tool_choice`. Preserve schemas,
@@ -238,8 +256,11 @@ Parse bounded NDJSON stdout while draining bounded stderr concurrently.
   shapes. Rewrite aliased tool names back to Fontaine names on tool blocks, then pass the nested raw
   event as a `WireFrame` to rig's existing Messages decoder. This yields normal text/reasoning/
   argument deltas, native signed blocks, tool calls, finish reasons, and per-completion token usage.
-  Completion requires a terminal `message_delta` and complete blocks, not just `message_stop`: a cut
-  stream that omits the delta or leaves tool JSON open is truncated, never accepted as a response.
+  When a terminal `message_delta` arrives, **buffer it instead of forwarding immediately**. Keep
+  reading until `message_stop` and the final `result` have been validated, stop the child, then
+  release the buffered delta; rig ends its read at that delta, before a following `message_stop`
+  or `result` could otherwise be consumed. A cut stream that omits the delta, stop, or result, or
+  leaves tool JSON open, is truncated, never accepted as a response.
 - `assistant`: use only for native error extraction, not as a second text stream.
 - `system/api_retry`, a second response, any native subagent event, any built-in tool or permission
   execution, and any unexpected model are compatibility failures; terminate the process rather than
@@ -247,12 +268,12 @@ Parse bounded NDJSON stdout while draining bounded stderr concurrently.
 - `result`: map native errors without echoing raw output. `error_max_turns` is a normal boundary
   only when the decoded response stopped for tool use. A successful result with no complete
   response, contradictory terminal events, or missing/duplicate final state is malformed.
-- Accept exactly one complete Messages response, then stop the child immediately after its valid
-  terminal delta and `message_stop`; a tool-use stop needs no successful process exit, final
-  `result`, or synthetic continuation. A result received earlier is validated; successful completion
-  never waits for one.
-  Usage comes from the Messages stream. `total_cost_usd`/`modelUsage` list-price equivalents are
-  never presented as subscription invoices or overage evidence.
+- Accept exactly one complete Messages response and one final `result`, then stop the child before
+  releasing the buffered terminal delta. Require `result.subtype = success` for a non-tool stop;
+  `error_max_turns` is valid only for a complete tool-use stop and needs no synthetic continuation.
+  A native process that hangs after its result is killed at that boundary. Usage comes from the
+  Messages stream and final usage is cross-checked where available. `total_cost_usd`/`modelUsage`
+  list-price equivalents are never presented as subscription invoices or overage evidence.
 
 This is deliberately not Hermes' authorization-forwarding loopback admission relay. Killing at the
 first complete response and rejecting retries/second responses is the credential-free boundary.
@@ -298,15 +319,17 @@ This is an explicit limitation of the experiment, not a claim of overage prevent
    - Update account literals and add external-auth rows in core/account/dialog tests.
 2. **CLI preflight and discovery.**
    - Implement `providers/claude_subscription/cli.rs`: resolution, version/auth probes, conflict
-     detection, bounded process launch, and `initialize` model discovery with credit flags.
+     detection, bounded process launch, and `initialize` model discovery with canonical routes and
+     credit flags. Add `Provider::requires_discovery` and call it before every main/guardian handle.
    - Add the external-account flow in `fontaine-tui/src/provider_dialog.rs`, `ui/providers.rs`, and
      setup tests. `/login` gives CLI instructions and runs preflight; it never prompts for a key.
 3. **Request transport and inert inventory.**
    - Implement `providers/claude_subscription/{transport,protocol,inventory}.rs` and the Messages
      wire construction. Add hidden inventory dispatch in `fontaine/src/{cli,lib}.rs` and
      `fontaine-evals/src/runner.rs`.
-   - Implement history replay, stable session ids, tool aliasing, private settings/files, and the
-     stream-json request/response state machine.
+   - Implement history replay, caller-namespaced session ids through `completion_for_agent` and
+     `ChildContext::model_for`, tool aliasing, beta propagation, private settings/files, and the
+     buffered stream-json request/response state machine.
 4. **Lifecycle, errors, and usage.**
    - Add process-tree cleanup, read-idle timeout, safe error mapping, native stream decoding, usage
      retention, and compatibility checks. Keep all existing permission/guardian paths unchanged.
@@ -323,7 +346,7 @@ This is an explicit limitation of the experiment, not a claim of overage prevent
 
 - `rust/fontaine-core/src/providers/mod.rs` — registration, external credential policy, context env.
 - `rust/fontaine-core/src/providers/claude_subscription/{mod,cli,transport,protocol,inventory}.rs` — new provider.
-- `rust/fontaine-core/src/{config,models,accounts}.rs` — account fields, resolution, notices, rows.
+- `rust/fontaine-core/src/{config,models,accounts,child_runner}.rs` — account fields, discovery/resolution, notices, rows, and per-agent model namespaces.
 - `rust/fontaine-tui/src/{provider_dialog,setup}.rs`, `rust/fontaine-tui/src/ui/providers.rs` — external-CLI account flow.
 - `rust/fontaine/src/{cli,lib}.rs`, `rust/fontaine-evals/src/{runner,live}.rs` — internal inventory mode and CLI-aware live-eval environment.
 - Tests: new `rust/fontaine-core/tests/claude_subscription.rs`,
@@ -432,12 +455,15 @@ Anthropic endpoint, or real `claude` process enters unit/integration CI.
   conflicting variable named without value disclosure; unrelated secrets absent from the rebuilt
   CLI environment and from the inert inventory's safe baseline; separate config directories;
   discovery sends `initialize` only, dedupes ids, and flags credit-billed rows.
-- **Translation unit tests:** system/history/tool schema and generation fields; signed native blocks;
-  stable alias and session id; root/guardian/subagent isolation; historical `shouldQuery` and
-  zero-turn acks; final user/tool-result query; unsupported prefill/roles/hosted tools.
+- **Translation unit tests:** canonical alias routes (including unset `max_tokens` and forced
+  guardian choice), beta propagation, system/history/tool schema and generation fields, signed
+  native blocks, stable session ids, identical independent sessions and same-type subagents,
+  historical `shouldQuery` and zero-turn acks, final user/tool-result query, and unsupported
+  prefill/roles/hosted tools.
 - **Stream unit tests:** arbitrary chunk boundaries and CRLF; text, reasoning, tool args/results,
-  stop reasons, usage, and alias restoration; no duplicate assistant text; malformed JSON, invalid
-  UTF-8, missing/duplicate/contradictory terminal state, second response, retry, subagent, native
+  stop reasons, usage, and alias restoration; no duplicate assistant text; terminal-delta buffering
+  until `message_stop` and `result`, including a hang after result; malformed JSON, invalid UTF-8,
+  missing/duplicate/contradictory terminal state, second response, retry, subagent, native
   tool/permission activity, unexpected model, and bounded output.
 - **Lifecycle tests:** drop while starting/mid-stream/after result, read-idle expiry, early EOF,
   nonzero exit, stderr caps, temp cleanup, and descendant cleanup on Unix and Windows. The portable
@@ -486,11 +512,17 @@ exhaust a plan merely to produce an error.
    has no catalog entry for compaction. Expect each CLI request to contain only its own history,
    signed reasoning where supplied, no second responses/native tools, and correct usage. This is
    the credential-free admission gate; any hidden additional request blocks shipping.
-4. **Cancellation.** During a long streamed response, press Esc in the TUI and terminate a headless
+4. **Forced guardian protocol.** Run
+   `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian live:claude/sonnet --filter 'attack:secret-exposure' --out <scratch>/guardian-attack.json`
+   and the same command with `--filter benign`. Expect typed verdicts through the real CLI's
+   aliased inert tool and fail-closed behavior on malformed/provider failures. This checks the
+   actual forced `tool_choice`/extra-body protocol, not guardian scorecard quality; it never runs
+   in CI.
+5. **Cancellation.** During a long streamed response, press Esc in the TUI and terminate a headless
    run. Expect the CLI and descendants to exit, temp files to be removed, and the next turn to work.
    Repeat on Windows with the official executable form and a path containing spaces/non-ASCII text;
    portable tests cannot establish the official shim's process-tree behavior.
-5. **Version/platform matrix.** Run checks 1–4 on the minimum supported CLI and the current stable
+6. **Version/platform matrix.** Run checks 1–5 on the minimum supported CLI and the current stable
    on Linux, macOS, and Windows. Record exact versions and any untested failure class here. Re-read
    the policy links and update the dedicated doc before any stable claim; no stable designation is
    part of this issue.
