@@ -7,6 +7,10 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Each of the ~140 integration-test binaries links the whole dependency tree; without debug info
+  # and incremental state the Linux runner's ~14 GB of free disk is enough for one test build.
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
@@ -58,6 +62,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Free disk space
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
+        working-directory: .
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
       - name: Install the pinned toolchain
         if: needs.changes.outputs.code == 'true'
         run: rustup toolchain install
@@ -94,7 +103,10 @@ jobs:
 
       - name: Test (pg2)
         if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
-        run: cargo test --features fontaine/pg2
+        # The default-feature test binaries are not reused by this build and would not fit beside it.
+        run: |
+          cargo clean
+          cargo test --features fontaine/pg2
 
       - name: Check (pg2)
         if: needs.changes.outputs.code == 'true' && runner.os != 'Linux'
