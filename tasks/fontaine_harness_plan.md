@@ -418,6 +418,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-21: Dependency policy — exact pins (`=x.y.z`) for rig and every pre-1.0 crate, each new crate listed with its pin in the owning phase's Files line; 1.x crates (clap, tokio, serde, toml) use caret.
 - 2026-10-22: Toolchain and workspace `rust-version` raised from 1.97.1 to 1.99.1 (PR #69); rig 0.45.0's 1.97.1 is the floor, not the pin.
 - 2026-10-25: Narrows the 2026-10-21 "every CI step runs on all three OSes": compile, lint and test coverage stays on all three, Linux runs pg2 clippy and test, macOS and Windows run `cargo check --features fontaine/pg2`; only the pure-scoring `fixture` evals are Linux-only (`--guardian none` stays everywhere; required check names unchanged). Reason: Windows CI took ~32 min vs ~8 on Ubuntu (#178).
+- 2026-11-04: CI builds with `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_DEV_DEBUG=0`, the Linux job frees the runner's preinstalled .NET, Android, GHC and CodeQL trees first, and runs `cargo clean` before the pg2 tests. Reason: the ~140 integration-test binaries are ~250 MB each with debug info (~147 MB without) and the free GitHub runner has ~14 GB of disk, so the Linux job ran out of space linking them; the default linker (rust-lld) was not the cause and is unchanged.
 
 ### Config
 
