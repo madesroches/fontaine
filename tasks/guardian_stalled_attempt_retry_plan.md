@@ -34,8 +34,9 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
 
 - `Options` gains `budget: Duration` (the overall ceiling; callers pass `settings.timeout` /
   `self.timeout`).
-- `run` records `started = Instant::now()` and, before each attempt, computes
-  `remaining = budget - elapsed` and `attempts_left = 1 + retries - attempt`. The attempt's
+- `run` records `started = tokio::time::Instant::now()` (not std, so the per-attempt
+  `tokio::time::timeout` and the paused test clock agree) and, before each attempt, computes
+  `remaining = budget.saturating_sub(elapsed)` (when zero, return `TimedOut` without starting another attempt) and `attempts_left = 1 + retries - attempt`. The attempt's
   timeout is `min(remaining, max(remaining / attempts_left, ATTEMPT_FLOOR))`, with
   `ATTEMPT_FLOOR = 5 s`. With the defaults (30 s, 3 attempts) that is 10 s for the first attempt;
   the last attempt always gets all that is left, and a floor that exceeds `remaining` is clamped to it.
@@ -50,8 +51,8 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
   `run`) and map `RunError::TimedOut` to `FailClosed::Timeout` / the existing `Scan::Failed`
   message, and `Failed(e)` to the existing arms. The `Timeout` explanation text and `spent.total()`
   tally are unchanged.
-- The per-attempt timeout wraps only `attempt_once`, so the loop's own bookkeeping cannot overrun the ceiling.
-  `Settings::timeout` doc comment still reads "wraps the whole extraction, retries included".
+- The ceiling holds because each slice is clamped to the remaining budget (see the zero-remaining
+  rule); the `Settings::timeout` doc comment stays accurate and is unchanged.
 
 ## Implementation Steps
 
@@ -59,9 +60,7 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
    timeout logic in `run`; extract the slice computation into a small pure function.
 2. `guardian.rs`: pass `budget: self.settings.timeout`, remove the outer `timeout`, map `RunError`.
 3. `scanner.rs`: same for `LlmScanner::run` (`budget: self.timeout`).
-4. Update any other `structured::run` / `Options` callers found by the compiler (check
-   `rust/fontaine-guardian/src` for `Options {` literals).
-5. Tests (below), docs, CHANGELOG entry under `### Fixed`.
+4. Tests (below), docs, CHANGELOG entry under `### Fixed`.
 
 ## Files to Modify
 
@@ -77,15 +76,13 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
 - Equal split of the remaining budget (as the issue suggests) over a fixed per-attempt timeout:
   it adapts to the configured `timeout` and to attempts already spent, with no new config key.
 - Floor of 5 s: models answer in 1–2 s, but a slow local model or a short configured timeout should
-  not be cut into slices too small to answer. Clamped to the remaining budget so the ceiling holds.
-- A stall counts as one of the existing retries rather than an extra one, so the worst-case call
-  count and spend are unchanged.
-
-## Decisions
+  not be cut into slices too small to answer.
+- Worst-case call count and spend are unchanged.
 
 ## Documentation
 
-- `docs/guardian.md`: the `Timeout` row and the scanner bound: a stalled attempt is dropped and
+- `docs/guardian.md`: the retry-budget sentence (~l.250, "two retries, shared between malformed
+  answers and provider errors") also says stalled attempts use that budget; the `Timeout` row and the scanner bound: a stalled attempt is dropped and
   retried within the same timeout; the timeout remains the ceiling.
 - `docs/configuration.md`: `timeout_secs` row says the same in one clause.
 - `CHANGELOG.md`: `### Fixed` entry (#310).
@@ -96,7 +93,8 @@ All automated with the scripted endpoint and a paused clock (no live APIs). A st
 (`attack-data-exfiltration-02` at 30001 ms) motivated this, so it is pinned by a regression test.
 
 - Unit tests for the slice function: first attempt with default budget gets budget/3; floor applies;
-  floor clamps to remaining; last attempt gets the remainder.
+  floor clamps to remaining; last attempt gets the remainder; zero remaining returns `TimedOut`
+  without another attempt.
 - `tests/guardian.rs`: a reply that hangs and then a valid one yields the verdict within the budget
   and the endpoint saw 2 calls; a hang that is followed by two more hangs still gives `Timeout`
   with total elapsed not above the budget; a stall plus a malformed answer plus a good one stays
