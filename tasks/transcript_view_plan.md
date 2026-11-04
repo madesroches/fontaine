@@ -53,9 +53,12 @@ untouched.
   `max_scroll: Cell<usize>` and a clamp, as `approval.rs` does (`scroll` :70, `max_scroll` :72, clamp
   :102). `overlay()` computes `max = verbose_lines.len().saturating_sub(body_rows)`, stores it in
   `max_scroll`, and passes only the window sliced by `body_rows` (as the pickers do,
-  `view.rs:390-423`). The view follows the tail only
-  while it is at the bottom (offset == max): content growth re-pins it to the new max, so a
-  streaming reply stays in view; a scrolled-up window stays put as entries are appended.
+  `view.rs:390-423`). The view opens pinned to the tail, not at
+  scroll 0. `view::overlay` takes `&App` and cannot write `scroll`, so following is a
+  `follow: Cell<bool>`: set on open and whenever the view is scrolled to the bottom
+  (Down/PgDn/End), cleared by any upward scroll. While it is set the window computation resolves
+  the offset to the current `max`, so content growth keeps a streaming reply in view; a
+  scrolled-up window stays put as entries are appended.
 - `Transcript::verbose_lines(width, theme) -> Vec<Line>` renders `shown()`'s entries with the
   full forms: tool cards via `tool_lines(.., full = true)`, the whole kept reasoning (clipped
   form; with `show_reasoning` off it stays hidden), everything else as `entry_lines`. It skips
@@ -84,6 +87,9 @@ untouched.
   approval prompt or question takes the overlay slot; like the agents panel, the view stays open
   under it and returns once it is answered. The `Transcript` key's open arm sits beside the
   `Todos` mapped arm (`app.rs:1101`) with the `!typing_reason` gate.
+  The `agent_list.focused && !control && !self.covered()` arm (`app.rs:1090`) runs before the
+  mapped arms and `AgentList::handle_key` drops `alt+t`, so its gate gains `&& mapped.is_none()`
+  and mapped global actions reach their arms while the agent list is focused.
   Ctrl+C is reserved and maps to `TuiAction::Interrupt`, whose arm (`app.rs:890-899`) sits at the
   top of `handle_key`, before every overlay block: that arm first checks
   `transcript_view.is_some() && approval.is_none() && questions.is_empty()`, ahead of the existing
@@ -222,14 +228,14 @@ keep it out of the main transcript while a subagent view is open.
 - Unit (`transcript`): `verbose_lines` shows every row of a long multi-line command, the whole
   output, the full reasoning, and the full multi-line denial reason; an `Expanded` entry and a
   stale pending row are not duplicated; collapsed rendering of the same denial stays one line.
-- Unit (`transcript_view`): scroll clamp at both ends, follow-the-tail while at the bottom, and a scrolled-up window stays put as entries are appended.
+- Unit (`transcript_view`): the view opens pinned to the tail (following, not at scroll 0), scroll clamp at both ends, `follow` keeps the tail in view as entries grow, an upward scroll clears `follow` so the window stays put as entries are appended, and scrolling back to the bottom resumes following.
 - Unit (`transcript`): `Decision` Deny followed by `guardian_denied` with the pending row already
   committed leaves the original `Entry::Tool` holding the `[rule] explanation` status, and
   `verbose_lines` shows it rather than the agent-facing note.
 - Unit (`app`): the key opens and closes the view; Esc, `q` and Ctrl-C (through the `Interrupt`
   arm, with no Interrupt/Quit returned) close it; typing is ignored while
   open, and so are Ctrl-T, Ctrl-V, alt+t and Ctrl-L; the key is ignored while the agents panel is open; an approval request takes precedence and the view is still open after the approval closes;
-  the todos key still toggles and an empty list yields the `no tasks` notice (in the viewed
+  alt+t toggles the task list while the agent list is focused; the todos key still toggles and an empty list yields the `no tasks` notice (in the viewed
   subagent's transcript when one is open).
 - Screen (`screen.rs` with `TestBackend`): opening over a tall transcript leaves the last message
   in scrollback on close (regression in the style of #296).
