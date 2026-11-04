@@ -544,7 +544,9 @@ is a folder, `fontaine-<first 8 characters of the session id>/`, instead. The fo
 its id, type, parent and status, with a link to its transcript file. Each `<agent-id>.md` opens
 with the same identification and renders the subagent's conversation exactly like the root's. A
 subagent that is still running is exported rather than refused: its file holds its completed runs
-only (a log is saved when a run ends), and its index row says so. Subagents whose spawn turn was
+and, after a marker, the in-flight run's messages from its journal, and its index row says so. A
+subagent whose process was killed mid-run is exported the same way, with the run marked as
+interrupted. Subagents whose spawn turn was
 later rewound away are still listed: their transcripts stand as per-agent evidence, the way the
 ledger keeps the fact of their work.
 The text is the model's conversation, so after a compaction the summary stands where the older

@@ -42,7 +42,7 @@ use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
 use crate::steering::{Steering, SteeringHook};
 use crate::turn::{Drive, Flow, SessionEvent, TurnOutcome, drive};
-use crate::turn_recovery::RecoveryHook;
+use crate::turn_recovery::{InflightHook, RecoveryHook};
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -571,6 +571,11 @@ impl ChildRunner for CoreChildRunner {
                 .add_hook(SteeringHook::new(context.steering.clone(), state.clone()))
                 .add_hook(KillHook { kill: kill_rx })
                 .add_hook(RecoveryHook::new(
+                    store.clone(),
+                    request.id.clone(),
+                    context.approver.clone(),
+                ))
+                .add_hook(InflightHook::new(
                     store,
                     request.id.clone(),
                     context.approver.clone(),

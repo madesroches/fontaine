@@ -18,6 +18,7 @@ use serde_json::Value;
 use crate::adjudication::action_summary;
 use crate::owner_only;
 use crate::session::{CONVERSATION_LOG, Session};
+use crate::turn_recovery::journal_log;
 
 #[derive(Debug)]
 pub enum ExportError {
@@ -66,7 +67,8 @@ pub struct AgentSummary {
     /// The live status, the ledger's finished status, or `ended` when the ledger has no
     /// finished record for it.
     pub status: String,
-    /// The agent runs in this process; its transcript file holds completed runs only.
+    /// The agent runs in this process; its transcript file holds completed runs and the
+    /// in-flight journal of the run in progress.
     pub running: bool,
     /// Whether a transcript file is written and linked; false only when the log cannot be
     /// read at all.
@@ -142,8 +144,17 @@ pub async fn export_session(
     let store = session.store();
     let mut transcripts = Vec::with_capacity(agents.len());
     for agent in &mut agents {
+        // The journal is read first: a run settling between the two loads then shows twice
+        // rather than not at all.
+        let journal = match load_async(&store, &journal_log(&agent.id)).await {
+            Ok(journal) => journal,
+            Err(e) => {
+                tracing::warn!(agent = %agent.id, error = %e, "the subagent's in-flight journal could not be read");
+                Conversation::default()
+            }
+        };
         match load_async(&store, &agent.id).await {
-            Ok(conversation) => transcripts.push(Some(conversation)),
+            Ok(conversation) => transcripts.push(Some((conversation, journal))),
             Err(e) => {
                 tracing::warn!(agent = %agent.id, error = %e, "the subagent transcript could not be read");
                 transcripts.push(None);
@@ -156,10 +167,10 @@ pub async fn export_session(
         render_main(&root, &session.id, name.as_deref(), &agents),
     )];
     for (agent, transcript) in agents.iter().zip(&transcripts) {
-        if let Some(conversation) = transcript {
+        if let Some((conversation, journal)) = transcript {
             files.push((
                 PathBuf::from(format!("{}.md", agent.id)),
-                render_agent_file(agent, &session.id, conversation),
+                render_agent_file(agent, &session.id, conversation, journal),
             ));
         }
     }
@@ -360,8 +371,8 @@ fn render_messages(doc: &mut Doc, conversation: &Conversation) {
 }
 
 /// The "## Subagents" index of the main file: one bullet per subagent, oldest first, each
-/// linking its transcript file. A running agent's row says its file holds completed runs
-/// only; a transcript that could not be read is listed without a link.
+/// linking its transcript file. A running agent's row says its file may include the run in
+/// progress; a transcript that could not be read is listed without a link.
 pub fn index_section(agents: &[AgentSummary]) -> String {
     let mut doc = Doc::new();
     doc.block("## Subagents");
@@ -376,7 +387,7 @@ pub fn index_section(agents: &[AgentSummary]) -> String {
         }
         line.push_str(": ");
         if agent.running {
-            line.push_str("running at export; its file holds completed runs only");
+            line.push_str("running at export; its file may include the run in progress");
         } else {
             line.push_str(&agent.status);
         }
@@ -391,11 +402,13 @@ pub fn index_section(agents: &[AgentSummary]) -> String {
 }
 
 /// One subagent's file: an identifying header, then the same render the root export uses.
-/// A log with no completed runs says so.
+/// A log with no completed runs and an empty journal says so; otherwise the journal's messages
+/// follow the log's under a marker saying whether the run is still in progress.
 pub fn render_agent_file(
     agent: &AgentSummary,
     session_id: &str,
     conversation: &Conversation,
+    journal: &Conversation,
 ) -> String {
     let mut doc = Doc::new();
     doc.block(&format!("# Subagent `{}` ({})", agent.id, agent.agent_type));
@@ -404,10 +417,19 @@ pub fn render_agent_file(
         doc.block(&format!("Parent: `{parent}`"));
     }
     doc.block(&format!("Status: {}", agent.status));
-    if conversation.entries().next().is_none() {
+    let no_journal = journal.entries().next().is_none();
+    if conversation.entries().next().is_none() && no_journal {
         doc.block("_No completed runs at export time._");
     } else {
         render_messages(&mut doc, conversation);
+    }
+    if !no_journal {
+        doc.block(if agent.running {
+            "_Run in progress at export._"
+        } else {
+            "_Run interrupted._"
+        });
+        render_messages(&mut doc, journal);
     }
     doc.out.push('\n');
     doc.out
@@ -599,7 +621,7 @@ mod tests {
             text,
             "## Subagents\n\n\
              - `agent-1` — worker: done — [transcript](agent-1.md)\n\
-             - `agent-2` — explore, child of `agent-1`: running at export; its file holds completed runs only — [transcript](agent-2.md)\n\
+             - `agent-2` — explore, child of `agent-1`: running at export; its file may include the run in progress — [transcript](agent-2.md)\n\
              - `agent-3` — worker, child of `agent-1`: ended — transcript unavailable"
         );
     }
@@ -607,7 +629,7 @@ mod tests {
     #[test]
     fn an_agent_file_opens_with_its_identity_and_renders_like_the_root() {
         let agent = summary("agent-2", Some("agent-1"), "explore", "done", false, true);
-        let text = render_agent_file(&agent, "abc", &sample());
+        let text = render_agent_file(&agent, "abc", &sample(), &Conversation::default());
         assert!(
             text.starts_with(
                 "# Subagent `agent-2` (explore)\n\nSession `abc`\n\nParent: `agent-1`\n\nStatus: done\n"
@@ -624,11 +646,33 @@ mod tests {
     #[test]
     fn an_agent_file_with_no_completed_run_says_so() {
         let agent = summary("agent-1", Some("main"), "worker", "ended", false, true);
-        let text = render_agent_file(&agent, "abc", &Conversation::default());
+        let text = render_agent_file(
+            &agent,
+            "abc",
+            &Conversation::default(),
+            &Conversation::default(),
+        );
         assert!(
             text.contains("Status: ended\n\n_No completed runs at export time._\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_journal_follows_the_log_under_a_marker_picked_by_the_agent_state() {
+        let mut running = summary("agent-2", Some("agent-1"), "explore", "running", true, true);
+        let text = render_agent_file(&running, "abc", &Conversation::default(), &sample());
+        assert!(
+            text.contains(
+                "Status: running\n\n_Run in progress at export._\n\n## User\n\nlist the files"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("No completed runs"), "{text}");
+        running.running = false;
+        let text = render_agent_file(&running, "abc", &sample(), &sample());
+        assert!(text.contains("_Run interrupted._"), "{text}");
+        assert_eq!(text.matches("list the files").count(), 2, "{text}");
     }
 
     fn session_with_agents(data: &Path) -> (Session, AgentTree) {
