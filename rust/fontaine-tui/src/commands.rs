@@ -9,6 +9,8 @@ pub enum Command {
     Agents,
     /// `/todos`: shows or hides the expanded task list.
     Todos,
+    /// `/transcript`: shows or hides the full transcript view.
+    Transcript,
     /// `/btw <question>`: a side question answered without entering the conversation.
     Btw(String),
     /// `/cost` (`/usage`): the session's token usage and spend by source; takes no argument.
@@ -125,6 +127,7 @@ impl Command {
                 | Command::Status
                 | Command::Theme(_)
                 | Command::Todos
+                | Command::Transcript
                 | Command::Agents
                 | Command::Denied
                 | Command::Permissions
@@ -435,6 +438,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "expand or collapse the task list",
         command: |_| Command::Todos,
+    },
+    Builtin {
+        name: "transcript",
+        aliases: &[],
+        hint: None,
+        description: "show or hide the full transcript view",
+        command: |_| Command::Transcript,
     },
     Builtin {
         name: "vim",
@@ -844,6 +854,7 @@ mod tests {
         assert_eq!(parse_command("/agents"), Some(Command::Agents));
         assert_eq!(parse_command("/tasks"), Some(Command::Agents));
         assert_eq!(parse_command("/todos"), Some(Command::Todos));
+        assert_eq!(parse_command("/transcript"), Some(Command::Transcript));
         assert_eq!(
             parse_command("/output-style terse"),
             Some(Command::OutputStyle("terse".into()))
@@ -986,6 +997,7 @@ mod tests {
             "/status",
             "/theme dark",
             "/todos",
+            "/transcript",
             "/agents",
             "/denied",
             "/permissions",

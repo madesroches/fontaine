@@ -1072,8 +1072,8 @@ Each entry is `"<keystroke>" = "<action>"`; the empty string unbinds the keystro
 
 ```toml
 [keybindings]
-"ctrl+t" = "todos"   # this key now opens the task list…
-"ctrl+o" = ""        # …and this one does nothing
+"ctrl+g" = "todos"   # this key now opens the task list…
+"ctrl+t" = ""       # …and this one does nothing
 "f2"     = "cycle_mode"
 ```
 
@@ -1098,8 +1098,9 @@ The actions and their default keystrokes:
 | `cycle_mode` | `shift+tab` | Cycle the permission mode; the cycle stays manual → accept edits → plan → auto, no matter the key. |
 | `interrupt` | `ctrl+c` (reserved) | Interrupt a running turn; quit when idle. |
 | `quit` | `ctrl+d` (reserved) | Quit when the input is empty; with text it deletes the character under the cursor. |
-| `agents_panel` | `ctrl+t` | Open or close the agents panel. |
-| `todos` | `ctrl+o` | Expand or collapse the task list. |
+| `agents_panel` | none | Open or close the agents panel; `/agents` opens it without a key. |
+| `todos` | `ctrl+t` | Expand or collapse the task list. |
+| `transcript` | `ctrl+o` | Open or close the transcript view. |
 | `reprint` | `ctrl+l` | Redraw the screen from the transcript. |
 | `attach_clipboard` | `ctrl+v` | Attach the clipboard's image. |
 | `history_search` | `ctrl+r` | Search the prompt history. |

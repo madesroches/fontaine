@@ -325,10 +325,32 @@ impl Overlay {
     }
 }
 
+/// Whether the transcript view has the keyboard and the slot: it is open and nothing ahead of it
+/// in [`overlay`]'s precedence is. Key routing and drawing both ask, so they cannot drift.
+pub(crate) fn transcript_has_keys(app: &App) -> bool {
+    app.transcript_view.is_some()
+        && app.denied.is_none()
+        && app.unavailable.is_none()
+        && app.server.is_none()
+        && app.guardian_off_prompt.is_none()
+        && app.skill_trust_prompt.is_none()
+        && app.setup_review.is_none()
+        && app.setup_composition.is_none()
+        && app.models.is_none()
+        && app.resume.is_none()
+        && app.rewind.is_none()
+        && app.config.is_none()
+        && app.providers.is_none()
+        && app.agents.is_none()
+        && app.approval.is_none()
+        && app.questions.is_empty()
+}
+
 /// What sits above the message box, if anything: the denied list, the unavailable-guardian
 /// prompt, the MCP server prompt, the guardian-off confirmation, the model picker, the resume
 /// picker, the rewind picker, the settings panel, the provider dialog, the agents panel, the
-/// approval prompt, the model's questions, the history search or the file completion list, then
+/// approval prompt, the model's questions, the transcript view, the history search or the file
+/// completion list, then
 /// the `/` menu (at most `MAX_MENU_ROWS` rows and a key-help footer), in that order of
 /// precedence, which is the order `App::handle_key` routes keys in.
 pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Overlay {
@@ -445,6 +467,14 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
             field: panel.field(),
             ..Overlay::new("question", panel.body(width, rows, theme), footer)
         };
+    }
+    if transcript_has_keys(app)
+        && let Some(open) = &app.transcript_view
+    {
+        let footer = open.footer();
+        let rows = body_rows(app, width, height, footer.len());
+        let body = open.window(app.shown(), app.viewing.as_deref(), width, theme, rows);
+        return Overlay::new("transcript", body, footer);
     }
     if let Some(search) = &app.search {
         let found = app.search_match().map_or_else(

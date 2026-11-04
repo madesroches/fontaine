@@ -423,7 +423,7 @@ impl<B: Backend + Anchor> Screen<B> {
             let over = (held + chrome).saturating_sub(usize::from(terminal_height));
             let (shown, theme) = app.shown_with_theme();
             let released = shown.commit_within(columns, theme, over);
-            if !released.is_empty() && app.agents.is_some() {
+            if !released.is_empty() && (app.agents.is_some() || app.transcript_view.is_some()) {
                 app.committed_under_overlay = true;
             }
             lines.extend(released);
@@ -1989,6 +1989,43 @@ mod tests {
             !nonblank(rows(screen.backend().scrollback())).is_empty(),
             "the panel forced rows into scrollback"
         );
+        app.handle_input(crate::Input::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        screen.render(&mut app).unwrap();
+        let visible = rows(screen.backend().buffer());
+        assert!(
+            visible.iter().any(|row| row.contains("n11")),
+            "the last message is on the visible rows: {visible:?}"
+        );
+        let all = nonblank(everything(&screen));
+        for i in 0..12 {
+            let text = format!("· n{i}");
+            let count = all.iter().filter(|row| **row == text).count();
+            assert_eq!(count, 1, "{text}: {all:?}");
+        }
+    }
+
+    #[test]
+    fn closing_a_tall_transcript_view_leaves_the_last_message_on_screen() {
+        let mut screen = screen(40, 14);
+        let mut app = app();
+        for i in 0..12 {
+            app.transcript.notice(format!("n{i}"));
+        }
+        screen.render(&mut app).unwrap();
+        app.handle_input(crate::Input::Key(KeyEvent::new(
+            KeyCode::Char('o'),
+            KeyModifiers::CONTROL,
+        )));
+        screen.render(&mut app).unwrap();
+        let open = rows(screen.backend().buffer());
+        assert!(
+            open.iter().any(|row| row.contains("┌ transcript")),
+            "{open:?}"
+        );
+        assert!(app.committed_under_overlay);
         app.handle_input(crate::Input::Key(KeyEvent::new(
             KeyCode::Esc,
             KeyModifiers::NONE,

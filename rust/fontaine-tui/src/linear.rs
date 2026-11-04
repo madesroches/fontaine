@@ -16,7 +16,8 @@ use ratatui::text::Line;
 use crate::app::App;
 use crate::todo_panel;
 use crate::transcript::{
-    Cut, Entry, OUTPUT_ROWS, REASONING_ROWS, Settled, ToolStatus, head_lines, tail_lines,
+    Cut, Entry, OUTPUT_ROWS, REASONING_ROWS, Settled, ToolStatus, Transcript, first_line,
+    head_lines, is_settled, tail_lines,
 };
 use crate::view;
 
@@ -273,7 +274,9 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
                 ToolStatus::Done => format!("tool: {call} — done"),
                 ToolStatus::Interrupted => format!("tool: {call} — interrupted"),
                 ToolStatus::Failed(why) => format!("tool error: {call} — failed: {why}"),
-                ToolStatus::Denied(why) => format!("tool error: {call} — denied: {why}"),
+                ToolStatus::Denied(why) => {
+                    format!("tool error: {call} — denied: {}", first_line(why))
+                }
             };
             out.push(line);
             if matches!(status, ToolStatus::Done | ToolStatus::Failed(_)) {
@@ -295,58 +298,7 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
                 }
             }
         }
-        Entry::Expanded(call) => {
-            if let Entry::Reasoning { text, clipped, .. } = &**call {
-                labelled("thinking:", text.trim_end_matches('\n'), out);
-                if *clipped {
-                    out.push("… clipped: only the start and end of the reasoning are kept".into());
-                }
-                return;
-            }
-            let Entry::Tool {
-                tool,
-                status,
-                call,
-                output,
-                diff,
-                ..
-            } = &**call
-            else {
-                return;
-            };
-            let (label, mark) = match status {
-                ToolStatus::Pending => ("tool:", "pending".to_string()),
-                ToolStatus::Done => ("tool:", "done".to_string()),
-                ToolStatus::Interrupted => ("tool:", "interrupted".to_string()),
-                ToolStatus::Failed(why) => ("tool error:", format!("failed: {why}")),
-                ToolStatus::Denied(why) => ("tool error:", format!("denied: {why}")),
-            };
-            labelled(label, &format!("{tool} — {mark}"), out);
-            out.extend(call.split('\n').map(str::to_string));
-            let diff = diff
-                .as_ref()
-                .filter(|_| !matches!(status, ToolStatus::Failed(_)));
-            if let Some(diff) = diff {
-                out.push(format!("{}  +{} -{}", diff.path, diff.added, diff.removed));
-                out.extend(diff.lines.iter().map(|l| {
-                    let sign = match l.kind {
-                        DiffKind::Added => '+',
-                        DiffKind::Removed => '-',
-                        DiffKind::Context | DiffKind::Gap => ' ',
-                    };
-                    format!("{sign} {}", l.text)
-                }));
-                if diff.hidden > 0 {
-                    out.push(format!("… {} more changed lines (not shown)", diff.hidden));
-                }
-            }
-            if let Some(output) = output {
-                out.extend(output.text.split('\n').map(str::to_string));
-                if output.clipped {
-                    out.push("… clipped: only the start and end of the output are kept".into());
-                }
-            }
-        }
+        Entry::Expanded(card) => expanded_card(card, out),
         Entry::Notice {
             severity: Severity::Info,
             headline,
@@ -367,6 +319,93 @@ fn label(settled: &Settled<'_>, out: &mut Vec<String>) {
             out.extend(output.trim_end().split('\n').map(terminal_text));
         }
     }
+}
+
+/// A call or reasoning card in full, the way `/expand` prints it.
+fn expanded_card(card: &Entry, out: &mut Vec<String>) {
+    if let Entry::Reasoning { text, clipped, .. } = card {
+        labelled("thinking:", text.trim_end_matches('\n'), out);
+        if *clipped {
+            out.push("… clipped: only the start and end of the reasoning are kept".into());
+        }
+        return;
+    }
+    let Entry::Tool {
+        tool,
+        status,
+        call,
+        output,
+        diff,
+        ..
+    } = card
+    else {
+        return;
+    };
+    let (label, mark) = match status {
+        ToolStatus::Pending => ("tool:", "pending".to_string()),
+        ToolStatus::Done => ("tool:", "done".to_string()),
+        ToolStatus::Interrupted => ("tool:", "interrupted".to_string()),
+        ToolStatus::Failed(why) => ("tool error:", format!("failed: {why}")),
+        ToolStatus::Denied(why) => ("tool error:", format!("denied: {why}")),
+    };
+    labelled(label, &format!("{tool} — {mark}"), out);
+    out.extend(call.split('\n').map(str::to_string));
+    let diff = diff
+        .as_ref()
+        .filter(|_| !matches!(status, ToolStatus::Failed(_)));
+    if let Some(diff) = diff {
+        out.push(format!("{}  +{} -{}", diff.path, diff.added, diff.removed));
+        out.extend(diff.lines.iter().map(|l| {
+            let sign = match l.kind {
+                DiffKind::Added => '+',
+                DiffKind::Removed => '-',
+                DiffKind::Context | DiffKind::Gap => ' ',
+            };
+            format!("{sign} {}", l.text)
+        }));
+        if diff.hidden > 0 {
+            out.push(format!("… {} more changed lines (not shown)", diff.hidden));
+        }
+    }
+    if let Some(output) = output {
+        out.extend(output.text.split('\n').map(str::to_string));
+        if output.clipped {
+            out.push("… clipped: only the start and end of the output are kept".into());
+        }
+    }
+}
+
+/// Not `terminal_text`: its redraw handling would drop the label before a `\r`.
+fn printable(lines: &[String]) -> impl Iterator<Item = String> + '_ {
+    lines.iter().map(|line| {
+        line.chars()
+            .filter(|c| !c.is_control() || *c == '\t')
+            .collect::<String>()
+    })
+}
+
+/// The settled entries of a transcript, each once: calls and reasoning in the full form
+/// `/expand` prints, the rest as they print when they settle.
+fn transcript_print(transcript: &Transcript) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in transcript.listed().filter(|entry| is_settled(entry)) {
+        match entry {
+            Entry::Reasoning { .. } if !transcript.show_reasoning => {}
+            Entry::Tool { .. } | Entry::Reasoning { .. } => expanded_card(entry, &mut out),
+            _ => label(
+                &Settled {
+                    entry,
+                    skip: 0,
+                    end: None,
+                },
+                &mut out,
+            ),
+        }
+    }
+    if out.is_empty() {
+        out.push("no transcript".to_string());
+    }
+    out
 }
 
 /// Appends to a stream instead of drawing a screen. The callback `drive` takes is
@@ -423,12 +462,11 @@ impl<W: Write> Linear<W> {
         for settled in app.shown_mut().commit_entries(Cut::Lines) {
             let mut labelled = Vec::new();
             label(&settled, &mut labelled);
-            // Not `terminal_text`: its redraw handling would drop the label before a `\r`.
-            lines.extend(labelled.iter().map(|line| {
-                line.chars()
-                    .filter(|c| !c.is_control() || *c == '\t')
-                    .collect::<String>()
-            }));
+            lines.extend(printable(&labelled));
+        }
+
+        if std::mem::take(&mut app.transcript_print) {
+            lines.extend(printable(&transcript_print(app.shown())));
         }
 
         // The list prints in full each time it changes, since there is no panel to look at.
@@ -612,6 +650,68 @@ mod tests {
             tool: "shell".into(),
             args,
         });
+    }
+
+    fn ctrl_o(rig: &mut Rig) {
+        rig.app.handle_input(Input::Key(KeyEvent::new(
+            KeyCode::Char('o'),
+            KeyModifiers::CONTROL,
+        )));
+    }
+
+    #[test]
+    fn the_transcript_key_prints_the_settled_entries_once_in_full() {
+        let mut rig = Rig::new();
+        rig.app.linear = true;
+        rig.render();
+        let command = (0..6)
+            .map(|i| format!("echo step{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let t = &mut rig.app.transcript;
+        t.user("hi".into());
+        tool_call(t, "a", serde_json::json!({ "command": command }));
+        t.on_event(SessionEvent::ToolResult {
+            id: "a".into(),
+            tool: "shell".into(),
+            success: true,
+            text: (0..20)
+                .map(|i| format!("out{i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        });
+        t.on_event(SessionEvent::Reasoning(
+            (0..8)
+                .map(|i| format!("thought{i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+        t.expand(crate::commands::ExpandTarget::Latest).unwrap();
+        tool_call(t, "p", serde_json::json!({ "command": "sleep 9" }));
+        t.on_event(SessionEvent::AssistantDelta("typing".into()));
+        rig.render();
+        ctrl_o(&mut rig);
+        assert!(rig.app.transcript_view.is_none());
+        let out = rig.render();
+        assert_eq!(out.matches("you: hi").count(), 1, "{out:?}");
+        assert_eq!(out.matches("echo step5").count(), 1, "{out:?}");
+        assert!(out.contains("out19"), "{out:?}");
+        assert!(out.contains("thought7"), "{out:?}");
+        assert!(!out.contains("earlier lines"), "{out:?}");
+        assert!(!out.contains("sleep 9"), "{out:?}");
+        assert!(!out.contains("typing"), "{out:?}");
+        assert!(rig.render().is_empty());
+    }
+
+    #[test]
+    fn the_transcript_key_with_nothing_settled_says_so() {
+        let mut rig = Rig::new();
+        rig.app.linear = true;
+        rig.render();
+        ctrl_o(&mut rig);
+        let out = rig.render();
+        assert!(out.contains("no transcript"), "{out:?}");
+        assert!(!rig.render().contains("no transcript"));
     }
 
     #[test]

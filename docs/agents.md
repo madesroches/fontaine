@@ -346,7 +346,7 @@ user file or `[agents.types]` entry of the same name, and so stays narrowed.
 In the terminal UI, a list below the status bar shows `main` and every running subagent, and
 `x` in it stops one. Enter on an agent shows its own transcript, drawn like the main chat, and
 what you type there goes to that agent: see [the agent list and the agent
-view](tui.md#the-agent-list-and-the-agent-view). `Ctrl+T` (or `/agents`, or `/tasks`) opens the
+view](tui.md#the-agent-list-and-the-agent-view). `/agents` (or `/tasks`) opens the
 [agents panel](tui.md#the-agents-panel), the full overview with one row per subagent, ended ones
 included until a `/clear` prunes them, its status (a teammate waiting for work shows `idle`, not `done`), spend against budget, a key to kill it, and the team's task board. A subagent's approval
 prompts appear like any other, labelled with its id, whichever transcript is on screen, so none

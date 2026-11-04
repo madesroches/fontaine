@@ -1280,7 +1280,7 @@ mod tests {
         b.handle_key(KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE));
         assert!(b.handle_key(KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL)));
         assert_eq!(b.text(), "a ");
-        // Ctrl+T is the App-level agents panel: the buffer refuses it.
+        // Ctrl+T is the App-level task list: the buffer refuses it.
         assert!(!b.handle_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL)));
     }
 

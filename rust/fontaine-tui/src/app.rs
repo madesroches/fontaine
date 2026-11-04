@@ -38,6 +38,7 @@ use crate::skill_trust_prompt::SkillTrustPrompt;
 use crate::theme::Theme;
 use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
+use crate::transcript_view::{TranscriptKey, TranscriptView};
 use fontaine_core::checkpoint::{RewindPlan, RewindWhat};
 use fontaine_core::config_catalog::ModelSlot;
 use fontaine_core::keybindings::TuiAction;
@@ -201,6 +202,11 @@ pub struct App {
     pub agents: Option<AgentsPanel>,
     /// The model's task list, shown above the input.
     pub todos: TodoPanel,
+    /// The full transcript view while it is open.
+    pub transcript_view: Option<TranscriptView>,
+    /// The next render of the linear renderer prints the settled transcript in full; it opens
+    /// no overlay.
+    pub transcript_print: bool,
     /// A repository's MCP server waiting for the human's say-so.
     pub server: Option<ServerPrompt>,
     /// The `/guardian-disable` confirmation while it is open.
@@ -366,6 +372,8 @@ impl App {
             questions: VecDeque::new(),
             agents: None,
             todos: TodoPanel::default(),
+            transcript_view: None,
+            transcript_print: false,
             server: None,
             guardian_off_prompt: None,
             skill_trust_prompt: None,
@@ -495,6 +503,8 @@ impl App {
             return;
         }
         let moved = self.transcript.entries.split_off(mark);
+        self.transcript.touch();
+        self.shown_mut().touch();
         self.shown_mut().entries.extend(moved);
     }
 
@@ -857,6 +867,36 @@ impl App {
         }
     }
 
+    /// Shows or hides the expanded task list; with no tasks it says so rather than do nothing
+    /// visible.
+    pub fn toggle_todos(&mut self) {
+        self.todos.toggle();
+        if self.todos.items().is_empty() {
+            self.shown_mut().notice("no tasks");
+        }
+    }
+
+    /// Opens the transcript view, or closes it. The screen-reader renderer has no overlay and
+    /// prints the transcript instead.
+    pub fn toggle_transcript(&mut self) {
+        if self.linear {
+            self.transcript_print = true;
+        } else if self.transcript_view.is_some() {
+            self.close_transcript();
+        } else {
+            self.transcript_view = Some(TranscriptView::new());
+        }
+    }
+
+    fn close_transcript(&mut self) {
+        self.transcript_view = None;
+        // Rows the screen wrote into scrollback while the view was tall left the last messages
+        // out of sight; the transcript is written again in full.
+        if std::mem::take(&mut self.committed_under_overlay) {
+            self.view(self.viewing.clone());
+        }
+    }
+
     /// Whether an overlay has the keyboard.
     pub fn covered(&self) -> bool {
         self.approval.is_some()
@@ -873,6 +913,7 @@ impl App {
             || self.config.is_some()
             || self.providers.is_some()
             || self.agents.is_some()
+            || self.transcript_view.is_some()
     }
 
     fn handle_key(&mut self, mut key: KeyEvent) -> Action {
@@ -888,6 +929,10 @@ impl App {
             return Action::CycleMode;
         }
         if mapped == Some(TuiAction::Interrupt) {
+            if crate::view::transcript_has_keys(self) {
+                self.close_transcript();
+                return Action::None;
+            }
             if !self.covered() && self.close_palette() {
                 return Action::None;
             }
@@ -1066,6 +1111,16 @@ impl App {
                 PanelKey::KillJob(id) => Action::KillJob(id),
             };
         }
+        if crate::view::transcript_has_keys(self) {
+            let closed = self
+                .transcript_view
+                .as_mut()
+                .is_some_and(|open| open.handle_key(key, mapped) == TranscriptKey::Close);
+            if closed {
+                self.close_transcript();
+            }
+            return Action::None;
+        }
         if self.approval.is_none() && !self.questions.is_empty() {
             self.question_key(key);
             return Action::None;
@@ -1099,7 +1154,17 @@ impl App {
             return Action::AttachClipboard;
         }
         if mapped == Some(TuiAction::Todos) && !typing_reason {
-            self.todos.toggle();
+            self.toggle_todos();
+            return Action::None;
+        }
+        // An approval or question is drawn over the view, so a toggle would change what the human
+        // cannot see.
+        if mapped == Some(TuiAction::Transcript)
+            && !typing_reason
+            && self.approval.is_none()
+            && self.questions.is_empty()
+        {
+            self.toggle_transcript();
             return Action::None;
         }
         if mapped == Some(TuiAction::Reprint) && !typing_reason {
@@ -1809,7 +1874,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(ctrl(&mut unbound, 't'), Action::None);
-        assert!(unbound.agents.is_none());
+        assert!(!unbound.todos.expanded);
 
         // Sanity: vim's Esc-switch still reaches the input, not the keymap.
         let mut vim_app = app();
@@ -3160,17 +3225,182 @@ mod tests {
         assert_ne!(selected_name(&app), moved);
     }
 
+    fn some_todos() -> Vec<fontaine_tools::todo::TodoItem> {
+        vec![fontaine_tools::todo::TodoItem {
+            content: "write".into(),
+            status: fontaine_tools::todo::TodoStatus::Pending,
+        }]
+    }
+
     #[test]
-    fn ctrl_o_toggles_the_task_list_unless_the_agents_panel_has_the_keys() {
+    fn ctrl_t_toggles_the_task_list_unless_the_agents_panel_has_the_keys() {
         let mut app = app();
-        assert_eq!(ctrl(&mut app, 'o'), Action::None);
+        app.todos.set_items(some_todos());
+        assert_eq!(ctrl(&mut app, 't'), Action::None);
         assert!(app.todos.expanded);
         app.agents = Some(AgentsPanel::new());
-        ctrl(&mut app, 'o');
+        ctrl(&mut app, 't');
         assert!(app.todos.expanded);
         app.agents = None;
-        ctrl(&mut app, 'o');
+        ctrl(&mut app, 't');
         assert!(!app.todos.expanded);
+    }
+
+    #[test]
+    fn ctrl_t_toggles_the_task_list_while_the_agent_list_is_focused() {
+        let mut app = app();
+        app.todos.set_items(some_todos());
+        app.agent_list.focused = true;
+        ctrl(&mut app, 't');
+        assert!(app.todos.expanded);
+    }
+
+    #[test]
+    fn the_agents_panel_has_no_default_key() {
+        let mut unbound = app();
+        ctrl(&mut unbound, 't');
+        assert!(unbound.agents.is_none());
+        let mut bound = app();
+        bound.keymap = Keymap::resolve(
+            &[("f2".to_string(), "agents_panel".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        press(&mut bound, KeyCode::F(2));
+        assert!(bound.agents.is_some());
+    }
+
+    #[test]
+    fn the_todos_key_says_so_when_there_are_no_tasks() {
+        let mut app = app();
+        ctrl(&mut app, 't');
+        assert!(app.todos.expanded);
+        assert_eq!(last_notice(&app), Some("no tasks"));
+    }
+
+    #[test]
+    fn the_no_tasks_notice_goes_to_the_viewed_agents_transcript() {
+        let mut app = app();
+        app.view(Some("a1".into()));
+        ctrl(&mut app, 't');
+        assert!(app.transcript.entries.is_empty());
+        assert!(matches!(
+            app.shown().entries.last(),
+            Some(crate::transcript::Entry::Notice { headline, .. }) if headline == "no tasks"
+        ));
+    }
+
+    #[test]
+    fn ctrl_o_opens_and_closes_the_transcript_view() {
+        let mut app = app();
+        assert_eq!(ctrl(&mut app, 'o'), Action::None);
+        assert!(app.transcript_view.is_some());
+        assert!(app.covered());
+        ctrl(&mut app, 'o');
+        assert!(app.transcript_view.is_none());
+        for closing in [KeyCode::Esc, KeyCode::Char('q')] {
+            ctrl(&mut app, 'o');
+            assert_eq!(press(&mut app, closing), Action::None);
+            assert!(app.transcript_view.is_none(), "{closing:?}");
+        }
+    }
+
+    #[test]
+    fn ctrl_c_closes_the_transcript_view_without_interrupting_or_quitting() {
+        let mut app = app();
+        app.running = true;
+        ctrl(&mut app, 'o');
+        assert_eq!(ctrl(&mut app, 'c'), Action::None);
+        assert!(app.transcript_view.is_none());
+        assert_eq!(ctrl(&mut app, 'c'), Action::Interrupt);
+    }
+
+    #[test]
+    fn ctrl_c_leaves_an_overlay_above_the_transcript_view_to_its_own_path() {
+        let mut app = app();
+        app.running = true;
+        ctrl(&mut app, 'o');
+        app.unavailable = Some(unavailable());
+        assert_eq!(ctrl(&mut app, 'c'), Action::Interrupt);
+        assert!(app.transcript_view.is_some());
+    }
+
+    #[test]
+    fn the_transcript_view_ignores_typing_and_the_other_global_keys() {
+        let mut app = app();
+        ctrl(&mut app, 'o');
+        type_text(&mut app, "hello");
+        assert_eq!(app.input.text(), "");
+        let panels_before = app.agents.is_none();
+        ctrl(&mut app, 't');
+        ctrl(&mut app, 'v');
+        ctrl(&mut app, 'l');
+        ctrl(&mut app, 't');
+        assert!(panels_before && app.agents.is_none());
+        assert!(!app.todos.expanded);
+        assert!(!app.reprint);
+        assert!(app.transcript_view.is_some());
+        app.handle_input(Input::Paste("pasted".into()));
+        assert_eq!(app.input.text(), "");
+    }
+
+    #[test]
+    fn the_transcript_key_is_ignored_while_the_agents_panel_has_the_keys() {
+        let mut app = app();
+        app.agents = Some(AgentsPanel::new());
+        ctrl(&mut app, 'o');
+        assert!(app.transcript_view.is_none());
+    }
+
+    #[test]
+    fn the_transcript_key_does_not_open_a_view_under_an_approval() {
+        let mut app = app();
+        app.approval = Some(approval());
+        ctrl(&mut app, 'o');
+        assert!(app.transcript_view.is_none());
+    }
+
+    #[test]
+    fn an_approval_takes_precedence_and_the_view_is_still_open_after_it_closes() {
+        let mut app = app();
+        ctrl(&mut app, 'o');
+        app.approval = Some(approval());
+        assert_eq!(crate::view::overlay(&app, 60, 30, false).title, "approval");
+        ctrl(&mut app, 'o');
+        assert!(app.transcript_view.is_some());
+        // The view does not take Esc while the approval is up.
+        press(&mut app, KeyCode::Esc);
+        assert!(app.transcript_view.is_some());
+        app.approval = None;
+        assert_eq!(
+            crate::view::overlay(&app, 60, 30, false).title,
+            "transcript"
+        );
+    }
+
+    #[test]
+    fn the_transcript_key_prints_in_linear_mode_and_opens_nothing() {
+        let mut app = app();
+        app.linear = true;
+        ctrl(&mut app, 'o');
+        assert!(app.transcript_view.is_none());
+        assert!(app.transcript_print);
+    }
+
+    #[test]
+    fn a_rebound_transcript_key_closes_the_view() {
+        let mut app = app();
+        app.keymap = Keymap::resolve(
+            &[("f4".to_string(), "transcript".to_string())]
+                .into_iter()
+                .collect(),
+        )
+        .unwrap();
+        press(&mut app, KeyCode::F(4));
+        assert!(app.transcript_view.is_some());
+        press(&mut app, KeyCode::F(4));
+        assert!(app.transcript_view.is_none());
     }
 
     #[test]
