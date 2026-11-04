@@ -6,6 +6,11 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `/clear` now erases the screen and the terminal's scrollback, as Ctrl-L does, so the old
+  conversation no longer stays visible above the "cleared the conversation" notice (#207).
+
 ### Added
 
 #### CLI
