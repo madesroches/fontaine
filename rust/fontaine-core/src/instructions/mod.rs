@@ -16,7 +16,7 @@ use crate::gate::SessionState;
 use crate::permission_rules::Rule;
 
 mod imports;
-mod markdown;
+pub(crate) mod markdown;
 pub mod on_demand;
 mod rules;
 
@@ -118,6 +118,18 @@ impl Sources {
             scope,
             confinement,
         }
+    }
+
+    /// The sources of a session about to start: `roots` has the primary root first, `deny` is the
+    /// configured deny rules.
+    pub fn for_launch(
+        config_dir: PathBuf,
+        home: Option<PathBuf>,
+        roots: &[PathBuf],
+        deny: Vec<Rule>,
+    ) -> Sources {
+        let scope = Arc::new(Scope::new(roots[0].clone(), roots[1..].iter().cloned()));
+        Sources::new(config_dir, home, scope, deny)
     }
 
     /// The sources of a running session, with its rules as they stand now.

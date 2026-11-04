@@ -103,6 +103,23 @@ files in your editor or the file system, or remove the whole `<data dir>/memory/
 directory. `/context` shows a `memory` row when the layer is loaded. Memory writes are ordinary
 `write` and `edit` records in the audit log, with their tier and reason.
 
+## Integrity checks
+
+`fontaine doctor` compares the store with its index and never changes either. It checks the store
+for the current workspace, even with `[memory] auto = false`, and ignores links inside fenced code
+blocks and `http(s)` links.
+
+| Finding | Level |
+|---|---|
+| No store directory yet | ok |
+| The store is a link or not a directory; `MEMORY.md` is a link, not a regular file, unreadable or not UTF-8 | fail |
+| `MEMORY.md` is past the line or byte cap, with the number of lines that never reach the prompt | warn |
+| An index line links to a `*.md` file that does not exist, naming the line and target | fail |
+| An index line links to something a session never loads as a topic file: a directory, a nested path or a link | warn |
+| A topic file no index line links to | warn |
+| Two index lines link to the same file | warn |
+| A link that leaves the store (another scheme, `..` or an absolute path); it is never followed or read | warn |
+
 ## Differences from Claude Code
 
 - The store is in Fontaine's data directory, not under `~/.claude/projects/`.

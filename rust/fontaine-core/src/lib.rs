@@ -14,6 +14,7 @@ pub mod context;
 pub mod credentials;
 pub mod destructive;
 pub mod dirs;
+pub mod doctor_report;
 pub mod effort;
 pub mod export;
 pub mod extensions;

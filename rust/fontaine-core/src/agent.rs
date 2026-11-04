@@ -68,7 +68,7 @@ mod setup;
 
 pub(crate) use build::apply_common;
 use build::{Parts, build_agent};
-pub use mcp::{McpOutcome, McpServerPlan};
+pub use mcp::{McpOutcome, McpServerPlan, mcp_plan, probe_server, server_digest, server_spec};
 pub use messaging::{Delivered, MessageRefusal};
 pub use model_source::{GuardianRef, SessionModels};
 pub use models::{CredentialEffect, GuardianQuota, Switched};

@@ -2638,39 +2638,253 @@ fn collect_sources<'a>(
     sources
 }
 
+/// The workspace and the two project files in it.
+struct ProjectFiles {
+    workspace: PathBuf,
+    project: PathBuf,
+    local: PathBuf,
+}
+
+fn project_files(launch_dir: &Path) -> Result<ProjectFiles, ConfigError> {
+    let workspace = std::fs::canonicalize(launch_dir).map_err(|source| ConfigError::Read {
+        path: launch_dir.to_path_buf(),
+        source,
+    })?;
+    let dir = workspace.join(PROJECT_DIR);
+    Ok(ProjectFiles {
+        project: dir.join(PROJECT_FILE),
+        local: dir.join(PROJECT_LOCAL_FILE),
+        workspace,
+    })
+}
+
+/// The column an existing project-local file is validated against, and why it is the project
+/// column when it is.
+fn local_column(files: &ProjectFiles, data_dir: &Path) -> (Column, Option<ProjectDemotion>) {
+    match trust::classify_project_local(&files.workspace, &files.local, data_dir) {
+        LocalClassification::UserTrust => (Column::ProjectLocal, None),
+        LocalClassification::Project(why) => (Column::Project, Some(why)),
+    }
+}
+
+/// What one settings layer came to when read on its own.
+#[derive(Debug)]
+pub enum LayerOutcome {
+    /// No file there.
+    Absent,
+    Loaded,
+    /// The file is unreadable, malformed, or sets a key its scope may not.
+    Failed(ConfigError),
+    /// Not looked at, for the reason given.
+    NotChecked(String),
+}
+
+#[derive(Debug)]
+pub struct LayerDiagnosis {
+    pub slot: Slot,
+    pub column: Option<Column>,
+    /// `None` for the managed slot, which has no file.
+    pub path: Option<PathBuf>,
+    /// Why a project-local file loads as project settings.
+    pub demotion: Option<ProjectDemotion>,
+    pub outcome: LayerOutcome,
+}
+
+impl LayerDiagnosis {
+    /// The layers of a configuration that loaded, in the order [`diagnose`] reports them.
+    pub fn from_scopes(config: &Config, data_dir: &Path) -> Vec<LayerDiagnosis> {
+        let files = project_files(&config.workspace).ok();
+        let mut out: Vec<LayerDiagnosis> = config
+            .scopes
+            .iter()
+            .map(|entry| {
+                let demotion = (entry.slot == Slot::ProjectLocal
+                    && entry.column == Some(Column::Project)
+                    && entry.loaded)
+                    .then(|| {
+                        let files = files.as_ref()?;
+                        match trust::classify_project_local(
+                            &files.workspace,
+                            &files.local,
+                            data_dir,
+                        ) {
+                            LocalClassification::Project(why) => Some(why),
+                            LocalClassification::UserTrust => None,
+                        }
+                    })
+                    .flatten();
+                LayerDiagnosis {
+                    slot: entry.slot,
+                    column: entry.column,
+                    path: entry.path.clone(),
+                    demotion,
+                    outcome: if entry.slot == Slot::Managed {
+                        LayerOutcome::NotChecked("not supported".to_string())
+                    } else if entry.loaded {
+                        LayerOutcome::Loaded
+                    } else {
+                        LayerOutcome::Absent
+                    },
+                }
+            })
+            .collect();
+        out.sort_by_key(|d| diagnosis_order(d.slot));
+        out
+    }
+}
+
+fn diagnosis_order(slot: Slot) -> u8 {
+    match slot {
+        Slot::Managed => 0,
+        Slot::User => 1,
+        Slot::Project => 2,
+        Slot::ProjectLocal => 3,
+        Slot::Cli => 4,
+        Slot::Plugin => 5,
+    }
+}
+
+fn diagnose_file(
+    slot: Slot,
+    column: Column,
+    path: &Path,
+    read: fn(&Path) -> io::Result<String>,
+    demotion: Option<ProjectDemotion>,
+    hint: Option<&str>,
+) -> LayerDiagnosis {
+    let outcome = match read_optional(path, read) {
+        Ok(None) => LayerOutcome::Absent,
+        Ok(Some(text)) => match parse_settings_with_hint(&text, path, column, hint) {
+            Ok(_) => LayerOutcome::Loaded,
+            Err(e) => LayerOutcome::Failed(e),
+        },
+        Err(e) => LayerOutcome::Failed(e),
+    };
+    LayerDiagnosis {
+        slot,
+        column: Some(column),
+        path: Some(path.to_path_buf()),
+        demotion,
+        outcome,
+    }
+}
+
+/// Reads every settings layer independently, so a bad layer does not hide the others. [`load`]
+/// stops at the first failure; this reports each layer's own first failure, with the same
+/// parser and scope rules. Checks that span layers are not repeated here.
+pub fn diagnose(params: &LoadParams<'_>) -> Vec<LayerDiagnosis> {
+    let user_path = params.config_dir.join(USER_FILE);
+    let mut out = vec![
+        LayerDiagnosis {
+            slot: Slot::Managed,
+            column: None,
+            path: None,
+            demotion: None,
+            outcome: LayerOutcome::NotChecked("not supported".to_string()),
+        },
+        diagnose_file(
+            Slot::User,
+            Column::User,
+            &user_path,
+            crate::file_lock::read_shared,
+            None,
+            None,
+        ),
+    ];
+    match project_files(params.launch_dir) {
+        Ok(files) => {
+            out.push(diagnose_file(
+                Slot::Project,
+                Column::Project,
+                &files.project,
+                |p| std::fs::read_to_string(p),
+                None,
+                None,
+            ));
+            let (column, demotion) = if files.local.is_file() {
+                local_column(&files, params.data_dir)
+            } else {
+                (Column::ProjectLocal, None)
+            };
+            let hint = demotion
+                .as_ref()
+                .and_then(|why| demotion_hint(why, params.data_dir));
+            out.push(diagnose_file(
+                Slot::ProjectLocal,
+                column,
+                &files.local,
+                |p| std::fs::read_to_string(p),
+                demotion,
+                hint.as_deref(),
+            ));
+        }
+        Err(_) => {
+            for (slot, column) in [
+                (Slot::Project, Column::Project),
+                (Slot::ProjectLocal, Column::ProjectLocal),
+            ] {
+                out.push(LayerDiagnosis {
+                    slot,
+                    column: Some(column),
+                    path: None,
+                    demotion: None,
+                    outcome: LayerOutcome::NotChecked(
+                        "the workspace directory cannot be resolved".to_string(),
+                    ),
+                });
+            }
+        }
+    }
+    if let Some(path) = params.settings_file {
+        let outcome = match std::fs::read_to_string(path) {
+            Err(source) => LayerOutcome::Failed(ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            }),
+            Ok(text) => match parse_settings_with_hint(&text, path, Column::Cli, None) {
+                Ok(_) => LayerOutcome::Loaded,
+                Err(e) => LayerOutcome::Failed(e),
+            },
+        };
+        out.push(LayerDiagnosis {
+            slot: Slot::Cli,
+            column: Some(Column::Cli),
+            path: Some(path.to_path_buf()),
+            demotion: None,
+            outcome,
+        });
+    }
+    out
+}
+
 pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
-    let workspace =
-        std::fs::canonicalize(params.launch_dir).map_err(|source| ConfigError::Read {
-            path: params.launch_dir.to_path_buf(),
-            source,
-        })?;
+    let files = project_files(params.launch_dir)?;
 
     let user_path = params.config_dir.join(USER_FILE);
     let user = read_optional(&user_path, crate::file_lock::read_shared)?
         .map(|text| parse_settings_with_hint(&text, &user_path, Column::User, None))
         .transpose()?;
 
-    let project_path = workspace.join(PROJECT_DIR).join(PROJECT_FILE);
-    let project = read_optional(&project_path, |p| std::fs::read_to_string(p))?
-        .map(|text| parse_settings_with_hint(&text, &project_path, Column::Project, None))
+    let project = read_optional(&files.project, |p| std::fs::read_to_string(p))?
+        .map(|text| parse_settings_with_hint(&text, &files.project, Column::Project, None))
         .transpose()?;
 
-    let local_path = workspace.join(PROJECT_DIR).join(PROJECT_LOCAL_FILE);
-    let (local_column, local) = match read_optional(&local_path, |p| std::fs::read_to_string(p))? {
+    let (local_column, local) = match read_optional(&files.local, |p| std::fs::read_to_string(p))? {
         None => (Column::ProjectLocal, None),
         Some(text) => {
-            let classification =
-                trust::classify_project_local(&workspace, &local_path, params.data_dir);
-            let (column, hint) = match &classification {
-                LocalClassification::UserTrust => (Column::ProjectLocal, None),
-                LocalClassification::Project(why) => {
-                    (Column::Project, demotion_hint(why, params.data_dir))
-                }
-            };
-            let settings = parse_settings_with_hint(&text, &local_path, column, hint.as_deref())?;
+            let (column, demotion) = local_column(&files, params.data_dir);
+            let hint = demotion
+                .as_ref()
+                .and_then(|why| demotion_hint(why, params.data_dir));
+            let settings = parse_settings_with_hint(&text, &files.local, column, hint.as_deref())?;
             (column, Some(settings))
         }
     };
+    let ProjectFiles {
+        workspace,
+        project: project_path,
+        local: local_path,
+    } = files;
 
     let cli_path = params.settings_file;
     let cli = match cli_path {

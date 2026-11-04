@@ -338,6 +338,19 @@ pub enum ProjectDemotion {
     UnreadableTrustStore,
 }
 
+impl std::fmt::Display for ProjectDemotion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ProjectDemotion::NoWorkTree => "no git work tree encloses the workspace",
+            ProjectDemotion::GitError => "git could not be read for the workspace",
+            ProjectDemotion::OutsideWorkTree => "the file resolves outside the git work tree",
+            ProjectDemotion::Tracked => "the file is tracked by git",
+            ProjectDemotion::UntrustedRoot(_) => "the workspace is not trusted",
+            ProjectDemotion::UnreadableTrustStore => "trust.toml is unreadable or malformed",
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum LocalClassification {
     UserTrust,

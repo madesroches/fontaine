@@ -1,17 +1,26 @@
 //! Starting the MCP servers a session is configured with, and the approval repository-defined
 //! ones need first.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::OsString;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use fontaine_mcp::{ServerSpec, Transport, connect as connect_server};
 use fontaine_tools::error_chain::chain;
+use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::guarded::Guard;
+use fontaine_tools::result_pipeline::ResultPipeline;
+use fontaine_tools::tls::LoadedNetwork;
+use futures::future::BoxFuture;
+use rig_core::tool::{DynamicTool, ManagedToolSink, ManagedToolToken};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::AgentRuntime;
-use crate::config::McpServer;
+use crate::config::{Config, McpServer};
 use crate::runtime_error::RuntimeError;
 use crate::tools;
 use crate::trust;
@@ -36,7 +45,7 @@ pub struct McpOutcome {
     pub error: Option<String>,
 }
 
-fn server_digest(name: &str, server: &McpServer) -> String {
+pub fn server_digest(name: &str, server: &McpServer) -> String {
     let canonical = json!({
         "name": name,
         "command": server.command,
@@ -96,41 +105,145 @@ fn server_description(server: &McpServer) -> String {
     }
 }
 
+/// The MCP servers a session at `root` would start, and which of them need the user's say-so.
+/// `project_executables` is whether the repository's own servers may load at all, and `confirm`
+/// whether the repository's servers wait for the user's approval.
+pub fn mcp_plan(
+    config: &Config,
+    root: &Path,
+    data_dir: &Path,
+    project_executables: bool,
+    confirm: bool,
+) -> Vec<McpServerPlan> {
+    config
+        .mcp_servers
+        .iter()
+        .filter_map(|(name, server)| {
+            let origin = config.mcp_origins.get(name).copied().unwrap_or_default();
+            let project = origin.is_project();
+            if project && !project_executables {
+                return None;
+            }
+            let digest = server_digest(name, server);
+            // A repository's server needs the user's approval; one in the user's own
+            // settings, or in an untracked local file of a trusted root, does not.
+            let repository_defined =
+                origin.slot == crate::config::Slot::Project || (project && !origin.user_trust);
+            let needs_approval = repository_defined
+                && confirm
+                && !trust::server_approved(data_dir, root, name, &digest);
+            Some(McpServerPlan {
+                name: name.clone(),
+                description: server_description(server),
+                project,
+                needs_approval,
+                digest,
+            })
+        })
+        .collect()
+}
+
+/// How to start the configured server `name` with its working directory at `root`; `None` when
+/// it is unknown or names neither a command nor a URL.
+pub fn server_spec(config: &Config, name: &str, root: &Path) -> Option<ServerSpec> {
+    let server = config.mcp_servers.get(name)?;
+    let transport = match (&server.command, &server.url) {
+        (Some(command), _) => Transport::Stdio {
+            command: command.clone(),
+            args: server.args.clone().unwrap_or_default(),
+            env_vars: server.env_vars.clone().unwrap_or_default(),
+            env: merged_server_env(tools::subprocess_env(config), &server.env),
+            cwd: root.to_path_buf(),
+        },
+        (None, Some(url)) => Transport::Http { url: url.clone() },
+        (None, None) => return None,
+    };
+    Some(ServerSpec {
+        name: name.to_string(),
+        transport,
+    })
+}
+
+/// A gate that refuses every call, for a connection made only to see what a server offers.
+struct DenyEveryCall;
+
+impl ToolGate for DenyEveryCall {
+    fn check<'a>(&'a self, _call: CallView<'a>) -> BoxFuture<'a, GateDecision> {
+        Box::pin(async {
+            GateDecision::Deny {
+                message: "a probe never calls tools".to_string(),
+            }
+        })
+    }
+}
+
+/// Counts the tools a server registers instead of keeping them.
+#[derive(Clone, Default)]
+struct CountingSink(Arc<AtomicUsize>);
+
+impl ManagedToolSink for CountingSink {
+    fn add_managed_tools(&self, tools: Vec<DynamicTool>) -> HashMap<String, ManagedToolToken> {
+        self.0.store(tools.len(), Ordering::Relaxed);
+        HashMap::new()
+    }
+
+    fn reconcile_managed_tools(
+        &self,
+        _expected: HashMap<String, ManagedToolToken>,
+        tools: Vec<DynamicTool>,
+    ) -> HashMap<String, ManagedToolToken> {
+        self.0.store(tools.len(), Ordering::Relaxed);
+        HashMap::new()
+    }
+}
+
+/// How long a probe waits for a server to start and list its tools.
+pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Starts the server `spec` describes, counts the tools it registers, and closes the
+/// connection. The count is of tools a session would register: names the guard cannot use are
+/// already dropped.
+pub async fn probe_server(
+    spec: &ServerSpec,
+    network: &LoadedNetwork,
+    env: &(dyn Fn(&str) -> Option<OsString> + Sync),
+) -> Result<usize, String> {
+    let sink = CountingSink::default();
+    let guard = Guard {
+        gate: Arc::new(DenyEveryCall),
+        results: Arc::new(ResultPipeline::new()),
+        hide_mcp_names: true,
+        pre_images: None,
+        kills: None,
+    };
+    let attempt = async {
+        let connected = connect_server(spec, sink.clone(), guard, false, network, env)
+            .await
+            .map_err(|e| chain(&e))?;
+        let count = sink.0.load(Ordering::Relaxed);
+        // Waits for the shutdown, so a server process is gone before doctor exits.
+        let _ = connected.connection.close().await;
+        Ok(count)
+    };
+    match tokio::time::timeout(PROBE_TIMEOUT, attempt).await {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "no answer within {} seconds",
+            PROBE_TIMEOUT.as_secs()
+        )),
+    }
+}
+
 impl AgentRuntime {
     /// The MCP servers this session would start, and which of them need the user's say-so.
     pub fn mcp_plan(&self) -> Vec<McpServerPlan> {
-        let root = self.primary_root();
-        self.config
-            .mcp_servers
-            .iter()
-            .filter_map(|(name, server)| {
-                let origin = self
-                    .config
-                    .mcp_origins
-                    .get(name)
-                    .copied()
-                    .unwrap_or_default();
-                let project = origin.is_project();
-                if project && !self.setup.project_executables {
-                    return None;
-                }
-                let digest = server_digest(name, server);
-                // A repository's server needs the user's approval; one in the user's own
-                // settings, or in an untracked local file of a trusted root, does not.
-                let repository_defined =
-                    origin.slot == crate::config::Slot::Project || (project && !origin.user_trust);
-                let needs_approval = repository_defined
-                    && self.setup.confirm_project_servers
-                    && !trust::server_approved(&self.setup.data_dir, &root, name, &digest);
-                Some(McpServerPlan {
-                    name: name.clone(),
-                    description: server_description(server),
-                    project,
-                    needs_approval,
-                    digest,
-                })
-            })
-            .collect()
+        mcp_plan(
+            &self.config,
+            &self.primary_root(),
+            &self.setup.data_dir,
+            self.setup.project_executables,
+            self.setup.confirm_project_servers,
+        )
     }
 
     /// Starts the MCP servers the plan allows: those that need no approval and those named in
@@ -151,22 +264,8 @@ impl AgentRuntime {
             if plan.needs_approval && !approved.contains(&plan.name) {
                 continue;
             }
-            let Some(server) = self.config.mcp_servers.get(&plan.name) else {
+            let Some(spec) = server_spec(&self.config, &plan.name, &self.primary_root()) else {
                 continue;
-            };
-            let spec = ServerSpec {
-                name: plan.name.clone(),
-                transport: match (&server.command, &server.url) {
-                    (Some(command), _) => Transport::Stdio {
-                        command: command.clone(),
-                        args: server.args.clone().unwrap_or_default(),
-                        env_vars: server.env_vars.clone().unwrap_or_default(),
-                        env: merged_server_env(tools::subprocess_env(&self.config), &server.env),
-                        cwd: self.primary_root(),
-                    },
-                    (None, Some(url)) => Transport::Http { url: url.clone() },
-                    (None, None) => continue,
-                },
             };
             let env = self.setup.env.clone();
             match connect_server(

@@ -218,6 +218,262 @@ pub fn files(dir: &Path) -> Vec<StoreFile> {
     found
 }
 
+/// What [`check`] found wrong, or worth knowing, about a store. Doctor maps each kind to a
+/// level, so the kinds stay distinct.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemoryFinding {
+    /// Nothing has been saved for this project yet.
+    StoreMissing,
+    /// The store cannot be used: a link, not a directory, or unreadable.
+    StoreUnusable { reason: String },
+    /// `MEMORY.md` would not load: a link, not a regular file, unreadable or not UTF-8.
+    IndexUnusable { reason: String },
+    /// `MEMORY.md` is longer than the prompt takes; the rest never reaches the model.
+    IndexTruncated { lines_beyond: usize },
+    /// An index line links to a topic file that does not exist.
+    DanglingEntry { line: usize, target: String },
+    /// An index line links to something that exists but that a session never loads as a topic
+    /// file: a directory, a nested path or a link.
+    UnloadedTarget {
+        line: usize,
+        target: String,
+        is_link: bool,
+    },
+    /// A topic file no index line links to.
+    OrphanFile { file: String },
+    /// Several index lines link to the same file.
+    DuplicateEntry { target: String, lines: Vec<usize> },
+    /// A link that leaves the store (another scheme, `..` or an absolute path); never followed.
+    EscapingLink { line: usize, target: String },
+}
+
+/// The destination of each inline `[text](target)` link on a line, without a title or a
+/// `#fragment`.
+fn link_targets(line: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    let mut rest = line;
+    let mut open_seen = false;
+    while let Some(at) = rest.find(['[', ']']) {
+        let tail = &rest[at..];
+        if let Some(after_open) = tail.strip_prefix('[') {
+            open_seen = true;
+            rest = after_open;
+            continue;
+        }
+        let after = &tail[1..];
+        let opened = std::mem::take(&mut open_seen);
+        let Some(inner) = after.strip_prefix('(').filter(|_| opened) else {
+            rest = after;
+            continue;
+        };
+        let Some(end) = inner.find(')') else {
+            break;
+        };
+        let raw = inner[..end].trim();
+        let raw = match raw.strip_prefix('<') {
+            Some(angled) => angled.split('>').next().unwrap_or_default(),
+            None => raw.split_whitespace().next().unwrap_or_default(),
+        };
+        let target = raw.split('#').next().unwrap_or_default();
+        if !target.is_empty() {
+            targets.push(target.to_string());
+        }
+        rest = &inner[end + 1..];
+    }
+    targets
+}
+
+fn has_scheme(target: &str) -> bool {
+    let Some((scheme, _)) = target.split_once(':') else {
+        return false;
+    };
+    // A single letter is a Windows drive, not a scheme.
+    scheme.len() > 1
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+}
+
+fn is_web_link(target: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+fn escapes_store(target: &str) -> bool {
+    has_scheme(target)
+        || target.starts_with(['/', '\\'])
+        || Path::new(target).is_absolute()
+        || Path::new(target)
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+/// The index text as the prompt gets it, how many non-blank lines lie beyond, and the reason
+/// the index cannot load, if it cannot.
+enum IndexRead {
+    Missing,
+    Unusable(String),
+    Text { kept: String, lines_beyond: usize },
+}
+
+/// Bounds how much of an oversized index is read just to count what the cap leaves out.
+const SCAN_LIMIT: u64 = 4 * 1024 * 1024;
+
+fn read_index(path: &Path) -> IndexRead {
+    let unusable = |what: &dyn std::fmt::Display| IndexRead::Unusable(what.to_string());
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_file() => {}
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return unusable(&"it is a link, which a session refuses to follow");
+        }
+        Ok(_) => return unusable(&"it is not a regular file"),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return IndexRead::Missing,
+        Err(e) => return unusable(&fontaine_tools::error_chain::chain(&e)),
+    }
+    let mut bytes = Vec::new();
+    let read =
+        std::fs::File::open(path).and_then(|file| file.take(SCAN_LIMIT).read_to_end(&mut bytes));
+    if let Err(e) = read {
+        return unusable(&fontaine_tools::error_chain::chain(&e));
+    }
+    // The same capped prefix `load` validates, so a character cut at the cap is accepted.
+    let cut = bytes.len() > MAX_INDEX_BYTES;
+    let prefix_len = bytes.len().min(MAX_INDEX_BYTES);
+    let valid = match std::str::from_utf8(&bytes[..prefix_len]) {
+        Ok(text) => text.len(),
+        Err(e) if cut && e.error_len().is_none() => e.valid_up_to(),
+        Err(_) => return unusable(&"it is not valid UTF-8"),
+    };
+    let prefix = std::str::from_utf8(&bytes[..valid]).expect("the prefix was validated");
+    let mut lines = prefix.split_inclusive('\n');
+    let kept: String = lines.by_ref().take(MAX_INDEX_LINES).collect();
+    // A byte cap that lands mid-line leaves the tail of a kept line in `rest`; it is not a
+    // further line, so counting starts at the next line boundary.
+    let rest = &bytes[kept.len()..];
+    let after_boundary = if kept.ends_with('\n') || kept.is_empty() {
+        rest
+    } else {
+        rest.iter()
+            .position(|b| *b == b'\n')
+            .map_or(&rest[rest.len()..], |i| &rest[i + 1..])
+    };
+    let mut lines_beyond = String::from_utf8_lossy(after_boundary).lines().count();
+    // Blank lines past the cap are still cut by `load`, which warns.
+    if lines_beyond == 0 && (cut || lines.next().is_some()) {
+        lines_beyond = 1;
+    }
+    IndexRead::Text { kept, lines_beyond }
+}
+
+/// Compares the store at `dir` with its `MEMORY.md`: whether the index loads, whether it stays
+/// within what the prompt takes, and whether its links and the topic files agree. Reads only.
+pub fn check(dir: &Path) -> Vec<MemoryFinding> {
+    use MemoryFinding::*;
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) if meta.file_type().is_dir() => {}
+        Ok(_) => {
+            return vec![StoreUnusable {
+                reason: "it is a link or not a directory, so a session will not use it".into(),
+            }];
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return vec![StoreMissing],
+        Err(e) => {
+            return vec![StoreUnusable {
+                reason: fontaine_tools::error_chain::chain(&e),
+            }];
+        }
+    }
+    let mut findings = Vec::new();
+    let (kept, lines_beyond) = match read_index(&dir.join(INDEX_FILE)) {
+        IndexRead::Missing => (String::new(), 0),
+        IndexRead::Unusable(reason) => {
+            return vec![IndexUnusable { reason }];
+        }
+        IndexRead::Text { kept, lines_beyond } => (kept, lines_beyond),
+    };
+    if lines_beyond > 0 {
+        findings.push(IndexTruncated { lines_beyond });
+    }
+
+    let mut linked: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut seen: std::collections::BTreeMap<String, Vec<usize>> =
+        std::collections::BTreeMap::new();
+    let mut fence = None;
+    for (index, text) in kept.lines().enumerate() {
+        let line = index + 1;
+        if let Some(open) = fence {
+            if crate::instructions::markdown::closes_fence(text, open) {
+                fence = None;
+            }
+            continue;
+        }
+        if let Some(open) = crate::instructions::markdown::opening_fence(text) {
+            fence = Some(open);
+            continue;
+        }
+        for target in link_targets(text) {
+            if is_web_link(&target) {
+                continue;
+            }
+            if escapes_store(&target) {
+                findings.push(EscapingLink { line, target });
+                continue;
+            }
+            if !target.to_ascii_lowercase().ends_with(".md") {
+                continue;
+            }
+            let relative: PathBuf = Path::new(&target)
+                .components()
+                .filter(|c| !matches!(c, std::path::Component::CurDir))
+                .collect();
+            let name = relative.to_string_lossy().replace('\\', "/");
+            seen.entry(name.clone()).or_default().push(line);
+            match std::fs::symlink_metadata(dir.join(&relative)) {
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    findings.push(DanglingEntry { line, target });
+                }
+                Err(_) => findings.push(UnloadedTarget {
+                    line,
+                    target,
+                    is_link: false,
+                }),
+                Ok(meta) => {
+                    let single = relative.components().count() == 1;
+                    if single && meta.file_type().is_file() {
+                        linked.insert(name.to_lowercase());
+                    } else {
+                        findings.push(UnloadedTarget {
+                            line,
+                            target,
+                            is_link: meta.file_type().is_symlink(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    for (target, lines) in seen {
+        if lines.len() > 1 {
+            findings.push(DuplicateEntry { target, lines });
+        }
+    }
+    for file in files(dir) {
+        let Some(name) = file
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        // Lowercased on both sides: on a case-insensitive filesystem `A.md` links `a.md`.
+        if name != INDEX_FILE && !linked.contains(&name.to_lowercase()) {
+            findings.push(OrphanFile { file: name });
+        }
+    }
+    findings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,5 +632,238 @@ mod tests {
             .collect();
         assert_eq!(names, ["MEMORY.md", "alpha.md", "zeta.md"]);
         assert!(files(&dir.join("missing")).is_empty());
+    }
+
+    fn index(dir: &Path, text: &str) {
+        std::fs::write(dir.join(INDEX_FILE), text).unwrap();
+    }
+
+    fn topic(dir: &Path, name: &str) {
+        std::fs::write(dir.join(name), "x").unwrap();
+    }
+
+    #[test]
+    fn a_consistent_store_has_no_findings() {
+        let (_tmp, dir) = store();
+        topic(&dir, "commands.md");
+        index(
+            &dir,
+            "- [cmds](commands.md) build and test\n- [site](https://example.com/a.md)\n",
+        );
+        assert_eq!(check(&dir), []);
+    }
+
+    #[test]
+    fn a_missing_store_is_not_a_problem() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            check(&tmp.path().join("none")),
+            [MemoryFinding::StoreMissing]
+        );
+    }
+
+    #[test]
+    fn a_store_that_is_a_file_is_unusable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("k");
+        std::fs::write(&path, "x").unwrap();
+        assert!(matches!(
+            check(&path)[..],
+            [MemoryFinding::StoreUnusable { .. }]
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_store_or_index_that_is_a_link_is_unusable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        assert!(matches!(
+            check(&link)[..],
+            [MemoryFinding::StoreUnusable { .. }]
+        ));
+
+        let (tmp, dir) = store();
+        let secret = tmp.path().join("secret.md");
+        std::fs::write(&secret, "x").unwrap();
+        std::os::unix::fs::symlink(&secret, dir.join(INDEX_FILE)).unwrap();
+        assert!(matches!(
+            check(&dir)[..],
+            [MemoryFinding::IndexUnusable { .. }]
+        ));
+    }
+
+    #[test]
+    fn an_index_that_is_a_directory_or_not_utf8_is_unusable() {
+        let (_tmp, dir) = store();
+        std::fs::create_dir(dir.join(INDEX_FILE)).unwrap();
+        assert!(matches!(
+            check(&dir)[..],
+            [MemoryFinding::IndexUnusable { .. }]
+        ));
+        std::fs::remove_dir(dir.join(INDEX_FILE)).unwrap();
+        std::fs::write(dir.join(INDEX_FILE), [0xff, 0xfe, b'a']).unwrap();
+        assert!(matches!(
+            check(&dir)[..],
+            [MemoryFinding::IndexUnusable { .. }]
+        ));
+    }
+
+    #[test]
+    fn a_character_cut_at_the_byte_cap_is_accepted() {
+        let (_tmp, dir) = store();
+        index(&dir, &"é".repeat(MAX_INDEX_BYTES));
+        let findings = check(&dir);
+        assert!(
+            !findings
+                .iter()
+                .any(|f| matches!(f, MemoryFinding::IndexUnusable { .. })),
+            "{findings:?}"
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, MemoryFinding::IndexTruncated { .. }))
+        );
+    }
+
+    #[test]
+    fn lines_beyond_the_cap_are_counted() {
+        let (_tmp, dir) = store();
+        let text: String = (0..MAX_INDEX_LINES + 3)
+            .map(|i| format!("l{i}\n"))
+            .collect();
+        index(&dir, &text);
+        assert_eq!(
+            check(&dir),
+            [MemoryFinding::IndexTruncated { lines_beyond: 3 }]
+        );
+    }
+
+    #[test]
+    fn a_dangling_entry_names_its_line_and_target() {
+        let (_tmp, dir) = store();
+        topic(&dir, "a.md");
+        index(&dir, "- [a](a.md)\n- [gone](gone.md#top)\n");
+        assert_eq!(
+            check(&dir),
+            [MemoryFinding::DanglingEntry {
+                line: 2,
+                target: "gone.md".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_target_the_store_never_loads_is_flagged() {
+        let (_tmp, dir) = store();
+        std::fs::create_dir(dir.join("sub")).unwrap();
+        topic(&dir.join("sub"), "n.md");
+        index(&dir, "- [n](sub/n.md)\n");
+        assert_eq!(
+            check(&dir),
+            [MemoryFinding::UnloadedTarget {
+                line: 1,
+                target: "sub/n.md".into(),
+                is_link: false
+            }]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_topic_file_is_named_as_a_link() {
+        let (tmp, dir) = store();
+        let outside = tmp.path().join("outside.md");
+        std::fs::write(&outside, "x").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join("l.md")).unwrap();
+        index(&dir, "- [l](l.md)\n");
+        assert_eq!(
+            check(&dir),
+            [MemoryFinding::UnloadedTarget {
+                line: 1,
+                target: "l.md".into(),
+                is_link: true
+            }]
+        );
+    }
+
+    #[test]
+    fn an_unlinked_topic_file_is_an_orphan() {
+        let (_tmp, dir) = store();
+        topic(&dir, "a.md");
+        topic(&dir, "b.md");
+        index(&dir, "- [a](./a.md)\n");
+        assert_eq!(
+            check(&dir),
+            [MemoryFinding::OrphanFile {
+                file: "b.md".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn topic_files_without_an_index_are_orphans() {
+        let (_tmp, dir) = store();
+        topic(&dir, "a.md");
+        assert_eq!(
+            check(&dir),
+            [MemoryFinding::OrphanFile {
+                file: "a.md".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn two_entries_for_one_file_are_a_duplicate() {
+        let (_tmp, dir) = store();
+        topic(&dir, "a.md");
+        index(&dir, "- [a](a.md)\n- [again](a.md)\n");
+        assert_eq!(
+            check(&dir),
+            [MemoryFinding::DuplicateEntry {
+                target: "a.md".into(),
+                lines: vec![1, 2]
+            }]
+        );
+    }
+
+    #[test]
+    fn links_that_leave_the_store_are_flagged_and_web_links_are_not() {
+        let (_tmp, dir) = store();
+        index(
+            &dir,
+            "[a](../x.md)\n[b](/etc/passwd.md)\n[c](mailto:a@b.c)\n[d](file:///x.md)\n[e](HTTPS://x.dev/y.md)\n",
+        );
+        let lines: Vec<usize> = check(&dir)
+            .iter()
+            .map(|f| match f {
+                MemoryFinding::EscapingLink { line, .. } => *line,
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(lines, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn links_inside_fenced_code_are_ignored() {
+        let (_tmp, dir) = store();
+        index(
+            &dir,
+            "```md\n[gone](gone.md)\n```\n~~~\n[x](../x.md)\n~~~\n",
+        );
+        assert_eq!(check(&dir), []);
+    }
+
+    #[test]
+    fn link_extraction_handles_titles_angles_and_several_per_line() {
+        assert_eq!(
+            link_targets("[a](a.md \"t\") and [b](<b c.md>) [no]( ) text](x.md)"),
+            ["a.md", "b c.md"]
+        );
+        assert!(link_targets("no links (here)").is_empty());
     }
 }

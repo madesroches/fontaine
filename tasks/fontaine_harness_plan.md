@@ -431,6 +431,10 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-25: project scope cannot set `[env]` (Claude Code honors it after trust); it cannot tighten, and a project `PATH` would shadow commands the pre-classifier and guardian reason about.
 - 2026-10-25: `[env]` applies to tool and extension subprocesses only, not Fontaine's own process (Claude Code applies it to both); credential and telemetry lookups keep their explicit keys.
 - 2026-11-02: `[model] effort` is `off|low|medium|high|max` (`off` is beyond Claude Code's set; `xhigh` and `minimal` are not exposed), user scope only. Unset sends nothing, so the model's own default applies, unlike a default level. `max` is passed through rig's provider mapping; Claude Code's exact `max` behavior was not re-verified. A level the model's catalog entry or its wire refuses (a generic `openai-compatible` gateway has no rig option mapping) is dropped with a one-time warning rather than failing the turn.
+- 2026-11-03: `fontaine doctor` is a CLI subcommand only (Claude Code's `/doctor` is an in-session command); the TUI `/doctor` is deferred. It is read-only and exits 1 when a finding is `fail`.
+- 2026-11-03: `config::load` stays fail-fast and fail-closed for sessions; only `config::diagnose`, used by `fontaine doctor`, reads every layer independently and reports each one's first error.
+- 2026-11-03: `fontaine doctor` starts MCP servers only as a session's `mcp_plan` would without a prompt: repository servers are skipped in an untrusted workspace and until approved, so it never runs repository code a session would not (`--connect=no` skips the probe).
+- 2026-11-03: `fontaine doctor` finding levels: only conditions that stop a session working as configured (unavailable guardian, `models::resolve` error, unreadable `trust.toml`, config, plugin, skill or memory load failures) are `fail`; an untrusted workspace, a failed MCP probe and model notices are `warn`. It adds no reachability probe of its own beyond `models::resolve`.
 
 ### Core
 

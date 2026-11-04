@@ -64,7 +64,10 @@ missing or unreadable `--settings` file is also an error.
 
 In the terminal UI, `/config` shows each key's effective value and the scope that supplied it, and
 edits a few preferences in the user file; it never writes a project file. See the
-[settings panel](tui.md#settings-panel).
+[settings panel](tui.md#settings-panel). `fontaine doctor` shows the same provenance without a
+session, reports every layer that fails to load (including a project key the scope policy
+refused) instead of stopping at the first, and checks trust, models and MCP servers; see
+[`fontaine doctor`](doctor.md).
 
 ### Merge rules
 

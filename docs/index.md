@@ -26,6 +26,9 @@ describe what the current build does; each page covers one topic.
 - [Instruction files](instructions.md): `FONTAINE.md`, `CLAUDE.md` and `AGENTS.md` from your
   config, every parent directory and nested directories, `@path` imports, rules scoped by path,
   what the guardian reads, `/memory` and `/init`.
+- [`fontaine doctor`](doctor.md): the read-only check of the settings layers (including project keys
+  the scope policy refused), effective values and their source, workspace trust, guardian and model
+  availability, MCP servers, instruction files, hooks and skills, and auto-memory integrity.
 - [Auto memory](memory.md): the per-project notes store, how its writes are gated, what the
   guardian does with them, and how to audit and clear it.
 - [Skills, agent files and output styles](extensions.md): the extension files, their

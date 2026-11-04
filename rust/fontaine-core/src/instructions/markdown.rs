@@ -10,7 +10,7 @@ fn split_line(text: &str) -> (&str, &str) {
 }
 
 /// The fence character and length a line opens, if it opens one.
-fn opening_fence(line: &str) -> Option<(char, usize)> {
+pub(crate) fn opening_fence(line: &str) -> Option<(char, usize)> {
     let trimmed = line.trim_start_matches([' ', '\t']);
     let c = trimmed.chars().next().filter(|c| matches!(c, '`' | '~'))?;
     let len = trimmed.chars().take_while(|&x| x == c).count();
@@ -24,7 +24,7 @@ fn opening_fence(line: &str) -> Option<(char, usize)> {
     Some((c, len))
 }
 
-fn closes_fence(line: &str, (c, len): (char, usize)) -> bool {
+pub(crate) fn closes_fence(line: &str, (c, len): (char, usize)) -> bool {
     let trimmed = line.trim();
     trimmed.len() >= len && trimmed.chars().all(|x| x == c)
 }
