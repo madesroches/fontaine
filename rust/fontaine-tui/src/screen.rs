@@ -2143,6 +2143,25 @@ mod tests {
     }
 
     #[test]
+    fn clearing_with_a_reprint_leaves_only_the_new_conversation() {
+        let mut harness = emulated::Harness::new(40, 12);
+        let mut app = app();
+        for i in 0..20 {
+            app.transcript.notice(format!("old {i}"));
+            harness.render(&mut app, "filling");
+        }
+        assert!(harness.scrollback().iter().any(|r| r.contains("old 0")));
+        app.transcript.clear();
+        app.transcript.notice("cleared");
+        app.reprint = true;
+        harness.render(&mut app, "after clear");
+        let mut seen = harness.scrollback();
+        seen.extend(harness.real());
+        assert!(!seen.iter().any(|r| r.contains("old ")), "{seen:?}");
+        assert!(seen.iter().any(|r| r.contains("cleared")), "{seen:?}");
+    }
+
+    #[test]
     fn clear_live_keeps_scrollback_and_blanks_the_live_rows() {
         let mut screen = screen(30, 10);
         let mut app = app();

@@ -218,8 +218,9 @@ impl Transcript {
         )));
     }
 
-    /// Empties the transcript after `/clear`. What was already written stays in the terminal's
-    /// scrollback; what was held back moves to `retired` for the screen to write.
+    /// Empties the transcript. Without a reprint (as in `/rewind`) what was already written stays
+    /// in the terminal's scrollback and what was held back moves to `retired` for the screen to
+    /// write; a reprint (as `/clear` does) drops both.
     pub fn clear(&mut self) {
         let skip = self.committed_chars;
         let held = self.entries.drain(self.committed..);

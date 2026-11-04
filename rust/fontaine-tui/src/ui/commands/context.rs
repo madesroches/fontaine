@@ -19,13 +19,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
         match runtime.clear_conversation().await {
             Ok(()) => {
                 self.app.transcript.clear();
+                // The old conversation would otherwise stay on screen and in scrollback, which
+                // is not what clearing it means; the reprint drops the rows the clear retired.
+                self.app.reprint = true;
                 self.app.todos.set_items(runtime.session.todos().root());
                 // They described the conversation that is gone.
                 self.app.pending_notices.clear();
                 // So do the cached per-agent transcripts, and a view onto a pruned agent
-                // would route input to a dead agent. Only an on-screen view needs the switch
-                // back: a plain clear must not reprint, or the rows just retired to
-                // scrollback are dropped with the erased screen.
+                // would route input to a dead agent.
                 self.app.agent_views.clear();
                 if self.app.viewing.is_some() {
                     self.app.view(None);

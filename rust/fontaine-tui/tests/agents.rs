@@ -592,7 +592,6 @@ async fn clear_prunes_an_ended_subagent_from_the_agent_list_at_once() {
         ui.send("/clear");
         ui.wait_for("cleared the conversation").await;
         // The list below the status bar is gone: no subagent row, and not even `main`.
-        // (The lines the cleared conversation wrote stay in scrollback, as they should.)
         let screen = ui.screen();
         assert!(!screen.contains("(agent-1) worker"), "{screen}");
         assert!(!screen.contains("● main"), "{screen}");

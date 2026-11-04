@@ -15,14 +15,14 @@ the input box, the status bar, any open prompt, the working spinner row while a 
 part of the transcript that still fits above the input. A short transcript, typically just the
 startup warnings, sits on the rows directly above the input box with empty space above it. Once the
 transcript no longer fits, the oldest entries move into the terminal's normal scrollback, and
-leaving the UI (or `/clear`) writes whatever was still held back there too, so the conversation
-stays in the terminal. Scroll back with the terminal or with tmux copy mode, and select text with
+leaving the UI writes whatever was still held back there too, so the conversation stays in the
+terminal. Scroll back with the terminal or with tmux copy mode, and select text with
 the mouse as in any shell program.
 Showing a [subagent's transcript](#the-agent-list-and-the-agent-view) erases the terminal's
 scrollback and writes that transcript in its place, and going back to the main conversation does
 the same, so whatever the terminal held from before the session started, and the
-main chat's rows from before a `/clear`, are gone after the first switch. Ctrl-L erases the
-scrollback the same way.
+main chat's rows from before a `/clear`, are gone after the first switch. Ctrl-L and `/clear`
+erase the scrollback the same way.
 
 The input box title says what Enter does: it sends a message, or, when the input starts with `!`,
 runs it as a shell command. The transcript shows your messages (`>`), the streaming answer, and a
@@ -613,9 +613,10 @@ ignores the escape leaves the clipboard unchanged without reporting an error.
 ## Context
 
 `/clear` empties the model's context. The session carries on: the same id, ledger, audit log,
-grants and permission mode. The transcript is emptied (what was already written stays in your
-terminal's scrollback), and so is the guardian's view of what you have asked, which starts again
-from the next message you send; the files, actions and denials it knows about are kept.
+grants and permission mode. The transcript is emptied and the screen and the terminal's
+scrollback are erased, as Ctrl-L does (screen-reader mode keeps its history), and so is the
+guardian's view of what you have asked, which starts again from the next message you send; the
+files, actions and denials it knows about are kept.
 [`/rewind`](checkpoints.md) trims the guardian's view the same way for the prompts it takes back. The old
 conversation cannot be resumed: `--resume` reopens the empty one. `/clear` is refused while a
 subagent is running or its report is waiting to be delivered, since the subagent's calls are judged against what you asked; wait for it

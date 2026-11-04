@@ -747,7 +747,7 @@ async fn finished_replies_stay_in_the_live_area_above_the_input_while_they_fit()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn clear_writes_the_held_conversation_to_scrollback_before_the_notice() {
+async fn clear_erases_the_old_conversation_from_the_screen_and_scrollback() {
     let w = World::new(vec![text_turn("first reply")]);
     w.run(|ui| async move {
         ui.send("one");
@@ -757,10 +757,13 @@ async fn clear_writes_the_held_conversation_to_scrollback_before_the_notice() {
         ui.wait_for("cleared the conversation").await;
         idle(&ui).await;
         let screen = ui.screen();
-        let reply = screen.find("first reply").expect("the reply is kept");
-        let cleared = screen.find("cleared the conversation").unwrap();
-        assert!(reply < cleared, "{screen}");
-        assert_eq!(screen.matches("first reply").count(), 1, "{screen}");
+        assert!(!screen.contains("first reply"), "{screen}");
+        assert!(!screen.contains("> one"), "{screen}");
+        assert_eq!(
+            screen.matches("cleared the conversation").count(),
+            1,
+            "{screen}"
+        );
     })
     .await;
 }
