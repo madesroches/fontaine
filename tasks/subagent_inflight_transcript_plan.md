@@ -19,13 +19,14 @@ The settle-time save stays the authoritative record.
   `SettledOutcome::Error` and `messages: Some(run.messages())`, which `RecoveryHook`
   (`turn_recovery.rs:46`) appends to the log. A kill reaches neither path.
 - rig-memory's `save_async` refuses a conversation that does not continue the log
-  (`check_continues` → `SessionError::Changed`). **Appending mid-run to the agent's own log
-  would therefore make the engine's final save fail.** The incremental write cannot go to
-  `agent-<n>` itself.
-- The hooks that observe a run in progress are `on_run_start` (the prompt `Message`),
-  `on_model_turn_finished` (the turn's committed assistant content) and `on_outcome`/`on_dispatch`
-  for tool effects. There is no hook that hands over the run's committed `Message`s mid-run;
-  `RunSettled.messages` exists only at the end.
+  (`check_continues` → `SessionError::Changed`).
+- `on_run_start` (`RunStart.history` gives the input length) and `on_completion_call`
+  (`CompletionCallEvent {prompt, history, turn}`, fired before every model call) hand over the
+  run's committed messages mid-run: `history[input_len..] + prompt` is exactly what the engine
+  has committed so far. `on_model_turn_finished` content can differ from what is committed, and
+  `OutcomeEvent` has no batch information, its results are rewritten after hooks and malformed
+  calls never reach it. `RunSettled.messages` exists only at the end.
+- No Fontaine code enumerates a store's logs.
 - `export.rs:145` renders a subagent with `load_async(&store, &agent.id)`; `docs/agents.md`
   ("A subagent's conversation") documents that a running agent has its completed runs only on
   disk.
@@ -38,9 +39,8 @@ committed by the run in progress (the prompt onward), so it never conflicts with
 save of `<agent-id>`.
 
 ```
-run start ──► journal reset, append prompt
-turn end  ──► append assistant message
-tool batch──► append tool-result user message
+run start      ──► journal reset, record input length
+completion call──► append the not-yet-journaled tail of history[input_len..] + prompt
 settle OK ──► (engine saved <id>) ──► journal removed
 settle Err──► RecoveryHook appends to <id> ──► journal removed
 SIGKILL   ──► journal stays; export reads <id> then <id>.inflight
@@ -53,29 +53,31 @@ warn-through-`Approver` failure handling:
 
 - `on_run_start`: remove any stale journal (a previous kill's leftover for this id is superseded
   because the id is never reused, but a resumed run in the same process starts a new journal),
-  then append the prompt. Returns `RunStartAction::Continue`.
-- `on_model_turn_finished`: append `Message::Assistant` built from `event.content`; returns
-  `ModelTurnAction::Continue`.
-- `on_outcome`: for a tool-call effect, buffer the result; the engine commits a batch atomically,
-  so flush the buffered results as one user message once the batch's last call has answered.
-  If a tool result cannot be reproduced exactly from `OutcomeEvent`, write it as a
-  `ToolResult` carrying the answer's text; the journal is evidence, not a resume source.
+  and record the input length from `RunStart.history`. Returns `RunStartAction::Continue`.
+- `on_completion_call`: append the not-yet-journaled tail of `history[input_len..] + prompt`
+  (exactly the committed messages) to the journal. The prompt is journaled by the first call.
+- `on_model_turn_finished` (optional): may append the last assistant turn while its tools are
+  still running; every other message comes from `on_completion_call`.
 - `on_run_settled`: remove the journal on both outcomes. `RecoveryHook` is registered before it,
   so the error-path append to `<id>` lands first.
 
 Every append is one `append_messages` call to the journal log (the existing helper: load, extend,
-`save_async`). That is O(n) per append; acceptable for subagent transcripts, and `DirStore`
-writes are append-only on disk. Failures are warned once per run via `Approver::warn`, never
+`save_async`). That is O(n) per append; acceptable for subagent transcripts, and `DirStore`'s
+`save_async` appends only the new messages. Failures are warned once per run via `Approver::warn`, never
 fatal, and never change a permission decision. Journal I/O must not block the kill path:
 `KillHook` is unaffected.
 
 ### Reading the journal
 
-`export.rs` loads `<id>` and then, when `<id>.inflight` exists, appends its messages after a
-"run interrupted" marker so the export distinguishes them. `load_async` already tolerates a torn
-tail. A live agent in this process is unaffected: its journal is removed at settle, and the
-existing "completed runs only" note applies except that the export may now include the journal of
-the run in progress.
+`export.rs` loads `<id>` and then `<id>.inflight`; `load_async` on a missing log returns an empty
+`Ok`, so an empty loaded journal means "no journal" and no marker is written. Otherwise its
+messages follow a "run interrupted" marker so the export distinguishes them. A fork child's
+`<id>` is seeded with the parent's context before its first run, so its export shows the seeded
+context, then the marker and the journal. `load_async` already tolerates a torn tail. A live
+agent's journal is removed at settle, except when the stream is dropped without settling (a
+spent budget, the kill-grace timeout): the journal then survives for an agent in the same process
+too and `/export` shows it the same way. The existing "completed runs only" note applies except
+that the export may include the journal of the run in progress.
 
 Scope: subagents only (the issue). `InflightHook` is generic over the store and log, so the root
 could register it later without change.
@@ -87,16 +89,14 @@ could register it later without change.
 2. `fontaine-core/src/child_runner.rs`: register `InflightHook` after `RecoveryHook`.
 3. `fontaine-core/src/export.rs`: append a present journal after the agent's log, with a marker;
    the missing-journal case is unchanged.
-4. Check that nothing enumerating the store's logs (session listing, `/rewind`, retention,
-   `fontaine doctor`) mistakes `*.inflight` for a conversation; adjust the filter if one does.
-5. Docs and changelog (below).
+4. Docs and changelog (below).
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/turn_recovery.rs`
 - `rust/fontaine-core/src/child_runner.rs`
 - `rust/fontaine-core/src/export.rs`
-- `rust/fontaine-core/tests/turn_recovery.rs` (or a new `tests/agent_inflight.rs`)
+- `rust/fontaine-core/tests/agent_pipeline.rs` (`mod killed`)
 - `docs/agents.md`, `docs/tui.md` (export note), `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (Decisions, Agents)
 
@@ -128,20 +128,15 @@ could register it later without change.
 Unit tests in `turn_recovery.rs` against `MemoryStore`/`DirStore`, driven by calling the hook
 methods with constructed events:
 
-- journal holds prompt, assistant and tool-result messages in order after each event;
+- journal holds prompt, assistant and tool-result messages in order after each `on_completion_call`;
 - journal is removed on `Response` and on `Error` settle, and on error the messages are in `<id>`;
 - a stale journal is replaced at run start;
 - a torn journal still loads (extends `a_torn_log_remains_readable`);
 - a store failure warns once and the run continues.
 
-Integration test through `rig_core::test_utils` mock models and the real `DirStore`: a scripted
-subagent run whose second model turn never completes (the future is dropped, simulating a kill);
+Integration test in `rust/fontaine-core/tests/agent_pipeline.rs` `mod killed`, reusing
+`build_held`/`child_log`/`wait_report`: the held request stands in for a run that never completes;
 assert `agent-N.inflight` holds the prompt, the first assistant turn and its tool result, and
 that `export_session` renders them. This pins the bug in #404 at the tier that reproduces it
-(a dropped run, no settle). A successful run leaves no `.inflight` file and an unchanged
+(a run with no settle). A successful run leaves no `.inflight` file and an unchanged
 `agent-N.jsonl`.
-
-## Open Questions
-
-- Whether `on_outcome` yields enough to rebuild tool-result messages faithfully (decided during
-  implementation by inspecting `Answered`); the fallback is stated under `on_outcome` above.
