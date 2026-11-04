@@ -74,9 +74,9 @@ overall timeout stays the hard ceiling and the fail-closed result is unchanged.
 ## Trade-offs
 
 - Front-loaded slicing (first attempt gets the budget minus a floor per later attempt) over an
-  equal split: an equal ~10 s slice would time out models that legitimately need 10–25 s per answer
-  (local/qwen3:4b p50 25 s, kimi-for-coding p95 17.5 s, see `docs/evals.md`) on every attempt, a
-  regression from today. It adapts to the configured `timeout` with no new config key. Cost: a
+  equal split: an equal ~10 s slice would time out models that legitimately need 10–20 s per answer
+  (kimi-for-coding p95 17.5 s, see `docs/evals.md`) on every attempt, a regression from today.
+  Answers taking 20–30 s now need a larger `timeout_secs`. It adapts to the configured `timeout` with no new config key. Cost: a
   retry after a stall gets only the floor (5 s), enough for a fast hosted model, not for a slow one;
   a model that needs more than `timeout - 2 * floor` (20 s by default) per answer needs a larger `timeout_secs`.
 - Floor of 5 s: a short configured timeout should not be cut into slices too small to answer.

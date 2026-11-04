@@ -249,7 +249,8 @@ Fontaine's code, not the model, decides what happens when there is no usable ver
 
 The retry budget is two retries, shared between malformed answers, provider errors and stalled
 attempts, and the last failure names the denial. Each attempt gets a slice of `timeout_secs`: the
-first may use all but 10 seconds of it and each retry at least 5, so a call that never answers is
+first may use all but 10 seconds of it (for timeouts of 15 seconds or more) and each retry gets
+at least 5 seconds when that much remains, so a call that never answers is
 retried instead of using the whole timeout, while `timeout_secs` stays the ceiling. A slow model
 therefore needs a `timeout_secs` above its worst answer time plus 10 seconds. A malformed verdict is retried with a note saying why it was rejected,
 written by Fontaine and never quoting the model's own text; if it still fails it is denied as
