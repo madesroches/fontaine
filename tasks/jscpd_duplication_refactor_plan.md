@@ -27,8 +27,10 @@ literal. It is a pure refactor: no user-visible, permission or audit-format beha
 - **Permission-path records.** `fontaine-core/src/gate.rs` (the `record_session_event` helper near line
   538), `permissions.rs` (`record` near line 1190) and `user_shell.rs` (near line 67) each spell out
   every `DecisionRecord` field, 19–23 of them `None`.
-- **Account literal.** `accounts.rs::build` and the `account()` helper in `user_config.rs` tests
-  each list every `Account` field with `None` except `kind` and `base_url`.
+- **Account literal.** `accounts.rs::build`, the `account()` helper in `user_config.rs` tests,
+  `config.rs`'s `openrouter` test helper and `fontaine-core/tests/account_session.rs::late_account`
+  each list every `Account` field with `None` except `kind` and `base_url` (`late_account` also sets
+  `models`).
 
 ## Design
 
@@ -54,6 +56,8 @@ pub enum Block { Text(String), Bold(String) }
   `… N more lines; the whole list is in the transcript above` line, hard-coded (the setup review is
   its only user).
 - `footer()` returns the one dim line.
+- `setup_prompt::new` maps `review.lines()` to one `Block::Text` each (`input::wrap` does not split
+  on newlines).
 - Each of the four modules keeps only its text: a constructor function returning `ConfirmPrompt`
   (`ServerPrompt::new` → `server_prompt::new(name, description)` etc.), plus `skill_trust_prompt`'s
   public `describe`. `GuardianOffPrompt`, `ServerPrompt`, `SetupReviewPrompt`, `SkillTrustPrompt`
@@ -77,7 +81,7 @@ Small free functions, not a trait or a generic widget (the rows and Enter payloa
   returns 0 when `total <= window`.
 - `MAX_ROWS` (both pickers define `const MAX_ROWS: usize = 14`) moves here.
 
-Both `handle_key`s call them; the model picker applies its heading adjustment on top of
+`handle_key` calls `step`/`edit_query`; `body_as` calls `window_start`; the model picker applies its heading adjustment on top of
 `window_start`, only when the list overflows. Esc/Enter stay per-picker.
 
 ### 3. `DecisionRecord::new`
@@ -92,27 +96,29 @@ impl DecisionRecord {
 }
 ```
 
-All optional fields start `None`, `latency_ms` 0. There is deliberately no `Default`: tier and
+`session_id`, `agent_id`, `tool`, `args_digest` and `permission_mode` are all `String`. All optional fields start `None`, `latency_ms` 0. There is deliberately no `Default`: tier and
 decision have no safe default (a default `Decision` is a fail-open hazard), and an audit record must
 always state its decision. Callers set the
 few fields they own (`rule`, `explanation`, `latency_ms`, `tool_use_id`, `agent_name`, …) by field
 assignment. `new` sets `ts` from `now_rfc3339()` itself. Convert the three named sites (the only production
-literals); leave test-only literals unless trivially identical. The
+literals); also convert `fontaine-core/tests/common/mod.rs::audit_record`; leave the other test literals. The
 `with_guardian`/`annotate` code that fills guardian and screen fields afterwards is unchanged. This
 touches only audit-record construction; no permission decision logic moves.
 
 ### 4. `Account::new`
 
-- Add `Account::new(kind: AccountKind, base_url: Option<String>)` (all other fields `None`) and use
-  it in `accounts::build` and the `user_config.rs` test helper (and `config.rs`'s `openrouter(base_url)` test helper).
+- Add `Account::new(kind: AccountKind, base_url: Option<String>)` (all other fields `None`) in
+  `impl Account` (`config.rs`) and use it in `accounts::build`, the `user_config.rs` test helper,
+  `config.rs`'s `openrouter(base_url)` test helper and
+  `fontaine-core/tests/account_session.rs::late_account` (plus a `models` assignment).
 
 ## Implementation Steps
 
 1. Add `audit.rs::DecisionRecord::new`; convert `gate.rs`, `permissions.rs`, `user_shell.rs`. Add the unit test below.
-2. Add `Account::new` in `config.rs`; use it in `accounts.rs`, `user_config.rs` and `config.rs`'s
-   `openrouter(base_url)` test helper.
+2. Add `Account::new` in `config.rs`'s `impl Account`; use it in `accounts.rs`, `user_config.rs`,
+   `config.rs`'s `openrouter(base_url)` test helper and `tests/account_session.rs::late_account`.
 3. Add `fontaine-tui/src/confirm_prompt.rs` (register in `lib.rs`), move `ANSWER_GRACE`, port the
-   four prompts to constructors, update `app.rs`, `view.rs`, `linear.rs`, `ui/mcp.rs`,
+   four prompts to constructors, update `app.rs`, `linear.rs`, `ui/mcp.rs`,
    `ui/commands/{skills,auto_mode_setup}.rs`, `trust_prompt.rs`, `question.rs`,
    `approval.rs`, `denials.rs` (private `ANSWER_GRACE` → `confirm_prompt::ANSWER_GRACE`).
 4. Add `fontaine-tui/src/picker.rs` (register in `lib.rs`); use it in `model_picker.rs` and
@@ -124,7 +130,7 @@ touches only audit-record construction; no permission decision logic moves.
 - `rust/fontaine-core/src/{audit,gate,permissions,user_shell,accounts,user_config,config}.rs`
 - `rust/fontaine-tui/src/{confirm_prompt,picker}.rs` (new), `lib.rs`
 - `rust/fontaine-tui/src/{guardian,server,setup,skill_trust}_prompt.rs`
-- `rust/fontaine-tui/src/{app,view,linear,trust_prompt,question,approval,denials,model_picker,resume_picker}.rs`
+- `rust/fontaine-tui/src/{app,linear,trust_prompt,question,approval,denials,model_picker,resume_picker}.rs`
 - `rust/fontaine-tui/src/ui/mcp.rs`, `ui/commands/{skills,auto_mode_setup}.rs`
 
 ## Decisions
@@ -143,9 +149,13 @@ None: internal refactor; no doc names the removed types.
   `setup_prompt.rs`'s `a_long_review_is_cut_with_a_pointer_to_the_transcript` moves there as the
   overflow test; picker tests (`up_and_down_skip_headings_and_wrap`,
   `the_window_follows_the_selection_in_a_long_list`, resume `arrows_wrap…`) stay unchanged and must
-  keep passing; the audit and ledger integration tests cover record contents.
-- New unit tests: `picker::{step,edit_query,window_start}` edge cases (empty list, wrap, Ctrl/Alt
-  chars, short list); `ConfirmPrompt::body` for each block kind;
+  keep passing, as do the existing model picker tests (`control_and_alt_characters_are_not_typed_but_shift_is`,
+  `editing_the_query_selects_the_first_match`).
+- New unit tests: `picker::step` with `count == 0` returns `selected`; `ConfirmPrompt::body` for each
+  block kind, checking each constructor's exact `body(80, theme)` and `footer()` lines;
   `DecisionRecord::new` leaves every optional field `None` and `latency_ms` 0.
-- Terminal layout is unchanged; compare a TUI prompt against `main` in tmux once if the rendered
-  lines differ in any snapshot test.
+- New integration tests, for fields set by assignment after `DecisionRecord::new`: in
+  `fontaine-core/tests/permissions.rs`, a child-agent check asserting `agent_name == Some(name)` and a
+  bounded `latency_ms`; in `fontaine-core/tests/guardian_off.rs`, find the record with rule
+  `guardian_off` and assert `tool`, `tier == GuardianOff`, `decision == Allow`, `agent_id == "root"`
+  and `explanation`.
