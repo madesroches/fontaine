@@ -752,6 +752,35 @@ mod tests {
     }
 
     #[test]
+    fn tui_notify_accepts_its_four_values_and_names_them_on_error() {
+        for method in ["bell", "osc9", "osc777", "off"] {
+            let text = format!("[tui]\nnotify = \"{method}\"\n");
+            assert_not_scope(&text, Column::User, method);
+        }
+        let text = "[tui]\nnotify = \"flash\"\n";
+        match outcome(text, Column::User) {
+            Err(ConfigError::Parse { message, .. }) => {
+                assert!(message.contains("2:10"), "{message}");
+                for method in ["bell", "osc9", "osc777", "off"] {
+                    assert!(message.contains(method), "{message}");
+                }
+            }
+            other => panic!("unknown variant: expected a parse error, got {other:?}"),
+        }
+        assert_scope(
+            "[tui]\nnotify = \"osc9\"\n",
+            Column::Project,
+            "project scope",
+        );
+        assert_eq!(
+            crate::config::Config::defaults(std::path::PathBuf::from("/w"))
+                .tui
+                .notify,
+            crate::config::NotifyMethod::Bell
+        );
+    }
+
+    #[test]
     fn effort_keys_refuse_the_shared_project_file() {
         for text in [
             "[model]\neffort = \"high\"\n",

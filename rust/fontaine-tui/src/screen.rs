@@ -21,7 +21,9 @@ use ratatui::style::Modifier;
 use ratatui::widgets::{Paragraph, Widget};
 
 use crate::app::App;
+use crate::notify::Notifier;
 use crate::view;
+use fontaine_core::config::NotifyMethod;
 
 /// Rows handed to `insert_before` at a time, so the count always fits a `u16`.
 const INSERT_CHUNK: usize = 512;
@@ -81,6 +83,9 @@ pub struct FrameWriter<W: Write = Tty> {
     frame: Vec<u8>,
     open: bool,
     discard: bool,
+    /// Written after the frame's closing marker, in the same write, so a terminal does not hold
+    /// it back with the synchronized update.
+    trailer: Vec<u8>,
 }
 
 impl<W: Write> FrameWriter<W> {
@@ -90,6 +95,7 @@ impl<W: Write> FrameWriter<W> {
             frame: Vec::new(),
             open: false,
             discard: false,
+            trailer: Vec::new(),
         }
     }
 
@@ -117,6 +123,8 @@ impl<W: Write> FrameWriter<W> {
 
     fn end(&mut self) -> io::Result<()> {
         self.queue(EndSynchronizedUpdate);
+        let trailer = mem::take(&mut self.trailer);
+        self.frame.extend_from_slice(&trailer);
         self.open = false;
         self.drain()
     }
@@ -158,6 +166,9 @@ pub trait Framed: Backend {
     /// Closes the synchronized update and writes everything collected since `begin_frame`.
     fn end_frame(&mut self) -> Result<(), Self::Error>;
 
+    /// Adds `bytes` to the end of this frame's write, outside the synchronized update.
+    fn notify(&mut self, bytes: &[u8]);
+
     /// Erases the screen and then the scrollback, and homes the cursor.
     fn purge(&mut self) -> Result<(), Self::Error>;
 }
@@ -169,6 +180,10 @@ impl<W: Write> Framed for CrosstermBackend<FrameWriter<W>> {
 
     fn end_frame(&mut self) -> io::Result<()> {
         self.writer_mut().end()
+    }
+
+    fn notify(&mut self, bytes: &[u8]) {
+        self.writer_mut().trailer.extend_from_slice(bytes);
     }
 
     fn purge(&mut self) -> io::Result<()> {
@@ -190,6 +205,8 @@ impl Framed for TestBackend {
         Ok(())
     }
 
+    fn notify(&mut self, _bytes: &[u8]) {}
+
     fn purge(&mut self) -> Result<(), Self::Error> {
         // The backend keeps its scrollback to itself, so a fresh one stands for the cleared one.
         let size = self.size()?;
@@ -208,6 +225,9 @@ pub trait Anchor: Backend {
     fn end_frame(&mut self) -> Result<(), Self::Error> {
         Ok(())
     }
+
+    /// Adds `bytes` to the end of this frame's write; a backend that writes nothing ignores it.
+    fn notify(&mut self, _bytes: &[u8]) {}
 
     /// Erases the screen and then the scrollback, and homes the cursor.
     fn purge(&mut self) -> Result<(), Self::Error>;
@@ -250,6 +270,10 @@ impl<B: Framed> Anchor for Anchored<B> {
 
     fn end_frame(&mut self) -> Result<(), Self::Error> {
         self.inner.end_frame()
+    }
+
+    fn notify(&mut self, bytes: &[u8]) {
+        self.inner.notify(bytes);
     }
 
     fn purge(&mut self) -> Result<(), Self::Error> {
@@ -348,6 +372,7 @@ pub struct Screen<B: Backend + Anchor> {
     repaint: bool,
     /// The terminal's size when the live area was last laid out.
     size: Size,
+    notifier: Notifier,
 }
 
 impl<B: Backend + Anchor> Screen<B> {
@@ -368,7 +393,14 @@ impl<B: Backend + Anchor> Screen<B> {
             placeholder,
             repaint: false,
             size,
+            notifier: Notifier::new(NotifyMethod::Off),
         })
+    }
+
+    /// Signals a prompt that waits for an answer with `method`.
+    pub fn with_notify(mut self, method: NotifyMethod) -> Self {
+        self.notifier = Notifier::new(method);
+        self
     }
 
     /// Commits the transcript rows that no longer fit above the input, sizes the live area to
@@ -389,6 +421,9 @@ impl<B: Backend + Anchor> Screen<B> {
     fn framed(&mut self, app: &mut App, all: bool) -> Result<(), B::Error> {
         self.terminal.backend_mut().begin_frame();
         let drawn = self.draw_frame(app, all);
+        if let Some(bytes) = self.notifier.observe(app.pending_prompt()) {
+            self.terminal.backend_mut().notify(&bytes);
+        }
         let ended = self.terminal.backend_mut().end_frame();
         drawn.and(ended)
     }
@@ -1211,6 +1246,10 @@ mod tests {
                 self.inner.end_frame()
             }
 
+            fn notify(&mut self, bytes: &[u8]) {
+                self.inner.notify(bytes);
+            }
+
             fn purge(&mut self) -> io::Result<()> {
                 self.inner.purge()
             }
@@ -1315,6 +1354,10 @@ mod tests {
 
         impl Harness {
             pub fn new(width: u16, height: u16) -> Self {
+                Self::notifying(width, height, NotifyMethod::Off)
+            }
+
+            pub fn notifying(width: u16, height: u16, method: NotifyMethod) -> Self {
                 let emulator =
                     Arc::new(Mutex::new(vt100::Parser::new(nz(height), nz(width), 1000)));
                 let erased = Erased::default();
@@ -1328,7 +1371,7 @@ mod tests {
                 ));
                 SPARE_WRITES.with(|w| w.lock().unwrap().clear());
                 Harness {
-                    screen: Screen::new(backend, spare).unwrap(),
+                    screen: Screen::new(backend, spare).unwrap().with_notify(method),
                     emulator,
                     erased,
                     trace,
@@ -1674,6 +1717,25 @@ mod tests {
     /// A row that holds text before a frame and after it must not go blank in between, or a
     /// terminal that paints what it has read so far flashes. A terminal scroll exposes blank
     /// rows that the same frame fills, which no write order avoids.
+    #[test]
+    fn a_pending_approval_appends_the_notification_after_the_frame_once() {
+        let mut harness = emulated::Harness::notifying(40, 10, NotifyMethod::Osc9);
+        let mut app = app();
+        harness.writes_of(&mut app);
+        let (tx, _rx) = oneshot::channel();
+        app.begin_approval(approval_request("ls"), tx);
+        let writes = harness.writes_of(&mut app);
+        assert_eq!(writes.len(), 1, "{writes:?}");
+        let frame = String::from_utf8_lossy(&writes[0]).into_owned();
+        assert!(
+            frame.ends_with("\x1b[?2026l\x1b]9;Fontaine needs your approval\x07"),
+            "{frame:?}"
+        );
+        let writes = harness.writes_of(&mut app);
+        let frame = String::from_utf8_lossy(&writes[0]).into_owned();
+        assert!(frame.ends_with("\x1b[?2026l"), "{frame:?}");
+    }
+
     #[test]
     fn issue_220_rows_that_keep_their_text_are_never_blanked_mid_frame() {
         let mut harness = emulated::Harness::new(40, 10);

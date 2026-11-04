@@ -197,6 +197,16 @@ fn editor_mode_choices() -> Vec<ChoiceValue> {
     ]
 }
 
+fn notify_choices() -> Vec<ChoiceValue> {
+    vec![
+        ("bell", Some("bell".into())),
+        ("osc9", Some("osc9".into())),
+        ("osc777", Some("osc777".into())),
+        ("off", Some("off".into())),
+        ("unset", None),
+    ]
+}
+
 fn composition_field(
     config: &Config,
     field: impl Fn(&crate::config::GuardianComposition) -> String,
@@ -267,6 +277,12 @@ pub const KEYS: &[KeyRow] = &[
         "tui.editor_mode",
         |c, _| lowercase_debug(c.tui.editor_mode),
         Edit::Choice(editor_mode_choices),
+        NextLaunch
+    ),
+    row!(
+        "tui.notify",
+        |c, _| c.tui.notify.as_str().to_string(),
+        Edit::Choice(notify_choices),
         NextLaunch
     ),
     row!(
@@ -793,6 +809,7 @@ mod tests {
                 "tui.screen_reader",
                 "tui.show_reasoning",
                 "tui.editor_mode",
+                "tui.notify",
                 "context.autocompact_window",
                 "schedule.enabled",
                 "memory.auto",

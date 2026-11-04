@@ -28,6 +28,7 @@ use crate::history::History;
 use crate::input::{InputBuffer, MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia};
 use crate::keymap::Keymap;
 use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
+use crate::notify::PromptKind;
 use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::question::QuestionPanel;
 use crate::resume_picker::{ResumeKey, ResumePicker};
@@ -293,6 +294,7 @@ pub struct App {
     setup_review_opened: u64,
     setup_composition_opened: u64,
     questions_opened: u64,
+    unavailable_opened: u64,
 }
 
 /// The `/` menu while it is open.
@@ -421,6 +423,7 @@ impl App {
             setup_review_opened: 0,
             setup_composition_opened: 0,
             questions_opened: 0,
+            unavailable_opened: 0,
         }
     }
 
@@ -745,8 +748,38 @@ impl App {
         self.setup_composition = Some(prompt);
     }
 
-    pub fn begin_unavailable(&mut self, prompt: UnavailablePrompt) {
+    pub fn begin_unavailable(&mut self, mut prompt: UnavailablePrompt) {
+        self.unavailable_opened += 1;
+        prompt.id = self.unavailable_opened;
         self.unavailable = Some(prompt);
+    }
+
+    /// The first prompt that waits for an answer, in `view::overlay`'s order, with its id. It
+    /// looks at pending state rather than the displayed overlay, so a prompt under a panel that
+    /// outranks it still counts.
+    pub(crate) fn pending_prompt(&self) -> Option<(PromptKind, u64)> {
+        if let Some(p) = &self.unavailable {
+            return Some((PromptKind::Unavailable, p.id));
+        }
+        if let Some(p) = &self.server {
+            return Some((PromptKind::Server, p.id));
+        }
+        if let Some(p) = &self.guardian_off_prompt {
+            return Some((PromptKind::GuardianOff, p.id));
+        }
+        if let Some(p) = &self.skill_trust_prompt {
+            return Some((PromptKind::Skills, p.id));
+        }
+        if let Some(p) = &self.setup_review {
+            return Some((PromptKind::SetupReview, p.id));
+        }
+        if let Some(p) = &self.setup_composition {
+            return Some((PromptKind::SetupComposition, p.id));
+        }
+        if let Some(p) = &self.approval {
+            return Some((PromptKind::Approval, p.id));
+        }
+        self.questions.front().map(|p| (PromptKind::Question, p.id))
     }
 
     /// Answers the open prompts of the main conversation with a denial, as when its turn is

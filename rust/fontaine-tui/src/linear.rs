@@ -27,15 +27,6 @@ const PROMPT: &str = "> ";
 /// Wide and tall enough that a dialog is neither wrapped nor cut: the terminal wraps for itself.
 const WIDTH: usize = 1000;
 
-/// Dialogs that wait for an answer, which ring the bell when they open.
-const NEEDS_ANSWER: &[&str] = &[
-    "approval",
-    "question",
-    "MCP server",
-    "guardian unavailable",
-    "guardian",
-];
-
 /// One line as plain text. A selected row, which the dialogs mark by reversing it (and the `@`
 /// list by a bold `> ` row), becomes `selected: <text>`.
 pub(crate) fn flatten(line: &Line<'_>) -> String {
@@ -492,7 +483,7 @@ impl<W: Write> Linear<W> {
                 shown.retain(|line| !is_field_line(line, bare));
             }
             let echoed = self.echo.update(overlay.title, overlay.instance, shown);
-            bell |= echoed.opened && NEEDS_ANSWER.contains(&overlay.title);
+            bell |= echoed.opened && overlay.notify_message().is_some();
             lines.extend(echoed.lines);
         }
 
@@ -1278,6 +1269,34 @@ mod tests {
         rig.app.begin_guardian_off();
         let out = rig.render();
         assert!(out.contains('\x07') && out.contains("guardian:"), "{out:?}");
+
+        let mut rig = Rig::new();
+        rig.app.running = true;
+        rig.render();
+        let (tx, _rx) = oneshot::channel();
+        let info = fontaine_core::permissions::GuardianUnavailable {
+            model: "a/b".into(),
+            reason: "no key".into(),
+            tool: "shell".into(),
+        };
+        rig.app
+            .begin_unavailable(crate::denials::UnavailablePrompt::new(info, Vec::new(), tx));
+        let out = rig.render();
+        assert!(
+            out.contains('\x07') && out.contains("guardian unavailable:"),
+            "{out:?}"
+        );
+
+        let mut rig = Rig::new();
+        rig.app.running = true;
+        rig.render();
+        rig.app
+            .begin_setup_review(crate::setup_prompt::SetupReviewPrompt::new("r".into(), 1));
+        let out = rig.render();
+        assert!(
+            out.contains('\x07') && out.contains("auto-mode setup:"),
+            "{out:?}"
+        );
 
         let mut rig = Rig::new();
         rig.app.running = true;

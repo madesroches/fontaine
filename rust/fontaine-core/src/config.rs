@@ -843,6 +843,28 @@ impl EditorMode {
     }
 }
 
+/// How the terminal UI signals that a prompt is waiting for an answer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum NotifyMethod {
+    #[default]
+    Bell,
+    Osc9,
+    Osc777,
+    Off,
+}
+
+impl NotifyMethod {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            NotifyMethod::Bell => "bell",
+            NotifyMethod::Osc9 => "osc9",
+            NotifyMethod::Osc777 => "osc777",
+            NotifyMethod::Off => "off",
+        }
+    }
+}
+
 impl ThemeName {
     pub const ALL: [ThemeName; 6] = [
         ThemeName::DarkAnsi,
@@ -878,6 +900,8 @@ pub struct TuiSection {
     /// Show the model's reasoning in the transcript (default true).
     pub show_reasoning: Option<bool>,
     pub editor_mode: Option<EditorMode>,
+    /// How a pending approval or question is signalled (default bell).
+    pub notify: Option<NotifyMethod>,
 }
 
 /// One `[env]` value. Its `Debug` is redacted so a stray `{config:?}` cannot put a proxy password
@@ -1969,6 +1993,7 @@ pub struct Tui {
     pub screen_reader: Option<bool>,
     pub show_reasoning: bool,
     pub editor_mode: EditorMode,
+    pub notify: NotifyMethod,
 }
 
 /// The merged, validated configuration.
@@ -2149,6 +2174,7 @@ impl Config {
                 screen_reader: None,
                 show_reasoning: true,
                 editor_mode: EditorMode::default(),
+                notify: NotifyMethod::default(),
             },
             telemetry: Telemetry {
                 enabled: false,
@@ -2209,6 +2235,9 @@ impl Config {
             }
             if let Some(v) = tui.editor_mode {
                 self.tui.editor_mode = v;
+            }
+            if let Some(v) = tui.notify {
+                self.tui.notify = v;
             }
         }
         if let Some(model) = s.model.as_ref().and_then(|m| m.model.clone()) {

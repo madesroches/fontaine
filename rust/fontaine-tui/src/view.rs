@@ -323,6 +323,28 @@ impl Overlay {
             field: None,
         }
     }
+
+    fn with_instance(self, id: u64) -> Overlay {
+        Overlay {
+            instance: Some(id),
+            ..self
+        }
+    }
+
+    /// What a notification says when this overlay waits for the human, or `None` for a panel
+    /// that does not need an answer. Both renderers ask, so they agree on which dialogs those are.
+    pub(crate) fn notify_message(&self) -> Option<&'static str> {
+        match self.title {
+            "approval" => Some("Fontaine needs your approval"),
+            "question" => Some("Fontaine has a question"),
+            "MCP server" => Some("Fontaine needs an MCP server decision"),
+            "guardian unavailable" => Some("The guardian is unavailable"),
+            "guardian" => Some("Fontaine needs your confirmation"),
+            "auto-mode setup" => Some("Auto-mode setup needs your review"),
+            "skills" => Some("Fontaine needs a skill trust decision"),
+            _ => None,
+        }
+    }
 }
 
 /// Whether the transcript view has the keyboard and the slot: it is open and nothing ahead of it
@@ -363,7 +385,8 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
             "guardian unavailable",
             prompt.body(width, theme),
             prompt.footer(),
-        );
+        )
+        .with_instance(prompt.id);
     }
     if let Some(prompt) = &app.server {
         return Overlay {

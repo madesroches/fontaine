@@ -20,6 +20,7 @@ pub mod keymap;
 pub mod linear;
 mod markdown;
 pub mod model_picker;
+mod notify;
 pub mod provider_dialog;
 pub mod question;
 pub mod recent;
@@ -563,7 +564,9 @@ pub async fn run(
             Anchored::new(CrosstermBackend::new(FrameWriter::stdout())),
             || Anchored::new(CrosstermBackend::new(FrameWriter::discarding(Tty::std()))),
         ) {
-            Ok(screen) => Some(Arc::new(Mutex::new(screen))),
+            Ok(screen) => Some(Arc::new(Mutex::new(
+                screen.with_notify(setup.config.tui.notify),
+            ))),
             Err(e) => {
                 restore_terminal();
                 return Err(format!(
