@@ -20,6 +20,10 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `[tui] notify` (`bell`, `osc9`, `osc777`, `off`; default `bell`) signals the terminal when an
+  approval, question or other prompt that needs your answer opens, so you notice it after switching
+  windows; it is also editable in `/config` (#51).
+
 #### CLI
 
 - `fontaine doctor [--format text|json] [--connect yes|no] [--all]`: a read-only check of the

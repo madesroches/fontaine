@@ -423,7 +423,8 @@ as yours for the [guardian](guardian.md).
 
 ## Approval prompts
 
-When a call needs approval, a prompt lists the call and why it asked:
+When a call needs approval, a prompt lists the call and why it asked. A bell or desktop
+notification tells you when it opens; see [Notifications](terminal.md#notifications).
 
 - `y` allow once.
 - `s` allow session, when the prompt offers it.
@@ -757,6 +758,7 @@ one row each: the key, its effective value with defaults filled in, and the scop
  > tui.theme                    dark-ansi                      default   ✎
    tui.screen_reader            unset                          default   ✎
    tui.show_reasoning           true                           default   ✎
+   tui.notify                   bell                           default   ✎
    context.autocompact_window   150000                         project-local ✎
    permissions.default_mode     unset (interactive: auto, ...  default
    permissions.deny             3 entries                      user, project
@@ -776,7 +778,7 @@ environment variable (`--model`, screen-reader mode) is not labelled as such.
 
 Typing filters the rows by key, space included. Up and Down select and wrap around, and Esc closes.
 
-Nine rows can be changed, marked `✎`. The rest are read-only: guardian, permission, account,
+Eleven rows can be changed, marked `✎`. The rest are read-only: guardian, permission, account,
 network, telemetry, `env`, hook and MCP keys change what the guardian and the permission pipeline
 allow or send data off the machine, so they take a deliberate edit of the settings file. Rule
 editing stays in the files too; see [Permissions](permissions.md).
@@ -786,6 +788,8 @@ editing stays in the files too; see [Permissions](permissions.md).
 | `tui.theme` | Cycles the themes | At once, as `/theme` |
 | `tui.screen_reader` | Cycles `true`, `false`, unset | From the next launch |
 | `tui.show_reasoning` | Cycles `true`, `false` | From the next launch |
+| `tui.editor_mode` | Cycles `emacs`, `vim`, unset | From the next launch |
+| `tui.notify` | Cycles `bell`, `osc9`, `osc777`, `off`, unset | From the next launch |
 | `context.autocompact_window` | Opens a field for a positive whole number; empty clears the key | From the next launch |
 | `schedule.enabled` | Cycles `true`, `false` | From the next launch |
 | `memory.auto` | Cycles `true`, `false` | From the next launch |

@@ -144,6 +144,8 @@ pub struct UnavailablePrompt {
     selected: usize,
     reply: Option<oneshot::Sender<UnavailableChoice>>,
     opened: Instant,
+    /// Set by `App::begin_unavailable`; tells two openings of this prompt apart.
+    pub id: u64,
 }
 
 impl UnavailablePrompt {
@@ -159,6 +161,7 @@ impl UnavailablePrompt {
             selected: 0,
             reply: Some(reply),
             opened: Instant::now(),
+            id: 0,
         }
     }
 

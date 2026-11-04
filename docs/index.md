@@ -44,7 +44,7 @@ describe what the current build does; each page covers one topic.
 - [Checkpoints and /rewind](checkpoints.md): what `write` and `edit` save before they change a
   file, `/rewind` and Esc Esc, restoring code, the conversation or both, and what is not tracked.
 - [Terminal setup](terminal.md): newline keys for each terminal, tmux, Option as Meta on macOS,
-  colour themes and `NO_COLOR`, and screen-reader mode.
+  colour themes and `NO_COLOR`, notifications for pending prompts, and screen-reader mode.
 - [Headless runs](headless.md): `fontaine -p`, its flags, exit codes, and the versioned JSON output
   that CI and the eval runner consume.
 - [Telemetry](telemetry.md): enabling export, the micromegas and OTLP backends, what is exported,

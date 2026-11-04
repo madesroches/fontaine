@@ -1051,6 +1051,7 @@ project or project-local file that has a `[tui]` table is an error.
 | `theme` | The colour theme: `dark-ansi`, `light-ansi`, `dark`, `light`, `dark-daltonized` or `light-daltonized`. `/theme` writes it. See [Terminal setup](terminal.md#colours). | `dark-ansi` |
 | `screen_reader` | Turns on screen-reader mode. `--ax-screen-reader` turns it on and `FONTAINE_AX_SCREEN_READER=0` keeps it off over this setting. See [Terminal setup](terminal.md#screen-reader-mode). | `false` |
 | `show_reasoning` | Shows the model's reasoning in the conversation: it streams live, then folds to a few rows once it settles, and `/expand thinking` prints it in full. `false` hides it. See [Terminal UI](tui.md#model-reasoning). | `true` |
+| `notify` | How a prompt that waits for your answer (an approval, a question, an MCP server or skill prompt, the guardian-unavailable prompt) signals the terminal: `bell` (the default), `osc9` or `osc777` (a desktop notification, on terminals that support the sequence) or `off`. Screen-reader mode keeps its own bell. See [Notifications](terminal.md#notifications). | `bell` |
 | `editor_mode` | How the input box edits text: `emacs` (readline-style, the default) or `vim` (modal INSERT/NORMAL; see [Vim input mode](tui.md#vim-input-mode)). `/vim` toggles it live and saves the choice. | `emacs` |
 
 ```toml
@@ -1059,6 +1060,7 @@ theme = "dark"
 screen_reader = false
 show_reasoning = true
 editor_mode = "vim"
+notify = "osc9"
 ```
 
 ### `[keybindings]`

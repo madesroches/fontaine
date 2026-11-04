@@ -1,7 +1,8 @@
 # Terminal setup, colours and screen readers
 
 This page covers the terminal side of the [terminal UI](tui.md): getting a newline key to work,
-tmux and macOS settings, colours and themes, the clipboard, and screen-reader mode. Fontaine has no
+tmux and macOS settings, colours and themes, the clipboard, notifications for pending prompts, and
+screen-reader mode. Fontaine has no
 `/terminal-setup` command: it never edits another program's configuration file, so the settings
 below are yours to make.
 
@@ -81,8 +82,37 @@ default `set-clipboard external`; if you changed that to `off`, set it back:
 set -g set-clipboard external
 ```
 
-The outer terminal must itself accept OSC 52 clipboard writes. See
+The outer terminal must itself accept OSC 52 clipboard writes.
+
+The `osc9` and `osc777` [notifications](#notifications) are dropped by tmux unless it passes them
+through; set `set -g allow-passthrough on`. The default `bell` needs no setting beyond
+`monitor-bell on`. See
 [the commands table](tui.md#commands) for `/copy`.
+
+## Notifications
+
+When a prompt that waits for your answer opens (an approval, a question from the model, an MCP
+server or skill trust prompt, the guardian-unavailable prompt or the `/guardian-disable`
+confirmation), Fontaine tells the terminal once, so you find out after switching windows. This
+includes approvals raised by background agents. `[tui] notify` in your user settings picks how:
+
+| Value | What is sent |
+|---|---|
+| `bell` (default) | A bell (BEL). Most terminals flag the window or tab; in tmux set `monitor-bell on`. |
+| `osc9` | An OSC 9 desktop notification (iTerm2, Ghostty, WezTerm, Windows Terminal and others). |
+| `osc777` | An OSC 777 desktop notification (VTE-based terminals, Konsole, Ghostty, foot and others). |
+| `off` | Nothing. |
+
+```toml
+[tui]
+notify = "osc9"
+```
+
+The text is fixed (`Fontaine needs your approval`, `Fontaine has a question`, ...); nothing from the
+model or a tool reaches the escape sequence. A terminal that does not know the sequence ignores
+it, so try `osc9` and `osc777` in turn. The signal is sent once when the prompt opens, not when a
+reply finishes, and a prompt that was already signalled does not signal again when a panel such as
+`/agents` closes over it. Screen-reader mode ignores `notify` and keeps [its own bell](#screen-reader-mode).
 
 ## Word movement and deletion
 
@@ -193,7 +223,8 @@ typing, it is printed on the lines above and your input is echoed again below it
 always ends on the input line.
 
 A bell (BEL) sounds when a reply finishes and when a prompt that needs an answer opens: an
-approval, an MCP server question or the unavailable-guardian prompt.
+approval, a question, an MCP server or skill trust prompt, the auto-mode setup review, the
+guardian confirmation or the unavailable-guardian prompt. `[tui] notify` does not apply here.
 
 Known limitations:
 
