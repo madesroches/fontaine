@@ -23,8 +23,9 @@ tools.
   (`permissions.rs:1871`: "Do not retry it or look for another route to the same effect; tell the
   user what you could not do."), the scouting rule (`guardian_prompt.md:52`) and the system
   prompt's "# Denied tool calls" (`system_prompt.md:31-38`: a different tool is not a route around
-  a denial; only a denial blaming the arguments may be corrected once) all stay as they are and
-  bound the new sentence. The minimal profile
+  a denial; only a denial blaming the arguments may be corrected once) all stay as they are. The
+  new sentence is advisory: the agent may still be bound by the wrapper's no-retry text, which
+  says the opposite for a different-tool retry. The minimal profile
   never denies a plain file-search shell call, so only `guardian_prompt.md` changes.
 - `rust/fontaine-tools/src/builtins.rs` (~589-602): the Unix `shell` tool description has no
   redirect to `read`/`glob`/`grep`; the PowerShell variant (~745-746) already has one.

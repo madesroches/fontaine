@@ -113,7 +113,8 @@ The guardian reads history and your messages by a few fixed rules:
   X" asks for that issue.
 - A guardian denial is not you rejecting the action. When it denies a soft-deny match, the
   explanation says what would clear it: you naming the action and its target, or a standing grant.
-- A denial explanation never proposes a shell command. It names a dedicated read-only tool
+- In the full profile, a denial explanation never proposes a shell command (the minimal profile
+  prompt does not carry this rule). It names a dedicated read-only tool
   (`grep`, `glob`, `read`) only when the deny turns on the shell construct itself (a redirection, a
   compound or unparseable command) and the call was a plain file search; when it rests on the target
   or content a rule protects, it names no alternative at all.

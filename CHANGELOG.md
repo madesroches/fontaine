@@ -6,13 +6,6 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
-### Changed
-
-- Steering away from the shell for file searches: the guardian's denial explanation never proposes
-  a shell command and names `grep`, `glob` or `read` only when the deny turns on the shell
-  construct itself, the Unix `shell` tool description points at `read`, `glob` and `grep`, and
-  `AGENTS.md` tells agents to search with the `grep` and `glob` tools (#358).
-
 ### Added
 
 #### CLI
@@ -854,6 +847,11 @@ All notable changes are recorded here. The format follows
   screen in front of the LLM guardian, sequential by default (`concurrent = true` races them), and
   a cancelled call cancels its reads and LLM request. Audit records gain `screen_scores`, and
   `fontaine-evals` gains `--composition-script` and `--composition-param` (#137, #136).
+
+- Steering away from the shell for file searches: the guardian's denial explanation never proposes
+  a shell command and names `grep`, `glob` or `read` only when the deny turns on the shell
+  construct itself, the Unix `shell` tool description points at `read`, `glob` and `grep`, and
+  `AGENTS.md` tells agents to search with the `grep` and `glob` tools (#358).
 
 #### Headless
 
