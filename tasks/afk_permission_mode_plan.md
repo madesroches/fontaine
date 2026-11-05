@@ -31,8 +31,11 @@ reverses the 2026-11-04 decision that AFK is "a session flag beside the mode, no
   on a toggle. `--afk` starts the stretch before the agent is built (`agent/setup.rs:415`).
 - The carousel is `CYCLE` / `next_mode` in `rust/fontaine-tui/src/statusbar.rs:52`
   (`manual → acceptEdits → plan → auto`); `Ui::cycle_mode` (`rust/fontaine-tui/src/ui/mod.rs:431`)
-  calls `SessionState::set_mode` synchronously, also from three in-turn input loops
-  (`ui/turn.rs:385`, `:711`, `:844`). `set_mode` (`gate.rs:497`) records `Record::ModeChange` and
+  calls `SessionState::set_mode` synchronously (it is sync, with `&AgentRuntime`). Other callers:
+  `serve_while` (`ui/turn.rs:385`, which also serves goal evaluation, `/compact`, workspace
+  commands and skill expansion), `serve_modal` (`ui/turn.rs:711`, between queued submissions in
+  `converse`, idle, with `&mut AgentRuntime`), the in-turn input loop (`ui/turn.rs:844`) and the
+  provider sign-in loop (`ui/providers.rs:223`, idle). `set_mode` (`gate.rs:497`) records `Record::ModeChange` and
   logs `permission_mode_changed`.
 - `/afk` (`rust/fontaine-tui/src/ui/commands/afk.rs`, parsed by `parse_afk` in
   `rust/fontaine-tui/src/commands.rs:737`) handles on, off, report and review. `/afk off` first
@@ -99,9 +102,11 @@ pub fn set_mode(&self, to: PermissionMode, source: AfkSource) -> Result<ModeChan
   guardian-off and AFK still exclude each other without interleaving).
 - Entering `Afk`: refused with the existing `AfkRefusal::{Stopped, GuardianOff,
   LedgerUnwritable}`; on success appends `Record::Afk { on: true, source }`, then `ModeChange`,
-  sets `stretch`, records the `afk_on` session event.
+  sets `stretch`. Both guards are dropped before the `afk_on` session event is recorded
+  (`record_session_event_as` reads `mode()` / `afk_on()`, so recording under the write guard would
+  deadlock; `set_afk` does the same with `drop(afk)` today).
 - Leaving `Afk`: appends `Record::Afk { on: false, source }` and `ModeChange`, clears `stretch`,
-  records `afk_off`. Never refused (as `/afk off` is not today, a stop included).
+  drops both guards, then records `afk_off`. Never refused (as `/afk off` is not today, a stop included).
 - Any other change: as today. `changed == false` when nothing changed.
 - `AfkSource` gains `Cycle` (Shift+Tab / a rebound `cycle_mode` key) and `Plan` (`/plan` out of
   AFK); `Command` stays for older ledgers that recorded `/afk`, and is still written by
@@ -153,8 +158,11 @@ itself is synchronous, and the review follows it:
 - The TUI keeps `pending_afk_review: Vec<u64>`. Idle: the review runs at once, as `/afk off`
   does now ("AFK mode off. Reviewing what happened…", then `afk_outcome_notice`). During a turn:
   the notice "AFK mode off; the stretch is reviewed when this turn ends" is shown, the seq is
-  queued, and the turn loop drains the queue after the turn ends (beside `pending_pick` /
-  `pending_resume`).
+  queued, and `cycle_mode` returns the closed stretch (or pushes it onto `pending_afk_review`), and the queue is
+  drained by `drain_deferred` (`ui/mod.rs:1148`, beside `pending_pick` / `pending_resume`; called
+  from `mod.rs:473` and `turn.rs:306`) and also between submissions in `converse`. Idle callers
+  (`serve_modal`, the sign-in loop) therefore review at once; `serve_while` and in-turn presses
+  review when that work ends.
 - Every TUI exit from AFK goes through this same idle-review / queued-review path: the carousel
   and `/plan`, and any other caller that receives `ModeChanged.closed_stretch`.
 
@@ -240,23 +248,21 @@ tracking and stop, breaker blocking, the `AfkApprover` backstop, guardian-disabl
 - `rust/fontaine-evals/src/runner.rs`, `baseline.rs`
 - Tests: `rust/fontaine-core/tests/afk.rs`, `rust/fontaine-tui/tests/afk.rs`,
   `rust/fontaine/tests/afk.rs`, `statusbar.rs` unit tests, `ui/tests.rs`
+- Test callers of `set_mode` / `set_afk` (signature change) in `rust/fontaine-core/tests/`:
+  `permissions.rs`, `audit_telemetry.rs`, `agent_pipeline.rs`, `project_environment.rs`,
+  `runtime_state.rs`, `native_search.rs`, `permissions_auto.rs`, `goal.rs`
 - `docs/afk.md`, `docs/permissions.md`, `docs/tui.md`, `docs/headless.md`,
   `docs/configuration.md`, `docs/guardian.md`, `docs/index.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
 
-- **AFK decides as `auto`** rather than keeping a base mode under it: the issue rules out a flag
-  layered over another mode, and orders AFK after `auto` by autonomy. The cost: `manual + AFK`
-  (deny everything that needs approval) is no longer expressible; `dontAsk` covers that need.
 - **`rules()` at the pipeline's entry** rather than an `Afk` arm in every match: tier logic stays
   written once, and a future change to `auto` cannot drift from AFK.
 - **Synchronous switch, deferred review** rather than blocking the turn on an LLM call when
   Shift+Tab leaves AFK mid-turn, or refusing the press until the turn ends: the press acts at
   once like every other mode switch, and the ledger already supports a review recorded after the
   off record.
-- **Refused AFK entry skips to `manual`** rather than staying put: a press always moves the
-  carousel, and never leaves the session looser than it asked.
 
 ## Decisions
 
@@ -294,6 +300,10 @@ Unit tests:
   is judged and a would-prompt is converted (deny with `afk`/`converted` fields, record mode
   `auto`); a `tracked_edit` is allowed as in `auto`; a child's posture is `auto` and its prompts
   convert too; the floor still denies.
+- `fontaine-core/tests/afk.rs`: tests that turn AFK on under Manual/DontAsk (e.g.
+  `a_mode_prompt_becomes_a_denial_and_nobody_is_asked`, expecting a `Tier::Mode` conversion) are
+  rewritten for AFK-as-auto (conversion of an auto would-prompt, e.g. an ask rule or a guardian
+  escalate) or removed where the premise no longer exists.
 - `assess_afk(stretch_seq)` grades the named stretch when a newer one exists.
 - `parse_afk`: bare and `off` are errors naming Shift+Tab; `report`, `report all`, `review` parse.
 - Prompt: the rebuild-before-turn picks up AFK guidance after an in-turn switch.
