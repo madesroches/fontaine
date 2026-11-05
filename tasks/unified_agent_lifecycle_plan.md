@@ -123,13 +123,13 @@ removes those rules instead. **Pick: the unified model.**
   showing `failed`, so its end stays visible, but it can be woken, as the human can already resume
   one. `agent_state` and export print "idle" only for a `Done` idle node, as `row_label` does; a
   `Failed` node prints `failed`.
-- **`Node`** loses `teammate` and `idle` and gains `retired: bool`. `fn is_idle(&Node)` holds the
+- **`Node`** loses `teammate` and `idle` and gains `retired: Option<String>`, the cause (an ancestor's final end, `/clear` or a rewind). `fn is_idle(&Node)` holds the
   derivation. `AgentRow.idle`, `job_output` and export read it.
-- **`finish`** returns whether the agent keeps its board tasks: `Done && !killed && !retired`. A
+- **`finish`** returns whether the agent keeps its board tasks: `Done && !killed && retired.is_none()`. A
   `Failed` end still releases them, as today.
 - **Final ends:** killed, budget exhausted, retired. A retired agent shows `done`, so `done` now
   always means "final"; export maps a ledger agent's `retired` end to `done` (`export.rs`). `resume` refuses a retired node with a new `Refusal::Retired(String)`, and
-  `resume_blocker` returns "it was retired (<why>)".
+  `resume_blocker` reads `retired` and returns "it was retired (<why>)".
 
 ### Retirement
 
@@ -166,8 +166,8 @@ agent resumable for the session. An agent retires only when resuming it no longe
 user Decision, whose aim (a finished team should not linger in the list) is now served by the agent
 list rule below without making agents unreachable.
 
-`AgentTree` API: `retire_idle(id)` becomes `retire(id) -> Vec<String>`, which retires the node and
-its idle descendants under one lock and returns every id it retired. `retire_all_idle() ->
+`AgentTree` API: `retire_idle(id)` becomes `retire(id, why) -> Vec<String>`, which retires the node and
+its idle descendants under one lock and returns every id it retired. `retire_all_idle(why) ->
 Vec<String>` serves rewind. A `spawn::retire` wrapper releases tasks and drops boards for those ids,
 as `kill_agent` does for a kill. `kill_outcome`'s idle arm uses the same cascade.
 
@@ -233,6 +233,10 @@ The owner spawns, prompted by one harness note:
     finished, which keeps it running for one more turn;
   - a slot freeing up or a task on its board becoming claimable while the owner is idle or between
     turns.
+
+  The second check runs from the shared task-release helper that every path uses (`conclude`,
+  `kill_agent` including its idle arm, `spawn::retire` / `retire_all_idle`, and `/clear`), and from
+  `board_update`, so no release path skips it.
 - **Delivery.** The note goes through the existing paths: `post_to_root` for `main`, the inbox for a
   running owner, and a `wake_idle` resume for an idle owner. It is not recorded as a user message.
 - **Deduplication.** Each owner keeps the last `(board mutation count, free slots)` it was reminded
@@ -332,7 +336,9 @@ Claude Code resumes an agent from its transcript.
   instead of resetting it. `TaskBoard::restore` takes the rebuilt ids. A subagent's board is not
   persisted, so a revived subagent owner starts with an empty board.
 - **Surfaces.** Rebuilt agents show in the `/agents` panel as `idle`, and `send_message`,
-  `job_output` and typing into their view reach them by name or id.
+  `job_output` and typing into their view reach them by name or id. A rebuilt agent's TUI view is
+  filled only from live run events (`fontaine-tui/src/app.rs`, `view_of`), so it shows only turns
+  from after the resume.
 
 ### Open points from the issue, settled
 
@@ -352,7 +358,7 @@ Claude Code resumes an agent from its transcript.
    - `finish`: return "keeps its tasks". `resume`: `Refusal::Retired`. `resume_blocker`: the retired
      reason. `spawn::describe` gains the arm.
    - `deliver`: drop the kind check, and make it `DeliverError::NotRunning(Option<String>)`.
-   - Add `retire(id)` (cascade) and `retire_all_idle()`, both returning ids. `kill_outcome` cascades
+   - Add `retire(id, why)` (cascade) and `retire_all_idle(why)`, both returning ids. `kill_outcome` cascades
      over the whole subtree, in its idle arm too. `finish` also returns the ids its cascade
      retired. `clear_ended` returns the pruned ids, with the idle ones marked. Delete `retire_idle`.
    - `rows()` / `AgentState` use `is_idle`. `owns_task` is not on `AgentRow`; the TUI computes it (step 5).
@@ -363,7 +369,10 @@ Claude Code resumes an agent from its transcript.
    - `owned_by`: the board owner replaces `ROOT_AGENT`.
    - Add `Boards::own(agent)`, `Boards::find(agent, parent, task_id)`, `Boards::drop_owner(agent)`
      and `Boards::release_owned_by(agent, parent)`.
-   - Add a reminder check, `Boards::reminder(owner, free_slots) -> Option<String>`, with the per-owner
+   - Add a listing accessor, `Boards::all() -> Vec<(owner, Vec<Task>)>`, and
+  `Boards::owns_in_progress(agent) -> bool`, which `ui/mod.rs` uses (it reads `teams.board.list()`
+  today) for `BoardRow`s and `owns_task`.
+- Add a reminder check, `Boards::reminder(owner, free_slots) -> Option<String>`, with the per-owner
      dedup pair.
    - `board_show` / `board_update`: the routing and the new descriptions.
    - Remove the hand-off from `Teams` (`allow_idle_resume` stays only for the hook, and its streak
@@ -377,16 +386,20 @@ Claude Code resumes an agent from its transcript.
        `wake_for_inbox` runs for every idle end.
      - Delete `retire_finished_team` and the claimable-task branch.
    - A slot freeing up or a task becoming claimable runs the reminder for idle owners. It hooks into
-     `conclude` and the `board_update` tool.
+     the shared task-release helper (called by `conclude`, `kill_agent`, `spawn::retire` /
+     `retire_all_idle` and `clear_conversation`) and the `board_update` tool.
    - `kill_agent`: release tasks and drop boards for every id the cascade ended. Add `pub fn retire`
      and `retire_all_idle` wrappers that do the same.
    - `conclude`: for the ids the cascade retired (from `finish` or a budget-exhausted end), release
      tasks, drop boards and append `finished: retired`, as `spawn::retire` does.
    - `SendMessageTool`: the new error text and description. Update the `agent` description.
+   - Reword the "teammate" / "team" strings: `spawn.rs` (the `stays idle` warning at ~249, the
+     resumed-in-a-row warning at ~256, the unread-message warning at ~337) and `tools.rs:17`
+     ("teams are off in this session").
 4. **Core** (`fontaine-core`)
    - `agent.rs::clear_conversation`: drop the `any_idle` refusal, and release tasks and drop boards
      for the ids `clear_ended` returns, and append `finished: retired` for its idle ones only.
-   - `agent/rewind.rs`: drop the refusal. On a conversation rewind, call `spawn::retire_all_idle`.
+   - `agent/rewind.rs`: drop the refusal. On a conversation rewind, call `spawn::retire_all_idle(why)`.
    - `session.rs` / `rewind.rs`: delete the `IdleTeammates` variants.
    - `agent/setup.rs`: build `Boards` around the restored root board.
    - The root's `after_turn` runs the owner reminder for `main`.
@@ -494,6 +507,7 @@ Claude Code resumes an agent from its transcript.
 - 2026-11-05 (user): No idle agent is reused for new board work; claimable tasks go to fresh agents.
 - 2026-11-05 (user): The owner of a board spawns its workers; the owner is any agent, not only `main`.
 - 2026-11-05 (user): Agents survive `--resume`: an agent is its conversation, not a process.
+- 2026-11-05: Ledgers written before this change (`/clear` wrote only `ContextCleared`, and `retire_idle` wrote no record) rebuild /clear-pruned and team-retired agents as idle and wakeable. Accepted: pre-release, only dev ledgers are affected, and the forward design appends `retired`.
 
 ## Documentation
 
@@ -503,7 +517,7 @@ Claude Code resumes an agent from its transcript.
     exception".
   - A new "Agent lifecycle" section: running / idle / final, the retirement triggers, `Failed`
     being wakeable, and agents coming back idle after `--resume` (model, tools and mode, spend
-    starting over).
+    starting over, and a view that shows only turns from after the resume).
   - "Agent teams" becomes "Task boards": per-agent boards, visibility, routing, the owner reminder,
     fresh agents for new work, persistence of `main`'s board only. Remove "Only `main` can start a
     teammate", "Idle instead of done", "The idle hand-off", and the board-retirement and
@@ -521,6 +535,7 @@ Claude Code resumes an agent from its transcript.
   `#the-task-board` links (`docs/permissions.md:201`, `docs/tools.md:36`, `docs/telemetry.md:155`).
 - `docs/hooks.md`: `teammate_idle` fires for an agent going idle with an in-progress task on its
   parent's board. `task_completed` applies on every board.
+- `README.md:93`: "updates to the team task board" becomes task-board wording without "team".
 - `docs/tui.md`: the agent-list rule for idle rows, and per-owner boards in the panel.
 - `docs/configuration.md`: `[agents] teams` turns the boards and team hooks on and off. It no longer
   controls idling.
