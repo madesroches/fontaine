@@ -33,6 +33,12 @@ fn binding(app: &App, action: TuiAction) -> Option<String> {
     )
 }
 
+/// The keystrokes bound to `cycle_mode`, for the notices that tell the human how to leave AFK
+/// mode; `None` when it is unbound.
+pub(crate) fn cycle_keys(app: &App) -> Option<String> {
+    binding(app, TuiAction::CycleMode)
+}
+
 /// `<keys> mode`, or nothing when `cycle_mode` is unbound.
 fn cycle_hint(app: &App) -> Option<String> {
     binding(app, TuiAction::CycleMode).map(|keys| format!("{keys} mode"))
@@ -44,16 +50,18 @@ pub fn mode_label(mode: PermissionMode) -> &'static str {
         PermissionMode::AcceptEdits => "⏵⏵ accept edits on",
         PermissionMode::Plan => "⏸ plan mode on",
         PermissionMode::Auto => "⏵⏵ auto mode on",
+        PermissionMode::Afk => "⏵⏵⏵ AFK mode on",
         PermissionMode::DontAsk => "dontAsk",
     }
 }
 
-/// The modes Shift+Tab walks through, in order.
+/// The modes Shift+Tab walks through, by increasing autonomy.
 const CYCLE: &[PermissionMode] = &[
     PermissionMode::Manual,
-    PermissionMode::AcceptEdits,
     PermissionMode::Plan,
+    PermissionMode::AcceptEdits,
     PermissionMode::Auto,
+    PermissionMode::Afk,
 ];
 
 /// The mode after `mode` in the Shift+Tab cycle; a mode outside the cycle returns to the first.
@@ -70,6 +78,7 @@ fn mode_style(mode: PermissionMode, theme: &Theme) -> Style {
         PermissionMode::AcceptEdits => theme.mode_accept,
         PermissionMode::Plan => theme.mode_plan,
         PermissionMode::Auto => theme.mode_auto,
+        PermissionMode::Afk => theme.mode_afk,
     };
     Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
@@ -250,13 +259,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
             Style::default()
                 .fg(app.theme.warning)
                 .add_modifier(Modifier::BOLD | Modifier::REVERSED),
-        ));
-    } else if app.afk {
-        spans.push(Span::styled(
-            " AFK ",
-            Style::default()
-                .fg(app.theme.warning)
-                .add_modifier(Modifier::BOLD),
         ));
     }
     let effort = app
@@ -685,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cycle_includes_auto_and_wraps() {
+    fn the_cycle_walks_by_increasing_autonomy_through_afk_and_wraps() {
         let mut mode = PermissionMode::Manual;
         let mut seen = Vec::new();
         for _ in 0..5 {
@@ -695,14 +697,15 @@ mod tests {
         assert_eq!(
             seen,
             [
-                PermissionMode::AcceptEdits,
                 PermissionMode::Plan,
+                PermissionMode::AcceptEdits,
                 PermissionMode::Auto,
-                PermissionMode::Manual,
-                PermissionMode::AcceptEdits
+                PermissionMode::Afk,
+                PermissionMode::Manual
             ]
         );
         assert_eq!(next_mode(PermissionMode::DontAsk), PermissionMode::Manual);
+        assert_eq!(mode_label(PermissionMode::Afk), "⏵⏵⏵ AFK mode on");
     }
 
     #[test]

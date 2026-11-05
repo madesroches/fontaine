@@ -89,6 +89,7 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         recent: RecentModels::in_memory(),
         pending_pick: None,
         pending_resume: None,
+        pending_afk_review: Vec::new(),
         config_pending: Default::default(),
         pending_config: VecDeque::new(),
         pending_provider: VecDeque::new(),
@@ -657,4 +658,85 @@ fn keybindings_lists_every_action_with_its_effective_keys() {
         notice.contains("there is no user settings file"),
         "{notice}"
     );
+}
+
+fn subagent_ask() -> (Prompt, oneshot::Receiver<Answer>) {
+    let (prompt, answer) = ask();
+    let Prompt::Ask(mut request, reply) = prompt else {
+        unreachable!("ask() builds an Ask");
+    };
+    request.agent = "worker-1".into();
+    (Prompt::Ask(request, reply), answer)
+}
+
+#[test]
+fn prompts_that_arrive_during_afk_mode_are_answered_without_an_overlay() {
+    use fontaine_core::permissions::{GuardianUnavailable, UnavailableChoice};
+    use fontaine_tools::ask_user::QuestionReply;
+
+    let (tx, rx) = unbounded_channel();
+    let mut ui = ui(rx);
+    ui.app.afk = true;
+
+    let (prompt, mut answer) = ask();
+    ui.on_prompt(None, prompt);
+    assert_eq!(answer.try_recv(), Ok(Answer::Deny { feedback: None }));
+
+    let (reply, mut question) = oneshot::channel();
+    ui.on_prompt(None, Prompt::Question("main".into(), Vec::new(), reply));
+    assert!(matches!(
+        question.try_recv(),
+        Ok(QuestionReply::Unavailable)
+    ));
+
+    let (reply, mut choice) = oneshot::channel();
+    let info = GuardianUnavailable {
+        model: "a/b".into(),
+        reason: "r".into(),
+        tool: "shell".into(),
+    };
+    ui.on_prompt(None, Prompt::Unavailable(Box::new(info), reply));
+    assert_eq!(choice.try_recv(), Ok(UnavailableChoice::Deny));
+
+    // What was still in the channel when AFK began, including a subagent's ask.
+    let (prompt, mut subagent) = subagent_ask();
+    tx.send(prompt).unwrap();
+    ui.drain_prompts();
+    assert_eq!(subagent.try_recv(), Ok(Answer::Deny { feedback: None }));
+    assert!(ui.app.approval.is_none() && ui.app.questions.is_empty());
+    assert!(ui.app.unavailable.is_none());
+}
+
+#[test]
+fn entering_afk_mode_closes_every_open_and_queued_prompt() {
+    use fontaine_core::permissions::{GuardianUnavailable, UnavailableChoice};
+    use fontaine_tools::ask_user::QuestionReply;
+
+    let (_tx, rx) = unbounded_channel();
+    let mut ui = ui(rx);
+    let (open, mut first) = ask();
+    let (queued, mut second) = subagent_ask();
+    ui.on_prompt(None, open);
+    ui.on_prompt(None, queued);
+    let (reply, mut question) = oneshot::channel();
+    ui.on_prompt(None, Prompt::Question("main".into(), Vec::new(), reply));
+    let (reply, mut choice) = oneshot::channel();
+    let info = GuardianUnavailable {
+        model: "a/b".into(),
+        reason: "r".into(),
+        tool: "shell".into(),
+    };
+    ui.on_prompt(None, Prompt::Unavailable(Box::new(info), reply));
+    assert!(ui.app.approval.is_some() && ui.app.unavailable.is_some());
+
+    assert_eq!(ui.app.answer_for_afk(), 4);
+    assert_eq!(first.try_recv(), Ok(Answer::Deny { feedback: None }));
+    assert_eq!(second.try_recv(), Ok(Answer::Deny { feedback: None }));
+    assert!(matches!(
+        question.try_recv(),
+        Ok(QuestionReply::Unavailable)
+    ));
+    assert_eq!(choice.try_recv(), Ok(UnavailableChoice::Deny));
+    assert!(ui.app.approval.is_none() && ui.app.queued_approvals.is_empty());
+    assert!(ui.app.questions.is_empty() && ui.app.unavailable.is_none());
 }

@@ -51,6 +51,20 @@ async fn editing_a_tracked_file_skips_the_guardian() {
 }
 
 #[tokio::test]
+async fn editing_a_tracked_file_in_afk_mode_skips_the_guardian_as_in_auto() {
+    let (rig, fake) = repo_rig(&["src/lib.rs"], "", false);
+    rig.state
+        .set_mode(
+            fontaine_core::config::PermissionMode::Afk,
+            fontaine_core::afk_report::AfkSource::Cycle,
+        )
+        .unwrap();
+    assert!(allowed(&rig.check("edit", edit_args("src/lib.rs")).await));
+    assert_eq!(last_tier(&rig), Tier::TrackedEdit);
+    assert_eq!(fake.calls(), 0);
+}
+
+#[tokio::test]
 async fn editing_a_tracked_notebook_skips_the_guardian() {
     let (rig, fake) = repo_rig(&["analysis.ipynb"], "", false);
     let args = json!({"path": "analysis.ipynb"});

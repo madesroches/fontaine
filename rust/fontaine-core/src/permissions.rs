@@ -26,6 +26,7 @@ use serde_json::Value;
 use tracing::Instrument;
 
 use crate::adjudication::{self, action_summary};
+use crate::afk_report::AfkSource;
 use crate::audit::{Converted, Decision, DecisionRecord, args_digest};
 use crate::config::PermissionMode;
 use crate::destructive::touched_paths;
@@ -671,7 +672,7 @@ impl PermissionPipeline {
     /// `None` for an agent the tree no longer knows, which has no posture to judge it by.
     fn posture_of(&self, agent: &str) -> Option<(PermissionMode, bool)> {
         if agent == fontaine_tools::gate::ROOT_AGENT {
-            return Some((self.state.mode(), false));
+            return Some((self.state.mode().rules(), false));
         }
         let tree = self.state.agents();
         if !tree.lineage_intact(agent) {
@@ -1152,10 +1153,12 @@ impl PermissionPipeline {
         // the child inherits the plan block, so it cannot edit.
         if tool == "agent" {
             return match mode {
-                PermissionMode::Auto | PermissionMode::Plan => Verdict::Allow {
-                    tier: Tier::Spawn,
-                    rule: None,
-                },
+                PermissionMode::Auto | PermissionMode::Afk | PermissionMode::Plan => {
+                    Verdict::Allow {
+                        tier: Tier::Spawn,
+                        rule: None,
+                    }
+                }
                 PermissionMode::Manual | PermissionMode::AcceptEdits => {
                     self.would_prompt(mode, needs_approval())
                 }
@@ -1178,7 +1181,7 @@ impl PermissionPipeline {
             // Plan mode never edits (refused above); what is left is consequential, and the
             // guardian judges it as it does in `auto`.
             PermissionMode::Plan => Verdict::Guardian,
-            PermissionMode::Auto => match self.unjudged_edit(call, args) {
+            PermissionMode::Auto | PermissionMode::Afk => match self.unjudged_edit(call, args) {
                 Some(tier) => Verdict::Allow { tier, rule: None },
                 None => Verdict::Guardian,
             },
@@ -1846,7 +1849,9 @@ impl PermissionPipeline {
                     adjudication = self.state.guardian().adjudicate(&request).await;
                 }
                 UnavailableChoice::Manual => {
-                    self.state.set_mode(PermissionMode::Manual);
+                    self.state
+                        .set_mode(PermissionMode::Manual, AfkSource::Command)
+                        .expect("only entering AFK mode is refused");
                     return self
                         .prompt_or_ask(
                             cx,
@@ -2150,7 +2155,7 @@ impl PermissionPipeline {
                         self.state.append(Record::AfkBlocked {});
                     }
                     self.approver.notice(if afk {
-                        "auto mode paused after repeated guardian denials: calls that need the guardian are denied while AFK is on; after /afk off the next such call asks you"
+                        "auto mode paused after repeated guardian denials: calls that need the guardian are denied while AFK is on; after leaving AFK mode the next such call asks you"
                     } else {
                         "auto mode paused after repeated guardian denials: the next call that needs the guardian asks you, and approving it resumes auto mode"
                     });

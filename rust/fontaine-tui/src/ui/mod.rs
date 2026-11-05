@@ -23,8 +23,10 @@ use crate::ui::schedule::IDLE_POLL;
 use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
 use crate::{Action, App, Command, Prompt, Ui, parse_command};
 use crate::{StatuslineTrigger, reports, statusbar};
+use fontaine_core::afk_report::AfkSource;
 use fontaine_core::agent::{AgentRuntime, Delivered, MessageRefusal};
 use fontaine_core::config::PermissionMode;
+use fontaine_core::gate::AfkRefusal;
 use fontaine_core::goal::{GoalArg, first_turn_prompt, parse_goal_arg};
 use fontaine_core::instructions;
 use fontaine_core::ledger::Record;
@@ -63,7 +65,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.mode = runtime.state.mode();
         self.app.guardian_off = runtime.state.guardian_off();
         let afk = runtime.state.afk();
-        self.app.afk = afk.on.is_some();
+        self.app.afk = runtime.state.afk_on();
         self.app.afk_stopped = afk.stopped.is_some();
         self.app.model = runtime.models.main.reference.to_string();
         self.app.effort = runtime.state.effort();
@@ -385,6 +387,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     fn on_prompt(&mut self, runtime: Option<&AgentRuntime>, prompt: Prompt) {
+        let prompt = if self.app.afk {
+            match answer_unattended(prompt) {
+                Ok(()) => return,
+                Err(prompt) => prompt,
+            }
+        } else {
+            prompt
+        };
         match prompt {
             // The call's turn was cut short while the prompt sat in the queue.
             Prompt::Ask(_, reply) if reply.is_closed() => {}
@@ -411,6 +421,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// longer exist, so they are dropped, but notices still count.
     fn drain_prompts(&mut self) {
         while let Ok(prompt) = self.prompts.try_recv() {
+            let prompt = if self.app.afk {
+                match answer_unattended(prompt) {
+                    Ok(()) => continue,
+                    Err(prompt) => prompt,
+                }
+            } else {
+                prompt
+            };
             match prompt {
                 Prompt::Notice(severity, message) => self.app.transcript.push_notice(Notice {
                     severity,
@@ -428,11 +446,79 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    fn cycle_mode(&mut self, runtime: &AgentRuntime) {
-        let state = &runtime.state;
-        state.set_mode(statusbar::next_mode(state.mode()));
-        if state.mode() == PermissionMode::Auto {
+    /// Switches the session's mode and keeps what the surface reads of it in step. A stretch the
+    /// switch ends waits in `pending_afk_review`; entering AFK closes the prompts already open.
+    pub(crate) fn change_mode(
+        &mut self,
+        runtime: &AgentRuntime,
+        to: PermissionMode,
+        source: AfkSource,
+    ) -> Result<(), AfkRefusal> {
+        let change = runtime.state.set_mode(to, source)?;
+        self.app.mode = runtime.state.mode();
+        self.app.afk = runtime.state.afk_on();
+        if let Some(stretch) = change.closed_stretch {
+            self.pending_afk_review.push(stretch);
+        }
+        if change.changed && to == PermissionMode::Afk {
+            let closed = self.app.answer_for_afk();
+            if closed > 0 {
+                self.app.transcript.notice(format!(
+                    "AFK mode: {closed} open prompt(s) answered as denied or unavailable"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// One press of the mode key. `deferred` is true while work is in progress, when leaving
+    /// AFK mode only queues the stretch's review for when that work ends.
+    pub(crate) fn cycle_mode(&mut self, runtime: &AgentRuntime, deferred: bool) {
+        let mut to = statusbar::next_mode(runtime.state.mode());
+        if let Err(refusal) = self.change_mode(runtime, to, AfkSource::Cycle) {
+            self.app.transcript.error(refusal.to_string());
+            to = statusbar::next_mode(to);
+            self.change_mode(runtime, to, AfkSource::Cycle)
+                .expect("only entering AFK mode is refused");
+        }
+        if to.rules() == PermissionMode::Auto {
             self.announce_auto(runtime);
+        }
+        if to == PermissionMode::Afk {
+            let leave =
+                statusbar::cycle_keys(&self.app).unwrap_or_else(|| "the mode key".to_string());
+            self.app.transcript.notice(format!(
+                "AFK mode on: nothing is asked of you while you are away. Each call that would have needed approval is denied, and the model is told to finish the work that is allowed or stop and report. {leave} leaves it; /afk report shows what happened."
+            ));
+        } else if deferred && !self.pending_afk_review.is_empty() {
+            self.app
+                .transcript
+                .notice("AFK mode off; the stretch is reviewed when this work ends");
+        }
+    }
+
+    /// Reviews the AFK stretches the human left since the last review: the evasion assessment,
+    /// then the outcome. Runs at once when nothing is in progress and otherwise when it ends.
+    pub(crate) async fn review_afk_exits(&mut self, runtime: &AgentRuntime) {
+        for stretch in std::mem::take(&mut self.pending_afk_review) {
+            self.app
+                .transcript
+                .notice("AFK mode off. Reviewing what happened…");
+            self.draw(runtime);
+            runtime.assess_afk(stretch).await;
+            match runtime.afk_reports(true) {
+                Ok(reports) => {
+                    if let Some(report) = reports
+                        .iter()
+                        .find(|report| report.stretch.started_seq == stretch)
+                    {
+                        self.app
+                            .transcript
+                            .notice(reports::afk_outcome_notice(report));
+                    }
+                }
+                Err(e) => self.app.transcript.error(chain(&e)),
+            }
         }
     }
 
@@ -589,7 +675,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             match action {
                 Action::Quit => return,
-                Action::CycleMode => self.cycle_mode(runtime),
+                Action::CycleMode => {
+                    self.cycle_mode(runtime, false);
+                    self.review_afk_exits(runtime).await;
+                }
                 Action::Submit(text, attachments) => {
                     self.remember(&text);
                     if self
@@ -910,8 +999,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Continue(CommandOutcome::AwaitingModal)
             }
             Command::Plan(description) => {
-                runtime.state.set_mode(PermissionMode::Plan);
+                self.change_mode(runtime, PermissionMode::Plan, AfkSource::Plan)
+                    .expect("only entering AFK mode is refused");
                 self.app.transcript.notice("plan mode on");
+                self.review_afk_exits(runtime).await;
                 if description.is_empty() {
                     Continue(CommandOutcome::Done)
                 } else {
@@ -1149,6 +1240,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         &mut self,
         runtime: &mut AgentRuntime,
     ) -> std::ops::ControlFlow<()> {
+        self.review_afk_exits(runtime).await;
         if let Some((purpose, reference)) = self.pending_pick.take() {
             self.apply_pick(runtime, purpose, &reference).await;
         }
@@ -1255,4 +1347,22 @@ fn usage_entries(
 /// A failing quota is reported once per account, not on every redraw or re-point.
 fn warn_once(warned: &mut std::collections::HashSet<String>, account: &str) -> bool {
     warned.insert(account.to_string())
+}
+
+/// Answers a prompt the way `AfkApprover` would, since nobody is asked during AFK mode; hands
+/// back the prompts that ask nothing.
+fn answer_unattended(prompt: Prompt) -> Result<(), Prompt> {
+    match prompt {
+        Prompt::Ask(_, reply) => {
+            let _ = reply.send(fontaine_core::permissions::Answer::Deny { feedback: None });
+        }
+        Prompt::Unavailable(_, reply) => {
+            let _ = reply.send(fontaine_core::permissions::UnavailableChoice::Deny);
+        }
+        Prompt::Question(_, _, reply) => {
+            let _ = reply.send(fontaine_tools::ask_user::QuestionReply::Unavailable);
+        }
+        other @ Prompt::Notice(..) => return Err(other),
+    }
+    Ok(())
 }

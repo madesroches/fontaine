@@ -7,7 +7,8 @@ pub enum Command {
     AddDir(String),
     Denied,
     Agents,
-    /// `/afk`, `/afk off`, `/afk report [all]` or `/afk review`.
+    /// `/afk report [all]` or `/afk review`; the bare form and `off` only explain that the mode
+    /// carousel replaced them.
     Afk(String),
     /// `/todos`: shows or hides the expanded task list.
     Todos,
@@ -165,8 +166,8 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "afk",
         aliases: &[],
-        hint: Some("[off | report [all] | review]"),
-        description: "work while you are away: nothing asks you, denials end in a report",
+        hint: Some("report [all] | review"),
+        description: "the AFK report and the review after a stop",
         command: Command::Afk,
     },
     Builtin {
@@ -727,8 +728,6 @@ fn interval(
 /// What `/afk` is asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AfkRequest {
-    On,
-    Off,
     Report { all: bool },
     Review,
 }
@@ -737,12 +736,15 @@ pub enum AfkRequest {
 pub fn parse_afk(argument: &str) -> Result<AfkRequest, String> {
     let mut words = argument.split_whitespace();
     let request = match (words.next(), words.next(), words.next()) {
-        (None, ..) => AfkRequest::On,
-        (Some("off"), None, _) => AfkRequest::Off,
         (Some("review"), None, _) => AfkRequest::Review,
         (Some("report"), None, _) => AfkRequest::Report { all: false },
         (Some("report"), Some("all"), None) => AfkRequest::Report { all: true },
-        _ => return Err("usage: /afk, /afk off, /afk report [all], /afk review".to_string()),
+        _ => {
+            return Err(
+                "/afk no longer toggles AFK: Shift+Tab cycles into and out of it; usage: /afk report [all], /afk review"
+                    .to_string(),
+            );
+        }
     };
     Ok(request)
 }
@@ -1024,18 +1026,17 @@ mod tests {
     }
 
     #[test]
-    fn afk_parses_its_four_forms_and_refuses_the_rest() {
+    fn afk_parses_its_two_forms_and_points_the_old_ones_at_shift_tab() {
         assert_eq!(parse_command("/afk"), Some(Command::Afk(String::new())));
-        assert_eq!(parse_afk(""), Ok(AfkRequest::On));
-        assert_eq!(parse_afk("off"), Ok(AfkRequest::Off));
         assert_eq!(parse_afk("review"), Ok(AfkRequest::Review));
         assert_eq!(parse_afk("report"), Ok(AfkRequest::Report { all: false }));
         assert_eq!(
             parse_afk("report all"),
             Ok(AfkRequest::Report { all: true })
         );
-        for bad in ["on", "report some", "off now", "review all"] {
-            assert!(parse_afk(bad).is_err(), "{bad}");
+        for bad in ["", "off", "on", "report some", "off now", "review all"] {
+            let usage = parse_afk(bad).expect_err(bad);
+            assert!(usage.contains("Shift+Tab"), "{bad}");
         }
         for text in ["/afk", "/afk off", "/afk report", "/afk review"] {
             let command = parse_command(text).expect("a command");

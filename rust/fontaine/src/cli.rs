@@ -45,10 +45,10 @@ pub struct Cli {
     #[arg(long = "disallowed-tools", value_name = "RULE")]
     pub disallowed_tools: Vec<String>,
 
-    /// Start in AFK mode: nothing that would ask the user is asked; each such call is denied
-    /// with guidance to finish the allowed work or stop and report. A temperature ceiling stops
-    /// a session that keeps hitting denials
-    #[arg(long)]
+    /// Start in AFK mode, which decides as `auto` does: nothing that would ask the user is
+    /// asked; each such call is denied with guidance to finish the allowed work or stop and
+    /// report. A temperature ceiling stops a session that keeps hitting denials
+    #[arg(long, conflicts_with = "permission_mode")]
     pub afk: bool,
 
     /// The AFK session temperature at which the session is stopped, overriding

@@ -1,8 +1,9 @@
 # AFK mode
 
-AFK mode is for working while you are away. It grants no authority. The mode, the deterministic
-floor, the fast paths, the guardian and every fail-closed rule are exactly what they were. The one
-thing that changes is what happens where a person would have been asked: nobody is asked.
+AFK mode is for working while you are away. It grants no authority. It is a permission mode that
+decides what runs exactly as `auto` does: the deterministic floor, the fast paths, the guardian and
+every fail-closed rule are what they were. The one thing that changes is what happens where a
+person would have been asked: nobody is asked.
 
 - Every outcome that would prompt becomes a denial, the way a [headless run](headless.md#denials)
   already treats it.
@@ -17,32 +18,36 @@ AFK adds two safety outputs of its own: a [report](#the-report) of everything th
 a [session temperature](#the-session-temperature) that stops the whole agent tree when denials
 pile up.
 
-## Turning it on and off
+## Entering and leaving it
 
-AFK is a flag on the session, not a sixth permission mode. It works over whatever mode is active,
-though `auto` is the one it is meant for: in `manual` it only turns every approval into a denial.
+AFK is the last stop of the Shift+Tab cycle, ordered by increasing autonomy: manual, plan, accept
+edits, auto, AFK, and back to manual. The status bar shows `⏵⏵⏵ AFK mode on`.
 
 | How | Effect |
 |---|---|
-| `/afk` | In the terminal UI, turns AFK on. In a mode other than `auto` it says every call that needs approval will be denied. |
-| `/afk off` | Turns it off, reviews the stretch and shows its outcome. |
+| Shift+Tab (the `cycle_mode` key) from `auto` | Enters AFK mode. Any prompt already open or queued is answered as a denial and closed. |
+| Shift+Tab from AFK | Leaves it for `manual`, then [reviews the stretch](#the-report) and shows its outcome. During a turn the mode changes at once and the review runs when the turn ends. |
+| `/plan` | Leaves AFK for plan mode, with the same review. |
 | `/afk report [all]` | Shows the report of the latest stretch, or of every stretch. |
-| `/afk review` | Lets a [stopped](#the-stop) session run again. |
-| `--afk` | Starts the session in AFK mode, in the terminal UI and in `-p`. |
+| `/afk review` | Lets a [stopped](#the-stop) session run again, in `manual` if AFK was on. |
+| `--afk` | Starts the session in AFK mode, in the terminal UI and in `-p`. It conflicts with `--permission-mode`. |
 
-Nothing but these can turn AFK on: not a settings key, not a tool, not a scheduled prompt, not the
-model, and a repository cannot. Typing a message does not end AFK, so a stray keypress cannot
-reopen approvals; only `/afk off` does.
+`/afk` and `/afk off` no longer toggle anything; they say to use Shift+Tab.
 
-A resumed session starts with AFK off, because you ran `--resume` and are there. A temperature stop
-survives a resume or a fork until it is reviewed.
+Nothing but these can enter AFK: not a settings key (`default_mode = "afk"` is rejected), not a
+tool, not a scheduled prompt, not the model, and a repository cannot. Typing a message does not end
+AFK, so a stray keypress cannot reopen approvals; leaving takes a deliberate press of the cycle key,
+and it only makes the session ask you again.
 
-`/afk` and [`/guardian-disable`](tui.md#commands) refuse each other. With the guardian disabled a
-root call runs before the floor and never prompts, so AFK would convert nothing; `/afk` says to run
-`/guardian-enable` first, and `/guardian-disable` is refused while AFK is on or a stop waits for a
-review.
+A resumed session does not start in AFK, because you ran `--resume` and are there. A temperature
+stop survives a resume or a fork until it is reviewed.
 
-A subagent always carries its parent's AFK posture, which can only be tighter.
+AFK and [`/guardian-disable`](tui.md#commands) refuse each other. With the guardian disabled a root
+call runs before the floor and never prompts, so AFK would convert nothing; entering AFK says to run
+`/guardian-enable` first (the cycle then moves on to `manual`), and `/guardian-disable` is refused
+while AFK is on or a stop waits for a review.
+
+A subagent runs at the `auto` rung under AFK, and a child's prompts are converted the same way.
 
 ## What a denial says
 
@@ -58,8 +63,8 @@ allowed subset. If no useful allowed progress remains, stop and report what was 
 blocked and why, and what remains. Do not ask for approval.
 ```
 
-The base prompt's section on denied calls says the same for the whole session, and is rebuilt when
-AFK is toggled, which costs one prompt-cache miss each way. A `--system-prompt` replaces that
+The base prompt's section on denied calls says the same for the whole session, and is rebuilt
+before the next turn after AFK is entered or left, which costs one prompt-cache miss each way. A `--system-prompt` replaces that
 section, so there the guidance arrives only through the denials. A subagent that was already
 running keeps the prompt it started with; the guidance in each denial covers it.
 
@@ -70,7 +75,7 @@ original outcome's, `afk` is `true`, and `converted` names the prompt that was t
 |---|---|
 | `ask_rule` | An `ask` rule, or an MCP tool that requires a person's approval |
 | `floor` | A critical-path or protected-path call |
-| `mode` | The mode's own approval, or `dontAsk` denying what would ask |
+| `mode` | The mode's own approval (not reachable in AFK mode, which decides as `auto`; it applies to a headless run) |
 | `hook` | A `pre_tool_use` hook's `ask` |
 | `escalate` | A guardian `escalate` verdict |
 | `screen_escalate` | A [composition](guardian.md#composing-the-guardian) stopping a call |
@@ -93,7 +98,7 @@ nothing can resume it, because only your approval does. The session is **blocked
   M denied, temperature X (peak Y). Full report: /afk report`.
 - A headless run exits 1 with `afk.outcome = "blocked"`, whether or not a goal ran.
 
-After `/afk off`, the next call that needs the guardian prompts as usual, and approving it resumes
+After you leave AFK mode, the next call that needs the guardian prompts as usual, and approving it resumes
 `auto`.
 
 ## The report
@@ -124,8 +129,9 @@ Two links are computed by rule, only between a denial and a later call of the sa
 
 The second is an *independent assessment*: one tool-less call to the guardian's model, never the
 working model, that names pairs where a later call pursues a denied call's effect another way. It
-runs when a stretch is blocked or stopped and again when it ends (`/afk off`, or the end of a
-headless run), and only when the stretch holds a denial. What it can say:
+runs when a stretch is blocked or stopped and again when it ends (you leave AFK mode, or a headless
+run ends), and only when the stretch holds a denial. It grades the stretch you left, even when it
+runs after the mode switch. What it can say:
 
 | Report line | Meaning |
 |---|---|
@@ -181,11 +187,12 @@ When the temperature reaches the ceiling, the whole agent tree stops:
 5. The stretch is assessed and the report summary is shown.
 
 While the stop stands, a typed prompt is refused with "the session is stopped (AFK temperature
-ceiling); run /afk review", `/afk` cannot turn AFK back on, and the read-only commands
+ceiling); run /afk review", the cycle cannot enter AFK again, and the read-only commands
 (`/afk report`, `/recap`, `/denied`, `/export`) still work. The status bar shows `AFK STOPPED`.
 
 **`/afk review`** is the only way out, and only in the terminal UI. It shows the report and asks for
-a confirmation. On `y` it records the review, clears the stop and leaves AFK off. It does not touch
+a confirmation. On `y` it records the review, clears the stop and, if AFK was on, leaves it for
+`manual`. It does not touch
 the denial breaker, the peak or any evidence. Cooling below the ceiling never clears a stop.
 
 A headless run has no review. A stopped session resumed with `-p` refuses to run: it makes no model
@@ -193,8 +200,9 @@ request, exits 1 with `error_during_execution` and `afk.outcome = "stopped"`.
 
 ## Headless runs
 
-`fontaine -p --afk` keeps the denials a headless run already has, switches to the AFK guidance and
-prompt, enables the temperature stop, runs the assessment and adds an `afk` object to the `result`
+`fontaine -p --afk` runs in AFK mode, which decides as `auto` (the `init` event reports `auto`, the
+mode the run started in), converts the would-prompt outcomes to denials as a headless run already
+does, switches to the AFK guidance and prompt, enables the temperature stop, runs the assessment and adds an `afk` object to the `result`
 event:
 
 ```json

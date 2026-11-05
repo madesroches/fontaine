@@ -3,14 +3,13 @@ use std::ops::ControlFlow;
 use crate::commands::{AfkRequest, parse_afk};
 use crate::reports;
 use crate::{Action, App, Ui};
-use fontaine_core::afk_report::AfkSource;
 use fontaine_core::agent::AgentRuntime;
-use fontaine_core::config::PermissionMode;
 use fontaine_core::goal::PauseReason;
 
 impl<R: FnMut(&mut App)> Ui<R> {
-    /// `/afk`, `/afk off`, `/afk report [all]` and `/afk review`. Interactive only: the model, a
-    /// config key and a scheduled prompt have no way to turn AFK on or to lift a stop.
+    /// `/afk report [all]` and `/afk review`. Interactive only: the model, a config key and a
+    /// scheduled prompt have no way to lift a stop. AFK mode itself is entered and left with the
+    /// mode key.
     pub(crate) async fn afk_command(
         &mut self,
         runtime: &mut AgentRuntime,
@@ -18,8 +17,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> ControlFlow<()> {
         match parse_afk(argument) {
             Err(usage) => self.app.transcript.error(usage),
-            Ok(AfkRequest::On) => self.afk_on(runtime),
-            Ok(AfkRequest::Off) => self.afk_off(runtime).await,
             Ok(AfkRequest::Report { all }) => self.afk_show(runtime, all),
             Ok(AfkRequest::Review) => return self.afk_review(runtime).await,
         }
@@ -71,47 +68,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    fn afk_on(&mut self, runtime: &mut AgentRuntime) {
-        match runtime.set_afk(true, AfkSource::Command) {
-            Ok(true) => {
-                let mut notice = String::from(
-                    "AFK mode on: nothing is asked of you while you are away. Each call that would have needed approval is denied, and the model is told to finish the work that is allowed or stop and report. /afk off turns it off; /afk report shows what happened.",
-                );
-                if runtime.state.mode() != PermissionMode::Auto {
-                    notice.push_str(
-                        " This session is not in auto mode, so every call that needs approval will be denied.",
-                    );
-                }
-                self.app.transcript.notice(notice);
-            }
-            Ok(false) => self.app.transcript.notice("AFK mode is already on"),
-            Err(refusal) => self.app.transcript.error(refusal.to_string()),
-        }
-    }
-
-    async fn afk_off(&mut self, runtime: &mut AgentRuntime) {
-        if !runtime.state.afk_on() {
-            self.app.transcript.notice("AFK mode is not on");
-            return;
-        }
-        self.app
-            .transcript
-            .notice("AFK mode off. Reviewing what happened…");
-        self.draw(runtime);
-        // The review is recorded before the off record so it lands inside the stretch it reviewed.
-        runtime.assess_afk().await;
-        match runtime.set_afk(false, AfkSource::Command) {
-            Ok(_) => {
-                if let Some(report) = runtime.afk_reports(false).ok().and_then(|mut r| r.pop()) {
-                    self.app
-                        .transcript
-                        .notice(reports::afk_outcome_notice(&report));
-                }
-            }
-            Err(refusal) => self.app.transcript.error(refusal.to_string()),
-        }
-    }
-
     pub(crate) fn afk_show(&mut self, runtime: &AgentRuntime, all: bool) {
         match runtime.afk_reports(all) {
             Ok(reports) if reports.is_empty() => self
@@ -134,7 +90,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// `/afk review`: shows the report and, after a confirmation, lets a stopped session run
-    /// again with AFK off. Nothing but the stop is cleared.
+    /// again, in `manual` if it was in AFK mode. Nothing but the stop is cleared.
     async fn afk_review(&mut self, runtime: &mut AgentRuntime) -> ControlFlow<()> {
         if runtime.state.afk().stopped.is_none() {
             self.app
@@ -169,9 +125,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
             match self.app.handle_input(input) {
                 Action::AfkReview(true) => {
                     if runtime.review_afk_stop() {
-                        self.app.transcript.notice(
-                            "reviewed: the session can run again. AFK mode is off; /afk turns it back on",
-                        );
+                        self.app.mode = runtime.state.mode();
+                        self.app.afk = runtime.state.afk_on();
+                        self.app
+                            .transcript
+                            .notice("reviewed: the session can run again, now in manual mode");
                     }
                     return ControlFlow::Continue(());
                 }

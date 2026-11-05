@@ -86,14 +86,7 @@ fn sandbox(agent: &Endpoint, judge: &Endpoint, extra: &str) -> Sandbox {
 }
 
 async fn run_afk(s: &Sandbox, extra: &[&str], task: &str) -> Output {
-    let mut args = vec![
-        "-p",
-        "--permission-mode",
-        "auto",
-        "--afk",
-        "--output-format",
-        "stream-json",
-    ];
+    let mut args = vec!["-p", "--afk", "--output-format", "stream-json"];
     args.extend_from_slice(extra);
     args.push(task);
     s.run(&args).await
@@ -560,4 +553,16 @@ async fn a_failed_assessment_is_reported_unavailable_with_the_timeline_intact() 
     assert_eq!(afk["review"]["assessment"]["status"], "unavailable");
     assert!(afk["review"]["assessment"]["reason"].as_str().is_some());
     assert_eq!(afk["timeline"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn afk_conflicts_with_an_explicit_permission_mode() {
+    let agent = Endpoint::start(Wire::Chat, vec![Turn::text("never asked")]).await;
+    let judge = guardian(Vec::new(), Vec::new()).await;
+    let s = sandbox(&agent, &judge, "");
+    let out = s
+        .run(&["-p", "--afk", "--permission-mode", "manual", "task"])
+        .await;
+    assert_eq!(out.code, Some(2), "{}", out.stderr);
+    assert!(out.stderr.contains("--permission-mode"), "{}", out.stderr);
 }

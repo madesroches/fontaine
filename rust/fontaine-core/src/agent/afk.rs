@@ -1,4 +1,4 @@
-//! AFK mode as the runtime drives it: turning it on and off, the report, the independent review
+//! AFK mode as the runtime drives it: the report, the independent review
 //! of a stretch, and what happens to the running tree when the temperature ceiling stops the
 //! session.
 
@@ -7,27 +7,13 @@ use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::ROOT_AGENT;
 
 use super::AgentRuntime;
-use crate::afk_report::{self, AfkOutcome, AfkReport, AfkSource, AssessmentResult};
-use crate::gate::{AfkRefusal, Blocked};
+use crate::afk_report::{self, AfkOutcome, AfkReport, AssessmentResult};
+use crate::gate::Blocked;
 use crate::goal::PauseReason;
 use crate::ledger::Record;
 use crate::runtime_error::RuntimeError;
 
 impl AgentRuntime {
-    /// Turns AFK mode on or off. The base prompt is rebuilt so the model reads the guidance that
-    /// matches, which costs one prompt-cache miss per toggle. Returns whether anything changed.
-    pub fn set_afk(&mut self, on: bool, source: AfkSource) -> Result<bool, AfkRefusal> {
-        let changed = self.state.set_afk(on, source)?;
-        if changed && let Err(e) = self.rebuild() {
-            // The pipeline enforces AFK either way; only the prompt's wording is stale.
-            self.approver.warn(&format!(
-                "the system prompt could not be rebuilt for AFK mode: {}",
-                chain(&e)
-            ));
-        }
-        Ok(changed)
-    }
-
     /// Why a turn nobody typed may not start.
     pub fn unattended_blocked(&self) -> Option<Blocked> {
         self.state.unattended_blocked()
@@ -48,12 +34,15 @@ impl AgentRuntime {
         Ok(reports)
     }
 
-    /// Asks the guardian's model whether a later call of the latest stretch pursued the effect
-    /// of a denied one, and records what it said. A stretch with no denial is not assessed. The
-    /// working model never grades itself, and a failed assessment is recorded as unavailable.
-    pub async fn assess_afk(&self) {
-        let report = match self.afk_reports(false) {
-            Ok(mut reports) => reports.pop(),
+    /// Asks the guardian's model whether a later call of the stretch that started at the ledger
+    /// position `stretch_seq` pursued the effect of a denied one, and records what it said. A
+    /// stretch with no denial is not assessed. The working model never grades itself, and a
+    /// failed assessment is recorded as unavailable.
+    pub async fn assess_afk(&self, stretch_seq: u64) {
+        let report = match self.afk_reports(true) {
+            Ok(reports) => reports
+                .into_iter()
+                .find(|report| report.stretch.started_seq == stretch_seq),
             Err(e) => {
                 self.approver.warn(&chain(&e));
                 return;
@@ -83,10 +72,12 @@ impl AgentRuntime {
         });
     }
 
-    /// What follows turning AFK off or ending a headless run: the final review of the stretch,
-    /// then its report.
+    /// What follows a stretch that stopped, blocked or ended a headless run: the final review of
+    /// the running stretch, then the report of the latest one.
     pub async fn finish_afk(&self) -> Option<AfkReport> {
-        self.assess_afk().await;
+        if let Some(stretch) = self.state.afk().stretch {
+            self.assess_afk(stretch.started_seq).await;
+        }
         self.afk_reports(false).ok()?.pop()
     }
 
@@ -140,15 +131,9 @@ impl AgentRuntime {
         self.finish_afk().await
     }
 
-    /// The temperature stop the user reviewed may run again: AFK stays off.
-    pub fn review_afk_stop(&mut self) -> bool {
-        let reviewed = self.state.afk_review();
-        if reviewed && let Err(e) = self.rebuild() {
-            self.approver.warn(&format!(
-                "the system prompt could not be rebuilt after the AFK review: {}",
-                chain(&e)
-            ));
-        }
-        reviewed
+    /// The temperature stop the user reviewed may run again, in `manual` if AFK mode was on. The
+    /// next turn's refresh brings the prompt's AFK guidance in line.
+    pub fn review_afk_stop(&self) -> bool {
+        self.state.afk_review()
     }
 }

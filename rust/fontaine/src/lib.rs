@@ -535,10 +535,14 @@ enum Outcome {
     Switch(fontaine_tui::SessionTarget, Option<Box<Config>>),
 }
 
-/// The session's permission mode: `--permission-mode`, then `default_mode`, then what the
-/// surface starts in. The interactive UI starts in `auto`; a headless run starts in `manual`,
-/// as Claude Code's `-p` starts in `default`.
+/// The session's permission mode: `--afk` (which starts in `auto` and enters AFK mode once the
+/// session state exists), then `--permission-mode`, then `default_mode`, then what the surface
+/// starts in. The interactive UI starts in `auto`; a headless run starts in `manual`, as Claude
+/// Code's `-p` starts in `default`.
 fn session_mode(cli: &Cli, config: &Config) -> PermissionMode {
+    if cli.afk {
+        return PermissionMode::Auto;
+    }
     cli.permission_mode
         .map(PermissionMode::from)
         .or(config.permissions.default_mode)

@@ -222,7 +222,7 @@ pub fn permissions(
     let mut out = format!("mode: {}", mode_label(mode));
     rule_list(&mut out, "deny", &rules.deny, &[]);
     rule_list(&mut out, "ask", &rules.ask, &[]);
-    let set_aside = if mode == PermissionMode::Auto {
+    let set_aside = if mode.rules() == PermissionMode::Auto {
         suspended
     } else {
         &[]
@@ -461,6 +461,8 @@ fn afk_outcome_words(report: &AfkReport) -> String {
     let source = match report.stretch.source {
         fontaine_core::afk_report::AfkSource::Command => "/afk",
         fontaine_core::afk_report::AfkSource::Cli => "--afk",
+        fontaine_core::afk_report::AfkSource::Cycle => "Shift+Tab",
+        fontaine_core::afk_report::AfkSource::Plan => "/plan",
     };
     let span = match (report.stretch.ended_ts_ms, report.stretch.started_ts_ms) {
         (Some(end), start) => format!(", lasted {}s", end.saturating_sub(start) / 1000),

@@ -257,7 +257,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// When the agent cannot be rebuilt to drop a search tool the gate now withholds, the turn
     /// must not run: this returns how it ends instead.
     fn refresh_native_search(&mut self, runtime: &mut AgentRuntime) -> Option<TurnEnd> {
-        let e = runtime.refresh_native_search().err()?;
+        let e = runtime.refresh_before_turn().err()?;
         let message = format!(
             "the provider's web search could not be turned off, so the turn did not run: {}",
             fontaine_tools::error_chain::chain(&e)
@@ -382,7 +382,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     None => return Err(TurnEnd::InputClosed),
                     Some(input) => match self.app.handle_input(input) {
                         Action::Interrupt | Action::Quit => return Err(TurnEnd::Interrupted),
-                        Action::CycleMode => self.cycle_mode(runtime),
+                        Action::CycleMode => self.cycle_mode(runtime, true),
                         Action::RetryDenied(index) if retry => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),
@@ -519,6 +519,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         while let Some(submission) = pending.pop_front() {
+            self.review_afk_exits(runtime).await;
             if runtime.state.afk().stopped.is_some()
                 && matches!(
                     submission,
@@ -708,7 +709,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 Action::OpenRewind => self.open_rewind(runtime),
                 Action::Interrupt | Action::Quit => return Break(()),
-                Action::CycleMode => self.cycle_mode(runtime),
+                Action::CycleMode => {
+                    self.cycle_mode(runtime, false);
+                    self.review_afk_exits(runtime).await;
+                }
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
                 Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
                 Action::KillAgent(id) => self.kill_agent(runtime, &id),
@@ -841,7 +845,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     None => break TurnEnd::InputClosed,
                     Some(input) => match self.app.handle_input(input) {
                         Action::Interrupt | Action::Quit => break TurnEnd::Interrupted,
-                        Action::CycleMode => self.cycle_mode(runtime),
+                        Action::CycleMode => self.cycle_mode(runtime, true),
                         Action::RetryDenied(index) => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),

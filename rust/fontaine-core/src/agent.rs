@@ -203,6 +203,8 @@ pub struct AgentRuntime {
     listings: Vec<AccountListing>,
     /// Whether the agent was built with the provider's search tool.
     native_search: bool,
+    /// Whether the built prompt carries the AFK guidance.
+    prompt_afk: bool,
 }
 
 /// The parts of the setup a rebuild needs again.
@@ -259,11 +261,9 @@ impl AgentRuntime {
         let tree = setup::agent_tree(&setup);
         let agent_types = Arc::new(build_agent_types(&setup.config, &setup.extensions));
         let state = setup::session_state(&setup, &tree, &agent_types);
-        // Every approver call site below this line, the pipeline's, the children's and the
-        // questions', goes through the AFK backstop.
+        // Every approver call site below, the pipeline's, children's and questions', passes the AFK backstop.
         setup.approver = Arc::new(AfkApprover::new(setup.approver.clone(), state.clone()));
-        setup::start_afk(&setup, &state);
-        setup::attach_composition(&state, &setup);
+        setup::configure_state(&setup, &state);
         let setup::Gates {
             pipeline,
             retained,
@@ -305,6 +305,7 @@ impl AgentRuntime {
             agent,
             prompt_pieces: pieces,
             launch_instructions: loaded,
+            prompt_afk: state.afk_on(),
             instruction_stage,
             state,
             session: setup.session,
@@ -343,6 +344,7 @@ impl AgentRuntime {
     /// session store, so a new agent continues it.
     fn rebuild(&mut self) -> Result<(), RuntimeError> {
         let scope = self.state.scope();
+        let prompt_afk = self.state.afk_on();
         let (agent, prompt_pieces, launch_instructions, native_search) = build_agent(&Parts {
             setup: &self.setup,
             roots: scope.roots(),
@@ -364,6 +366,7 @@ impl AgentRuntime {
             kills: &self.kills,
         })?;
         self.native_search = native_search;
+        self.prompt_afk = prompt_afk;
         self.agent = agent;
         self.prompt_pieces = prompt_pieces;
         self.launch_instructions = launch_instructions;
@@ -374,23 +377,26 @@ impl AgentRuntime {
         native_search::offered(&self.config, &self.models, &self.state)
     }
 
-    /// Rebuilds the agent when the live mode and rules change whether the provider's search
-    /// tool is offered. The tool is part of the built agent, which a mode switch or a session
-    /// rule does not rebuild, so the turn drivers call this before each turn.
+    /// Rebuilds the agent when the live mode and rules change what the built agent carries: the
+    /// provider's search tool, or the AFK guidance in the prompt. Neither is refreshed by a mode
+    /// switch or a session rule, so the turn drivers call this before each turn; a rebuild costs
+    /// one prompt-cache miss.
     ///
     /// A failed rebuild is an error only when the old agent would keep a search tool the gate now
     /// withholds, so the caller must not run the turn; failing to newly offer it is warned about
-    /// and the turn runs without it.
-    pub fn refresh_native_search(&mut self) -> Result<(), RuntimeError> {
+    /// and the turn runs without it, and a stale AFK wording is warned about (the pipeline
+    /// enforces the mode either way).
+    pub fn refresh_before_turn(&mut self) -> Result<(), RuntimeError> {
         let offered = self.native_search_entry().is_some();
-        if offered == self.native_search {
+        let afk = self.state.afk_on();
+        if offered == self.native_search && afk == self.prompt_afk {
             return Ok(());
         }
         match self.rebuild() {
-            Err(e) if !offered => Err(e),
+            Err(e) if !offered && self.native_search => Err(e),
             Err(e) => {
                 self.approver.warn(&format!(
-                    "the provider's web search could not be updated: {}",
+                    "the system prompt or the provider's web search could not be updated: {}",
                     fontaine_tools::error_chain::chain(&e)
                 ));
                 Ok(())

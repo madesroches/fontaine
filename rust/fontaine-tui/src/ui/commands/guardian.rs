@@ -15,13 +15,15 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             return ControlFlow::Continue(());
         }
         let afk = runtime.state.afk();
-        if afk.stopped.is_some() || afk.on.is_some() {
-            let refusal = if afk.stopped.is_some() {
-                fontaine_core::gate::AfkRefusal::Stopped
+        if afk.stopped.is_some() || afk.stretch.is_some() {
+            let message = if afk.stopped.is_some() {
+                fontaine_core::gate::AfkRefusal::Stopped.to_string()
             } else {
-                fontaine_core::gate::AfkRefusal::AfkOn
+                let key = crate::statusbar::cycle_keys(&self.app)
+                    .unwrap_or_else(|| "the mode key".to_string());
+                format!("AFK mode is on: leave it with {key} before disabling the guardian")
             };
-            self.app.transcript.error(refusal.to_string());
+            self.app.transcript.error(message);
             return ControlFlow::Continue(());
         }
         self.app.begin_guardian_off();

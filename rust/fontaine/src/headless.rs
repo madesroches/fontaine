@@ -461,7 +461,7 @@ fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Value {
             "workspace_roots": roots,
             "config_sources": sources,
             "workspace_trust": if trusted { "trusted" } else { "untrusted" },
-            "suspended_allow_rules": if runtime.start_mode() == PermissionMode::Auto {
+            "suspended_allow_rules": if runtime.start_mode().rules() == PermissionMode::Auto {
                 runtime.state.suspended_allow_rules()
             } else {
                 Vec::new()
@@ -642,7 +642,7 @@ fn announce(runtime: &AgentRuntime) {
     }
     if !matches!(
         runtime.start_mode(),
-        PermissionMode::Auto | PermissionMode::Plan
+        PermissionMode::Auto | PermissionMode::Afk | PermissionMode::Plan
     ) {
         return;
     }
@@ -1016,7 +1016,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
                 return 2;
             }
         };
-        let mut handled = match runtime.refresh_native_search() {
+        let mut handled = match runtime.refresh_before_turn() {
             Ok(()) => handle_message(&runtime, &options, stream_events, text).await,
             Err(e) => Handled {
                 outcome: Outcome {
@@ -1088,7 +1088,9 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
         last.afk = Some(report);
     }
     // The run was the AFK stretch: close it in the ledger.
-    if let Err(e) = runtime.state.set_afk(false, AfkSource::Cli) {
+    if runtime.state.afk_on()
+        && let Err(e) = runtime.state.set_mode(PermissionMode::Auto, AfkSource::Cli)
+    {
         eprintln!("fontaine: {e}");
     }
     runtime.state.agents().kill_all();

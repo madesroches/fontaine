@@ -10,8 +10,8 @@ use common::pipeline::{Options, Rig, allowed, denied_message, fake_guardian, ver
 use fontaine_agents::mode::Ladder;
 use fontaine_core::afk_report::{AfkSource, OutcomeStatus, build_latest};
 use fontaine_core::audit::{Converted, Decision};
-use fontaine_core::config::PermissionMode::{Auto, DontAsk, Manual};
-use fontaine_core::gate::{AFK_STOPPED_MESSAGE, AfkRefusal, Blocked};
+use fontaine_core::config::PermissionMode::{Afk, Auto, Manual};
+use fontaine_core::gate::{AFK_STOPPED_MESSAGE, AfkRefusal, Blocked, ModeChanged};
 use fontaine_core::ledger::Record;
 use fontaine_core::permissions::{
     AfkApprover, Answer, ApprovalRequest, Approver, HookDecision, HookError, HookPermission,
@@ -32,7 +32,7 @@ fn shell(command: &str) -> serde_json::Value {
 }
 
 fn afk_on(rig: &Rig) {
-    rig.state.set_afk(true, AfkSource::Command).unwrap();
+    rig.state.set_mode(Afk, AfkSource::Cycle).unwrap();
 }
 
 /// The last audit record the call produced.
@@ -63,25 +63,6 @@ async fn a_denial_ends_in_the_attended_sentence_until_afk_is_on_and_then_in_the_
     let record = last_record(&rig);
     assert!(record.afk);
     assert_eq!(record.converted, None, "a deny rule stands for no prompt");
-}
-
-#[tokio::test]
-async fn a_mode_prompt_becomes_a_denial_and_nobody_is_asked() {
-    let rig = Rig::new(Manual);
-    afk_on(&rig);
-    let decision = rig.check("shell", shell("python x.py")).await;
-    let message = denied_message(&decision);
-    assert!(
-        message.contains("it needs the user's approval, and the user is away (AFK mode)"),
-        "{message}"
-    );
-    assert!(message.contains(AFK_GUIDANCE), "{message}");
-    assert_eq!(rig.approver.asked(), 0);
-    let record = last_record(&rig);
-    assert_eq!(
-        (record.tier, record.decision, record.converted),
-        (Tier::Mode, Decision::Deny, Some(Converted::Mode))
-    );
 }
 
 #[tokio::test]
@@ -150,22 +131,6 @@ async fn a_hook_ask_is_converted_with_its_own_variant() {
 }
 
 #[tokio::test]
-async fn dont_ask_keeps_its_own_words_and_still_gets_the_afk_sentence() {
-    let rig = Rig::with(
-        Options::new(DontAsk).settings("[permissions]\nask = [\"shell(npm publish)\"]\n"),
-    );
-    afk_on(&rig);
-    let decision = rig.check("shell", shell("npm publish")).await;
-    let message = denied_message(&decision);
-    assert!(
-        message.contains("dontAsk mode denies what would need approval"),
-        "{message}"
-    );
-    assert!(message.contains(AFK_GUIDANCE), "{message}");
-    assert_eq!(last_record(&rig).converted, Some(Converted::Mode));
-}
-
-#[tokio::test]
 async fn a_guardian_escalation_is_denied_counted_and_keeps_its_verdict() {
     let fake = fake_guardian(verdict_json("escalate", "Production Deploy", 0.9));
     let rig = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));
@@ -221,11 +186,7 @@ async fn the_guardian_unavailable_dialog_is_skipped() {
     let decision = rig.check("shell", shell("echo hi > x")).await;
     assert!(!allowed(&decision));
     assert!(rig.approver.unavailable_asked.lock().unwrap().is_empty());
-    assert_eq!(
-        rig.state.mode(),
-        Auto,
-        "the mode is not switched while away"
-    );
+    assert_eq!(rig.state.mode(), Afk, "the mode is not switched while away");
     let record = last_record(&rig);
     assert_eq!(record.fail_closed_reason.as_deref(), Some("unavailable"));
     assert_eq!(record.converted, Some(Converted::GuardianUnavailable));
@@ -280,16 +241,23 @@ async fn a_temperature_stop_denies_every_call_of_every_agent_before_the_floor() 
     }
 
     // Neither AFK nor the escape hatch can be turned on until the stop is reviewed.
-    assert_eq!(
-        rig.state.set_afk(true, AfkSource::Command),
-        Err(AfkRefusal::Stopped)
-    );
     assert_eq!(rig.state.set_guardian_off(true), Err(AfkRefusal::Stopped));
     assert_eq!(rig.state.unattended_blocked(), Some(Blocked::Stopped));
+    rig.state.set_mode(Auto, AfkSource::Cycle).unwrap();
+    assert_eq!(
+        rig.state.set_mode(Afk, AfkSource::Cycle),
+        Err(AfkRefusal::Stopped)
+    );
+    assert_eq!(rig.state.mode(), Auto, "a refused entry changes nothing");
 
     assert!(rig.state.afk_review());
     assert!(rig.state.afk().stopped.is_none());
-    assert!(!rig.state.afk_on(), "a review leaves AFK off");
+    assert!(!rig.state.afk_on());
+    assert_eq!(
+        rig.state.mode(),
+        Auto,
+        "a review outside AFK keeps the mode"
+    );
     assert!(!rig.state.afk_review(), "a review clears a stop once");
     assert!(
         rig.session
@@ -308,23 +276,88 @@ async fn afk_and_the_guardian_escape_hatch_exclude_each_other() {
     let rig = Rig::new(Manual);
     rig.state.set_guardian_off(true).unwrap();
     assert_eq!(
-        rig.state.set_afk(true, AfkSource::Command),
+        rig.state.set_mode(Afk, AfkSource::Cycle),
         Err(AfkRefusal::GuardianOff)
     );
+    assert_eq!(rig.state.mode(), Manual);
+    assert!(!rig.state.afk_on());
     rig.state.set_guardian_off(false).unwrap();
-    assert_eq!(rig.state.set_afk(true, AfkSource::Command), Ok(true));
+    assert!(rig.state.set_mode(Afk, AfkSource::Cycle).unwrap().changed);
+    assert!(rig.state.afk_on());
     assert_eq!(rig.state.set_guardian_off(true), Err(AfkRefusal::AfkOn));
     assert!(!rig.state.guardian_off());
-    assert_eq!(rig.state.set_afk(false, AfkSource::Command), Ok(true));
-    assert_eq!(rig.state.set_afk(false, AfkSource::Command), Ok(false));
+    let left = rig.state.set_mode(Manual, AfkSource::Cycle).unwrap();
+    assert!(left.changed && left.closed_stretch.is_some());
+    assert_eq!(
+        rig.state.set_mode(Manual, AfkSource::Cycle),
+        Ok(ModeChanged::default())
+    );
     rig.state.set_guardian_off(true).unwrap();
 }
 
 #[tokio::test]
-async fn toggling_afk_is_recorded_in_the_ledger_and_the_audit_log() {
+async fn afk_follows_the_mode_and_is_recorded_in_the_ledger_and_the_audit_log() {
     let rig = Rig::new(Manual);
+    rig.state.set_mode(Afk, AfkSource::Cycle).unwrap();
+    assert!(rig.state.afk_on());
+    assert!(rig.state.afk().stretch.is_some());
+    let left = rig.state.set_mode(Auto, AfkSource::Plan).unwrap();
+    assert!(!rig.state.afk_on());
+    assert!(rig.state.afk().stretch.is_none());
+    let records: Vec<_> = rig
+        .session
+        .ledger
+        .read()
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.record {
+            Record::Afk { on, source } => Some(format!("afk {on} {source:?}")),
+            Record::ModeChange { from, to } => Some(format!("mode {from}>{to}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        records,
+        [
+            "afk true Cycle",
+            "mode manual>afk",
+            "afk false Plan",
+            "mode afk>auto"
+        ]
+    );
+    let started = rig
+        .session
+        .ledger
+        .read()
+        .unwrap()
+        .into_iter()
+        .find(|e| matches!(e.record, Record::Afk { on: true, .. }))
+        .unwrap()
+        .seq;
+    assert_eq!(left.closed_stretch, Some(started));
+    let rules: Vec<_> = rig
+        .audit()
+        .into_iter()
+        .filter(|r| r.tier == Tier::Afk)
+        .map(|r| (r.rule.unwrap(), r.permission_mode))
+        .collect();
+    assert_eq!(
+        rules,
+        [
+            ("afk_on".to_string(), "auto".to_string()),
+            ("afk_off".to_string(), "auto".to_string())
+        ]
+    );
+}
+
+#[tokio::test]
+async fn reviewing_a_stop_inside_afk_lands_in_manual() {
+    let rig = Rig::new(Auto);
     afk_on(&rig);
-    rig.state.set_afk(false, AfkSource::Command).unwrap();
+    rig.state.afk_stop(13.0, 12.0, vec![1]);
+    assert!(rig.state.afk_review());
+    assert_eq!(rig.state.mode(), Manual);
+    assert!(!rig.state.afk_on() && rig.state.afk().stopped.is_none());
     let kinds: Vec<_> = rig
         .session
         .ledger
@@ -332,21 +365,51 @@ async fn toggling_afk_is_recorded_in_the_ledger_and_the_audit_log() {
         .unwrap()
         .into_iter()
         .filter_map(|e| match e.record {
-            Record::Afk { on, source } => Some((on, source)),
+            Record::Afk { on: false, .. } => Some("afk off"),
+            Record::ModeChange { .. } => Some("mode"),
+            Record::AfkReviewed {} => Some("reviewed"),
             _ => None,
         })
         .collect();
+    assert_eq!(kinds, ["mode", "reviewed", "afk off", "mode"]);
+}
+
+#[tokio::test]
+async fn afk_decides_as_auto_with_nobody_to_ask() {
+    let fake = fake_guardian(verdict_json("escalate", "Production Deploy", 0.9));
+    let rig = Rig::with(Options::new(Manual).guardian(fake.guardian.clone()));
+    afk_on(&rig);
+    let decision = rig.check("shell", shell("deploy now")).await;
+    assert!(denied_message(&decision).contains(AFK_GUIDANCE));
+    assert_eq!(fake.calls(), 1, "the guardian judged it as in auto");
+    let record = last_record(&rig);
     assert_eq!(
-        kinds,
-        [(true, AfkSource::Command), (false, AfkSource::Command)]
+        (
+            record.permission_mode.as_str(),
+            record.afk,
+            record.converted
+        ),
+        ("auto", true, Some(Converted::Escalate))
     );
-    let rules: Vec<_> = rig
-        .audit()
-        .into_iter()
-        .filter(|r| r.tier == Tier::Afk)
-        .map(|r| r.rule.unwrap())
-        .collect();
-    assert_eq!(rules, ["afk_on", "afk_off"]);
+    assert_eq!(rig.approver.asked(), 0);
+
+    rig.check("shell", shell("rm -rf /")).await;
+    assert_eq!(last_record(&rig).tier, Tier::CriticalPath);
+}
+
+#[tokio::test]
+async fn a_child_of_an_afk_session_runs_at_the_auto_rung_and_its_prompts_convert() {
+    let fake = fake_guardian(verdict_json("escalate", "Production Deploy", 0.9));
+    let rig = Rig::with(Options::new(Manual).guardian(fake.guardian.clone()));
+    afk_on(&rig);
+    let child = rig
+        .agents
+        .reserve(ROOT_AGENT, "worker", "m", Vec::new(), Ladder::Auto)
+        .unwrap();
+    let decision = rig.check_as(&child, "shell", shell("deploy now")).await;
+    assert!(denied_message(&decision).contains(AFK_GUIDANCE));
+    assert_eq!(rig.approver.asked(), 0);
+    assert_eq!(last_record(&rig).converted, Some(Converted::Escalate));
 }
 
 #[tokio::test]
@@ -485,7 +548,7 @@ async fn the_live_temperature_equals_the_one_replayed_from_the_ledger() {
 }
 
 #[tokio::test]
-async fn reviewing_a_stop_rebuilds_the_root_prompt_without_the_away_text() {
+async fn the_rebuild_before_a_turn_follows_afk_in_both_directions() {
     use common::World;
     use common::runtime::build;
     use fontaine_core::config::PermissionMode;
@@ -500,35 +563,97 @@ async fn reviewing_a_stop_rebuilds_the_root_prompt_without_the_away_text() {
     };
     let w = World::new();
     let mut built = build(&w, PermissionMode::Manual, vec![answer(), answer()], false);
-    built
-        .runtime
-        .set_afk(true, AfkSource::Command)
-        .expect("afk can be turned on");
-    built.runtime.state.afk_stop(13.0, 12.0, vec![1]);
-    assert!(built.runtime.review_afk_stop());
-
     let mut seen = |_| Flow::Continue;
-    let outcome = run_turn(
-        TurnParams {
-            agent: &built.runtime.agent,
-            state: &built.runtime.state,
-            prompt: "hello".to_string(),
-            attachments: Vec::new(),
-            modalities: rig_core::catalog::Modalities::default(),
-            max_turns: Some(5),
-            priced: true,
-            model: "scripted".to_string(),
-            provider: "mock".to_string(),
-            native_search: false,
-            generation_options: None,
-        },
-        &mut seen,
-    )
-    .await;
-    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
-    let request = format!("{:?}", built.main.requests()[0]);
-    assert!(
-        !request.contains("The user is away (AFK mode)"),
-        "{request}"
-    );
+    for (afk, turn) in [(true, 0), (false, 1)] {
+        if afk {
+            built
+                .runtime
+                .state
+                .set_mode(Afk, AfkSource::Cycle)
+                .expect("afk can be turned on");
+        } else {
+            built.runtime.state.afk_stop(13.0, 12.0, vec![1]);
+            assert!(built.runtime.review_afk_stop());
+            assert_eq!(built.runtime.state.mode(), Manual);
+        }
+        built.runtime.refresh_before_turn().unwrap();
+        let outcome = run_turn(
+            TurnParams {
+                agent: &built.runtime.agent,
+                state: &built.runtime.state,
+                prompt: "hello".to_string(),
+                attachments: Vec::new(),
+                modalities: rig_core::catalog::Modalities::default(),
+                max_turns: Some(5),
+                priced: true,
+                model: "scripted".to_string(),
+                provider: "mock".to_string(),
+                native_search: false,
+                generation_options: None,
+            },
+            &mut seen,
+        )
+        .await;
+        assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+        let request = format!("{:?}", built.main.requests()[turn]);
+        assert_eq!(
+            request.contains("The user is away (AFK mode)"),
+            afk,
+            "{request}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_review_grades_the_stretch_it_is_given_not_the_latest() {
+    use common::World;
+    use common::runtime::build;
+    use fontaine_core::config::PermissionMode;
+    use rig_core::test_utils::{MockStreamEvent, mock_final};
+
+    let w = World::new();
+    let answer = vec![
+        MockStreamEvent::Text("not a verdict".to_string()),
+        MockStreamEvent::FinalResponse(mock_final(rig_core::completion::Usage::default())),
+    ];
+    let built = build(&w, PermissionMode::Auto, vec![answer], false);
+    let state = &built.runtime.state;
+    let denial = || Record::Denial {
+        tool: "shell".into(),
+        agent: ROOT_AGENT.into(),
+        reason: "r".into(),
+        rule: Some("deny_rule".into()),
+        summary: "s".into(),
+        tier: None,
+        tool_use_id: None,
+        digest: None,
+        paths: Vec::new(),
+        converted: None,
+        fail_closed: None,
+        explanation: None,
+    };
+    state.set_mode(Afk, AfkSource::Cycle).unwrap();
+    state.append(denial());
+    let first = state
+        .set_mode(Auto, AfkSource::Cycle)
+        .unwrap()
+        .closed_stretch
+        .expect("the first stretch closed");
+    state.set_mode(Afk, AfkSource::Cycle).unwrap();
+    state.append(denial());
+
+    built.runtime.assess_afk(first).await;
+    let graded: Vec<_> = built
+        .runtime
+        .state
+        .ledger
+        .read()
+        .unwrap()
+        .into_iter()
+        .filter_map(|e| match e.record {
+            Record::AfkAssessment { stretch_seq, .. } => Some(stretch_seq),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(graded, [first]);
 }
