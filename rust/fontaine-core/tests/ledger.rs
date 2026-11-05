@@ -391,6 +391,24 @@ fn the_file_index_respects_gitignore() {
     assert!(!names.contains(&"ignored.txt".to_string()), "{names:?}");
     assert!(!names.iter().any(|n| n.starts_with("build/")), "{names:?}");
     assert!(!names.iter().any(|n| n.starts_with(".git/")), "{names:?}");
+
+    let dirs: Vec<String> = index
+        .dirs
+        .iter()
+        .map(|p| {
+            std::path::Path::new(p)
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    assert_eq!(dirs, vec!["src".to_string()], "{dirs:?}");
+    assert!(
+        index.completion_paths().iter().any(|p| p.ends_with("src/")),
+        "{:?}",
+        index.completion_paths()
+    );
 }
 
 #[test]
@@ -406,6 +424,18 @@ fn the_file_index_stops_at_the_cap_and_records_the_truncation() {
     assert_eq!(exact.paths.len(), 10);
     assert!(!exact.truncated);
     assert_eq!(FILE_INDEX_CAP, 50_000);
+}
+
+#[test]
+fn directories_do_not_consume_the_file_cap() {
+    let w = World::new();
+    for i in 0..3 {
+        common::write(&w.work.join(format!("d{i}/f.txt")), "x");
+    }
+    let index = FileIndex::build(std::slice::from_ref(&w.work), 3);
+    assert_eq!(index.paths.len(), 3);
+    assert!(!index.truncated);
+    assert_eq!(index.dirs.len(), 3);
 }
 
 #[test]

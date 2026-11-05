@@ -605,8 +605,13 @@ impl App {
             return;
         };
         let path = &list.matches[list.selected];
-        self.input
-            .replace_range(list.mention.start, list.mention.end, &format!("@{path} "));
+        // A directory gets no space so the list reopens on its children.
+        let space = if path.ends_with('/') { "" } else { " " };
+        self.input.replace_range(
+            list.mention.start,
+            list.mention.end,
+            &format!("@{path}{space}"),
+        );
         self.history.reset();
         self.refresh_completion();
     }
@@ -1500,7 +1505,22 @@ impl App {
         match key.code {
             KeyCode::Up => list.selected = list.selected.saturating_sub(1),
             KeyCode::Down => list.selected = (list.selected + 1).min(list.matches.len() - 1),
-            KeyCode::Tab => self.accept_completion(),
+            KeyCode::Tab => {
+                let names: Vec<&str> = list.matches.iter().map(String::as_str).collect();
+                let prefix = common_prefix(&names);
+                let canonical = |text: &str| text.to_lowercase().replace('\\', "/");
+                let narrows = list.matches.len() > 1
+                    && prefix.chars().count() > list.mention.query.chars().count()
+                    && canonical(&prefix).starts_with(&canonical(&list.mention.query));
+                if narrows {
+                    let (start, end) = (list.mention.start, list.mention.end);
+                    self.input.replace_range(start, end, &format!("@{prefix}"));
+                    self.history.reset();
+                    self.refresh_completion();
+                } else {
+                    self.accept_completion();
+                }
+            }
             KeyCode::Enter
                 if !key
                     .modifiers
@@ -3222,6 +3242,91 @@ mod tests {
         // Typing another character starts over at the top.
         press(&mut app, KeyCode::Backspace);
         assert_eq!(selected_name(&app), "model");
+    }
+
+    #[test]
+    fn completion_list_down_clamps_at_the_last_match() {
+        let mut app = app_with_many_files();
+        type_text(&mut app, "@f");
+        let list = app.completion.as_ref().expect("completion is open");
+        let total = list.matches.len();
+        assert!(total > 8, "need more than 8 matches, got {total}");
+        // Press Down more times than there are entries.
+        for _ in 0..total + 5 {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(
+            app.completion.as_ref().unwrap().selected,
+            total - 1,
+            "selected must clamp at the last match"
+        );
+    }
+
+    fn app_with_many_files() -> App {
+        let mut app = app();
+        app.primary_root = PathBuf::from("/w");
+        let files: Vec<String> = (0..20).map(|i| format!("/w/file{i:02}.rs")).collect();
+        app.set_files(Arc::new(files));
+        app
+    }
+
+    #[test]
+    fn tab_narrows_to_the_common_prefix_before_accepting() {
+        let mut app = app_with_files();
+        type_text(&mut app, "@src/m");
+        assert_eq!(press(&mut app, KeyCode::Tab), Action::None);
+        assert_eq!(app.input.text(), "@src/ma");
+        assert_eq!(app.completion.as_ref().unwrap().mention.query, "src/ma");
+        assert_eq!(press(&mut app, KeyCode::Tab), Action::None);
+        assert_eq!(app.input.text(), "@src/main.rs ");
+        assert!(app.completion.is_none());
+    }
+
+    #[test]
+    fn tab_narrowing_treats_backslash_as_a_separator() {
+        let mut app = app();
+        app.primary_root = PathBuf::from("/w");
+        app.set_files(Arc::new(vec![
+            "/w/src\\main.rs".to_string(),
+            "/w/src\\manual.md".to_string(),
+        ]));
+        type_text(&mut app, "@src/m");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "@src\\ma");
+    }
+
+    fn app_with_directories() -> App {
+        let mut app = app();
+        app.primary_root = PathBuf::from("/w");
+        app.set_files(Arc::new(vec![
+            "/w/tasks/".to_string(),
+            "/w/tasks/plan.md".to_string(),
+            "/w/rust/core/src/tasks.rs".to_string(),
+        ]));
+        app
+    }
+
+    #[test]
+    fn tab_on_a_directory_inserts_it_without_a_space_and_lists_its_children() {
+        let mut app = app_with_directories();
+        type_text(&mut app, "@task");
+        assert_eq!(press(&mut app, KeyCode::Tab), Action::None);
+        assert_eq!(app.input.text(), "@tasks/");
+        let list = app.completion.as_ref().expect("the children are listed");
+        assert_eq!(list.matches, vec!["tasks/plan.md"]);
+    }
+
+    #[test]
+    fn a_child_file_completes_into_a_message_that_submits() {
+        let mut app = app_with_directories();
+        type_text(&mut app, "@task");
+        press(&mut app, KeyCode::Tab);
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input.text(), "@tasks/plan.md ");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            Action::Submit("@tasks/plan.md".into(), Vec::new())
+        );
     }
 
     #[test]

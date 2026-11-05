@@ -4,9 +4,6 @@
 
 use std::path::Path;
 
-/// The most candidates the list offers.
-pub const MAX_MATCHES: usize = 8;
-
 /// A sigil token in the input, as char offsets (`end` exclusive) and the text after the sigil.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token {
@@ -43,26 +40,45 @@ pub fn mention_at(text: &str, cursor: usize) -> Option<Token> {
     token_at(text, '@', cursor)
 }
 
-/// A path as the list shows it: relative to the primary root when it is under it.
+/// A path as the list shows it: relative to the primary root when it is under it. A directory's
+/// trailing separator is set aside around the `Path` operations, which would drop it, and comes
+/// back as `/`.
 pub fn display(path: &str, root: &Path) -> String {
-    Path::new(path).strip_prefix(root).map_or_else(
-        |_| path.to_string(),
+    let (bare, directory) = match path.strip_suffix(['/', '\\']) {
+        Some(bare) => (bare, true),
+        None => (path, false),
+    };
+    let mut shown = Path::new(bare).strip_prefix(root).map_or_else(
+        |_| bare.to_string(),
         |relative| relative.to_string_lossy().into_owned(),
-    )
+    );
+    if directory {
+        shown.push('/');
+    }
+    shown
 }
 
-/// The files whose displayed path contains `query`, ignoring case: basename prefix matches
-/// first, then basename substring matches, then the rest, shorter paths first within each.
+/// The files and directories whose displayed path contains `query`, ignoring case: basename
+/// prefix matches first, then basename substring matches, then the rest, shorter paths first
+/// within each. Comparisons treat `\` as `/`; the returned strings keep their spelling.
 pub fn rank(query: &str, files: &[String], root: &Path) -> Vec<String> {
-    let query = query.to_lowercase();
+    let query = query.to_lowercase().replace('\\', "/");
     let mut found: Vec<(u8, usize, String)> = Vec::new();
     for file in files {
         let shown = display(file, root);
-        let lower = shown.to_lowercase();
+        let lower = shown.to_lowercase().replace('\\', "/");
         if !lower.contains(&query) {
             continue;
         }
-        let base = lower.rsplit(['/', '\\']).next().unwrap_or(&lower);
+        // A directory listing itself among its children is no completion.
+        if lower.ends_with('/') && lower == query {
+            continue;
+        }
+        let base = lower
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or(&lower);
         let class = if base.starts_with(&query) {
             0
         } else if base.contains(&query) {
@@ -73,11 +89,7 @@ pub fn rank(query: &str, files: &[String], root: &Path) -> Vec<String> {
         found.push((class, shown.chars().count(), shown));
     }
     found.sort();
-    found
-        .into_iter()
-        .take(MAX_MATCHES)
-        .map(|(_, _, shown)| shown)
-        .collect()
+    found.into_iter().map(|(_, _, shown)| shown).collect()
 }
 
 #[cfg(test)]
@@ -154,9 +166,9 @@ mod tests {
     }
 
     #[test]
-    fn at_most_eight_are_offered() {
+    fn the_full_match_set_is_returned() {
         let all: Vec<String> = (0..20).map(|i| format!("/w/f{i}.rs")).collect();
-        assert_eq!(rank("f", &all, Path::new("/w")).len(), MAX_MATCHES);
+        assert_eq!(rank("f", &all, Path::new("/w")).len(), 20);
     }
 
     #[test]
@@ -165,6 +177,39 @@ mod tests {
         assert_eq!(
             rank("a.rs", &all, Path::new("/w")),
             vec!["a.rs", "/other/a.rs"]
+        );
+    }
+
+    #[test]
+    fn a_directory_matches_by_its_own_name_and_keeps_its_marker() {
+        let all = files(&["/w/rust/core/src/tasks.rs", "/w/tasks/", "/w/tasks/plan.md"]);
+        assert_eq!(
+            rank("task", &all, Path::new("/w")),
+            vec!["tasks/", "rust/core/src/tasks.rs", "tasks/plan.md"]
+        );
+    }
+
+    #[test]
+    fn a_directory_is_not_listed_among_its_own_children() {
+        let all = files(&["/w/tasks/", "/w/tasks/plan.md", "/w/src/main.rs"]);
+        assert_eq!(rank("tasks/", &all, Path::new("/w")), vec!["tasks/plan.md"]);
+        assert_eq!(rank("TASKS/", &all, Path::new("/w")), vec!["tasks/plan.md"]);
+        assert_eq!(
+            rank("src/main.rs", &all, Path::new("/w")),
+            vec!["src/main.rs"]
+        );
+    }
+
+    #[test]
+    fn mixed_separators_still_descend_into_a_directory() {
+        let all = files(&["/w/src\\sub/", "/w/src\\sub/a.rs", "/w/src\\sub\\b.rs"]);
+        assert_eq!(
+            rank("src/sub/", &all, Path::new("/w")),
+            vec!["src\\sub/a.rs", "src\\sub\\b.rs"]
+        );
+        assert_eq!(
+            rank("src\\sub\\", &all, Path::new("/w")),
+            vec!["src\\sub/a.rs", "src\\sub\\b.rs"]
         );
     }
 }

@@ -722,11 +722,15 @@ impl Ledger {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FileIndex {
     pub paths: Vec<String>,
+    /// The directories met before the walk stopped, without a trailing separator. Kept apart
+    /// from `paths` so the ledger's file index and its cap count files only.
+    pub dirs: Vec<String>,
     pub truncated: bool,
 }
 
 impl FileIndex {
-    /// The files under `roots` that git would not ignore, up to `cap` of them.
+    /// The files under `roots` that git would not ignore, up to `cap` of them, and the
+    /// directories met before the walk stops.
     pub fn build(roots: &[PathBuf], cap: usize) -> FileIndex {
         let mut index = FileIndex::default();
         for root in roots {
@@ -737,7 +741,14 @@ impl FileIndex {
                 .filter_entry(|entry| entry.file_name() != ".git")
                 .build();
             for entry in walk.flatten() {
-                if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+                let kind = entry.file_type();
+                if kind.is_some_and(|kind| kind.is_dir()) {
+                    if entry.depth() > 0 {
+                        index.dirs.push(entry.path().to_string_lossy().into_owned());
+                    }
+                    continue;
+                }
+                if !kind.is_some_and(|kind| kind.is_file()) {
                     continue;
                 }
                 if index.paths.len() == cap {
@@ -750,6 +761,16 @@ impl FileIndex {
             }
         }
         index
+    }
+
+    /// What `@` completion offers: the files, then the directories marked with a trailing `/`
+    /// on every platform (the string is only matched and inserted, never opened).
+    pub fn completion_paths(&self) -> Vec<String> {
+        self.paths
+            .iter()
+            .cloned()
+            .chain(self.dirs.iter().map(|dir| format!("{dir}/")))
+            .collect()
     }
 }
 
