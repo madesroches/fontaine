@@ -111,7 +111,7 @@ pub fn verify_file(keys: &TrustedKeys, channel: Channel, archive: &Path,
   `finalize()` succeeds.
 - The `minisign_verify::Error` mapping: `MalformedSignature` ← `InvalidEncoding`,
   `UnsupportedAlgorithm`, `UnexpectedAlgorithm` or `UnsupportedLegacyMode`; `WrongKey` ←
-  `UnexpectedKeyId`; `BadSignature` ← `InvalidSignature`; `Io` ← archive read errors.
+  `UnexpectedKeyId`; `BadSignature` ← `InvalidSignature`; `Io` ← archive read errors and `IoError` (which cannot occur on the decode/stream path).
 - The error enum is typed because callers dispatch on it: the updater reports why, and CI tests
   each class. Only `Verified` means success. Every other outcome, including I/O, is a failure,
   and the caller must leave the installed binary untouched.
@@ -159,7 +159,9 @@ plan ─▶ build-local-artifacts ─▶ build-global-artifacts ─▶ sign (env
   scripts and `keys/`, with `persist-credentials: false`. It runs no build tools and no code from
   the artifacts.
 - `host` keeps `dist host`, but creates the release with `gh release create --draft`, adding the
-  signature files.
+  signature files. Before `gh release create`, it removes `artifacts/dist-manifest.json` (and the
+  per-platform `*-dist-manifest.json` files it already removes), so the published asset set
+  matches `verify-draft`'s allowlist.
 - `verify-draft` downloads every asset of the draft (`gh release download <tag>`), so it checks
   exactly what users will fetch, and runs `release-verify.sh release`.
 - `publish` flips the draft to published, only after `verify-draft` succeeds. If anything fails,
@@ -240,8 +242,7 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
 2. **Dependencies.** In `rust/Cargo.toml`, add `minisign-verify = "=0.3.0"` (runtime) and
    `minisign = "=0.10.0"` (dev-only, for disposable test keys) to the workspace dependencies. In
    `rust/fontaine/Cargo.toml`, add `minisign-verify.workspace = true` under `[dependencies]` and
-   `minisign.workspace = true` under `[dev-dependencies]`. Run `cargo deny check`, and if
-   their licenses (MIT / ISC) are not yet allowed, update `rust/deny.toml`.
+   `minisign.workspace = true` under `[dev-dependencies]`. Run `cargo deny check`.
 3. **Verification module.** Write `rust/fontaine/src/release_signature.rs` as designed and
    export it from `rust/fontaine/src/lib.rs`. Unit tests use the `minisign` crate to make
    disposable keys and signatures at test time:
@@ -249,8 +250,9 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
    - a missing signature returns `MissingSignature`;
    - malformed signatures (truncated base64, garbage, an empty string, a legacy non-prehashed
      signature) return `MalformedSignature`; the legacy fixture cannot come from minisign
-     0.10's `sign()`, which always signs prehashed, so it re-encodes a prehashed signature
-     with the algorithm tag `Ed`;
+     0.10's `sign()`, which always signs prehashed, so it re-encodes only the algorithm bytes
+     of a prehashed signature to `Ed`, keeps the key ID, and is verified against the same key
+     (otherwise the key-ID check runs first and returns `WrongKey`);
    - a signature from another key returns `WrongKey`;
    - a signature from the dev key checked on the release channel returns `WrongKey`;
    - a tampered archive returns `BadSignature`;
@@ -263,11 +265,11 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
    `FONTAINE_SIGNING_FIXTURE_DIR`. It verifies files produced by the real `minisign` CLI and
    `release-sign.sh`, so the CLI's output format and the Rust verifier cannot drift apart.
 5. **Scripts.** Write `.github/scripts/release-sign.sh` and `.github/scripts/release-verify.sh`
-   (bash, `set -euo pipefail`), plus `.github/scripts/install-minisign.sh` for the pinned
-   download and sha256 check: minisign 0.12, asset `minisign-0.12-linux.tar.gz` from
-   `jedisct1/minisign`, its sha256 recorded at implementation time. The script uses the x86_64
-   linux binary inside the tarball.
-6. **CI coverage (`ci.yml`, Linux job).** Add a "Release signing" step:
+   (bash, `set -euo pipefail`), plus `.github/scripts/install-minisign.sh` which does the pinned
+   download and sha256 check described under CI signing tool.
+6. **CI coverage (`ci.yml`, Linux job).** Add a "Release signing" step after
+   "Test" and before "Test (pg2)", with `if: needs.changes.outputs.code == 'true' && runner.os ==
+   'Linux'` like its neighbours:
    - install minisign and generate a disposable passwordless key, plus a second key that plays
      the wrong-channel key;
    - make dummy archives and their `.sha256` files;
@@ -281,7 +283,8 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
    - run `cargo test -p fontaine release_signature -- --ignored` with the fixture directory set.
    Production secrets are never referenced: the job names no environment.
 7. **`release.yml`.** Add the `sign`, `verify-draft` and `publish` jobs, make `host` create a
-   draft and upload the signatures, and scope permissions per job. Add `sign` to `host`'s
+   draft and upload the signatures, remove `artifacts/dist-manifest.json` as well before
+   `gh release create`, and scope permissions per job. Add `sign` to `host`'s
    `needs` and `&& needs.sign.result == 'success'` to its `if:`. Give `verify-draft` and
    `publish` plain success gating. Change `announce` to `needs: [plan, publish]` with
    `if: always() && needs.publish.result == 'success'`. Set `source-tarball = false` in
@@ -291,13 +294,14 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
 8. **`dev.yml`.** Add the new workflow as designed, with the same strict job chain as
    `release.yml`.
 9. **Docs.** See Documentation.
-10. **Master plan.** Add the `Build and release` Decisions lines below, and the `#425` item under
-    Release readiness in `## Remaining work`.
+10. **Master plan.** Add the `Build and release` Decisions lines below, the `#425` item under the
+    `**Repository and release**` sub-group of Release readiness in `## Remaining work`, and update
+    `### Workspace layout` in `tasks/fontaine_harness_plan.md` with `dev.yml`, the Linux "Release
+    signing" `ci.yml` step, `.github/scripts/` and `rust/fontaine/keys/`.
 
 ## Files to Modify
 
-- `rust/Cargo.toml` (dependencies; `source-tarball = false`), `rust/fontaine/Cargo.toml`,
-  `rust/deny.toml` (if needed)
+- `rust/Cargo.toml` (dependencies; `source-tarball = false`), `rust/fontaine/Cargo.toml`
 - `rust/fontaine/src/release_signature.rs` (new), `rust/fontaine/src/lib.rs`
 - `rust/fontaine/keys/release.pub`, `rust/fontaine/keys/dev.pub` (new, placeholders)
 - `.github/scripts/install-minisign.sh`, `release-sign.sh`, `release-verify.sh` (new)
