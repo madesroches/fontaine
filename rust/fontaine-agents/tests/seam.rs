@@ -1579,6 +1579,24 @@ async fn mail_that_arrives_as_a_turn_ends_resumes_the_agent_even_with_teams_off(
 }
 
 #[tokio::test]
+async fn mail_queued_to_a_running_agent_goes_back_when_it_is_killed_before_reading_it() {
+    let rig = rig();
+    spawn(&rig, named_args("worker", "busy")).await.unwrap();
+    let id = rig.runner.spawned()[0].id.clone();
+    send(&rig, ROOT_AGENT, "busy", "unread").await.unwrap();
+    assert!(rig.tree.has_subagent_mail());
+    let ledger: Arc<dyn RootLedger> = rig.ledger.clone();
+    assert!(kill_agent(&rig.tree, &ledger, &id));
+    until(|| {
+        rig.tree.take_notifications(ROOT_AGENT).iter().any(|n| {
+            n.text.contains("Your message to busy was not read") && n.text.contains("unread")
+        })
+    })
+    .await;
+    assert!(!rig.tree.has_subagent_mail());
+}
+
+#[tokio::test]
 async fn a_message_to_a_killed_or_retired_agent_says_why_it_cannot_be_woken() {
     let team = team_rig();
     let (killed, _) = idle_agent(&team.rig, ROOT_AGENT, "worker", "dead").await;

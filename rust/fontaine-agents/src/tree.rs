@@ -1565,6 +1565,7 @@ impl AgentTree {
     pub fn has_subagent_mail(&self) -> bool {
         self.lock().nodes.iter().any(|(id, node)| {
             id != ROOT_AGENT
+                && (node.status.is_running() || is_idle(node))
                 && node.inbox.iter().any(|note| {
                     matches!(
                         note.kind,

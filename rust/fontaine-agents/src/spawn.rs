@@ -250,6 +250,14 @@ fn conclude(
     {
         teams.boards.drop_owner(id);
     }
+    if finish.final_end {
+        // Mail queued while it ran and still unread will never be read.
+        let why = match finish.status {
+            Some(ChildStatus::Killed) => "it was killed",
+            _ => "its budget ran out",
+        };
+        bounce(tree, id, tree.take_notifications(id), why);
+    }
     settle_retired(tree, ledger, finish.retired);
     let name = tree.name_of(id);
     let event = match report.status {
@@ -578,7 +586,7 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
 pub enum WakeError {
     /// Someone else woke it first; its run reads what was meant for it.
     AlreadyRunning,
-    /// A limit stops it for now (concurrent agents, the session's budget); it stays idle and
+    /// A limit stops it for now (the concurrent-agent limit); it stays idle and
     /// keeps its tasks.
     Transient(String),
     /// The session's budget is spent and only grows: nothing queued for the agent will be read.
