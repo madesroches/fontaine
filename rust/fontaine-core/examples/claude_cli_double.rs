@@ -247,7 +247,9 @@ impl Double {
         let mut init = json!({
             "type": "system", "subtype": "init", "model": model, "tools": tools,
             "mcp_servers": [{"name": "fontaine", "status": "connected"}],
-            "plugins": [], "skills": [], "slash_commands": [], "agents": [],
+            "plugins": [{"name": "cc-plugin-telemetry", "path": "builtin",
+                         "source": "cc-plugin-telemetry@builtin"}],
+            "skills": [], "slash_commands": [], "agents": [],
         });
         if let Some(extra) = self.scenario.get("init_extra").and_then(Value::as_object) {
             for (key, value) in extra {
