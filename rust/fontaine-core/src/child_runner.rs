@@ -195,7 +195,7 @@ async fn screened_notes(
 }
 
 /// What ends a parked `job_output` wait early: a message from another agent, a message the
-/// user typed to the waiting agent meanwhile, and for the root a command or skill the user queued.
+/// user typed to the waiting agent meanwhile, and for the root a command, skill or `!` line the user queued.
 pub struct CoreWake {
     pub tree: Arc<AgentTree>,
     pub steering: Steering,
