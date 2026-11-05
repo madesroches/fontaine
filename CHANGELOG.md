@@ -24,6 +24,17 @@ All notable changes are recorded here. The format follows
   approval, question or other prompt that needs your answer opens, so you notice it after switching
   windows; it is also editable in `/config` (#51).
 
+#### Providers
+
+- Experimental `claude-subscription` account kind: the installed, unmodified Claude Code CLI as a
+  model-only transport for your own Max or Ultra plan. Fontaine keeps its own agent loop, tools,
+  permission pipeline, guardian and sessions; rig's Messages wire is reused with a request-scoped
+  subprocess transport, and the tools reach the model through an inert MCP inventory that refuses
+  every call. Every request checks the CLI version (2.1.318 or newer), the login, conflicting
+  environment variables and the model's billing class first; usage is token-only (no cost), and
+  `/login` checks the external login instead of asking for a key. The account's extra-usage
+  setting remains the CLI's, and the adapter is not a stable feature (#412).
+
 #### CLI
 
 - `fontaine doctor [--format text|json] [--connect yes|no] [--all]`: a read-only check of the

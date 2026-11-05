@@ -415,7 +415,7 @@ impl Setup {
         let resolved = models::resolve(&ResolveParams {
             config: &self.config,
             data_dir: &self.dirs.data,
-            env: &*self.env,
+            env: self.env.clone(),
             model_override: self.model_override.as_deref(),
             session_id: Some(self.session_id.clone()),
         })
@@ -486,6 +486,13 @@ impl Setup {
                     After::Start(started) => return Ok(Step::Start(started)),
                     After::Quit => return Ok(Step::Quit),
                 },
+                DialogKey::ExternalCheck(account) => {
+                    match self.external_check(io, &account).await? {
+                        After::Ask(next) => next,
+                        After::Start(started) => return Ok(Step::Start(started)),
+                        After::Quit => return Ok(Step::Quit),
+                    }
+                }
                 DialogKey::LogOut(account) => match accounts::log_out(&self.dirs.data, &account) {
                     Ok(removed) => {
                         self.refresh_rows();
@@ -562,6 +569,34 @@ impl Setup {
             account: account.to_string(),
             summary,
         })))
+    }
+
+    /// The external login's checks for an account, then the model is resolved again.
+    async fn external_check<S: Surface>(
+        &mut self,
+        io: &mut Io<S>,
+        name: &str,
+    ) -> io::Result<After> {
+        let Some(account) = self.config.accounts.get(name).cloned() else {
+            return Ok(After::Ask(
+                self.dialog
+                    .finish(Outcome::Failed(format!("unknown account `{name}`"))),
+            ));
+        };
+        let network = match fontaine_core::models::account_network(&self.config, name) {
+            Ok(network) => network,
+            Err(reason) => return Ok(After::Ask(self.dialog.finish(Outcome::Failed(reason)))),
+        };
+        self.status = Some("checking the external login…".to_string());
+        self.redraw(io)?;
+        let checked =
+            accounts::external_check(name, &account, &self.dirs.data, &network, self.env.clone())
+                .await;
+        self.status = None;
+        match checked {
+            Ok(summary) => self.logged_in(io, name, summary).await,
+            Err(reason) => Ok(After::Ask(self.dialog.finish(Outcome::Failed(reason)))),
+        }
     }
 
     async fn sign_in<S: Surface>(&mut self, io: &mut Io<S>, name: &str) -> io::Result<After> {

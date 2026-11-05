@@ -550,6 +550,8 @@ pub struct Sandbox {
     /// Stands in for `$XDG_RUNTIME_DIR` (`%TEMP%` on Windows), where the session scratch directories go.
     pub runtime: PathBuf,
     env: Vec<(String, String)>,
+    /// Variables the test host may have set that a run must not inherit.
+    env_removed: Vec<String>,
 }
 
 pub struct Output {
@@ -580,6 +582,7 @@ impl Sandbox {
             runtime: root.join("runtime"),
             _tmp: tmp,
             env: Vec::new(),
+            env_removed: Vec::new(),
         };
         for dir in [
             &sandbox.work,
@@ -641,6 +644,11 @@ impl Sandbox {
         self.env.push((name.to_string(), value.to_string()));
     }
 
+    /// Keeps a variable of the test host out of the runs.
+    pub fn remove_env(&mut self, name: &str) {
+        self.env_removed.push(name.to_string());
+    }
+
     pub fn command(&self, args: &[&str]) -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_fontaine"));
         cmd.args(args)
@@ -654,6 +662,9 @@ impl Sandbox {
             .env_remove("MICROMEGAS_TELEMETRY_URL")
             .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
             .kill_on_drop(true);
+        for name in &self.env_removed {
+            cmd.env_remove(name);
+        }
         for (name, value) in &self.env {
             cmd.env(name, value);
         }

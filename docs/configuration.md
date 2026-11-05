@@ -161,7 +161,7 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 
 | Key | Meaning | Default |
 |---|---|---|
-| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `ollama`, `opencode-go` or `openrouter`. Required. | none |
+| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `ollama`, `opencode-go`, `openrouter` or `claude-subscription` (experimental). Required. | none |
 | `api_key_env` | The name of the environment variable that holds the key. Omit it to use the stored credential. Raw keys are never accepted inline. Refused for `opencode-go`, which signs in instead. | unset |
 | `base_url` | Endpoint override. Required for `openai-compatible`. | the provider's public endpoint |
 | `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
@@ -171,6 +171,8 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `cache_ttl` | `anthropic`, `openrouter` and `opencode-go` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
 | `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. An explicit [`effort`](#model) wins over it, and `effort = "off"` equals `think = false` for the main agent. | unset |
 | `quota` | `openai-compatible` only: `"kimi"` shows the account's subscription quota in the [status bar](tui.md#status-bar) and in headless `result.account_usage`, read from Kimi for Coding's `GET <base_url>/usages`. User scope only, because it sends the account's key in extra requests. | unset |
+| `cli_path` | `claude-subscription` only: the absolute path of the official `claude` executable. | `claude` on `PATH` |
+| `claude_config_dir` | `claude-subscription` only: the absolute path of the CLI's own config directory, handed to it as `CLAUDE_CONFIG_DIR` for this account only, so two accounts can keep separate logins. | unset |
 | `https_proxy`, `http_proxy`, `no_proxy`, `ca_bundle`, `client_cert`, `client_key` | Override the same key of [`[network]`](#network) for this account only. | the `[network]` value |
 
 Account names are not empty and contain no `/`. Accounts can be set from the user file or from
@@ -189,6 +191,7 @@ What each kind talks to:
 | `openai-compatible` | Chat Completions | none; `base_url` is required | optional |
 | `opencode-go` | Chat Completions, Responses, Messages and `generateContent`, per model | `https://opencode.ai/inference/go` | sign-in |
 | `openrouter` | Chat Completions, with prompt caching | `https://openrouter.ai/api/v1` | required |
+| `claude-subscription` | Messages API, through the installed Claude Code CLI | none | the CLI's own login |
 
 An `openai-compatible` endpoint speaks Chat Completions, not the Responses API, and its models are
 unpriced, so `--max-budget-usd` does not apply to them.
@@ -225,6 +228,10 @@ An `opencode-go` account has no key. Its credential is the sign-in that
 `/login <account>` stores, and an account that has not signed in is a configuration error (exit
 code 2) that names that command.
 
+A `claude-subscription` account has no Fontaine credential at all: the installed Claude CLI owns the
+login, a stored key or an `api_key_env` is refused or ignored, and `/login` only checks the CLI. See
+[Claude subscription](claude-subscription.md).
+
 The guardian is different: a missing or invalid credential on the account of `[guardian] model`
 never stops startup. The guardian is then unavailable, and every decision that needs it fails
 closed.
@@ -237,6 +244,13 @@ listing otherwise), once, and only for the account that `[model] model` or `--mo
 model the account does not offer is a configuration error (exit code 2). A listing call that
 fails, whether by a transport error, a non-2xx status or a 401/403, is a run failure (exit code 1).
 For Ollama a bare name matches the `latest` tag.
+
+A `claude-subscription` account is always listed, even with a `models` list, because the models'
+facts come from the CLI's own answer: the list only narrows what the CLI offers. The listing
+checks the CLI, so a missing or outdated CLI, a login that is not a Max or Ultra subscription and a
+conflicting environment variable are run failures (exit code 1) with a corrective message, and a
+model the CLI marks as drawing from paid usage credits is a configuration error (exit code 2). Every
+listing is bounded in time, including the one at startup.
 
 The model of `[guardian] model` is checked the same way when its account has a `models` list, or
 shares the main model's account. Otherwise Fontaine makes no call with the guardian's credentials
@@ -415,6 +429,18 @@ kind = "opencode-go"
 Go usage is billed against the subscription's allowances, so its models are unpriced: the cost Go
 reports, including Extra usage, is not shown or counted, and `--max-budget-usd` with a Go main
 model is a usage error (exit code 2).
+
+Claude Code CLI as a subscription transport (experimental; see
+[Claude subscription](claude-subscription.md) for scope, checks and limits):
+
+```toml
+[accounts.claude]
+kind = "claude-subscription"
+```
+
+Sign in with `claude auth login` outside Fontaine, then pick a model with `--model claude/sonnet`.
+Usage is subscription usage: tokens are shown, a cost never is, and `--max-budget-usd` with such a
+main model is a usage error (exit code 2).
 
 ### `[network]`
 
@@ -1231,6 +1257,9 @@ owner-only). The telemetry ingestion key is the `[telemetry]` entry of that file
 `[websearch] api_key_env` names. An `opencode-go` sign-in is a poor fit for CI: refresh tokens
 rotate, so a copied `credentials.toml` works on one machine at a time and the copy left behind
 stops working after the first refresh. Use a key-based account there.
+
+A `claude-subscription` account never has an entry here, and one left behind under its name is
+never read.
 
 A missing file or entry means no credential. A file that cannot be parsed, or that cannot be read
 for any reason other than not existing, is a configuration error naming the path.

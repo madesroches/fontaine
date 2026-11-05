@@ -15,12 +15,14 @@ use rig_core::providers::anthropic::completion::CacheTtl as RigTtl;
 
 use crate::config::{Account, CacheTtl};
 use crate::credentials::StoredCredential;
+use crate::models::SharedEnv;
 use crate::quota::QuotaSource;
 use fontaine_tools::tls::LoadedNetwork;
 
 pub mod anthropic;
 pub mod cache_minimum;
 mod cache_wire;
+pub mod claude_subscription;
 pub mod device_flow;
 pub mod gemini;
 pub mod kimi_quota;
@@ -39,6 +41,8 @@ pub enum CredentialPolicy {
     Optional,
     /// The credential comes from the kind's interactive sign-in (`/login`).
     SignIn,
+    /// An external program owns the login; Fontaine stores, reads and forwards nothing.
+    ExternalCli,
 }
 
 /// Whether the provider dialog asks for a `base_url` when it adds an account of the kind.
@@ -115,6 +119,18 @@ pub trait Provider: Send + Sync + 'static {
         false
     }
 
+    /// Whether a listing is needed before any model of the kind can be built, because the model
+    /// facts come from the listing. A configured `models` list then only filters it.
+    fn requires_discovery(&self) -> bool {
+        false
+    }
+
+    /// A line shown once when an account of this kind becomes the main model: what the kind
+    /// does that the user should know before relying on it.
+    fn selection_notice(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Whether a listed id satisfies a requested model.
     fn lists(&self, available: &[String], model: &str) -> bool {
         available.iter().any(|id| id == model)
@@ -187,6 +203,19 @@ impl std::error::Error for SignInError {
 
 pub trait AccountClient: Send + Sync {
     fn completion(&self, model: &str) -> DynModel<Completion>;
+    /// [`AccountClient::completion`] for the agent `namespace`, for kinds that derive per-caller
+    /// state from it. The default ignores it.
+    fn completion_for_agent(&self, model: &str, _namespace: &str) -> DynModel<Completion> {
+        self.completion(model)
+    }
+    /// [`AccountClient::guardian_completion`] for the agent `namespace`.
+    fn guardian_completion_for_agent(&self, model: &str, _namespace: &str) -> DynModel<Completion> {
+        self.guardian_completion(model)
+    }
+    /// Why `model` is not usable although a listing named it or would have, when the kind knows.
+    fn unavailable_reason(&self, _model: &str) -> Option<String> {
+        None
+    }
     /// What the request body must carry to turn `model`'s thinking off, where its wire needs it:
     /// the guardian and the scanner force a tool call, which a thinking model refuses.
     fn thinking_off(&self, _model: &str) -> Option<serde_json::Value> {
@@ -264,6 +293,9 @@ pub struct ConnectContext<'a> {
     pub data_dir: &'a Path,
     pub session_id: Option<&'a str>,
     pub network: &'a LoadedNetwork,
+    /// The process environment, looked up live on every call. Owned so a client can keep it for
+    /// the requests it makes later.
+    pub env: SharedEnv,
 }
 
 impl ConnectContext<'_> {
@@ -288,6 +320,7 @@ const PROVIDERS: &[&dyn Provider] = &[
     &ollama::Ollama,
     &opencode_go::OpencodeGo,
     &openrouter::OpenRouter,
+    &claude_subscription::ClaudeSubscription,
 ];
 
 pub fn find(name: &str) -> Option<&'static dyn Provider> {

@@ -47,6 +47,8 @@ pub enum DialogKey {
         key: Secret,
     },
     SignIn(String),
+    /// Run the external login's preflight (the Claude CLI's checks) for this account.
+    ExternalCheck(String),
     CancelSignIn,
     LogOut(String),
     Remove(String),
@@ -227,6 +229,16 @@ impl ProviderDialog {
             };
             return DialogKey::None;
         };
+        if row.kind.provider().credential() == CredentialPolicy::ExternalCli {
+            // Fontaine neither prompts for a key nor starts a login: it checks the external one.
+            self.screen = Screen::Waiting {
+                account: account.to_string(),
+                url: None,
+                code: None,
+                notes: vec!["checking the external login (experimental)…".to_string()],
+            };
+            return DialogKey::ExternalCheck(account.to_string());
+        }
         if row.kind.provider().credential() == CredentialPolicy::SignIn {
             self.screen = Screen::Waiting {
                 account: account.to_string(),
@@ -1040,6 +1052,32 @@ mod tests {
         );
         assert_eq!(press(&mut d, KeyCode::Esc), DialogKey::CancelSignIn);
         assert!(text(&d).contains("sign-in cancelled"));
+    }
+
+    #[test]
+    fn an_external_cli_account_checks_the_login_instead_of_asking_for_a_key() {
+        let mut all = rows();
+        all.push(row(
+            "claude",
+            "claude-subscription",
+            SignInState::ExternalCli,
+        ));
+        let (mut d, _) = ProviderDialog::new(all.clone(), None);
+        select(&mut d, "claude");
+        let shown = text(&d);
+        assert!(shown.contains("external CLI"), "{shown}");
+        let key = press(&mut d, KeyCode::Enter);
+        assert_eq!(key, DialogKey::ExternalCheck("claude".into()));
+        let shown = text(&d);
+        assert!(!shown.contains("API key for"), "{shown}");
+        // A failure says what to run outside Fontaine; the dialog shows it as given.
+        d.finish(Outcome::Failed(
+            "the Claude CLI is not signed in; run `claude auth login` outside Fontaine".into(),
+        ));
+        assert!(text(&d).contains("claude auth login"));
+        // A named account opens straight on the check.
+        let (_, key) = ProviderDialog::new(all, Some("claude"));
+        assert_eq!(key, DialogKey::ExternalCheck("claude".into()));
     }
 
     #[test]

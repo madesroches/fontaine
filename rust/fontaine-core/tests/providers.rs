@@ -12,10 +12,14 @@ fn parse(text: &str) -> Result<fontaine_core::config::Settings, String> {
 #[test]
 fn every_registered_name_round_trips_through_the_kind() {
     for name in providers::names() {
-        let settings = parse(&format!(
-            "[accounts.x]\nkind = \"{name}\"\nbase_url = \"http://localhost:1/v1\"\n"
-        ))
-        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        // A kind whose login and endpoint belong to an external program has no URL to set.
+        let endpoint = if name == "claude-subscription" {
+            ""
+        } else {
+            "base_url = \"http://localhost:1/v1\"\n"
+        };
+        let settings = parse(&format!("[accounts.x]\nkind = \"{name}\"\n{endpoint}"))
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
         let kind = settings.accounts.unwrap()["x"].kind;
         assert_eq!(kind.as_str(), name);
         assert_eq!(kind, AccountKind::named(name));
@@ -220,4 +224,34 @@ fn a_tiny_context_window_is_refused() {
     let err = parse("[accounts.l]\nkind = \"ollama\"\ncontext_tokens = 512\n").unwrap_err();
     assert!(err.contains("accounts.l.context_tokens"), "{err}");
     assert!(parse("[accounts.l]\nkind = \"ollama\"\ncontext_tokens = 2048\n").is_ok());
+}
+
+#[test]
+fn claude_subscription_takes_its_two_paths_and_refuses_credentials_and_endpoints() {
+    let abs = if cfg!(windows) {
+        "C:\\\\claude"
+    } else {
+        "/usr/bin/claude"
+    };
+    let ok = parse(&format!(
+        "[accounts.c]\nkind = \"claude-subscription\"\ncli_path = \"{abs}\"\nclaude_config_dir = \"{abs}\"\nmodels = [\"sonnet\"]\n"
+    ))
+    .unwrap();
+    let account = ok.accounts.unwrap()["c"].clone();
+    assert!(account.cli_path.is_some() && account.claude_config_dir.is_some());
+    for (line, key) in [
+        ("api_key_env = \"K\"", "api_key_env"),
+        ("base_url = \"http://x\"", "base_url"),
+        ("https_proxy = \"http://p:1\"", "https_proxy"),
+        ("cli_path = \"relative\"", "cli_path"),
+    ] {
+        let err = parse(&format!(
+            "[accounts.c]\nkind = \"claude-subscription\"\n{line}\n"
+        ))
+        .unwrap_err();
+        assert!(err.contains(&format!("accounts.c.{key}")), "{line}: {err}");
+    }
+    // The paths exist for this kind only.
+    let err = parse("[accounts.o]\nkind = \"ollama\"\nclaude_config_dir = \"/x\"\n").unwrap_err();
+    assert!(err.contains("accounts.o.claude_config_dir"), "{err}");
 }

@@ -592,7 +592,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Action::EditQueued => self.edit_queued(runtime),
                 Action::CancelWakeup => self.cancel_wakeup(runtime),
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
-                Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
+                Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
                 Action::ResumeSession(id) => {
                     if self.switch_to(runtime, &id).is_break() {
                         return;

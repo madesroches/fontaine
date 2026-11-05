@@ -587,3 +587,20 @@ exhaust a plan merely to produce an error.
 ## Open Questions
 
 None outstanding; qualification-only questions were resolved as conservative stances (Decisions, `AFK:`).
+
+## Completion results
+
+Deterministic implementation, recorded for review:
+
+- Offline suites: `fontaine-core/tests/claude_subscription.rs`, `fontaine/tests/claude_subscription.rs`,
+  the protocol, inventory and CLI unit tests in `providers/claude_subscription`, the provider dialog
+  and `/login` tests in `fontaine-tui`, and the registry/config round trips. All run against the
+  scripted `claude_cli_double`; the real `claude` binary was never started.
+- Not done, and blocking any stable designation or the move to `tasks/completed/`: the live Max and
+  Ultra qualification under Manual Verification (every step needs a real subscription and the
+  unmodified CLI). No CLI version, platform or protocol limitation has been observed live, so
+  **2.1.318** is the planned minimum and not a qualified one, the stream-json frame and
+  `initialize` model-row shapes (`value`, `resolvedModel`, the usage-credit marker) follow the
+  documented Agent SDK shapes as understood and are unverified against a live CLI, and the
+  credential-free admission result (no hidden second request before the first complete response)
+  is unproven. A failed live admission result blocks shipping.

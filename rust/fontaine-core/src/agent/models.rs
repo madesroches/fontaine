@@ -87,12 +87,13 @@ impl AgentRuntime {
             .ok_or_else(|| RuntimeError::new("models cannot be switched in this session"))
     }
 
-    fn guardian_for(&self, text: &str) -> Result<GuardianModel, RuntimeError> {
+    async fn guardian_for(&self, text: &str) -> Result<GuardianModel, RuntimeError> {
         self.switcher()?
             .guardian(
                 text,
                 Some((&self.models.main.reference, &self.models.main_listing)),
             )
+            .await
             .map_err(|e| RuntimeError::caused("could not resolve the guardian model", e))
     }
 
@@ -295,7 +296,7 @@ impl AgentRuntime {
         let guardian_on_account = ModelRef::parse(self.state.guardian().label())
             .is_some_and(|reference| reference.account == name);
         if guardian_on_account {
-            effect.guardian_ready = Some(self.retry_guardian().unwrap_or(false));
+            effect.guardian_ready = Some(self.retry_guardian().await.unwrap_or(false));
         }
         effect
     }
@@ -303,8 +304,8 @@ impl AgentRuntime {
     /// `/guardian-model`: pins the guardian to `text` for the live session and saves it as
     /// `[guardian] model`. An account with no credential gives an unavailable guardian rather
     /// than an error, which the next adjudication reports.
-    pub fn set_guardian_model(&mut self, text: &str) -> Result<Switched, RuntimeError> {
-        let model = self.guardian_for(text)?;
+    pub async fn set_guardian_model(&mut self, text: &str) -> Result<Switched, RuntimeError> {
+        let model = self.guardian_for(text).await?;
         self.install_guardian(&model);
         let reference = model.reference().to_string();
         self.models.guardian = Some(model);
@@ -321,9 +322,9 @@ impl AgentRuntime {
 
     /// Tries the guardian model again, for when its credential has appeared since startup.
     /// Returns whether it can be asked now.
-    pub fn retry_guardian(&self) -> Result<bool, RuntimeError> {
+    pub async fn retry_guardian(&self) -> Result<bool, RuntimeError> {
         let current = self.state.guardian();
-        let model = self.guardian_for(current.label())?;
+        let model = self.guardian_for(current.label()).await?;
         self.install_guardian(&model);
         Ok(matches!(model, GuardianModel::Ready(_)))
     }
@@ -334,8 +335,8 @@ impl AgentRuntime {
     ///
     /// It takes `&self` because it answers a prompt raised mid-turn, so the runtime's own record
     /// of the guardian is not updated; the live guardian is the gate state's.
-    pub fn use_guardian(&self, text: &str) -> Result<Option<Switched>, RuntimeError> {
-        let model = self.guardian_for(text)?;
+    pub async fn use_guardian(&self, text: &str) -> Result<Option<Switched>, RuntimeError> {
+        let model = self.guardian_for(text).await?;
         self.install_guardian(&model);
         if !matches!(model, GuardianModel::Ready(_)) {
             return Ok(None);

@@ -276,7 +276,7 @@ async fn critique_models(
     let resolved = models::resolve(&ResolveParams {
         config,
         data_dir: &dirs.data,
-        env: &*host.env,
+        env: crate::shared_env(host),
         model_override: cli.model.as_deref(),
         session_id: None,
     })
@@ -489,7 +489,7 @@ async fn scan_step(
     let resolved = models::resolve(&ResolveParams {
         config,
         data_dir: &dirs.data,
-        env: &*host.env,
+        env: crate::shared_env(host),
         model_override: cli.model.as_deref(),
         session_id: None,
     })

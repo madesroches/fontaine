@@ -74,7 +74,7 @@ async fn guardian_model(server: &MockServer) -> GuardianModel {
     models::resolve(&ResolveParams {
         config: &config,
         data_dir: &w.data,
-        env: &|_| None,
+        env: std::sync::Arc::new(|_| None),
         model_override: None,
         session_id: None,
     })

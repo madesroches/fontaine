@@ -126,7 +126,9 @@ the token counts. Source file paths and thread names are not exported.
 | `fontaine.screen.count` | `{call}` | `outcome` (`stop`, `allow`, `deny`, `pass`, `unavailable`; in shadow mode `stop`, `allow` and `deny` are what the composition would have done) |
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
-which is always the case for an `openai-compatible` endpoint or an `opencode-go` account. An
+which is always the case for an `openai-compatible` endpoint, an `opencode-go` account or a
+`claude-subscription` account (whose token usage is exported but whose cost is never inferred from
+the CLI's list-price figures). An
 `openrouter` account is priced by its upstream model.
 `query_source` is `main` for the session model, `guardian` for the model calls made while a
 guardian adjudication is open, `scanner` for the calls the `llm` tool-result scanner makes, and

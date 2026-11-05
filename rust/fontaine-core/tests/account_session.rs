@@ -51,7 +51,7 @@ async fn session(w: &World) -> AgentRuntime {
     let resolved = models::resolve(&ResolveParams {
         config: &config,
         data_dir: &w.data,
-        env: &*env,
+        env: env.clone(),
         model_override: None,
         session_id: None,
     })

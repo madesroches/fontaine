@@ -81,6 +81,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.store_key(runtime, &account, key).await
                 }
                 DialogKey::SignIn(account) => self.sign_in(runtime, &account).await,
+                DialogKey::ExternalCheck(account) => self.external_check(runtime, &account).await,
                 DialogKey::LogOut(account) => self.log_out(runtime, &account).await,
                 DialogKey::Remove(account) => self.remove_account(runtime, &account),
                 DialogKey::PickModel(account) => {
@@ -221,7 +222,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             | Action::Quit => break None,
                             Action::CycleMode => self.cycle_mode(runtime),
                             Action::RetryDenied(index) => self.retry_denied(runtime, index),
-                            Action::Guardian(answer) => self.answer_unavailable(runtime, answer),
+                            Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
                             Action::KillAgent(id) => self.kill_agent(runtime, &id),
                             Action::MessageAgent { id, text } => {
                                 self.message_agent(runtime, id, text);
@@ -279,6 +280,34 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
+    /// `/login` on an account whose login an external program owns: the program's checks, then
+    /// the model picker. Nothing is prompted for and no login is started.
+    async fn external_check(&mut self, runtime: &mut AgentRuntime, name: &str) -> DialogKey {
+        let Some(account) = runtime.config.accounts.get(name).cloned() else {
+            return self.tell_dialog(Outcome::Failed(format!("unknown account `{name}`")));
+        };
+        let network = match fontaine_core::models::account_network(&runtime.config, name) {
+            Ok(network) => network,
+            Err(reason) => return self.tell_dialog(Outcome::Failed(reason)),
+        };
+        self.draw(runtime);
+        let checked =
+            accounts::external_check(name, &account, &self.data_dir, &network, self.env.clone())
+                .await;
+        match checked {
+            Ok(summary) => {
+                self.app.transcript.notice(summary.clone());
+                self.refresh_rows(runtime);
+                self.tell_dialog(Outcome::LoggedIn {
+                    account: name.to_string(),
+                    summary,
+                });
+                DialogKey::PickModel(name.to_string())
+            }
+            Err(reason) => self.tell_dialog(Outcome::Failed(reason)),
+        }
+    }
+
     fn sign_in_step(&mut self, step: accounts::SignInStep) {
         if let accounts::SignInStep::Warning(text) = &step {
             self.app.transcript.notice(text.clone());
@@ -287,6 +316,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     async fn log_out(&mut self, runtime: &mut AgentRuntime, account: &str) -> DialogKey {
+        if runtime.config.accounts.get(account).is_some_and(|a| {
+            a.kind.provider().credential()
+                == fontaine_core::providers::CredentialPolicy::ExternalCli
+        }) {
+            let summary = accounts::external_log_out_summary(account);
+            self.app.transcript.notice(summary.clone());
+            return self.tell_dialog(Outcome::Done(summary));
+        }
         let removed = match accounts::log_out(&self.data_dir, account) {
             Ok(removed) => removed,
             Err(e) => return self.failed(&e),

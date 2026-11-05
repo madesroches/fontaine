@@ -4,6 +4,13 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 
 ## Session ledger
 
+The Claude CLI adapter (`claude-subscription`) keeps no conversation of its own: each model call
+starts a fresh CLI process that replays the history Fontaine holds from rig-memory and the ledger,
+with a CLI session id derived (SHA-256 formatted as a UUID) from the Fontaine session id, the
+caller (root, guardian or a subagent's request id), the canonical model, the system prompt and the
+first frame, so an unchanged prefix keeps its id and no two callers share one. Nothing is resumed
+or persisted by the CLI; compaction and a model change simply derive a new id.
+
 Two stores per session. rig-memory holds the model context, which compaction may rewrite. The
 **session ledger** (`fontaine-core::ledger`) is Fontaine-owned and append-only: user messages
 verbatim, mode changes, approvals and session grants, denial records, actions taken, the workspace

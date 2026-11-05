@@ -59,7 +59,7 @@ async fn resolve(w: &World, model: &str) -> Result<ModelHandle, models::ModelErr
     models::resolve(&ResolveParams {
         config: &config,
         data_dir: &w.data,
-        env: &no_env,
+        env: std::sync::Arc::new(no_env),
         model_override: Some(&model),
         session_id: Some(SESSION.to_string()),
     })
@@ -617,7 +617,7 @@ async fn the_messages_guardian_marks_only_its_static_prefix() {
     let resolved = models::resolve(&ResolveParams {
         config: &config,
         data_dir: &w.data,
-        env: &no_env,
+        env: std::sync::Arc::new(no_env),
         model_override: Some("go/kimi-k3"),
         session_id: Some(SESSION.to_string()),
     })

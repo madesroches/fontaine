@@ -43,7 +43,7 @@ This block is schema-valid but not load-valid before Phase 4 (`default_mode = "a
 
 ```toml
 [accounts.work]                   # named accounts (opencode-style); several of one kind allowed
-kind = "anthropic"                # "anthropic" | "openai" | "gemini" | "openai-compatible" | "ollama"
+kind = "anthropic"                # "anthropic" | "openai" | "gemini" | "openai-compatible" | "ollama" | "opencode-go" | "openrouter" | "claude-subscription"
 api_key_env = "ANTHROPIC_API_KEY_WORK"   # credential source: env var NAME, or omit to use the
                                   #   stored-credentials file written by `/login` (or provisioned by hand)
                                   #   (`<data dir>/credentials.toml`, owner-only). Raw keys are never accepted inline.
@@ -168,14 +168,14 @@ Code's auto-mode config (proven design). Two more splice markers appear in `[age
 `$main` = the session model (`[model]`), `$guardian_default` = the top-ranked validated guardian
 model available on the configured accounts (per Decisions). `[accounts]` comes only from the user
 file or the CLI, and every `<account>/<model>` reference is rejected from shared project scope — a
-project file must not be able to point the guardian (or the session) at another endpoint; a missing or invalid credential for the guardian's account makes the
+project file must not be able to point the guardian (or the session) at another endpoint (a `claude-subscription` account's `cli_path` and `claude_config_dir` are accounts keys too, so a repository can neither choose the executable nor redirect billing; the account has no Fontaine credential, the Claude CLI owns its login, and a conflicting Anthropic or cloud variable in the environment is refused by name); a missing or invalid credential for the guardian's account makes the
 guardian unavailable, which fails closed. **Trust asymmetry**: the per-key scope table below is the rule (shared project settings may only tighten); the Decisions entries on trust asymmetry and `default_mode` record the deviations from Claude Code.
 
 Per-key scope (the user file may set every key; a key a scope may not set is rejected at load). The single source is the `RULES` table in `fontaine-core/src/config_scope.rs`, one row per key; a key with no row is refused from project scopes, and a test fails until every `Settings` key has a row:
 
 | Key | Project | Project-local (untracked) | CLI |
 |-----|---------|---------------------------|-----|
-| `[accounts.*]` (`kind`, `base_url`, `api_key_env`, `models`) | no | no | `--settings` |
+| `[accounts.*]` (`kind`, `base_url`, `api_key_env`, `models`, `cli_path`, `claude_config_dir`) | no | no | `--settings` |
 | `[model]` `model` | no | yes | yes (`--model`) |
 | `[guardian]` `model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | `--settings` |
 | `[guardian]` `scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no (user file only) |

@@ -84,6 +84,38 @@ async fn the_dialog_lists_the_accounts_and_stores_a_key_without_showing_it() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_external_cli_account_checks_the_cli_and_never_asks_for_a_key() {
+    let missing = if cfg!(windows) {
+        "C:\\\\nonexistent\\\\claude.exe"
+    } else {
+        "/nonexistent/claude"
+    };
+    let account =
+        format!("\n[accounts.claude]\nkind = \"claude-subscription\"\ncli_path = \"{missing}\"\n");
+    let w = World::routed("http://127.0.0.1:9", &account);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/login");
+        dialog_open(&ui).await;
+        let shown = ui.live();
+        assert!(shown.contains("external CLI"), "{shown}");
+        ui.press(KeyCode::Esc);
+        dialog_closed(&ui).await;
+        ui.send("/login claude");
+        // The check runs the CLI; its failure is shown as a sentence, with no key prompt.
+        ui.wait_for("could not be started").await;
+        let shown = ui.screen();
+        assert!(!shown.contains("API key for"), "{shown}");
+        assert!(!shown.contains("RequestError"), "{shown}");
+    })
+    .await;
+    assert!(
+        credentials(&w).is_empty(),
+        "an external-login account stores nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_key_can_be_pasted_into_the_masked_field() {
     let w = World::routed("http://127.0.0.1:9", WORK);
     w.run(|ui| async move {
