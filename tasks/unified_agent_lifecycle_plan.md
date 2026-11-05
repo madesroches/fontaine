@@ -265,6 +265,51 @@ waking do not depend on it.
 - **Status bar, export, `job_output`:** read the derived idle state; no other change.
 - **AFK stop:** still kills `running_ids() ∪ idle_ids()`, and `idle_ids` now covers every idle agent.
 
+### Agents across `--resume`
+
+An agent is a conversation plus a few facts about it, not a process. Its log (`logs/agent-<n>.jsonl`)
+persists, and its id and name are already stable across `--resume` (2026-11-21 #300). A resumed
+session therefore brings back every agent that had not ended for good, as idle and wakeable, as
+Claude Code resumes an agent from its transcript.
+
+- **What the ledger must hold.** The `spawned` record gains `model` (the resolved `ModelSpec` text).
+  Retiring appends `finished` with status `retired`. That covers the cascade, `/clear` and rewind,
+  so a resumed session knows which agents are final without replaying those rules. `/clear` already
+  records `ContextCleared`, and agents spawned before it stay gone on rebuild.
+- **Rebuild at startup** (`agent/setup.rs`, next to `seed_names`). The ledger view's `agents` are
+  walked in spawn order. Each agent whose last `finished` status is `done` or `failed` becomes an
+  idle node with no handle:
+  - Its type comes from the current registry.
+  - Its tools are re-derived as the type's toolset cut to its rebuilt parent's, as at spawn.
+  - Its mode is `own_mode` against the parent's posture, so it is never looser than the parent, and
+    the session itself resumes in the default mode (P6).
+  - Its depth comes from the parent chain.
+
+  An agent whose parent is not rebuilt (final, or gone after a clear) is not rebuilt either. That is
+  the cascade rule applied at load. Killed, budget-exhausted, retired and still-running agents (the
+  previous process's `kill_all` ended those as `killed`) are not rebuilt.
+- **Lazy handle.** A rebuilt node gets its `ChildHandle` on its first wake, not at startup, so a
+  resume opens no model clients for agents nobody talks to. `ChildRunner` gains
+  `revive(RevivalRequest) -> Result<Arc<dyn ChildHandle>, String>`. The request is a `SpawnRequest`
+  without a prompt. `CoreChildRunner` builds the rig agent over the existing per-agent log without
+  launching a run. `wake_idle`'s "it has no conversation to resume" branch calls `revive` first,
+  then resumes as usual. A missing log, an unknown type or an unavailable model refuses the wake
+  with that reason.
+- **Model.** The agent revives on the recorded model. A record from before this change has none,
+  and revives on its type's model. A type from a project agent file always runs on the session
+  model, as at spawn.
+- **Guardian intent.** The root's human messages and the agent-scoped ones (`Record::UserMessage {
+  agent }`) are replayed from the ledger as today, so a revived agent is judged against the same
+  intent it had.
+- **Budgets.** The tree's spend tallies are in memory, so a revived agent's per-agent spend, like the
+  session tally, starts over in the new process. The per-agent budgets are opt-in, and this matches
+  the session budget.
+- **Board.** `main`'s restored board keeps an in-progress task owned when its owner is rebuilt idle,
+  instead of resetting it. `TaskBoard::restore` takes the rebuilt ids. A subagent's board is not
+  persisted, so a revived subagent owner starts with an empty board.
+- **Surfaces.** Rebuilt agents show in the `/agents` panel as `idle`, and `send_message`,
+  `job_output` and typing into their view reach them by name or id.
+
 ### Open points from the issue, settled
 
 - **Memory:** no new cost. Every ended child already keeps its handle and on-disk log.
@@ -323,8 +368,19 @@ waking do not depend on it.
    - `AgentRow.owns_task`, and the `agent_list.rs` listing rule.
    - Per-owner boards in `ui/mod.rs` and `agents_panel.rs`.
    - Test updates in `agent_list.rs`, `agents_panel.rs` and `screen.rs`.
-6. **Docs** (see Documentation).
-7. **Plan Decisions** in `tasks/fontaine_harness_plan.md`, at the end of `### Agents`:
+6. **Agents across `--resume`**
+   - Ledger: `Record::Agent` gains an optional `model`, set on `spawned`; `AgentEvent::Spawned`
+     carries it from the `agent` tool. Retiring appends `Finished { status: "retired" }` from
+     `spawn::retire` / `retire_all_idle`. `AgentRecord` gains `model` (`fontaine-core/src/ledger.rs`,
+     `child_runner.rs::LedgerWindow`).
+   - `AgentTree::rebuild(records, types, limits)`: adds idle, handle-less nodes for revivable
+     agents, re-deriving their tools, mode and depth (`tree.rs`). Called from `agent/setup.rs`.
+   - `ChildRunner::revive` (`runner.rs`) and `CoreChildRunner::revive` (`child_runner.rs`), sharing
+     the agent construction with `spawn`. `wake_idle` and the human resume path (`message_agent`)
+     revive a handle-less node before resuming.
+   - `TaskBoard::restore` keeps in-progress tasks whose owner was rebuilt.
+7. **Docs** (see Documentation).
+8. **Plan Decisions** in `tasks/fontaine_harness_plan.md`, at the end of `### Agents`:
    - 2026-11-05 (supersedes the 2026-11-02 line "one team per session … only `main` starts a
      teammate … a teammate is an ordinary subagent with an idle state"): every subagent whose turn
      ends `done` or `failed` goes idle and keeps its conversation. A reachable agent's message, a
@@ -345,17 +401,22 @@ waking do not depend on it.
      work and spawn agents for it (#435).
    - 2026-11-05: `teammate_idle` fires only for an agent going idle with an in-progress task on its
      parent's board, as a gate on unfinished work (#435).
+   - 2026-11-05 (user): A `--resume`d session rebuilds every agent that had not ended for good as
+     idle, from the ledger and its per-agent log. Its handle is built lazily on the first wake, its
+     tools and mode are re-derived (never looser than its parent's), and its per-agent spend starts
+     over. Claude Code parity: an agent resumes from its transcript (#435).
 
 ## Files to Modify
 
-- `rust/fontaine-agents/src/tree.rs`, `spawn.rs`, `tasks.rs`, `tools.rs`
+- `rust/fontaine-agents/src/tree.rs`, `spawn.rs`, `tasks.rs`, `tools.rs`, `runner.rs`, `root_ledger.rs`
+- `rust/fontaine-core/src/ledger.rs`, `child_runner.rs` (`revive`, `LedgerWindow`)
 - `rust/fontaine-core/src/agent.rs`, `agent/rewind.rs`, `agent/setup.rs`, `session.rs`, the root
   `after_turn` path, `tasks.rs` (store unchanged; doc comment)
 - `rust/fontaine-tui/src/agent_list.rs`, `agents_panel.rs`, `ui/mod.rs`, `screen.rs` (tests)
 - `rust/fontaine-core/tests/teams.rs`, `rust/fontaine-core/tests/agent_resume.rs`,
   `rust/fontaine-agents/tests/seam.rs`, `rust/fontaine/tests/parallel_agents.rs` (wherever they
   pass `teammate`)
-- `docs/agents.md`, `docs/hooks.md`, `docs/tui.md`, `docs/config.md`, `CHANGELOG.md`
+- `docs/agents.md`, `docs/hooks.md`, `docs/tui.md`, `docs/configuration.md`, `docs/architecture.md`, `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
@@ -383,11 +444,19 @@ waking do not depend on it.
   work.
 - **Rewind prunes like `/clear`.** Rejected: rewind keeps the list today, and retiring is enough for
   the intent property.
+- **Revive agents eagerly at resume.** Rejected: it would open a model client per agent whether or
+  not anyone wakes it. The lazy handle costs one `revive` seam.
+- **Persist per-agent spend so budgets carry over a resume.** Rejected for now: the session tally
+  does not carry over either, and the per-agent budgets are opt-in.
+- **Persist subagent boards so a revived owner keeps its board.** Rejected: a child's board is
+  scratch state, like its todo list. The owner can recreate tasks, and `main`'s board, the one the
+  human sees, persists.
 
 ## Decisions
 
 - 2026-11-05 (user): No idle agent is reused for new board work; claimable tasks go to fresh agents.
 - 2026-11-05 (user): The owner of a board spawns its workers; the owner is any agent, not only `main`.
+- 2026-11-05 (user): Agents survive `--resume`: an agent is its conversation, not a process.
 
 ## Documentation
 
@@ -395,8 +464,9 @@ waking do not depend on it.
   - The `agent` arguments table: remove `teammate`.
   - "Messages between agents": the wake rule replaces "a teammate that is idle is the one
     exception".
-  - A new "Agent lifecycle" section: running / idle / final, the retirement triggers, and `Failed`
-    being wakeable.
+  - A new "Agent lifecycle" section: running / idle / final, the retirement triggers, `Failed`
+    being wakeable, and agents coming back idle after `--resume` (model, tools and mode, spend
+    starting over).
   - "Agent teams" becomes "Task boards": per-agent boards, visibility, routing, the owner reminder,
     fresh agents for new work, persistence of `main`'s board only. Remove "Only `main` can start a
     teammate", "Idle instead of done", "The idle hand-off", and the board-retirement and
@@ -405,8 +475,10 @@ waking do not depend on it.
 - `docs/hooks.md`: `teammate_idle` fires for an agent going idle with an in-progress task on its
   parent's board. `task_completed` applies on every board.
 - `docs/tui.md`: the agent-list rule for idle rows, and per-owner boards in the panel.
-- `docs/config.md`: `[agents] teams` turns the boards and team hooks on and off. It no longer
+- `docs/configuration.md`: `[agents] teams` turns the boards and team hooks on and off. It no longer
   controls idling.
+- `docs/architecture.md`: the ledger's agent records gain `model` on `spawned` and the `retired`
+  end, and a resumed session rebuilds idle agents from them.
 - `CHANGELOG.md`: "Any finished subagent can be woken by `send_message`. The `teammate` argument is
   removed, any agent can own a task board, and claimable tasks go to fresh agents."
 
@@ -457,7 +529,20 @@ Integration tests through the core with `rig_core::test_utils` scripted models
 - `teams.rs` tests rewritten without `teammate`, keeping their wake and non-recorded-intent
   assertions.
 
-## Open Questions
-
-- Agents from an earlier process of a `--resume`d session stay unaddressable, though their logs
-  persist; Claude Code resumes from the transcript. Should that be a follow-up issue?
+Across `--resume` (unit tests on the ledger view and `AgentTree::rebuild`; one integration test):
+- The ledger view's `AgentRecord` carries `model`, and `finished: retired` marks an agent final.
+- `rebuild`:
+  - It adds idle nodes for `done` and `failed` agents only, and skips a child whose parent was not
+    rebuilt.
+  - It re-derives tools as the type's cut to the parent's, and a mode never looser than the parent's
+    posture.
+  - It skips agents spawned before a `ContextCleared`.
+- A handle-less idle node: a wake calls `revive` once, then resumes. `revive` failing (missing log,
+  unknown type) refuses the wake with that reason and releases its tasks.
+- `TaskBoard::restore` keeps an in-progress task owned by a rebuilt id and resets the others.
+- Integration (`fontaine-core/tests/agent_resume.rs`):
+  - Run a session where root spawns a worker that ends `done`, then reopen the session from its
+    store as `--resume` does.
+  - Root's `send_message` to the worker's name returns `queued`, and the worker's next request
+    holds its earlier history from the per-agent log.
+  - The guardian intent for its calls is the replayed root intent.
