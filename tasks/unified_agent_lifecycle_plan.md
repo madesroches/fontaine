@@ -194,7 +194,7 @@ finds nothing.
   `wake_for_inbox(parent)` runs. The parent is woken only after the child's `conclude` has freed the
   child's slot. A transient refusal (`Refusal::Parallel`, `SessionBudget`) requeues every taken note,
   reports included, as the `AlreadyRunning` arm does, and does not release tasks; the wake is
-  retried when the next slot frees, from the same slot-free hook the owner reminder uses. Only a
+  retried when the next slot frees, from the slot-free check that `conclude` runs on every end (below). Only a
   final refusal releases the node's tasks. This only fires when something woke the child: the
   human typing into it, or a sibling's message. A subagent still joins its own running children
   before it goes idle (2026-10-30 #326).
@@ -254,7 +254,11 @@ The owner spawns, prompted by one harness note:
 
   The second check runs from the shared task-release helper that every path uses (`conclude`,
   `kill_agent` including its idle arm, `spawn::retire` / `retire_all_idle`, and `/clear`), and from
-  `board_update`, so no release path skips it.
+  `board_update`, so no release path skips it. `conclude` calls that helper only when the end
+  releases tasks (`!tree.finish(...)`), and a `Done` end keeps its tasks, so `conclude` also runs the
+  slot-free check (owner reminder and the retry of transiently refused wakes) itself on every end.
+  A root reminder fires only on `TurnOutcome::Answer`: budget stops are `Stopped`, and the TUI passes
+  `None` for an interrupted turn.
 - **Delivery.** The note goes through the existing paths: `post_to_root` for `main`, the inbox for a
   running owner, and a `wake_idle` resume for an idle owner. It is not recorded as a user message.
 - **Deduplication.** Each owner keeps the last `(board mutation count, free slots)` it was reminded
@@ -341,8 +345,8 @@ Claude Code resumes an agent from its transcript.
 
   An agent whose type is no longer in the registry is skipped, and so are its descendants. An
   agent whose parent is not rebuilt (final) is not rebuilt either. That is
-  the cascade rule applied at load. Failed, killed, budget-exhausted, retired and still-running agents (the
-  previous process's `kill_all` ended those as `killed`) are not rebuilt.
+  the cascade rule applied at load. Failed, killed, budget-exhausted, retired and still-running agents (they
+  have no finished record after their last resumed, or `kill_all` recorded them killed) are not rebuilt.
 - **Lazy handle.** A rebuilt node gets its `ChildHandle` on its first wake, not at startup, so a
   resume opens no model clients for agents nobody talks to. `ChildRunner` gains
   `revive(RevivalRequest) -> BoxFuture<Result<Arc<dyn ChildHandle>, String>>`, async like `spawn`
@@ -376,7 +380,8 @@ Claude Code resumes an agent from its transcript.
 ### Open points from the issue, settled
 
 - **Spend:** There is no per-subtree budget.
-- **One-shot reliance:** `job_output` treats a `Done` idle agent as ended (`AgentState::Ended { status: "idle" }`; a `Failed` one reports `failed`),
+- **One-shot reliance:** `job_output` treats a `Done` idle agent as ended (`AgentState::Ended { status: "idle" }`; a `Failed` one reports `failed`; `render_agent_wait` gives the wake hint for `idle` and also for
+  `failed`, e.g. "It failed but keeps its conversation: send_message wakes it"),
   so a parent waiting on a child returns when the child's turn ends. Headless `settle` waits on
   `any_running` only, so idle agents never hold a run open.
 - **Nesting:** idle descendants follow the cascade rule. Boards nest through ownership, bounded by
@@ -415,15 +420,20 @@ Claude Code resumes an agent from its transcript.
    - Remove `AgentArgs.teammate`, its schema entry, its refusals and the board note.
    - `watch_report`:
      - For any `Done` end, first resume on queued inbox mail, then on a `teammate_idle` block when the
-       agent owns an in-progress parent-board task, then on the owner reminder.
+       agent owns an in-progress parent-board task, then on the owner reminder. The inbox resume runs
+       before and independently of the `tree.teams()` check (today it lives in `continue_teammate`,
+       which returns false when teams are off, `spawn.rs:214-216`); only the `teammate_idle` and
+       reminder branches need teams.
      - Use the new idle report line. A report to an idle parent queues and wakes it, and
        `wake_for_inbox` runs for every idle end. `push` / `notify_report` queue to an idle node, the
        wake happens after `conclude` frees the child's slot, and a transient refusal requeues every
-       taken note (reports included) without releasing tasks, retried from the slot-free hook. `wake_idle` releases tasks only on a final refusal.
+       taken note (reports included) without releasing tasks, retried from the slot-free check that `conclude` runs on every end. `wake_idle` releases tasks only on a final refusal.
      - Delete `retire_finished_team` and the claimable-task branch.
    - A slot freeing up or a task becoming claimable runs the reminder for idle owners. It hooks into
      the shared task-release helper (called by `conclude`, `kill_agent`, `spawn::retire` /
-     `retire_all_idle` and `clear_conversation`) and the `board_update` tool.
+     `retire_all_idle` and `clear_conversation`) and the `board_update` tool. Because `conclude` skips
+    that helper on a `Done` end, `conclude` also runs the slot-free check (reminder plus retry of
+    transiently refused wakes) on every end.
    - `kill_agent`: release tasks, drop boards and append `finished: retired` for every id the cascade
      retired (from `kill_outcome`). Add `pub fn retire` and `retire_all_idle` wrappers that do the same.
    - Retire, kill-while-idle, `conclude`'s cascade and `/clear` take the node's inbox first: `Message`
@@ -501,7 +511,7 @@ Claude Code resumes an agent from its transcript.
 ## Files to Modify
 
 - `rust/fontaine-agents/src/tree.rs`, `spawn.rs`, `tasks.rs`, `tools.rs`, `runner.rs`, `root_ledger.rs`
-- `rust/fontaine-tools/src/jobs.rs`, `rust/fontaine-core/src/user_hooks.rs` (stale teammate comments)
+- `rust/fontaine-tools/src/jobs.rs`, `rust/fontaine-tools/src/jobs/tools.rs` (`render_agent_wait` wake hint for `failed`), `rust/fontaine-core/src/user_hooks.rs` (stale teammate comments)
 - `rust/fontaine-core/src/ledger.rs`, `child_runner.rs` (`revive`, `LedgerWindow`)
 - `rust/fontaine-core/src/agent.rs`, `agent/rewind.rs`, `agent/setup.rs`, `session.rs`, `agent/messaging.rs`, `agent/afk.rs`, `afk_report.rs` (test `Record::Agent` literal gains `model`), `config.rs` (`teams` doc), `export.rs`, `agent/goal.rs`
   (`goal_turn_ended`), `tasks.rs` (store unchanged; doc comment)
@@ -557,6 +567,9 @@ Claude Code resumes an agent from its transcript.
 ## Documentation
 
 - `docs/agents.md`:
+  - "Persistence and resume" (~283-287: ids do survive; agents come back idle) and "Not built"
+    (~289-292): rewrite for agents returning idle after `--resume`.
+  - "Messaging a subagent" (~366-389): "or wakes an idle teammate" and the ended-subagent bullet.
   - The `agent` arguments table: remove `teammate`.
   - "Messages between agents": the wake rule replaces "a teammate that is idle is the one
     exception".
@@ -580,6 +593,9 @@ Claude Code resumes an agent from its transcript.
   `docs/configuration.md`, `docs/tools.md` and `docs/tui.md`; update every `#agent-teams` link. Also update `docs/hooks.md:161`'s
   `agents.md#the-idle-hand-off` link, which goes with the removed section, and the
   `#the-task-board` links (`docs/permissions.md:201`, `docs/tools.md:36`, `docs/telemetry.md:155`).
+- `docs/tools.md:35` (the `send_message` row) and `docs/configuration.md:761-762` (the `teammate_idle` text).
+- `docs/hooks.md:16, 151, 160-162` ("When a teammate's turn ends"; "shares the hand-off's cap" needs
+  rewording, since the cap now covers only the `teammate_idle` resume).
 - `docs/hooks.md`: `teammate_idle` fires for an agent going idle with an in-progress task on its
   parent's board. `task_completed` applies on every board.
 - `README.md:93`: "updates to the team task board" becomes task-board wording without "team".
@@ -643,7 +659,8 @@ Integration tests through the core with `rig_core::test_utils` scripted models
 - `teammate_idle`: a blocking hook resumes an agent going idle with an in-progress task, capped as
   today. It does not fire for an agent with no task.
 - With `teams = false`, a finished worker still idles and can be woken by a message, and has no
-  board tools.
+  board tools. A message queued to it as its turn ends resumes it (the inbox resume does not depend
+  on teams).
 - `teams.rs` tests rewritten without `teammate`, keeping their wake and non-recorded-intent
   assertions.
 
