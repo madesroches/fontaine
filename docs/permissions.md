@@ -196,14 +196,14 @@ cross over: `shell(...)` allows are for `shell` only, and the read-only pre-clas
 allows a `monitor` by itself, so allow one with `monitor(tail *)` or let the guardian judge it. In
 `auto`, `monitor` with no specifier is a broad allow like `shell`, and is set aside.
 
-## Agent teams
+## Task boards
 
-With `[agents] teams` on (the default) the [task board](agents.md#the-task-board) adds two tools. `board_show` is read-only and names no path, so it takes the read-only fast path in every
+With `[agents] teams` on (the default) the [task boards](agents.md#the-task-board) add two tools. `board_show` is read-only and names no path, so it takes the read-only fast path in every
 mode. `board_update` is a coordination tool like `send_message`: it writes only the session's own
 `tasks.json` and runs your `task_completed` hooks, so in every mode it runs at `tier = coordination` with
 no guardian verdict and no prompt. A `deny` or `ask` rule naming `board_update` (a hook too) runs
-first in every mode. It has no fast path and no specifier. Waking an idle teammate
-with `send_message` is likewise unjudged, and each call the woken teammate makes passes the
+first in every mode. It has no fast path and no specifier. Waking an idle agent
+with `send_message` is likewise unjudged, and each call the woken agent makes passes the
 whole pipeline. So in `manual`, `acceptEdits` and `dontAsk` agents can message and wake each other
 without a prompt to you; spend is bounded only by the session and subagent budgets, which are
 unset by default. A subagent type holding `board_show` or `board_update` can still take the read-only

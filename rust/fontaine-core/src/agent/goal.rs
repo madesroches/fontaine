@@ -107,8 +107,12 @@ impl AgentRuntime {
         cleared
     }
 
-    /// A turn ended; `None` is an interrupted one. Returns the pause this caused.
+    /// A turn ended; `None` is an interrupted one. Reminds `main` of tasks waiting on its board
+    /// after a real model turn, and returns the pause this caused.
     pub fn goal_turn_ended(&self, end: Option<&TurnOutcome>) -> Option<PauseReason> {
+        if matches!(end, Some(TurnOutcome::Answer(_))) {
+            fontaine_agents::spawn::remind_main(self.state.agents());
+        }
         let goal = self.session.goal();
         let paused = goal.after_turn(end);
         if paused.is_some() {

@@ -138,8 +138,6 @@ impl CompactResult {
 pub enum ClearError {
     /// A subagent is running or has a report to deliver, so nothing was changed.
     SubagentsRunning,
-    /// A teammate is idle: it holds conversation history a later wake needs.
-    IdleTeammates,
     Store {
         action: &'static str,
         source: rig_memory::SessionError,
@@ -152,9 +150,6 @@ impl fmt::Display for ClearError {
             ClearError::SubagentsRunning => f.write_str(
                 "subagents are still running or have reports to deliver; /clear is refused until they finish or are killed",
             ),
-            ClearError::IdleTeammates => f.write_str(
-                "a teammate is idle and keeps its own history; /clear is refused until it is killed or the session ends",
-            ),
             ClearError::Store { action, .. } => {
                 write!(f, "the conversation could not be {action}")
             }
@@ -165,7 +160,7 @@ impl fmt::Display for ClearError {
 impl std::error::Error for ClearError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            ClearError::SubagentsRunning | ClearError::IdleTeammates => None,
+            ClearError::SubagentsRunning => None,
             ClearError::Store { source, .. } => Some(source),
         }
     }

@@ -1,5 +1,5 @@
 //! `/rewind` on the runtime: the same refusal guard as `/clear`, then the conversation, the
-//! files and the ledger record.
+//! files and the ledger record. A rewind of the conversation retires the idle subagents.
 
 use std::fmt;
 
@@ -15,8 +15,6 @@ use crate::session::ClearError;
 pub enum RewindError {
     /// A subagent is running or has a report to deliver.
     SubagentsRunning,
-    /// A teammate is idle: it holds conversation history a later wake needs.
-    IdleTeammates,
     /// The conversation could not be put back.
     Conversation(ClearError),
 }
@@ -27,9 +25,6 @@ impl fmt::Display for RewindError {
             RewindError::SubagentsRunning => f.write_str(
                 "subagents are still running or have reports to deliver; /rewind is refused until they finish or are killed",
             ),
-            RewindError::IdleTeammates => f.write_str(
-                "a teammate is idle and keeps its own history; /rewind is refused until it is killed or the session ends",
-            ),
             RewindError::Conversation(_) => f.write_str("the conversation could not be rewound"),
         }
     }
@@ -38,7 +33,7 @@ impl fmt::Display for RewindError {
 impl std::error::Error for RewindError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            RewindError::SubagentsRunning | RewindError::IdleTeammates => None,
+            RewindError::SubagentsRunning => None,
             RewindError::Conversation(e) => Some(e),
         }
     }
@@ -88,15 +83,14 @@ impl AgentRuntime {
         if agents.any_running() || agents.has_agent_notifications() {
             return Err(RewindError::SubagentsRunning);
         }
-        if agents.any_idle() {
-            return Err(RewindError::IdleTeammates);
-        }
         let checkpoints = self.session.checkpoints();
         if what.includes_conversation() {
             self.session
                 .rewind_conversation(plan.conv_n)
                 .await
                 .map_err(RewindError::Conversation)?;
+            // A woken agent would be judged against intent the rewind dropped.
+            self.retire_idle_agents("the conversation was rewound");
             self.end_jobs().await;
             self.reset_shell_cwd();
         }

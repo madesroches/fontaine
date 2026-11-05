@@ -5,7 +5,7 @@ Fontaine denied it. Hooks are how you add your own checks, rewrite arguments and
 without changing Fontaine. They follow Claude Code's hooks: the event arrives as JSON on standard
 input, the answer is JSON on standard output, and exit code 2 blocks.
 
-There are five events, three around tool calls and two for [agent teams](agents.md#agent-teams):
+There are five events, three around tool calls and two for [task boards](agents.md#task-boards):
 
 | Event | When | What it can do |
 |---|---|---|
@@ -13,7 +13,7 @@ There are five events, three around tool calls and two for [agent teams](agents.
 | `post_tool_use` | After the tool ran, in the result pipeline. | Add a note to the result the agent reads. |
 | `permission_denied` | When the pipeline denied the call. | Say the agent may retry a call the guardian denied. |
 | `task_completed` | Before `board_update` completes a task. | Block, keeping the task open. |
-| `teammate_idle` | When a teammate's turn ends. | Block, keeping the teammate working. |
+| `teammate_idle` | When an agent's turn ends while it holds a task in progress on its parent's board. | Block, keeping the agent working. |
 
 In the terminal UI, `/hooks` lists the configured hooks by event with their scope.
 
@@ -130,9 +130,9 @@ pipeline.
 
 Every subagent tool call runs the same hooks.
 
-## Teams: `task_completed` and `teammate_idle`
+## Task boards: `task_completed` and `teammate_idle`
 
-These two events are quality gates for [agent teams](agents.md#agent-teams) and exist only while
+These two events are quality gates for [task boards](agents.md#task-boards) and exist only while
 `[agents] teams` is on (the default). They are configured like the others, without a `matcher`, which is
 rejected at load because the events have no tool name:
 
@@ -147,8 +147,8 @@ timeout_secs = 20
 
 | Event | Fires | Extra input | A block |
 |---|---|---|---|
-| `task_completed` | Before `board_update complete` takes effect, with no board lock held. | `task`: the task object (`id`, `title`, `description`, `status`, `owner`, `blocked_by`, `created_by`). | The task stays in progress and the reason is the error the owner reads. |
-| `teammate_idle` | After a teammate's turn ends, before it is marked idle and before its report is delivered. | `teammate_name`. | The teammate is resumed with the reason as feedback instead of going idle. |
+| `task_completed` | Before `board_update complete` takes effect on any board, with no board lock held. | `task`: the task object (`id`, `title`, `description`, `status`, `owner`, `blocked_by`, `created_by`). | The task stays in progress and the reason is the error the owner reads. |
+| `teammate_idle` | After an agent's turn ends while it owns an in-progress task on its parent's board, before it is marked idle and before its report is delivered. It never fires for an agent holding no such task. | `teammate_name` (the agent's name). | The agent is resumed with the reason as feedback instead of going idle. It is a gate on unfinished work and never hands out new work. |
 
 The answer is Claude Code's: exit code 2 blocks and standard error is the reason. A hook has no
 `allow` answer; nothing it says can loosen anything, it can only add work, and a JSON answer of
@@ -156,10 +156,10 @@ The answer is Claude Code's: exit code 2 blocks and standard error is the reason
 
 - **A failing gate does not block.** A hook that cannot start, exits with another code, or runs
   past its timeout warns you once and blocks nothing: these are quality gates, not security gates,
-  and one that failed closed forever would wedge the team.
-- **A gate that always blocks is bounded.** A `teammate_idle` block shares the
-  [hand-off's cap](agents.md#the-idle-hand-off): a teammate is resumed at most three times in a row
-  without the board changing, then goes idle with a warning.
+  and one that failed closed forever would wedge the agents.
+- **A gate that always blocks is bounded.** A `teammate_idle` block resumes an
+  agent at most three times in a row without the board that holds its task changing (a create,
+  claim, complete or release on it resets the count), then it goes idle with a warning.
 - **Where they may come from.** Your user config, `--settings` and plugins can define both. A
   repository's `task_completed` hook loads like its other hooks (after workspace trust, and it
   counts in the trust prompt) and can only keep a task open. A repository's `teammate_idle` hook is

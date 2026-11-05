@@ -33,7 +33,7 @@ pub struct ListRow {
     pub unpriced: bool,
     /// Characters the model has written in its current step; shown while the agent runs.
     pub writing: u64,
-    /// A teammate waiting for work, listed until killed rather than dropped as done.
+    /// An agent waiting to be woken, listed while it owns a task in progress.
     pub idle: bool,
 }
 
@@ -54,19 +54,24 @@ impl ListRow {
     }
 }
 
-/// The rows to list: `main` first, then every running agent, the one being viewed, and those
-/// that failed, were killed or ran out of budget less than [`ENDED_LISTED`] ago and were not
-/// dismissed. An agent that is done leaves at once. Nothing is listed while no subagent is.
-/// `main_writing` is the main conversation's step progress, which `main` shows.
+/// The rows to list: `main` first, then every running agent, the one being viewed, an idle
+/// agent that owns a task in progress (`task_owners`), and those that failed, were killed or ran
+/// out of budget less than [`ENDED_LISTED`] ago and were not dismissed. An agent that is done, or
+/// idle with no task, leaves at once. Nothing is listed while no subagent is. `main_writing` is
+/// the main conversation's step progress, which `main` shows.
 pub fn rows(
     agents: &[AgentRow],
     viewing: Option<&str>,
     dismissed: &HashSet<String>,
+    task_owners: &HashSet<String>,
     now: Instant,
     main_writing: u64,
 ) -> Vec<ListRow> {
     let listed = |row: &AgentRow| {
-        if row.status.is_running() || row.idle || viewing == Some(row.id.as_str()) {
+        if row.status.is_running()
+            || (row.idle && task_owners.contains(&row.id))
+            || viewing == Some(row.id.as_str())
+        {
             return true;
         }
         let recent = row
@@ -482,15 +487,35 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_teammate_stays_listed_unlike_a_done_agent() {
+    fn an_idle_agent_is_listed_only_while_it_owns_a_task_or_is_viewed() {
         let now = Instant::now();
         let mut idle = agent("agent-1", "main", ChildStatus::Done, now);
         idle.idle = true;
+        let mut quiet = agent("agent-3", "main", ChildStatus::Done, now);
+        quiet.idle = true;
         let done = agent("agent-2", "main", ChildStatus::Done, now);
-        let listed = rows(&[idle, done], None, &HashSet::new(), now, 0);
+        let owners = HashSet::from(["agent-1".to_string()]);
+        let listed = rows(
+            &[idle.clone(), quiet.clone(), done.clone()],
+            None,
+            &HashSet::new(),
+            &owners,
+            now,
+            0,
+        );
         let ids: Vec<_> = listed.iter().filter_map(|r| r.id.as_deref()).collect();
         assert_eq!(ids, ["agent-1"]);
         assert!(listed[1].idle);
+        let viewed = rows(
+            &[idle, quiet, done],
+            Some("agent-3"),
+            &HashSet::new(),
+            &owners,
+            now,
+            0,
+        );
+        let ids: Vec<_> = viewed.iter().filter_map(|r| r.id.as_deref()).collect();
+        assert_eq!(ids, ["agent-1", "agent-3"]);
     }
 
     #[test]
@@ -503,7 +528,7 @@ mod tests {
             cost_usd: Some(0.0519),
             unpriced_tokens: 4_850_000,
         };
-        let rows = rows(&[worker], None, &HashSet::new(), now, 0);
+        let rows = rows(&[worker], None, &HashSet::new(), &HashSet::new(), now, 0);
         assert_eq!(rows[1].spend, "13k tok · $0.0519 · 4.9M unpriced tok");
         assert!(rows[1].unpriced);
         let mut list = AgentList::default();
@@ -525,7 +550,7 @@ mod tests {
             cost_usd: Some(0.0519),
             unpriced_tokens: 4_850_000,
         };
-        let mut rows = rows(&[worker], None, &HashSet::new(), now, 0);
+        let mut rows = rows(&[worker], None, &HashSet::new(), &HashSet::new(), now, 0);
         rows[1].agent_type = "general-purpose".into();
         rows[1].status = Some(ChildStatus::WaitingOnPermission);
         let mut list = AgentList::default();
@@ -546,7 +571,14 @@ mod tests {
         let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
         worker.agent_type = "general-purpose".into();
         let mut list = AgentList::default();
-        list.set_rows(rows(&[worker], None, &HashSet::new(), now, 0));
+        list.set_rows(rows(
+            &[worker],
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            0,
+        ));
         let lines = list.lines(None, 20, 5);
         let text: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "◯ agent-1 general-pu", "{text}");
@@ -555,9 +587,9 @@ mod tests {
     #[test]
     fn nothing_is_listed_while_no_subagent_is() {
         let now = Instant::now();
-        assert!(rows(&[], None, &HashSet::new(), now, 0).is_empty());
+        assert!(rows(&[], None, &HashSet::new(), &HashSet::new(), now, 0).is_empty());
         let done = [agent("agent-1", "main", ChildStatus::Done, now)];
-        assert!(rows(&done, None, &HashSet::new(), now, 0).is_empty());
+        assert!(rows(&done, None, &HashSet::new(), &HashSet::new(), now, 0).is_empty());
     }
 
     #[test]
@@ -568,7 +600,7 @@ mod tests {
             agent("agent-2", "main", ChildStatus::Running, now),
             agent("agent-3", "agent-1", ChildStatus::Running, now),
         ];
-        let listed = rows(&agents, None, &HashSet::new(), now, 0);
+        let listed = rows(&agents, None, &HashSet::new(), &HashSet::new(), now, 0);
         assert_eq!(
             ids(&listed),
             [None, Some("agent-1"), Some("agent-3"), Some("agent-2")]
@@ -589,7 +621,14 @@ mod tests {
         ];
         let soon = started + Duration::from_secs(29);
         assert_eq!(
-            ids(&rows(&agents, None, &HashSet::new(), soon, 0)),
+            ids(&rows(
+                &agents,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+                soon,
+                0
+            )),
             [
                 None,
                 Some("agent-2"),
@@ -600,7 +639,14 @@ mod tests {
         );
         let later = started + Duration::from_secs(30);
         assert_eq!(
-            ids(&rows(&agents, None, &HashSet::new(), later, 0)),
+            ids(&rows(
+                &agents,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+                later,
+                0
+            )),
             [None, Some("agent-5")]
         );
     }
@@ -615,7 +661,14 @@ mod tests {
         ];
         let dismissed = HashSet::from(["agent-2".to_string()]);
         assert_eq!(
-            ids(&rows(&agents, Some("agent-1"), &dismissed, now, 0)),
+            ids(&rows(
+                &agents,
+                Some("agent-1"),
+                &dismissed,
+                &HashSet::new(),
+                now,
+                0
+            )),
             [None, Some("agent-1"), Some("agent-3")]
         );
     }
@@ -625,7 +678,14 @@ mod tests {
         let now = Instant::now();
         let agents = [agent("agent-1", "main", ChildStatus::Running, now)];
         for modifiers in [KeyModifiers::SHIFT, KeyModifiers::ALT] {
-            let mut list = focused(rows(&agents, None, &HashSet::new(), now, 0));
+            let mut list = focused(rows(
+                &agents,
+                None,
+                &HashSet::new(),
+                &HashSet::new(),
+                now,
+                0,
+            ));
             let enter = KeyEvent::new(KeyCode::Enter, modifiers);
             assert_eq!(list.handle_key(enter, None), ListKey::Blur { typed: true });
             assert!(!list.focused);
@@ -636,7 +696,14 @@ mod tests {
     fn focusing_selects_main_and_up_from_the_first_row_gives_the_prompt_back() {
         let now = Instant::now();
         let agents = [agent("agent-1", "main", ChildStatus::Running, now)];
-        let mut list = focused(rows(&agents, None, &HashSet::new(), now, 0));
+        let mut list = focused(rows(
+            &agents,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            0,
+        ));
         assert!(list.focused);
         assert_eq!(list.handle_key(key(KeyCode::Down), None), ListKey::None);
         assert_eq!(list.handle_key(key(KeyCode::Up), None), ListKey::None);
@@ -665,7 +732,14 @@ mod tests {
             agent("agent-1", "main", ChildStatus::Running, now),
             agent("agent-2", "main", ChildStatus::Failed, now),
         ];
-        let mut list = focused(rows(&agents, None, &HashSet::new(), now, 0));
+        let mut list = focused(rows(
+            &agents,
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            0,
+        ));
         list.handle_key(key(KeyCode::Down), None);
         assert_eq!(
             list.handle_key(key(KeyCode::Char('x')), None),
@@ -683,7 +757,14 @@ mod tests {
     fn x_on_main_or_the_viewed_agent_is_typed_into_the_prompt() {
         let now = Instant::now();
         let agents = [agent("agent-1", "main", ChildStatus::Running, now)];
-        let listed = rows(&agents, Some("agent-1"), &HashSet::new(), now, 0);
+        let listed = rows(
+            &agents,
+            Some("agent-1"),
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            0,
+        );
         let mut list = focused(listed.clone());
         assert_eq!(
             list.handle_key(key(KeyCode::Char('x')), Some("agent-1")),
@@ -701,7 +782,7 @@ mod tests {
     fn a_printable_key_and_escape_return_focus_and_only_the_key_is_typed() {
         let now = Instant::now();
         let agents = [agent("agent-1", "main", ChildStatus::Running, now)];
-        let listed = rows(&agents, None, &HashSet::new(), now, 0);
+        let listed = rows(&agents, None, &HashSet::new(), &HashSet::new(), now, 0);
         let mut list = focused(listed.clone());
         assert_eq!(
             list.handle_key(key(KeyCode::Char('h')), None),
@@ -719,7 +800,7 @@ mod tests {
         let now = Instant::now();
         let mut named = agent("agent-1", "main", ChildStatus::Running, now);
         named.name = "survey-tech-debt".into();
-        let rows = rows(&[named], None, &HashSet::new(), now, 0);
+        let rows = rows(&[named], None, &HashSet::new(), &HashSet::new(), now, 0);
         let mut list = AgentList::default();
         list.set_rows(rows);
         list.lines(None, width, 10)
@@ -763,7 +844,14 @@ mod tests {
     fn the_viewed_row_is_marked_and_the_focused_one_reversed() {
         let now = Instant::now();
         let agents = [agent("agent-1", "main", ChildStatus::Running, now)];
-        let mut list = focused(rows(&agents, Some("agent-1"), &HashSet::new(), now, 0));
+        let mut list = focused(rows(
+            &agents,
+            Some("agent-1"),
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            0,
+        ));
         list.handle_key(key(KeyCode::Down), Some("agent-1"));
         let lines = list.lines(Some("agent-1"), 80, 10);
         let text: Vec<String> = lines.iter().map(ToString::to_string).collect();
@@ -787,13 +875,27 @@ mod tests {
         let now = Instant::now();
         let worker = agent("agent-1", "main", ChildStatus::Running, now);
         let mut list = AgentList::default();
-        list.set_rows(rows(&[worker], None, &HashSet::new(), now, 4200));
+        list.set_rows(rows(
+            &[worker],
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            4200,
+        ));
         assert_eq!(line_text(&list, 80, 0), "● main · writing 4.2k chars");
         let mut list = AgentList::default();
         let worker = agent("agent-1", "main", ChildStatus::Running, now);
-        list.set_rows(rows(&[worker], None, &HashSet::new(), now, 0));
+        list.set_rows(rows(
+            &[worker],
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            0,
+        ));
         assert_eq!(line_text(&list, 80, 0), "● main");
-        assert!(rows(&[], None, &HashSet::new(), now, 900).is_empty());
+        assert!(rows(&[], None, &HashSet::new(), &HashSet::new(), now, 900).is_empty());
     }
 
     #[test]
@@ -804,7 +906,14 @@ mod tests {
         let mut failed = agent("agent-2", "main", ChildStatus::Failed, now);
         failed.writing = 999;
         let mut list = AgentList::default();
-        list.set_rows(rows(&[running, failed], None, &HashSet::new(), now, 0));
+        list.set_rows(rows(
+            &[running, failed],
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            0,
+        ));
         assert!(line_text(&list, 120, 1).ends_with(" · writing 999 chars"));
         assert!(!line_text(&list, 120, 2).contains("writing"));
     }
@@ -817,7 +926,14 @@ mod tests {
         worker.spend.unpriced_tokens = 5;
         worker.writing = 5000;
         let mut list = AgentList::default();
-        list.set_rows(rows(&[worker], None, &HashSet::new(), now, 0));
+        list.set_rows(rows(
+            &[worker],
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            0,
+        ));
         let text = line_text(&list, 60, 1);
         assert!(text.ends_with(" · 5 unpriced tok"), "{text}");
         assert!(!text.contains("writing"), "{text}");

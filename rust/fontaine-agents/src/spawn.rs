@@ -1,5 +1,5 @@
 //! The tools that make agents a model can use: `agent` starts a subagent and `send_message`
-//! talks to one, and with teams on `board_show` and `board_update` work the shared task board.
+//! talks to one, and with teams on `board_show` and `board_update` work the task boards.
 //! `send_message` and `board_update` skip the guardian at the `coordination` tier and `agent`
 //! at the `spawn` tier; the checks here only decide whether a request can be served at all.
 
@@ -14,8 +14,10 @@ use crate::mode::own_mode;
 use crate::registry::{AgentTypes, ModelSpec};
 use crate::root_ledger::{AgentEvent, RootLedger};
 use crate::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnRequest};
-use crate::tasks::TaskStatus;
-use crate::tree::{AgentTree, DeliverError, Killed, Notification, NotificationKind, Refusal};
+use crate::tasks::Reminder;
+use crate::tree::{
+    AgentTree, DeliverError, Killed, Notification, NotificationKind, Refusal, Retired,
+};
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -37,8 +39,6 @@ pub struct AgentArgs {
     pub prompt: String,
     pub model: Option<String>,
     pub name: Option<String>,
-    /// Start a teammate: it stays alive, idle, between pieces of work. Only with teams on.
-    pub teammate: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -87,25 +87,118 @@ pub(crate) fn task_event(event: &str, agent: &str, agent_name: &str, task: &str)
     );
 }
 
-/// Returns the tasks `agent` owns to the board, for an agent that ended without finishing them.
-fn release_tasks(tree: &AgentTree, ledger: &dyn RootLedger, agent: &str) {
+/// Returns the tasks `agent` holds on its own board and its parent's to `Pending`, for an agent
+/// that ended without finishing them, and tells the owners of boards that now have claimable work
+/// and free slots.
+fn release_tasks(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, agent: &str) {
+    release_tasks_of(tree, ledger, agent, tree.parent_of(agent).as_deref());
+}
+
+fn release_tasks_of(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    agent: &str,
+    parent: Option<&str>,
+) {
     let Some(teams) = tree.teams() else {
         return;
     };
     let name = tree.name_of(agent);
-    for task in teams.board.release_owned_by(agent) {
-        task_event("released", agent, &name, &task);
+    let released = teams.boards.release_owned_by(agent, parent);
+    for task in &released {
+        task_event("released", agent, &name, task);
         ledger.append_event(AgentEvent::TaskReleased {
-            task,
+            task: task.clone(),
             agent: agent.to_string(),
         });
     }
+    if !released.is_empty() {
+        remind_owners(tree, ledger, Some(agent));
+    }
+}
+
+/// Gives mail an agent will never read back: a message to its sender, who was told it was
+/// queued, and a report to the root, which `watch_report` would have sent there had the agent
+/// been final when it arrived.
+fn bounce(tree: &AgentTree, id: &str, notes: Vec<Notification>, why: &str) {
+    let name = tree.name_of(id);
+    for note in notes {
+        match note.kind {
+            NotificationKind::Message => {
+                let text = format!(
+                    "Your message to {name} was not read: {why}.\nThe message was: {}",
+                    note.text
+                );
+                if tree.is_running(&note.from) {
+                    tree.push(&note.from, id, NotificationKind::Message, text);
+                } else {
+                    tree.post_to_root(id, NotificationKind::Message, text);
+                }
+            }
+            NotificationKind::Report => {
+                tree.post_to_root(&note.from, NotificationKind::Report, note.text);
+            }
+            NotificationKind::Job | NotificationKind::Reminder => {}
+        }
+    }
+}
+
+/// Does what an agent that stopped being resumable without a kill of its own needs: its mail goes
+/// back, its tasks are released, its board is dropped and the ledger marks it retired, unless it
+/// ended some other way, which the ledger keeps.
+pub fn settle_retired(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, retired: Vec<Retired>) {
+    for gone in retired {
+        let name = tree.name_of(&gone.id);
+        let type_name = tree.type_of(&gone.id).unwrap_or_default();
+        bounce(tree, &gone.id, gone.inbox, "it was retired");
+        release_tasks_of(tree, ledger, &gone.id, gone.parent.as_deref());
+        if let Some(teams) = tree.teams() {
+            teams.boards.drop_owner(&gone.id);
+        }
+        if gone.was_done {
+            ledger.append_event(AgentEvent::Finished {
+                agent: gone.id.clone(),
+                status: RETIRED.to_string(),
+            });
+        }
+        subagent_event("retired", &gone.id, &name, &type_name);
+    }
+}
+
+/// The ledger's `finished` status of an agent that is final without having failed or been
+/// killed.
+pub const RETIRED: &str = "retired";
+
+/// Ends the idle agent `id` for good, and the idle agents below it. Returns every id retired.
+pub fn retire(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    id: &str,
+    why: &str,
+) -> Vec<String> {
+    let retired = tree.retire(id, why);
+    let ids = retired.iter().map(|r| r.id.clone()).collect();
+    settle_retired(tree, ledger, retired);
+    ids
+}
+
+/// Retires every idle agent, such as when a rewind drops the conversation they were judged
+/// against or an AFK stop ends the session's activity. Returns every id retired.
+pub fn retire_all_idle(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    why: &str,
+) -> Vec<String> {
+    let retired = tree.retire_all_idle(why);
+    let ids = retired.iter().map(|r| r.id.clone()).collect();
+    settle_retired(tree, ledger, retired);
+    ids
 }
 
 /// Records how a child ended: the tree, the ledger and telemetry.
 fn conclude(
-    tree: &AgentTree,
-    ledger: &dyn RootLedger,
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
     id: &str,
     agent_type: &str,
     report: &ChildReport,
@@ -115,11 +208,19 @@ fn conclude(
         agent: id.to_string(),
         status: report.status.as_str().to_string(),
     });
-    // A teammate that finished its turn keeps its tasks: it is idle, not gone. `finish` says
+    let parent = tree.parent_of(id);
+    // An agent that finished its turn keeps its tasks: it is idle, not gone. `finish` says
     // whether it ended so, because a kill can land at any point before it.
-    if !tree.finish(id, report.clone()) {
-        release_tasks(tree, ledger, id);
+    let finish = tree.finish(id, report.clone());
+    if !finish.keeps_tasks {
+        release_tasks_of(tree, ledger, id, parent.as_deref());
     }
+    if finish.final_end
+        && let Some(teams) = tree.teams()
+    {
+        teams.boards.drop_owner(id);
+    }
+    settle_retired(tree, ledger, finish.retired);
     let name = tree.name_of(id);
     let event = match report.status {
         ChildStatus::Killed => "killed",
@@ -127,31 +228,108 @@ fn conclude(
         _ => "complete",
     };
     subagent_event(event, id, &name, agent_type);
+    slot_freed(tree, ledger, Some(id));
 }
 
-/// Kills an agent from outside its run. An idle teammate has no watcher to conclude it, so its
-/// end, its released tasks and the telemetry are recorded here.
-pub fn kill_agent(tree: &AgentTree, ledger: &dyn RootLedger, id: &str) -> bool {
-    let Some(found) = tree.kill_outcome(id) else {
+/// Kills an agent from outside its run. An idle agent has no watcher to conclude it, so its
+/// end, its released tasks and the telemetry are recorded here, and so is the retirement of the
+/// idle agents below any target.
+pub fn kill_agent(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str) -> bool {
+    let parent = tree.parent_of(id);
+    let Some(outcome) = tree.kill_outcome(id) else {
         return false;
     };
-    if found == Killed::Idle {
+    if outcome.killed == Killed::Idle {
         ledger.append_event(AgentEvent::Finished {
             agent: id.to_string(),
             status: ChildStatus::Killed.as_str().to_string(),
         });
-        release_tasks(tree, ledger, id);
+        bounce(tree, id, outcome.inbox, "it was killed");
+        release_tasks_of(tree, ledger, id, parent.as_deref());
+        if let Some(teams) = tree.teams() {
+            teams.boards.drop_owner(id);
+        }
         let type_name = tree.type_of(id).unwrap_or_default();
         subagent_event("killed", id, &tree.name_of(id), &type_name);
     }
+    settle_retired(tree, ledger, outcome.retired);
     true
 }
 
+/// What follows any agent giving up a slot or a task: idle agents with mail they could not be
+/// woken for are woken, and owners of claimable work are reminded. `except` is the agent whose
+/// own end this is.
+pub fn slot_freed(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, except: Option<&str>) {
+    for id in tree.idle_ids() {
+        if Some(id.as_str()) != except && tree.has_notifications(&id) {
+            wake_for_inbox(tree, ledger, &id);
+        }
+    }
+    remind_owners(tree, ledger, except);
+}
+
+/// Tells the owners of boards with claimable tasks that agents could be started for them: at
+/// most as many owners as there are free slots, the earliest spawned first, and only those whose
+/// board or free slots changed since they were last told. `except` is the agent whose own action
+/// this follows. `main` is not told in a headless run.
+pub fn remind_owners(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, except: Option<&str>) {
+    let Some(teams) = tree.teams() else {
+        return;
+    };
+    if tree.shutting_down() {
+        return;
+    }
+    let free = tree.free_slots();
+    let mut slots_left = free;
+    for owner in tree.by_spawn_order(&teams.boards.claimable_owners()) {
+        if slots_left == 0 {
+            break;
+        }
+        if Some(owner.as_str()) == except || (owner == ROOT_AGENT && teams.headless) {
+            continue;
+        }
+        let running = tree.is_running(&owner);
+        if !running && !tree.is_idle(&owner) {
+            continue;
+        }
+        // A running subagent's own slot is one of the used ones, and it is the same slot that
+        // frees when it goes idle: the key does not change between its turn end and its idle end.
+        let key_slots = free + u32::from(running && owner != ROOT_AGENT);
+        let Some(reminder) = teams.boards.pending_reminder(&owner, free, key_slots) else {
+            continue;
+        };
+        teams.boards.reminded(&owner, &reminder);
+        slots_left -= 1;
+        if owner == ROOT_AGENT {
+            tree.post_to_root(ROOT_AGENT, NotificationKind::Reminder, reminder.text);
+        } else if running {
+            tree.push(&owner, &owner, NotificationKind::Reminder, reminder.text);
+        } else if wake_idle(tree, ledger, &owner, reminder.text).is_err() {
+            teams.boards.forget_reminder(&owner);
+        }
+    }
+}
+
+/// Tells `main` at the end of its turn that tasks on its board wait for agents.
+pub fn remind_main(tree: &AgentTree) {
+    let Some(teams) = tree.teams() else {
+        return;
+    };
+    if teams.headless || tree.shutting_down() {
+        return;
+    }
+    let free = tree.free_slots();
+    if let Some(reminder) = teams.boards.pending_reminder(ROOT_AGENT, free, free) {
+        teams.boards.reminded(ROOT_AGENT, &reminder);
+        tree.post_to_root(ROOT_AGENT, NotificationKind::Reminder, reminder.text);
+    }
+}
+
 /// Waits for the child's current run to end, hands its report to the parent, and concludes the
-/// run. The report goes to the parent's inbox, or to the root's when the parent has ended, so an
-/// idle root still gets a turn for it. Then messages the human left for the child unread resume
-/// it. A teammate whose turn ended `Done` is first offered more work (see
-/// [`continue_teammate`]); only when it has none is it concluded, as idle.
+/// run. The report goes to the parent's inbox, or to the root's when the parent has ended for
+/// good, so an idle root still gets a turn for it; an idle parent is woken for it. Then messages
+/// the human left for the child unread resume it. A run that ended `Done` is first offered more
+/// work (see [`continue_agent`]); only when it has none is it concluded, as idle.
 pub fn watch_report(
     tree: Arc<AgentTree>,
     ledger: Arc<dyn RootLedger>,
@@ -162,48 +340,73 @@ pub fn watch_report(
 ) {
     tokio::spawn(async move {
         let report = handle.report().await;
-        let teammate = tree.is_teammate(&id);
-        let finished_turn = teammate && report.status == ChildStatus::Done && !tree.was_killed(&id);
+        let finished_turn = report.status == ChildStatus::Done && !tree.was_killed(&id);
         // Decided before the node is finished and before the report is queued, so a surface that
         // sees nothing running never misses a resume that was about to happen.
-        if finished_turn
-            && continue_teammate(&tree, &ledger, &parent, &id, &type_name, &handle).await
+        if finished_turn && continue_agent(&tree, &ledger, &parent, &id, &type_name, &handle).await
         {
             return;
         }
-        // Queued before the child is marked finished, so a surface that sees no one
-        // running always finds the report already waiting.
-        if report.status != ChildStatus::Killed && !tree.was_killed(&id) {
-            let name = tree.name_of(&id);
-            let outcome = if finished_turn {
-                "finished its turn and is idle (send it a message to wake it; idle teammates are retired once every task on the board is completed)".to_string()
-            } else {
-                format!("finished: {}", report.status.as_str())
-            };
-            let note = format!(
-                "Agent {name} ({id}, {type_name}) {outcome}\n{}",
-                report_text(&report)
-            );
-            if tree.is_running(&parent) {
-                tree.notify_report(&parent, &id, note);
-            } else {
-                tree.post_to_root(&id, NotificationKind::Report, note);
-            }
-        }
-        conclude(&tree, ledger.as_ref(), &id, &type_name, &report);
+        finish_run(
+            &tree,
+            &ledger,
+            &parent,
+            &id,
+            &type_name,
+            &report,
+            finished_turn,
+        );
         resume_missed(&tree, &ledger, &id, &handle);
-        if teammate {
-            wake_for_inbox(&tree, &ledger, &id);
-            retire_finished_team(&tree);
-        }
+        wake_for_inbox(&tree, &ledger, &id);
+        wake_for_inbox(&tree, &ledger, &parent);
     });
 }
 
-/// Gives a teammate whose turn just ended another run when there is a reason to: a message that
-/// arrived while it finished, a `teammate_idle` hook that blocks, or a task on the board it could
-/// take. Returns whether it did. The node never stops running in between, so nothing waiting for
-/// the end of the run can slip past.
-async fn continue_teammate(
+/// Queues a run's report for its parent and concludes the run.
+fn finish_run(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    parent: &str,
+    id: &str,
+    type_name: &str,
+    report: &ChildReport,
+    finished_turn: bool,
+) {
+    // Queued before the child is marked finished, so a surface that sees no one
+    // running always finds the report already waiting.
+    if report.status != ChildStatus::Killed && !tree.was_killed(id) {
+        let name = tree.name_of(id);
+        let outcome = if finished_turn {
+            "finished its turn and is idle; send_message wakes it with its conversation intact."
+                .to_string()
+        } else {
+            format!("finished: {}", report.status.as_str())
+        };
+        let note = format!(
+            "Agent {name} ({id}, {type_name}) {outcome}\n{}",
+            report_text(report)
+        );
+        if tree.is_running(parent) || tree.is_idle(parent) {
+            tree.notify_report(parent, id, note);
+        } else {
+            tree.post_to_root(id, NotificationKind::Report, note);
+        }
+    }
+    conclude(tree, ledger, id, type_name, report);
+}
+
+/// What gives an agent whose turn just ended another run.
+enum Reason {
+    Mail,
+    Hook(String),
+    Reminder(Reminder),
+}
+
+/// Gives an agent whose turn just ended `Done` another run when there is a reason to: a message
+/// that arrived while it finished, a `teammate_idle` hook that blocks while it holds a task on its
+/// parent's board, or tasks on its own board waiting for agents. Returns whether it did. The node
+/// never stops running in between, so nothing waiting for the end of the run can slip past.
+async fn continue_agent(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
     parent: &str,
@@ -211,61 +414,65 @@ async fn continue_teammate(
     type_name: &str,
     handle: &Arc<dyn ChildHandle>,
 ) -> bool {
-    let Some(teams) = tree.teams() else {
-        return false;
-    };
     let name = tree.name_of(id);
+    let teams = tree.teams();
     // A message that arrived while it finished is read at once; the other two reasons to go on
-    // are capped, because nothing else bounds them.
-    let queued = tree.has_notifications(id);
-    let text = if queued {
-        None
-    } else {
-        let reason = teams.gate.teammate_idle(id, &name).await;
-        let text = match reason {
-            Some(reason) => format!(
-                "[Harness note, not the user's words: a teammate_idle hook asks you to keep working.]\n{reason}"
-            ),
-            None => {
-                let Some(task) = teams.board.claimable() else {
-                    return false;
-                };
-                // A type without the board tools could never act on the note.
-                if !tree.tools_of(id).iter().any(|tool| tool == "board_update") {
-                    return false;
-                }
-                format!(
-                    "[Harness note, not the user's words: task {} is available: use `board_show` and `board_update` to claim it.]",
-                    task.id
-                )
-            }
+    // are bounded, because nothing else bounds them.
+    let reason = if tree.has_notifications(id) {
+        Reason::Mail
+    } else if let Some(teams) = &teams {
+        let hook = if teams.boards.owns_in_progress_on(parent, id) {
+            teams.gate.teammate_idle(id, &name).await
+        } else {
+            None
         };
-        Some(text)
+        if let Some(reason) = hook {
+            Reason::Hook(reason)
+        } else {
+            let free = tree.free_slots();
+            // Its own slot is still counted as used.
+            match teams.boards.pending_reminder(id, free, free + 1) {
+                Some(reminder) => Reason::Reminder(reminder),
+                None => return false,
+            }
+        }
+    } else {
+        return false;
     };
     if let Some(why) = tree.continue_blocker(id) {
         if !tree.shutting_down() {
-            teams
-                .gate
-                .warn(&format!("teammate {name} stays idle: {why}"));
+            tree.warn(&format!("agent {name} stays idle: {why}"));
         }
         return false;
     }
-    // Counted only once the resume can happen, so a full `max_parallel` does not use up the streak.
-    if text.is_some() && !teams.allow_idle_resume(id) {
-        teams.gate.warn(&format!(
-            "teammate {name} was resumed {} times in a row with no change on the board; leaving it idle",
-            crate::tasks::MAX_IDLE_RESUMES
-        ));
-        return false;
-    }
-    let text = match text {
-        Some(text) => text,
-        None => {
+    let text = match reason {
+        Reason::Mail => {
             let notes = tree.take_notifications(id);
             if notes.is_empty() {
                 return false;
             }
             render_notes(&notes)
+        }
+        Reason::Hook(reason) => {
+            let teams = teams.expect("a hook reason comes from teams");
+            // Counted only once the resume can happen, so a full `max_parallel` does not use up the streak.
+            if !teams.allow_idle_resume(id, parent) {
+                tree.warn(&format!(
+                    "agent {name} was resumed {} times in a row with no change on the board that holds its task; leaving it idle",
+                    crate::tasks::MAX_IDLE_RESUMES
+                ));
+                return false;
+            }
+            format!(
+                "[Harness note, not the user's words: a teammate_idle hook asks you to keep working.]\n{reason}"
+            )
+        }
+        Reason::Reminder(reminder) => {
+            teams
+                .expect("a reminder comes from teams")
+                .boards
+                .reminded(id, &reminder);
+            reminder.text
         }
     };
     subagent_event("resume", id, &name, type_name);
@@ -289,27 +496,8 @@ fn render_notes(notes: &[Notification]) -> String {
         .join("\n\n")
 }
 
-/// Ends the idle teammates once the team's work is done: the board holds tasks, all completed,
-/// and no teammate is still running. They leave the agent list as `done`; a later task needs a
-/// new teammate.
-fn retire_finished_team(tree: &AgentTree) {
-    let Some(teams) = tree.teams() else {
-        return;
-    };
-    let tasks = teams.board.list();
-    if tasks.is_empty() || tasks.iter().any(|t| t.status != TaskStatus::Completed) {
-        return;
-    }
-    if tree.any_teammate_running() {
-        return;
-    }
-    for id in tree.idle_ids() {
-        tree.retire_idle(&id);
-    }
-}
-
-/// Wakes an idle teammate that was sent messages in the moment between its last check and its
-/// end, which would otherwise wait for the next message.
+/// Wakes an idle agent that was sent messages or a report in the moment between its last check
+/// and its end, or while no slot was free, which would otherwise wait for the next message.
 fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str) {
     if !tree.is_idle(id) || !tree.has_notifications(id) {
         return;
@@ -317,24 +505,20 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
     let notes = tree.take_notifications(id);
     match wake_idle(tree, ledger, id, render_notes(&notes)) {
         Ok(()) => {}
-        Err(WakeError::AlreadyRunning) => tree.requeue(id, notes),
+        // Someone woke it first, or no slot is free yet: the notes wait for its next end or the
+        // next slot to free.
+        Err(WakeError::AlreadyRunning | WakeError::Transient(_)) => tree.requeue(id, notes),
         Err(WakeError::Refused(why)) => {
             // The senders were told "queued"; they learn here that nobody read it.
-            let name = tree.name_of(id);
-            for note in notes.iter().filter(|n| n.kind == NotificationKind::Message) {
-                let text = format!(
-                    "Your message to {name} was not read: it ended before it could ({why}).\nThe message was: {}",
-                    note.text
-                );
-                if tree.is_running(&note.from) {
-                    tree.push(&note.from, id, NotificationKind::Message, text);
-                } else {
-                    tree.post_to_root(id, NotificationKind::Message, text);
-                }
-            }
-            if let Some(teams) = tree.teams() {
-                teams.gate.warn(&format!(
-                    "teammate {} could not read a message sent as it went idle: {why}",
+            bounce(
+                tree,
+                id,
+                notes,
+                &format!("it ended before it could ({why})"),
+            );
+            if !tree.shutting_down() {
+                tree.warn(&format!(
+                    "agent {} could not read a message sent as it went idle: {why}",
                     tree.name_of(id)
                 ));
             }
@@ -342,16 +526,20 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
     }
 }
 
-/// Why an idle teammate was not woken.
+/// Why an idle agent was not woken.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WakeError {
     /// Someone else woke it first; its run reads what was meant for it.
     AlreadyRunning,
+    /// A limit stops it for now (concurrent agents, the session's budget); it stays idle and
+    /// keeps its tasks.
+    Transient(String),
+    /// Its end is final; its tasks were released.
     Refused(String),
 }
 
-/// Wakes an idle teammate on `text`, which is not the human's words. A refused wake releases the
-/// teammate's tasks: nothing is going to finish them.
+/// Wakes an idle agent on `text`, which is not the human's words. A final refusal releases the
+/// agent's tasks: nothing is going to finish them.
 pub fn wake_idle(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
@@ -359,18 +547,18 @@ pub fn wake_idle(
     text: String,
 ) -> Result<(), WakeError> {
     let refuse = |why: String| {
-        release_tasks(tree, ledger.as_ref(), id);
+        release_tasks(tree, ledger, id);
         Err(WakeError::Refused(why))
     };
     if let Some(why) = tree.wake_blocker(id) {
         return refuse(why);
     }
-    let Some(handle) = tree.handle_of(id) else {
-        return refuse("it has no conversation to resume".to_string());
-    };
-    match resume_inner(tree, ledger, id, &handle, text, false) {
+    match resume_inner(tree, ledger, id, text, false) {
         Ok(()) => Ok(()),
         Err(Refusal::AlreadyRunning) => Err(WakeError::AlreadyRunning),
+        Err(transient @ (Refusal::Parallel(_) | Refusal::SessionBudget(_))) => {
+            Err(WakeError::Transient(describe(&transient)))
+        }
         Err(other) => refuse(describe(&other)),
     }
 }
@@ -381,32 +569,72 @@ pub fn resume_child(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
     id: &str,
-    handle: &Arc<dyn ChildHandle>,
     text: String,
 ) -> Result<(), Refusal> {
-    resume_inner(tree, ledger, id, handle, text, true)
+    resume_inner(tree, ledger, id, text, true)
 }
 
 fn resume_inner(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
     id: &str,
-    handle: &Arc<dyn ChildHandle>,
     text: String,
     from_human: bool,
 ) -> Result<(), Refusal> {
+    // A node a resumed session rebuilt has no conversation handle yet: the runner builds one,
+    // after the node is claimed.
+    let revival = match tree.handle_of(id) {
+        Some(handle) => Err(handle),
+        None => match (tree.revival_request(id, ledger.clone()), tree.runner()) {
+            (Some(request), Some(runner)) => Ok((request, runner)),
+            _ => return Err(Refusal::NoConversation),
+        },
+    };
     tree.resume(id)?;
     let type_name = tree.type_of(id).unwrap_or_default();
     ledger.append_event(AgentEvent::Resumed {
         agent: id.to_string(),
     });
     subagent_event("resume", id, &tree.name_of(id), &type_name);
+    let parent = tree.parent_of(id).unwrap_or_else(|| ROOT_AGENT.to_string());
+    match revival {
+        Err(handle) => start_run(
+            tree, ledger, parent, id, type_name, &handle, text, from_human,
+        ),
+        Ok((request, runner)) => {
+            let (tree, ledger, id) = (tree.clone(), ledger.clone(), id.to_string());
+            tokio::spawn(async move {
+                match runner.revive(request).await {
+                    Ok(handle) => {
+                        tree.attach(&id, handle.clone());
+                        start_run(
+                            &tree, &ledger, parent, &id, type_name, &handle, text, from_human,
+                        );
+                    }
+                    Err(why) => revive_failed(&tree, &ledger, &parent, &id, &type_name, &why),
+                }
+            });
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_run(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    parent: String,
+    id: &str,
+    type_name: String,
+    handle: &Arc<dyn ChildHandle>,
+    text: String,
+    from_human: bool,
+) {
     if from_human {
         handle.resume(text);
     } else {
         handle.resume_with_data(text);
     }
-    let parent = tree.parent_of(id).unwrap_or_else(|| ROOT_AGENT.to_string());
     watch_report(
         tree.clone(),
         ledger.clone(),
@@ -415,7 +643,33 @@ fn resume_inner(
         type_name,
         handle.clone(),
     );
-    Ok(())
+}
+
+/// Ends the run of an agent whose conversation could not be rebuilt as failed, reporting it as
+/// any failed run is reported. Mail queued while it started is returned to its senders.
+fn revive_failed(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    parent: &str,
+    id: &str,
+    type_name: &str,
+    why: &str,
+) {
+    let dropped = tree.take_notifications(id);
+    bounce(
+        tree,
+        id,
+        dropped,
+        &format!("it could not be revived from its saved conversation ({why})"),
+    );
+    let report = ChildReport {
+        status: ChildStatus::Failed,
+        text: String::new(),
+        reason: Some(format!(
+            "it could not be revived from its saved conversation: {why}; messages sent while it started were dropped"
+        )),
+    };
+    finish_run(tree, ledger, parent, id, type_name, &report, false);
 }
 
 /// Resumes a child that ended with the human's messages still unread, as Claude Code does. This
@@ -435,7 +689,7 @@ fn resume_missed(
         handle.report_undelivered(&why, &text);
         return;
     }
-    if let Err(refusal) = resume_child(tree, ledger, id, handle, text.clone()) {
+    if let Err(refusal) = resume_child(tree, ledger, id, text.clone()) {
         handle.report_undelivered(&describe(&refusal), &text);
     }
 }
@@ -450,6 +704,8 @@ pub fn describe(refusal: &Refusal) -> String {
         Refusal::SessionBudget(why) => format!("the session's agent budget is spent: {why}"),
         Refusal::AlreadyRunning => "it is already running".to_string(),
         Refusal::Killed => "it was killed".to_string(),
+        Refusal::Retired(why) => format!("it was retired ({why})"),
+        Refusal::NoConversation => "it has no conversation to resume".to_string(),
         Refusal::Name(why) => why.clone(),
     }
 }
@@ -489,7 +745,9 @@ impl Tool for AgentTool {
              `name` at once. When you start several, give each a short `name` that says its role. \
              Subagents run concurrently with you and with each other, and the report \
              arrives as a notification with a later tool result or turn; call `job_output` with \
-             the id or the name to wait for one. A subagent that answers while its own subagents run waits \
+             the id or the name to wait for one. When its turn ends it goes idle and keeps its \
+             conversation: `send_message` wakes it for follow-up on the same work. Start a new \
+             agent for new work. A subagent that answers while its own subagents run waits \
              for them before it ends. A subagent has a subset of your tools and never more \
              authority than you, and every call it makes passes the same permission checks. \
              Agent types:\n{}",
@@ -498,7 +756,7 @@ impl Tool for AgentTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        let mut schema = json!({
+        json!({
             "type": "object",
             "properties": {
                 "agent_type": {
@@ -518,19 +776,7 @@ impl Tool for AgentTool {
             },
             "required": ["agent_type", "prompt"],
             "additionalProperties": false,
-        });
-        if self.tree.teams().is_some()
-            && let Some(properties) = schema["properties"].as_object_mut()
-        {
-            properties.insert(
-                "teammate".to_string(),
-                json!({
-                    "type": "boolean",
-                    "description": "Start a teammate: when its turn ends it goes idle instead of done and keeps its name, so `send_message` wakes it for more work, and it can claim tasks from the board with `board_show` and `board_update`, if its type has them: `worker` has both, `explore` can only read the board. Only the main conversation can start one.",
-                }),
-            );
-        }
-        schema
+        })
     }
 
     async fn call(
@@ -555,19 +801,6 @@ impl Tool for AgentTool {
             if args.model.is_some() {
                 return Err(ToolExecutionError::invalid_args(
                     "a fork runs on the session model; leave `model` out",
-                ));
-            }
-        }
-        let teammate = args.teammate.unwrap_or(false);
-        if teammate {
-            if self.tree.teams().is_none() {
-                return Err(ToolExecutionError::refused(
-                    "teammates are off: `[agents] teams = false` is set; remove it from the user config to turn them on",
-                ));
-            }
-            if caller != ROOT_AGENT {
-                return Err(ToolExecutionError::refused(
-                    "only the main conversation can start a teammate; start a plain subagent instead",
                 ));
             }
         }
@@ -613,21 +846,20 @@ impl Tool for AgentTool {
                 )),
                 Refusal::Name(why) => ToolExecutionError::invalid_args(why),
                 // Only a resume can find a node already running; a reservation is always new.
-                Refusal::AlreadyRunning | Refusal::Killed => {
+                Refusal::AlreadyRunning
+                | Refusal::Killed
+                | Refusal::Retired(_)
+                | Refusal::NoConversation => {
                     ToolExecutionError::other("the subagent slot is already taken")
                 }
             })?;
 
-        if teammate {
-            self.tree.set_teammate(&id);
-        }
         let name = self.tree.name_of(&id);
         let mut reservation = ReleaseOnDrop {
             tree: self.tree.clone(),
             id: id.clone(),
             armed: true,
         };
-        let board_tools_held = tools.iter().any(|tool| tool == "board_update");
         let request = SpawnRequest {
             id: id.clone(),
             parent: caller.clone(),
@@ -656,6 +888,7 @@ impl Tool for AgentTool {
             name: name.clone(),
             parent: caller.clone(),
             agent_type: agent_type.name.clone(),
+            model: self.tree.model_of(&id),
         });
         subagent_event("spawn", &id, &name, &agent_type.name);
 
@@ -667,14 +900,7 @@ impl Tool for AgentTool {
             agent_type.name.clone(),
             handle,
         );
-        let mut out = json!({ "agent_id": id, "name": name });
-        if teammate && !board_tools_held {
-            out["note"] = json!(format!(
-                "{} has no `board_update`, so it cannot claim or complete tasks: put its work in the prompt, or start a `worker`.",
-                agent_type.name
-            ));
-        }
-        Ok(ToolOutput::json(out))
+        Ok(ToolOutput::json(json!({ "agent_id": id, "name": name })))
     }
 }
 
@@ -692,7 +918,7 @@ pub struct SendMessageTool {
 }
 
 impl SendMessageTool {
-    /// Wakes the idle teammate `to` with the message as its next prompt, marked as another agent's
+    /// Wakes the idle agent `to` with the message as its next prompt, marked as another agent's
     /// untrusted words like a queued one. The sender still just sees it queued.
     fn wake(
         &self,
@@ -714,9 +940,10 @@ impl SendMessageTool {
                     .deliver(from, to, message)
                     .map_err(|_| ToolExecutionError::other("agent not running"))?;
             }
-            Err(WakeError::Refused(why)) => {
+            Err(WakeError::Transient(why) | WakeError::Refused(why)) => {
                 return Err(ToolExecutionError::other(format!(
-                    "the teammate cannot be woken: {why}"
+                    "{} cannot be woken: {why}",
+                    self.tree.name_of(to)
                 )));
             }
         }
@@ -735,11 +962,12 @@ impl Tool for SendMessageTool {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "Send a message to another running agent: your parent, one of your subagents, a sibling \
+        "Send a message to another agent: your parent, one of your subagents, a sibling \
          (another subagent of your parent) or `main`, the main conversation. The message is \
          queued and the recipient reads it at its next turn, marked with your agent name and id. \
-         A teammate that is idle is woken by it. Returns \
-         `{\"status\":\"queued\"}`, or an error when the agent is not running."
+         An agent whose turn has ended is woken by it with its conversation intact, unless it was \
+         killed, ran out of budget or was retired. Returns \
+         `{\"status\":\"queued\"}`, or an error when the agent cannot be reached or woken."
             .to_string()
     }
 
@@ -772,7 +1000,13 @@ impl Tool for SendMessageTool {
                 Ok(ToolOutput::json(json!({ "status": "queued" })))
             }
             Err(DeliverError::Idle(to)) => self.wake(&from, &to, args.message),
-            Err(DeliverError::NotRunning) => Err(ToolExecutionError::other("agent not running")),
+            Err(DeliverError::NotRunning(Some(why))) => Err(ToolExecutionError::other(format!(
+                "{} cannot be woken: {why}; start a new agent with the context it needs",
+                args.to
+            ))),
+            Err(DeliverError::NotRunning(None)) => {
+                Err(ToolExecutionError::other("agent not running"))
+            }
             Err(DeliverError::NotReachable) => Err(ToolExecutionError::invalid_args(format!(
                 "`{}` is not your parent, one of your subagents, a sibling or `main`",
                 args.to

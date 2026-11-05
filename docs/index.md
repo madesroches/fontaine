@@ -20,8 +20,8 @@ describe what the current build does; each page covers one topic.
 - [The guardian](guardian.md): what `auto` mode asks a separate model, what it sees, how every
   failure becomes a denial, how to choose the guardian model, and the container-mode profile.
 - [Subagents](agents.md): the `agent` and `send_message` tools, asynchronous subagents, agent types
-  and agent files, agent teams (named teammates and the shared task board with `board_show` and
-  `board_update`), the permission-mode rules, budgets, and the agents panel.
+  and agent files, the agent lifecycle (idle, wake, retire, resume), task boards (any agent can own
+  one, with `board_show` and `board_update`), the permission-mode rules, budgets, and the agents panel.
 - [User hooks](hooks.md): the `pre_tool_use`, `post_tool_use`, `permission_denied`, `task_completed`
   and `teammate_idle` hooks, their JSON input and output, and what a hook can and cannot decide.
 - [MCP servers](mcp.md): declaring stdio and streamable-HTTP servers, workspace trust and

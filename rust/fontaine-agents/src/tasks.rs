@@ -1,8 +1,9 @@
-//! The team's shared task board: tasks the lead creates and teammates claim. It is an in-memory
-//! list behind one mutex, saved through [`TaskStore`] on every change. The board is state, not
-//! authority: every operation on it is an ordinary gated tool call.
+//! The task boards: tasks an agent creates for its children to claim. Each board belongs to the
+//! agent that owns it and is an in-memory list behind one mutex; `main`'s is saved through
+//! [`TaskStore`] on every change. A board is state, not authority: every operation on it is an
+//! ordinary gated tool call.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,8 +18,8 @@ pub const MAX_TITLE_CHARS: usize = 200;
 pub const MAX_DESCRIPTION_CHARS: usize = 5_000;
 pub const MAX_BLOCKED_BY: usize = 20;
 
-/// How many times in a row a teammate is resumed by the idle hand-off or a `teammate_idle` hook
-/// without the board changing in between. Both loops sustain themselves, so they need a bound.
+/// How many times in a row an agent is resumed by a `teammate_idle` hook without the board that
+/// holds its task changing in between. The loop sustains itself, so it needs a bound.
 pub const MAX_IDLE_RESUMES: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,7 +87,6 @@ impl fmt::Display for BoardError {
 impl std::error::Error for BoardError {}
 
 struct State {
-    next: u64,
     tasks: Vec<Task>,
 }
 
@@ -109,37 +109,46 @@ impl State {
     fn claimable(&self, task: &Task) -> bool {
         task.status == TaskStatus::Pending && task.owner.is_none() && self.unblocked(task)
     }
-
-    fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            next: self.next,
-            tasks: self.tasks.clone(),
-        }
-    }
 }
 
 pub struct TaskBoard {
+    /// The agent whose board this is, who may change any task on it.
+    owner: String,
     state: Mutex<State>,
+    /// Task ids come from one counter for the whole session, so a task is named the same on
+    /// every board.
+    ids: Arc<AtomicU64>,
     store: Option<Arc<dyn TaskStore>>,
-    /// Counts every create, claim, complete and release, so the idle loops can tell whether the
-    /// board moved between two resumes.
+    /// The saved board, saved again when this one mints an id, so the stored counter never falls
+    /// behind an id a subagent's board used.
+    saved_root: Option<Arc<TaskBoard>>,
+    /// Counts every create, claim, complete and release, so the idle loops and the owner
+    /// reminder can tell whether the board moved.
     mutations: AtomicU64,
 }
 
 impl TaskBoard {
+    /// The board of `main`.
     pub fn new(store: Option<Arc<dyn TaskStore>>) -> TaskBoard {
-        TaskBoard::restore(store, Snapshot::default())
+        TaskBoard::restore(store, Snapshot::default(), &HashSet::new())
     }
 
-    /// A board holding what an earlier process of the session saved. Agent ids do not survive a
-    /// resume, so a task somebody was working on goes back to `Pending` with no owner.
-    pub fn restore(store: Option<Arc<dyn TaskStore>>, snapshot: Snapshot) -> TaskBoard {
+    /// A board holding what an earlier process of the session saved. A task somebody was working
+    /// on stays in progress when its owner is in `revivable` (the agents the resumed session
+    /// brought back); otherwise nobody is working on it and it goes back to `Pending`.
+    pub fn restore(
+        store: Option<Arc<dyn TaskStore>>,
+        snapshot: Snapshot,
+        revivable: &HashSet<String>,
+    ) -> TaskBoard {
         let mut tasks = snapshot.tasks;
         for task in &mut tasks {
-            if task.status == TaskStatus::InProgress {
+            let kept = task.status == TaskStatus::InProgress
+                && task.owner.as_ref().is_some_and(|o| revivable.contains(o));
+            if task.status == TaskStatus::InProgress && !kept {
                 task.status = TaskStatus::Pending;
             }
-            if task.status != TaskStatus::Completed {
+            if task.status != TaskStatus::Completed && !kept {
                 task.owner = None;
             }
         }
@@ -150,23 +159,55 @@ impl TaskBoard {
             .max()
             .map_or(1, |max| max + 1);
         TaskBoard {
-            state: Mutex::new(State {
-                next: snapshot.next.max(floor).max(1),
-                tasks,
-            }),
+            owner: ROOT_AGENT.to_string(),
+            state: Mutex::new(State { tasks }),
+            ids: Arc::new(AtomicU64::new(snapshot.next.max(floor).max(1))),
             store,
+            saved_root: None,
             mutations: AtomicU64::new(0),
         }
+    }
+
+    fn child(owner: &str, root: &Arc<TaskBoard>) -> TaskBoard {
+        TaskBoard {
+            owner: owner.to_string(),
+            state: Mutex::new(State { tasks: Vec::new() }),
+            ids: root.ids.clone(),
+            store: None,
+            saved_root: Some(root.clone()),
+            mutations: AtomicU64::new(0),
+        }
+    }
+
+    pub fn owner(&self) -> &str {
+        &self.owner
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, State> {
         lock(&self.state, "task board")
     }
 
+    fn snapshot(&self, state: &State) -> Snapshot {
+        Snapshot {
+            next: self.ids.load(Ordering::SeqCst),
+            tasks: state.tasks.clone(),
+        }
+    }
+
     fn changed(&self, state: &State) {
         self.mutations.fetch_add(1, Ordering::SeqCst);
         if let Some(store) = &self.store {
-            store.save(&state.snapshot());
+            store.save(&self.snapshot(state));
+        }
+    }
+
+    /// Saves `main`'s board again, for the counter a subagent's board just moved.
+    fn save_root(&self) {
+        if let Some(root) = &self.saved_root
+            && let Some(store) = &root.store
+        {
+            let state = root.state();
+            store.save(&root.snapshot(&state));
         }
     }
 
@@ -183,11 +224,17 @@ impl TaskBoard {
         state.index(id).map(|at| state.tasks[at].clone())
     }
 
-    /// The first task a teammate could claim now: pending, unowned and with every dependency
+    /// The first task an agent could claim now: pending, unowned and with every dependency
     /// completed.
     pub fn claimable(&self) -> Option<Task> {
         let state = self.state();
         state.tasks.iter().find(|t| state.claimable(t)).cloned()
+    }
+
+    /// How many tasks an agent could claim now.
+    pub fn claimable_count(&self) -> usize {
+        let state = self.state();
+        state.tasks.iter().filter(|t| state.claimable(t)).count()
     }
 
     pub fn create(
@@ -234,7 +281,7 @@ impl TaskBoard {
             }
         }
         let task = Task {
-            id: format!("t{}", state.next),
+            id: format!("t{}", self.ids.fetch_add(1, Ordering::SeqCst)),
             title: title.to_string(),
             description: description.to_string(),
             status: TaskStatus::Pending,
@@ -242,9 +289,10 @@ impl TaskBoard {
             blocked_by: deps,
             created_by: creator.to_string(),
         };
-        state.next += 1;
         state.tasks.push(task.clone());
         self.changed(&state);
+        drop(state);
+        self.save_root();
         Ok(task)
     }
 
@@ -292,8 +340,8 @@ impl TaskBoard {
         Ok(task)
     }
 
-    /// What `agent` may do to an in-progress task: its owner and the lead.
-    fn owned_by(task: &Task, agent: &str, verb: &str) -> Result<(), BoardError> {
+    /// What `agent` may do to an in-progress task: its claimer and the board's owner.
+    fn owned_by(&self, task: &Task, agent: &str, verb: &str) -> Result<(), BoardError> {
         if task.status != TaskStatus::InProgress {
             return Err(BoardError::Refused(format!(
                 "task {} is {}, so it cannot be {verb}",
@@ -301,9 +349,9 @@ impl TaskBoard {
                 task.status.as_str()
             )));
         }
-        if agent != ROOT_AGENT && task.owner.as_deref() != Some(agent) {
+        if agent != self.owner && task.owner.as_deref() != Some(agent) {
             return Err(BoardError::Refused(format!(
-                "only the owner or the lead can change task {} while it is in progress",
+                "only the claimer or the board's owner can change task {} while it is in progress",
                 task.id
             )));
         }
@@ -315,14 +363,14 @@ impl TaskBoard {
     pub fn check_complete(&self, agent: &str, id: &str) -> Result<Task, BoardError> {
         let state = self.state();
         let task = &state.tasks[state.index(id)?];
-        Self::owned_by(task, agent, "completed")?;
+        self.owned_by(task, agent, "completed")?;
         Ok(task.clone())
     }
 
     pub fn complete(&self, agent: &str, id: &str) -> Result<Task, BoardError> {
         let mut state = self.state();
         let at = state.index(id)?;
-        Self::owned_by(&state.tasks[at], agent, "completed")?;
+        self.owned_by(&state.tasks[at], agent, "completed")?;
         state.tasks[at].status = TaskStatus::Completed;
         let task = state.tasks[at].clone();
         self.changed(&state);
@@ -333,7 +381,7 @@ impl TaskBoard {
     pub fn release(&self, agent: &str, id: &str) -> Result<Task, BoardError> {
         let mut state = self.state();
         let at = state.index(id)?;
-        Self::owned_by(&state.tasks[at], agent, "released")?;
+        self.owned_by(&state.tasks[at], agent, "released")?;
         let task = &mut state.tasks[at];
         task.status = TaskStatus::Pending;
         task.owner = None;
@@ -359,12 +407,219 @@ impl TaskBoard {
         }
         released
     }
+
+    /// Whether `agent` has claimed a task here that is still in progress.
+    pub fn has_in_progress_of(&self, agent: &str) -> bool {
+        self.state()
+            .tasks
+            .iter()
+            .any(|t| t.status == TaskStatus::InProgress && t.owner.as_deref() == Some(agent))
+    }
+}
+
+/// The reminder that tasks wait for agents, and the key it was computed at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reminder {
+    pub text: String,
+    key: (u64, u32),
+}
+
+/// Every board of a session: `main`'s, which is saved, and one per other agent that created a
+/// task and holds the `agent` tool. A task id is unique across all of them.
+pub struct Boards {
+    root: Arc<TaskBoard>,
+    others: Mutex<Vec<(String, Arc<TaskBoard>)>>,
+    /// Per owner: the board's mutation count and the free slots at the last reminder.
+    reminded: Mutex<HashMap<String, (u64, u32)>>,
+}
+
+impl Boards {
+    pub fn new(store: Option<Arc<dyn TaskStore>>) -> Boards {
+        Boards::with_root(Arc::new(TaskBoard::new(store)))
+    }
+
+    /// Boards around `root`, `main`'s own, whose counter they share.
+    pub fn with_root(root: Arc<TaskBoard>) -> Boards {
+        Boards {
+            root,
+            others: Mutex::new(Vec::new()),
+            reminded: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn restore(
+        store: Option<Arc<dyn TaskStore>>,
+        snapshot: Snapshot,
+        revivable: &HashSet<String>,
+    ) -> Boards {
+        Boards::with_root(Arc::new(TaskBoard::restore(store, snapshot, revivable)))
+    }
+
+    /// `main`'s board.
+    pub fn root(&self) -> &Arc<TaskBoard> {
+        &self.root
+    }
+
+    fn others(&self) -> std::sync::MutexGuard<'_, Vec<(String, Arc<TaskBoard>)>> {
+        lock(&self.others, "task boards")
+    }
+
+    /// The board `agent` owns, when it has one.
+    pub fn get(&self, agent: &str) -> Option<Arc<TaskBoard>> {
+        if agent == ROOT_AGENT {
+            return Some(self.root.clone());
+        }
+        self.others()
+            .iter()
+            .find(|(owner, _)| owner == agent)
+            .map(|(_, board)| board.clone())
+    }
+
+    /// The board `agent` owns, created empty the first time.
+    pub fn own(&self, agent: &str) -> Arc<TaskBoard> {
+        if agent == ROOT_AGENT {
+            return self.root.clone();
+        }
+        let mut others = self.others();
+        if let Some((_, board)) = others.iter().find(|(owner, _)| owner == agent) {
+            return board.clone();
+        }
+        let board = Arc::new(TaskBoard::child(agent, &self.root));
+        others.push((agent.to_string(), board.clone()));
+        board
+    }
+
+    /// The board holding `task`, of those `agent` can reach: its own, then its parent's.
+    pub fn find(&self, agent: &str, parent: Option<&str>, task: &str) -> Option<Arc<TaskBoard>> {
+        std::iter::once(agent)
+            .chain(parent)
+            .filter_map(|owner| self.get(owner))
+            .find(|board| board.get(task).is_ok())
+    }
+
+    /// Ends `agent`'s board with its owner. `main`'s lives as long as the session.
+    pub fn drop_owner(&self, agent: &str) {
+        if agent == ROOT_AGENT {
+            return;
+        }
+        self.others().retain(|(owner, _)| owner != agent);
+        lock(&self.reminded, "owner reminders").remove(agent);
+    }
+
+    /// Returns every in-progress task `agent` owns, on its own board and on its parent's, to
+    /// `Pending`. The ids released.
+    pub fn release_owned_by(&self, agent: &str, parent: Option<&str>) -> Vec<String> {
+        std::iter::once(agent)
+            .chain(parent)
+            .filter_map(|owner| self.get(owner))
+            .flat_map(|board| board.release_owned_by(agent))
+            .collect()
+    }
+
+    /// Every board, `main`'s first and the rest in the order they were created, with its tasks.
+    pub fn all(&self) -> Vec<(String, Vec<Task>)> {
+        let mut all = vec![(ROOT_AGENT.to_string(), self.root.list())];
+        all.extend(
+            self.others()
+                .iter()
+                .map(|(owner, board)| (owner.clone(), board.list())),
+        );
+        all
+    }
+
+    /// Whether `agent` holds a task in progress on any board.
+    pub fn owns_in_progress(&self, agent: &str) -> bool {
+        self.all()
+            .iter()
+            .any(|(_, tasks)| in_progress_of(tasks, agent))
+    }
+
+    /// Whether `agent` holds a task in progress on the board `board_owner` owns.
+    pub fn owns_in_progress_on(&self, board_owner: &str, agent: &str) -> bool {
+        self.get(board_owner)
+            .is_some_and(|board| board.has_in_progress_of(agent))
+    }
+
+    /// The mutation count of the board `owner` owns, zero when it has none.
+    pub fn mutations_of(&self, owner: &str) -> u64 {
+        self.get(owner).map_or(0, |board| board.mutations())
+    }
+
+    /// The owners whose boards hold a task an agent could claim now, `main` first.
+    pub fn claimable_owners(&self) -> Vec<String> {
+        let mut owners = Vec::new();
+        if self.root.claimable_count() > 0 {
+            owners.push(ROOT_AGENT.to_string());
+        }
+        owners.extend(
+            self.others()
+                .iter()
+                .filter(|(_, board)| board.claimable_count() > 0)
+                .map(|(owner, _)| owner.clone()),
+        );
+        owners
+    }
+
+    /// The reminder `owner` is due, if any: its board holds claimable tasks, `free_slots` agents
+    /// could start for them, and nothing has changed since it was last reminded. `key_slots` is
+    /// the free-slot count that change is measured by, which differs from `free_slots` for an
+    /// owner whose own running slot counts as free. Recorded only by
+    /// [`reminded`](Self::reminded).
+    pub fn pending_reminder(
+        &self,
+        owner: &str,
+        free_slots: u32,
+        key_slots: u32,
+    ) -> Option<Reminder> {
+        let board = self.get(owner)?;
+        let claimable = board.claimable_count();
+        if claimable == 0 || free_slots == 0 {
+            return None;
+        }
+        let key = (board.mutations(), key_slots);
+        if lock(&self.reminded, "owner reminders").get(owner) == Some(&key) {
+            return None;
+        }
+        let tasks = if claimable == 1 {
+            "1 task on your board is".to_string()
+        } else {
+            format!("{claimable} tasks on your board are")
+        };
+        let slots = if free_slots == 1 {
+            "1 agent slot is".to_string()
+        } else {
+            format!("{free_slots} agent slots are")
+        };
+        Some(Reminder {
+            text: format!(
+                "[Harness note, not the user's words: {tasks} claimable and {slots} free; start agents for them with agent, or do them yourself.]"
+            ),
+            key,
+        })
+    }
+
+    /// Forgets that `owner` was reminded, for a reminder that could not be delivered.
+    pub fn forget_reminder(&self, owner: &str) {
+        lock(&self.reminded, "owner reminders").remove(owner);
+    }
+
+    /// Records that `owner` got `reminder`, so it is not sent again until the board or the free
+    /// slots change.
+    pub fn reminded(&self, owner: &str, reminder: &Reminder) {
+        lock(&self.reminded, "owner reminders").insert(owner.to_string(), reminder.key);
+    }
+}
+
+fn in_progress_of(tasks: &[Task], agent: &str) -> bool {
+    tasks
+        .iter()
+        .any(|t| t.status == TaskStatus::InProgress && t.owner.as_deref() == Some(agent))
 }
 
 /// The two quality gates, implemented over the user's hooks by `fontaine-core`. A gate can only
 /// add work: it blocks or it does not. One that errors or times out reports itself through
 /// [`warn`](Self::warn) and answers `None`, because a gate that failed closed forever would wedge
-/// the team.
+/// the agents.
 pub trait QualityGate: Send + Sync {
     /// Runs the `task_completed` hooks before `agent` completes `task`; `Some(reason)` blocks.
     fn task_completed<'a>(
@@ -373,35 +628,46 @@ pub trait QualityGate: Send + Sync {
         task: &'a Task,
     ) -> BoxFuture<'a, Option<String>>;
 
-    /// Runs the `teammate_idle` hooks when `name` ended a turn; `Some(reason)` resumes it with
-    /// the reason as feedback.
+    /// Runs the `teammate_idle` hooks when `name` ended a turn with a task in progress;
+    /// `Some(reason)` resumes it with the reason as feedback.
     fn teammate_idle<'a>(&'a self, agent: &'a str, name: &'a str) -> BoxFuture<'a, Option<String>>;
 
     /// Tells the human something went wrong that is not the model's to handle.
     fn warn(&self, message: &str);
 }
 
-/// What a session with teams on holds: the board, the gates and the resume streaks.
+/// What a session with teams on holds: the boards, the gates and the resume streaks.
 pub struct Teams {
-    pub board: Arc<TaskBoard>,
+    pub boards: Boards,
     pub gate: Arc<dyn QualityGate>,
-    /// Per teammate: resumes in a row and the board's mutation count at the last of them.
+    /// A headless run never reminds `main`: a reminder is a root notification, and the run's
+    /// answer must stay its own.
+    pub headless: bool,
+    /// Per agent: resumes in a row and the mutation count of the board that holds its task at the
+    /// last of them.
     streaks: Mutex<HashMap<String, (u32, u64)>>,
 }
 
 impl Teams {
-    pub fn new(board: Arc<TaskBoard>, gate: Arc<dyn QualityGate>) -> Teams {
+    pub fn new(boards: Boards, gate: Arc<dyn QualityGate>) -> Teams {
         Teams {
-            board,
+            boards,
             gate,
+            headless: false,
             streaks: Mutex::new(HashMap::new()),
         }
     }
 
-    /// Whether `agent` may be resumed by the idle hand-off or a hook block now, counting it. The
-    /// streak starts over whenever the board has changed since the last such resume.
-    pub fn allow_idle_resume(&self, agent: &str) -> bool {
-        let mutations = self.board.mutations();
+    pub fn headless(mut self, headless: bool) -> Teams {
+        self.headless = headless;
+        self
+    }
+
+    /// Whether `agent` may be resumed by a `teammate_idle` block now, counting it. The streak
+    /// starts over whenever the board of its `parent`, which holds its task, has changed since the
+    /// last such resume.
+    pub fn allow_idle_resume(&self, agent: &str, parent: &str) -> bool {
+        let mutations = self.boards.mutations_of(parent);
         let mut streaks = lock(&self.streaks, "idle resume streaks");
         let entry = streaks.entry(agent.to_string()).or_insert((0, mutations));
         if entry.1 != mutations {
@@ -439,6 +705,7 @@ mod tests {
                 next: 1,
                 tasks: board.list(),
             },
+            &HashSet::new(),
         );
         assert_eq!(add(&restored, "c", &[]), "t3", "a stale counter is lifted");
     }
@@ -539,7 +806,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_owner_or_the_lead_updates_an_in_progress_task() {
+    fn only_the_claimer_or_the_board_owner_updates_an_in_progress_task() {
         let board = board();
         let id = add(&board, "work", &[]);
         board.claim("a", &id).unwrap();
@@ -593,6 +860,7 @@ mod tests {
                 next: 3,
                 tasks: board.list(),
             },
+            &HashSet::new(),
         );
         let task = restored.get(&mine).unwrap();
         assert_eq!((task.status, task.owner), (TaskStatus::Pending, None));
@@ -632,15 +900,157 @@ mod tests {
     }
 
     #[test]
-    fn the_idle_resume_streak_is_capped_and_a_board_change_resets_it() {
+    fn the_idle_resume_streak_is_capped_and_a_change_of_its_board_resets_it() {
         let board = Arc::new(board());
-        let teams = Teams::new(board.clone(), Arc::new(NoGate));
+        let teams = Teams::new(Boards::with_root(board.clone()), Arc::new(NoGate));
         for _ in 0..MAX_IDLE_RESUMES {
-            assert!(teams.allow_idle_resume("a"));
+            assert!(teams.allow_idle_resume("a", ROOT_AGENT));
         }
-        assert!(!teams.allow_idle_resume("a"));
-        assert!(teams.allow_idle_resume("b"), "streaks are per teammate");
+        assert!(!teams.allow_idle_resume("a", ROOT_AGENT));
+        assert!(
+            teams.allow_idle_resume("b", ROOT_AGENT),
+            "streaks are per agent"
+        );
         add(&board, "news", &[]);
-        assert!(teams.allow_idle_resume("a"), "the board moved");
+        assert!(
+            teams.allow_idle_resume("a", ROOT_AGENT),
+            "the board that holds its task moved"
+        );
+    }
+
+    #[test]
+    fn a_board_owner_other_than_main_changes_any_task_on_its_board() {
+        let boards = Boards::new(None);
+        let board = boards.own("agent-1");
+        let id = board.create("agent-1", "work", "", &[]).unwrap().id;
+        board.claim("agent-2", &id).unwrap();
+        assert!(board.complete("agent-3", &id).is_err());
+        assert!(
+            board.complete(ROOT_AGENT, &id).is_err(),
+            "main is not its owner"
+        );
+        board.release("agent-1", &id).unwrap();
+        board.claim("agent-2", &id).unwrap();
+        board.complete("agent-1", &id).unwrap();
+    }
+
+    #[test]
+    fn ids_are_unique_across_boards_and_only_mains_board_is_saved() {
+        #[derive(Default)]
+        struct Saved(Mutex<Vec<Snapshot>>);
+        impl TaskStore for Saved {
+            fn save(&self, snapshot: &Snapshot) {
+                self.0.lock().unwrap().push(snapshot.clone());
+            }
+        }
+        let store = Arc::new(Saved::default());
+        let boards = Boards::new(Some(store.clone()));
+        let a = add(boards.root(), "main's", &[]);
+        let b = boards
+            .own("agent-1")
+            .create("agent-1", "theirs", "", &[])
+            .unwrap();
+        let c = add(boards.root(), "main's again", &[]);
+        assert_eq!((a.as_str(), b.id.as_str(), c.as_str()), ("t1", "t2", "t3"));
+        let saved = store.0.lock().unwrap();
+        let last = saved.last().unwrap();
+        assert_eq!(last.next, 4);
+        assert!(
+            saved
+                .iter()
+                .all(|s| s.tasks.iter().all(|t| t.title != "theirs")),
+            "a subagent's tasks are never saved"
+        );
+        assert_eq!(saved[1].next, 3, "its mint saved the counter");
+    }
+
+    #[test]
+    fn a_task_is_found_on_the_callers_board_or_its_parents_and_nowhere_else() {
+        let boards = Boards::new(None);
+        let mains = add(boards.root(), "main's", &[]);
+        let own = boards
+            .own("agent-1")
+            .create("agent-1", "own", "", &[])
+            .unwrap()
+            .id;
+        let sibling = boards
+            .own("agent-2")
+            .create("agent-2", "sibling", "", &[])
+            .unwrap()
+            .id;
+        assert!(boards.find("agent-1", Some(ROOT_AGENT), &mains).is_some());
+        assert!(boards.find("agent-1", Some(ROOT_AGENT), &own).is_some());
+        assert!(boards.find("agent-1", Some(ROOT_AGENT), &sibling).is_none());
+        assert!(boards.find("agent-3", Some("agent-1"), &own).is_some());
+        assert!(
+            boards.find("agent-3", Some("agent-1"), &mains).is_none(),
+            "a grandparent's board is out of reach"
+        );
+    }
+
+    #[test]
+    fn dropping_an_owner_removes_its_board_and_releasing_covers_both_boards() {
+        let boards = Boards::new(None);
+        let mains = add(boards.root(), "main's", &[]);
+        let own = boards
+            .own("agent-1")
+            .create("agent-1", "own", "", &[])
+            .unwrap()
+            .id;
+        boards.root().claim("agent-1", &mains).unwrap();
+        boards
+            .get("agent-1")
+            .unwrap()
+            .claim("agent-1", &own)
+            .unwrap();
+        let mut released = boards.release_owned_by("agent-1", Some(ROOT_AGENT));
+        released.sort();
+        assert_eq!(released, vec![mains.clone(), own]);
+        assert!(!boards.owns_in_progress("agent-1"));
+        boards.drop_owner("agent-1");
+        assert!(boards.get("agent-1").is_none());
+        boards.drop_owner(ROOT_AGENT);
+        assert!(boards.get(ROOT_AGENT).is_some(), "main's board stays");
+    }
+
+    #[test]
+    fn a_reminder_needs_claimable_tasks_and_free_slots_and_waits_for_a_change() {
+        let boards = Boards::new(None);
+        assert!(
+            boards.pending_reminder(ROOT_AGENT, 2, 2).is_none(),
+            "no tasks"
+        );
+        add(boards.root(), "one", &[]);
+        add(boards.root(), "two", &[]);
+        assert!(
+            boards.pending_reminder(ROOT_AGENT, 0, 0).is_none(),
+            "no slots"
+        );
+        let reminder = boards.pending_reminder(ROOT_AGENT, 2, 2).unwrap();
+        assert!(
+            reminder
+                .text
+                .contains("2 tasks on your board are claimable")
+        );
+        assert!(reminder.text.contains("2 agent slots are free"));
+        assert!(
+            reminder
+                .text
+                .starts_with("[Harness note, not the user's words:")
+        );
+        boards.reminded(ROOT_AGENT, &reminder);
+        assert!(
+            boards.pending_reminder(ROOT_AGENT, 2, 2).is_none(),
+            "nothing changed"
+        );
+        assert!(
+            boards.pending_reminder(ROOT_AGENT, 1, 1).is_some(),
+            "a slot went"
+        );
+        add(boards.root(), "three", &[]);
+        assert!(
+            boards.pending_reminder(ROOT_AGENT, 2, 2).is_some(),
+            "the board moved"
+        );
     }
 }

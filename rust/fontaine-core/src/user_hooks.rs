@@ -6,8 +6,8 @@
 //! A hook can only add: `deny` and `ask` tighten, `allow` acts exactly as an allow rule does,
 //! and a hook that fails, times out or says something unreadable decides nothing.
 //!
-//! The two team events, `task_completed` and `teammate_idle`, are quality gates and can only
-//! block: exit code 2 keeps the task open or keeps the teammate working, with stderr as the
+//! The two task-board events, `task_completed` and `teammate_idle`, are quality gates and can
+//! only block: exit code 2 keeps the task open or keeps the agent working, with stderr as the
 //! reason. They have no `allow` answer.
 
 use std::ffi::OsString;
@@ -488,15 +488,15 @@ impl ResultStage for PostHookStage {
     }
 }
 
-/// What a hook of a team event is told besides the common fields.
+/// What a hook of a task-board event is told besides the common fields.
 enum TeamEvent<'a> {
     TaskCompleted(&'a Task),
     TeammateIdle(&'a str),
 }
 
-/// The team's quality gates over the user's hooks. A gate that cannot run says so to the human
+/// The task boards' quality gates over the user's hooks. A gate that cannot run says so to the human
 /// and lets the work go on: it is a quality check, and one that failed closed would wedge the
-/// team.
+/// agents.
 pub struct TeamGate {
     task_completed: Vec<CommandHook>,
     teammate_idle: Vec<CommandHook>,

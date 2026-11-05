@@ -115,6 +115,20 @@ pub fn build_keyed(
     root: Vec<Vec<MockStreamEvent>>,
     child: Vec<Vec<MockStreamEvent>>,
 ) -> (Built, MockCompletionModel) {
+    build_keyed_with(world, mode, marker, root, child, None, true)
+}
+
+/// [`build_keyed`] over an existing `session` (a restart) or a new one, `headless` as a `-p` run
+/// is and the TUI is not.
+pub fn build_keyed_with(
+    world: &World,
+    mode: PermissionMode,
+    marker: &str,
+    root: Vec<Vec<MockStreamEvent>>,
+    child: Vec<Vec<MockStreamEvent>>,
+    session: Option<Session>,
+    headless: bool,
+) -> (Built, MockCompletionModel) {
     let main = MockCompletionModel::from_stream_turns(root);
     let children = MockCompletionModel::from_stream_turns(child);
     let keyed = Model::new(
@@ -137,7 +151,25 @@ pub fn build_keyed(
         guardian_choice: GuardianChoice::MainFallback,
         notices: Vec::new(),
     };
-    let runtime = build_with_models(world, mode, models, None, false, Default::default(), None);
+    let runtime = match session {
+        None if headless => {
+            build_with_models(world, mode, models, None, false, Default::default(), None)
+        }
+        session => build_with_env_session(
+            world,
+            mode,
+            models,
+            None,
+            false,
+            Default::default(),
+            None,
+            Arc::new(DenyAll),
+            false,
+            Arc::new(|_| None),
+            session.unwrap_or_else(|| Session::create(&world.data, &session_id()).unwrap()),
+            headless,
+        ),
+    };
     (Built { runtime, main }, children)
 }
 

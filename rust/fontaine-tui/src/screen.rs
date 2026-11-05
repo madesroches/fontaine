@@ -2107,7 +2107,7 @@ mod tests {
     }
 
     #[test]
-    fn the_agents_panel_shows_an_idle_teammate_apart_from_done_and_lists_the_board() {
+    fn the_agents_panel_shows_an_idle_agent_apart_from_done_and_lists_each_board_under_its_owner() {
         let mut screen = screen(80, 24);
         let mut app = app();
         let mut idle = panel_row(1);
@@ -2117,6 +2117,7 @@ mod tests {
         panel.set_rows(vec![idle, done]);
         panel.set_board(vec![
             crate::agents_panel::BoardRow {
+                board: "main".into(),
                 id: "t1".into(),
                 title: "write the parser".into(),
                 status: "in_progress".into(),
@@ -2124,6 +2125,7 @@ mod tests {
                 blocked_by: Vec::new(),
             },
             crate::agents_panel::BoardRow {
+                board: "main".into(),
                 id: "t2".into(),
                 title: "write the\x1b[31m printer".into(),
                 status: "pending".into(),
@@ -2149,7 +2151,7 @@ mod tests {
             line_of("worker-2 (agent-2)").contains("m/x done"),
             "{shown}"
         );
-        assert!(shown.contains("Board"), "{shown}");
+        assert!(shown.contains("Board of main"), "{shown}");
         assert!(line_of("t1 in_progress").contains("write the parser"));
         assert!(line_of("owner: worker-1").contains("owner: worker-1"));
         assert!(shown.contains("owner: nobody · blocked by t1"), "{shown}");

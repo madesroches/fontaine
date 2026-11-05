@@ -1870,7 +1870,7 @@ pub struct Agents {
     pub subagent_cost_budget_usd: Option<f64>,
     pub session_token_budget: Option<u64>,
     pub session_cost_budget_usd: Option<f64>,
-    /// Named teammates and the shared task board.
+    /// The task boards and their quality hooks. Idling and waking do not depend on it.
     pub teams: bool,
     pub types: BTreeMap<String, AgentType>,
 }

@@ -150,7 +150,7 @@ async fn parallel_subagents_one_killed_the_others_finish_and_every_call_is_audit
         ui.wait_for("everyone reported").await;
         open_agents(&ui);
         ui.wait_until("final rows", |s| {
-            s.matches("done").count() >= 2 && s.contains("killed")
+            s.matches("idle").count() >= 2 && s.contains("killed")
         })
         .await;
         let screen = ui.screen();
@@ -511,7 +511,7 @@ async fn a_subagent_is_viewed_messaged_resumed_and_the_main_chat_comes_back_whol
         ui.wait_for("queued: also count the lines").await;
         ui.wait_for("> also count the lines").await;
         ui.wait_for("first answer").await;
-        ui.wait_for("worker-1 (agent-1) · worker · done").await;
+        ui.wait_for("worker-1 (agent-1) · worker · idle").await;
 
         // The agent has ended, and typing resumes it.
         ui.send("and the words");
@@ -692,7 +692,7 @@ async fn a_joining_subagent_takes_a_turn_on_the_words_typed_into_its_view() {
         ui.send("mid-join words");
         ui.wait_for("lead read the words").await;
         ui.wait_for("lead read the report").await;
-        ui.wait_for("lead-1 (agent-1) · lead · done").await;
+        ui.wait_for("lead-1 (agent-1) · lead · idle").await;
     })
     .await;
 
@@ -754,7 +754,7 @@ async fn export_with_a_subagent_writes_a_folder_with_the_index_and_transcripts()
     assert!(main.contains("## Subagents"), "{main}");
     assert!(
         main.contains(
-            "- `worker-1` (`agent-1`) — worker, child of `root`: done — [transcript](agent-1.md)"
+            "- `worker-1` (`agent-1`) — worker, child of `root`: idle — [transcript](agent-1.md)"
         ),
         "{main}"
     );
@@ -764,7 +764,7 @@ async fn export_with_a_subagent_writes_a_folder_with_the_index_and_transcripts()
         "{child}"
     );
     assert!(child.contains("Parent: `root`"), "{child}");
-    assert!(child.contains("Status: done"), "{child}");
+    assert!(child.contains("Status: idle"), "{child}");
     assert!(child.contains("child did the work"), "{child}");
     #[cfg(unix)]
     {

@@ -61,6 +61,20 @@ pub struct SpawnRequest {
     pub ledger: Arc<dyn RootLedger>,
 }
 
+/// Everything a runner needs to rebuild the conversation of an agent a resumed session brought
+/// back: a [`SpawnRequest`] without a prompt.
+pub struct RevivalRequest {
+    pub id: String,
+    pub parent: String,
+    pub agent_type: AgentType,
+    pub model: ModelSpec,
+    pub tools: Vec<String>,
+    pub mode: Ladder,
+    pub budget: Budget,
+    pub depth: usize,
+    pub ledger: Arc<dyn RootLedger>,
+}
+
 /// How a child ended.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ChildReport {
@@ -110,4 +124,13 @@ pub trait ChildRunner: Send + Sync {
         &'a self,
         request: SpawnRequest,
     ) -> BoxFuture<'a, Result<Arc<dyn ChildHandle>, String>>;
+
+    /// Builds the handle of an agent whose conversation an earlier process left on disk, without
+    /// starting a run. The caller resumes it.
+    fn revive<'a>(
+        &'a self,
+        _request: RevivalRequest,
+    ) -> BoxFuture<'a, Result<Arc<dyn ChildHandle>, String>> {
+        Box::pin(async { Err("this runner cannot revive an agent".to_string()) })
+    }
 }

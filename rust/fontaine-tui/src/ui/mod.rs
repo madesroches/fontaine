@@ -8,7 +8,7 @@ mod schedule;
 mod tests;
 mod turn;
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -82,7 +82,18 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let rows = runtime.state.agents().rows();
         self.app.running_agents = rows.iter().filter(|r| r.status.is_running()).count();
         let main_writing = runtime.state.agents().writing_of(ROOT_AGENT);
-        self.refresh_agent_list(&rows, main_writing);
+        let task_owners: HashSet<String> =
+            runtime
+                .state
+                .agents()
+                .teams()
+                .map_or_else(HashSet::new, |teams| {
+                    rows.iter()
+                        .filter(|row| teams.boards.owns_in_progress(&row.id))
+                        .map(|row| row.id.clone())
+                        .collect()
+                });
+        self.refresh_agent_list(&rows, &task_owners, main_writing);
         if self.app.agents.is_some() {
             self.refresh_panel(runtime, &rows);
         }
@@ -311,13 +322,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// The list below the status line, from the tree as it stands now.
-    fn refresh_agent_list(&mut self, rows: &[fontaine_agents::tree::AgentRow], main_writing: u64) {
+    fn refresh_agent_list(
+        &mut self,
+        rows: &[fontaine_agents::tree::AgentRow],
+        task_owners: &HashSet<String>,
+        main_writing: u64,
+    ) {
         let list = &mut self.app.agent_list;
         list.forget_running(rows);
         let shown = agent_list::rows(
             rows,
             self.app.viewing.as_deref(),
             self.app.agent_list.dismissed(),
+            task_owners,
             std::time::Instant::now(),
             main_writing,
         );
@@ -367,10 +384,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let tree = runtime.state.agents();
         let board: Vec<BoardRow> = tree.teams().map_or_else(Vec::new, |teams| {
             teams
-                .board
-                .list()
+                .boards
+                .all()
                 .into_iter()
-                .map(|task| BoardRow {
+                .flat_map(|(board_owner, tasks)| {
+                    let board = tree.name_of(&board_owner);
+                    tasks.into_iter().map(move |task| (board.clone(), task))
+                })
+                .map(|(board, task)| BoardRow {
+                    board,
                     id: task.id,
                     title: task.title,
                     status: task.status.as_str().to_string(),

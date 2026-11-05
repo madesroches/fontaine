@@ -610,7 +610,7 @@ error: an export never overwrites.
 | `/recap` | Reports what the session has done so far, from the ledger and without calling a model; see [Side questions](#side-questions-and-recaps). Runs immediately, turn or no turn. |
 | `/rename [<name>]` | Names the session. Without a name, draws one from the first line of your first message. See [Sessions](#sessions). |
 | `/resume [<name-or-id>]` | Switches to another session started in this folder: the picker without an argument, that session with one. Sessions where nothing was said and that have no name are not listed. Only between turns. See [Sessions](#sessions). |
-| `/rewind`, `/checkpoint` | Opens a list of this conversation's prompts to restore the code, the conversation or both to the start of one. Esc twice does the same. See [Checkpoints and /rewind](checkpoints.md). Refused while a subagent runs or a [teammate](agents.md#agent-teams) is idle. |
+| `/rewind`, `/checkpoint` | Opens a list of this conversation's prompts to restore the code, the conversation or both to the start of one. Esc twice does the same. See [Checkpoints and /rewind](checkpoints.md). Refused while a subagent runs or has a report to deliver; a conversation restore retires the idle [subagents](agents.md#agent-lifecycle). |
 | `/skills [trust <name>]` | Without an argument, lists every loaded [skill](extensions.md#skills) with its scope, marking those only the model can use, those only you can run, those a built-in command hides, and those you have trusted (`trusted`) or trusted before the file changed (`changed (re-trust)`). `trust <name>` opens a dialog that lists the skill's `allowed-tools` (or, for a skill you trusted before, what changed in them and in its `!` commands) and records your trust on `y`, in the session ledger and audit log too. The trust applies from the next session start; the running session's grants and this list do not change. The trust form waits for the turn to end; a [project skill](extensions.md#allowed-tools) cannot be trusted. See [Trusted skills](extensions.md#trusted-skills). |
 | `/status` | Shows the version, the session id, the workspace roots (the scratch directory labelled separately), the permission mode, the main model, the guardian (or why it is unavailable) with its profile, the output style, and how many MCP servers are connected. While the guardian is off it reports that instead of the guardian's model. |
 | `/theme [<name>]` | Without an argument, lists the colour themes, marks the current one and names the file the choice is saved to. With a name, switches to that theme at once and saves it as `[tui] theme` in your user settings file. An unknown name is an error that lists the themes. See [Terminal setup](terminal.md#colours). |
@@ -637,8 +637,8 @@ files, actions and denials it knows about are kept.
 [`/rewind`](checkpoints.md) trims the guardian's view the same way for the prompts it takes back. The old
 conversation cannot be resumed: `--resume` reopens the empty one. `/clear` is refused while a
 subagent is running or its report is waiting to be delivered, since the subagent's calls are judged against what you asked; wait for it
-or kill it from the [agents panel](#the-agents-panel). It is refused while a teammate is idle,
-too: the teammate keeps its own history for a later wake. The subagents the cleared
+or kill it from the [agents panel](#the-agents-panel). Idle subagents are retired and pruned: they
+could not be woken against intent the clear drops, and the subagents the cleared
 conversation spawned leave the [agent list](#the-agent-list-and-the-agent-view) and the
 [agents panel](#the-agents-panel); their persisted transcripts stay on disk, so `/export` still
 renders them.
@@ -1072,8 +1072,8 @@ one row per subagent with its [name](agents.md#naming-a-subagent) and its id dim
 for example `◯ survey-tech-debt (agent-3) worker running 1m02s · 1.5k tok`. On a narrow terminal the id is cut before the status and the age. A nested agent is indented under its
 parent. The row on screen is marked `●` and the others `◯`. The list shows every running agent, the
 agent on screen, and an agent that failed, was killed or ran out of budget for 30 seconds after it
-ended or until you hide it with `x`. An agent that finished normally leaves at once, except a teammate that is
-[idle](agents.md#agent-teams), which stays listed as `idle` until it is killed. With nothing
+ended or until you hide it with `x`. An agent that finished normally leaves at once, except an
+[idle](agents.md#agent-lifecycle) one that owns a task in progress, which stays listed as `idle`. With nothing
 to list, the list is not drawn. `/clear` empties the list at once: an agent that ended before it
 is pruned with the conversation instead of staying listed. The spend uses the same format as the
 [agents panel](#the-agents-panel), including the `N unpriced tok` segment: on a narrow terminal the
@@ -1134,7 +1134,7 @@ not printed yet.
 `/agents` (or `/tasks`) opens the full overview: one row per [subagent](agents.md), ended
 ones included until a `/clear` prunes them, and below it one row per [background job](tools.md#background-jobs) of the main conversation (its id, its state, its age and the start of its command): an agent row shows its name with its id dimmed after it (`survey-tech-debt (agent-3)`), its type, its
 model, its status (`running`, `waiting-on-permission`, `idle`, `done`, `killed`, `budget-exhausted` or
-`failed`; `idle` is a [teammate](agents.md#agent-teams) that finished its turn and waits for work) and what it has used, such as `1.5k tok · $0.0021`; each `/ <cap>` form
+`failed`; `idle` is an agent that finished its turn and can be woken; `done` is final) and what it has used, such as `1.5k tok · $0.0021`; each `/ <cap>` form
 (`1.5k / 200k tok`, `$0.0021 / $2.00`) appears only for a budget that is set, and `cost n/a`
 shows in place of the spend when a cost budget is set but no priced call has been counted yet,
 as for a model with no known price. Tokens that carried no price (an unpriced account's main model next to its priced guardian
@@ -1150,8 +1150,8 @@ and shows that agent's transcript, which is how you reach an agent that has left
 [agent list](#the-agent-list-and-the-agent-view). A running agent's spend line also ends in
 `· writing 4.2k chars` while its model is mid-step, as in the list; it clears when the step ends.
 
-With [agent teams](agents.md#agent-teams) on and tasks on the team's board, a **Board** section
-below the jobs lists each task: its id, status and title, then its owner's name (or `nobody`) and the
+With [task boards](agents.md#task-boards) on and tasks on a board, a **Board of <name>** section
+per board owner below the jobs lists each task: its id, status and title, then its owner's name (or `nobody`) and the
 tasks blocking it. It is for reading only, and the title is shown with control characters taken
 out, since an agent wrote it. `/tasks` stays an alias of `/agents`; the board is not the
 [task panel](#the-task-panel) of `todo_write`.
