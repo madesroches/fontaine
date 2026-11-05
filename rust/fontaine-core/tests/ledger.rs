@@ -799,8 +799,8 @@ mod afk_records {
     use super::*;
     use fontaine_core::afk_report::{AfkOutcome, AfkSource, build_latest};
 
-    fn write_lines(session: &Session, lines: &[&str]) {
-        let ledger = session.ledger.path().to_path_buf();
+    // Windows refuses a second handle on the ledger, so callers drop the session first.
+    fn write_lines(ledger: std::path::PathBuf, lines: &[&str]) {
         let mut text = std::fs::read_to_string(&ledger).unwrap_or_default();
         for line in lines {
             text.push_str(line);
@@ -813,15 +813,18 @@ mod afk_records {
     fn records_written_before_afk_existed_still_parse() {
         let world = World::new();
         let session = Session::create(&world.data, SESSION_ID).unwrap();
+        let dir = session.dir.clone();
+        let ledger = session.ledger.path().to_path_buf();
+        drop(session);
         write_lines(
-            &session,
+            ledger,
             &[
                 r#"{"seq":0,"ts_ms":1,"kind":"action","tool":"read","agent":"root","paths":[],"created":[],"summary":"a"}"#,
                 r#"{"seq":1,"ts_ms":2,"kind":"denial","tool":"shell","agent":"root","reason":"no","rule":"Git Destructive","summary":"s"}"#,
                 r#"{"seq":2,"ts_ms":3,"kind":"goal","event":"paused","evaluations":2}"#,
             ],
         );
-        let reopened = Ledger::open(&session.dir).unwrap();
+        let reopened = Ledger::open(&dir).unwrap();
         let entries = reopened.read().unwrap();
         assert_eq!(entries.len(), 3);
         assert!(matches!(
@@ -855,14 +858,17 @@ mod afk_records {
                 contributing: vec![4, 6],
             })
             .unwrap();
-        let reopened = Ledger::open(&session.dir).unwrap();
+        let dir = session.dir.clone();
+        drop(session);
+        let reopened = Ledger::open(&dir).unwrap();
         let stopped = reopened.view().afk().stopped().cloned().expect("a stop");
         assert_eq!((stopped.value, stopped.contributing), (13.5, vec![4, 6]));
         // AFK itself is not restored: the stretch is closed on open.
         assert_eq!(reopened.view().afk().latest(), Some(AfkOutcome::Stopped));
         reopened.append(Record::AfkReviewed {}).unwrap();
         assert!(reopened.view().afk().stopped().is_none());
-        let again = Ledger::open(&session.dir).unwrap();
+        drop(reopened);
+        let again = Ledger::open(&dir).unwrap();
         assert!(again.view().afk().stopped().is_none());
     }
 
