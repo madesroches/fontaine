@@ -519,15 +519,19 @@ fn agent_names(entries: &[Entry]) -> HashMap<&str, &str> {
 
 fn stretch_bounds(entries: &[Entry]) -> Vec<(usize, usize)> {
     let mut bounds: Vec<(usize, usize)> = Vec::new();
+    // `--afk` opens its stretch during setup, before its own process writes `SessionStart`; that
+    // first start belongs to the stretch and must not close it.
+    let mut own_start_pending = false;
     for (at, entry) in entries.iter().enumerate() {
         match entry.record {
-            Record::Afk { on: true, .. } => {
+            Record::Afk { on: true, source } => {
                 if let Some(last) = bounds.last_mut()
                     && last.1 == usize::MAX
                 {
                     last.1 = at;
                 }
                 bounds.push((at, usize::MAX));
+                own_start_pending = source == AfkSource::Cli;
             }
             Record::Afk { on: false, .. } => {
                 if let Some(last) = bounds.last_mut()
@@ -537,8 +541,12 @@ fn stretch_bounds(entries: &[Entry]) -> Vec<(usize, usize)> {
                 }
             }
             // AFK is never restored on reopen, so a stretch the previous process left open
-            // ends where the new one begins.
-            Record::SessionStart { .. } | Record::Resumed { .. } => {
+            // ends where the new one begins. `Resumed` always follows that process's
+            // `SessionStart`, so the start alone marks the reopen.
+            Record::SessionStart { .. } => {
+                if std::mem::take(&mut own_start_pending) {
+                    continue;
+                }
                 if let Some(last) = bounds.last_mut()
                     && last.1 == usize::MAX
                 {
@@ -926,20 +934,47 @@ mod tests {
 
     #[test]
     fn a_reopen_ends_the_stretch_the_previous_process_left_open() {
-        let reopened = entry(
-            2,
-            Record::Resumed {
-                source: "old".into(),
-                how: "resume".into(),
-            },
-        );
         let entries = vec![
             afk_on(0),
             action(1, "read", "main", None, "d", &[]),
-            reopened,
+            session_start(2),
             action(3, "read", "main", None, "d", &[]),
         ];
         assert_eq!(stretch_bounds(&entries), vec![(0, 2)]);
+    }
+
+    #[test]
+    fn a_cli_stretch_survives_its_own_session_start_but_not_the_next() {
+        let cli_on = entry(
+            0,
+            Record::Afk {
+                on: true,
+                source: AfkSource::Cli,
+            },
+        );
+        let entries = vec![
+            cli_on,
+            session_start(1),
+            action(2, "read", "main", None, "d", &[]),
+            session_start(3),
+            action(4, "read", "main", None, "d", &[]),
+        ];
+        assert_eq!(stretch_bounds(&entries), vec![(0, 3)]);
+    }
+
+    fn session_start(seq: u64) -> Entry {
+        entry(
+            seq,
+            Record::SessionStart {
+                session_id: "s".into(),
+                permission_mode: "auto".into(),
+                workspace_roots: Vec::new(),
+                workspace_trust: "trusted".into(),
+                git_remotes: Vec::new(),
+                env_keys: Vec::new(),
+                project_environment: None,
+            },
+        )
     }
 
     #[test]
