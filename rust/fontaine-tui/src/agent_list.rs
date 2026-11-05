@@ -326,7 +326,11 @@ impl AgentList {
                         return ListKey::Blur { typed: true };
                     }
                     Some(id) => {
-                        if row.idle || row.status.is_some_and(ChildStatus::is_running) {
+                        // A failed row is idle too, but only a Done one still has a live
+                        // agent to kill.
+                        if row.status.is_some_and(ChildStatus::is_running)
+                            || (row.idle && row.status == Some(ChildStatus::Done))
+                        {
                             return ListKey::Kill(id);
                         }
                         self.dismissed.insert(id);
@@ -751,6 +755,34 @@ mod tests {
             ListKey::None
         );
         assert!(list.dismissed().contains("agent-2"));
+    }
+
+    #[test]
+    fn x_dismisses_an_idle_failed_row_instead_of_killing_it() {
+        let now = Instant::now();
+        let mut failed = agent("agent-1", "main", ChildStatus::Failed, now);
+        failed.idle = true;
+        let mut done = agent("agent-2", "main", ChildStatus::Done, now);
+        done.idle = true;
+        let mut list = focused(rows(
+            &[failed, done],
+            None,
+            &HashSet::new(),
+            &HashSet::from(["agent-1".to_string(), "agent-2".to_string()]),
+            now,
+            0,
+        ));
+        list.handle_key(key(KeyCode::Down), None);
+        assert_eq!(
+            list.handle_key(key(KeyCode::Char('x')), None),
+            ListKey::None
+        );
+        assert!(list.dismissed().contains("agent-1"));
+        list.handle_key(key(KeyCode::Down), None);
+        assert_eq!(
+            list.handle_key(key(KeyCode::Char('x')), None),
+            ListKey::Kill("agent-2".into())
+        );
     }
 
     #[test]

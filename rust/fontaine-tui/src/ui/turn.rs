@@ -276,6 +276,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         let jobs = runtime.state.agents().has_job_notifications()
             && !runtime.state.agents().has_agent_notifications();
+        let reminders = runtime.state.agents().has_only_root_reminders();
         let Some(prompt) = runtime.notification_prompt().await else {
             return std::ops::ControlFlow::Continue(());
         };
@@ -284,6 +285,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
         self.app.transcript.notice(if jobs {
             "a background job reported back"
+        } else if reminders {
+            "tasks on your board are waiting for agents"
         } else {
             "an agent reported back"
         });

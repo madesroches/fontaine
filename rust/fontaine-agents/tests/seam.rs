@@ -2174,7 +2174,8 @@ async fn a_report_for_an_idle_parent_wakes_it_once_a_slot_is_free_and_waits_unti
 }
 
 #[tokio::test]
-async fn a_report_for_an_idle_parent_waits_out_a_spent_session_budget_and_keeps_its_tasks() {
+async fn a_report_for_an_idle_parent_with_a_spent_session_budget_goes_to_main_and_keeps_its_tasks()
+{
     let team = team_rig_with(
         Limits {
             session: Budget {
@@ -2205,8 +2206,12 @@ async fn a_report_for_an_idle_parent_waits_out_a_spent_session_budget_and_keeps_
     let ledger: Arc<dyn RootLedger> = team.rig.ledger.clone();
     fontaine_agents::spawn::slot_freed(&team.rig.tree, &ledger, None);
     assert!(team.rig.tree.is_idle(&parent));
-    assert!(team.rig.tree.has_notifications(&parent));
+    assert!(!team.rig.tree.has_notifications(&parent));
     assert!(parent_child.data_resumes.lock().unwrap().is_empty());
+    assert!(
+        team.rig.tree.has_agent_notifications(),
+        "the report went to main"
+    );
     assert_eq!(
         team.teams.boards.root().get("t1").unwrap().status,
         TaskStatus::InProgress

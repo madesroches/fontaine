@@ -1549,6 +1549,17 @@ impl AgentTree {
         })
     }
 
+    /// Whether the root's inbox holds owner reminders and nothing else.
+    pub fn has_only_root_reminders(&self) -> bool {
+        self.lock().nodes.get(ROOT_AGENT).is_some_and(|node| {
+            !node.inbox.is_empty()
+                && node
+                    .inbox
+                    .iter()
+                    .all(|note| note.kind == NotificationKind::Reminder)
+        })
+    }
+
     /// Whether any subagent's inbox holds a message or report, mail that retiring the agent
     /// would hand back to the root.
     pub fn has_subagent_mail(&self) -> bool {

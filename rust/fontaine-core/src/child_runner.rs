@@ -156,10 +156,15 @@ pub async fn notification_prompt(
         screened
             .push(screened_notes(results, agent, "job_output", RiskClass::ReadOnly, &jobs).await);
     }
-    let news = if jobs.is_empty() {
-        "agents you started or that wrote to you have news"
-    } else {
+    let news = if !jobs.is_empty() {
         "agents or background jobs you started have news"
+    } else if agents
+        .iter()
+        .all(|note| note.kind == NotificationKind::Reminder)
+    {
+        "tasks on your board are waiting for agents"
+    } else {
+        "agents you started or that wrote to you have news"
     };
     Some(format!(
         "[Harness note, not the user's words: {news}.]\n\n{}",

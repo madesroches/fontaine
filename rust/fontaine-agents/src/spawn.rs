@@ -97,6 +97,7 @@ fn release_tasks(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, agent: &st
         agent,
         &tree.name_of(agent),
         tree.parent_of(agent).as_deref(),
+        true,
     );
 }
 
@@ -106,6 +107,7 @@ fn release_tasks_of(
     agent: &str,
     name: &str,
     parent: Option<&str>,
+    remind: bool,
 ) {
     let Some(teams) = tree.teams() else {
         return;
@@ -118,7 +120,7 @@ fn release_tasks_of(
             agent: agent.to_string(),
         });
     }
-    if !released.is_empty() {
+    if remind && !released.is_empty() {
         remind_owners(tree, ledger, Some(agent));
     }
 }
@@ -155,7 +157,14 @@ fn bounce(tree: &AgentTree, id: &str, notes: Vec<Notification>, why: &str) {
 pub fn settle_retired(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, retired: Vec<Retired>) {
     for gone in retired {
         bounce(tree, &gone.id, gone.inbox, "it was retired");
-        release_tasks_of(tree, ledger, &gone.id, &gone.name, gone.parent.as_deref());
+        release_tasks_of(
+            tree,
+            ledger,
+            &gone.id,
+            &gone.name,
+            gone.parent.as_deref(),
+            true,
+        );
         if let Some(teams) = tree.teams() {
             teams.boards.drop_owner(&gone.id);
         }
@@ -225,7 +234,16 @@ fn conclude(
         });
     }
     if !finish.keeps_tasks {
-        release_tasks_of(tree, ledger, id, &tree.name_of(id), parent.as_deref());
+        // No reminder here: `after_end` sends it once `resume_missed` has had the freed slot, so
+        // an idle owner cannot take it first.
+        release_tasks_of(
+            tree,
+            ledger,
+            id,
+            &tree.name_of(id),
+            parent.as_deref(),
+            false,
+        );
     }
     if finish.final_end
         && let Some(teams) = tree.teams()
@@ -256,7 +274,7 @@ pub fn kill_agent(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
             status: ChildStatus::Killed.as_str().to_string(),
         });
         bounce(tree, id, outcome.inbox, "it was killed");
-        release_tasks_of(tree, ledger, id, &tree.name_of(id), parent.as_deref());
+        release_tasks_of(tree, ledger, id, &tree.name_of(id), parent.as_deref(), true);
         if let Some(teams) = tree.teams() {
             teams.boards.drop_owner(id);
         }
@@ -527,6 +545,16 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
         // Someone woke it first, or no slot is free yet: the notes wait for its next end or the
         // next slot to free.
         Err(WakeError::AlreadyRunning | WakeError::Transient(_)) => tree.requeue(id, notes),
+        // The spent budget never clears, so the mail would stay queued forever; the agent keeps
+        // its tasks.
+        Err(WakeError::SessionBudget(why)) => {
+            bounce(
+                tree,
+                id,
+                notes,
+                &format!("the session's budget is spent ({why})"),
+            );
+        }
         Err(WakeError::Refused(why)) => {
             // The senders were told "queued"; they learn here that nobody read it.
             bounce(
@@ -553,6 +581,9 @@ pub enum WakeError {
     /// A limit stops it for now (concurrent agents, the session's budget); it stays idle and
     /// keeps its tasks.
     Transient(String),
+    /// The session's budget is spent and only grows: nothing queued for the agent will be read.
+    /// It keeps its tasks.
+    SessionBudget(String),
     /// Its end is final; its tasks were released.
     Refused(String),
 }
@@ -577,9 +608,8 @@ pub fn wake_idle(
     match resume_inner(tree, ledger, id, text, false, waking) {
         Ok(()) => Ok(()),
         Err(Refusal::AlreadyRunning) => Err(WakeError::AlreadyRunning),
-        Err(transient @ (Refusal::Parallel(_) | Refusal::SessionBudget(_))) => {
-            Err(WakeError::Transient(describe(&transient)))
-        }
+        Err(transient @ Refusal::Parallel(_)) => Err(WakeError::Transient(describe(&transient))),
+        Err(spent @ Refusal::SessionBudget(_)) => Err(WakeError::SessionBudget(describe(&spent))),
         Err(other) => refuse(describe(&other)),
     }
 }
@@ -620,18 +650,14 @@ fn resume_inner(
     subagent_event("resume", id, &tree.name_of(id), &type_name);
     let parent = tree.parent_of(id).unwrap_or_else(|| ROOT_AGENT.to_string());
     match revival {
-        Err(handle) => start_run(
-            tree, ledger, parent, id, type_name, &handle, text, from_human,
-        ),
+        Err(handle) => start_run(tree, ledger, id, &handle, text, from_human),
         Ok((request, runner)) => {
             let (tree, ledger, id) = (tree.clone(), ledger.clone(), id.to_string());
             tokio::spawn(async move {
                 match runner.revive(request).await {
                     Ok(handle) => {
                         tree.attach(&id, handle.clone());
-                        start_run(
-                            &tree, &ledger, parent, &id, type_name, &handle, text, from_human,
-                        );
+                        start_run(&tree, &ledger, &id, &handle, text, from_human);
                     }
                     Err(why) => {
                         runner.discard_unread(&id);
@@ -644,13 +670,10 @@ fn resume_inner(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 fn start_run(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
-    parent: String,
     id: &str,
-    type_name: String,
     handle: &Arc<dyn ChildHandle>,
     text: String,
     from_human: bool,
@@ -660,6 +683,8 @@ fn start_run(
     } else {
         handle.resume_with_data(text);
     }
+    let parent = tree.parent_of(id).unwrap_or_else(|| ROOT_AGENT.to_string());
+    let type_name = tree.type_of(id).unwrap_or_default();
     watch_report(
         tree.clone(),
         ledger.clone(),
@@ -968,7 +993,9 @@ impl SendMessageTool {
                     .deliver(from, to, message)
                     .map_err(|_| ToolExecutionError::other("agent not running"))?;
             }
-            Err(WakeError::Transient(why) | WakeError::Refused(why)) => {
+            Err(
+                WakeError::Transient(why) | WakeError::SessionBudget(why) | WakeError::Refused(why),
+            ) => {
                 return Err(ToolExecutionError::other(format!(
                     "{} cannot be woken: {why}",
                     self.tree.name_of(to)

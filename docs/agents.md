@@ -205,8 +205,9 @@ final**.
   subagents, the [reminder](#task-boards) of an owner of claimable work, a `teammate_idle` hook's
   reason or you typing into its view starts another run on the same conversation, with the same
   tools, mode and budget (spend is cumulative). A wake can be refused like any resume: a full
-  `max_parallel` or the session's spent agent budget leaves the agent idle, with its tasks, for a
-  later wake. What wakes an agent other than you is marked as untrusted data and is never recorded
+  `max_parallel` leaves the agent idle, with its tasks, for a later wake. The session's spent
+  agent budget leaves it idle with its tasks too, but what was queued for it goes back to its
+  senders, since the budget never frees up. What wakes an agent other than you is marked as untrusted data and is never recorded
   as something you said, so it never becomes the guardian's idea of your intent.
 - **Final.** A kill, a spent budget or a retirement cannot be undone. Killed, out of budget and
   `failed` rows show their own status; a retired agent shows `done`, so `done` always means final.
