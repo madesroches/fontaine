@@ -77,6 +77,10 @@ pub fn rules(self) -> PermissionMode { match self { Afk => Auto, m => m } }
   `fontaine-tui/src/lib.rs:452`, `headless.rs:645`, the eval runner) compare `mode.rules()`.
   Exhaustive matches that display a mode (`mode_label`, `linear.rs`, `mode_style`,
   `baseline.rs`) get an explicit `Afk` arm.
+- Direct `state.mode()` readers that would otherwise emit `"afk"` use `mode().rules()`: the
+  session-event `DecisionRecord` (`gate.rs:804`), the root `PostToolUse` payload
+  (`user_hooks.rs:424`, so it matches `PreToolUse`'s `posture_of`), and the user-shell
+  `DecisionRecord` (`user_shell.rs:72`).
 - Audit and decision records keep `mode = "auto"` plus `afk: true` under AFK (their shape is
   unchanged); `ModeChange` ledger records and `permission_mode_changed` carry `"afk"`.
 
@@ -88,7 +92,7 @@ exactly while the mode is `Afk`. `SessionState::set_afk` is removed; its rules m
 `set_mode`, which becomes fallible:
 
 ```rust
-pub fn set_mode(&self, to: PermissionMode, source: AfkSource) -> Result<bool, AfkRefusal>
+pub fn set_mode(&self, to: PermissionMode, source: AfkSource) -> Result<ModeChanged, AfkRefusal>
 ```
 
 - Takes the AFK lock first, then the mode lock (same order as `set_guardian_off`, so
@@ -98,10 +102,13 @@ pub fn set_mode(&self, to: PermissionMode, source: AfkSource) -> Result<bool, Af
   sets `stretch`, records the `afk_on` session event.
 - Leaving `Afk`: appends `Record::Afk { on: false, source }` and `ModeChange`, clears `stretch`,
   records `afk_off`. Never refused (as `/afk off` is not today, a stop included).
-- Any other change: as today. `Ok(false)` when nothing changed.
+- Any other change: as today. `changed == false` when nothing changed.
 - `AfkSource` gains `Cycle` (Shift+Tab / a rebound `cycle_mode` key) and `Plan` (`/plan` out of
   AFK); `Command` stays for older ledgers that recorded `/afk`, and is still written by
-  `/afk review`. Old ledgers parse unchanged.
+  `/afk review`. Old ledgers parse unchanged. `source` is recorded only on AFK enter and leave
+  (for other changes it is ignored). Callers pass `Cycle` for the carousel, `Plan` for `/plan`,
+  `Command` for the `permissions.rs:1849` guardian-unavailable switch and `/afk review`, and `Cli`
+  for `--afk` and the headless run end.
 - `AfkRefusal::AfkOn`'s text becomes "AFK mode is on: leave it with Shift+Tab before disabling
   the guardian" (built from the live `cycle_mode` binding where a surface has it; the core
   string names the default key).
@@ -111,22 +118,25 @@ through the same path (`Record::Afk { on: false }` + `ModeChange`). Manual is th
 mode after AFK and the most conservative one; the human who just reviewed is present.
 
 The other existing caller, `permissions.rs:1849` (the guardian-unavailable "switch to manual"
-answer), only runs when `no_human()` is `None`, so never under AFK; it ignores the `Ok(bool)`.
+answer), only runs when `no_human()` is `None`, so never under AFK; it discards the result.
 
 ### Runtime and prompt
 
 `AgentRuntime::set_afk` becomes `AgentRuntime::set_mode(&mut self, to, source)` for idle-time
-callers (`/plan`, the idle carousel, `/afk review`): it calls `SessionState::set_mode` and
-rebuilds the base prompt when the AFK guidance changed. In-turn carousel presses only have
+callers (`/plan`, the idle carousel, `/afk review`): it calls `SessionState::set_mode`. In-turn carousel presses only have
 `&AgentRuntime`: they change the mode on `SessionState`, and the pipeline enforces it on the next
 call (as the existing comment in `agent/afk.rs:22` relies on). The runtime records whether the
 built prompt carries AFK guidance; `refresh_native_search`, which every turn driver already calls
 before a turn, is generalized to `refresh_before_turn` and also rebuilds when that flag differs
 from `afk_on()`.
 
-`--afk` (`setup::start_afk`) sets the start mode to `Afk` through `set_mode(Afk, Cli)` before the
-agent is built; a refusal is warned and the session starts in `auto` (the mode the carousel
-precedes AFK with). `--afk` conflicts with `--permission-mode` at the clap level (two answers to
+`lib.rs::session_mode` yields `Auto` for `--afk` (still overriding `default_mode`), so the state
+is built in `auto`; `setup::start_afk` then enters AFK with `set_mode(Afk, Cli)` before the agent
+is built, so the stretch start, the `Afk { on: true }` record and the refusal checks all run. A
+refusal is warned and the session stays in `auto`. The headless init / `SessionStart`
+`permission_mode` therefore reports `auto` (the start mode) under `--afk`, and the headless v1
+schema enum needs no change. At the headless run end, when the mode is `Afk`, the run calls
+`set_mode(Auto, AfkSource::Cli)` (`headless.rs:1091` today calls `set_afk(false, Cli)`). `--afk` conflicts with `--permission-mode` at the clap level (two answers to
 one question is a usage error) and overrides `default_mode`.
 
 ### Leaving AFK: the stretch review
@@ -145,6 +155,8 @@ itself is synchronous, and the review follows it:
   the notice "AFK mode off; the stretch is reviewed when this turn ends" is shown, the seq is
   queued, and the turn loop drains the queue after the turn ends (beside `pending_pick` /
   `pending_resume`).
+- Every TUI exit from AFK goes through this same idle-review / queued-review path: the carousel
+  and `/plan`, and any other caller that receives `ModeChanged.closed_stretch`.
 
 ### Carousel
 
@@ -189,29 +201,37 @@ tracking and stop, breaker blocking, the `AfkApprover` backstop, guardian-disabl
    `gate.rs`: `root_mode(Afk)`; fold `set_afk` into fallible `set_mode` with `ModeChanged`;
    `AfkState.on → stretch`; `afk_on()` from the mode; `afk_review` leaves AFK for manual;
    `AfkRefusal::AfkOn` text. `afk_report.rs`: `AfkSource::{Cycle, Plan}`.
+   Refresh the doc comments at `gate.rs:62,68`, `afk_report.rs:25,338` and `commands.rs:10`.
 2. **Pipeline** — `permissions.rs`: `posture_of` uses `rules()`; fix `set_mode` caller at 1849;
    breaker notice text ("after /afk off" → "after leaving AFK mode").
-3. **Other mode readers** — replace `== Auto` checks with `.rules() == Auto` in
+3. **Other mode readers** — `gate.rs:804`, `user_hooks.rs:424` and `user_shell.rs:72` use
+   `mode().rules()`; replace `== Auto` checks with `.rules() == Auto` in
    `native_search.rs`, `project_env.rs`, `headless.rs`, `fontaine-tui/src/lib.rs`,
    `reports.rs`, `ui/mod.rs`, `fontaine-evals/src/runner.rs`; add `Afk` arms in display
    matches (`statusbar.rs`, `linear.rs`, `fontaine-evals/src/baseline.rs`).
 4. **Runtime** — `agent/afk.rs`: `set_mode` replaces `set_afk`; `assess_afk(stretch_seq)`;
-   `finish_afk` / headless pass the current stretch. `agent.rs`: prompt-AFK flag and
-   `refresh_before_turn` (callers of `refresh_native_search` updated). `agent/setup.rs`:
-   `start_afk` sets the mode.
+   `finish_afk` / headless pass the current stretch; `headless.rs:1091` ends the run with
+   `set_mode(Auto, Cli)` when the mode is `Afk`. `agent.rs`: prompt-AFK flag and
+   `refresh_before_turn`, the only prompt rebuild site (callers of `refresh_native_search`
+   updated). `agent/setup.rs`: `start_afk` enters AFK via `set_mode(Afk, Cli)`.
 5. **CLI** — `cli.rs`: `--afk` `conflicts_with = "permission_mode"`; `lib.rs::session_mode`:
-   `--afk` yields `Afk`; doc comments.
+   `--afk` yields `Auto` (overriding `default_mode`); `start_afk` alone enters AFK; doc comments.
 6. **TUI** — `statusbar.rs`: `CYCLE`, `mode_label`, `mode_style`, badge; theme `mode_afk`.
    `ui/mod.rs`: `cycle_mode` with refusal skip, notices, idle review / in-turn queue; `/plan`
-   through `runtime.set_mode`. `ui/turn.rs`: drain `pending_afk_review` after a turn.
+   through `runtime.set_mode`, its exit from AFK using the same review path as the carousel.
+   Startup notice `fontaine-tui/src/lib.rs:462` ("/afk off turns it off" becomes "Shift+Tab leaves
+   it"); review confirmation `ui/commands/afk.rs:173` ("AFK mode is off; /afk turns it back on"
+   becomes a line saying the session is now in manual); `AfkSource` labels in
+   `fontaine-tui/src/reports.rs:462` gain `Cycle` and `Plan` arms. `ui/turn.rs`: drain `pending_afk_review` after a turn.
    `commands.rs` / `ui/commands/afk.rs`: drop on/off.
 7. **Docs** — see Documentation.
-8. **Decisions** — master plan: amend under the AFK subject (see Decisions below).
+8. **Decisions** — master plan: append the lines under `## Decisions` below to the end of the AFK
+   subsection of its `## Decisions` (after the "Measured on `evals/sequences/afk.jsonl`" line).
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/config.rs`, `gate.rs`, `permissions.rs`, `afk_report.rs`,
-  `native_search.rs`, `project_env.rs`, `statusline.rs`, `agent.rs`, `agent/afk.rs`,
+  `user_hooks.rs`, `user_shell.rs`, `native_search.rs`, `project_env.rs`, `statusline.rs`, `agent.rs`, `agent/afk.rs`,
   `agent/setup.rs`
 - `rust/fontaine/src/cli.rs`, `lib.rs`, `headless.rs`, `headless/afk.rs`
 - `rust/fontaine-tui/src/statusbar.rs`, `linear.rs`, `lib.rs`, `reports.rs`, `commands.rs`,
@@ -240,15 +260,23 @@ tracking and stop, breaker blocking, the `AfkApprover` backstop, guardian-disabl
 
 ## Decisions
 
+- 2026-11-05: AFK (#431): AFK is a sixth `PermissionMode` that decides as `auto`, superseding the 2026-11-04 flag-not-mode decision; only `--afk` and the carousel enter it, never a setting (`default_mode = "afk"` is rejected).
+- 2026-11-05: AFK (#431): AFK ends on Shift+Tab (or `/plan`), superseding "ends only with explicit `/afk off`, not on any keystroke"; the issue asks for carousel exit, leaving needs a deliberate press of the cycle binding, and leaving only makes the session ask the human again (manual is next), never looser.
+- 2026-11-05: AFK (#431): `/afk` and `/afk off` are removed; `/afk review` clears a stop and lands in manual (supersedes "leaves AFK off"); the `/guardian-disable` exclusion is unchanged, now triggered by the mode.
+- 2026-11-05: AFK (#431): Deviation from Claude Code: the carousel order is manual, plan, accept edits, auto, AFK (Claude Code: default, acceptEdits, plan, ...); reason: the issue orders modes by increasing autonomy.
+- 2026-11-05: AFK (#431): `--afk` conflicts with `--permission-mode`; `-p --afk` now decides as auto (previously manual plus AFK) since AFK decides as auto; manual plus AFK is no longer expressible, `dontAsk` covers it.
+- 2026-11-05: AFK (#431): A refused AFK entry from the carousel skips to manual.
+
 ## Documentation
 
-- `docs/afk.md`: entering and leaving (Shift+Tab, `--afk`), AFK decides as `auto`, review on
+- `docs/afk.md` (including :196, "keeps the denials a headless run already has"): entering and leaving (Shift+Tab, `--afk`), AFK decides as `auto`, review on
   leaving (deferred to turn end when mid-turn), `/afk review` returns to manual, commands table.
-- `docs/permissions.md`: modes table gains `afk`; not settable as `default_mode`.
-- `docs/tui.md`: carousel order, status label, `/afk` subcommands.
+- `docs/permissions.md`: modes table gains `afk`; not settable as `default_mode`; :30 ("AFK is not a mode but a flag").
+- `docs/tui.md`: carousel order, status label, `/afk` subcommands (lines 117, 176, 179, 219, 572).
 - `docs/headless.md`: `--afk` selects AFK mode (decides as `auto`), conflicts with
   `--permission-mode`.
-- `docs/configuration.md`, `docs/guardian.md`, `docs/index.md`: any `/afk` / `/afk off` mention.
+- `docs/configuration.md` (:1145 `cycle_mode` row cycle text; :1299 `--afk` row), `docs/guardian.md`, `docs/index.md`: any `/afk` / `/afk off` mention.
+- `research/research-claude-code-parity.md:258`: Shift+Tab "same names/semantics" (order now differs).
 - `CHANGELOG.md`: via `pr`.
 
 ## Testing Strategy
@@ -269,12 +297,12 @@ Unit tests:
 - `assess_afk(stretch_seq)` grades the named stretch when a newer one exists.
 - `parse_afk`: bare and `off` are errors naming Shift+Tab; `report`, `report all`, `review` parse.
 - Prompt: the rebuild-before-turn picks up AFK guidance after an in-turn switch.
-- TUI (`fontaine-tui/tests/afk.rs`, `ui/tests.rs`): Shift+Tab from `auto` enters AFK with the
+- TUI (`fontaine-tui/tests/afk.rs`, rewritten around Shift+Tab; `ui/tests.rs`): Shift+Tab from `auto` enters AFK with the
   notice; Shift+Tab from AFK while idle shows the review and the report and lands in manual;
   pressed during a turn, the review runs after the turn; refused entry (guardian off) shows the
-  error and lands in manual; a rebound `cycle_mode` key walks the same cycle; the TUI starts in
+  error and lands in manual; `/plan` from AFK shows the review and the report; a rebound `cycle_mode` key walks the same cycle; the TUI starts in
   `auto` with no mode configured.
-- Headless (`fontaine/tests/afk.rs`): `-p --afk` runs in AFK (the record's mode is `auto` with
+- Headless (`fontaine/tests/afk.rs`): drop `--permission-mode auto` from `run_afk` (lines 88-93; rejected by the new conflict); `-p --afk` runs in AFK (the record's mode is `auto` with
   `afk: true`, report present); `--afk --permission-mode manual` is a usage error.
 
 ## Open Questions
