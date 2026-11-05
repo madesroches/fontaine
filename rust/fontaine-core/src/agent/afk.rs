@@ -135,7 +135,14 @@ impl AgentRuntime {
     }
 
     /// The temperature stop the user reviewed may run again: AFK stays off.
-    pub fn review_afk_stop(&self) -> bool {
-        self.state.afk_review()
+    pub fn review_afk_stop(&mut self) -> bool {
+        let reviewed = self.state.afk_review();
+        if reviewed && let Err(e) = self.rebuild() {
+            self.approver.warn(&format!(
+                "the system prompt could not be rebuilt after the AFK review: {}",
+                chain(&e)
+            ));
+        }
+        reviewed
     }
 }

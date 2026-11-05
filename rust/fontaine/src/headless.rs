@@ -60,6 +60,11 @@ enum Input {
 }
 
 impl Input {
+    /// Whether no further message can follow. A stream of lines cannot say before it ends.
+    fn is_exhausted(&self) -> bool {
+        matches!(self, Input::Single(None))
+    }
+
     /// The next user message, `None` at the end of input. An error is a usage error.
     async fn next(&mut self) -> Result<Option<String>, String> {
         match self {
@@ -816,7 +821,7 @@ async fn handle_message(
             outcome: afk::stopped_outcome(std::time::Instant::now(), Vec::new()),
             goal: None,
             goal_ran: false,
-            afk: afk_report(runtime).await,
+            afk: afk_report(runtime),
         };
     }
     let mut involved = runtime.session.goal().is_active();
@@ -836,7 +841,7 @@ async fn handle_message(
                 outcome,
                 goal,
                 goal_ran: false,
-                afk: afk_report(runtime).await,
+                afk: afk_report(runtime),
             };
         }
         Some(GoalArg::Clear) => {
@@ -845,7 +850,7 @@ async fn handle_message(
                 outcome,
                 goal,
                 goal_ran: false,
-                afk: afk_report(runtime).await,
+                afk: afk_report(runtime),
             };
         }
         Some(GoalArg::Set(condition)) => {
@@ -862,7 +867,7 @@ async fn handle_message(
                     outcome,
                     goal: None,
                     goal_ran: false,
-                    afk: afk_report(runtime).await,
+                    afk: afk_report(runtime),
                 };
             }
             involved = true;
@@ -933,38 +938,47 @@ async fn handle_message(
         goal_ran: involved,
         afk: match blocked {
             Some(report) => Some(report),
-            None => afk_report(runtime).await,
+            None => afk_report(runtime),
         },
     }
 }
 
-/// The report of the AFK stretch, while AFK is on or a stop stands. A stretch that is blocked or
-/// stopped was reviewed when it ended; one still running is reviewed now.
-async fn afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
+/// The report of the AFK stretch, while AFK is on or a stop stands, built from the ledger alone.
+/// The paid evasion review runs once, when the run ends.
+fn afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
     let stopped = runtime.state.afk().stopped.is_some();
     if !runtime.state.afk_on() && !stopped {
         return None;
     }
-    let report = if stopped || runtime.unattended_blocked().is_some() {
-        match runtime.afk_reports(false) {
-            Ok(mut reports) => reports.pop(),
-            Err(e) => {
-                runtime
-                    .approver()
-                    .warn(&fontaine_tools::error_chain::chain(&e));
-                None
-            }
+    match runtime.afk_reports(false) {
+        Ok(mut reports) => reports.pop().map(ended),
+        Err(e) => {
+            runtime
+                .approver()
+                .warn(&fontaine_tools::error_chain::chain(&e));
+            None
         }
-    } else {
-        runtime.finish_afk().await
-    };
-    // The run is the stretch, so it has ended by the time a consumer reads its result.
-    report.map(|mut report| {
-        if report.outcome == AfkOutcome::Active {
-            report.outcome = AfkOutcome::Ended;
-        }
-        report
-    })
+    }
+}
+
+/// The run is the stretch, so it has ended by the time a consumer reads its result.
+fn ended(mut report: AfkReport) -> AfkReport {
+    if report.outcome == AfkOutcome::Active {
+        report.outcome = AfkOutcome::Ended;
+    }
+    report
+}
+
+/// The report of a stretch still running as the run ends, after its evasion review. A stretch
+/// stopped or blocked was reviewed when it ended, and one that is over needs no review.
+async fn final_afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
+    if !runtime.state.afk_on()
+        || runtime.state.afk().stopped.is_some()
+        || runtime.unattended_blocked().is_some()
+    {
+        return None;
+    }
+    runtime.finish_afk().await.map(ended)
 }
 
 /// Runs the headless session and returns the process exit code: 0 completed, 1 run error or a
@@ -988,6 +1002,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
 
     let mut last: Option<Handled> = None;
     let mut goal_failure: Option<String> = None;
+    let mut reviewed = false;
     let mut code = 0u8;
     let mut usage_warned = HashSet::new();
     loop {
@@ -1001,7 +1016,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
                 return 2;
             }
         };
-        let handled = match runtime.refresh_native_search() {
+        let mut handled = match runtime.refresh_native_search() {
             Ok(()) => handle_message(&runtime, &options, stream_events, text).await,
             Err(e) => Handled {
                 outcome: Outcome {
@@ -1017,11 +1032,10 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
                 },
                 goal: None,
                 goal_ran: false,
-                afk: afk_report(&runtime).await,
+                afk: afk_report(&runtime),
             },
         };
-        let outcome = &handled.outcome;
-        let failed = outcome.subtype != Subtype::Success;
+        let failed = handled.outcome.subtype != Subtype::Success;
         // A goal that ended impossible or paused did not finish the task, even when the turn
         // itself answered. A failed turn already says why.
         goal_failure = handled
@@ -1031,6 +1045,15 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             .filter(|_| handled.goal_ran && !failed);
         // A blocked or stopped AFK run did not finish what it was asked, whether or not a goal
         // ran and whatever its last turn answered.
+        // The review is paid for once, with the message that ends the run.
+        if (input.is_exhausted() || failed || goal_failure.is_some())
+            && !reviewed
+            && let Some(report) = final_afk_report(&runtime).await
+        {
+            handled.afk = Some(report);
+            reviewed = true;
+        }
+        let outcome = &handled.outcome;
         let afk_failure = handled.afk.as_ref().and_then(afk::failure);
         if afk_failure.is_some() {
             goal_failure = goal_failure.or(afk_failure);
@@ -1057,6 +1080,12 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             code = 1;
             break;
         }
+    }
+    if !reviewed
+        && let Some(last) = last.as_mut()
+        && let Some(report) = final_afk_report(&runtime).await
+    {
+        last.afk = Some(report);
     }
     // The run was the AFK stretch: close it in the ledger.
     if let Err(e) = runtime.state.set_afk(false, AfkSource::Cli) {

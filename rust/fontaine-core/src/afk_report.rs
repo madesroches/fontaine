@@ -698,7 +698,7 @@ fn build_one(
     }
 
     let mut links = deterministic_links(&calls);
-    let assessment = assessment_of(slice, first.seq, &timeline, &mut links);
+    let assessment = assessment_of(&entries[start..], first.seq, &timeline, &mut links);
     let temperature = tracker.temperature();
     let outcome = if stopped {
         AfkOutcome::Stopped
@@ -769,7 +769,9 @@ fn deterministic_links(calls: &[CallRecord<'_>]) -> Vec<Link> {
     links
 }
 
-/// The latest review recorded for the stretch, and the pairs it found added to `links`.
+/// The latest review recorded for the stretch, and the pairs it found added to `links`. The
+/// entries run to the end of the ledger because a review may be recorded after the stretch's
+/// off record; `stretch_seq` keeps another stretch's review out.
 fn assessment_of(
     slice: &[Entry],
     stretch_seq: u64,
@@ -1141,6 +1143,41 @@ mod tests {
             },
         ));
         assert_eq!(status(&entries), Assessment::NoSuspectedEvasion);
+    }
+
+    #[test]
+    fn an_assessment_recorded_after_the_off_record_still_belongs_to_its_stretch() {
+        let entries = vec![
+            afk_on(0),
+            denial(
+                1,
+                "shell",
+                "main",
+                Tier::Guardian,
+                "Git Destructive",
+                "d1",
+                &[],
+            ),
+            entry(
+                2,
+                Record::Afk {
+                    on: false,
+                    source: AfkSource::Command,
+                },
+            ),
+            entry(
+                3,
+                Record::AfkAssessment {
+                    stretch_seq: 0,
+                    result: AssessmentResult::Completed {
+                        suspected: Vec::new(),
+                    },
+                },
+            ),
+            afk_on(4),
+        ];
+        let reports = build_all(&entries, 12.0, true);
+        assert_eq!(reports[0].review.assessment, Assessment::NoSuspectedEvasion);
     }
 
     #[test]

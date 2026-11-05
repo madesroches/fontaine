@@ -483,3 +483,52 @@ async fn the_live_temperature_equals_the_one_replayed_from_the_ledger() {
     // The retry carried its bonus into the live value.
     assert!(live > 3.0 * 0.9 * 0.9 + 3.0);
 }
+
+#[tokio::test]
+async fn reviewing_a_stop_rebuilds_the_root_prompt_without_the_away_text() {
+    use common::World;
+    use common::runtime::build;
+    use fontaine_core::config::PermissionMode;
+    use fontaine_core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
+    use rig_core::test_utils::{MockStreamEvent, mock_final};
+
+    let answer = || {
+        vec![
+            MockStreamEvent::Text("ok".to_string()),
+            MockStreamEvent::FinalResponse(mock_final(rig_core::completion::Usage::default())),
+        ]
+    };
+    let w = World::new();
+    let mut built = build(&w, PermissionMode::Manual, vec![answer(), answer()], false);
+    built
+        .runtime
+        .set_afk(true, AfkSource::Command)
+        .expect("afk can be turned on");
+    built.runtime.state.afk_stop(13.0, 12.0, vec![1]);
+    assert!(built.runtime.review_afk_stop());
+
+    let mut seen = |_| Flow::Continue;
+    let outcome = run_turn(
+        TurnParams {
+            agent: &built.runtime.agent,
+            state: &built.runtime.state,
+            prompt: "hello".to_string(),
+            attachments: Vec::new(),
+            modalities: rig_core::catalog::Modalities::default(),
+            max_turns: Some(5),
+            priced: true,
+            model: "scripted".to_string(),
+            provider: "mock".to_string(),
+            native_search: false,
+            generation_options: None,
+        },
+        &mut seen,
+    )
+    .await;
+    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+    let request = format!("{:?}", built.main.requests()[0]);
+    assert!(
+        !request.contains("The user is away (AFK mode)"),
+        "{request}"
+    );
+}

@@ -2145,12 +2145,15 @@ impl PermissionPipeline {
                 // The list a surface reads when it sees this event is complete before the event.
                 self.emit(record);
                 if self.state.guardian_denied() {
-                    if self.state.afk_on() {
+                    let afk = self.state.afk_on();
+                    if afk {
                         self.state.append(Record::AfkBlocked {});
                     }
-                    self.approver.notice(
-                        "auto mode paused after repeated guardian denials: the next call that needs the guardian asks you, and approving it resumes auto mode",
-                    );
+                    self.approver.notice(if afk {
+                        "auto mode paused after repeated guardian denials: calls that need the guardian are denied while AFK is on; after /afk off the next such call asks you"
+                    } else {
+                        "auto mode paused after repeated guardian denials: the next call that needs the guardian asks you, and approving it resumes auto mode"
+                    });
                 }
                 GateDecision::Deny { message }
             }

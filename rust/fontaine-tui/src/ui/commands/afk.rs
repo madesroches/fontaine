@@ -83,19 +83,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     async fn afk_off(&mut self, runtime: &mut AgentRuntime) {
+        if !runtime.state.afk_on() {
+            self.app.transcript.notice("AFK mode is not on");
+            return;
+        }
+        self.app
+            .transcript
+            .notice("AFK mode off. Reviewing what happened…");
+        self.draw(runtime);
+        // The review is recorded before the off record so it lands inside the stretch it reviewed.
+        runtime.assess_afk().await;
         match runtime.set_afk(false, AfkSource::Command) {
-            Ok(true) => {
-                self.app
-                    .transcript
-                    .notice("AFK mode off. Reviewing what happened…");
-                self.draw(runtime);
-                if let Some(report) = runtime.finish_afk().await {
+            Ok(_) => {
+                if let Some(report) = runtime.afk_reports(false).ok().and_then(|mut r| r.pop()) {
                     self.app
                         .transcript
                         .notice(reports::afk_outcome_notice(&report));
                 }
             }
-            Ok(false) => self.app.transcript.notice("AFK mode is not on"),
             Err(refusal) => self.app.transcript.error(refusal.to_string()),
         }
     }
