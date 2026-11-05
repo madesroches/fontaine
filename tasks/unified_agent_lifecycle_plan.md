@@ -121,7 +121,8 @@ removes those rules instead. **Pick: the unified model.**
   `Failed`, and it is neither retired nor exhausted. That is exactly when `resume_blocker` allows a
   resume, so the human's resume and an agent's wake share one predicate. A `Failed` agent keeps
   showing `failed`, so its end stays visible, but it can be woken, as the human can already resume
-  one.
+  one. `agent_state` and export print "idle" only for a `Done` idle node, as `row_label` does; a
+  `Failed` node prints `failed`.
 - **`Node`** loses `teammate` and `idle` and gains `retired: bool`. `fn is_idle(&Node)` holds the
   derivation. `AgentRow.idle`, `job_output` and export read it.
 - **`finish`** returns whether the agent keeps its board tasks: `Done && !killed && !retired`. A
@@ -138,16 +139,22 @@ agent resumable for the session. An agent retires only when resuming it no longe
 
 1. **Cascade on a final end.** When an agent is killed, runs out of budget, or retires, every idle
    descendant retires with it. Their tasks are released, and the boards they own are dropped (see
-   below). A kill already stops the running descendants, so this makes "a kill is final" cover the
+   below). This makes "a kill is final" cover the
    whole subtree. A parent that merely goes idle leaves its idle children alone, because a later wake
    of the parent may need them. That is the reviewer scenario. A `Failed` end is idle, so it leaves
    its idle descendants alone; `finish` still kills its running descendants, as today, since the
-   parent is no longer running to join them. The cascade runs on every path that makes a node final,
+   parent is no longer running to join them. The cascade walks the whole subtree at every depth,
+   killing running descendants and retiring idle ones, including a running grandchild under an
+   idle child, and including in `kill_outcome`'s idle arm (today only its running arm collects
+   descendants, and only through running nodes). It runs on every path that makes a node final,
    including descendants that `finish` or the running arm of `kill_outcome` marks `Killed`, and a
-   budget-exhausted end through `conclude`.
+   budget-exhausted end through `conclude`. `finish` and `conclude` return the ids their cascade
+   retired, and `conclude` does what `spawn::retire` does for them: release tasks, drop boards and
+   append `finished: retired`.
 2. **`/clear`.** The `IdleTeammates` refusal goes away. `clear_ended` already drops every ended node,
-   idle ones included. It now returns the dropped ids, so `clear_conversation` releases their tasks
-   and drops their boards first. This is the existing `clear_ended` pruning (see `docs/tui.md`),
+   idle ones included. It now returns the dropped ids, split into the idle (`Done`) ones and the
+   rest, so `clear_conversation` releases all their tasks and drops their boards first, and appends
+   `finished: retired` only for the idle ones (a killed or failed agent keeps its own end). This is the existing `clear_ended` pruning (see `docs/tui.md`),
    which ends the resumability of pre-clear subagents.
 3. **Conversation rewind.** The `IdleTeammates` refusal goes away. A rewind that includes the
    conversation retires every idle agent. The refusal existed because a woken agent would be judged
@@ -251,8 +258,9 @@ waking do not depend on it.
 
 ### Text the model and the human read
 
-- Idle report line, for every agent: `Agent <name> (<id>, <type>) finished its turn and is idle;
-  send_message wakes it with its conversation intact.` Other ends keep `finished: <status>`.
+- Idle report line, for every agent whose turn ended `Done`: `Agent <name> (<id>, <type>) finished
+  its turn and is idle; send_message wakes it with its conversation intact.` Other ends, `Failed`
+  included, keep `finished: <status>`.
 - `agent` description, added after "returns a report": "When its turn ends it goes idle and keeps
   its conversation: `send_message` wakes it for follow-up on the same work. Start a new agent for
   new work." The `teammate` schema entry is removed.
@@ -266,6 +274,8 @@ waking do not depend on it.
 - **Agent list** (`agent_list.rs:69`): `running || viewed`, plus idle rows that own an in-progress
   task. An idle row without one leaves at once, as a `done` row does today. `ListRow`
   (`agent_list.rs:25-38`) gains `owns_task: bool`, filled in `fontaine-tui/src/ui/mod.rs` from the boards.
+  The `ENDED_LISTED` retention arm for `Failed`, `Killed` and `BudgetExhausted` rows is unchanged,
+  so a `Failed` idle row stays listed for that window.
 - **`/agents` panel:** every row with `idle` / `done` / … and the kill key on idle rows, as today.
   It lists each non-empty board under its owner's name instead of the single team board
   (`ui/mod.rs:368` builds `BoardRow`s per owner).
@@ -282,7 +292,9 @@ Claude Code resumes an agent from its transcript.
 - **What the ledger must hold.** The `spawned` record gains `model` (the concrete resolved reference that `tree.set_model` stores, not `$main`, so the agent revives on the exact model it used).
   Retiring appends `finished` with status `retired`. That covers the cascade, `/clear` and rewind,
   so a resumed session knows which agents are final without replaying those rules. `/clear` appends `retired`
-  for every node `clear_ended` prunes, so pruned agents stay gone on rebuild.
+  for each pruned node that was idle (`Done`), so pruned agents stay gone on rebuild. A pruned
+  killed or failed node keeps its own `finished` end: a `retired` record would overwrite it and
+  export would show it as `done`.
 - **Rebuild at startup** (`agent/setup.rs`, next to `seed_names`). The ledger view's `agents` are
   walked in spawn order. Each agent whose last `finished` status is `done` or `failed` becomes an
   idle node with no handle:
@@ -292,7 +304,8 @@ Claude Code resumes an agent from its transcript.
     the session itself resumes in the default mode (P6).
   - Its depth comes from the parent chain.
 
-  An agent whose parent is not rebuilt (final) is not rebuilt either. That is
+  An agent whose type is no longer in the registry is skipped, and so are its descendants. An
+  agent whose parent is not rebuilt (final) is not rebuilt either. That is
   the cascade rule applied at load. Killed, budget-exhausted, retired and still-running agents (the
   previous process's `kill_all` ended those as `killed`) are not rebuilt.
 - **Lazy handle.** A rebuilt node gets its `ChildHandle` on its first wake, not at startup, so a
@@ -302,8 +315,10 @@ Claude Code resumes an agent from its transcript.
   `CoreChildRunner` builds the rig agent over the existing per-agent log without launching a run.
   `wake_idle` and `message_agent` stay sync: for a handle-less node they claim it with
   `tree.resume` as usual, then spawn a task that awaits `revive`, installs the handle and starts
-  the run. A missing log, an unknown type or an unavailable model ends that run as `Failed` with
+  the run. A missing log or an unavailable model ends that run as `Failed` with
   that reason through the normal report path, which also releases the node's tasks.
+  `rig_memory::load` returns an empty conversation for a missing file, so `CoreChildRunner::revive`
+  checks that the agent's log exists and returns an error otherwise.
 - **Model.** The agent revives on the recorded model. A record from before this change has none,
   and revives on its type's model. A type from a project agent file always runs on the session
   model, as at spawn.
@@ -322,7 +337,7 @@ Claude Code resumes an agent from its transcript.
 ### Open points from the issue, settled
 
 - **Spend:** There is no per-subtree budget.
-- **One-shot reliance:** `job_output` treats idle as ended (`AgentState::Ended { status: "idle" }`),
+- **One-shot reliance:** `job_output` treats a `Done` idle agent as ended (`AgentState::Ended { status: "idle" }`; a `Failed` one reports `failed`),
   so a parent waiting on a child returns when the child's turn ends. Headless `settle` waits on
   `any_running` only, so idle agents never hold a run open.
 - **Nesting:** idle descendants follow the cascade rule. Boards nest through ownership, bounded by
@@ -338,7 +353,8 @@ Claude Code resumes an agent from its transcript.
      reason. `spawn::describe` gains the arm.
    - `deliver`: drop the kind check, and make it `DeliverError::NotRunning(Option<String>)`.
    - Add `retire(id)` (cascade) and `retire_all_idle()`, both returning ids. `kill_outcome` cascades
-     over idle descendants, and `clear_ended` returns the pruned ids. Delete `retire_idle`.
+     over the whole subtree, in its idle arm too. `finish` also returns the ids its cascade
+     retired. `clear_ended` returns the pruned ids, with the idle ones marked. Delete `retire_idle`.
    - `rows()` / `AgentState` use `is_idle`. `owns_task` is not on `AgentRow`; the TUI computes it (step 5).
 2. **Boards** (`fontaine-agents/src/tasks.rs`, `tools.rs`)
    - Add `Boards` (owner → `TaskBoard`, shared id counter, a store only for `ROOT_AGENT`'s board).
@@ -364,10 +380,12 @@ Claude Code resumes an agent from its transcript.
      `conclude` and the `board_update` tool.
    - `kill_agent`: release tasks and drop boards for every id the cascade ended. Add `pub fn retire`
      and `retire_all_idle` wrappers that do the same.
+   - `conclude`: for the ids the cascade retired (from `finish` or a budget-exhausted end), release
+     tasks, drop boards and append `finished: retired`, as `spawn::retire` does.
    - `SendMessageTool`: the new error text and description. Update the `agent` description.
 4. **Core** (`fontaine-core`)
    - `agent.rs::clear_conversation`: drop the `any_idle` refusal, and release tasks and drop boards
-     for the ids `clear_ended` returns.
+     for the ids `clear_ended` returns, and append `finished: retired` for its idle ones only.
    - `agent/rewind.rs`: drop the refusal. On a conversation rewind, call `spawn::retire_all_idle`.
    - `session.rs` / `rewind.rs`: delete the `IdleTeammates` variants.
    - `agent/setup.rs`: build `Boards` around the restored root board.
@@ -392,7 +410,8 @@ Claude Code resumes an agent from its transcript.
      `a_saved_board_loads_back_without_owners` (`fontaine-core/src/tasks.rs:83-92`).
    - `message_agent` (`fontaine-core/src/agent/messaging.rs`, `handle_of` near line 139) revives a
      handle-less node. Fix the stale doc comments at `fontaine-agents/src/tasks.rs:134-135` and
-     `fontaine-core/src/tasks.rs:1-2`. Update the `teams` doc at `fontaine-core/src/config.rs:~1873`.
+     `fontaine-core/src/tasks.rs:1-2`, `fontaine-tools/src/jobs.rs:134` and
+     `fontaine-core/src/user_hooks.rs:9-11`. Update the `teams` doc at `fontaine-core/src/config.rs:~1873`.
 7. **Docs** (see Documentation).
 8. **Plan Decisions** in `tasks/fontaine_harness_plan.md`, at the end of `### Agents`:
    - 2026-11-05 (supersedes the 2026-11-02 line "one team per session … only `main` starts a
@@ -426,6 +445,7 @@ Claude Code resumes an agent from its transcript.
 ## Files to Modify
 
 - `rust/fontaine-agents/src/tree.rs`, `spawn.rs`, `tasks.rs`, `tools.rs`, `runner.rs`, `root_ledger.rs`
+- `rust/fontaine-tools/src/jobs.rs`, `rust/fontaine-core/src/user_hooks.rs` (stale teammate comments)
 - `rust/fontaine-core/src/ledger.rs`, `child_runner.rs` (`revive`, `LedgerWindow`)
 - `rust/fontaine-core/src/agent.rs`, `agent/rewind.rs`, `agent/setup.rs`, `session.rs`, `agent/messaging.rs`, `config.rs` (`teams` doc), `export.rs`, the root
   `after_turn` path, `tasks.rs` (store unchanged; doc comment)
@@ -490,13 +510,15 @@ Claude Code resumes an agent from its transcript.
     `/clear`/`/rewind` refusal text.
   - The "Watching and stopping" paragraph: `idle` vs `done`, and boards per owner in the panel.
 - `docs/permissions.md` ("Agent teams", waking an idle teammate), `docs/tools.md` (the `agent` and
-  board tool text), `docs/index.md`, `docs/telemetry.md` (the idle / teammate wording) and
+  board tool text), `docs/index.md`, `docs/telemetry.md` (the agent-team / task-board wording at line 155 and its `#the-task-board` link) and
   `docs/tui.md` (`/rewind` and `/clear` no longer refused while an agent is idle, plus the other
   teammate wording): update every passage that describes teammates, idle teammates or the
   refusals. `docs/configuration.md`: the "named teammates that go idle" text and `teammate` being
   refused when teams are off.
 - Renaming "Agent teams" breaks the `#agent-teams` anchors in `docs/hooks.md`,
-  `docs/configuration.md`, `docs/tools.md` and `docs/tui.md`; update every `#agent-teams` link.
+  `docs/configuration.md`, `docs/tools.md` and `docs/tui.md`; update every `#agent-teams` link. Also update `docs/hooks.md:161`'s
+  `agents.md#the-idle-hand-off` link, which goes with the removed section, and the
+  `#the-task-board` links (`docs/permissions.md:201`, `docs/tools.md:36`, `docs/telemetry.md:155`).
 - `docs/hooks.md`: `teammate_idle` fires for an agent going idle with an in-progress task on its
   parent's board. `task_completed` applies on every board.
 - `docs/tui.md`: the agent-list rule for idle rows, and per-owner boards in the panel.
@@ -515,9 +537,12 @@ and boards:
 - `deliver` to a finished plain agent returns `Idle` for a reachable sender and `NotRunning(None)`
   for an unreachable one. A killed or retired target returns `NotRunning(Some(reason))`.
 - `retire` cascades over idle descendants only and returns their ids. A parent that merely idles
-  leaves its idle children alone. `kill_outcome` on an idle node retires its idle children.
+  leaves its idle children alone. `kill_outcome` on an idle node retires its idle children and kills a running grandchild under an
+  idle child.
 - `resume` refuses a retired node with `Refusal::Retired`. `finish` keeps tasks only for a `Done`
-  end. `clear_ended` returns the pruned idle ids.
+  end, and returns the ids its cascade retired. `clear_ended` returns every pruned id with the idle
+  ones marked, and `/clear` appends `retired` only for those: a pruned killed agent still exports
+  as killed.
 - `Boards`:
   - Ids are unique across owners. `create` lands on the caller's board.
   - `claim` / `complete` / `release` route by id to the caller's own or parent's board, and refuse a
@@ -558,11 +583,12 @@ Across `--resume` (unit tests on the ledger view and `AgentTree::rebuild`; one i
 - The ledger view's `AgentRecord` carries `model`, and `finished: retired` marks an agent final.
 - `rebuild`:
   - It adds idle nodes for `done` and `failed` agents only, and skips a child whose parent was not
-    rebuilt.
+    rebuilt and an agent whose type is no longer in the registry (with its descendants).
   - It re-derives tools as the type's cut to the parent's, and a mode never looser than the parent's
     posture.
 - A handle-less idle node: a wake calls `revive` once, then resumes. `revive` failing (missing log,
-  unknown type) ends the run `Failed` with that reason and releases its tasks.
+  unavailable model) ends the run `Failed` with that reason and releases its tasks. The missing-log
+  case is tested against the real `CoreChildRunner`, not only a fake.
 - `TaskBoard::restore` keeps an in-progress task owned by a rebuilt id and resets the others.
 - Integration (`fontaine-core/tests/agent_resume.rs`):
   - Run a session where root spawns a worker that ends `done`, then reopen the session from its
