@@ -12,8 +12,7 @@ archive has a signature that verifies against the public key checked into the re
 small verification module in the `fontaine` crate, built on `minisign-verify`, is the one
 verifier for the automatic updater and `fontaine update` (#175). The installers (#176) are shell
 and PowerShell scripts, so they do not call it; they share the checked-in key files, the
-trusted-comment format and the minisign-CLI checks. This issue ships that module, not its
-callers. The issue blocks #175, #176 and the first
+trusted-comment format and the minisign-CLI checks. The issue blocks #175, #176 and the first
 release tag (#109).
 
 ## Current State
@@ -188,7 +187,7 @@ plan ─▶ build-local-artifacts ─▶ build-global-artifacts ─▶ sign (env
 ### `dev` channel workflow (`.github/workflows/dev.yml`, new)
 
 ```
-workflow_run of CI completed on main, conclusion success, event push
+plan ─▶ workflow_run of CI completed on main, conclusion success, event push
              ─▶ build (dist build --artifacts=local per target, no tag, no secrets)
              ─▶ global (sha256.sum) ─▶ sign (env: dev-signing, main only, no reviewer)
              ─▶ draft prerelease dev-<run_number> ─▶ verify-draft (vs keys/dev.pub)
@@ -206,7 +205,7 @@ workflow_run of CI completed on main, conclusion success, event push
   only `host`, `verify-draft` and `publish` get `contents: write`.
 - The whole workflow runs only when `github.event.workflow_run.conclusion == 'success'`,
   `github.event.workflow_run.event == 'push'` and the repository variable
-  `FONTAINE_DEV_CHANNEL` is `enabled` (job-level `if:` on the first job).
+  `FONTAINE_DEV_CHANNEL` is `enabled` (job-level `if:` on `plan`, which supplies the matrix and the dist cache).
 - `sign` runs `rm -f <dir>/*-dist-manifest.json` on the downloaded artifacts before
   `release-sign.sh`, as in `release.yml`.
 - `concurrency: dev-channel` with `cancel-in-progress: false` is set at the workflow level and
@@ -269,7 +268,9 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
    - a placeholder key returns `NoKeyForChannel`;
    - the shipped key files test described under Keys.
 4. **Interop test.** `release_signature::cli_interop` is `#[ignore]`d and reads
-   `FONTAINE_SIGNING_FIXTURE_DIR`. It verifies files produced by the real `minisign` CLI and
+   `FONTAINE_SIGNING_FIXTURE_DIR`, the pristine signed directory, which holds the disposable public
+   key as `release.pub` (and the second disposable key as `dev.pub`). It loads both with
+   `TrustedKeys::from_pub_files` and verifies on the `release` channel. It verifies files produced by the real `minisign` CLI and
    `release-sign.sh`, so the CLI's output format and the Rust verifier cannot drift apart.
 5. **Scripts.** Write `.github/scripts/release-sign.sh` and `.github/scripts/release-verify.sh`
    (bash, `set -euo pipefail`), plus `.github/scripts/install-minisign.sh` which does the pinned
@@ -282,18 +283,19 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
      is exercised;
    - make dummy archives, their `.sha256` files and a `sha256.sum` over the archives;
    - run `release-sign.sh` (passing the disposable public key), then `release-verify.sh` and expect success;
-   - expect `release-verify.sh` to fail on each mutation: a deleted `.minisig`, a truncated
+   - run each mutation on a fresh copy of the pristine signed directory, and expect
+     `release-verify.sh` to fail on each: a deleted `.minisig`, a truncated
      `.minisig`, an archive signed by the other key, a tampered archive, an orphan `.minisig`,
      an empty directory, a wrong channel argument (`dev` against release-signed files), a file
      swap (archive A and its signature renamed onto B's name, with B's `.sha256` and `sha256.sum`
      regenerated so the failure comes only from the `file=` check), a checksum mismatch (one `.sha256` edited) and
      an unrecognised asset;
-   - run `cargo test -p fontaine release_signature -- --ignored` with the fixture directory set.
+   - copy the disposable public key into the pristine directory as `release.pub` (the second as
+     `dev.pub`), then run `cargo test -p fontaine --lib release_signature::cli_interop -- --ignored`
+     with `FONTAINE_SIGNING_FIXTURE_DIR` pointing at the pristine directory.
    Production secrets are never referenced: the job names no environment.
 7. **`release.yml`.** Add the `sign`, `verify-draft` and `publish` jobs, make `host` create a
-   draft and upload the signatures, remove `artifacts/dist-manifest.json` as well before
-   `gh release create`, run `rm -f <dir>/*-dist-manifest.json` in `sign` before
-   `release-sign.sh`, and scope permissions per job. Add `sign` to `host`'s
+   draft and upload the signatures, and scope permissions per job. Add `sign` to `host`'s
    `needs` and `&& needs.sign.result == 'success'` to its `if:`. Give `verify-draft` and
    `publish` plain success gating. Change `announce` to `needs: [plan, publish]` with
    `if: always() && needs.publish.result == 'success'`. Set `source-tarball = false` in
@@ -301,8 +303,7 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
    every release), so every published asset is signed. Update the hand-adaptation header
    comment.
 8. **`dev.yml`.** Add the new workflow as designed, with the same strict job chain as
-   `release.yml`, including the `rm -f <dir>/*-dist-manifest.json` in `sign` before
-   `release-sign.sh`.
+   `release.yml`.
 9. **Docs.** See Documentation.
 10. **Master plan.** Add the `Build and release` Decisions lines below, the `#425` item under the
     `**Repository and release**` sub-group of Release readiness in `## Remaining work`, and update
@@ -407,7 +408,6 @@ because they depend on GitHub-side environment settings and real tags, which no 
    `channel=release` and the file name.
 3. Set `FONTAINE_DEV_CHANNEL=enabled` and merge a PR. Expected: once CI succeeds on the merge
    commit, a published prerelease
-   `dev-<n>`, with no approval prompt, whose archives verify against `dev.pub` and fail against
-   `release.pub`.
+   `dev-<n>`, with no approval prompt, whose archives verify against `dev.pub`.
 4. Open a PR that adds `environment: release-signing` to a job. Expected: the deployment is
    refused by the tag-only rule, and the secret is never exposed.
