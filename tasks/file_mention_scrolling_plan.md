@@ -73,7 +73,7 @@ classification behind the `tracked_edit` fast path. That record must stay files-
    `tasks/`, which the directory itself would otherwise match). File entries are never
    skipped, so a fully typed file path stays first.
    Canonicalize candidate paths and queries to `/` for all containment, directory-skip,
-   basename, and common-prefix comparisons while retaining the directory marker in
+   and basename comparisons while retaining the directory marker in
    displayed and inserted strings; add a mixed-separator directory-descent regression
    test. `display()` (`complete.rs:44-49`) goes through `Path::strip_prefix` and
    `to_string_lossy()`, which drop a trailing separator, so it strips the trailing
