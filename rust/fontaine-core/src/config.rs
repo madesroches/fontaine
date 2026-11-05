@@ -367,6 +367,12 @@ pub struct Account {
     /// `openai-compatible` only: where to read the provider's own subscription quota for the
     /// status bar. Sends the account's key to `<base_url>/usages`.
     pub quota: Option<QuotaKind>,
+    /// `claude-subscription` only: the official `claude` executable; `claude` on `PATH` when
+    /// unset.
+    pub cli_path: Option<PathBuf>,
+    /// `claude-subscription` only: the CLI's own config directory, handed to it as
+    /// `CLAUDE_CONFIG_DIR` so two accounts can keep separate logins.
+    pub claude_config_dir: Option<PathBuf>,
     /// Each network key replaces the `[network]` value for this account only. Declared here
     /// rather than flattened from `NetworkSection`, since `deny_unknown_fields` and `flatten`
     /// do not combine.
@@ -426,6 +432,8 @@ impl Account {
             prompt_caching: None,
             cache_ttl: None,
             quota: None,
+            cli_path: None,
+            claude_config_dir: None,
             https_proxy: None,
             http_proxy: None,
             no_proxy: None,
@@ -1147,6 +1155,17 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
             format!("accounts.{name}.context_tokens"),
             format!("must be at least {MIN_OLLAMA_CONTEXT_TOKENS}"),
         ));
+    }
+    for (key, set) in [
+        ("cli_path", account.cli_path.is_some()),
+        ("claude_config_dir", account.claude_config_dir.is_some()),
+    ] {
+        if set && provider.credential() != crate::providers::CredentialPolicy::ExternalCli {
+            return Err((
+                format!("accounts.{name}.{key}"),
+                format!("not used by kind = \"{}\"", provider.name()),
+            ));
+        }
     }
     check_network_shape(&account.network())
         .map_err(|(key, message)| (format!("accounts.{name}.{key}"), message))?;

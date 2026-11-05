@@ -124,6 +124,18 @@ pub struct ModelHandle {
     /// The same model's completions with conversation-wide and static-prefix-only caching, when
     /// it was built from a client.
     scopes: Option<Scopes>,
+    /// The client the handle was built from, so a completion can be rebuilt for another caller.
+    client: Option<ClientRef>,
+}
+
+/// The client a handle was built from; only its presence shows in debug output.
+#[derive(Clone)]
+struct ClientRef(Client);
+
+impl fmt::Debug for ClientRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Client")
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -142,11 +154,12 @@ impl ModelHandle {
             output_probe: None,
             quota: None,
             scopes: None,
+            client: None,
         }
     }
 
     /// A handle on `reference`, completing through `client`.
-    pub fn from_client(reference: ModelRef, kind: AccountKind, client: &dyn AccountClient) -> Self {
+    pub fn from_client(reference: ModelRef, kind: AccountKind, client: &Client) -> Self {
         let mut handle = Self::guardian_from_client(reference, kind, client);
         handle.completion = handle.conversation_completion();
         handle
@@ -175,12 +188,26 @@ impl ModelHandle {
         handle
     }
 
+    /// This model for the agent `namespace`, with its conversation completion and both cached
+    /// scopes rebuilt through the client it came from. A kind that derives nothing from the
+    /// namespace gives the same completions back.
+    pub fn for_agent(&self, namespace: &str) -> Self {
+        let (Some(client), Some(_)) = (&self.client, &self.scopes) else {
+            return self.clone();
+        };
+        let model = &self.reference.model;
+        let conversation = client.0.completion_for_agent(model, namespace);
+        let mut handle = self.clone();
+        handle.completion = conversation.clone();
+        handle.scopes = Some(Scopes {
+            conversation,
+            guardian: client.0.guardian_completion_for_agent(model, namespace),
+        });
+        handle
+    }
+
     /// A handle for the guardian: the same model, with only the static prefix cacheable.
-    pub fn guardian_from_client(
-        reference: ModelRef,
-        kind: AccountKind,
-        client: &dyn AccountClient,
-    ) -> Self {
+    pub fn guardian_from_client(reference: ModelRef, kind: AccountKind, client: &Client) -> Self {
         let guardian = client.guardian_completion(&reference.model);
         let thinking_off = client.thinking_off(&reference.model);
         let output_probe = client.output_probe(&reference.model);
@@ -197,6 +224,7 @@ impl ModelHandle {
                 conversation,
                 guardian,
             }),
+            client: Some(ClientRef(client.clone())),
         }
     }
 
@@ -315,7 +343,7 @@ pub struct Models {
 pub struct ResolveParams<'a> {
     pub config: &'a Config,
     pub data_dir: &'a Path,
-    pub env: EnvLookup<'a>,
+    pub env: SharedEnv,
     /// `--model`, which wins over `[model] model`.
     pub model_override: Option<&'a str>,
     /// Sent to gateways that ask which session a request belongs to.
@@ -337,6 +365,10 @@ pub(crate) fn credential(
     env: EnvLookup<'_>,
     stored: &Credentials,
 ) -> Credential {
+    // The external program owns the login: nothing stored or named here may stand in for it.
+    if account.kind.provider().credential() == CredentialPolicy::ExternalCli {
+        return Credential::NoSource;
+    }
     match &account.api_key_env {
         Some(var) => match env(var).and_then(|v| v.into_string().ok()) {
             Some(value) if !value.is_empty() => Credential::Found(StoredCredential::ApiKey(value)),
@@ -365,7 +397,10 @@ pub(crate) fn credential(
 
 /// Whether the kind cannot be used without a credential.
 fn needs_credential(kind: AccountKind) -> bool {
-    kind.provider().credential() != CredentialPolicy::Optional
+    matches!(
+        kind.provider().credential(),
+        CredentialPolicy::Required | CredentialPolicy::SignIn
+    )
 }
 
 fn missing_credential_hint(name: &str) -> String {
@@ -377,15 +412,15 @@ fn missing_credential_hint(name: &str) -> String {
 fn client_for(
     name: &str,
     account: &Account,
-    env: EnvLookup<'_>,
+    env: &SharedEnv,
     src: &Sources<'_>,
     network: &LoadedNetwork,
 ) -> Result<Client, String> {
     let provider = account.kind.provider();
-    let credential = match credential(name, account, env, &src.stored) {
+    let credential = match credential(name, account, &**env, &src.stored) {
         Credential::Found(found) => Some(found),
         Credential::NoSource => match provider.credential() {
-            CredentialPolicy::Optional => None,
+            CredentialPolicy::Optional | CredentialPolicy::ExternalCli => None,
             CredentialPolicy::Required => {
                 return Err(format!(
                     "account `{name}` has no credential; {}",
@@ -407,6 +442,7 @@ fn client_for(
         data_dir: src.data_dir,
         session_id: src.session_id,
         network,
+        env: env.clone(),
     })
 }
 
@@ -425,6 +461,10 @@ pub fn account_network(config: &Config, account: &str) -> Result<LoadedNetwork, 
 /// transport error, so the walk starts from it directly. Causes whose text is already shown are
 /// skipped, since wrappers often repeat their source's message.
 fn with_causes(error: &ProviderError) -> String {
+    // The Claude CLI adapter's failures are already complete sentences for a person.
+    if let Some(claude) = crate::providers::claude_subscription::claude_error(error) {
+        return fontaine_tools::error_chain::chain(claude);
+    }
     let mut text = error.to_string();
     let mut source = match error {
         ProviderError::Http(transport) => std::error::Error::source(&**transport),
@@ -490,38 +530,71 @@ fn unknown_model(reference: &ModelRef, available: &[String]) -> ModelError {
     ))
 }
 
+/// How long listing one account's models may take while a model is being resolved. The kinds that
+/// discover through a local program need more than a picker's wait, but nothing is unbounded.
+pub const RESOLVE_LISTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
+
+/// The ids `account` offers: its provider's listing, narrowed to the account's own `models` when
+/// the kind has to be listed to be usable. Bounded by [`RESOLVE_LISTING_TIMEOUT`].
+async fn list_models(client: &Client, name: &str) -> Result<Vec<String>, ModelError> {
+    match tokio::time::timeout(RESOLVE_LISTING_TIMEOUT, client.list()).await {
+        Ok(Ok(models)) => Ok(models),
+        Ok(Err(e)) => Err(ModelError::Provider(format!(
+            "cannot list the models of account `{name}`: {}",
+            with_causes(&e)
+        ))),
+        Err(_) => Err(ModelError::Provider(format!(
+            "listing the models of account `{name}` timed out after {RESOLVE_LISTING_TIMEOUT:?}"
+        ))),
+    }
+}
+
+/// The ids to check a requested model against. A configured `models` list stands in for a
+/// listing, except for a kind whose models can only be built after a listing: there it narrows
+/// the completed listing and never replaces it.
+async fn models_of(
+    client: &Client,
+    name: &str,
+    account: &Account,
+) -> Result<Vec<String>, ModelError> {
+    match &account.models {
+        Some(list) if !account.kind.provider().requires_discovery() => Ok(list.clone()),
+        Some(allowed) => Ok(list_models(client, name)
+            .await?
+            .into_iter()
+            .filter(|id| allowed.contains(id))
+            .collect()),
+        None => list_models(client, name).await,
+    }
+}
+
+/// The error for a model that is not in the checked list: the kind's own reason when it has one.
+fn not_offered(client: &Client, reference: &ModelRef, available: &[String]) -> ModelError {
+    match client.unavailable_reason(&reference.model) {
+        Some(reason) => config_error(reason),
+        None => unknown_model(reference, available),
+    }
+}
+
 /// The main model's client, its model ids and its handle.
-///
-/// Generic over the environment lookup so a caller whose lookup is `Sync` gets a future it can
-/// send to another task.
-async fn resolve_main_model<E: Fn(&str) -> Option<std::ffi::OsString> + ?Sized>(
+async fn resolve_main_model(
     config: &Config,
     src: &Sources<'_>,
-    env: &E,
+    env: &SharedEnv,
     text: &str,
     what: &str,
 ) -> Result<(ModelRef, Client, Vec<String>, ModelHandle), ModelError> {
     let main_ref = parse_reference(text, what)?;
     let main_account = account_of(config, &main_ref, what)?;
     let main_client = {
-        let lookup = |name: &str| env(name);
         let network = account_network(config, &main_ref.account).map_err(config_error)?;
-        client_for(&main_ref.account, main_account, &lookup, src, &network).map_err(config_error)?
+        client_for(&main_ref.account, main_account, env, src, &network).map_err(config_error)?
     };
-    let main_models = match &main_account.models {
-        Some(list) => list.clone(),
-        None => main_client.list().await.map_err(|e| {
-            ModelError::Provider(format!(
-                "cannot list the models of account `{}`: {}",
-                main_ref.account,
-                with_causes(&e)
-            ))
-        })?,
-    };
+    let main_models = models_of(&main_client, &main_ref.account, main_account).await?;
     if !lists(main_account.kind, &main_models, &main_ref.model) {
-        return Err(unknown_model(&main_ref, &main_models));
+        return Err(not_offered(&main_client, &main_ref, &main_models));
     }
-    let main = ModelHandle::from_client(main_ref.clone(), main_account.kind, main_client.as_ref());
+    let main = ModelHandle::from_client(main_ref.clone(), main_account.kind, &main_client);
     Ok((main_ref, main_client, main_models, main))
 }
 
@@ -530,10 +603,27 @@ async fn resolve_main_model<E: Fn(&str) -> Option<std::ffi::OsString> + ?Sized>(
 /// An account without a `models` list is listed through the provider, lazily and only for the
 /// main model's account. The guardian's model is checked against a list only when that list is
 /// known without a call to the guardian's own credentials; its availability is otherwise the
-/// guardian's startup concern and fails closed. With no `[guardian] model`, the default is the
-/// highest-ranked validated model an account offers, and the main model when none does.
+/// guardian's startup concern and fails closed. A kind that needs its listing to build a model
+/// is always listed, for the main model and the guardian alike. With no `[guardian] model`, the
+/// default is the highest-ranked validated model an account offers, and the main model when none
+/// does.
 pub async fn resolve(params: &ResolveParams<'_>) -> Result<Models, ModelError> {
     resolve_with(params, &validated_models()).await
+}
+
+/// What the user should know before relying on the account `reference` names, when its kind has
+/// something to say.
+pub fn selection_notice(config: &Config, reference: &ModelRef) -> Option<crate::notice::Notice> {
+    let account = config.accounts.get(&reference.account)?;
+    let detail = account.kind.provider().selection_notice()?;
+    Some(crate::notice::Notice::warning(
+        format!(
+            "Account `{}` ({}) is experimental",
+            reference.account,
+            account.kind.as_str()
+        ),
+        Some(detail.to_string()),
+    ))
 }
 
 /// [`resolve`] against a given ranked list of validated guardian models instead of the shipped
@@ -551,27 +641,31 @@ pub async fn resolve_with(
         })?;
     let stored = Sources::load(params.data_dir, params.session_id.as_deref())?;
     let (main_ref, main_client, main_models, main) =
-        resolve_main_model(config, &stored, params.env, main_text, "model").await?;
+        resolve_main_model(config, &stored, &params.env, main_text, "model").await?;
 
     let mut notices = Vec::new();
+    notices.extend(selection_notice(config, &main_ref));
     let (guardian, guardian_choice) = match config.guardian.model.as_deref() {
         Some(text) => (
             resolve_guardian(
                 config,
                 &stored,
-                params.env,
+                &params.env,
                 text,
                 (&main_ref, &main_client, &main_models),
-            )?,
+            )
+            .await?,
             GuardianChoice::Pinned,
         ),
         None => match default_guardian(
             validated,
             config,
             &stored,
-            params.env,
+            &params.env,
             (&main_ref, &main_client, &main_models),
-        ) {
+        )
+        .await
+        {
             Some(guardian) => (guardian, GuardianChoice::Default),
             None => {
                 notices.push(crate::notice::Notice::warning(
@@ -594,10 +688,10 @@ pub async fn resolve_with(
     })
 }
 
-fn resolve_guardian(
+async fn resolve_guardian(
     config: &Config,
     stored: &Sources<'_>,
-    env: EnvLookup<'_>,
+    env: &SharedEnv,
     text: &str,
     main: (&ModelRef, &Client, &[String]),
 ) -> Result<GuardianModel, ModelError> {
@@ -610,14 +704,16 @@ fn resolve_guardian(
         Some((main_ref, main_models)),
         Some(main_client),
     )
+    .await
 }
 
 /// The guardian `text` names. The main model's account listing vouches for a guardian on that
-/// account, and reuses the main client rather than building another.
-fn build_guardian(
+/// account, and reuses the main client rather than building another. A kind that must be listed
+/// to build a model is listed here whatever else is known, so its model facts exist.
+async fn build_guardian(
     config: &Config,
     stored: &Sources<'_>,
-    env: EnvLookup<'_>,
+    env: &SharedEnv,
     text: &str,
     main: Option<(&ModelRef, &[String])>,
     main_client: Option<&Client>,
@@ -625,28 +721,45 @@ fn build_guardian(
     let reference = parse_reference(text, "guardian model")?;
     let account = account_of(config, &reference, "guardian model")?;
     let same_account = main.is_some_and(|(main_ref, _)| reference.account == main_ref.account);
+    let discovers = account.kind.provider().requires_discovery();
 
     let known: Option<&[String]> = match (&account.models, main) {
-        (Some(list), _) => Some(list),
+        (Some(list), _) if !discovers => Some(list),
         (None, Some((_, listing))) if same_account => Some(listing),
+        // The main account's listing is a completed discovery narrowed by `models`.
+        (Some(_), Some((_, listing))) if same_account && main_client.is_some() => Some(listing),
         _ => None,
     };
     if let Some(list) = known
         && !lists(account.kind, list, &reference.model)
     {
-        return Err(unknown_model(&reference, list));
+        return Err(match main_client.filter(|_| same_account) {
+            Some(client) => not_offered(client, &reference, list),
+            None => unknown_model(&reference, list),
+        });
     }
 
-    let client = match main_client {
-        Some(client) if same_account => Ok(client.clone()),
-        _ => account_network(config, &reference.account)
+    let reused = main_client.filter(|_| same_account && (known.is_some() || !discovers));
+    let client = match reused {
+        Some(client) => Ok(client.clone()),
+        None => account_network(config, &reference.account)
             .and_then(|network| client_for(&reference.account, account, env, stored, &network)),
+    };
+    let client = match client {
+        Ok(client) if discovers && reused.is_none() => {
+            match models_of(&client, &reference.account, account).await {
+                Ok(listing) if lists(account.kind, &listing, &reference.model) => Ok(client),
+                Ok(listing) => return Err(not_offered(&client, &reference, &listing)),
+                Err(e) => Err(e.to_string()),
+            }
+        }
+        other => other,
     };
     Ok(match client {
         Ok(client) => GuardianModel::Ready(ModelHandle::guardian_from_client(
             reference,
             account.kind,
-            client.as_ref(),
+            &client,
         )),
         Err(reason) => GuardianModel::Unavailable { reference, reason },
     })
@@ -671,6 +784,14 @@ fn account_has(
     stored: &Sources<'_>,
 ) -> bool {
     let stored = &stored.stored;
+    // Its listing is how a discovering kind says what it offers, so only a configured list can
+    // rule it out here; the guardian's resolution lists it.
+    if account.kind.provider().requires_discovery() {
+        return account
+            .models
+            .as_ref()
+            .is_none_or(|list| lists(account.kind, list, model));
+    }
     if needs_credential(account.kind)
         && !matches!(credential(name, account, env, stored), Credential::Found(_))
     {
@@ -707,22 +828,22 @@ fn available_validated(
     out
 }
 
-fn default_guardian(
+async fn default_guardian(
     validated: &[ModelEntry],
     config: &Config,
     stored: &Sources<'_>,
-    env: EnvLookup<'_>,
+    env: &SharedEnv,
     main: (&ModelRef, &Client, &[String]),
 ) -> Option<GuardianModel> {
-    available_validated(validated, config, stored, env, (main.0, main.2))
-        .into_iter()
-        .find_map(|reference| {
-            let text = reference.to_string();
-            match resolve_guardian(config, stored, env, &text, main) {
-                Ok(ready @ GuardianModel::Ready(_)) => Some(ready),
-                _ => None,
-            }
-        })
+    for reference in available_validated(validated, config, stored, &**env, (main.0, main.2)) {
+        let text = reference.to_string();
+        if let Ok(ready @ GuardianModel::Ready(_)) =
+            resolve_guardian(config, stored, env, &text, main).await
+        {
+            return Some(ready);
+        }
+    }
+    None
 }
 
 /// How long one account may take to list its models before the picker shows it as failed.
@@ -775,47 +896,57 @@ impl Switcher {
     pub async fn main(&self, text: &str) -> Result<(ModelHandle, Vec<String>), ModelError> {
         let stored = self.sources()?;
         let (_, _, listing, handle) =
-            resolve_main_model(&self.config, &stored, &*self.env, text, "model").await?;
+            resolve_main_model(&self.config, &stored, &self.env, text, "model").await?;
         Ok((handle, listing))
+    }
+
+    /// The notice for the account of a main or child model that was just switched onto.
+    pub fn selection_notice(&self, reference: &ModelRef) -> Option<crate::notice::Notice> {
+        selection_notice(&self.config, reference)
     }
 
     /// The guardian model `text` names. An account without a credential gives an unavailable
     /// guardian, not an error: it fails closed and the user is asked what to do. `main` is the
     /// main model and the listing of its account, which vouches for a guardian on that account.
-    pub fn guardian(
+    pub async fn guardian(
         &self,
         text: &str,
         main: Option<(&ModelRef, &[String])>,
     ) -> Result<GuardianModel, ModelError> {
         let stored = self.sources()?;
-        build_guardian(&self.config, &stored, &*self.env, text, main, None)
+        build_guardian(&self.config, &stored, &self.env, text, main, None).await
     }
 
     /// The model `$guardian_default` stands for: the top-ranked validated guardian model an
     /// account offers, or `None` when none is available.
-    pub fn guardian_default(&self, main: &ModelRef, main_models: &[String]) -> Option<ModelHandle> {
+    pub async fn guardian_default(
+        &self,
+        main: &ModelRef,
+        main_models: &[String],
+    ) -> Option<ModelHandle> {
         let stored = self.sources().ok()?;
-        available_validated(
+        let candidates = available_validated(
             &validated_models(),
             &self.config,
             &stored,
             &*self.env,
             (main, main_models),
-        )
-        .into_iter()
-        .find_map(|reference| {
-            match build_guardian(
+        );
+        for reference in candidates {
+            if let Ok(GuardianModel::Ready(handle)) = build_guardian(
                 &self.config,
                 &stored,
-                &*self.env,
+                &self.env,
                 &reference.to_string(),
                 Some((main, main_models)),
                 None,
-            ) {
-                Ok(GuardianModel::Ready(handle)) => Some(handle),
-                _ => None,
+            )
+            .await
+            {
+                return Some(handle);
             }
-        })
+        }
+        None
     }
 
     /// The models of every account, or only of those named in `only`, sorted by account name.
@@ -857,17 +988,24 @@ impl Switcher {
         };
         let stored = &stored;
         futures::future::join_all(wanted.map(|(name, account)| async move {
-            let models = if let Some(list) = &account.models {
+            let discovers = account.kind.provider().requires_discovery();
+            let models = if let Some(list) = account.models.as_ref().filter(|_| !discovers) {
                 Ok(list.clone())
             } else if let Some(main) = main.filter(|main| *name == main.0.account) {
                 Ok(main.1.to_vec())
             } else {
                 let client = account_network(&self.config, name)
-                    .and_then(|network| client_for(name, account, &*self.env, stored, &network));
+                    .and_then(|network| client_for(name, account, &self.env, stored, &network));
                 match client {
                     Err(reason) => Err(reason),
                     Ok(client) => match tokio::time::timeout(timeout, client.list()).await {
-                        Ok(Ok(models)) => Ok(models),
+                        Ok(Ok(models)) => Ok(match &account.models {
+                            Some(allowed) => models
+                                .into_iter()
+                                .filter(|id| allowed.contains(id))
+                                .collect(),
+                            None => models,
+                        }),
                         Ok(Err(e)) => Err(with_causes(&e)),
                         Err(_) => Err(format!("listing timed out after {timeout:?}")),
                     },
@@ -915,4 +1053,29 @@ impl Switcher {
         }
         out
     }
+}
+
+/// The check `/login` runs for an account whose login an external program owns: connect the
+/// kind, list its models (which makes the program's own checks) and summarize.
+pub(crate) async fn external_check(
+    name: &str,
+    account: &Account,
+    data_dir: &Path,
+    network: &LoadedNetwork,
+    env: SharedEnv,
+) -> Result<String, String> {
+    let stored = Credentials::default();
+    let src = Sources {
+        stored,
+        data_dir,
+        session_id: None,
+    };
+    let client = client_for(name, account, &env, &src, network)?;
+    let models = models_of(&client, name, account)
+        .await
+        .map_err(|e| fontaine_tools::error_chain::chain(&e))?;
+    Ok(format!(
+        "`{name}` is ready: {} model(s) available through the external login",
+        models.len()
+    ))
 }

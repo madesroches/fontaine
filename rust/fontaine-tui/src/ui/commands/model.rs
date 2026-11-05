@@ -101,7 +101,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.open_guardian_picker(runtime).await;
             return;
         }
-        match runtime.set_guardian_model(reference) {
+        match runtime.set_guardian_model(reference).await {
             Ok(switched) => {
                 let guardian = runtime.state.guardian();
                 match guardian.unavailable_reason() {
@@ -239,9 +239,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// The human's answer to an unavailable guardian: the session is changed first, then the
     /// waiting call is told what to do.
-    pub(crate) fn answer_unavailable(&mut self, runtime: &AgentRuntime, answer: UnavailableAnswer) {
+    pub(crate) async fn answer_unavailable(
+        &mut self,
+        runtime: &AgentRuntime,
+        answer: UnavailableAnswer,
+    ) {
         let choice = match answer {
-            UnavailableAnswer::Retry => match runtime.retry_guardian() {
+            UnavailableAnswer::Retry => match runtime.retry_guardian().await {
                 Ok(true) => UnavailableChoice::Retry,
                 Ok(false) => {
                     self.app
@@ -256,7 +260,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     UnavailableChoice::Deny
                 }
             },
-            UnavailableAnswer::Pick(reference) => match runtime.use_guardian(&reference) {
+            UnavailableAnswer::Pick(reference) => match runtime.use_guardian(&reference).await {
                 Ok(Some(switched)) => {
                     self.remember_model(PickerPurpose::Guardian, &switched.reference);
                     self.finish_switch(

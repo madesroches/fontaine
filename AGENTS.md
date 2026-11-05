@@ -130,7 +130,9 @@ all tests pass:
 - The eval harness in `evals/` runs manually / nightly against live guardian models — it is
   **not** a CI gate.
 - `claude -p` may be run manually or from `evals/` to capture Claude Code baselines and
-  compare Fontaine's behavior as features land — never from unit/integration tests or CI.
+  compare Fontaine's behavior as features land — never from unit/integration tests or CI. The
+  `claude-subscription` provider runs the official CLI as its production model transport; its tests
+  use the portable fake `claude_cli_double`, never the real binary, and live qualification is manual.
 - Integration tests drive the core through the headless `fontaine -p` surface.
 - Terminal layout bugs (live area, scrollback) must be reproduced in a real tmux, not only in
   `TestBackend`: see `tasks/design/testing.md`, "Reproducing terminal layout bugs".

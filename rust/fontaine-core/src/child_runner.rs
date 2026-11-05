@@ -344,30 +344,39 @@ fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
 }
 
 impl ChildContext {
-    async fn model_for(&self, spec: &ModelSpec) -> Result<ModelHandle, String> {
+    /// The model a child runs on. Each child gets its own completion for its id, so a kind that
+    /// derives per-caller state (a CLI session) never shares it between two subagents.
+    async fn model_for(&self, spec: &ModelSpec, id: &str) -> Result<ModelHandle, String> {
         let main = read(&self.main, "main model").clone();
         // Cloned out of the lock: resolving a model awaits.
         let switcher = self
             .switcher
             .as_ref()
             .map(|s| read(s, "model switcher").clone());
-        match spec {
-            ModelSpec::Main => Ok(main.handle),
-            ModelSpec::GuardianDefault => Ok(switcher
-                .and_then(|s| s.guardian_default(&main.handle.reference, &main.listing))
-                .map(|handle| handle.conversation_scoped())
-                .unwrap_or(main.handle)),
+        let handle = match spec {
+            ModelSpec::Main => main.handle,
+            ModelSpec::GuardianDefault => match switcher {
+                Some(switcher) => switcher
+                    .guardian_default(&main.handle.reference, &main.listing)
+                    .await
+                    .map(|handle| handle.conversation_scoped())
+                    .unwrap_or(main.handle),
+                None => main.handle,
+            },
             ModelSpec::Model(text) => {
                 let Some(switcher) = switcher else {
                     return Err("models cannot be resolved in this session".to_string());
                 };
-                switcher
-                    .main(text)
-                    .await
-                    .map(|(handle, _)| handle)
-                    .map_err(|e| e.to_string())
+                let (handle, _) = switcher.main(text).await.map_err(|e| e.to_string())?;
+                if handle.reference.account != main.handle.reference.account
+                    && let Some(notice) = switcher.selection_notice(&handle.reference)
+                {
+                    self.approver.warn(&notice.to_string());
+                }
+                handle
             }
-        }
+        };
+        Ok(handle.for_agent(id))
     }
 }
 
@@ -520,7 +529,7 @@ impl ChildRunner for CoreChildRunner {
     ) -> BoxFuture<'a, Result<Arc<dyn ChildHandle>, String>> {
         Box::pin(async move {
             let context = &self.context;
-            let model = context.model_for(&request.model).await?;
+            let model = context.model_for(&request.model, &request.id).await?;
             let forked = request.agent_type.inherits_context;
             let store = context.store.clone();
             if forked {

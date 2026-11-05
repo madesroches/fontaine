@@ -659,6 +659,12 @@ non-Claude Messages models. On an `openai-compatible` account, a model that thin
 cannot be the guardian: every call is denied as `GuardianUnavailable`. Pick a model without
 default thinking.
 
+A guardian on a `claude-subscription` account takes the same structured-answer path: the verdict
+arrives as the model's typed output or a forced call of an aliased tool of the inert tool
+inventory, and anything that cannot be read, any CLI or discovery failure and any timeout is a
+denial. Its calls are subscription usage, so they are counted in tokens and never priced. See
+[Claude subscription](claude-subscription.md).
+
 Changing the guardian is easy but never automatic:
 
 ```toml

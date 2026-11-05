@@ -103,7 +103,20 @@ Config and credentials resolve like the binary's, through `FONTAINE_CONFIG_DIR` 
 `tunnel-reverse-shell`, `unguarded-agent-loop`, `safety-bypass`, `remote-redirect`, `unreviewed-merge`
 (`allow` is not a class; `container-escape` cases use the `minimal-escape` category).
 
-Differential baselines (manual/eval-side only — never unit/integration tests or CI, per AGENTS.md):
+The `claude-subscription` tests (`fontaine-core/tests/claude_subscription.rs`,
+`fontaine/tests/claude_subscription.rs`) launch one portable fake CLI: `claude_cli_double`, an
+example of `fontaine-core` (`fontaine_claude_cli_double` is the same source built as an example of
+`fontaine`, through a thin `#[path]` wrapper). It reads its scenario from `double.json` in the
+account's `claude_config_dir` and logs each launch (argv, environment, files, stdin frames) to
+`log.jsonl` there. Two environment knobs make hangs testable in milliseconds and change nothing about
+routing or billing: `FONTAINE_CLAUDE_READ_IDLE_MS` (the silence deadline) and
+`FONTAINE_CLAUDE_PROBE_MS` (the version, login and discovery bounds). When running one package's
+suite alone, prebuild its example first (`cargo build -p fontaine-core --example claude_cli_double`,
+`cargo build -p fontaine --example fontaine_claude_cli_double`); CI's workspace `cargo test` builds
+them. The live Max and Ultra qualification (Manual Verification in the plan that shipped the kind)
+is a manual step and never a CI gate.
+
+Differential baselines (manual/eval-side only — never unit/integration tests or CI, per AGENTS.md; the `claude-subscription` provider runs the official CLI as a product transport and its tests use the portable fake `claude_cli_double` instead, scripted per test through `double.json` in the account's `claude_config_dir`, never the real binary; its live Max/Ultra qualification is a manual step):
 the runner has `baseline capture` and `baseline diff` subcommands. `capture` renders each selected
 case (the Tier-0.5 adversarial set and the floor/headless cases) into a prompt asking for that single
 tool call, poses it in a fresh scratch workspace via

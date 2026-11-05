@@ -306,13 +306,17 @@ impl World {
             .iter()
             .map(|(k, v)| (k.clone(), v.into()))
             .collect();
+        let lookup_env: fontaine_core::agent::EnvLookup = {
+            let lookup = lookup.clone();
+            Arc::new(move |name: &str| lookup.get(name).cloned())
+        };
         let resolved = if self.routed {
             Some(
                 futures::executor::block_on(fontaine_core::models::resolve(
                     &fontaine_core::models::ResolveParams {
                         config: &config,
                         data_dir: &self.data,
-                        env: &|name| lookup.get(name).cloned(),
+                        env: lookup_env.clone(),
                         model_override: None,
                         session_id: None,
                     },

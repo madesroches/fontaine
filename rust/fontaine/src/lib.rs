@@ -42,7 +42,7 @@ use uuid::Uuid;
 use cli::{Cli, InputFormat, OutputFormat};
 use telemetry::{DebugSink, InstallParams};
 
-pub type EnvFn = Box<dyn Fn(&str) -> Option<OsString>>;
+pub type EnvFn = Arc<dyn Fn(&str) -> Option<OsString> + Send + Sync>;
 pub type EnvNamesFn = Box<dyn Fn() -> Vec<OsString>>;
 
 /// The process environment, injected so only `main` touches the real one.
@@ -60,7 +60,7 @@ impl Host {
     pub fn from_process() -> std::io::Result<Host> {
         Ok(Host {
             cwd: std::env::current_dir()?,
-            env: Box::new(|name| std::env::var_os(name)),
+            env: Arc::new(|name| std::env::var_os(name)),
             default_config_dir: ::dirs::config_dir(),
             default_data_dir: ::dirs::data_dir(),
             env_names: Box::new(|| std::env::vars_os().map(|(name, _)| name).collect()),
@@ -283,6 +283,23 @@ fn screen_reader_mode(
 }
 
 pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode {
+    let args: Vec<OsString> = args.into_iter().collect();
+    // The Claude CLI adapter starts this executable as its inert tool inventory; the mode is
+    // hidden and takes no part in the command line.
+    if let Some(manifest) =
+        fontaine_core::providers::claude_subscription::inventory::from_args(args.clone())
+    {
+        return match fontaine_core::providers::claude_subscription::inventory::serve(&manifest) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!(
+                    "fontaine: the tool inventory failed: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                );
+                ExitCode::from(1)
+            }
+        };
+    }
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(e) => {
@@ -878,7 +895,7 @@ async fn resolve_models(
     models::resolve(&ResolveParams {
         config,
         data_dir: &dirs.data,
-        env: &*host.env,
+        env: shared_env(host),
         model_override: cli.model.as_deref(),
         session_id: Some(session_id.to_string()),
     })
@@ -911,17 +928,10 @@ async fn start_scanner(launch: &Launch<'_>, prep: &SessionPrep, models: &Models)
     .await
 }
 
-/// The environment as the session started, for resolving models again later.
+/// The environment, looked up live on every call: the Claude CLI adapter checks for conflicting
+/// variables before each request, so a variable set after startup must be seen.
 fn shared_env(host: &Host) -> fontaine_core::agent::EnvLookup {
-    let env: std::collections::HashMap<String, OsString> = (host.env_names)()
-        .into_iter()
-        .filter_map(|name| {
-            let name = name.into_string().ok()?;
-            let value = (host.env)(&name)?;
-            Some((name, value))
-        })
-        .collect();
-    Arc::new(move |name: &str| env.get(name).cloned())
+    host.env.clone()
 }
 
 fn agent_setup(
@@ -1072,7 +1082,7 @@ async fn run_interactive(
     let resolved = models::resolve(&ResolveParams {
         config,
         data_dir: &dirs.data,
-        env: &*host.env,
+        env: shared_env(host),
         model_override: cli.model.as_deref(),
         session_id: Some(prep.session.id.clone()),
     })

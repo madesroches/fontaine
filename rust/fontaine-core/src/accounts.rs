@@ -44,6 +44,8 @@ pub enum SignInState {
     NotSignedIn,
     /// A key is optional and none is stored.
     NoKeyNeeded,
+    /// An external program owns the login (`claude auth login`); Fontaine holds nothing.
+    ExternalCli,
 }
 
 impl fmt::Display for SignInState {
@@ -56,6 +58,9 @@ impl fmt::Display for SignInState {
             SignInState::EnvUnset { var } => write!(f, "${var} is not set"),
             SignInState::NotSignedIn => f.write_str("not signed in"),
             SignInState::NoKeyNeeded => f.write_str("no key needed"),
+            SignInState::ExternalCli => {
+                f.write_str("login owned by the external CLI (experimental)")
+            }
         }
     }
 }
@@ -144,6 +149,7 @@ pub fn rows(
         .map(|(name, account)| {
             let policy = account.kind.provider().credential();
             let state = match credential(name, account, env, &stored) {
+                _ if policy == CredentialPolicy::ExternalCli => SignInState::ExternalCli,
                 Credential::Found(StoredCredential::OAuth(tokens)) => SignInState::SignedIn {
                     detail: tokens.extra.get("email").cloned(),
                 },
@@ -277,8 +283,29 @@ pub async fn sign_in(
         .await
 }
 
+/// What `/login` does for an account whose login an external program owns: checks that the program
+/// is installed, signed in on a plan Fontaine accepts and offers models, and returns the summary.
+/// It never starts a login of its own; its failure says what to run outside Fontaine.
+pub async fn external_check(
+    name: &str,
+    account: &Account,
+    data_dir: &Path,
+    network: &LoadedNetwork,
+    env: crate::models::SharedEnv,
+) -> Result<String, String> {
+    crate::models::external_check(name, account, data_dir, network, env).await
+}
+
+/// What a log-out says for an account whose login an external program owns: Fontaine holds nothing
+/// to remove and never touches the program's login.
+pub fn external_log_out_summary(account: &str) -> String {
+    format!(
+        "`{account}` uses the external CLI's own login; Fontaine holds nothing to remove. Sign out with `claude auth logout` outside Fontaine"
+    )
+}
+
 /// Removes the account's stored credential. The provider-side token is not revoked. `false` when
-/// nothing was stored.
+/// nothing was stored. An external-CLI account has none, and the CLI's own login is never touched.
 pub fn log_out(data_dir: &Path, name: &str) -> Result<bool, ConfigError> {
     credentials::remove(data_dir, name)
 }

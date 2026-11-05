@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use fontaine_core::dirs::Dirs;
@@ -58,7 +59,7 @@ impl Fixture {
         write(&plugin.join("check.sh"), "#!/bin/sh\nexit 0\n");
         let host = Host {
             cwd: root.clone(),
-            env: Box::new(|_| None),
+            env: Arc::new(|_| None),
             default_config_dir: None,
             default_data_dir: None,
             env_names: Box::new(Vec::new),
@@ -538,7 +539,7 @@ fn a_sha_pinned_plugin_moves_only_when_the_catalog_sha_differs() {
     };
     let host = Host {
         cwd: root.clone(),
-        env: Box::new(|_| None),
+        env: Arc::new(|_| None),
         default_config_dir: None,
         default_data_dir: None,
         env_names: Box::new(Vec::new),

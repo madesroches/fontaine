@@ -588,7 +588,7 @@ error: an export never overwrites.
 | `/help` | Lists the built-in commands, your user-invocable skills and the main keys. |
 | `/hooks` | Lists the [hooks](hooks.md) by event with their matcher, command and scope, and marks a repository's hooks that did not load because the workspace is not trusted. |
 | `/init` | Has the agent write the project instruction file, or improve the one that exists. See [Instruction files](instructions.md#init). Takes no argument. |
-| `/login [<account>]` | Opens the [provider dialog](#managing-providers) to add an account, log in, log out or remove one. With an account name it opens straight on that account's log-in: a hidden key prompt, or the device sign-in for `opencode-go`. Only between turns. |
+| `/login [<account>]` | Opens the [provider dialog](#managing-providers) to add an account, log in, log out or remove one. With an account name it opens straight on that account's log-in: a hidden key prompt, the device sign-in for `opencode-go`, or, for a `claude-subscription` account, the check of the external Claude CLI. Only between turns. |
 | `/loop [<interval>] <prompt>`, `/loop list`, `/loop stop [<id>]` | Runs a prompt again and again while the session is idle; see [Scheduled prompts](#scheduled-prompts). |
 | `/mcp` | Lists each [MCP server](mcp.md) as `connected`, `failed` with the error, `left off` (you declined it) or `not loaded` (the workspace is not trusted), each with the scope that contributed it — a plugin's servers read `[plugin]`. It takes no arguments. |
 | `/memory [<n>]` | Lists the instruction files, numbered, with where each came from and the `FONTAINE.md` files that do not exist yet. With a number it opens that file in `$VISUAL` or `$EDITOR`, creating it first when needed. See [Instruction files](instructions.md#memory). |
@@ -834,7 +834,7 @@ authenticates with:
 
 The state column is `key stored`, `key from $VAR` or `$VAR is not set` for an account with
 `api_key_env`, `signed in (<email>)`, `not signed in` for an account that needs a key or sign-in
-and has none, and `no key needed` for an `ollama` or `openai-compatible` account without one. It
+and has none, `no key needed` for an `ollama` or `openai-compatible` account without one, and `login owned by the external CLI (experimental)` for a `claude-subscription` account. It
 is what resolving the account would do, so a key left behind by a changed `kind` counts as not
 signed in.
 
@@ -866,12 +866,20 @@ set. Logging in to an `opencode-go` account starts the device sign-in inside the
 the verification URL and the code, waits for you to approve it in a browser, and stores the token
 pair. Esc cancels the wait.
 
+Logging in to a `claude-subscription` account never opens a key prompt and never starts a login.
+It runs the checks of the external Claude CLI (installed, supported version, signed in on a Max or
+Ultra subscription, models listed) and then opens the model picker on its models; when a check
+fails the dialog says to run `claude auth login` outside Fontaine. See
+[Claude subscription](claude-subscription.md).
+
 A new credential takes effect in the running session. If the main model is on the account it is
 rebuilt on the new credential, an unavailable guardian on the account is tried again, and the
 account's cached model listing is dropped. The summary line says which of these happened.
 
 **Logging out** removes the stored credential from this machine; nothing is revoked at the
-provider. A main model that is already running on the account keeps the key it was built with until
+provider. For a `claude-subscription` account there is nothing to remove, and the CLI's own login is
+never changed: the dialog says to run `claude auth logout` outside Fontaine, and removing the
+account leaves that login alone too. A main model that is already running on the account keeps the key it was built with until
 you switch models or restart (an `opencode-go` account stops working at its next token refresh),
 and the summary line says so. A guardian on the account becomes unavailable, so the calls that need
 it are denied until it has a credential again.

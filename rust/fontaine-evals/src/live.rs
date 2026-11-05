@@ -63,7 +63,7 @@ impl Live {
 ///
 /// `transport` forces how the guardian and the scanner are asked for a typed answer; `None`
 /// leaves it to the model's reported capabilities, as in a session.
-pub fn connect(
+pub async fn connect(
     spec: &str,
     profile: Profile,
     transport: Option<OutputMode>,
@@ -92,12 +92,14 @@ pub fn connect(
         .map(|a| a.kind.as_str())
         .ok_or_else(|| format!("account `{account}` is not configured"))?;
 
-    // Only the variables the accounts name are carried over: the switcher outlives the borrow.
+    // Only the variables the accounts name are carried over, and the ones the Claude CLI adapter
+    // forwards or refuses: the switcher outlives the borrow, and every conflict must be seen.
     let snapshot: HashMap<String, OsString> = config
         .accounts
         .values()
-        .filter_map(|a| a.api_key_env.as_ref())
-        .filter_map(|var| Some((var.clone(), env(var)?)))
+        .filter_map(|a| a.api_key_env.as_deref())
+        .chain(fontaine_core::providers::claude_subscription::inherited_env_names())
+        .filter_map(|var| Some((var.to_string(), env(var)?)))
         .collect();
     let held = snapshot.clone();
     let switcher = Switcher::new(
@@ -106,7 +108,10 @@ pub fn connect(
         Arc::new(move |name: &str| held.get(name).cloned()),
         Some(uuid::Uuid::new_v4().to_string()),
     );
-    let mut guardian_model = switcher.guardian(spec, None).map_err(|e| e.to_string())?;
+    let mut guardian_model = switcher
+        .guardian(spec, None)
+        .await
+        .map_err(|e| e.to_string())?;
     if let (Some(mode), GuardianModel::Ready(handle)) = (transport, &mut guardian_model) {
         handle.output_probe = Some(Arc::new(FixedProbe(mode)));
     }

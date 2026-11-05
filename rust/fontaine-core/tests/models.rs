@@ -18,15 +18,15 @@ use serde_json::json;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> + use<> {
+fn env_of(pairs: &[(&str, &str)]) -> fontaine_core::models::SharedEnv {
     let map: HashMap<String, String> = pairs
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-    move |name| map.get(name).map(OsString::from)
+    std::sync::Arc::new(move |name| map.get(name).map(OsString::from))
 }
 
-async fn resolve_main(world: &World, env: &dyn Fn(&str) -> Option<OsString>) -> ModelHandle {
+async fn resolve_main(world: &World, env: fontaine_core::models::SharedEnv) -> ModelHandle {
     let config = world.load().unwrap();
     models::resolve(&ResolveParams {
         config: &config,
@@ -69,7 +69,7 @@ async fn anthropic_uses_the_messages_wire_and_the_env_key() {
         "[accounts.work]\nkind = \"anthropic\"\nbase_url = \"{}\"\napi_key_env = \"WORK_KEY\"\nmodels = [\"claude-haiku-4-5\"]\n\n[model]\nmodel = \"work/claude-haiku-4-5\"\n",
         server.uri()
     ));
-    let handle = resolve_main(&w, &env_of(&[("WORK_KEY", "key-from-env")])).await;
+    let handle = resolve_main(&w, env_of(&[("WORK_KEY", "key-from-env")])).await;
     assert_eq!(handle.kind, AccountKind::named("anthropic"));
     assert_eq!(handle.reference.to_string(), "work/claude-haiku-4-5");
     assert_eq!(say_hi(&handle).await, "hi from anthropic");
@@ -102,7 +102,7 @@ async fn openai_uses_the_responses_wire_and_a_bearer_key() {
         &w.data.join("credentials.toml"),
         "[accounts.main]\napi_key = \"stored-key\"\n",
     );
-    let handle = resolve_main(&w, &env_of(&[])).await;
+    let handle = resolve_main(&w, env_of(&[])).await;
     assert_eq!(handle.kind, AccountKind::named("openai"));
     assert!(handle.priced(), "gpt-4o-mini has a catalog price");
     assert_eq!(say_hi(&handle).await, "hi from openai");
@@ -128,7 +128,7 @@ async fn gemini_uses_generate_content_with_the_key_in_the_query() {
         "[accounts.g]\nkind = \"gemini\"\nbase_url = \"{}\"\napi_key_env = \"GEM\"\nmodels = [\"gemini-2.5-flash\"]\n\n[model]\nmodel = \"g/gemini-2.5-flash\"\n",
         server.uri()
     ));
-    let handle = resolve_main(&w, &env_of(&[("GEM", "gem-key")])).await;
+    let handle = resolve_main(&w, env_of(&[("GEM", "gem-key")])).await;
     assert_eq!(handle.kind, AccountKind::named("gemini"));
     assert_eq!(say_hi(&handle).await, "hi from gemini");
 }
@@ -152,7 +152,7 @@ async fn ollama_uses_the_native_chat_route_without_a_key() {
         "[accounts.local]\nkind = \"ollama\"\nbase_url = \"{}\"\nmodels = [\"qwen3:4b\"]\n\n[model]\nmodel = \"local/qwen3:4b\"\n",
         server.uri()
     ));
-    let handle = resolve_main(&w, &env_of(&[])).await;
+    let handle = resolve_main(&w, env_of(&[])).await;
     assert_eq!(handle.kind, AccountKind::named("ollama"));
     assert_eq!(say_hi(&handle).await, "hi from ollama");
     let requests = server.received_requests().await.unwrap();
@@ -180,7 +180,7 @@ async fn ollama_request(model: &str, account_extra: &str) -> (serde_json::Value,
         "[accounts.local]\nkind = \"ollama\"\nbase_url = \"{}\"\nmodels = [\"{model}\"]\n{account_extra}\n[model]\nmodel = \"local/{model}\"\n",
         server.uri()
     ));
-    let handle = resolve_main(&w, &env_of(&[])).await;
+    let handle = resolve_main(&w, env_of(&[])).await;
     say_hi(&handle).await;
     let requests = server.received_requests().await.unwrap();
     let chat = requests
@@ -256,7 +256,7 @@ async fn openai_compatible_uses_chat_completions_and_is_unpriced() {
         "[accounts.gw]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\nmodels = [\"openai/gpt-4o-mini\"]\n\n[model]\nmodel = \"gw/openai/gpt-4o-mini\"\n",
         server.uri()
     ));
-    let handle = resolve_main(&w, &env_of(&[])).await;
+    let handle = resolve_main(&w, env_of(&[])).await;
     assert_eq!(handle.kind, AccountKind::named("openai-compatible"));
     // The model id keeps its own slash: the account is whatever precedes the first one.
     assert_eq!(handle.reference.account, "gw");
@@ -292,7 +292,7 @@ async fn an_openai_compatible_key_is_sent_as_a_bearer_token() {
         "[accounts.gw]\nkind = \"openai-compatible\"\nbase_url = \"{}\"\napi_key_env = \"GW\"\nmodels = [\"m\"]\n\n[model]\nmodel = \"gw/m\"\n",
         server.uri()
     ));
-    let handle = resolve_main(&w, &env_of(&[("GW", "gw-key")])).await;
+    let handle = resolve_main(&w, env_of(&[("GW", "gw-key")])).await;
     assert_eq!(say_hi(&handle).await, "ok");
 }
 
@@ -307,7 +307,7 @@ async fn the_guardian_model_may_sit_on_another_account() {
     let resolved = models::resolve(&ResolveParams {
         config: &config,
         data_dir: &w.data,
-        env: &env,
+        env: env.clone(),
         model_override: None,
         session_id: None,
     })
@@ -336,7 +336,7 @@ fn entry(kind: &str, model: &str, catch: f64) -> ModelEntry {
 
 async fn resolve_listed(
     w: &World,
-    env: &dyn Fn(&str) -> Option<OsString>,
+    env: fontaine_core::models::SharedEnv,
     list: &[ModelEntry],
 ) -> models::Models {
     let config = w.load().unwrap();
@@ -361,14 +361,14 @@ async fn an_empty_list_means_the_main_model_judges_with_a_one_time_notice() {
     let w = World::new();
     w.user_file(MAIN);
     for resolved in [
-        resolve_listed(&w, &env_of(&[]), &[]).await,
+        resolve_listed(&w, env_of(&[]), &[]).await,
         // The shipped list is empty until a scorecard run fills it.
         {
             let config = w.load().unwrap();
             models::resolve(&ResolveParams {
                 config: &config,
                 data_dir: &w.data,
-                env: &env_of(&[]),
+                env: env_of(&[]),
                 model_override: None,
                 session_id: None,
             })
@@ -398,7 +398,7 @@ async fn a_list_with_no_match_on_any_account_falls_back_to_the_main_model() {
     let w = World::new();
     w.user_file(MAIN);
     let list = [entry("anthropic", "claude-haiku-5-5", 0.99)];
-    let resolved = resolve_listed(&w, &env_of(&[]), &list).await;
+    let resolved = resolve_listed(&w, env_of(&[]), &list).await;
     assert_eq!(resolved.guardian_choice, GuardianChoice::MainFallback);
     assert_eq!(resolved.notices.len(), 1);
 }
@@ -414,7 +414,7 @@ async fn the_top_entry_on_an_unconfigured_account_is_skipped_for_the_next() {
         entry("anthropic", "claude-haiku-5-5", 0.99),
         entry("openai", "gpt-flash", 0.95),
     ];
-    let resolved = resolve_listed(&w, &env_of(&[("OA_KEY", "k")]), &list).await;
+    let resolved = resolve_listed(&w, env_of(&[("OA_KEY", "k")]), &list).await;
     assert_eq!(resolved.guardian_choice, GuardianChoice::Default);
     assert!(resolved.notices.is_empty());
     assert_eq!(
@@ -437,7 +437,7 @@ async fn a_list_less_account_counts_with_a_credential_and_is_never_listed() {
         server.uri()
     ));
     let list = [entry("anthropic", "claude-haiku-5-5", 0.99)];
-    let resolved = resolve_listed(&w, &env_of(&[("CLOUD_KEY", "k")]), &list).await;
+    let resolved = resolve_listed(&w, env_of(&[("CLOUD_KEY", "k")]), &list).await;
     assert_eq!(resolved.guardian_choice, GuardianChoice::Default);
     assert_eq!(
         resolved.guardian.unwrap().reference().to_string(),
@@ -468,7 +468,7 @@ async fn the_main_account_is_judged_by_the_listing_already_fetched() {
         entry("anthropic", "claude-unlisted", 0.99),
         entry("anthropic", "claude-haiku-5-5", 0.95),
     ];
-    let resolved = resolve_listed(&w, &env_of(&[("K", "k")]), &list).await;
+    let resolved = resolve_listed(&w, env_of(&[("K", "k")]), &list).await;
     assert_eq!(
         resolved.guardian.unwrap().reference().to_string(),
         "work/claude-haiku-5-5"
@@ -484,7 +484,7 @@ async fn a_pinned_guardian_is_never_substituted() {
     ));
     // The pinned model has no credential; the list holds a model that would work.
     let list = [entry("openai", "gpt-flash", 0.99)];
-    let resolved = resolve_listed(&w, &env_of(&[("OA_KEY", "k")]), &list).await;
+    let resolved = resolve_listed(&w, env_of(&[("OA_KEY", "k")]), &list).await;
     assert_eq!(resolved.guardian_choice, GuardianChoice::Pinned);
     assert!(resolved.notices.is_empty());
     let Some(GuardianModel::Unavailable { reference, reason }) = resolved.guardian else {
@@ -501,13 +501,13 @@ async fn a_validated_model_on_an_account_without_its_credential_is_not_picked() 
         "{MAIN}\n[accounts.nokey]\nkind = \"openai\"\napi_key_env = \"MISSING\"\nmodels = [\"gpt-flash\"]\n\n[accounts.oa]\nkind = \"openai\"\napi_key_env = \"OA_KEY\"\nmodels = [\"gpt-flash\"]\n"
     ));
     let list = [entry("openai", "gpt-flash", 0.99)];
-    let resolved = resolve_listed(&w, &env_of(&[("OA_KEY", "k")]), &list).await;
+    let resolved = resolve_listed(&w, env_of(&[("OA_KEY", "k")]), &list).await;
     let Some(GuardianModel::Ready(handle)) = resolved.guardian else {
         panic!("ready");
     };
     assert_eq!(handle.reference.to_string(), "oa/gpt-flash");
 
-    let resolved = resolve_listed(&w, &env_of(&[]), &list).await;
+    let resolved = resolve_listed(&w, env_of(&[]), &list).await;
     let Some(GuardianModel::Ready(handle)) = resolved.guardian else {
         panic!("falls back to the main model");
     };
@@ -529,7 +529,7 @@ async fn a_stored_sign_in_is_no_credential_for_a_key_based_account() {
     let Err(err) = models::resolve(&ResolveParams {
         config: &config,
         data_dir: &w.data,
-        env: &env_of(&[]),
+        env: env_of(&[]),
         model_override: None,
         session_id: None,
     })
@@ -540,8 +540,8 @@ async fn a_stored_sign_in_is_no_credential_for_a_key_based_account() {
     assert!(err.to_string().contains("has no credential"), "{err}");
 }
 
-#[test]
-fn the_switcher_offers_the_validated_and_the_explicit_models_the_accounts_have() {
+#[tokio::test]
+async fn the_switcher_offers_the_validated_and_the_explicit_models_the_accounts_have() {
     let w = World::new();
     w.user_file(&format!(
         "{MAIN}\n[accounts.cloud]\nkind = \"anthropic\"\napi_key_env = \"CLOUD_KEY\"\nmodels = [\"claude-haiku-5-5\", \"claude-sonnet-4-6\"]\n\n[accounts.nokey]\nkind = \"openai\"\napi_key_env = \"MISSING\"\nmodels = [\"gpt-flash\"]\n"
@@ -567,22 +567,25 @@ fn the_switcher_offers_the_validated_and_the_explicit_models_the_accounts_have()
         ]
     );
     // An account without its credential gives an unavailable guardian, not an error.
-    let nokey = switcher.guardian("nokey/gpt-flash", None).unwrap();
+    let nokey = switcher.guardian("nokey/gpt-flash", None).await.unwrap();
     assert!(matches!(nokey, GuardianModel::Unavailable { .. }));
     assert!(matches!(
-        switcher.guardian("cloud/claude-haiku-5-5", None).unwrap(),
+        switcher
+            .guardian("cloud/claude-haiku-5-5", None)
+            .await
+            .unwrap(),
         GuardianModel::Ready(_)
     ));
-    assert!(switcher.guardian("cloud/not-offered", None).is_err());
+    assert!(switcher.guardian("cloud/not-offered", None).await.is_err());
 
     // A guardian on the main model's account is checked against that account's listing.
     let listing = ["qwen3:4b".to_string()];
     let with_main = Some((&main, &listing[..]));
     assert!(matches!(
-        switcher.guardian("main/qwen3:4b", with_main).unwrap(),
+        switcher.guardian("main/qwen3:4b", with_main).await.unwrap(),
         GuardianModel::Ready(_)
     ));
-    assert!(switcher.guardian("main/typo", with_main).is_err());
+    assert!(switcher.guardian("main/typo", with_main).await.is_err());
 }
 
 #[test]

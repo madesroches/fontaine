@@ -59,7 +59,7 @@ async fn build_report(
         models::resolve(&ResolveParams {
             config,
             data_dir: &dirs.data,
-            env: &*host.env,
+            env: shared_env(host),
             model_override: cli.model.as_deref(),
             session_id: None,
         }),

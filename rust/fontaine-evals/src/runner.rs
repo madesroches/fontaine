@@ -350,6 +350,20 @@ struct Report<'a> {
 }
 
 pub fn run(args: impl IntoIterator<Item = OsString>) -> u8 {
+    let args: Vec<OsString> = args.into_iter().collect();
+    // A live guardian eval on the Claude CLI adapter starts this executable as its inert tool
+    // inventory; the mode is hidden and takes no part in the command line.
+    if let Some(manifest) =
+        fontaine_core::providers::claude_subscription::inventory::from_args(args.clone())
+    {
+        return match fontaine_core::providers::claude_subscription::inventory::serve(&manifest) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("fontaine-evals: the tool inventory failed: {}", chain(&e));
+                1
+            }
+        };
+    }
     let cli = match Cli::try_parse_from(args) {
         Ok(cli) => cli,
         Err(e) => {
@@ -579,12 +593,17 @@ fn run_score(args: &RunArgs) -> u8 {
             Profile::Full => fontaine_guardian::Profile::Full,
             Profile::Minimal => fontaine_guardian::Profile::Minimal,
         };
-        let mut connected = match live::connect(
+        // Connecting may run the Claude CLI's checks, which await; `run_score` is synchronous.
+        let rt = match runtime() {
+            Ok(rt) => rt,
+            Err(code) => return code,
+        };
+        let mut connected = match rt.block_on(live::connect(
             spec,
             guardian_profile,
             forced_mode(args.verdict_transport),
             &|name| std::env::var_os(name),
-        ) {
+        )) {
             Ok(connected) => connected,
             Err(e) => return usage(&e),
         };
