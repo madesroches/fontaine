@@ -22,7 +22,8 @@ model, in the wait's own answer, that the user has something pending.
   (`fontaine-tui/src/ui/turn.rs`, `converse`). That ordering is correct and stays.
 - `JobOutputTool::call` (`rust/fontaine-tools/src/jobs/tools.rs:~311-345`) races `arm` against
   `woken` (polls `pending` every `WAKE_POLL` = 250 ms). On wake it re-reads with a zero wait and
-  appends the fixed text `[Stopped waiting: a message arrived.]`.
+  appends the fixed text `[Stopped waiting: a message arrived.]` (the plan changes it to
+  `[Stopped waiting: new input arrived.]`).
 - Plain `Message` entries already work end to end: the wait wakes, and the same result carries the
   message via the steering hook.
 - Per-subagent queues (`queue_for`) hold only plain text and already wake via
@@ -33,12 +34,14 @@ Three additions, all keeping the queue-ordering rules untouched.
 
 1. **Announce unannounced queued entries.** `SteeringState` gains `announced: usize`, the count of
    leading queue entries already announced to the model. `Steering` gains:
-   - `has_unannounced(&self) -> bool`: not held and `queued.len() > max(p, announced)`, where `p`
-     is the length of the leading run of `Queued::Message` (the same `take_while` prefix `steer`
-     drains and delivers in full). Plain messages are never announced, so a lone queued
-     `Message("hi")` neither announces nor is named in the notice.
+   - `has_unannounced(&self) -> bool`: not held and some non-`Message` entry sits at or after
+     index `max(p, announced)`, where `p` is the length of the leading run of `Queued::Message`
+     (the same `take_while` prefix `steer` drains and delivers in full). Plain messages are never
+     announced, so a lone queued `Message("hi")`, or a `Message` queued behind an already
+     announced command (never delivered mid-turn), neither wakes the wait nor is named.
    - `take_announcement(&self) -> Option<String>`: when `has_unannounced`, returns a notice naming
-     the entries from index `max(p, announced)` onward and sets `announced = queued.len()`.
+     only the non-`Message` entries from index `max(p, announced)` onward and sets
+     `announced = queued.len()`.
    Maintenance of `announced`: `retract` takes the whole queue, so it resets `announced` to 0;
    `steer` subtracts the number of messages it drained (saturating); `queue` leaves it alone. The
    root-only check keeps this separate from `queued_for`.
@@ -50,8 +53,9 @@ Three additions, all keeping the queue-ordering rules untouched.
 3. **Say it in the wait's answer.** `WaitWake` gains a defaulted method
    `fn take_notice(&self, agent: &str) -> Option<String> { None }`; `CoreWake` implements it for
    the root as `steering.take_announcement()`. In `JobOutputTool::call`'s wake branch, after the
-   zero-wait re-read, append `take_notice` when `Some`, otherwise the existing
-   `[Stopped waiting: a message arrived.]`. Notice text, user words marked as such:
+   zero-wait re-read, append `take_notice` when `Some`, otherwise the neutral fixed text
+   `[Stopped waiting: new input arrived.]` (the queue can be empty by then, e.g. after a retract).
+   Notice text, user words marked as such:
 
    ```
    [Stopped waiting: the user queued input while you waited: `/afk`. It runs when this turn ends;
@@ -112,17 +116,19 @@ early-return list gains queued entries.
 ## Testing Strategy
 All unit/integration, no live APIs:
 - `steering.rs`: a lone queued `Message` yields no announcement (`has_unannounced` false,
-  `take_announcement` `None`); a queued `Command` makes `has_unannounced` true; `take_announcement` returns the
-  raw text once and then `None`; a second queued entry announces only the new one; `retract` and
+  `take_announcement` `None`); a queued `Command` makes `has_unannounced` true; `take_announcement` quotes each
+  entry's first line (cut) exactly once and then `None`, including a multi-line entry; a second
+  queued entry announces only the new one; a `Message` queued behind an already announced command
+  neither wakes the wait nor is named; `retract` and
   delivery keep `announced` consistent; a delivery hold suppresses it; `has_deliverable_message`
   behavior unchanged.
 - `fontaine-tools/tests/jobs.rs` with `FakeWake`: a wake with a notice appends the notice instead
-  of the fixed text; a wake without one keeps the old text. Pins the reported bug (`/afk` queued
+  of the fixed text; a wake without one appends `[Stopped waiting: new input arrived.]`. Pins the reported bug (`/afk` queued
   during a `wait_secs: 600` subagent wait).
 - `fontaine-core` test with the real `CoreWake` and `Steering` (closes the gap that no test wakes
   a live wait through the real wake object): queue `Queued::Command`, assert `pending` flips true,
   and after `take_notice` a fresh `pending` is false; also a lone `Queued::Message`: `pending` is
-  true (existing deliverable path) and `take_notice` is `None`, so the old text is kept.
+  true (existing deliverable path) and `take_notice` is `None`, so the fallback text is used.
 
 ## Open Questions
 None.
