@@ -109,6 +109,8 @@ jobs:
           set -euo pipefail
           scripts="$GITHUB_WORKSPACE/.github/scripts"
           "$scripts/install-minisign.sh"
+          # GITHUB_PATH only applies to later steps; this step calls minisign itself.
+          export PATH="${RUNNER_TEMP:-/tmp}/minisign-bin:$PATH"
           work="$(mktemp -d)"
           export MINISIGN_PASSWORD="dummy-password"
           version="0.0.0-ci"
