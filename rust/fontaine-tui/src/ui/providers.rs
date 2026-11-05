@@ -295,7 +295,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             accounts::external_check(name, &account, &self.data_dir, &network, self.env.clone())
                 .await;
         match checked {
-            Ok(summary) => {
+            Ok(mut summary) => {
+                summary.push_str(&self.credential_effects(runtime, name, false).await);
                 self.app.transcript.notice(summary.clone());
                 self.refresh_rows(runtime);
                 self.tell_dialog(Outcome::LoggedIn {

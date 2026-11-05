@@ -138,17 +138,21 @@ impl AgentRuntime {
     /// Resolves `text`, rebuilds the agent on it and makes it the model of the session and its
     /// subagents, without saving anything. Returns whether the guardian followed.
     async fn install_main(&mut self, text: &str) -> Result<bool, RuntimeError> {
-        let (handle, listing) = self
-            .switcher()?
+        let switcher = self.switcher()?;
+        let (handle, listing) = switcher
             .main(text)
             .await
             .map_err(|e| RuntimeError::caused("could not resolve the model", e))?;
+        let switcher_notice = switcher.selection_notice(&handle.reference);
         let previous = std::mem::replace(&mut self.models.main, handle);
         let previous_listing = std::mem::replace(&mut self.models.main_listing, listing);
         if let Err(e) = self.rebuild() {
             self.models.main = previous;
             self.models.main_listing = previous_listing;
             return Err(e);
+        }
+        if let Some(notice) = switcher_notice {
+            self.approver().warn(&notice.to_string());
         }
         *write(&self.main, "main model") = MainModel {
             handle: self.models.main.clone(),

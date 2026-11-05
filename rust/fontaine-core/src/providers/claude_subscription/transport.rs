@@ -18,7 +18,7 @@ use rig_core::providers::anthropic::Messages;
 use rig_core::wire::{Body, Encoded, WireFrame};
 use serde_json::json;
 
-use super::cli::{ChildFiles, Cli, CliChild, ReadFail, Scratch, fixed_args};
+use super::cli::{ChildFiles, Cli, CliChild, ReadFail, Scratch, fixed_args, scratch_error};
 use super::inventory::INVENTORY_FLAG;
 use super::protocol::{Event, Expect, Failure, Reader, SessionSeed, exit_failure, translate};
 use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, read_idle_error};
@@ -257,10 +257,7 @@ impl ClaudeTransport {
 }
 
 fn scratch_failed(error: std::io::Error) -> Failure {
-    provider(ClaudeError::new(
-        ErrorKind::Cli,
-        format!("could not prepare a private working directory for the Claude CLI ({error})"),
-    ))
+    provider(scratch_error(error))
 }
 
 /// The next stdout line, or the failure that ended the read.

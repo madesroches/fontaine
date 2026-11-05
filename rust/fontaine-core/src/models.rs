@@ -611,6 +611,21 @@ pub async fn resolve(params: &ResolveParams<'_>) -> Result<Models, ModelError> {
     resolve_with(params, &validated_models()).await
 }
 
+/// What the user should know before relying on the account `reference` names, when its kind has
+/// something to say.
+pub fn selection_notice(config: &Config, reference: &ModelRef) -> Option<crate::notice::Notice> {
+    let account = config.accounts.get(&reference.account)?;
+    let detail = account.kind.provider().selection_notice()?;
+    Some(crate::notice::Notice::warning(
+        format!(
+            "Account `{}` ({}) is experimental",
+            reference.account,
+            account.kind.as_str()
+        ),
+        Some(detail.to_string()),
+    ))
+}
+
 /// [`resolve`] against a given ranked list of validated guardian models instead of the shipped
 /// one.
 pub async fn resolve_with(
@@ -629,18 +644,7 @@ pub async fn resolve_with(
         resolve_main_model(config, &stored, &params.env, main_text, "model").await?;
 
     let mut notices = Vec::new();
-    if let Some(account) = config.accounts.get(&main_ref.account)
-        && let Some(detail) = account.kind.provider().selection_notice()
-    {
-        notices.push(crate::notice::Notice::warning(
-            format!(
-                "Account `{}` ({}) is experimental",
-                main_ref.account,
-                account.kind.as_str()
-            ),
-            Some(detail.to_string()),
-        ));
-    }
+    notices.extend(selection_notice(config, &main_ref));
     let (guardian, guardian_choice) = match config.guardian.model.as_deref() {
         Some(text) => (
             resolve_guardian(
@@ -896,6 +900,11 @@ impl Switcher {
         Ok((handle, listing))
     }
 
+    /// The notice for the account of a main or child model that was just switched onto.
+    pub fn selection_notice(&self, reference: &ModelRef) -> Option<crate::notice::Notice> {
+        selection_notice(&self.config, reference)
+    }
+
     /// The guardian model `text` names. An account without a credential gives an unavailable
     /// guardian, not an error: it fails closed and the user is asked what to do. `main` is the
     /// main model and the listing of its account, which vouches for a guardian on that account.
@@ -1062,10 +1071,9 @@ pub(crate) async fn external_check(
         session_id: None,
     };
     let client = client_for(name, account, &env, &src, network)?;
-    let models = tokio::time::timeout(RESOLVE_LISTING_TIMEOUT, client.list())
+    let models = models_of(&client, name, account)
         .await
-        .map_err(|_| format!("the check timed out after {RESOLVE_LISTING_TIMEOUT:?}"))?
-        .map_err(|e| with_causes(&e))?;
+        .map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     Ok(format!(
         "`{name}` is ready: {} model(s) available through the external login",
         models.len()

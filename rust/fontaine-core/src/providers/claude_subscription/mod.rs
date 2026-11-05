@@ -71,18 +71,34 @@ pub enum ErrorKind {
 
 /// A CLI failure with a message that is safe to show and to export: fixed text or text built
 /// from names, never raw CLI output or a credential value.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct ClaudeError {
     pub kind: ErrorKind,
     message: String,
+    source: Option<std::sync::Arc<std::io::Error>>,
 }
+
+impl PartialEq for ClaudeError {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.message == other.message
+    }
+}
+
+impl Eq for ClaudeError {}
 
 impl ClaudeError {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
         ClaudeError {
             kind,
             message: message.into(),
+            source: None,
         }
+    }
+
+    /// Keeps the I/O failure behind this error as its `source()`, out of the message.
+    pub fn with_source(mut self, source: std::io::Error) -> Self {
+        self.source = Some(std::sync::Arc::new(source));
+        self
     }
 
     /// The failure as a non-retryable provider error that keeps the typed error as its source.
@@ -101,7 +117,11 @@ impl std::fmt::Display for ClaudeError {
     }
 }
 
-impl std::error::Error for ClaudeError {}
+impl std::error::Error for ClaudeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source.as_deref().map(|e| e as _)
+    }
+}
 
 /// The typed error inside a provider error this adapter made.
 pub fn claude_error(error: &ProviderError) -> Option<&ClaudeError> {

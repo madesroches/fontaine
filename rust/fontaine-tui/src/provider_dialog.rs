@@ -751,7 +751,13 @@ impl ProviderDialog {
                 Confirm::LogOut => vec![
                     line(format!("Log out of `{account}`?")),
                     Line::styled(
-                        "This removes its stored credential from this machine; nothing is revoked at the provider.",
+                        if self.row(account).is_some_and(|r| {
+                            r.kind.provider().credential() == CredentialPolicy::ExternalCli
+                        }) {
+                            "Fontaine holds no credential for it; the external CLI's own login is not touched."
+                        } else {
+                            "This removes its stored credential from this machine; nothing is revoked at the provider."
+                        },
                         dim,
                     ),
                 ],

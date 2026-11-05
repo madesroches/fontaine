@@ -367,11 +367,11 @@ impl ChildContext {
                 let Some(switcher) = switcher else {
                     return Err("models cannot be resolved in this session".to_string());
                 };
-                switcher
-                    .main(text)
-                    .await
-                    .map(|(handle, _)| handle)
-                    .map_err(|e| e.to_string())?
+                let (handle, _) = switcher.main(text).await.map_err(|e| e.to_string())?;
+                if let Some(notice) = switcher.selection_notice(&handle.reference) {
+                    self.approver.warn(&notice.to_string());
+                }
+                handle
             }
         };
         Ok(handle.for_agent(id))

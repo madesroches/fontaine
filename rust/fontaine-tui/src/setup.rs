@@ -493,6 +493,15 @@ impl Setup {
                         After::Quit => return Ok(Step::Quit),
                     }
                 }
+                DialogKey::LogOut(account)
+                    if self.config.accounts.get(&account).is_some_and(|a| {
+                        a.kind.provider().credential()
+                            == fontaine_core::providers::CredentialPolicy::ExternalCli
+                    }) =>
+                {
+                    self.dialog
+                        .finish(Outcome::Done(accounts::external_log_out_summary(&account)))
+                }
                 DialogKey::LogOut(account) => match accounts::log_out(&self.dirs.data, &account) {
                     Ok(removed) => {
                         self.refresh_rows();

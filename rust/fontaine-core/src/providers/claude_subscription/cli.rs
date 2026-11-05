@@ -466,14 +466,15 @@ impl Cli {
         command
     }
 
-    fn start_error(&self, error: &std::io::Error) -> ClaudeError {
+    fn start_error(&self, error: std::io::Error) -> ClaudeError {
         ClaudeError::new(
             ErrorKind::Cli,
             format!(
-                "the Claude CLI `{}` could not be started ({error}); install it, or set `cli_path` in the account",
+                "the Claude CLI `{}` could not be started; install it, or set `cli_path` in the account",
                 self.program.display()
             ),
         )
+        .with_source(error)
     }
 
     /// Starts the CLI in `scratch`, which the child guard owns from here on.
@@ -488,7 +489,7 @@ impl Cli {
             .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|e| self.start_error(&e))?;
+        let mut child = command.spawn().map_err(|e| self.start_error(e))?;
         let pid = child.id();
         let stdout = child.stdout.take().expect("stdout was piped");
         let stderr = child.stderr.take().expect("stderr was piped");
@@ -576,11 +577,12 @@ fn protocol(message: &str) -> ClaudeError {
     ClaudeError::new(ErrorKind::Protocol, message)
 }
 
-fn scratch_error(error: std::io::Error) -> ClaudeError {
+pub(crate) fn scratch_error(error: std::io::Error) -> ClaudeError {
     ClaudeError::new(
         ErrorKind::Cli,
-        format!("could not prepare a private working directory for the Claude CLI ({error})"),
+        "could not prepare a private working directory for the Claude CLI",
     )
+    .with_source(error)
 }
 
 /// The first token of the CLI's version line, as three numbers.

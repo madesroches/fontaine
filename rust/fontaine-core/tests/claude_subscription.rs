@@ -295,6 +295,18 @@ async fn selecting_the_account_gives_the_experimental_notice() {
     assert!(!models.main.priced());
 }
 
+#[tokio::test]
+async fn switching_onto_the_account_gives_the_experimental_notice() {
+    let claude = Claude::new();
+    claude.scenario(json!({}));
+    let switcher = claude.switcher();
+    let (handle, _) = switcher.main("claude/sonnet").await.unwrap();
+    let notice = switcher
+        .selection_notice(&handle.reference)
+        .expect("a notice");
+    assert!(notice.headline.contains("experimental"), "{notice}");
+}
+
 // ---- preflight ------------------------------------------------------------------------------
 
 #[tokio::test]
