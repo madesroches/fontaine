@@ -57,7 +57,8 @@ classification behind the `tracked_edit` fast path. That record must stay files-
    receiving `paths` (files only), so `existence()` semantics are untouched. A new
    accessor `completion_paths()` returns files plus directories, each directory marked
    with a trailing `/` (on all platforms; the string is only ever matched and inserted,
-   never opened).
+   never opened). Paths stored in `dirs` use `/` as the separator on all platforms so
+   that `rank()` containment and prefix comparisons work uniformly.
 2. **`fontaine-core/src/agent.rs` — feed completion the directory list.**
    `record_session_start` and `refresh_files` call `set_files` with
    `index.completion_paths()` instead of `index.paths`.
@@ -67,23 +68,31 @@ classification behind the `tracked_edit` fast path. That record must stay files-
    path has nothing left to complete, and a directory must not list itself among its own
    children when the query is its path followed by `/` (accepting `tasks/` reopens the
    list with query `tasks/`, which the directory itself would otherwise match).
+   Canonicalize candidate paths and queries to `/` for all containment, exact-match,
+   basename, and common-prefix comparisons while retaining the directory marker in
+   displayed and inserted strings; add a mixed-separator directory-descent regression
+   test.
 4. **`fontaine-tui/src/app.rs` — the `/` menu's Tab contract for `@`.**
    - `completion_key` Tab first extends the token to the common prefix of the current
      matches — the existing `common_prefix` helper, case-insensitive, spelled as in the
      first match — when there is more than one match and the prefix both starts with the
      query and is longer than it; only when nothing more can be extended does Tab accept
-     the selected row. Enter keeps accepting the selection directly.
+     the selected row. After the common-prefix `replace_range`, end the stored-list
+     borrow and call `self.refresh_completion()` so the next Tab uses the narrowed query,
+     token range, matches, and selection. Enter keeps accepting the selection directly.
    - `accept_completion` inserts a match ending in `/` without the trailing space, so the
      refreshed list opens on the directory's children and the user can keep completing
      into it.
 5. **`docs/tui.md` — describe both behaviors** in the "File mentions" paragraph:
    directories are offered (marked with `/`) and can be completed into; Tab narrows to
-   the common prefix of the matches before accepting one.
+   the common prefix of the matches before accepting one. Also update the main Keys table
+   Tab row to state that, when a completion list is open, Tab first extends the token to
+   the longest shared prefix before accepting the selection.
 
 Resulting flow for the reported case: `@task` matches `tasks/` (class 0, 6 chars) ahead
 of `rust/fontaine-core/src/tasks.rs` (class 0, 31 chars, shorter-paths-first inside the
-class). Their common prefix is `task`, already typed, so Tab accepts `tasks/` without a
-space; the list reopens on the children of `tasks/`.
+class). Their common prefix is empty, so there is nothing to extend, and Tab accepts
+`tasks/` without a space; the list reopens on the children of `tasks/`.
 
 ### Implementation Steps (not started)
 
@@ -92,9 +101,11 @@ space; the list reopens on the children of `tasks/`.
 2. `fontaine-core/src/agent.rs`: use `completion_paths()` in `record_session_start` and
    `refresh_files`; leave the `Record::FileIndex` append on `index.paths`.
 3. `fontaine-tui/src/complete.rs`: basename trimming and the exact-match skip in `rank()`.
-4. `fontaine-tui/src/app.rs`: common-prefix narrowing on Tab in `completion_key`;
-   trailing-space suppression for directory matches in `accept_completion`.
-5. `docs/tui.md` "File mentions" paragraph.
+4. `fontaine-tui/src/app.rs`: common-prefix narrowing on Tab in `completion_key`
+   (call `self.refresh_completion()` after `replace_range` so the stored list is fresh
+   before the next Tab); trailing-space suppression for directory matches in
+   `accept_completion`.
+5. `docs/tui.md`: "File mentions" paragraph and the main Keys table Tab row.
 6. `CHANGELOG.md` under `[Unreleased]` → `Fixed`.
 
 ### Files to Modify (Round 2)
@@ -120,10 +131,6 @@ space; the list reopens on the children of `tasks/`.
   `/` menu's contract since #294, which is the behavior the maintainer pointed at as
   working; it also means a shared stem (`@task` → `tasks/`, `tasks.rs`) pauses on the
   stem instead of jumping into the top-ranked file.
-- **Skipping exact matches in `rank()`**: without it, accepting a directory inserts its
-  path and immediately re-lists the directory itself as its own child, so a second Tab
-  seals the directory with a space instead of completing into it.
-
 ### Decisions (to record in the master plan on merge)
 
 - 2026-11-05: `@` completion offers directories, marked with a trailing `/` and inserted
@@ -139,22 +146,18 @@ space; the list reopens on the children of `tasks/`.
   offered; query `tasks/` lists the children of `tasks/` but not `tasks/` itself.
 - `app.rs` unit tests: `@task` + Tab inserts `@tasks/` with no trailing space and reopens
   the list on the children; `@src/m` + Tab narrows to `@src/ma` (list still open) and a
-  second Tab accepts `src/main.rs`.
+  second Tab accepts `src/main.rs`; extend the directory-to-file app test to assert that
+  Enter at that point submits the accepted path (`Action::Submit`).
 - `fontaine-core/tests/ledger.rs`: extend the gitignore fixture to assert directories are
   collected (an unignored dir present, an ignored dir and `.git` absent, the walk root
   itself absent); assert the cap counts files and directories together. The existing cap
   test keeps passing because its fixture has no subdirectories.
-- Manual tmux check per the repo testing strategy (real-terminal overlay rendering).
-
-### Manual Verification (Round 2)
-
-1. `cargo run -p fontaine` in the fontaine repo, type `@task` + Tab: `tasks/` is
-   inserted with no trailing space and the popup shows the children of `tasks/`.
-2. Continue into the directory with Tab/typing; complete a file inside it and confirm the
-   message sends with the typed path.
-3. Type `@src/m` + Tab: the token extends to `@src/ma`, the list stays open; a second Tab
-   accepts `src/main.rs`.
-4. Compare Tab behavior with the `/` menu: both narrow to the common prefix first.
+- `fontaine-core` runtime test `the_memory_root_is_not_scanned_into_the_file_index`:
+  add a workspace `src/main.rs` fixture and assert that after `record_session_start()`
+  `runtime.files` contains both the file path and a trailing-slash `src/` entry.
+- One controlled-fixture tmux/`capture-pane` check: drive directory reopening and prefix
+  narrowing, assert one intact overlay of at most eight rows plus its footer with no
+  stale rows or duplicated scrollback.
 
 ## Round 1: scrolling (implemented on this branch)
 
