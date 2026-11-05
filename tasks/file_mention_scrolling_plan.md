@@ -127,6 +127,8 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
 6. `CHANGELOG.md`: extend the existing Round 1 #419 entry under `[Unreleased]` → `Fixed`
    ("The `@` file-mention popup no longer stops at the first eight matches...") rather
    than adding a second.
+7. Master plan `## Decisions`: append the decision line at the end of the `### TUI`
+   subsection of `tasks/fontaine_harness_plan.md`.
 
 ### Files to Modify (Round 2)
 
@@ -136,6 +138,7 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
 - `rust/fontaine-tui/src/app.rs`
 - `docs/tui.md`
 - `CHANGELOG.md`
+- `tasks/fontaine_harness_plan.md`
 
 ### Trade-offs
 
@@ -173,7 +176,7 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
 - `app.rs` unit tests: `@task` + Tab inserts `@tasks/` with no trailing space and reopens
   the list on the children; `@src/m` + Tab narrows to `@src/ma` (list still open) and a
   second Tab accepts `src/main.rs`; a mixed-separator narrowing test (query `src/m` with
-  matches displayed as `src\main.rs` and `src\mod.rs` narrows to `src\m`); a new test:
+  matches displayed as `src\main.rs` and `src\manual.md` narrows to `src\ma`); a new test:
   `@task` + Tab gives `@tasks/`, selecting/Tab-ing a child file inserts `@tasks/<file> `,
   then Enter returns `Action::Submit`.
 - `fontaine-core/tests/ledger.rs`: extend the gitignore fixture to assert directories are
