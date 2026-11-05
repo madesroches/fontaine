@@ -519,14 +519,18 @@ async fn broad_code_execution_rules_are_suspended_while_auto_is_on() {
     assert!(!suspended.iter().any(|r| r.contains("npm test")));
 
     // Leaving auto restores them.
-    rig.state.set_mode(Manual);
+    rig.state
+        .set_mode(Manual, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     let before = fake.calls();
     assert!(allowed(
         &rig.check("shell", shell("python script.py")).await
     ));
     assert_eq!(fake.calls(), before);
     assert_eq!(last(&rig).tier, Tier::AllowRule);
-    rig.state.set_mode(Auto);
+    rig.state
+        .set_mode(Auto, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     assert!(allowed(
         &rig.check("shell", shell("python script.py")).await
     ));

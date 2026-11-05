@@ -195,8 +195,20 @@ async fn an_auto_session_without_facts_warns_once_and_a_manual_one_warns_on_its_
         assert!(told[0].contains(WARNING) && told[0].contains("fontaine auto-mode setup"));
     }
     assert!(runtime.state.setup_warning_shown());
-    runtime.state.set_mode(PermissionMode::Manual);
-    runtime.state.set_mode(PermissionMode::Auto);
+    runtime
+        .state
+        .set_mode(
+            PermissionMode::Manual,
+            fontaine_core::afk_report::AfkSource::Command,
+        )
+        .expect("not AFK mode");
+    runtime
+        .state
+        .set_mode(
+            PermissionMode::Auto,
+            fontaine_core::afk_report::AfkSource::Command,
+        )
+        .expect("not AFK mode");
     assert!(runtime.setup_notice_on_auto().is_none(), "not twice");
 
     let w = world_with_remote();
@@ -205,7 +217,13 @@ async fn an_auto_session_without_facts_warns_once_and_a_manual_one_warns_on_its_
     assert!(warnings.about_setup().is_empty());
     assert!(!runtime.state.setup_warning_shown());
     assert!(runtime.setup_notice_on_auto().is_none(), "manual mode");
-    runtime.state.set_mode(PermissionMode::Auto);
+    runtime
+        .state
+        .set_mode(
+            PermissionMode::Auto,
+            fontaine_core::afk_report::AfkSource::Command,
+        )
+        .expect("not AFK mode");
     let notice = runtime
         .setup_notice_on_auto()
         .expect("the first switch into auto warns");
@@ -218,7 +236,13 @@ async fn the_switch_path_is_silent_while_the_guardian_is_off_and_when_the_remind
     let w = world_with_remote();
     let (runtime, _) = start(&w, PermissionMode::Manual);
     runtime.record_session_start().await;
-    runtime.state.set_mode(PermissionMode::Auto);
+    runtime
+        .state
+        .set_mode(
+            PermissionMode::Auto,
+            fontaine_core::afk_report::AfkSource::Command,
+        )
+        .expect("not AFK mode");
     runtime.state.set_guardian_off(true).unwrap();
     assert!(runtime.setup_notice_on_auto().is_none());
     runtime.state.set_guardian_off(false).unwrap();
@@ -300,7 +324,13 @@ async fn applying_mid_session_reaches_the_next_request_of_any_agent_and_changes_
     let loaded = project_env::load(&w.data, &runtime.primary_root());
     assert_eq!(loaded.record.unwrap().remotes.len(), 2);
     // And the warning is not raised again.
-    runtime.state.set_mode(PermissionMode::Auto);
+    runtime
+        .state
+        .set_mode(
+            PermissionMode::Auto,
+            fontaine_core::afk_report::AfkSource::Command,
+        )
+        .expect("not AFK mode");
     assert!(runtime.setup_notice_on_auto().is_none());
     assert!(warnings.about_setup().is_empty());
 }

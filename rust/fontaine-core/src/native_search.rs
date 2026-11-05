@@ -23,7 +23,7 @@ pub(crate) fn permitted(mode: PermissionMode, rules: &Rules) -> bool {
         return false;
     }
     match mode {
-        PermissionMode::Auto | PermissionMode::Plan => true,
+        PermissionMode::Auto | PermissionMode::Afk | PermissionMode::Plan => true,
         PermissionMode::Manual | PermissionMode::AcceptEdits | PermissionMode::DontAsk => {
             names_tool(&rules.allow)
         }

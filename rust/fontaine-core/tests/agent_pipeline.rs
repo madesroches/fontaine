@@ -51,14 +51,18 @@ async fn a_childs_next_call_follows_the_tighter_mode_when_the_parent_switches() 
     );
 
     // The parent drops to manual: the child's next call asks the human instead.
-    rig.state.set_mode(Manual);
+    rig.state
+        .set_mode(Manual, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     rig.check_as(&id, "shell", shell("python b.py")).await;
     assert_eq!(fake.calls(), 1);
     assert_eq!(rig.approver.asked(), 1);
     assert_eq!(rig.audit().last().unwrap().permission_mode, "manual");
 
     // And back: the child is as loose as its own setting and its parent allow.
-    rig.state.set_mode(Auto);
+    rig.state
+        .set_mode(Auto, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     assert!(allowed(
         &rig.check_as(&id, "shell", shell("python c.py")).await
     ));
@@ -119,7 +123,9 @@ async fn a_parent_entering_plan_mid_run_blocks_the_childs_next_edit() {
     rig.check_as(&id, "edit", edit_args("a.txt")).await;
     assert_ne!(rig.audit().last().unwrap().tier, Tier::PlanBlock);
 
-    rig.state.set_mode(Plan);
+    rig.state
+        .set_mode(Plan, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     assert!(!allowed(
         &rig.check_as(&id, "edit", edit_args("a.txt")).await
     ));
@@ -337,7 +343,9 @@ async fn a_resumed_child_is_still_held_to_its_parents_posture() {
     assert_eq!(fake.calls(), 1, "an auto child under auto is judged");
 
     // The parent tightens while the child runs its second life: the child follows.
-    rig.state.set_mode(Manual);
+    rig.state
+        .set_mode(Manual, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     rig.check_as(&id, "shell", shell("python b.py")).await;
     assert_eq!(fake.calls(), 1);
     assert_eq!(rig.approver.asked(), 1);

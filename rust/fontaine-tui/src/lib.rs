@@ -247,6 +247,9 @@ struct Ui<R> {
     pending_pick: Option<(PickerPurpose, String)>,
     /// A session picked in `/resume` while a turn ran, switched to once it is over.
     pending_resume: Option<String>,
+    /// The AFK stretches the human left whose independent review has not run yet, by start
+    /// position: a mode switch is immediate, the review waits for the end of the work in progress.
+    pending_afk_review: Vec<u64>,
     /// Settings saved from `/config` that apply from the next launch, by key, as the label the
     /// panel shows; they outlive the panel so reopening it still shows them.
     config_pending: std::collections::BTreeMap<String, String>,
@@ -379,6 +382,7 @@ pub async fn drive(
         recent,
         pending_pick: None,
         pending_resume: None,
+        pending_afk_review: Vec::new(),
         config_pending: Default::default(),
         pending_config: VecDeque::new(),
         pending_provider: VecDeque::new(),
@@ -449,7 +453,7 @@ pub async fn drive(
         ));
     }
     ui.app.menu.sort_by(|a, b| a.name.cmp(&b.name));
-    if mode == PermissionMode::Auto {
+    if mode.rules() == PermissionMode::Auto {
         ui.announce_auto(&runtime);
     }
     if runtime.state.afk().stopped.is_some() {
@@ -459,7 +463,7 @@ pub async fn drive(
     }
     if runtime.state.afk_on() {
         ui.app.transcript.notice(
-            "AFK mode is on (--afk): nothing is asked of you; each call that would have needed approval is denied. /afk off turns it off.",
+            "AFK mode is on: nothing is asked of you; each call that would have needed approval is denied. Shift+Tab leaves it.",
         );
     }
     if ui.start_mcp(&mut runtime).await {

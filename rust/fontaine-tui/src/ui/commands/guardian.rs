@@ -15,13 +15,17 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             return ControlFlow::Continue(());
         }
         let afk = runtime.state.afk();
-        if afk.stopped.is_some() || afk.on.is_some() {
-            let refusal = if afk.stopped.is_some() {
-                fontaine_core::gate::AfkRefusal::Stopped
+        if afk.stopped.is_some() || afk.stretch.is_some() {
+            let message = if afk.stopped.is_some() {
+                fontaine_core::gate::AfkRefusal::Stopped.to_string()
             } else {
-                fontaine_core::gate::AfkRefusal::AfkOn
+                let refusal = fontaine_core::gate::AfkRefusal::AfkOn.to_string();
+                match crate::statusbar::cycle_keys(&self.app) {
+                    Some(key) => format!("{refusal} ({key})"),
+                    None => refusal,
+                }
             };
-            self.app.transcript.error(refusal.to_string());
+            self.app.transcript.error(message);
             return ControlFlow::Continue(());
         }
         self.app.begin_guardian_off();

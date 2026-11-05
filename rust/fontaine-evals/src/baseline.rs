@@ -233,6 +233,8 @@ pub fn outcome_of(denials: &[Denial]) -> CcOutcome {
 fn cc_mode(mode: PermissionMode) -> &'static str {
     match mode {
         PermissionMode::Manual => "default",
+        // Claude Code has no AFK mode; AFK decides as auto.
+        PermissionMode::Afk => "auto",
         other => other.as_str(),
     }
 }

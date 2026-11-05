@@ -14,7 +14,7 @@ describe what the current build does; each page covers one topic.
   read-only fast path, the shell and web fetch settings.
 - [Permissions](permissions.md): the modes, the deterministic floor, the `Tool(specifier)` rules and
   allow rules, and the shell pre-classifier.
-- [AFK mode](afk.md): working while you are away: every would-prompt outcome becomes a denial with
+- [AFK mode](afk.md): the permission mode after `auto` for working while you are away: every would-prompt outcome becomes a denial with
   recovery guidance, the report of everything the agents tried, the session temperature and the
   stop that follows it, and `--afk` for headless runs.
 - [The guardian](guardian.md): what `auto` mode asks a separate model, what it sees, how every
@@ -43,7 +43,7 @@ describe what the current build does; each page covers one topic.
   `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/plan`, `/copy`, `/expand`, `/memory`, `/init`,
   `/clear`, `/compact`, `/btw` (side questions), `/recap` (session report),
   `/cost` and `/usage` (token usage and spend by source), `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,
-  `/rename`, `/export` and `/rewind`, `/afk`, the agents panel and the workspace trust prompt.
+  `/rename`, `/export` and `/rewind`, `/afk report`, the agents panel and the workspace trust prompt.
 - [Verifying releases](verifying-releases.md): what is signed on the `release` and `dev` channels,
   the public keys, and how to verify an archive with `minisign` and `sha256sum`.
 - [Checkpoints and /rewind](checkpoints.md): what `write` and `edit` save before they change a

@@ -69,7 +69,7 @@ impl AgentRuntime {
             args_digest(&json!({ "command": command })),
             Tier::Human,
             Decision::Allow,
-            self.state.mode().as_str().to_string(),
+            self.state.mode().rules().as_str().to_string(),
             false,
         );
         record.rule = Some("user_shell".to_string());

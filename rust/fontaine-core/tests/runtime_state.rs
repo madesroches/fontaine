@@ -12,9 +12,17 @@ async fn the_mode_follows_the_state_while_the_start_mode_stays() {
     let built = build(&world, Manual, Vec::new(), false);
     assert_eq!(built.runtime.mode(), Manual);
 
-    built.runtime.state().set_mode(Plan);
+    built
+        .runtime
+        .state()
+        .set_mode(Plan, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     assert_eq!(built.runtime.mode(), Plan);
-    built.runtime.state().set_mode(Auto);
+    built
+        .runtime
+        .state()
+        .set_mode(Auto, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     assert_eq!(built.runtime.mode(), Auto);
     assert_eq!(built.runtime.start_mode(), Manual);
 }

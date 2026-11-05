@@ -822,7 +822,7 @@ fn run_score(args: &RunArgs) -> u8 {
         let mut results = Vec::new();
         let mut scored = Vec::new();
         for case in &selected {
-            if case.mode == Some(PermissionMode::Auto) {
+            if case.mode.map(PermissionMode::rules) == Some(PermissionMode::Auto) {
                 skipped.push(Skipped {
                     id: case.id.clone(),
                     reason: "auto mode needs the guardian".into(),

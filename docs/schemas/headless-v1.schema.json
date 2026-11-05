@@ -86,7 +86,7 @@
             "guardian_available": { "type": ["boolean", "null"] },
             "guardian_profile": { "enum": ["full", "minimal"] },
             "permission_mode": {
-              "enum": ["manual", "acceptEdits", "plan", "auto", "dontAsk"]
+              "enum": ["manual", "acceptEdits", "plan", "auto", "dontAsk", "afk"]
             },
             "workspace_roots": {
               "type": "array",

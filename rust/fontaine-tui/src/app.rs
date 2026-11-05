@@ -802,6 +802,31 @@ impl App {
         self.questions.front().map(|p| (PromptKind::Question, p.id))
     }
 
+    /// Answers every open or queued prompt the way `AfkApprover` would, because nobody is asked
+    /// during AFK mode: approvals and the unavailable-guardian dialog are denied, questions are
+    /// unavailable. Returns how many prompts it closed.
+    pub fn answer_for_afk(&mut self) -> usize {
+        let mut closed = 0;
+        for mut approval in self
+            .approval
+            .take()
+            .into_iter()
+            .chain(self.queued_approvals.drain(..))
+        {
+            approval.reply(Answer::Deny { feedback: None });
+            closed += 1;
+        }
+        if let Some(mut prompt) = self.unavailable.take() {
+            prompt.reply(UnavailableChoice::Deny);
+            closed += 1;
+        }
+        for mut panel in self.questions.drain(..) {
+            panel.reply(QuestionReply::Unavailable);
+            closed += 1;
+        }
+        closed
+    }
+
     /// Answers the open prompts of the main conversation with a denial, as when its turn is
     /// interrupted. A subagent's prompts stay: its run goes on.
     pub fn deny_pending(&mut self) {

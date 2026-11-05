@@ -208,6 +208,7 @@ fn mode_announcement(mode: PermissionMode) -> &'static str {
         PermissionMode::AcceptEdits => "[accept edits on]",
         PermissionMode::Plan => "[plan mode on]",
         PermissionMode::Auto => "[auto mode on]",
+        PermissionMode::Afk => "[AFK mode on]",
         PermissionMode::DontAsk => "[dontAsk mode on]",
     }
 }
@@ -1217,6 +1218,7 @@ mod tests {
         assert!(rig.render().contains("[accept edits on]"));
         for (mode, said) in [
             (PermissionMode::Auto, "[auto mode on]"),
+            (PermissionMode::Afk, "[AFK mode on]"),
             (PermissionMode::DontAsk, "[dontAsk mode on]"),
             (PermissionMode::Manual, "[manual mode on]"),
         ] {

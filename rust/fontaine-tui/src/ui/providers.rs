@@ -220,7 +220,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             Action::Providers(DialogKey::CancelSignIn)
                             | Action::Interrupt
                             | Action::Quit => break None,
-                            Action::CycleMode => self.cycle_mode(runtime),
+                            Action::CycleMode => {
+                                self.cycle_mode(runtime, false);
+                                self.review_afk_exits(runtime).await;
+                            }
                             Action::RetryDenied(index) => self.retry_denied(runtime, index),
                             Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
                             Action::KillAgent(id) => self.kill_agent(runtime, &id),

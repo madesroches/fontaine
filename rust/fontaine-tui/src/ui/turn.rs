@@ -251,13 +251,14 @@ fn push_verdict(app: &mut App, event: &SessionEvent) {
 }
 
 impl<R: FnMut(&mut App)> Ui<R> {
-    /// Brings the provider's search tool in line with the mode and rules now in force, which a
-    /// mode switch or a session rule may have changed since the agent was built.
+    /// Brings the agent in line with the mode and rules now in force, which a mode switch or a
+    /// session rule may have changed since it was built: the provider's search tool and the AFK
+    /// prompt guidance.
     ///
     /// When the agent cannot be rebuilt to drop a search tool the gate now withholds, the turn
     /// must not run: this returns how it ends instead.
-    fn refresh_native_search(&mut self, runtime: &mut AgentRuntime) -> Option<TurnEnd> {
-        let e = runtime.refresh_native_search().err()?;
+    fn refresh_before_turn(&mut self, runtime: &mut AgentRuntime) -> Option<TurnEnd> {
+        let e = runtime.refresh_before_turn().err()?;
         let message = format!(
             "the provider's web search could not be turned off, so the turn did not run: {}",
             fontaine_tools::error_chain::chain(&e)
@@ -278,7 +279,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let Some(prompt) = runtime.notification_prompt().await else {
             return std::ops::ControlFlow::Continue(());
         };
-        if let Some(end) = self.refresh_native_search(runtime) {
+        if let Some(end) = self.refresh_before_turn(runtime) {
             return self.harness_turn_tail(runtime, launch_dir, end).await;
         }
         self.app.transcript.notice(if jobs {
@@ -332,7 +333,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app
             .transcript
             .notice(format!("scheduled: {}", fired.job.id));
-        let end = match self.refresh_native_search(runtime) {
+        let end = match self.refresh_before_turn(runtime) {
             Some(end) => end,
             None => self.turn(runtime, prompt, None, Vec::new()).await,
         };
@@ -354,7 +355,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         next: Continue,
     ) -> std::ops::ControlFlow<()> {
         let prompt = runtime.goal_prompt(&next).await;
-        let end = match self.refresh_native_search(runtime) {
+        let end = match self.refresh_before_turn(runtime) {
             Some(end) => end,
             None => self.turn(runtime, prompt, None, Vec::new()).await,
         };
@@ -382,7 +383,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     None => return Err(TurnEnd::InputClosed),
                     Some(input) => match self.app.handle_input(input) {
                         Action::Interrupt | Action::Quit => return Err(TurnEnd::Interrupted),
-                        Action::CycleMode => self.cycle_mode(runtime),
+                        Action::CycleMode => self.cycle_mode(runtime, true),
                         Action::RetryDenied(index) if retry => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),
@@ -519,6 +520,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         while let Some(submission) = pending.pop_front() {
+            self.review_afk_exits(runtime).await;
             if runtime.state.afk().stopped.is_some()
                 && matches!(
                     submission,
@@ -537,7 +539,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app.transcript.user(text.clone());
                     // A prompt from the user resumes a paused goal.
                     runtime.goal_user_prompt();
-                    match self.refresh_native_search(runtime) {
+                    match self.refresh_before_turn(runtime) {
                         Some(end) => end,
                         None => {
                             runtime.begin_turn(&text, false);
@@ -566,7 +568,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     }
                     // A prompt from the user resumes a paused goal.
                     runtime.goal_user_prompt();
-                    match self.refresh_native_search(runtime) {
+                    match self.refresh_before_turn(runtime) {
                         Some(end) => end,
                         None => {
                             runtime.begin_turn(&text, false);
@@ -578,7 +580,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app.transcript.user(text.clone());
                     // A prompt from the user resumes a paused goal.
                     runtime.goal_user_prompt();
-                    match self.refresh_native_search(runtime) {
+                    match self.refresh_before_turn(runtime) {
                         Some(end) => end,
                         None => {
                             // Recorded as the human's message before this point.
@@ -708,7 +710,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 Action::OpenRewind => self.open_rewind(runtime),
                 Action::Interrupt | Action::Quit => return Break(()),
-                Action::CycleMode => self.cycle_mode(runtime),
+                Action::CycleMode => {
+                    self.cycle_mode(runtime, false);
+                    self.review_afk_exits(runtime).await;
+                }
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
                 Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
                 Action::KillAgent(id) => self.kill_agent(runtime, &id),
@@ -841,7 +846,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     None => break TurnEnd::InputClosed,
                     Some(input) => match self.app.handle_input(input) {
                         Action::Interrupt | Action::Quit => break TurnEnd::Interrupted,
-                        Action::CycleMode => self.cycle_mode(runtime),
+                        Action::CycleMode => self.cycle_mode(runtime, true),
                         Action::RetryDenied(index) => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),

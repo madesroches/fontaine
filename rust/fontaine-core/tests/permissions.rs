@@ -1294,12 +1294,16 @@ async fn a_mode_change_takes_effect_on_the_next_call() {
         first(&rig, "write", write_args("a.txt")).await,
         (Decision::Prompt, Tier::Mode)
     );
-    rig.state.set_mode(AcceptEdits);
+    rig.state
+        .set_mode(AcceptEdits, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     assert_eq!(
         first(&rig, "write", write_args("a.txt")).await,
         (Decision::Allow, Tier::Mode)
     );
-    rig.state.set_mode(Plan);
+    rig.state
+        .set_mode(Plan, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     assert_eq!(
         first(&rig, "write", write_args("a.txt")).await,
         (Decision::Deny, Tier::PlanBlock)
@@ -1520,7 +1524,9 @@ async fn an_interrupted_prompt_leaves_no_diff_for_the_next_call() {
     assert!(interrupted.is_err());
     assert_eq!(rig.approver.asked(), 1);
 
-    rig.state.set_mode(AcceptEdits);
+    rig.state
+        .set_mode(AcceptEdits, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     let d = rig.check("edit", preview_edit("one", "1")).await;
     assert!(allowed(&d));
     let (id, preview) = rig

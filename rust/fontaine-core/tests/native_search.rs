@@ -116,7 +116,7 @@ async fn manual_mode_needs_an_allow_rule_and_a_grant_takes_effect_on_the_next_tu
         .runtime
         .state
         .grant(parse_rule("websearch").unwrap(), RuleSource::Session);
-    built.runtime.refresh_native_search().unwrap();
+    built.runtime.refresh_before_turn().unwrap();
     assert!(built.runtime.native_search_active());
     turn(&built).await;
     assert_eq!(sent_tools(&built), vec![entry()]);
@@ -134,13 +134,27 @@ async fn a_mode_switch_adds_and_removes_it_on_the_next_turn() {
     turn(&built).await;
     assert_eq!(sent_tools(&built), vec![entry()]);
 
-    built.runtime.state.set_mode(PermissionMode::Manual);
-    built.runtime.refresh_native_search().unwrap();
+    built
+        .runtime
+        .state
+        .set_mode(
+            PermissionMode::Manual,
+            fontaine_core::afk_report::AfkSource::Command,
+        )
+        .expect("not AFK mode");
+    built.runtime.refresh_before_turn().unwrap();
     turn(&built).await;
     assert!(sent_tools(&built).is_empty());
 
-    built.runtime.state.set_mode(PermissionMode::Plan);
-    built.runtime.refresh_native_search().unwrap();
+    built
+        .runtime
+        .state
+        .set_mode(
+            PermissionMode::Plan,
+            fontaine_core::afk_report::AfkSource::Command,
+        )
+        .expect("not AFK mode");
+    built.runtime.refresh_before_turn().unwrap();
     turn(&built).await;
     assert_eq!(sent_tools(&built), vec![entry()]);
 }
@@ -157,7 +171,7 @@ async fn an_unchanged_gate_does_not_rebuild_the_agent() {
     );
     // A rebuild re-reads the instruction files, so a changed file shows whether one happened.
     common::write(&w.work.join("FONTAINE.md"), "marker-v2\n");
-    built.runtime.refresh_native_search().unwrap();
+    built.runtime.refresh_before_turn().unwrap();
     turn(&built).await;
     let sent = format!("{:?}", built.main.requests().last().unwrap());
     assert!(
@@ -165,8 +179,15 @@ async fn an_unchanged_gate_does_not_rebuild_the_agent() {
         "{sent}"
     );
 
-    built.runtime.state.set_mode(PermissionMode::Manual);
-    built.runtime.refresh_native_search().unwrap();
+    built
+        .runtime
+        .state
+        .set_mode(
+            PermissionMode::Manual,
+            fontaine_core::afk_report::AfkSource::Command,
+        )
+        .expect("not AFK mode");
+    built.runtime.refresh_before_turn().unwrap();
     turn(&built).await;
     let sent = format!("{:?}", built.main.requests().last().unwrap());
     assert!(
@@ -327,8 +348,15 @@ async fn a_failed_rebuild_that_must_withhold_it_is_an_error() {
     assert!(built.runtime.native_search_active());
     std::fs::remove_file(w.data.join("credentials.toml")).unwrap();
 
-    built.runtime.state.set_mode(PermissionMode::Manual);
-    assert!(built.runtime.refresh_native_search().is_err());
+    built
+        .runtime
+        .state
+        .set_mode(
+            PermissionMode::Manual,
+            fontaine_core::afk_report::AfkSource::Command,
+        )
+        .expect("not AFK mode");
+    assert!(built.runtime.refresh_before_turn().is_err());
     assert!(built.runtime.native_search_active());
 }
 
@@ -339,7 +367,14 @@ async fn a_failed_rebuild_that_would_only_offer_it_is_not() {
     assert!(!built.runtime.native_search_active());
     std::fs::remove_file(w.data.join("credentials.toml")).unwrap();
 
-    built.runtime.state.set_mode(PermissionMode::Auto);
-    built.runtime.refresh_native_search().unwrap();
+    built
+        .runtime
+        .state
+        .set_mode(
+            PermissionMode::Auto,
+            fontaine_core::afk_report::AfkSource::Command,
+        )
+        .expect("not AFK mode");
+    built.runtime.refresh_before_turn().unwrap();
     assert!(!built.runtime.native_search_active());
 }

@@ -275,7 +275,7 @@ pub fn setup_notice(
     auto_mode: &AutoMode,
     now: DateTime<Utc>,
 ) -> Option<Notice> {
-    if mode != PermissionMode::Auto || !auto_mode.setup_reminder {
+    if mode.rules() != PermissionMode::Auto || !auto_mode.setup_reminder {
         return None;
     }
     let Some(record) = record else {

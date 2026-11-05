@@ -226,8 +226,12 @@ async fn a_mode_change_emits_an_event() {
     let capture = TraceCapture::default();
     let _guard = tracing::subscriber::set_default(capture.subscriber());
     let rig = Rig::new(Manual);
-    rig.state.set_mode(Plan);
-    rig.state.set_mode(Plan);
+    rig.state
+        .set_mode(Plan, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
+    rig.state
+        .set_mode(Plan, fontaine_core::afk_report::AfkSource::Command)
+        .expect("not AFK mode");
     let events: Vec<_> = capture
         .events()
         .into_iter()

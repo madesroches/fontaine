@@ -421,7 +421,7 @@ impl PostHookStage {
         let mode = if tree.is_child(call.agent) {
             crate::gate::permission_mode(tree.posture(call.agent).mode)
         } else {
-            self.state.mode()
+            self.state.mode().rules()
         };
         let tool_use_id = self.state.current_call(call.agent);
         let mut input = base_event(

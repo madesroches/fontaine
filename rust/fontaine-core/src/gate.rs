@@ -43,10 +43,20 @@ pub const UNREGISTERED_AGENT: &str = "the calling agent is no longer registered"
 /// AFK mode as the pipeline reads it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct AfkState {
-    /// The stretch that is running; `None` when AFK is off.
-    pub on: Option<AfkStretch>,
+    /// The stretch that is running: `Some` exactly while the session's mode is `afk`.
+    pub stretch: Option<AfkStretch>,
     /// The temperature stop no review has cleared yet.
     pub stopped: Option<AfkStop>,
+}
+
+/// What `SessionState::set_mode` did.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ModeChanged {
+    /// False when the session was already in the mode.
+    pub changed: bool,
+    /// The ledger position of the `Afk` record that started the AFK stretch this change ended;
+    /// the surface reviews that stretch.
+    pub closed_stretch: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,13 +69,13 @@ pub struct AfkStretch {
 /// Why AFK mode and the guardian escape hatch cannot both be on, or why AFK cannot start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AfkRefusal {
-    /// `/afk` while the guardian is off: nothing would be converted to a denial.
+    /// Entering AFK mode while the guardian is off: nothing would be converted to a denial.
     GuardianOff,
-    /// `/guardian-disable` while AFK is on.
+    /// `/guardian-disable` while AFK mode is on.
     AfkOn,
     /// Either, while a temperature stop waits for a review.
     Stopped,
-    /// `/afk` when the ledger cannot record the start: the stretch would never open in the
+    /// Entering AFK mode when the ledger cannot record the start: the stretch would never open in the
     /// view, so its temperature could not rise. The write failure itself is reported as a warning.
     LedgerUnwritable,
 }
@@ -76,7 +86,9 @@ impl std::fmt::Display for AfkRefusal {
             AfkRefusal::GuardianOff => {
                 "the guardian is disabled for this session: run /guardian-enable first"
             }
-            AfkRefusal::AfkOn => "AFK mode is on: run /afk off before disabling the guardian",
+            AfkRefusal::AfkOn => {
+                "AFK mode is on: leave it with the mode-cycle key before disabling the guardian"
+            }
             AfkRefusal::Stopped => {
                 "the session is stopped by the AFK temperature ceiling: run /afk review first"
             }
@@ -132,7 +144,7 @@ pub fn root_mode(mode: PermissionMode) -> RootMode {
         PermissionMode::DontAsk => RootMode::Ladder(Ladder::DontAsk),
         PermissionMode::Manual => RootMode::Ladder(Ladder::Manual),
         PermissionMode::AcceptEdits => RootMode::Ladder(Ladder::AcceptEdits),
-        PermissionMode::Auto => RootMode::Ladder(Ladder::Auto),
+        PermissionMode::Auto | PermissionMode::Afk => RootMode::Ladder(Ladder::Auto),
     }
 }
 
@@ -427,7 +439,7 @@ impl SessionState {
             mode,
             guardian_off: RwLock::new(false),
             afk: RwLock::new(AfkState {
-                on: None,
+                stretch: None,
                 stopped: restored_stop,
             }),
             afk_ceiling: RwLock::new(fontaine_guardian::temperature::DEFAULT_CEILING),
@@ -494,21 +506,80 @@ impl SessionState {
 
     /// Switches the mode for the next call. The change is recorded in the ledger and reported
     /// as a `permission_mode_changed` event; setting the mode it already has does neither.
-    pub fn set_mode(&self, to: PermissionMode) {
-        let from = std::mem::replace(&mut *write(&self.mode, "mode"), to);
+    ///
+    /// Entering `afk` is refused while the guardian is off, while a temperature stop waits for a
+    /// review, or when the ledger cannot record the start; the mode is then unchanged. Leaving it
+    /// is never refused and returns the closed stretch for the surface to review. `source` is
+    /// recorded only when AFK mode starts or ends: it is never entered by anything but the
+    /// user's own flag or key press, never persisted and never restored by a resume.
+    pub fn set_mode(
+        &self,
+        to: PermissionMode,
+        source: AfkSource,
+    ) -> Result<ModeChanged, AfkRefusal> {
+        self.switch_mode(write(&self.afk, "afk"), to, source)
+    }
+
+    /// `set_mode` for a caller that already holds the AFK lock, so a stop and the mode it ends
+    /// change together. The AFK lock is taken before the mode lock, as in `set_guardian_off`.
+    fn switch_mode(
+        &self,
+        mut afk: std::sync::RwLockWriteGuard<'_, AfkState>,
+        to: PermissionMode,
+        source: AfkSource,
+    ) -> Result<ModeChanged, AfkRefusal> {
+        let mut mode = write(&self.mode, "mode");
+        let from = *mode;
         if from == to {
-            return;
+            return Ok(ModeChanged::default());
         }
+        let mut closed_stretch = None;
+        if to == PermissionMode::Afk {
+            if afk.stopped.is_some() {
+                return Err(AfkRefusal::Stopped);
+            }
+            if self.guardian_off() {
+                return Err(AfkRefusal::GuardianOff);
+            }
+            let Some(started_seq) = self.append_seq(Record::Afk { on: true, source }) else {
+                return Err(AfkRefusal::LedgerUnwritable);
+            };
+            afk.stretch = Some(AfkStretch {
+                started_seq,
+                source,
+            });
+        } else if from == PermissionMode::Afk {
+            self.append(Record::Afk { on: false, source });
+            closed_stretch = afk.stretch.take().map(|stretch| stretch.started_seq);
+        }
+        *mode = to;
         self.append(Record::ModeChange {
             from: from.as_str().to_string(),
             to: to.as_str().to_string(),
         });
+        // The session events read the mode and the AFK state, so both guards go first.
+        drop(mode);
+        drop(afk);
+        if to == PermissionMode::Afk || from == PermissionMode::Afk {
+            let on = to == PermissionMode::Afk;
+            self.record_session_event(
+                "afk",
+                serde_json::json!({ "on": on, "source": source }),
+                Tier::Afk,
+                if on { "afk_on" } else { "afk_off" },
+                if on { "AFK mode on" } else { "AFK mode off" },
+            );
+        }
         tracing::info!(
             target: TARGET,
             from = from.as_str(),
             to = to.as_str(),
             "permission_mode_changed"
         );
+        Ok(ModeChanged {
+            changed: true,
+            closed_stretch,
+        })
     }
 
     /// Whether the session escape hatch is on: every root call runs before the floor and the
@@ -566,13 +637,13 @@ impl SessionState {
     /// the ledger and the audit log; it is never persisted and never loosens a subagent. Refused
     /// while AFK mode is on or stopped: it would turn off the very denials AFK relies on.
     pub fn set_guardian_off(&self, off: bool) -> Result<(), AfkRefusal> {
-        // The AFK lock is taken first here and in `set_afk`, so the two cannot interleave.
+        // The AFK lock is taken first here and in `set_mode`, so the two cannot interleave.
         let afk = read(&self.afk, "afk");
         if off {
             if afk.stopped.is_some() {
                 return Err(AfkRefusal::Stopped);
             }
-            if afk.on.is_some() {
+            if afk.stretch.is_some() {
                 return Err(AfkRefusal::AfkOn);
             }
         }
@@ -603,7 +674,7 @@ impl SessionState {
 
     /// Whether AFK mode is on: nobody can be asked.
     pub fn afk_on(&self) -> bool {
-        read(&self.afk, "afk").on.is_some()
+        self.mode() == PermissionMode::Afk
     }
 
     /// The temperature at which an AFK stretch stops.
@@ -613,40 +684,6 @@ impl SessionState {
 
     pub fn set_afk_ceiling(&self, ceiling: f64) {
         *write(&self.afk_ceiling, "afk ceiling") = ceiling;
-    }
-
-    /// Turns AFK mode on or off for the rest of the session; `Ok(false)` when nothing changed.
-    /// Starting a stretch is refused while the guardian is off or a stop waits for review. The
-    /// toggle is recorded in the ledger and the audit log; it is never persisted, never restored
-    /// by a resume and never set by anything but the user's own command or flag.
-    pub fn set_afk(&self, on: bool, source: AfkSource) -> Result<bool, AfkRefusal> {
-        let mut afk = write(&self.afk, "afk");
-        if on && afk.stopped.is_some() {
-            return Err(AfkRefusal::Stopped);
-        }
-        if on == afk.on.is_some() {
-            return Ok(false);
-        }
-        if on && self.guardian_off() {
-            return Err(AfkRefusal::GuardianOff);
-        }
-        let seq = self.append_seq(Record::Afk { on, source });
-        if on && seq.is_none() {
-            return Err(AfkRefusal::LedgerUnwritable);
-        }
-        afk.on = on.then(|| AfkStretch {
-            started_seq: seq.unwrap_or(0),
-            source,
-        });
-        drop(afk);
-        self.record_session_event(
-            "afk",
-            serde_json::json!({ "on": on, "source": source }),
-            Tier::Afk,
-            if on { "afk_on" } else { "afk_off" },
-            if on { "AFK mode on" } else { "AFK mode off" },
-        );
-        Ok(true)
     }
 
     /// Stops the session: every call from every agent is denied until a review. Does only what
@@ -688,30 +725,20 @@ impl SessionState {
         true
     }
 
-    /// The human reviewed a stopped session: it may run again, with AFK off. Evidence is kept,
-    /// and the denial breaker is untouched. Returns false when no stop stands.
+    /// The human reviewed a stopped session: it may run again, in `manual` when AFK mode was on
+    /// (the human who just reviewed is present). Evidence is kept, and the denial breaker is
+    /// untouched. Returns false when no stop stands.
     pub fn afk_review(&self) -> bool {
         let mut afk = write(&self.afk, "afk");
         let Some(stop) = afk.stopped.take() else {
             return false;
         };
         self.append(Record::AfkReviewed {});
-        let was_on = afk.on.take();
-        if let Some(stretch) = was_on {
-            self.append(Record::Afk {
-                on: false,
-                source: stretch.source,
-            });
-        }
-        drop(afk);
-        if was_on.is_some() {
-            self.record_session_event(
-                "afk",
-                serde_json::json!({ "on": false }),
-                Tier::Afk,
-                "afk_off",
-                "AFK mode off",
-            );
+        if *read(&self.mode, "mode") == PermissionMode::Afk {
+            self.switch_mode(afk, PermissionMode::Manual, AfkSource::Command)
+                .expect("leaving AFK mode is never refused");
+        } else {
+            drop(afk);
         }
         self.record_session_event(
             "afk",
@@ -750,7 +777,7 @@ impl SessionState {
         let afk = read(&self.afk, "afk");
         if afk.stopped.is_some() {
             Some(Blocked::Stopped)
-        } else if afk.on.is_some() && self.auto_paused() {
+        } else if afk.stretch.is_some() && self.auto_paused() {
             Some(Blocked::BreakerPaused)
         } else {
             None
@@ -801,7 +828,7 @@ impl SessionState {
             args_digest(&args),
             tier,
             decision,
-            self.mode().as_str().to_string(),
+            self.mode().rules().as_str().to_string(),
             false,
         );
         record.afk = self.afk_on();

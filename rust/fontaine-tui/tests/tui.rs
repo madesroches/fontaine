@@ -126,17 +126,21 @@ async fn shift_tab_cycles_the_mode_and_the_status_bar_follows() {
         idle(&ui).await;
         assert!(ui.screen().contains("manual"));
         ui.press(KeyCode::BackTab);
-        ui.wait_for("⏵⏵ accept edits on").await;
-        ui.press(KeyCode::BackTab);
         ui.wait_for("⏸ plan mode on").await;
+        ui.press(KeyCode::BackTab);
+        ui.wait_for("⏵⏵ accept edits on").await;
         ui.press(KeyCode::BackTab);
         ui.wait_for("⏵⏵ auto mode on").await;
         ui.press(KeyCode::BackTab);
+        ui.wait_for("⏵⏵⏵ AFK mode on").await;
+        ui.press(KeyCode::BackTab);
         ui.wait_until("manual again", |s| {
-            s.contains("manual")
-                && !s.contains("plan mode on")
-                && !s.contains("accept edits")
-                && !s.contains("auto mode on")
+            let bar = s.lines().last().unwrap_or("");
+            bar.contains("manual")
+                && !bar.contains("plan mode on")
+                && !bar.contains("accept edits")
+                && !bar.contains("auto mode on")
+                && !bar.contains("AFK mode on")
         })
         .await;
     })
@@ -485,9 +489,13 @@ async fn starting_in_auto_lists_the_allow_rules_it_sets_aside_and_shift_tab_leav
         );
         assert!(screen.contains("shell(python *)"), "{screen}");
         assert!(!screen.contains("npm test"), "{screen}");
+        // The next stop is AFK, which sets the same rules aside.
+        ui.press(KeyCode::BackTab);
+        ui.wait_for("⏵⏵⏵ AFK mode on").await;
         ui.press(KeyCode::BackTab);
         ui.wait_until("manual", |s| {
-            s.contains("manual") && !s.contains("auto mode on")
+            let bar = s.lines().last().unwrap_or("");
+            bar.contains("manual") && !bar.contains("AFK mode on")
         })
         .await;
         // Cycling back into auto lists them again.
@@ -1432,9 +1440,17 @@ async fn plan_enters_plan_mode_and_a_description_is_sent_in_that_mode() {
         ui.wait_for("plan mode on").await;
         ui.wait_for("⏸ plan mode on").await;
         ui.press(KeyCode::BackTab);
+        ui.wait_for("⏵⏵ accept edits on").await;
+        ui.press(KeyCode::BackTab);
         ui.wait_for("⏵⏵ auto mode on").await;
         ui.press(KeyCode::BackTab);
-        ui.wait_for("manual").await;
+        ui.wait_for("⏵⏵⏵ AFK mode on").await;
+        ui.press(KeyCode::BackTab);
+        ui.wait_until("manual", |s| {
+            let bar = s.lines().last().unwrap_or("");
+            bar.contains("manual") && !bar.contains("AFK mode on")
+        })
+        .await;
         ui.send("/plan do x");
         ui.wait_for("planned").await;
         // Plan mode's rules handled the write; manual mode would have asked.

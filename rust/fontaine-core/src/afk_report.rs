@@ -22,10 +22,14 @@ use crate::tier::Tier;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AfkSource {
-    /// `/afk` in the terminal UI.
+    /// `/afk` in the terminal UI of an older session, or `/afk review` leaving a stopped stretch.
     Command,
-    /// `--afk` on the command line.
+    /// The start of the session: `--afk`, `--permission-mode afk` or `default_mode = "afk"`.
     Cli,
+    /// The mode carousel (Shift+Tab or a rebound `cycle_mode` key).
+    Cycle,
+    /// `/plan` out of AFK.
+    Plan,
 }
 
 /// Whether an allowed call ran to the end.
@@ -335,7 +339,7 @@ impl AfkLedgerState {
     }
 }
 
-/// One stretch, from `/afk` or `--afk` to its end.
+/// One stretch, from entering AFK mode to leaving it.
 #[derive(Clone, Debug, Serialize)]
 pub struct Stretch {
     pub started_seq: u64,

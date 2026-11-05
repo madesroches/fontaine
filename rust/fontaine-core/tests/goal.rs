@@ -1243,7 +1243,13 @@ async fn an_afk_pause_stops_the_next_step_and_is_recorded_with_its_reason() {
     );
 
     // ...but not a stop that waits for its review.
-    runtime.state.set_afk(true, AfkSource::Command).unwrap();
+    runtime
+        .state
+        .set_mode(
+            fontaine_core::config::PermissionMode::Afk,
+            AfkSource::Command,
+        )
+        .unwrap();
     runtime.state.afk_stop(13.0, 12.0, vec![1]);
     runtime.pause_goal(PauseReason::AfkStopped);
     runtime.goal_user_prompt();

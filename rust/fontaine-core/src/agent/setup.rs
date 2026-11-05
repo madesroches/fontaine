@@ -410,22 +410,31 @@ pub(super) fn session_state(
     }))
 }
 
-/// Sets the AFK ceiling and, for `--afk`, starts the stretch before the agent is built, so its
+/// What the session state needs before the agent is built: the AFK stretch and the composition.
+pub(super) fn configure_state(setup: &AgentSetup, state: &SessionState) {
+    start_afk(setup, state);
+    attach_composition(state, setup);
+}
+
+/// Sets the AFK ceiling and, for a session asked to start in AFK, enters AFK mode before the agent is built, so its
 /// prompt already carries the AFK guidance.
-pub(super) fn start_afk(setup: &AgentSetup, state: &SessionState) {
+fn start_afk(setup: &AgentSetup, state: &SessionState) {
     state.set_afk_ceiling(setup.config.afk.ceiling());
     if setup.afk
-        && let Err(why) = state.set_afk(true, crate::afk_report::AfkSource::Cli)
+        && let Err(why) = state.set_mode(
+            crate::config::PermissionMode::Afk,
+            crate::afk_report::AfkSource::Cli,
+        )
     {
         setup
             .approver
-            .warn(&format!("--afk was not applied: {why}"));
+            .warn(&format!("starting in AFK mode was not applied: {why}"));
     }
 }
 
 /// Puts the configured composition on the state. One that cannot be built is reported and left
 /// off.
-pub(super) fn attach_composition(state: &SessionState, setup: &AgentSetup) {
+fn attach_composition(state: &SessionState, setup: &AgentSetup) {
     match build_composition(
         &setup.config,
         setup.guardian_profile,

@@ -255,7 +255,7 @@ only, the file format becomes a second, competing definition path.
 
 | Feature | CC doc | Fontaine status | Triage | Notes |
 |---|---|---|---|---|
-| Permission modes: default/manual, acceptEdits, plan, auto, dontAsk; Shift+Tab cycling | [permission-modes](https://code.claude.com/docs/en/permission-modes) | planned | — | Phase 3 (modes) + Phase 4 (auto). Same names/semantics; acceptEdits shell deviation recorded in Decisions. |
+| Permission modes: default/manual, acceptEdits, plan, auto, dontAsk; Shift+Tab cycling | [permission-modes](https://code.claude.com/docs/en/permission-modes) | planned | — | Phase 3 (modes) + Phase 4 (auto). Same names/semantics; acceptEdits shell deviation recorded in Decisions. The Shift+Tab order differs (manual, plan, acceptEdits, auto, AFK) and AFK is a sixth mode. |
 | bypassPermissions / --dangerously-skip-permissions | [permission-modes#skip-all-checks-with-bypasspermissions-mode](https://code.claude.com/docs/en/permission-modes#skip-all-checks-with-bypasspermissions-mode) | excluded | — | Decision 2026-10-21 (user): no bypass mode in v1; containers get `[guardian] profile = "minimal"`. |
 | Auto mode classifier (separate model, fail-closed, deny reasons fed back, prose environment/allow/soft_deny/hard_deny lists, $defaults) | [auto-mode-config](https://code.claude.com/docs/en/auto-mode-config) | planned | — | Phase 4 guardian; `tasks/design/config.md` §Config `[auto_mode]`. Local/any-model is the differentiator. |
 | Recently-denied list, retry, teach-the-classifier after repeated denials; fallback to prompting after N denials | [permission-modes#when-auto-mode-falls-back](https://code.claude.com/docs/en/permission-modes#when-auto-mode-falls-back) | planned | — | Phase 4 step 3 (`/denied`, loop breaker). |

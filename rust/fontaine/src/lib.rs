@@ -352,6 +352,9 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
         return models_cmd::run(&cli, args, &config, &dirs, &host);
     }
 
+    if let Err(code) = check_mode_flags(&cli) {
+        return code;
+    }
     let mode = session_mode(&cli, &config);
     if !cli.print && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         return usage("the interactive UI needs a terminal; use `fontaine -p` for scripted runs");
@@ -535,10 +538,13 @@ enum Outcome {
     Switch(fontaine_tui::SessionTarget, Option<Box<Config>>),
 }
 
-/// The session's permission mode: `--permission-mode`, then `default_mode`, then what the
-/// surface starts in. The interactive UI starts in `auto`; a headless run starts in `manual`,
-/// as Claude Code's `-p` starts in `default`.
-fn session_mode(cli: &Cli, config: &Config) -> PermissionMode {
+/// The mode the session is asked to start in: `--afk` or `--permission-mode`, then
+/// `default_mode`, then what the surface starts in. The interactive UI starts in `auto`; a
+/// headless run starts in `manual`, as Claude Code's `-p` starts in `default`.
+fn requested_mode(cli: &Cli, config: &Config) -> PermissionMode {
+    if cli.afk {
+        return PermissionMode::Afk;
+    }
     cli.permission_mode
         .map(PermissionMode::from)
         .or(config.permissions.default_mode)
@@ -547,6 +553,26 @@ fn session_mode(cli: &Cli, config: &Config) -> PermissionMode {
         } else {
             PermissionMode::Auto
         })
+}
+
+/// The mode the session state is built in. AFK is entered once the state exists, so that its
+/// refusal checks and ledger record run; a refusal leaves the session in `auto`.
+fn session_mode(cli: &Cli, config: &Config) -> PermissionMode {
+    match requested_mode(cli, config) {
+        PermissionMode::Afk => PermissionMode::Auto,
+        mode => mode,
+    }
+}
+
+/// `--afk` is shorthand for `--permission-mode afk`, so any other mode beside it is two answers
+/// to one question.
+fn check_mode_flags(cli: &Cli) -> Result<(), ExitCode> {
+    match cli.permission_mode {
+        Some(mode) if cli.afk && PermissionMode::from(mode) != PermissionMode::Afk => Err(usage(
+            "two modes given: --afk is --permission-mode afk, so it cannot be combined with another --permission-mode",
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Validates everything about a headless invocation that needs no network, so a usage error
@@ -964,6 +990,7 @@ fn agent_setup(
         lookup.clone(),
         Some(prep.session.id.clone()),
     );
+    let afk = requested_mode(cli, config) == PermissionMode::Afk;
     let mut config = config.clone();
     config.effort = cli.effort.or(config.effort);
     if headless && let Some(cap) = cli.max_budget_usd {
@@ -989,7 +1016,7 @@ fn agent_setup(
         append_system_prompt: cli.append_system_prompt.clone(),
         json_schema,
         headless,
-        afk: cli.afk,
+        afk,
         approver: Arc::new(DenyAll),
         home: prep.home,
         user_config: Some(dirs.config.join(config::USER_FILE)),

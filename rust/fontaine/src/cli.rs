@@ -45,9 +45,9 @@ pub struct Cli {
     #[arg(long = "disallowed-tools", value_name = "RULE")]
     pub disallowed_tools: Vec<String>,
 
-    /// Start in AFK mode: nothing that would ask the user is asked; each such call is denied
-    /// with guidance to finish the allowed work or stop and report. A temperature ceiling stops
-    /// a session that keeps hitting denials
+    /// Shorthand for `--permission-mode afk`: AFK mode decides as `auto` does, but nothing that
+    /// would ask the user is asked; each such call is denied with guidance to finish the allowed
+    /// work or stop and report. A temperature ceiling stops a session that keeps hitting denials
     #[arg(long)]
     pub afk: bool,
 
@@ -328,6 +328,8 @@ pub enum ModeArg {
     Auto,
     #[value(name = "dontAsk")]
     DontAsk,
+    #[value(name = "afk")]
+    Afk,
 }
 
 impl From<ModeArg> for PermissionMode {
@@ -338,6 +340,7 @@ impl From<ModeArg> for PermissionMode {
             ModeArg::Plan => PermissionMode::Plan,
             ModeArg::Auto => PermissionMode::Auto,
             ModeArg::DontAsk => PermissionMode::DontAsk,
+            ModeArg::Afk => PermissionMode::Afk,
         }
     }
 }
