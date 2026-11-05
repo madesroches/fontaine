@@ -8,7 +8,7 @@ recording proxy against the Kimi coding endpoint (`kimi-for-coding`), ran Fontai
 `claude -p` baselines where Claude Code's behaviour was in doubt. Experiments, scripts and excerpts: `research/kimi-harness/` (the README
 there reproduces each one; `captures/<file>` names below are relative to it). No benchmark and no live scorecard: this is a feature study.
 Each claim carries its evidence: a source path, a capture file, or a command. The opencode Go gateway's Kimi models could not be used:
-the account's monthly allowance was spent, so every Go request answered 429 (section 8).
+the account's monthly allowance was spent (`captures/e2_go_429.json`), so every Go request answered 429 (section 8).
 
 ## 1. Executive summary
 
@@ -97,7 +97,7 @@ fix-the-test session are in `captures/e7_wire_record_types.txt`.
   (`agent/toolDedupe/toolDedupeService.ts@df90d90e:63-66,520-560`); off with `KIMI_CODE_REPEAT_BREAKER=0` (`:32`). Same-step identical calls are collapsed to one execution
   (`checkToolCall`, `:439-452`).
   *Live:* the model replaced the retries by one shell loop (`e3-repeat`) or by 14 parallel identical calls in one response (`e3-repeat2`); the 14 results are the same
-  error text, calls 2-14 with a wall time of 0.001 s against 0.015 s (`captures/e3_repeat2_tool_calls_and_results.json`). That this is the dedupe and not 14 executions is inferred, not
+  error text, calls 2-14 with a wall time of 0.001 s against 0.015 s (`captures/e3-repeat2_tool_calls_and_results.json`). That this is the dedupe and not 14 executions is inferred, not
   instrumented. The cross-step ladder did not fire: not observed live (Not tried).
 - *Goal mode.* `CreateGoal`/`GetGoal`/`UpdateGoal`/`SetGoalBudget` tools (present in the 25-tool list, `captures/e2_tool_names.txt`); the active-goal reminder tells the model to take "one bounded,
   useful slice" per turn, to end the turn without `UpdateGoal` when work remains so the runtime continues it, to run a completion audit before `complete`, and to
@@ -109,12 +109,12 @@ fix-the-test session are in `captures/e7_wire_record_types.txt`.
   *Live:* `sleep 75; echo finished` returned at 60.011 s with `task_id`, `status: running` and "do NOT wait, poll, or call TaskOutput"; the model then used `WaitFor`, which
   reported `completed`, `exit_code: 0`, `Wall time: 75.003 seconds` and the output path (`captures/e3_hung_tool_results.json`). A task result carries a 32 KB preview and an `output_path`.
 - *Error shape.* A failing `Bash` command comes back as `Wall time: ...`, `<system>ERROR: Tool execution failed.</system>`, the output, then `Command failed with exit code: 1.`
-  (`captures/e3_repeat2_tool_calls_and_results.json`). Spilled results say `Tool output exceeded 50000 characters; the full output was saved to a file` with `tool_name`, `tool_call_id`,
+  (`captures/e3-repeat2_tool_calls_and_results.json`). Spilled results say `Tool output exceeded 50000 characters; the full output was saved to a file` with `tool_name`, `tool_call_id`,
   `output_size_chars` and `output_path` (`captures/e5_large_result_stub.txt`).
 - *Diagnostics feedback.* None. A search of the tree for a language server, `publishDiagnostics` or an LSP client finds only syntax-highlighting bundles in `apps/kimi-code/dist-web`
   (`rg -il '\blsp\b|language.server|publishDiagnostics' packages apps docs/en`). Negative result.
-- *Hooks.* Command hooks on `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop` (a block "lets the model continue"), `PreCompact`, `SubagentStart` and about
-  a dozen more events; exit 2 blocks (`docs/en/customization/hooks.md@df90d90e:110-133`). A `Stop` hook is the user-written way to force a test run before the turn ends.
+- *Hooks.* Command hooks on `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop` (a block "lets the model continue"), `PreCompact`, `SubagentStart` and 13
+  more events, 20 in all (`docs/en/customization/hooks.md@df90d90e:110-133`); exit 2 blocks (`hooks.md@df90d90e:17,89`). A `Stop` hook is the user-written way to force a test run before the turn ends.
 
 **Claude Code.** Promote-on-timeout: same, at 120 s (`claude -p`, `captures/e10_hung.txt`; a bare `sleep N` is refused by its Bash tool, so the baseline used a Python sleep). Repeat reminder: none
 (measured by the DeepSeek study, #160). Goal mode, `Stop` hooks and same-step dedupe: not checked here.
@@ -135,14 +135,14 @@ nothing needed for reasoning replay on the coding endpoint.
 
 ```
 model, messages, tools(25), prompt_cache_key=<session id>,
-thinking={type:"enabled", effort:"max", keep:"all"}, max_completion_tokens=1048365, stream, stream_options.include_usage
+thinking={type:"enabled", effort:"max", keep:"all"}, max_completion_tokens=1048357, stream, stream_options.include_usage
 ```
 
 - Messages: one system message of 10,161 characters (sections: Communicating with the user, Tool use, Coding, Risky actions, Delivering work, Context management, Environment,
   Project information, Skills), the task, then two user-role `<system-reminder>` messages (date; "Auto permission mode is active ... Do NOT call AskUserQuestion").
 - 25 tools, 48,746 bytes of JSON (Fontaine: 21 tools, 24,356 bytes, system prompt 20,632 characters including this repo's instruction file). Tool descriptions are long and
   behavioural (`captures/e2_tool_schemas_sample.json`).
-- `max_completion_tokens` is `window - tokens used` for every request (1,048,365 then 1,035,548 ... ; `kimi/protocol.ts@df90d90e:69-75`), so a small-window alias shows the cap shrinking to 1 (section 4.4).
+- `max_completion_tokens` is `window - tokens used` for every request (1,048,357 then 1,035,490 ... in `captures/e2_request_body_keys.json` and `e2_summary_kc.txt`; `kimi/protocol.ts@df90d90e:69-75`), so a small-window alias shows the cap shrinking to 1 (section 4.4).
 - Assistant tool-call turns omit `content` when it is empty and carry `reasoning_content`; tool results are plain strings in `role: tool` messages
   (`kimi/protocol.ts:91-122`, `captures/e2_summary_kc.txt`). Headers: `User-Agent: kimi-code-cli/2.5.1`, `X-Msh-Platform`, `X-Msh-Version`, `X-Msh-Device-Name`,
   `X-Msh-Device-Model` (kernel string), `X-Msh-Os-Version`, `X-Msh-Device-Id` (a persistent id; redacted in the capture) and the `x-stainless-*` SDK headers.
@@ -187,7 +187,7 @@ numbers are in `captures/e1_models_kimi_coding.json` (1,048,576 for four ids, 26
 
 **What kimi does.** Three modes: Always Ask (default; reads run, everything else asks), Ask When Needed (`--yolo`; routine calls run, risky ones ask) and Never Ask (`--auto`; everything runs, except plan
 exit) (`docs/en/guides/interaction.md@df90d90e:66-72`). `kimi -p` is Never Ask and cannot be combined with `--yolo`, `--auto` or `--plan`; static deny rules stay in effect
-(`docs/en/reference/kimi-command.md@df90d90e`). Rules are `[[permission.rules]]` with `decision` and a glob `pattern` such as `Bash(rm -rf*)`. A policy chain (`agent/permissionPolicy/policies`, 15 policy files plus a path helper)
+(`docs/en/reference/kimi-command.md@df90d90e`). Rules are `[[permission.rules]]` with `decision` and a glob `pattern` such as `Bash(rm -rf*)`. A policy chain (`agent/permissionPolicy/policies`, 13 policies plus 3 helpers)
 includes a dangerous-command guard that parses the command with tree-sitter and asks for a short fixed list (`shutdown`, `reboot`, `mkfs`, `rm -rf` and a few more, through wrappers such as `sudo`, `env`,
 `sh -c`), a sensitive-file guard, and a git-path guard (`policies/dangerous-command-ask.ts@df90d90e:1-80`). There is no OS sandbox: a search for bubblewrap, seatbelt, landlock or `sandbox-exec` finds only a
 test file in `packages/node-sdk`. Remote environments (a container or host over SSH) are the isolation story (`docs/en/guides/remote-environment.md`). The system prompt adds a rule in prose: the dedicated tools
@@ -231,14 +231,14 @@ droppedCount=1 backupCreated=true`, and a `wire.jsonl.bak` was left (`captures/e
 
 ### 4.8 Telemetry and privacy
 
-*Live (E1, no login, container, default config):* DNS queries for `telemetry-logs.kimi.com` (8, across search domains) and `code.kimi.com` (4), next to `fwd` (the proxy); nothing else
+*Live (E1, no login, container, default config):* DNS queries for `telemetry-logs.kimi.com` (8 per name, under the bare name and two search-domain suffixes: 24 in total) and `code.kimi.com` (4 per name, 12 in total), next to `fwd` (the proxy); nothing else
 (`captures/e1_egress_e1-boot.txt`). With `KIMI_DISABLE_TELEMETRY=1` and `KIMI_CODE_NO_AUTO_UPDATE=1` only `fwd` was queried, and neither the `telemetry/` nor the `updates/` directory was created
 (`captures/e1_egress_e1-off.txt`, `e1_files_telemetry_off.txt` vs `e1_files_telemetry_on.txt`). The two switches are separate; `telemetry = false` in `config.toml` is a third way
-(`docs/en/configuration/env-vars.md@df90d90e:27-32,192`). `device_id` is still created and sent in `X-Msh-Device-Id` to the model endpoint either way (`captures/e2_request_headers.json`).
+(`docs/en/configuration/env-vars.md@df90d90e:27-32`, `config-files.md@df90d90e:105`). `device_id` is still created and sent in `X-Msh-Device-Id` to the model endpoint either way (`captures/e2_request_headers.json`).
 
 What the unsent event held (`captures/e1_telemetry_event.json`): `event: system_metrics`, `device_id`, `session_id`, process RSS, heap, CPU and uptime, load average, free and total memory, CPU count; context
 `app_name`, version, runtime, platform, arch, Node version, OS version, `ui_mode`, `model` alias (`kc`), `region: mainland-cn`, `region_source: fallback`. The region defaults to mainland-China
-(`telemetry-logs.kimi.com`, `code.kimi.com`) when neither login nor install marker says otherwise; the global region uses `.ai` hosts (`packages/oauth/src/region.ts@df90d90e:60-80`). The captured event says `region_source: fallback` (container clock UTC, `LANG` unset). Source defines 87 telemetry event interfaces (`app/telemetry/events.ts@df90d90e`), including `tool_call`, `permission_policy_decision`, `shell_command`, `goal_*`,
+(`telemetry-logs.kimi.com`, `code.kimi.com`) when neither login nor install marker says otherwise (`packages/oauth/src/region.ts@df90d90e:11-20,215`); the global region uses `.ai` hosts (`packages/oauth/src/region.ts@df90d90e:60-80`). The captured event says `region_source: fallback` (container clock UTC, `LANG` unset). Source defines 84 telemetry `*Event` interfaces (`app/telemetry/events.ts@df90d90e`), including `tool_call`, `permission_policy_decision`, `shell_command`, `goal_*`,
 `compaction_*`, `prompt_cache_probe` and `wire_repair`. Strings pass a regex cleaner that replaces emails, URLs, JWTs, API keys and file paths (`app/telemetry/privacy.ts@df90d90e:1-36`). Failed
 sends are kept in `telemetry/failed_*.jsonl` and retried. Which hosts would have answered was not observable (the network was internal); what the collector stores is not documented in what was read.
 
@@ -252,18 +252,18 @@ E9 ran Fontaine through the same recorder: `fontaine -p --permission-mode auto -
 
 - *Task parity.* Read-only question: answered correctly in 8 main requests plus 5 guardian calls; fix-the-test: fixed `calc.py`, 7 main plus 4 guardian (`captures/e9_e2_summary.txt`, `e9_e3_summary.txt`). Kimi did the fix in 6 requests.
 - *Wire.* Main requests carry no `thinking`, no `prompt_cache_key`, no `max_completion_tokens`; reasoning is replayed as `reasoning_content` on the turns that had it. Guardian requests carry `tool_choice: "required"`, `max_tokens: 1024`, no `thinking`
-  (so thinking-off is not sent on the `kimi` account), and returned a `submit` call with the verdict in 5.2-11.0 s (`captures/e9_guardian_request_keys.json`, `e9_guardian_response.json`). The coding endpoint accepted the forced tool choice with thinking on.
+  (so thinking-off is not sent on the `kimi` account), and returned a `submit` call with the verdict in 5.2-11.0 s (`captures/e9_e2_summary.txt`, `e9_e3_summary.txt`; request and response shape in `e9_guardian_request_keys.json`, `e9_guardian_response.json`). The coding endpoint accepted the forced tool choice with thinking on.
 - *Effort.* `--effort low` printed "effort `low` is not used with kimi/kimi-for-coding: no option mapping is known for this gateway" and sent nothing (`captures/e9_effort_stderr.txt`). Filed as #438. The endpoint honours the field:
   one sample each, reasoning tokens 469 (default), 150 (`max`), 83 (`low`), 0 (`disabled`) (`captures/e8_probe.json`).
 - *Sampling.* `temperature: 0.2` answers 400 "invalid temperature: only 1 is allowed for this model"; `max_tokens` and `max_completion_tokens` both work and both cut the answer when small (`captures/e8_probe.json`). Fontaine sends neither temperature nor a Kimi cap.
-- *Reasoning replay.* Re-verified against the pinned rig-core: the empty-reasoning fill and the cross-model rebuild key on a catalog row with `reasoning_field` (`src/providers/openai/wire/chat.rs`, `reasoning_field`), and only `kimi-k3` (opencode-go) has one; none of the six `kimi` ids, nor `kimi-k3.1-pro`, has a row.
+- *Reasoning replay.* Re-verified against the pinned rig-core: the empty-reasoning fill and the cross-model rebuild key on a catalog row with `reasoning_field` (`src/providers/openai/wire/chat.rs`, `reasoning_field`), and `kimi-k3` has one, under the `moonshot` catalog provider (`models.json:754`). `reasoning_field()` (`chat.rs:177-199`) looks up the dialect row, then the `moonshot` row by the id's last path segment, then the `openrouter` row by full id, so the row applies to `kimi-k3` behind opencode-go. The `openrouter` row `moonshotai/kimi-k2.6` (`models.json:1050`) matches only that literal id, which the study does not use. None of the six `kimi` ids, nor `kimi-k3.1-pro`, has a row.
   The expected 400 did not reproduce: five hand-built replays all returned 200 (`captures/e9_history.json`). Resuming a `kimi-for-coding` session on `kimi/k3.1-pro` sent no `reasoning_content` on any earlier turn and cached 5,632 of 11,770 tokens, against 11,520 of 11,958 when
   resumed on the same model (`captures/e9_resume_summary.txt`, `e9_resume_same_summary.txt`; comment on #227).
-- *Go gateway.* `madesroches/kimi-k3` on the Chat wire and on the Messages wire (`wires = {"kimi-k3" = "messages"}`) both answered 429 `GoUsageLimitError` ("monthly"); Fontaine retried each three times (`captures/e9_go_chat.json`, `e9_go_messages.json`). The request framing is captured: Chat has
+- *Go gateway.* `madesroches/kimi-k3` on the Chat wire and on the Messages wire (`wires = {"kimi-k3" = "messages"}`) both answered 429 `GoUsageLimitError`; Fontaine sent each request three times, 1 attempt and 2 retries (`captures/e9_go_chat.json`, `e9_go_messages.json`; limit name "monthly" in `e2_go_429.json`). The request framing is captured: Chat has
   `x-opencode-session`, no thinking field; Messages has `max_tokens: 4096`, `tool_choice: auto`, `x-api-key`, `anthropic-version`. Responses were not obtained.
-- *kimi on the Go gateway.* Without `x-opencode-session` the gateway answers 400 `MissingSessionID`; a provider `custom_headers` entry fixed the request, after which the 429 appeared (`captures/e2_go_nosession_400.json`). With the `openai` provider type kimi sent 24 tools (no `ReadMediaFile`), no
+- *kimi on the Go gateway.* Without `x-opencode-session` the gateway answers 400 `MissingSessionID`; a provider `custom_headers` entry fixed the request, after which the 429 appeared (`captures/e2_go_429.json`; the 400 in `e2_go_nosession_400.json`). With the `openai` provider type kimi sent 24 tools (no `ReadMediaFile`), no
   `thinking` and no token cap, so none of the Kimi patch (`captures/e2_go_nosession_400.json`, request keys and tool count).
-- *Quota errors.* See #115 (comment): kimi classifies only `exceeded_current_quota_error` as non-retryable and so retried the Go limit; Fontaine retried it three times.
+- *Quota errors.* See #115 (comment): kimi classifies only `exceeded_current_quota_error` as non-retryable and so retried the Go limit; Fontaine sent it three times (1 attempt and 2 retries).
 - *Dynamic tools.* The Kimi endpoint honours tool declarations inside a system message (`captures/e9_dynamic.json`); #439.
 - *Guardian thinking-off.* Replaying one recorded guardian request three times each way: reasoning tokens 36-64 against none, latency 5.4-6.1 s against 5.0-8.2 s, six identical verdicts (`captures/e9_guardian_thinking.json`). Thinking-off buys nothing measurable here. Not a scorecard.
 - *Image and video input.* The endpoint lists image and video input for all models but `k3-256k` (image only); not exercised.
@@ -275,7 +275,7 @@ E9 ran Fontaine through the same recorder: `fontaine -p --permission-mode auto -
 | 1 | Verify-before-done prompt: tests green on the deliverable, scenario end to end, no quiet shrinking, `git status` sweep | `captures/e2_system_prompt.txt`; six-request fix run | A prompt change; compare Fontaine's text before copying | Similar guidance (not diffed) | Read the text when the main prompt is next reviewed; no issue filed |
 | 2 | Goal as model tools with token/turn/wall-clock budgets, completion and blocked audits, `-p` exit codes 0/3/6 | `features/goal/**@df90d90e`; `captures/e6_goal_stderr.txt` | `/goal` with `max_turns`, cost cap, headless exit code (#17 closed) | not checked here (see #17) | Already covered; wall-clock budget is the only extra |
 | 3 | Repeat breaker: 3/5/8 reminders, hard stop at 12 with text-only hand-off | `toolDedupeService.ts@df90d90e:63-66,520-560` | #160 (advisory only) | None (DeepSeek study E9) | Comment on #160; hard stop and any change need a Decisions line |
-| 4 | Collapse identical calls within one response | same file; `captures/e3_repeat2_tool_calls_and_results.json` | None | Runs every call | Comment on #160 |
+| 4 | Collapse identical calls within one response | same file; `captures/e3-repeat2_tool_calls_and_results.json` | None | Runs every call | Comment on #160 |
 | 5 | Foreground command promoted to a background task at the timeout, `WaitFor` with steering | `captures/e3_hung_tool_results.json` | Has it (`docs/tools.md`) | Same at 120 s (measured) | None needed |
 | 6 | Spill over 50,000 characters, 4,096 + 1,024 preview | `captures/e5_large_result_stub.txt` | #161 open | Same idea (measured) | Comment on #161 |
 | 7 | Handoff-style compaction prompt with "what you still don't know" and unverified claims | `captures/e5_compaction_request_tail.txt` | `/compact` summary | Summary compaction | Read when touching the summary prompt; one measured failure (spilled output misdescribed) in #161 |
@@ -320,7 +320,7 @@ Proxy defects fixed along the way: the recording proxy first sent urllib's defau
 
 ## 8. Not tried, and why
 
-- **The opencode Go gateway's Kimi models, any model reply.** The `madesroches` account's monthly allowance was spent: every request (kimi and Fontaine, Chat and Messages) answered 429 `GoUsageLimitError`. So E2/E3/E8 on Go, the Messages wire for Kimi, Go caching, Go reasoning
+- **The opencode Go gateway's Kimi models, any model reply.** The `madesroches` account's monthly allowance was spent (`captures/e2_go_429.json`): every request (kimi and Fontaine, Chat and Messages) answered 429 `GoUsageLimitError`. So E2/E3/E8 on Go, the Messages wire for Kimi, Go caching, Go reasoning
   round-trip and whether the gateway forwards a system-message `tools` field are all unmeasured. Retry after the allowance resets (#338 has the same dependency).
 - **`manual` and `yolo` modes (E4) and plan mode (E6).** They need a `kimi acp` client (`session/set_mode`, permission requests) or the TUI; `--prompt` is locked to Never Ask. Read from source only.
 - **A user correction mid-run, and a model switch mid-session (E3, E8).** Same reason.
