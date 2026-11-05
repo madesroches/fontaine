@@ -158,10 +158,13 @@ async fn the_memory_root_is_not_scanned_into_the_file_index() {
     let dir = w.enable_memory();
     common::write(&dir.join("MEMORY.md"), "- a\n");
     common::write(&w.work.join("src.rs"), "fn main() {}\n");
+    common::write(&w.work.join("src/main.rs"), "fn main() {}\n");
     let built = build(&w, Manual, answer(), false);
     built.runtime.record_session_start().await;
     let files = built.runtime.files.read().unwrap().clone();
     assert!(files.iter().any(|p| p.ends_with("src.rs")), "{files:?}");
+    assert!(files.iter().any(|p| p.ends_with("main.rs")), "{files:?}");
+    assert!(files.iter().any(|p| p.ends_with("src/")), "{files:?}");
     assert!(!files.iter().any(|p| p.ends_with("MEMORY.md")), "{files:?}");
 }
 

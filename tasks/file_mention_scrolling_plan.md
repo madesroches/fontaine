@@ -2,9 +2,7 @@
 
 **GitHub Issue**: https://github.com/madesroches/fontaine/issues/419
 
-**Status**: Round 1 (scrolling) is implemented on this branch and unmerged. Round 2
-(directories and common-prefix Tab) is design only — no code is written yet; this section
-is awaiting review before implementation starts.
+**Status**: Both rounds are implemented on this branch and unmerged.
 
 ## Overview
 
@@ -110,7 +108,7 @@ of `rust/fontaine-core/src/tasks.rs` (class 0, 31 chars, shorter-paths-first ins
 class). Their common prefix is empty, so there is nothing to extend, and Tab accepts
 `tasks/` without a space; the list reopens on the children of `tasks/`.
 
-### Implementation Steps (not started)
+### Implementation Steps
 
 1. `fontaine-core/src/ledger.rs`: add `dirs` to `FileIndex`, collect directories in
    `build` (depth-0 skip, file-only cap), add `completion_paths()`.

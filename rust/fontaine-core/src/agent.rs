@@ -726,7 +726,7 @@ impl AgentRuntime {
         .unwrap_or_default();
         let (project_environment, setup_notice) =
             self.project_environment_at_start(stored, &git_remotes);
-        self.set_files(index.paths.clone());
+        self.set_files(index.completion_paths());
         if let Some(message) = trust::unreadable(&self.setup.data_dir) {
             self.approver.warn(&message);
         }
@@ -844,7 +844,7 @@ impl AgentRuntime {
         tokio::task::spawn_blocking(move || {
             let index = FileIndex::build(&roots, FILE_INDEX_CAP);
             // The completion index is advisory: a stale list only misses a suggestion.
-            *write_recovering(&slot) = Arc::new(index.paths);
+            *write_recovering(&slot) = Arc::new(index.completion_paths());
         });
     }
 

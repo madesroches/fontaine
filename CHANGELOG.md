@@ -13,7 +13,10 @@ All notable changes are recorded here. The format follows
   skill is still refused, and the error now names the entries and where they likely come from
   (#429).
 - The `@` file-mention popup no longer stops at the first eight matches: it now holds every
-  matching workspace file and Up/Down scroll through them, keeping the selection visible (#419).
+  matching workspace file and Up/Down scroll through them, keeping the selection visible. It now
+  also lists directories (marked with `/`, completed without a trailing space so you can keep
+  descending), and Tab first extends the token to the common prefix of the matches before accepting
+  a row, as the `/` menu does (#419).
 - A guardian or `llm` scanner call that never answers is now dropped and retried within
   `[guardian] timeout_secs` instead of using all of it and being denied as a timeout; the timeout
   stays the ceiling and the denial stays fail-closed; a model needing more than about 20 s per

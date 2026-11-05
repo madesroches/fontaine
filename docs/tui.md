@@ -215,7 +215,7 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Enter, x, Esc in the agent list | Enter shows the selected row's transcript (`main` or a subagent). `x` stops a running subagent, or hides an ended one; on `main` or the agent on screen it is typed into the input. Esc gives the keyboard back to the input, and any printable key does too and is typed there. |
 | Ctrl-R (`history_search`) | Search the prompt history; see [History](#history). |
 | Ctrl-V (`attach_clipboard`) | Attach the clipboard's image to the message; see [Attaching files](#attaching-files). Terminals that turn Ctrl+V into a bracketed paste never deliver the key event; their paste arrives as text, and a dropped PDF path becomes a PDF attachment. |
-| Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the menu it first extends the name to what all the listed commands share. |
+| Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the `/` menu and the `@` list it first extends what you typed to what all the listed commands, files or directories share, and accepts the selected row only when nothing more can be extended. |
 | Shift+Tab (`cycle_mode`) | Cycle the mode by increasing autonomy: manual, plan, accept edits, auto, [AFK](afk.md), and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` or AFK lists the broad allow rules it sets aside and says so when the guardian cannot be asked. Entering AFK answers every open or queued approval, question and guardian dialog as a denial or no-answer; leaving it reviews the stretch, when the turn ends if one is running. A rebound key runs the same cycle — no binding can jump to a mode outside it. |
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one. While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
@@ -318,12 +318,15 @@ coloured; Enter runs the command instead of sending a message, and the `!` is no
 ## File mentions
 
 Typing `@` after whitespace, or at the start of the input, opens a list of every workspace file
-that matches what follows it, best matches first (file name prefix, then file name substring, then
-shorter paths). The list shows up to eight rows at a time; Up and Down scroll through all matches
-and keep the selection visible. Tab or Enter put `@path ` in the input, and Esc closes the list
-until you edit the token. Files come from the same index the session starts with, which respects
-`.gitignore`, and is refreshed when a turn ends and after `/add-dir`. Paths under the primary root
-are shown relative to it.
+or directory that matches what follows it, best matches first (file or directory name prefix, then
+name substring, then shorter paths). Directories are marked with a trailing `/`. The list shows up
+to eight rows at a time; Up and Down scroll through all matches and keep the selection visible.
+Tab first extends the token to what all the matches share, and accepts the selected row once
+nothing more can be extended; Enter accepts the selected row directly. A file puts `@path ` in the
+input; a directory puts `@dir/` with no space, so the list reopens on its contents and you can keep
+completing into it. Esc closes the list until you edit the token. Files and directories come from
+the same index the session starts with, which respects `.gitignore`, and is refreshed when a turn
+ends and after `/add-dir`. Paths under the primary root are shown relative to it.
 
 Completion only edits your input. The message is sent as you typed it, and the agent reads the
 file through its `read` tool, so the content passes the same scope checks, deterministic floor and
