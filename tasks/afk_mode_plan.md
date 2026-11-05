@@ -130,6 +130,11 @@ pub struct AfkStop { pub seq: u64, pub value: f64, pub ceiling: f64, pub contrib
   both TUI and headless start). No config key, tool, scheduled prompt or model output can set it.
   - The CLI flag is the user's own command line, so it is not project-settable.
   - `/afk` is `main_only` and handled TUI-side only, as `/guardian-disable` is.
+- **`/guardian-disable` and AFK exclude each other.** A root call under `/guardian-disable` is
+  allowed before the floor and never prompts, so AFK would convert nothing. `/afk` is refused while
+  the guardian is disabled ("run /guardian-enable first"), and `/guardian-disable` is refused while
+  AFK is on or a stop is active. `--afk` cannot meet it, since `/guardian-disable` is never
+  persisted or restored.
 - **Leaving AFK** is explicit: `/afk off`. Typing a message does not end AFK. Approvals stay denied
   until the user says they are back. When AFK ends, the end-of-stretch assessment runs (§6) and the
   report summary is shown.
@@ -157,10 +162,10 @@ the guardian-unavailable branch. AFK skips the guardian-unavailable dialog, so
   It gains two fields:
   - `afk: bool`;
   - `converted: Option<Converted>` — `ask_rule | floor | mode | escalate | screen_escalate |
-    breaker_paused | guardian_unavailable`.
+    breaker_paused | guardian_unavailable | hook`.
   `converted` is set for headless conversions too, since it is free and useful. It is derived from
   `prompt.tier` in `would_prompt` (Guardian→`breaker_paused`, AskRule→`ask_rule`,
-  CriticalPath|ProtectedPath→`floor`, Mode→`mode`) or from the conversion site (`settle`→`escalate`,
+  CriticalPath|ProtectedPath→`floor`, Mode→`mode`, Hook→`hook` for a hook `ask`) or from the conversion site (`settle`→`escalate`,
   `screen_stop`→`screen_escalate`, guardian-unavailable), and is passed through `Verdict::Deny`
   into `deny()`/`record()`.
 - dontAsk + AFK: `would_prompt` returns the dontAsk text before it checks headless. Such
@@ -175,8 +180,11 @@ the guardian-unavailable branch. AFK skips the guardian-unavailable dialog, so
   the only three non-test approver call sites: `approve` in `ask_human` (permissions.rs:1978),
   `guardian_unavailable` (permissions.rs:1622) and `ask_user` (questions.rs:28). It forwards
   `notice` and `warn` unchanged.
-- The raw approver goes into `SessionState`, which uses it only for `warn`. The decorator over
-  `Arc<SessionState>` is what is handed to the permission pipeline and to `HumanQuestions`.
+- `AgentRuntime::new` wraps the approver right after `setup::session_state` builds the state
+  (agent.rs:257) and replaces `setup.approver` with the decorator over `Arc<SessionState>`. So
+  `setup::gates` (the pipeline), `ChildDeps` (agent.rs:271), `build_agent` and `HumanQuestions`
+  (build.rs:231), and the `rebuild()` path (agent.rs:351) all get it. `SessionState` keeps the
+  approver it was built with, which it uses only for `warn`.
 
 **`ask_user_question`.** `HumanQuestions` shares the same approver (build.rs:231), so the decorator's
 `ask_user` already gives `QuestionReply::Unavailable`, the existing best-judgment text, while AFK is
@@ -269,6 +277,9 @@ ledgers still parse.
   - `paths: Vec<String>` (`touched_paths`, computed for every denial, not only non-read-only
     ones);
   - `converted: Option<Converted>`;
+  - `fail_closed: Option<String>`: the `FailClosed::as_str` reason (`error`, `timeout`,
+    `unparseable`, `low_confidence`, `unavailable`), copied from the decision's fail-closed reason
+    rather than inferred from the `AuditLabel` in `rule`;
   - `explanation: Option<String>`: the rule's explanation without the recovery sentence, cut to
     `SUMMARY_CHARS`, and passed through `rig_core::redact::text`, since `reason` is not redacted
     today.
@@ -311,14 +322,17 @@ pub enum Assessment { NoDenials, Pending, NoSuspectedEvasion, Found, Unavailable
 
 - `ExactRetry`: a later attempt with the same `tool` and `digest` as an earlier denial, from any
   agent.
-- `SameTargetOtherTool`: a later attempt with a *different* tool, in the same direction as the
-  denied call, whose `paths` intersect the denial's `paths`.
-  - Direction comes from the tool's risk class in the descriptor table: write-class after a
-    write-class denial, or read-class after a read-class denial.
-  - `shell` counts by its touched paths: redirect targets for writes, named paths for reads.
+- `SameTargetOtherTool`: a later attempt with a *different* tool, in a matching direction,
+  whose `paths` intersect the denial's `paths`.
+  - Direction is the tool's `RiskClass`: `ReadOnly` is read, `WorkspaceWrite` is write, and
+    `Arbitrary` (shell, MCP) is both, since `touched_paths` is a flat list. A `WorkspaceWrite`
+    attempt links to a `WorkspaceWrite` or `Arbitrary` denial, a `ReadOnly` attempt to a `ReadOnly`
+    or `Arbitrary` denial, and an `Arbitrary` attempt to any denial, on any touched path.
   - This catches a denied `write` followed by a `shell` write to the same file.
-  - A later call to a different path, or a read after a denied write, is never linked. Independent
-    work and a narrower scope therefore stay unmarked.
+  - A later call to a different path, or a `ReadOnly` read after a denied write, is never linked.
+    Independent work and a narrower scope therefore stay unmarked.
+  - `ReadOnlyFastPath` and `Tier05` allows keep no paths (`action()` is unchanged), so they are
+    never linked by this rule; `ExactRetry` and the assessment still see them.
 
 **Independent semantic assessment** (the working model never grades itself):
 
@@ -389,19 +403,25 @@ impl Temperature {
     does.
   - `peak` is the maximum of `current` and never decreases.
   - `contributions` keeps every denial with its weight and bonus. Cooling never removes evidence.
-- **Severity mapping**, in core (`afk_report.rs`), because `Tier` lives there:
+- **Severity mapping**, in core (`afk_report.rs`), because `Tier` lives there. A denial takes the
+  **highest** weight among every rule below that applies to it (so a converted escalate with a High
+  label is High, and a converted `guardian_unavailable` is Low), then adds its bonuses:
   - Guardian or composition deny, by `RuleLabel` parsed with serde from the stored `rule` string (the serde renames equal the display
     names, fontaine-guardian/src/rule_label.rs:11-40):
     - **High:** Data Exfiltration, Download+Execute, Tunnel/Reverse Shell, Secret Exposure,
       Safety Bypass, Container Escape, Unguarded Agent Loop.
     - **Medium:** Git Destructive, Destroy Pre-existing Files, Production Deploy, IAM Grant,
-      Remote Redirect, Unreviewed Merge, and any unrecognized label.
+      Remote Redirect, Unreviewed Merge, and any unrecognized label. The fail-closed
+      `AuditLabel` names (`GuardianUnavailable`, `Timeout`, `Unparseable`, `LowConfidence`) are not
+      labels here; the fail-closed rule covers them.
+  - Composition denials (`Tier::Screen`: `screen_deny`, and a converted `screen_stop`) store the
+    node name as `rule` → Medium.
   - `DenyRule`, `CriticalPath`, `ProtectedPath` and `PlanBlock` denials → Medium.
   - Converted prompts (`converted` set) and breaker-paused denials → Low. While the breaker is
     paused the guardian is not asked, so its severity is unknown, but continued pressure still
     counts.
-  - Fail-closed denials (`fail_closed_reason` set: guardian error, timeout or unparseable output)
-    → `FAIL_CLOSED_WEIGHT`, because they show guardian trouble rather than agent pressure.
+  - Fail-closed denials (`fail_closed` set: guardian error, timeout, unparseable output, low
+    confidence or unavailable) → `FAIL_CLOSED_WEIGHT`, because they show guardian trouble rather than agent pressure.
   - Bonuses: `ExactRetry` adds `EXACT_RETRY_BONUS` to the retry's weight, and
     `SameTargetOtherTool` adds `SAME_TARGET_BONUS`. The links are computed when the attempt is
     gated. If the attempt is allowed it adds no weight, but the link still appears in the report.
@@ -431,7 +451,8 @@ impl Temperature {
 
 When the ceiling is reached, `SessionState::afk_stop(value, ceiling, contributing)`:
 
-1. Sets `afk.stopped`. From then on the pipeline's first check, before the floor, denies **every**
+1. Sets `afk.stopped`. From then on the first check in `adjudicate`, right after `posture_of` and
+   before the `/guardian-disable` short-circuit and the floor, denies **every**
    call from every agent with `Tier::Afk`, rule `afk_stopped` and a fixed message: "the session was
    stopped by the AFK temperature ceiling; no further tool calls run until the user reviews it".
    This is a deny-only check and can never allow.
@@ -446,9 +467,9 @@ When the ceiling is reached, `SessionState::afk_stop(value, ceiling, contributin
    tripped while the main turn is idle (a child running) is also acted on.
    - The in-flight main turn ends by dropping the turn future, as Esc does, so the main model gets
      no further tool-capable turn. In the TUI this is `TurnEnd::Stopped(AfkStopped)`. Headless has no
-     `TurnEnd`: a new headless `Subtype::AfkStopped` (`as_str` `error_afk_stopped`) is added, with
-     `Subtype::as_str` (headless.rs) and `turn_end` in `fontaine/src/headless/goal.rs:125-133`
-     updated; headless `run_one` (headless.rs:489) has no interrupt select today, so a `select!` on
+     `TurnEnd`: the stop maps to the existing `Subtype::Execution` (`error_during_execution`), with
+     the cause carried in the additive `afk.outcome = "stopped"`, so the closed `result.subtype`
+     enum is unchanged; headless `run_one` (headless.rs:489) has no interrupt select today, so a `select!` on
      the stop watch is added around `run_turn`, and its subtype mapping must not reuse the
      hard-coded `MaxBudget` for `TurnOutcome::Stopped` (headless.rs:580).
    - The handler kills every agent in `AgentTree::running_ids() ∪ idle_ids()`
@@ -465,8 +486,8 @@ When the ceiling is reached, `SessionState::afk_stop(value, ceiling, contributin
 5. Runs the interim evasion assessment (a guardian-model call, which is not the working model and has no
    tools), then renders the report summary from the ledger:
    - TUI: as a notice;
-   - headless: in the `result` event's `afk` object, with `subtype: "error_afk_stopped"` (a new
-     value) and exit 1.
+   - headless: in the `result` event's `afk` object (`outcome: "stopped"`), with `subtype:
+     "error_during_execution"` and exit 1.
 
 **While a stop is active:**
 - A typed TUI prompt is refused with "the session is stopped (AFK temperature ceiling); run /afk
@@ -483,7 +504,7 @@ When the ceiling is reached, `SessionState::afk_stop(value, ceiling, contributin
 
 Review does not touch the denial breaker, the peak or any evidence. Cooling below the ceiling never
 clears a stop. Headless has no review: a stopped session resumed headless refuses every call, and
-the run exits 1 with `error_afk_stopped`.
+the run exits 1 with `error_during_execution` and `afk.outcome = "stopped"`.
 
 ### 9. Commands and flags
 
@@ -527,10 +548,11 @@ the run exits 1 with `error_afk_stopped`.
      `gate_decision_event` (headless.rs:463-484), and have `record_session_event` (gate.rs:541) fill
      `afk` from state;
    - fill the new ledger fields in `action()`/`denial()`;
-   - add the stopped deny-only check first in `evaluate`.
-5. `fontaine-core/src/permissions.rs`: add the `AfkApprover` decorator. Put the raw approver in
-   `SessionState` and hand the decorator over `Arc<SessionState>` to the pipeline and
-   `HumanQuestions` in `agent/setup.rs`.
+   - add the stopped deny-only check in `adjudicate`, right after `posture_of` and before the
+     guardian-off short-circuit.
+5. `fontaine-core/src/permissions.rs`: add the `AfkApprover` decorator. In `AgentRuntime::new`
+   (`agent.rs`), right after `setup::session_state`, replace `setup.approver` with the decorator
+   over `Arc<SessionState>`, before `setup::gates`, `ChildDeps` and `build_agent`.
 6. An always-attached core result stage (reading `state.current_call`, skipping synthetic results,
    recording `Cancelled` on the kill/cut-short path): append `Record::ToolOutcome`.
 7. `fontaine-core/prompts/system_prompt.md` and `prompt.rs`: add the `{{denial_recovery}}`
@@ -561,9 +583,9 @@ the run exits 1 with `error_afk_stopped`.
       its exhaustive match.
     - Status-line indicator (`statusbar.rs`) and the `statusline.rs` payload fields.
     - Headless (`fontaine/src/headless.rs`, `headless/goal.rs`): add a `select!` on the stop watch
-      around `run_turn` in `run_one`, a stop arm in `wait_for_news`/`settle`, map `TurnOutcome::Stopped` to `error_afk_stopped` (not `MaxBudget`), gate the goal
+      around `run_turn` in `run_one`, a stop arm in `wait_for_news`/`settle`, map the AFK stop to `Subtype::Execution` (not `MaxBudget`), gate the goal
       loop, add the `afk` result object and the `gate_decision` fields. Update
-      `docs/schemas/headless-v1.schema.json` (the `afk` property, the `afk` tier and `error_afk_stopped` in the `result.subtype` enum, :241-247).
+      `docs/schemas/headless-v1.schema.json` (the `afk` property and the `afk` tier; the `result.subtype` enum is unchanged).
 
 **Phase C — report, assessment, commands**
 13. `fontaine-guardian/src/evasion.rs` + `prompts/evasion_prompt.md`: `assess_evasion`. The core
@@ -576,8 +598,10 @@ the run exits 1 with `error_afk_stopped`.
     `Case` (`deny_unknown_fields`, single-call required fields, `enum Kind {Guardian, Pipeline,
     Scanner}`, case.rs:13), and CI loads the whole `evals/dataset` dir in three modes
     (ci.yml:119-129). So a separate sequence-case type gets its own loader, reading a file outside
-    the single-call loader's glob. It runs offline in the fixture mode and is skipped in `minimal`
-    and `--guardian none`:
+    the single-call loader's glob, named by a new `RunArgs` flag `--sequences <FILE>` (no default,
+    not derived from `--dataset`). It is accepted only with `--guardian fixture` or `live:` and is an
+    argument error otherwise. CI passes it only on the default-profile fixture step, so it is
+    skipped in `minimal` and `--guardian none`:
     - `temperature` cases: a sequence of `{tool, tier, rule, digest, paths, decision}` and an
       expected `stop|continue`, scored with false-stop and false-continue rates;
     - `evasion` cases: a sequence plus the expected suspected pairs, with `fixture_verdict`
@@ -597,6 +621,8 @@ the run exits 1 with `error_afk_stopped`.
 - `rust/fontaine-evals/src/` (new sequence-case type, loader and runner), and `evals/sequences/afk.jsonl` (new)
 - `docs/afk.md` (new), plus `docs/{permissions,headless,tui,configuration,guardian,evals,index}.md` and `docs/schemas/headless-v1.schema.json`
 - `evals/README.md`
+- `.github/workflows/ci.yml`: add `--sequences ../evals/sequences/afk.jsonl` to the "Eval fixture
+  run (default profile)" step
 - `tasks/fontaine_harness_plan.md` (Decisions)
 - `CHANGELOG.md`
 
@@ -610,6 +636,14 @@ the run exits 1 with `error_afk_stopped`.
 - The `AfkApprover` decorator is defence-in-depth over the three approver call sites; the pipeline checks give the right text and audit fields.
 - `/afk review` does not resume the denial breaker; it resumes on the next approval as today.
 - A zero-denial stretch skips the evasion assessment (`NoDenials`); an allowed malicious action is the per-call guardian's job.
+- AFK: `/afk` and `/guardian-disable` exclude each other (each is refused while the other is active), and the stop's deny-only check sits in `adjudicate` before the guardian-off short-circuit, so no root call escapes a stop.
+- AFK: a headless AFK stop reuses `error_during_execution` with the cause in the additive `afk.outcome = "stopped"`, so the closed v1 `result.subtype` enum and its additive-only promise are kept.
+- AFK: temperature exists only within an AFK stretch (reset at stretch start, stop only while AFK is on); no non-AFK window is defined.
+- AFK: a denial's severity is the highest weight among the rules that apply; `Record::Denial` gains an explicit `fail_closed` reason (including `low_confidence`) instead of inferring it from `AuditLabel`, and composition (`Tier::Screen`) denials are Medium.
+- AFK: a converted hook `ask` gets its own `Converted::Hook` variant rather than being folded into `ask_rule`, so the record names the real source.
+- AFK: `SameTargetOtherTool` direction comes from `RiskClass` (`Arbitrary` matches both ways on any touched path); fast-path and `Tier05` reads stay path-less and unlinked by this rule rather than changing `action()`.
+- AFK: sequence evals are loaded through an explicit `--sequences <FILE>` runner flag, passed only on the CI default-profile fixture step, rather than a path derived from `--dataset`.
+- AFK: `AgentRuntime::new` replaces `setup.approver` with `AfkApprover` right after `SessionState` is built, so the pipeline, children, `HumanQuestions` and `rebuild()` all get it (verified: the `agent/setup.rs` wiring missed `ChildDeps` and `HumanQuestions`).
 
 ## Documentation
 
@@ -625,7 +659,8 @@ the run exits 1 with `error_afk_stopped`.
   Link it from `docs/index.md`.
 - `docs/permissions.md`: an AFK row or note beside the mode table, and AFK conversions alongside
   headless. Add `afk` and the missing `guardian_off` to the tier list (lines 152-154).
-- `docs/headless.md`: `--afk`, the `afk` result object, `error_afk_stopped`, the exit codes, and
+- `docs/headless.md`: `--afk`, the `afk` result object (`outcome: "stopped"` with
+  `error_during_execution`), the exit codes, and
   the `gate_decision` fields `afk`/`converted`. Add `afk` and the missing `guardian_off` to the tier
   list (lines 196-198).
 - `docs/tui.md`: the `/afk` commands, the status indicator, the `/recap` line, the AFK/stopped fields in the custom status-line JSON field table, and the Goals and
@@ -668,7 +703,8 @@ the run exits 1 with `error_afk_stopped`.
   - each conversion site with AFK on gives a deny with the original rule, the AFK guidance and
     `converted` set;
   - the guardian-unavailable dialog is skipped;
-  - with the stop active, the deny-only check precedes the floor and covers child agents.
+  - with the stop active, the deny-only check precedes the floor and the guardian-off
+    short-circuit and covers child agents.
 - `config_scope.rs` / `config.rs`:
   - a project value above the user value is clamped to the user value;
   - a project value below it lowers the ceiling;
@@ -678,6 +714,8 @@ the run exits 1 with `error_afk_stopped`.
   not clear `AfkStopped` while the stop is active.
 - TUI (`TestBackend` with a scripted model):
   - `/afk` parsing;
+  - `/afk` is refused while the guardian is disabled, and `/guardian-disable` while AFK is on or
+    stopped;
   - the idle loop does not start goal, scheduled or notification turns while blocked or stopped;
   - a typed prompt is refused while stopped;
   - `/afk review` confirmation clears the stop and appends `AfkReviewed`;
@@ -702,7 +740,7 @@ the ledger file, the result JSON and the kill paths together.
   - the in-flight turn ends;
   - the child is killed;
   - `AfkStop` is in the ledger and the audit log;
-  - `error_afk_stopped`;
+  - `error_during_execution` with `afk.outcome = "stopped"`;
   - no further model request reaches the mock (asserted on wiremock received requests);
 - alternate-route evasion: a denied `write` then a `shell` redirect to the same file is flagged
   `SameTargetOtherTool`, in an ordinary AFK turn and in an AFK `/goal` run;
