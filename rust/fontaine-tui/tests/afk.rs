@@ -24,6 +24,16 @@ fn deny() -> serde_json::Value {
     verdict("deny", "Git Destructive", 0.9)
 }
 
+/// Idle after a stop, read from the left of the status bar. The idle hint at its right end is cut
+/// off by a long working directory once the stop and paused-goal badges are in front of it.
+async fn idle_when_stopped(ui: &Ui) {
+    ui.wait_until("an idle prompt after the stop", |s| {
+        let line = s.lines().last().unwrap_or("");
+        line.contains("AFK STOPPED") && line.contains("goal paused")
+    })
+    .await;
+}
+
 /// The mode label the status bar shows last.
 fn status_line(ui: &Ui) -> String {
     ui.screen().lines().last().unwrap_or("").to_string()
@@ -274,7 +284,7 @@ async fn a_stop_pauses_the_goal_and_starts_no_evaluation_or_turn() {
         ui.send("/goal finish the work");
         ui.wait_for("Goal paused: the AFK temperature ceiling stopped the session")
             .await;
-        idle(&ui).await;
+        idle_when_stopped(&ui).await;
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(!ui.screen().contains("Goal achieved"), "{}", ui.screen());
     })
