@@ -836,7 +836,7 @@ async fn handle_message(
                 outcome,
                 goal,
                 goal_ran: false,
-                afk: None,
+                afk: afk_report(runtime).await,
             };
         }
         Some(GoalArg::Clear) => {
@@ -845,7 +845,7 @@ async fn handle_message(
                 outcome,
                 goal,
                 goal_ran: false,
-                afk: None,
+                afk: afk_report(runtime).await,
             };
         }
         Some(GoalArg::Set(condition)) => {
@@ -862,7 +862,7 @@ async fn handle_message(
                     outcome,
                     goal: None,
                     goal_ran: false,
-                    afk: None,
+                    afk: afk_report(runtime).await,
                 };
             }
             involved = true;
@@ -1017,7 +1017,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
                 },
                 goal: None,
                 goal_ran: false,
-                afk: None,
+                afk: afk_report(&runtime).await,
             },
         };
         let outcome = &handled.outcome;

@@ -65,6 +65,9 @@ pub enum AfkRefusal {
     AfkOn,
     /// Either, while a temperature stop waits for a review.
     Stopped,
+    /// `/afk` when the ledger cannot record the start: the stretch would never open in the
+    /// view, so its temperature could not rise. The write failure itself is reported as a warning.
+    LedgerUnwritable,
 }
 
 impl std::fmt::Display for AfkRefusal {
@@ -76,6 +79,9 @@ impl std::fmt::Display for AfkRefusal {
             AfkRefusal::AfkOn => "AFK mode is on: run /afk off before disabling the guardian",
             AfkRefusal::Stopped => {
                 "the session is stopped by the AFK temperature ceiling: run /afk review first"
+            }
+            AfkRefusal::LedgerUnwritable => {
+                "AFK mode did not start: the session ledger could not be written"
             }
         })
     }
@@ -625,6 +631,9 @@ impl SessionState {
             return Err(AfkRefusal::GuardianOff);
         }
         let seq = self.append_seq(Record::Afk { on, source });
+        if on && seq.is_none() {
+            return Err(AfkRefusal::LedgerUnwritable);
+        }
         afk.on = on.then(|| AfkStretch {
             started_seq: seq.unwrap_or(0),
             source,

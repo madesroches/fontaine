@@ -935,6 +935,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     Continue(CommandOutcome::Done)
                 }
                 GoalArg::Set(condition) => {
+                    if self.refuse_if_stopped(runtime, raw) {
+                        return Continue(CommandOutcome::Done);
+                    }
                     if let Err(e) = runtime.set_goal(&condition) {
                         self.app
                             .transcript
@@ -970,6 +973,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app
                         .transcript
                         .error(format!("/init takes no argument, not `{argument}`"));
+                    return Continue(CommandOutcome::Done);
+                }
+                if self.refuse_if_stopped(runtime, raw) {
                     return Continue(CommandOutcome::Done);
                 }
                 let (target, existing) = instructions::init_target(&runtime.primary_root());
@@ -1059,6 +1065,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app.transcript.error(format!(
                         "unknown command /{name}; type / to see the commands and skills"
                     ));
+                    return Continue(CommandOutcome::Done);
+                }
+                if self.refuse_if_stopped(runtime, raw) {
                     return Continue(CommandOutcome::Done);
                 }
                 match self

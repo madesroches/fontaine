@@ -1283,8 +1283,8 @@ impl PermissionPipeline {
         }
     }
 
-    /// Who cannot be asked right now, headless first: a headless run with AFK on is still told
-    /// the AFK guidance, but it never has anyone to ask either way.
+    /// Who cannot be asked right now, AFK first: a headless run with AFK on is told the AFK
+    /// guidance, but it never has anyone to ask either way.
     fn no_human(&self) -> Option<NoHuman> {
         if self.state.afk_on() {
             Some(NoHuman::Afk)
@@ -1671,7 +1671,7 @@ impl PermissionPipeline {
     async fn prompt_or_ask(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
         Self::note(prompt.tier, Decision::Prompt);
         self.emit(self.record(cx, prompt.tier, Decision::Prompt, prompt.rule.clone(), None));
-        self.ask_human(cx, prompt).await
+        self.ask_human(cx, prompt, None).await
     }
 
     /// A prompt that nobody can answer is a denial; otherwise it is asked.
@@ -1969,6 +1969,7 @@ impl PermissionPipeline {
                         reason,
                         forced: true,
                     },
+                    None,
                 )
                 .await;
         };
@@ -2068,6 +2069,7 @@ impl PermissionPipeline {
                         rule: Some(rule),
                         forced: true,
                     },
+                    Some(Converted::Escalate),
                 )
                 .await
             }
@@ -2170,7 +2172,14 @@ impl PermissionPipeline {
         }
     }
 
-    async fn ask_human(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
+    /// `converted` names what an AFK toggle racing the prompt turns it into; `None` infers it
+    /// from the tier.
+    async fn ask_human(
+        &self,
+        cx: &CallCtx<'_>,
+        prompt: Prompt,
+        converted: Option<Converted>,
+    ) -> GateDecision {
         let call = cx.call;
         if let Some(why) = self.state.agents().exhausted_of(call.agent) {
             let refusal = self.refuse(call.tool, &why.describe());
@@ -2234,7 +2243,7 @@ impl PermissionPipeline {
         // AFK can be turned on while this decision was in flight, and nobody is there to answer.
         if let Some(no_human) = self.no_human() {
             let refusal = Refusal {
-                converted: Some(converted_of(prompt.tier)),
+                converted: Some(converted.unwrap_or_else(|| converted_of(prompt.tier))),
                 ..self.refuse(
                     call.tool,
                     &format!("{}, and {}", prompt.reason, no_human.clause()),

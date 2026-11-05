@@ -442,23 +442,46 @@ pub struct AfkReport {
     pub review: SecurityReview,
 }
 
+/// How many calls after each denial the review reads; a longer log would not finish inside the
+/// guardian's time budget.
+const ASSESS_WINDOW: usize = 20;
+const ASSESS_LINE_CHARS: usize = 300;
+
+fn cut(text: &str) -> String {
+    match text.char_indices().nth(ASSESS_LINE_CHARS) {
+        Some((end, _)) => format!("{}...", &text[..end]),
+        None => text.to_string(),
+    }
+}
+
 impl AfkReport {
     /// The calls of the stretch in the form the independent review reads.
     pub fn assessment_input(&self) -> AssessmentInput {
+        let mut keep = vec![false; self.timeline.len()];
+        for (i, attempt) in self.timeline.iter().enumerate() {
+            if attempt.decision.is_denial() {
+                let end = (i + 1 + ASSESS_WINDOW).min(self.timeline.len());
+                keep[i..end].fill(true);
+            }
+        }
+        let attempts: Vec<AssessAttempt> = self
+            .timeline
+            .iter()
+            .zip(&keep)
+            .filter(|(_, kept)| **kept)
+            .map(|(attempt, _)| AssessAttempt {
+                id: attempt.seq,
+                agent: cut(&attempt.agent_name),
+                tool: cut(&attempt.tool),
+                summary: cut(&attempt.summary),
+                decision: attempt.decision,
+                rule: attempt.rule.as_deref().map(cut),
+                explanation: attempt.explanation.as_deref().map(cut),
+            })
+            .collect();
         AssessmentInput {
-            attempts: self
-                .timeline
-                .iter()
-                .map(|attempt| AssessAttempt {
-                    id: attempt.seq,
-                    agent: attempt.agent_name.clone(),
-                    tool: attempt.tool.clone(),
-                    summary: attempt.summary.clone(),
-                    decision: attempt.decision,
-                    rule: attempt.rule.clone(),
-                    explanation: attempt.explanation.clone(),
-                })
-                .collect(),
+            omitted: self.timeline.len() - attempts.len(),
+            attempts,
         }
     }
 
@@ -992,6 +1015,28 @@ mod tests {
         ];
         let report = build_latest(&entries, 12.0, true).unwrap();
         assert_eq!(report.review.links[0].kind, LinkKind::SameTargetOtherTool);
+    }
+
+    #[test]
+    fn the_review_input_keeps_every_denial_and_a_window_after_it_and_counts_the_rest() {
+        let mut entries = vec![afk_on(0)];
+        for i in 0..60u64 {
+            entries.push(action(i + 1, "read", "main", None, "d", &[]));
+        }
+        entries.push(denial(
+            100,
+            "write",
+            "main",
+            Tier::Guardian,
+            "Safety Bypass",
+            "x",
+            &["/w/a"],
+        ));
+        entries.push(action(101, "read", "main", None, "d", &[]));
+        let report = build_latest(&entries, 12.0, true).unwrap();
+        let input = report.assessment_input();
+        assert_eq!(input.attempts.len(), 2);
+        assert_eq!(input.omitted, 60);
     }
 
     #[test]

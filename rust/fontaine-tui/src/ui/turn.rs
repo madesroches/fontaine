@@ -487,6 +487,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
+    /// Refuses a turn-starting line while a stop stands and puts the text back in the input.
+    /// Callers check before recording the line or setting a goal, so the ledger never holds
+    /// intent for a turn that did not run. Returns whether it refused.
+    pub(crate) fn refuse_if_stopped(&mut self, runtime: &AgentRuntime, raw: &str) -> bool {
+        if runtime.state.afk().stopped.is_none() {
+            return false;
+        }
+        self.refuse_stopped(raw);
+        true
+    }
+
+    fn refuse_stopped(&mut self, raw: &str) {
+        self.app
+            .transcript
+            .error("the session is stopped (AFK temperature ceiling); run /afk review");
+        self.app.restore_to_input(raw);
+    }
+
     /// Runs the submissions in `pending`, one at a time, in order. A turn submission runs the
     /// way the idle path runs it; a skill is expanded against live state as it pops; a command
     /// dispatches through the idle handlers, and one that opens a picker or dialog suspends
@@ -510,10 +528,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Submission::Skill { .. }
                 )
             {
-                self.app
-                    .transcript
-                    .error("the session is stopped (AFK temperature ceiling); run /afk review");
-                self.app.restore_to_input(submission.raw());
+                self.refuse_stopped(submission.raw());
                 continue;
             }
             runtime.steering.set_delivery_hold(!pending.is_empty());

@@ -263,6 +263,7 @@ fn input_of(case: &EvasionCase) -> AssessmentInput {
                 explanation: a.explanation.clone(),
             })
             .collect(),
+        omitted: 0,
     }
 }
 

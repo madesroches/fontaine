@@ -71,7 +71,11 @@ impl AgentRuntime {
                     suspected: assessed.suspected,
                 }
             }
-            Err(e) => AssessmentResult::Unavailable { reason: chain(&e) },
+            Err(e) => {
+                // A timed-out or unparseable answer still cost tokens.
+                self.state.add_guardian_usage(ROOT_AGENT, &e.usage, true);
+                AssessmentResult::Unavailable { reason: chain(&e) }
+            }
         };
         self.state.append(Record::AfkAssessment {
             stretch_seq: report.stretch.started_seq,
