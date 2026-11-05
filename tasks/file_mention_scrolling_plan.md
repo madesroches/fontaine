@@ -13,7 +13,8 @@ Two rounds on the `@` file-mention popup:
 1. **Round 1 (done, on this branch):** the popup truncated its results to the first 8
    matches, so files that ranked below the cut could never be selected. `rank()` now
    returns the full list and the view windows the visible rows around the selection, the
-   way the slash-command menu already does.
+   way the slash-command menu already does. Files touched: `complete.rs`, `view.rs`,
+   `app.rs` (all `rust/fontaine-tui/src/`), `docs/tui.md`, `CHANGELOG.md`.
 2. **Round 2 (designed, not implemented):** `@task<tab>` completes to
    `rust/fontaine-core/src/tasks.rs` instead of `tasks/`. Directories never appear in the
    completion list at all, and `@` completion accepts the selected row on the first Tab
@@ -84,7 +85,11 @@ classification behind the `tracked_edit` fast path. That record must stay files-
      matches — the existing `common_prefix` helper, case-insensitive, spelled as in the
      first match — when there is more than one match and the prefix both starts with the
      query and is longer than it; only when nothing more can be extended does Tab accept
-     the selected row. After the common-prefix `replace_range`, end the stored-list
+     the selected row. The starts-with check compares the common prefix with the query
+     after mapping `\` to `/` on both (the canonicalization `rank` uses), since on Windows
+     `display()` returns native `\` paths and `common_prefix` only folds case; the text
+     written into the input is the common prefix as displayed (native spelling, as
+     accepting a row inserts). After the common-prefix `replace_range`, end the stored-list
      borrow and call `self.history.reset()` and `self.refresh_completion()` so the next Tab uses the narrowed query,
      token range, matches, and selection. Enter keeps accepting the selection directly.
    - `accept_completion` inserts a match ending in `/` without the trailing space, so the
@@ -114,7 +119,8 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
 3. `fontaine-tui/src/complete.rs`: basename trimming and the directory self-skip in `rank()`, and
    `display()` preserving the trailing `/`.
 4. `fontaine-tui/src/app.rs`: common-prefix narrowing on Tab in `completion_key`
-   (call `self.history.reset()` and `self.refresh_completion()` after `replace_range` so the stored list is fresh
+   (compare prefix and query after mapping `\` to `/`, write the prefix as displayed; call
+   `self.history.reset()` and `self.refresh_completion()` after `replace_range` so the stored list is fresh
    before the next Tab); trailing-space suppression for directory matches in
    `accept_completion`.
 5. `docs/tui.md`: "File mentions" paragraph and the main Keys table Tab row.
@@ -166,8 +172,10 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
   `/w/src\\sub/` (on Linux `Path::strip_prefix` does not treat `\` as a separator).
 - `app.rs` unit tests: `@task` + Tab inserts `@tasks/` with no trailing space and reopens
   the list on the children; `@src/m` + Tab narrows to `@src/ma` (list still open) and a
-  second Tab accepts `src/main.rs`; extend the directory-to-file app test to assert that
-  Enter at that point submits the accepted path (`Action::Submit`).
+  second Tab accepts `src/main.rs`; a mixed-separator narrowing test (query `src/m` with
+  matches displayed as `src\main.rs` and `src\mod.rs` narrows to `src\m`); a new test:
+  `@task` + Tab gives `@tasks/`, selecting/Tab-ing a child file inserts `@tasks/<file> `,
+  then Enter returns `Action::Submit`.
 - `fontaine-core/tests/ledger.rs`: extend the gitignore fixture to assert directories are
   collected (an unignored dir present, an ignored dir and `.git` absent, the walk root
   itself absent); assert directories do not consume the file cap. The existing cap
@@ -176,68 +184,3 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
   (`rust/fontaine-core/tests/memory.rs`):
   add a workspace `src/main.rs` fixture and assert that after `record_session_start()`
   `runtime.files` contains both the file path and a trailing-slash `src/` entry.
-
-## Round 1: scrolling (implemented on this branch)
-
-The original plan is preserved below as the record of what Round 1 changed. Its steps
-are all done; the only change since it was written is that `rank()` now returns the full
-match list instead of truncating at 8.
-
----
-
-### Original Round 1 plan
-
-**Overview.** The `@` file-mention popup truncates its results to the first 8 matches, so
-files that rank below the cut can never be selected. Return the full ranked list from
-`rank()` and window the visible rows in the view around the selection, exactly the way
-the slash-command menu already does — Up/Down then reach every matching file.
-
-**Current state (pre-Round-1).** `complete::rank()` collected matching files, sorted them
-by match class then path length, and hard-truncated with `.take(MAX_MATCHES)` where
-`MAX_MATCHES = 8`. The view rendered every stored match and the footer already advertised
-"↑/↓ select". `App::completion_key` clamped Down to `matches.len() - 1`, so selection
-scrolling was correct — it just had nothing to scroll into past row 8 because the list
-was cut.
-
-The slash-command menu solved the identical problem differently: `App::slash_menu()`
-returns an unbounded `matches`, the slash-menu Up/Down handling moves the selection
-through all of them, and `menu_lines` shows only a `MAX_MENU_ROWS = 8` window that
-follows the selection.
-
-**Design.**
-
-1. `complete.rs` — stop truncating: `rank()` returns the full sorted match list; delete
-   `.take(MAX_MATCHES)` and the `MAX_MATCHES` constant.
-2. `view.rs` — window the rows: render at most `MAX_MENU_ROWS` rows of the completion
-   list, with the same `(selected + 1).saturating_sub(MAX_MENU_ROWS)` window the slash
-   menu uses, extracted into a shared helper.
-3. `app.rs` — no behavior change needed; `completion_key` already clamps and
-   `refresh_completion` preserves the selection.
-4. `docs/tui.md` — describe scrolling instead of "up to eight workspace files".
-
-**Implementation steps (all done).**
-
-1. In `rust/fontaine-tui/src/complete.rs`, remove `MAX_MATCHES` and the `.take()` in
-   `rank()`; adjust the truncation test into one asserting the full match set is
-   returned.
-2. In `rust/fontaine-tui/src/view.rs`, extract the slash-menu window line into a helper
-   used by both `menu_lines` and the completion overlay.
-3. Add a view test mirroring the slash-menu window test.
-4. Add an `app.rs` test for the completion-list selection clamp.
-5. Update the "File mentions" section of `docs/tui.md`.
-
-**Files modified (Round 1).**
-
-- `rust/fontaine-tui/src/complete.rs`
-- `rust/fontaine-tui/src/view.rs`
-- `docs/tui.md`
-
-**Testing strategy (Round 1).** `complete.rs` unit tests (full result set returned,
-ranking order unchanged); `view.rs` unit tests (row count capped at the window, window
-follows the selection both directions); `app.rs` unit test (Down clamps at
-`matches.len() - 1`); manual tmux check for the real-terminal rendering.
-
-**Manual verification (Round 1).** In a workspace with more than 8 files matching a
-prefix, hold Down: the selection moves past row 8 and the window scrolls, ending on the
-last match; the popup never grows taller than 8 rows plus its footer; identical windowing
-to the slash menu.
