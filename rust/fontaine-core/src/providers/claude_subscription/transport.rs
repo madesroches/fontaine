@@ -34,11 +34,11 @@ pub struct InventoryCommand {
 impl InventoryCommand {
     /// This executable with the hidden inventory flag. It must handle the flag, as `fontaine`
     /// and `fontaine-evals` do.
-    pub fn current_exe() -> Self {
-        InventoryCommand {
-            program: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("fontaine")),
+    pub fn current_exe() -> std::io::Result<Self> {
+        Ok(InventoryCommand {
+            program: std::env::current_exe()?,
             leading: vec![OsString::from(INVENTORY_FLAG)],
-        }
+        })
     }
 
     pub fn new(program: PathBuf, leading: Vec<OsString>) -> Self {

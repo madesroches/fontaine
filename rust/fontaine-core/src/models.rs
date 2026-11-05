@@ -463,7 +463,7 @@ pub fn account_network(config: &Config, account: &str) -> Result<LoadedNetwork, 
 fn with_causes(error: &ProviderError) -> String {
     // The Claude CLI adapter's failures are already complete sentences for a person.
     if let Some(claude) = crate::providers::claude_subscription::claude_error(error) {
-        return claude.to_string();
+        return fontaine_tools::error_chain::chain(claude);
     }
     let mut text = error.to_string();
     let mut source = match error {

@@ -641,6 +641,42 @@ async fn explicit_models_and_cached_listings_still_discover() {
     }
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cli_that_cannot_be_executed_shows_the_os_reason() {
+    use std::os::unix::fs::PermissionsExt;
+    let claude = Claude::new();
+    let plain = claude.w.root.join("not-executable");
+    std::fs::write(&plain, "x").unwrap();
+    std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let config_text = std::fs::read_to_string(claude.w.config.join("config.toml")).unwrap();
+    claude
+        .w
+        .user_file(&config_text.replace(&toml_path(&double()), &toml_path(&plain)));
+    let error = claude.resolve(None).await.unwrap_err();
+    assert!(message(&error).contains("could not be started"), "{error}");
+    assert!(message(&error).contains("ermission denied"), "{error}");
+}
+
+#[tokio::test]
+async fn the_picker_lists_the_allowlist_and_a_pinned_guardian_outside_it_is_refused() {
+    let claude = Claude::with_account("models = [\"haiku\"]\n");
+    claude.scenario(json!({}));
+    let listings = claude.switcher().listings(None, None).await;
+    let listing = listings.iter().find(|l| l.account == "claude").unwrap();
+    assert_eq!(listing.models.as_ref().unwrap(), &["haiku".to_string()]);
+
+    let main = claude.resolve(Some("claude/haiku")).await.unwrap();
+    let from = Some((&main.main.reference, main.main_listing.as_slice()));
+    let offered = claude.switcher().guardian("claude/haiku", from).await;
+    assert!(matches!(offered, Ok(GuardianModel::Ready(_))));
+    let refused = claude.switcher().guardian("claude/sonnet", from).await;
+    assert!(
+        refused.is_err() || matches!(refused, Ok(GuardianModel::Unavailable { .. })),
+        "a model outside `models` must not be a ready guardian"
+    );
+}
+
 #[tokio::test]
 async fn a_failed_discovery_makes_the_guardian_unavailable_not_allowed() {
     let claude = Claude::new();

@@ -240,10 +240,16 @@ impl Provider for ClaudeSubscription {
         let session = ctx
             .session_id
             .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
+        let inventory = InventoryCommand::current_exe().map_err(|e| {
+            format!(
+                "cannot locate the fontaine executable for model discovery: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )
+        })?;
         Ok(Arc::new(Connected {
             cli: Arc::new(cli),
             session,
-            inventory: InventoryCommand::current_exe(),
+            inventory,
             discovered: RwLock::new(BTreeMap::new()),
         }))
     }
