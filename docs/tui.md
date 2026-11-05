@@ -317,12 +317,13 @@ coloured; Enter runs the command instead of sending a message, and the `!` is no
 
 ## File mentions
 
-Typing `@` after whitespace, or at the start of the input, opens a list of up to eight workspace
-files that match what follows it, best matches first (file name prefix, then file name substring,
-then shorter paths). Up and Down select, Tab or Enter put `@path ` in the input, and Esc closes
-the list until you edit the token. Files come from the same index the session starts with, which
-respects `.gitignore`, and is refreshed when a turn ends and after `/add-dir`. Paths under the
-primary root are shown relative to it.
+Typing `@` after whitespace, or at the start of the input, opens a list of every workspace file
+that matches what follows it, best matches first (file name prefix, then file name substring, then
+shorter paths). The list shows up to eight rows at a time; Up and Down scroll through all matches
+and keep the selection visible. Tab or Enter put `@path ` in the input, and Esc closes the list
+until you edit the token. Files come from the same index the session starts with, which respects
+`.gitignore`, and is refreshed when a turn ends and after `/add-dir`. Paths under the primary root
+are shown relative to it.
 
 Completion only edits your input. The message is sent as you typed it, and the agent reads the
 file through its `read` tool, so the content passes the same scope checks, deterministic floor and

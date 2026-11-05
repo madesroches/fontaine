@@ -4,9 +4,6 @@
 
 use std::path::Path;
 
-/// The most candidates the list offers.
-pub const MAX_MATCHES: usize = 8;
-
 /// A sigil token in the input, as char offsets (`end` exclusive) and the text after the sigil.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Token {
@@ -73,11 +70,7 @@ pub fn rank(query: &str, files: &[String], root: &Path) -> Vec<String> {
         found.push((class, shown.chars().count(), shown));
     }
     found.sort();
-    found
-        .into_iter()
-        .take(MAX_MATCHES)
-        .map(|(_, _, shown)| shown)
-        .collect()
+    found.into_iter().map(|(_, _, shown)| shown).collect()
 }
 
 #[cfg(test)]
@@ -154,9 +147,9 @@ mod tests {
     }
 
     #[test]
-    fn at_most_eight_are_offered() {
+    fn the_full_match_set_is_returned() {
         let all: Vec<String> = (0..20).map(|i| format!("/w/f{i}.rs")).collect();
-        assert_eq!(rank("f", &all, Path::new("/w")).len(), MAX_MATCHES);
+        assert_eq!(rank("f", &all, Path::new("/w")).len(), 20);
     }
 
     #[test]

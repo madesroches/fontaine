@@ -524,10 +524,13 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
         );
     }
     if let Some(list) = &app.completion {
+        let first = window_first(list.selected, MAX_MENU_ROWS);
         let body = list
             .matches
             .iter()
             .enumerate()
+            .skip(first)
+            .take(MAX_MENU_ROWS)
             .map(|(i, path)| {
                 if i == list.selected {
                     Line::styled(
@@ -569,6 +572,11 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
     Overlay::new("", Vec::new(), Vec::new())
 }
 
+/// First index to show so that `selected` stays within a window of `max` rows.
+fn window_first(selected: usize, max: usize) -> usize {
+    (selected + 1).saturating_sub(max)
+}
+
 /// The `/` menu: the commands and skills the text typed so far could be, the selected one
 /// marked. Shown while the cursor is in a `/name` at the start of the message or after a space.
 fn menu_lines(app: &App, width: usize) -> Vec<Line<'static>> {
@@ -579,7 +587,7 @@ fn menu_lines(app: &App, width: usize) -> Vec<Line<'static>> {
     let bold = Style::default().add_modifier(Modifier::BOLD);
     // The window follows the selection so it stays visible; `draw_overlay` would otherwise
     // show only the tail.
-    let first = (menu.selected + 1).saturating_sub(MAX_MENU_ROWS);
+    let first = window_first(menu.selected, MAX_MENU_ROWS);
     menu.matches
         .iter()
         .enumerate()
@@ -840,6 +848,47 @@ mod tests {
         assert!(!rows[0].contains("add-dir"), "{rows:?}");
         assert!(rows[MAX_MENU_ROWS - 1].starts_with("> "), "{rows:?}");
         assert_eq!(height(&app, 80, 60) as usize, rows.len() + 1 + 2 + 3 + 1);
+    }
+
+    fn completion_body(app: &App) -> Vec<String> {
+        let ov = overlay(app, 80, 40, false);
+        assert_eq!(
+            ov.title, "files",
+            "expected files overlay, got {:?}",
+            ov.title
+        );
+        ov.body
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_long_completion_list_is_windowed_to_eight_rows_around_the_selection() {
+        use std::sync::Arc;
+        let mut app = App::new(fontaine_core::config::PermissionMode::Manual, "m".into());
+        app.primary_root = std::path::PathBuf::from("/w");
+        let files: Vec<String> = (0..20).map(|i| format!("/w/file{i:02}.rs")).collect();
+        app.set_files(Arc::new(files));
+        app.handle_input(crate::app::Input::Key(KeyEvent::new(
+            KeyCode::Char('@'),
+            KeyModifiers::NONE,
+        )));
+        app.handle_input(crate::app::Input::Key(KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::NONE,
+        )));
+
+        // At the start the first MAX_MENU_ROWS matches are shown.
+        let rows = completion_body(&app);
+        assert_eq!(rows.len(), MAX_MENU_ROWS);
+        assert!(rows[0].starts_with("> "), "{rows:?}");
+
+        // Down past the initial window; the window must follow the selection.
+        down(&mut app, MAX_MENU_ROWS + 2);
+        let rows = completion_body(&app);
+        assert_eq!(rows.len(), MAX_MENU_ROWS);
+        assert!(rows[MAX_MENU_ROWS - 1].starts_with("> "), "{rows:?}");
     }
 
     fn list_row(id: Option<&str>) -> ListRow {

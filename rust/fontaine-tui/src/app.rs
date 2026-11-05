@@ -3225,6 +3225,32 @@ mod tests {
     }
 
     #[test]
+    fn completion_list_down_clamps_at_the_last_match() {
+        let mut app = app_with_many_files();
+        type_text(&mut app, "@f");
+        let list = app.completion.as_ref().expect("completion is open");
+        let total = list.matches.len();
+        assert!(total > 8, "need more than 8 matches, got {total}");
+        // Press Down more times than there are entries.
+        for _ in 0..total + 5 {
+            press(&mut app, KeyCode::Down);
+        }
+        assert_eq!(
+            app.completion.as_ref().unwrap().selected,
+            total - 1,
+            "selected must clamp at the last match"
+        );
+    }
+
+    fn app_with_many_files() -> App {
+        let mut app = app();
+        app.primary_root = PathBuf::from("/w");
+        let files: Vec<String> = (0..20).map(|i| format!("/w/file{i:02}.rs")).collect();
+        app.set_files(Arc::new(files));
+        app
+    }
+
+    #[test]
     fn tab_completes_with_a_space_only_when_there_is_an_argument() {
         let mut app = app();
         type_text(&mut app, "/add");
