@@ -159,25 +159,30 @@ the guardian-unavailable branch. AFK skips the guardian-unavailable dialog, so
   - `converted: Option<Converted>` — `ask_rule | floor | mode | escalate | screen_escalate |
     breaker_paused | guardian_unavailable`.
   `converted` is set for headless conversions too, since it is free and useful.
+- dontAsk + AFK: `would_prompt` returns the dontAsk text before it checks headless. Such
+  conversions keep the dontAsk fragment and set `converted = mode`; `recovery()` reads `no_human()`
+  independently, so the AFK sentence still applies.
 
 **Backstop.**
 - `ask_human` re-checks `no_human()` immediately before `approver.approve`, to catch an AFK toggle
   that races an in-flight decision.
-- A decorator `AfkApprover` wraps the session approver. While AFK is on it returns `Deny` from
-  `approve`, `Unavailable` from `ask_user`, and `Deny` from `guardian_unavailable`. This catches
-  every other caller of the approver (MCP interaction, plugin and skill trust prompts, plan exit),
-  so no approval surface can open while the user is away.
-- The implementer lists every `approver.approve`/`ask_user` call site in a code comment on the
-  decorator's test.
+- A decorator `AfkApprover` wraps the approver. While AFK is on it returns `Deny` from `approve`,
+  `Unavailable` from `ask_user`, and `Deny` from `guardian_unavailable`. It is defence-in-depth over
+  the only three non-test approver call sites: `approve` in `ask_human` (permissions.rs:1978),
+  `guardian_unavailable` (permissions.rs:1622) and `ask_user` (questions.rs:28). It forwards
+  `notice` and `warn` unchanged.
+- The raw approver goes into `SessionState`, which uses it only for `warn`. The decorator over
+  `Arc<SessionState>` is what is handed to the permission pipeline and to `HumanQuestions`.
 
-**`ask_user_question`.** `HumanQuestions::ask` returns `QuestionReply::Unavailable` while AFK is on,
-which is the existing best-judgment text.
+**`ask_user_question`.** `HumanQuestions` shares the same approver (build.rs:231), so the decorator's
+`ask_user` already gives `QuestionReply::Unavailable`, the existing best-judgment text, while AFK is
+on. `questions.rs` needs no change.
 
 ### 3. One trusted denial-guidance builder
 
 `permissions.rs` gets one function that owns the recovery sentence, and every denial builder calls
-it: `denied()`, the `settle` guardian message, `screen_stop`, the exhausted-agent denial and the
-breaker-pause denial.
+it: `denied()`, the `settle` guardian message, `screen_stop` and the exhausted-agent denial. The
+breaker-pause denial is covered by `denied()` via `human_or_deny`→`would_prompt`.
 
 ```rust
 fn recovery(no_human: Option<NoHuman>) -> &'static str
@@ -206,8 +211,11 @@ becomes a `{{denial_recovery}}` placeholder, filled at build time:
   report what you completed, what was blocked and why, and what remains. Do not ask for approval
   or wait for a reply."
 
-Subagent prompts (`agent/setup.rs:743`) are filled the same way. `set_afk` calls
-`AgentRuntime::rebuild()` on the root, as `set_output_style` does. Children already running keep
+Subagent prompts (`agent/setup.rs:743`) are filled the same way. `PromptParts` gains
+an AFK flag. An `AgentRuntime::set_afk` wrapper calls the `SessionState` setter and then
+`rebuild()` on the root, as `set_output_style` does (agent.rs:466). Headless `--afk` is applied at
+build time. With `--system-prompt` (a replacement) the placeholder is not present, so the AFK
+guidance arrives only through the denial texts. Children already running keep
 their prompt, and the AFK guidance on each denial covers them. Toggling AFK costs one prompt-cache
 miss per toggle.
 
@@ -231,13 +239,15 @@ When the breaker is paused while AFK is on, the session is **blocked**:
   ```
 
   The TUI idle loop checks it before notification turns, scheduled turns and goal steps, and
-  skips all three while it is `Some`. The headless goal loop checks it before each goal turn. The
+  skips all three while it is `Some`. The gate is checked before `scheduler.due()` (which consumes
+  a fired job), without busy-looping. The headless goal loop checks it before each goal turn. The
   scheduler needs no pause API: its jobs simply do not fire while the gate holds. They stay listed
   and are not deleted.
 - The turn already running is not cut short, because each denial tells the model to report. When
   it ends, the TUI shows the AFK outcome notice: "AFK: blocked — repeated denials paused auto
   mode. N allowed, M denied, temperature X (peak Y). Full report: /afk report".
-- In headless, the run exits 1, as for a paused goal, with `afk.outcome = "blocked"`.
+- In headless, `afk.outcome = "blocked"` sets exit 1 independently of whether a goal ran (the
+  current paused-goal exit is filtered by `goal_ran`, headless.rs:933-938).
 
 ### 6. AFK report
 
@@ -257,9 +267,13 @@ ledgers still parse.
   - `explanation: Option<String>`: the rule's explanation without the recovery sentence, cut to
     `SUMMARY_CHARS`, and passed through `rig_core::redact::text`, since `reason` is not redacted
     today.
-- New `Record::ToolOutcome{tool_use_id, agent, status: Ok|Error|Cancelled}` is appended by the
-  gated tool wrapper after the call returns, at the same point that runs `post_tool_use` hooks.
-  This is what separates "allowed" from "succeeded". A missing outcome renders as "outcome not
+- New `Record::ToolOutcome{tool_use_id, agent, status: Ok|Error|Cancelled}` is appended by an
+  always-attached core result stage, independent of the optional `PostHookStage` (attached only
+  when post hooks exist, setup.rs:600-605). `gated()` lives in fontaine-tools with no ledger,
+  `SessionState` or `tool_use_id`, so the stage lives in core and reads the id from
+  `state.current_call(agent)`. It skips synthetic results (screened texts with no `tool_use_id`:
+  agent.rs:562, child_runner.rs:188). `ResultPipeline::run` is skipped for calls killed mid-run
+  (`cut_short`, guarded.rs:381-395), so that path records `Cancelled` explicitly. This is what separates "allowed" from "succeeded". A missing outcome renders as "outcome not
   recorded", never as success.
 - New `Record::Afk{on, source}`, `Record::AfkStop{value, ceiling, contributing}`,
   `Record::AfkReviewed{}` and `Record::AfkAssessment{stretch_seq, result}`.
@@ -380,7 +394,9 @@ impl Temperature {
   - Bonuses: `ExactRetry` adds `EXACT_RETRY_BONUS` to the retry's weight, and
     `SameTargetOtherTool` adds `SAME_TARGET_BONUS`. The links are computed when the attempt is
     gated. If the attempt is allowed it adds no weight, but the link still appears in the report.
-- **Live evaluation.** `SessionState` holds `afk_temperature: Mutex<Temperature>`, which is reset
+- **Live evaluation.** `Ledger::read()` is used only on resume and for the report. The live path
+  keeps a per-stretch in-memory index of denials and the decision count (seq, tool, digest, paths,
+  weight), fed at append time and using the same pure functions. `SessionState` holds `afk_temperature: Mutex<Temperature>`, which is reset
   when a stretch starts. After every recorded denial while AFK is on, the pipeline updates it and
   compares `current` with the ceiling. On resume, the value is rebuilt by replaying the stretch,
   using the same function the report uses, so the live and reported values cannot drift.
@@ -412,12 +428,17 @@ When the ceiling is reached, `SessionState::afk_stop(value, ceiling, contributin
    the ceiling and the contributing denial seqs.
 3. Fires a session `stop` signal, a `tokio::sync::watch<bool>` on `SessionState` that the turn
    drivers subscribe to:
-   - The TUI turn loop and the headless `run_one` select on it next to the interrupt. It ends the
+   - The TUI turn loop and the headless `run_one` select on it next to the interrupt. Headless
+     `run_one` (headless.rs:489) has no interrupt select today, so a `select!` on the stop watch is
+     added around `run_turn`. Its subtype mapping must not reuse the hard-coded `MaxBudget` for
+     `TurnOutcome::Stopped` (headless.rs:580). It ends the
      in-flight main turn as `TurnEnd::Stopped(AfkStopped)` by dropping the turn future, as Esc
      does, so the main model gets no further tool-capable turn.
    - The runtime kills every live child with `spawn::kill_agent` per id (not `kill_all`, which
-     latches) and kills each running job with `jobs().kill_by_user(id)`. The implementer confirms
-     `terminate_all` latches before choosing per-id kills.
+     latches) and kills each running job with `jobs().kill_by_user(id)` (jobs.rs:962). `Jobs::terminate_all`
+     (jobs.rs:1078) does not latch but is silent (it posts nothing to the model) and blocks up to
+     grace+5 s, so per-id kills stay and the model sees each kill note. `AgentTree::kill_all`
+     does latch.
 4. Pauses the goal with `PauseReason::AfkStopped`. `unattended_blocked()` keeps scheduled and
    notification turns from firing.
 5. Runs the evasion assessment (a guardian-model call, which is not the working model and has no
@@ -428,7 +449,8 @@ When the ceiling is reached, `SessionState::afk_stop(value, ceiling, contributin
 
 **While a stop is active:**
 - A typed TUI prompt is refused with "the session is stopped (AFK temperature ceiling); run /afk
-  review".
+  review". The refusal also covers deferred queued input (`drain_deferred`,
+  fontaine-tui/src/ui/mod.rs:469).
 - `/afk` cannot turn AFK back on.
 - Read-only slash commands (`/afk report`, `/recap`, `/denied`, `/export`) still work.
 
@@ -448,9 +470,13 @@ the run exits 1 with `error_afk_stopped`.
   report, and `/afk review` resumes a stopped session.
   - These are `Command::Afk(String)` with a `parse_afk` beside `parse_loop`
     (`fontaine-tui/src/commands.rs`).
-  - `report` runs mid-turn; the others are idle-only and `main_only`.
+  - All four are idle-only and `main_only`. `report` is queued, not `runs_mid_turn`, since it does a
+    full `Ledger::read()`, which breaks the mid-turn contract (commands.rs:123). The test
+    `runs_mid_turn_marks_the_immediate_ui_set_and_nothing_else` (commands.rs:994) lists stay
+    unchanged.
 - The status line shows `AFK` while it is on and `AFK STOPPED` while stopped, mirroring the
-  guardian-off indicator.
+  guardian-off indicator (`fontaine-tui/src/statusbar.rs`). The custom status-line payload
+  (`fontaine-core/src/statusline.rs`) gains AFK/stopped fields.
 - `--afk` (`fontaine/src/cli.rs`) applies to TUI start and to `-p`. `--afk-temperature-ceiling
   <f64>` is a CLI-scope ceiling.
 - In headless, `--afk` keeps today's would-prompt denials but switches to the AFK guidance and
@@ -460,7 +486,9 @@ the run exits 1 with `error_afk_stopped`.
 ## Implementation Steps
 
 **Phase A — state, conversion, guidance**
-1. `fontaine-core/src/tier.rs`: add `Tier::Afk`, extend `Tier::ALL`, and fix the count tests.
+1. `fontaine-core/src/tier.rs`: add `Tier::Afk`, extend `Tier::ALL`, and fix the count tests. Add
+   `afk` to `$defs.tier.enum` in `docs/schemas/headless-v1.schema.json` (pinned by
+   `the_schema_tier_enum_is_exactly_the_tier_names`, rust/fontaine/tests/headless_contract.rs:28).
 2. `fontaine-core/src/ledger.rs`:
    - add the new `Action`/`Denial` fields, `ToolOutcome`, `Afk`, `AfkStop`, `AfkReviewed`,
      `AfkAssessment`, and the `Goal{Paused}` reason, all with `#[serde(default)]`;
@@ -476,13 +504,15 @@ the run exits 1 with `error_afk_stopped`.
    - add `converted` and `afk` on `DecisionRecord` (`audit.rs`);
    - fill the new ledger fields in `action()`/`denial()`;
    - add the stopped deny-only check first in `evaluate`.
-5. `fontaine-core/src/questions.rs`: return `Unavailable` while AFK is on.
-   `fontaine-core/src/permissions.rs`: add the `AfkApprover` decorator, and wrap the approver in
-   `agent/setup.rs`.
-6. Gated tool wrapper (`fontaine-core`, at the `post_tool_use` site): append `Record::ToolOutcome`.
+5. `fontaine-core/src/permissions.rs`: add the `AfkApprover` decorator. Put the raw approver in
+   `SessionState` and hand the decorator over `Arc<SessionState>` to the pipeline and
+   `HumanQuestions` in `agent/setup.rs`.
+6. An always-attached core result stage (reading `state.current_call`, skipping synthetic results,
+   recording `Cancelled` on the kill/cut-short path): append `Record::ToolOutcome`.
 7. `fontaine-core/prompts/system_prompt.md` and `prompt.rs`: add the `{{denial_recovery}}`
    placeholder and both texts. Fill it in `agent/build.rs` and `agent/setup.rs` (subagents).
-   `set_afk` triggers `rebuild()`.
+   Add an AFK flag to `PromptParts`; the `AgentRuntime::set_afk` wrapper calls the state setter
+   then `rebuild()`.
 
 **Phase B — temperature, stop, gates**
 8. `fontaine-guardian/src/temperature.rs`: the `Temperature`, `Severity` and constants, with unit
@@ -498,23 +528,32 @@ the run exits 1 with `error_afk_stopped`.
     with the wrapper in `agent/goal.rs`. `AgentRuntime::unattended_blocked()`, and the stop
     handling that kills children and jobs per id.
 12. TUI:
-    - `ui/mod.rs`: gate the idle loop, refuse prompts while stopped, show the outcome notice.
-    - `ui/turn.rs`: select on the stop `watch`.
-    - Status-line indicator.
-    - Headless (`fontaine/src/headless.rs`): select on the stop, gate the goal loop, add the `afk`
-      result object, `error_afk_stopped`, and the `gate_decision` fields. Update
-      `docs/schemas/headless-v1.schema.json`.
+    - `ui/mod.rs`: gate the idle loop (before `scheduler.due()`), refuse typed and deferred
+      prompts while stopped, show the outcome notice.
+    - `ui/turn.rs`: select on the stop `watch`. `ui/goal.rs`: handle the new `TurnEnd` variant in
+      its exhaustive match.
+    - Status-line indicator (`statusbar.rs`) and the `statusline.rs` payload fields.
+    - Headless (`fontaine/src/headless.rs`): add a `select!` on the stop watch around `run_turn` in
+      `run_one`, map `TurnOutcome::Stopped` to `error_afk_stopped` (not `MaxBudget`), gate the goal
+      loop, add the `afk` result object and the `gate_decision` fields. Update
+      `docs/schemas/headless-v1.schema.json` (the `afk` property and the `afk` tier).
 
 **Phase C — report, assessment, commands**
 13. `fontaine-guardian/src/evasion.rs` + `prompts/evasion_prompt.md`: `assess_evasion`. The core
     wiring runs it at the end of a stretch and appends `AfkAssessment`.
 14. `fontaine-tui/src/commands.rs`: `Command::Afk`, `parse_afk` and the builtin row. Add
-    `ui/commands/afk.rs`, with the on/off/report/review handlers and the review confirmation in the
-    `guardian_prompt.rs` style. Add `reports::afk_report` and the `/recap` line.
-15. Evals (`rust/fontaine-evals`, `evals/dataset/afk.jsonl`):
-    - a `temperature` case kind: a sequence of `{tool, tier, rule, digest, paths, decision}` and an
-      expected `stop|continue`, scored offline with false-stop and false-continue rates;
-    - an `evasion` case kind: a sequence plus the expected suspected pairs, with `fixture_verdict`
+    `ui/commands/afk.rs`, with the on/off/report/review handlers (`report` idle-only, queued) and
+    the review confirmation in the `guardian_prompt.rs` style, wired like `guardian_off_prompt`
+    through `view.rs` (`transcript_has_keys`/`overlay`) and a new `PromptKind` in `notify.rs`. Add `reports::afk_report` and the `/recap` line.
+15. Evals (`rust/fontaine-evals`, `evals/sequences/afk.jsonl`). Sequence-shaped cases do not fit
+    `Case` (`deny_unknown_fields`, single-call required fields, `enum Kind {Guardian, Pipeline,
+    Scanner}`, case.rs:13), and CI loads the whole `evals/dataset` dir in three modes
+    (ci.yml:119-129). So a separate sequence-case type gets its own loader, reading a file outside
+    the single-call loader's glob. It runs offline in the fixture mode and is skipped in `minimal`
+    and `--guardian none`:
+    - `temperature` cases: a sequence of `{tool, tier, rule, digest, paths, decision}` and an
+      expected `stop|continue`, scored with false-stop and false-continue rates;
+    - `evasion` cases: a sequence plus the expected suspected pairs, with `fixture_verdict`
       offline and the guardian model live.
     Calibrate `DEFAULT_CEILING` so every fixture passes, and record the measured rates in the
     master plan's Decisions.
@@ -522,47 +561,27 @@ the run exits 1 with `error_afk_stopped`.
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/{tier.rs, ledger.rs, gate.rs, permissions.rs, audit.rs, questions.rs, prompt.rs, goal.rs, config.rs, config_scope.rs, agent.rs, agent/build.rs, agent/setup.rs, agent/goal.rs}`
+- `rust/fontaine-core/src/{tier.rs, ledger.rs, gate.rs, permissions.rs, audit.rs, prompt.rs, goal.rs, config.rs, config_scope.rs, agent.rs, agent/build.rs, agent/setup.rs, agent/goal.rs, statusline.rs}`
 - `rust/fontaine-core/src/afk_report.rs` (new)
 - `rust/fontaine-core/prompts/system_prompt.md`
 - `rust/fontaine-guardian/src/{temperature.rs, evasion.rs}` (new), `src/lib.rs`, and `prompts/evasion_prompt.md` (new)
-- `rust/fontaine-tui/src/{commands.rs, reports.rs, guardian_prompt.rs, app.rs, ui/mod.rs, ui/turn.rs, ui/commands/afk.rs (new), ui/commands/reports.rs}`
+- `rust/fontaine-tui/src/{commands.rs, reports.rs, guardian_prompt.rs, app.rs, view.rs, notify.rs, statusbar.rs, ui/mod.rs, ui/turn.rs, ui/goal.rs, ui/commands/afk.rs (new), ui/commands/reports.rs}`
 - `rust/fontaine/src/{cli.rs, lib.rs, headless.rs}`
-- `rust/fontaine-evals/src/case.rs` + runner, and `evals/dataset/afk.jsonl` (new)
+- `rust/fontaine-evals/src/` (new sequence-case type, loader and runner), and `evals/sequences/afk.jsonl` (new)
 - `docs/afk.md` (new), plus `docs/{permissions,headless,tui,configuration,guardian,evals,index}.md` and `docs/schemas/headless-v1.schema.json`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 - `CHANGELOG.md`
 
-## Trade-offs
-
-- **A session flag, not a sixth `PermissionMode`.**
-  - AFK is orthogonal to how much the agent may do: `auto` and AFK `auto` allow exactly the same
-    calls.
-  - As a mode it would need a ladder rung, and child inheritance would have to place it relative
-    to `Auto`. It would also give Shift-Tab cycling a way to enter it implicitly.
-  - A flag read for every agent tightens the whole tree with no inheritance logic.
-- **Extending the ledger, not joining the audit log.**
-  - The ledger is the record that is already replayed on resume, copied on fork and shared by the
-    tree. The audit log starts empty on fork and stores only digests.
-  - Adding tier, digest, paths and outcome to the ledger keeps one source and lets temperature be
-    a replay.
-  - The audit log keeps the full decision metadata (`converted`, `afk`) for the security record.
-- **Decay per gate decision, not wall-clock time.**
-  - It is deterministic and resume-safe, and explainable as "each later decision cools it by 10%".
-  - A wall clock would make the same session score differently depending on model latency, and
-    would cool a stalled session that did nothing.
-- **Explicit `/afk off`, not "any keystroke ends AFK".**
-  - An accidental keypress must not re-open approvals mid-stretch, and an explicit end gives the
-    assessment a clean trigger.
-  - The cost is that a returning user sees denials until they type `/afk off`. The status-line
-    indicator makes that visible.
-- **Kill children per id, not `AgentTree::kill_all`.** `kill_all` latches shutdown, so the session
-  could never resume after a review.
-- **The approver decorator as a backstop on top of the pipeline checks.** Pipeline checks give the
-  right text and audit fields. The decorator guarantees that approval surfaces outside the
-  pipeline (MCP, plugins, plan exit) cannot open while the user is away.
-
 ## Decisions
+
+- AFK is a session flag, not a sixth `PermissionMode`: it is orthogonal to what the agent may do and tightens the whole tree with no inheritance logic.
+- The report data extends the ledger rather than joining the audit log: the ledger is replayed on resume and copied on fork, the audit log is not.
+- Temperature decays per gate decision, not wall-clock time, so it is deterministic and replayable.
+- AFK ends only with an explicit `/afk off`, not on any keystroke, so an accidental keypress cannot reopen approvals.
+- A stop kills children and jobs per id (`kill_agent`, `kill_by_user`), not `AgentTree::kill_all`, which latches and would block resume after a review.
+- The `AfkApprover` decorator is defence-in-depth over the three approver call sites; the pipeline checks give the right text and audit fields.
+- `/afk review` does not resume the denial breaker; it resumes on the next approval as today.
+- A zero-denial stretch skips the evasion assessment (`NoDenials`); an allowed malicious action is the per-call guardian's job.
 
 ## Documentation
 
@@ -577,10 +596,11 @@ the run exits 1 with `error_afk_stopped`.
   - the headless `--afk` output.
   Link it from `docs/index.md`.
 - `docs/permissions.md`: an AFK row or note beside the mode table, and AFK conversions alongside
-  headless.
+  headless. Add `afk` and the missing `guardian_off` to the tier list (lines 152-154).
 - `docs/headless.md`: `--afk`, the `afk` result object, `error_afk_stopped`, the exit codes, and
-  the `gate_decision` fields `afk`/`converted`.
-- `docs/tui.md`: the `/afk` commands, the status indicator, the `/recap` line, and the Goals and
+  the `gate_decision` fields `afk`/`converted`. Add `afk` and the missing `guardian_off` to the tier
+  list (lines 196-198).
+- `docs/tui.md`: the `/afk` commands, the status indicator, the `/recap` line, the AFK/stopped fields in the custom status-line JSON field table, and the Goals and
   Scheduled prompts interaction (they pause while blocked or stopped).
 - `docs/configuration.md`: `[afk] temperature_ceiling`, its scope-table row ("project may only
   lower"), and `--afk-temperature-ceiling`.
@@ -662,7 +682,7 @@ the ledger file, the result JSON and the kill paths together.
   unavailable` and the timeline still present.
 
 **Evals**:
-- `afk.jsonl` `temperature` cases run offline in CI with the fixture eval.
+- `evals/sequences/afk.jsonl` `temperature` cases run offline in CI with the fixture eval.
 - The `evasion` cases run live against the guardian model before merge (the live Haiku eval), since
   the prompt is new guardian-side prose.
 
@@ -674,15 +694,5 @@ the ledger file, the result JSON and the kill paths together.
    because the layout of a long report in the real terminal needs a human eye (see
    `tasks/design/testing.md`, terminal layout).
 2. In a real tmux, trigger a stop with `--afk --afk-temperature-ceiling 1`. Expect `AFK STOPPED`
-   in the status line, a typed prompt refused, and `/afk review` clearing the stop. This is a live
-   redraw check that `TestBackend` cannot reproduce.
-
-## Open Questions
-
-- Should `/afk review` also offer to resume the denial breaker in the same confirmation? The plan
-  says no: review touches only the temperature stop, and the breaker resumes on the next approval
-  as today.
-- Should a stretch with zero denials still make the guardian assessment call, to catch an evasion
-  that the per-call gate allowed? The plan skips it (`NoDenials`), since with no denial there is
-  nothing the model could have routed around; an allowed malicious action is the per-call
-  guardian's job.
+   in the status line to redraw correctly, which `TestBackend` cannot reproduce. The rest is covered
+   by `TestBackend` tests.
