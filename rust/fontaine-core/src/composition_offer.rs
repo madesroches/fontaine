@@ -497,6 +497,7 @@ mod tests {
                 cli_rules: CliRules {
                     allow: &[],
                     deny: &[],
+                    afk_temperature_ceiling: None,
                 },
                 env,
             })

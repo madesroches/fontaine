@@ -642,6 +642,7 @@ mod tests {
             cli_rules: fontaine_core::config::CliRules {
                 allow: &[],
                 deny: &[],
+                afk_temperature_ceiling: None,
             },
             env: &env,
         })

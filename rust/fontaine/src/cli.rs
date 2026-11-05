@@ -45,6 +45,17 @@ pub struct Cli {
     #[arg(long = "disallowed-tools", value_name = "RULE")]
     pub disallowed_tools: Vec<String>,
 
+    /// Start in AFK mode: nothing that would ask the user is asked; each such call is denied
+    /// with guidance to finish the allowed work or stop and report. A temperature ceiling stops
+    /// a session that keeps hitting denials
+    #[arg(long)]
+    pub afk: bool,
+
+    /// The AFK session temperature at which the session is stopped, overriding
+    /// `[afk] temperature_ceiling`; a finite number above zero
+    #[arg(long, value_name = "TEMPERATURE")]
+    pub afk_temperature_ceiling: Option<f64>,
+
     /// The main model as `<account>/<model>`, overriding `[model] model`
     #[arg(long, value_name = "ACCOUNT/MODEL")]
     pub model: Option<String>,

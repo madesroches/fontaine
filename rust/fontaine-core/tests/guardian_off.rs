@@ -35,7 +35,7 @@ async fn guardian_off_runs_a_denied_call_and_is_recorded() {
             .any(|r| r.decision == Decision::Deny)
     );
 
-    rig.state.set_guardian_off(true);
+    rig.state.set_guardian_off(true).unwrap();
     assert!(rig.state.guardian_off());
 
     let before = rig.audit().len();
@@ -57,7 +57,7 @@ async fn guardian_off_runs_a_denied_call_and_is_recorded() {
             .any(|record| record.rule.as_deref() == Some("guardian_off"))
     );
 
-    rig.state.set_guardian_off(false);
+    rig.state.set_guardian_off(false).unwrap();
     assert!(!rig.state.guardian_off());
     assert!(!allowed(&rig.check("write", write_outside()).await));
 }
@@ -65,7 +65,7 @@ async fn guardian_off_runs_a_denied_call_and_is_recorded() {
 #[tokio::test]
 async fn the_toggle_is_audited_as_a_root_decision_with_its_explanation() {
     let rig = Rig::new(PermissionMode::Manual);
-    rig.state.set_guardian_off(true);
+    rig.state.set_guardian_off(true).unwrap();
     let records = rig.audit();
     let record = records
         .iter()
@@ -85,7 +85,7 @@ async fn guardian_off_normalizes_an_external_read_and_runs_no_floor_or_hooks() {
     std::fs::create_dir_all(&outside).unwrap();
     std::fs::write(outside.join("x.txt"), "x").unwrap();
 
-    rig.state.set_guardian_off(true);
+    rig.state.set_guardian_off(true).unwrap();
     // The escape hatch applies the same execution normalization as every other allow, with
     // no hooks and no floor.
     match rig.check("read", json!({"path": "../outside/x.txt"})).await {
@@ -116,7 +116,7 @@ async fn guardian_off_normalizes_an_external_read_and_runs_no_floor_or_hooks() {
 async fn guardian_off_normalizes_an_external_write_and_runs_no_floor_or_hooks() {
     let rig = Rig::new(PermissionMode::Manual);
 
-    rig.state.set_guardian_off(true);
+    rig.state.set_guardian_off(true).unwrap();
     // The escape hatch applies the same execution normalization as every other allow, with
     // no hooks and no floor.
     let resolved = rig.world.root.join("outside.txt");
@@ -149,7 +149,7 @@ async fn guardian_off_never_loosens_a_child() {
     let rig = Rig::new(PermissionMode::Auto);
     let id = child(&rig, Ladder::Manual);
 
-    rig.state.set_guardian_off(true);
+    rig.state.set_guardian_off(true).unwrap();
     // The root runs anything, but the child keeps its own manual posture and still asks.
     assert!(allowed(&rig.check("write", write_outside()).await));
     assert!(!allowed(

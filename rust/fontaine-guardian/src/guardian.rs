@@ -63,7 +63,7 @@ impl Default for Settings {
     }
 }
 
-enum Backend {
+pub(crate) enum Backend {
     Ready(Box<DynModel<Completion>>),
     Unavailable(String),
 }
@@ -90,14 +90,14 @@ pub struct Adjudication {
 }
 
 pub struct Guardian {
-    backend: Backend,
+    pub(crate) backend: Backend,
     label: String,
-    settings: Settings,
+    pub(crate) settings: Settings,
     cache: Mutex<VerdictCache>,
     /// Extra request parameters, e.g. the one that turns thinking off for a model that refuses a
     /// forced tool call while thinking.
-    additional_params: Option<serde_json::Value>,
-    mode: ModeResolver,
+    pub(crate) additional_params: Option<serde_json::Value>,
+    pub(crate) mode: ModeResolver,
 }
 
 impl Guardian {

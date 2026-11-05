@@ -10,6 +10,7 @@ pub(crate) enum PromptKind {
     Question,
     Server,
     GuardianOff,
+    AfkReview,
     Unavailable,
     Skills,
     SetupReview,
@@ -24,7 +25,7 @@ impl PromptKind {
             PromptKind::Approval => "Fontaine needs your approval",
             PromptKind::Question => "Fontaine has a question",
             PromptKind::Server => "Fontaine needs an MCP server decision",
-            PromptKind::GuardianOff => "Fontaine needs your confirmation",
+            PromptKind::GuardianOff | PromptKind::AfkReview => "Fontaine needs your confirmation",
             PromptKind::Unavailable => "The guardian is unavailable",
             PromptKind::Skills => "Fontaine needs a skill trust decision",
             PromptKind::SetupReview | PromptKind::SetupComposition => {

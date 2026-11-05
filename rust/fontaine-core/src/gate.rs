@@ -18,7 +18,9 @@ use fontaine_tools::lock::{lock, lock_recovering, read, write};
 use fontaine_tools::scope::Scope;
 use rig_core::completion::{UnsupportedOption, Usage};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tokio::sync::watch;
 
+use crate::afk_report::{AfkSource, AfkStop};
 use crate::audit::{AuditLog, Decision, DecisionRecord, args_digest};
 use crate::config::{PermissionMode, Slot};
 use crate::effort::Effort;
@@ -37,6 +39,59 @@ const TARGET: &str = "fontaine::telemetry";
 
 /// Why a call from an agent the session's tree no longer holds is refused.
 pub const UNREGISTERED_AGENT: &str = "the calling agent is no longer registered";
+
+/// AFK mode as the pipeline reads it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AfkState {
+    /// The stretch that is running; `None` when AFK is off.
+    pub on: Option<AfkStretch>,
+    /// The temperature stop no review has cleared yet.
+    pub stopped: Option<AfkStop>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AfkStretch {
+    /// The ledger position of the record that started the stretch.
+    pub started_seq: u64,
+    pub source: AfkSource,
+}
+
+/// Why AFK mode and the guardian escape hatch cannot both be on, or why AFK cannot start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AfkRefusal {
+    /// `/afk` while the guardian is off: nothing would be converted to a denial.
+    GuardianOff,
+    /// `/guardian-disable` while AFK is on.
+    AfkOn,
+    /// Either, while a temperature stop waits for a review.
+    Stopped,
+}
+
+impl std::fmt::Display for AfkRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            AfkRefusal::GuardianOff => {
+                "the guardian is disabled for this session: run /guardian-enable first"
+            }
+            AfkRefusal::AfkOn => "AFK mode is on: run /afk off before disabling the guardian",
+            AfkRefusal::Stopped => {
+                "the session is stopped by the AFK temperature ceiling: run /afk review first"
+            }
+        })
+    }
+}
+
+/// Why an unattended turn may not start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blocked {
+    /// Repeated denials paused `auto` while AFK is on.
+    BreakerPaused,
+    /// The temperature ceiling stopped the session.
+    Stopped,
+}
+
+/// The message every call gets while a temperature stop waits for a review.
+pub const AFK_STOPPED_MESSAGE: &str = "the session was stopped by the AFK temperature ceiling; no further tool calls run until the user reviews it";
 
 /// What a surface that shows a subagent's own transcript receives about it.
 #[derive(Clone, Debug)]
@@ -305,6 +360,12 @@ pub struct SessionState {
     inner: RwLock<Inner>,
     mode: Arc<RwLock<PermissionMode>>,
     guardian_off: RwLock<bool>,
+    afk: RwLock<AfkState>,
+    afk_ceiling: RwLock<f64>,
+    /// The blocked outcome was already announced for the breaker pause now in force.
+    afk_block_announced: AtomicBool,
+    /// Counts temperature stops, so a surface that holds a receiver sees each one exactly once.
+    afk_stops: watch::Sender<u64>,
     setup_warned: AtomicBool,
     effort: RwLock<Option<Effort>>,
     /// Every model and level the human was told were incompatible, so a session says it once per
@@ -340,6 +401,7 @@ impl SessionState {
         let (decisions, rx) = unbounded_channel();
         let (previews, previews_rx) = unbounded_channel();
         let mode = Arc::new(RwLock::new(params.mode));
+        let restored_stop = params.ledger.view().afk().stopped().cloned();
         {
             let cell = mode.clone();
             params
@@ -358,6 +420,13 @@ impl SessionState {
             memory_root: params.memory_root,
             mode,
             guardian_off: RwLock::new(false),
+            afk: RwLock::new(AfkState {
+                on: None,
+                stopped: restored_stop,
+            }),
+            afk_ceiling: RwLock::new(fontaine_guardian::temperature::DEFAULT_CEILING),
+            afk_block_announced: AtomicBool::new(false),
+            afk_stops: watch::channel(0).0,
             setup_warned: AtomicBool::new(false),
             effort: RwLock::new(params.effort),
             effort_warned: Mutex::new(HashSet::new()),
@@ -488,11 +557,23 @@ impl SessionState {
     }
 
     /// Turns the escape hatch on or off for the rest of the session. The toggle is recorded in
-    /// the ledger and the audit log; it is never persisted and never loosens a subagent.
-    pub fn set_guardian_off(&self, off: bool) {
+    /// the ledger and the audit log; it is never persisted and never loosens a subagent. Refused
+    /// while AFK mode is on or stopped: it would turn off the very denials AFK relies on.
+    pub fn set_guardian_off(&self, off: bool) -> Result<(), AfkRefusal> {
+        // The AFK lock is taken first here and in `set_afk`, so the two cannot interleave.
+        let afk = read(&self.afk, "afk");
+        if off {
+            if afk.stopped.is_some() {
+                return Err(AfkRefusal::Stopped);
+            }
+            if afk.on.is_some() {
+                return Err(AfkRefusal::AfkOn);
+            }
+        }
         let from = std::mem::replace(&mut *write(&self.guardian_off, "guardian off"), off);
+        drop(afk);
         if from == off {
-            return;
+            return Ok(());
         }
         self.append(Record::GuardianOff { off });
         self.record_session_event(
@@ -506,6 +587,159 @@ impl SessionState {
                 "guardian enabled"
             },
         );
+        Ok(())
+    }
+
+    /// The AFK state now.
+    pub fn afk(&self) -> AfkState {
+        read(&self.afk, "afk").clone()
+    }
+
+    /// Whether AFK mode is on: nobody can be asked.
+    pub fn afk_on(&self) -> bool {
+        read(&self.afk, "afk").on.is_some()
+    }
+
+    /// The temperature at which an AFK stretch stops.
+    pub fn afk_ceiling(&self) -> f64 {
+        *read(&self.afk_ceiling, "afk ceiling")
+    }
+
+    pub fn set_afk_ceiling(&self, ceiling: f64) {
+        *write(&self.afk_ceiling, "afk ceiling") = ceiling;
+    }
+
+    /// Turns AFK mode on or off for the rest of the session; `Ok(false)` when nothing changed.
+    /// Starting a stretch is refused while the guardian is off or a stop waits for review. The
+    /// toggle is recorded in the ledger and the audit log; it is never persisted, never restored
+    /// by a resume and never set by anything but the user's own command or flag.
+    pub fn set_afk(&self, on: bool, source: AfkSource) -> Result<bool, AfkRefusal> {
+        let mut afk = write(&self.afk, "afk");
+        if on && afk.stopped.is_some() {
+            return Err(AfkRefusal::Stopped);
+        }
+        if on == afk.on.is_some() {
+            return Ok(false);
+        }
+        if on && self.guardian_off() {
+            return Err(AfkRefusal::GuardianOff);
+        }
+        let seq = self.append_seq(Record::Afk { on, source });
+        afk.on = on.then(|| AfkStretch {
+            started_seq: seq.unwrap_or(0),
+            source,
+        });
+        drop(afk);
+        self.record_session_event(
+            "afk",
+            serde_json::json!({ "on": on, "source": source }),
+            Tier::Afk,
+            if on { "afk_on" } else { "afk_off" },
+            if on { "AFK mode on" } else { "AFK mode off" },
+        );
+        Ok(true)
+    }
+
+    /// Stops the session: every call from every agent is denied until a review. Does only what
+    /// can run inside the turn it ends: the stop state, its records and the signal. The surface's
+    /// stop handler kills the agents and jobs. Returns false when a stop already stands.
+    pub fn afk_stop(&self, value: f64, ceiling: f64, contributing: Vec<u64>) -> bool {
+        let mut afk = write(&self.afk, "afk");
+        if afk.stopped.is_some() {
+            return false;
+        }
+        let seq = self.append_seq(Record::AfkStop {
+            value,
+            ceiling,
+            contributing: contributing.clone(),
+        });
+        afk.stopped = Some(AfkStop {
+            seq: seq.unwrap_or(0),
+            value,
+            ceiling,
+            contributing: contributing.clone(),
+        });
+        drop(afk);
+        let list = contributing
+            .iter()
+            .map(|seq| format!("#{seq}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.record_session_event_as(
+            "afk",
+            serde_json::json!({ "value": value, "ceiling": ceiling, "contributing": contributing }),
+            Tier::Afk,
+            "afk_stop",
+            &format!(
+                "session temperature {value:.1} reached the ceiling {ceiling:.1}; contributing denials: {list}"
+            ),
+            Decision::Deny,
+        );
+        self.afk_stops.send_modify(|stops| *stops += 1);
+        true
+    }
+
+    /// The human reviewed a stopped session: it may run again, with AFK off. Evidence is kept,
+    /// and the denial breaker is untouched. Returns false when no stop stands.
+    pub fn afk_review(&self) -> bool {
+        let mut afk = write(&self.afk, "afk");
+        let Some(stop) = afk.stopped.take() else {
+            return false;
+        };
+        self.append(Record::AfkReviewed {});
+        let was_on = afk.on.take();
+        if let Some(stretch) = was_on {
+            self.append(Record::Afk {
+                on: false,
+                source: stretch.source,
+            });
+        }
+        drop(afk);
+        if was_on.is_some() {
+            self.record_session_event(
+                "afk",
+                serde_json::json!({ "on": false }),
+                Tier::Afk,
+                "afk_off",
+                "AFK mode off",
+            );
+        }
+        self.record_session_event(
+            "afk",
+            serde_json::json!({ "stop_seq": stop.seq }),
+            Tier::Afk,
+            "afk_review",
+            "the AFK temperature stop was reviewed",
+        );
+        true
+    }
+
+    /// True once for each time the denial breaker blocks an AFK session, so a surface announces
+    /// the outcome exactly once however often it asks.
+    pub fn announce_blocked(&self) -> bool {
+        if self.unattended_blocked() == Some(Blocked::BreakerPaused) {
+            !self.afk_block_announced.swap(true, Ordering::Relaxed)
+        } else {
+            self.afk_block_announced.store(false, Ordering::Relaxed);
+            false
+        }
+    }
+
+    /// A receiver that sees each temperature stop as a change of its value.
+    pub fn afk_stop_signal(&self) -> watch::Receiver<u64> {
+        self.afk_stops.subscribe()
+    }
+
+    /// Why a turn nobody typed (a notification, a scheduled prompt, a goal step) may not start.
+    pub fn unattended_blocked(&self) -> Option<Blocked> {
+        let afk = read(&self.afk, "afk");
+        if afk.stopped.is_some() {
+            Some(Blocked::Stopped)
+        } else if afk.on.is_some() && self.auto_paused() {
+            Some(Blocked::BreakerPaused)
+        } else {
+            None
+        }
     }
 
     /// The human trusted `skill` at `digest` in the terminal: recorded in the ledger and the
@@ -533,16 +767,29 @@ impl SessionState {
         rule: &str,
         explanation: &str,
     ) {
+        self.record_session_event_as(tool, args, tier, rule, explanation, Decision::Allow);
+    }
+
+    fn record_session_event_as(
+        &self,
+        tool: &str,
+        args: serde_json::Value,
+        tier: Tier,
+        rule: &str,
+        explanation: &str,
+        decision: Decision,
+    ) {
         let mut record = DecisionRecord::new(
             self.session_id.clone(),
             ROOT_AGENT.to_string(),
             tool.to_string(),
             args_digest(&args),
             tier,
-            Decision::Allow,
+            decision,
             self.mode().as_str().to_string(),
             false,
         );
+        record.afk = self.afk_on();
         record.rule = Some(rule.to_string());
         record.explanation = Some(explanation.to_string());
         crate::permissions::record_decision(self, &record);
@@ -814,8 +1061,48 @@ impl SessionState {
     pub const ALWAYS: RuleSource = RuleSource::Config(Slot::User);
 
     pub fn append(&self, record: Record) {
-        if let Err(e) = self.ledger.append(record) {
-            self.sink_failed(Sink::Ledger, &e);
+        self.append_seq(record);
+    }
+
+    /// Appends `record` and returns its ledger position, or `None` when it could not be written.
+    /// A denial while AFK is on can push the session temperature to its ceiling, which stops the
+    /// session.
+    fn append_seq(&self, record: Record) -> Option<u64> {
+        let denial = matches!(record, Record::Denial { .. });
+        let seq = match self.ledger.append(record) {
+            Ok(seq) => Some(seq),
+            Err(e) => {
+                self.sink_failed(Sink::Ledger, &e);
+                None
+            }
+        };
+        if denial && seq.is_some() {
+            self.stop_if_too_hot();
+        }
+        seq
+    }
+
+    /// Stops the session when the stretch's temperature has reached the ceiling.
+    fn stop_if_too_hot(&self) {
+        if !self.afk_on() {
+            return;
+        }
+        let ceiling = self.afk_ceiling();
+        let reached = {
+            let ledger = self.ledger.view();
+            let temperature = ledger.afk().temperature();
+            (temperature.current() >= ceiling).then(|| {
+                let contributing: Vec<u64> = temperature
+                    .contributions()
+                    .iter()
+                    .filter(|c| temperature.remaining(c) >= 0.1)
+                    .map(|c| c.seq)
+                    .collect();
+                (temperature.current(), contributing)
+            })
+        };
+        if let Some((value, contributing)) = reached {
+            self.afk_stop(value, ceiling, contributing);
         }
     }
 

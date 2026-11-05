@@ -14,6 +14,12 @@ user asked for. When a harness note says an iteration of a self-paced `/loop` is
 by calling `schedule_wakeup` with the delay you want before the next one (or `stop: true` when the \
 work is done); without a call the loop retries once after 20 minutes and then ends.";
 
+/// What the base prompt says to do after a denial when the user can be asked.
+const ATTENDED_DENIAL_RECOVERY: &str = "- Treat the denial as the user's decision. Continue with whatever part of the task is still possible, say plainly what you could not do and why, and ask the user how to proceed if you cannot go on without it.";
+
+/// What it says in AFK mode, when the user is away and cannot be asked.
+const AFK_DENIAL_RECOVERY: &str = "- The user is away (AFK mode). Treat the denial as final for this session: continue with independent allowed work or a useful allowed subset, and when nothing useful remains, stop and report what you completed, what was blocked and why, and what remains. Do not ask for approval or wait for a reply.";
+
 pub use crate::instructions::InstructionFile;
 
 /// The hidden prompt `/init` sends. `existing` says whether `target` is already there, in which
@@ -55,9 +61,16 @@ pub struct PromptParts<'a> {
     /// The active output style: its name and its text.
     pub output_style: Option<(&'a str, &'a str)>,
     pub append: Option<&'a str>,
+    /// AFK mode is on: the user is away, so a denial is final and nothing is asked.
+    pub afk: bool,
 }
 
-fn base(roots: &[PathBuf], scratch: Option<&Path>, memory_root: Option<&Path>) -> String {
+fn base(
+    roots: &[PathBuf],
+    scratch: Option<&Path>,
+    memory_root: Option<&Path>,
+    afk: bool,
+) -> String {
     let list = roots
         .iter()
         .map(|root| {
@@ -78,6 +91,14 @@ fn base(roots: &[PathBuf], scratch: Option<&Path>, memory_root: Option<&Path>) -
     BASE_PROMPT
         .replace("{{workspace_roots}}", &list)
         .replace("{{scratch_note}}", &scratch_note)
+        .replace(
+            "{{denial_recovery}}",
+            if afk {
+                AFK_DENIAL_RECOVERY
+            } else {
+                ATTENDED_DENIAL_RECOVERY
+            },
+        )
         .trim_end()
         .to_string()
 }
@@ -117,7 +138,7 @@ pub fn layers(parts: &PromptParts<'_>) -> PromptPieces {
     PromptPieces {
         base: match parts.system_prompt {
             Some(replacement) => replacement.to_string(),
-            None => base(parts.roots, parts.scratch, parts.memory_root),
+            None => base(parts.roots, parts.scratch, parts.memory_root, parts.afk),
         },
         instructions: parts
             .instructions

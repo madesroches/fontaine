@@ -64,6 +64,8 @@ pub struct Payload {
     pub mode: String,
     pub guardian: GuardianInfo,
     pub recent_verdicts: Vec<RecentVerdict>,
+    /// AFK mode: whether it is on, and whether the temperature ceiling has stopped the session.
+    pub afk: AfkInfo,
     pub account_usage: Vec<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_window: Option<ContextWindowInfo>,
@@ -93,6 +95,20 @@ pub struct EffortInfo {
 pub struct GuardianInfo {
     pub model: Option<String>,
     pub off: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct AfkInfo {
+    pub on: bool,
+    pub stopped: bool,
+}
+
+impl Payload {
+    /// The payload with the AFK fields set; `build_payload` leaves them off.
+    pub fn with_afk(mut self, on: bool, stopped: bool) -> Payload {
+        self.afk = AfkInfo { on, stopped };
+        self
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -297,6 +313,7 @@ pub fn build_payload(
             off: guardian_off,
         },
         recent_verdicts,
+        afk: AfkInfo::default(),
         account_usage: account_usage.iter().map(AccountUsage::json).collect(),
         context_window: match (context_used, context_window) {
             (Some(used), Some(window)) if window > 0 => Some(ContextWindowInfo {
@@ -484,6 +501,8 @@ mod tests {
             permission_mode: "auto".into(),
             headless: false,
             explanation: None,
+            afk: false,
+            converted: None,
         };
         let v = RecentVerdict::from(&record);
         assert_eq!(v.tool, "shell");

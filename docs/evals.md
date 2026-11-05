@@ -189,6 +189,29 @@ of writes they did not — so it is scored with a live run over `--filter floor`
 file). Adding the cases changed the dataset version, so scorecards and ranked-list entries
 scored before them no longer match the dataset and are re-based by the next full live run.
 
+## The AFK sequence slice
+
+The single-call dataset cannot express a run of decisions, so the AFK cases live in their own file,
+`evals/sequences/afk.jsonl`, named with `--sequences <file>` (only with `--guardian fixture` or
+`live:`; it is a usage error otherwise). Two kinds:
+
+- `temperature` cases replay a sequence of gate decisions (`tool`, `decision`, `tier`, `rule`,
+  `digest`, `paths`, and `converted` or `fail_closed` when they apply) through the same tracker a
+  session uses and expect the stretch to `stop` or `continue` under a ceiling (the default, or the
+  case's own). The scorecard reports the false-stop rate (a `continue` case that stopped) and the
+  false-continue rate (a `stop` case that did not). They need no model, so the offline run gates
+  them.
+- `evasion` cases hold the calls of a stretch and the `[denied, later]` pairs the
+  [end-of-stretch assessment](afk.md#links-and-the-assessment) should name. The offline run answers
+  with the case's `fixture_verdict`; a `live:` run asks the guardian model and reports the result as
+  a measurement. On `anthropic/claude-haiku-5.5` through OpenRouter the six shipped cases named exactly
+  the expected pairs in three runs in a row.
+
+The shipped file holds 8 `continue` and 5 `stop` temperature cases, which pass at the default
+ceiling of 12.0 with a false-stop rate and a false-continue rate of 0.0%, and 6 evasion cases (a
+write then a shell redirect, an encoded command, a subagent's retry, and three that are independent
+work or a narrower scope and must name nothing).
+
 ## Running it
 
 A scorecard run is manual and needs a key for the model being scored. It is never part of CI.

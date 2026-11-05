@@ -97,6 +97,13 @@ struct RunArgs {
     #[arg(long, value_name = "DIR")]
     dataset: Option<PathBuf>,
 
+    /// A `*.jsonl` file of sequence cases (AFK `temperature` and `evasion` cases), scored after
+    /// the dataset. Only with `--guardian fixture` or `live:`; `temperature` cases replay the
+    /// session temperature offline, and `evasion` cases use their canned verdict under
+    /// `fixture` and the guardian model under `live:`
+    #[arg(long, value_name = "FILE")]
+    sequences: Option<PathBuf>,
+
     /// Which guardian scores the cases: `fixture` (canned verdicts), `none` (the real
     /// permission pipeline, no guardian), `live:<account>/<model>` (a live guardian model) or
     /// `screen:<model>` (a typed-decision model behind `--screen-url`, guardian cases only)
@@ -420,6 +427,11 @@ fn run_score(args: &RunArgs) -> u8 {
         return usage(&format!(
             "unsupported --guardian `{guardian}`; supported modes are `fixture`, `none`, `live:<account>/<model>` and `screen:<model>`"
         ));
+    }
+    if args.sequences.is_some() && guardian != "fixture" && live_spec.is_none() {
+        return usage(
+            "`--sequences` scores sequence cases with `--guardian fixture` or `live:<account>/<model>`",
+        );
     }
     if args.verdict_transport.is_some() && live_spec.is_none() {
         return usage(
@@ -889,14 +901,49 @@ fn run_score(args: &RunArgs) -> u8 {
             );
         }
     }
+    let mut sequences_failed = false;
+    if let Some(file) = &args.sequences {
+        match run_sequences(file, live_run.as_ref().map(|(live, _)| live)) {
+            Ok(failed) => sequences_failed = failed,
+            Err(code) => return code,
+        }
+    }
     // A live or screen run reports and exits 0 whatever it scored: it is a measurement, not a
     // gate. Only an unreliable measurement fails it.
     let measurement = live_run.is_some() || screen_spec.is_some();
-    if !summary.infrastructure_failures.is_empty() || (!measurement && summary.failed > 0) {
+    if !summary.infrastructure_failures.is_empty()
+        || (!measurement && (summary.failed > 0 || sequences_failed))
+    {
         EXIT_FAIL
     } else {
         0
     }
+}
+
+/// Scores the sequence cases of `file`: the temperature cases offline, the evasion cases from
+/// their canned verdict or, with a live guardian, the model. Returns whether any failed.
+fn run_sequences(file: &std::path::Path, live: Option<&Live>) -> Result<bool, u8> {
+    use crate::sequences::{self, Scorecard, SequenceCase};
+    let cases = sequences::load(file).map_err(|errors| {
+        for e in &errors {
+            eprintln!("{e}");
+        }
+        eprintln!("fontaine-evals: {} sequence problem(s)", errors.len());
+        EXIT_USAGE
+    })?;
+    let rt = runtime()?;
+    let mut card = Scorecard::default();
+    for case in &cases {
+        card.results.push(match (case, live) {
+            (SequenceCase::Temperature(c), _) => sequences::score_temperature(c),
+            (SequenceCase::Evasion(c), None) => sequences::score_evasion_fixture(c),
+            (SequenceCase::Evasion(c), Some(live)) => {
+                rt.block_on(sequences::score_evasion_live(c, &live.guardian))
+            }
+        });
+    }
+    card.print();
+    Ok(card.failed() > 0)
 }
 
 /// Scores `selected` against the live guardian, one case at a time so each latency is its own,

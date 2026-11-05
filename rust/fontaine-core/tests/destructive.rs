@@ -304,6 +304,9 @@ fn a_write_is_an_overwrite_only_when_it_replaces_something_old() {
             paths: vec![root.join("session.txt").to_string_lossy().into_owned()],
             created: vec![root.join("session.txt").to_string_lossy().into_owned()],
             summary: String::new(),
+            tier: None,
+            tool_use_id: None,
+            digest: None,
         })
         .unwrap();
     assert!(!call("write", "session.txt"));
@@ -381,7 +384,10 @@ fn a_ledger_written_before_paths_and_summaries_existed_still_loads() {
             agent: "root".into(),
             paths: vec![],
             created: vec![],
-            summary: String::new()
+            summary: String::new(),
+            tier: None,
+            tool_use_id: None,
+            digest: None,
         }
     );
     let old = r#"{"seq":4,"ts_ms":1,"kind":"denial","tool":"shell","agent":"root","reason":"no"}"#;

@@ -130,6 +130,10 @@ pub enum PauseReason {
     TurnFailed(String),
     Interrupted,
     EvaluatorFailed(String),
+    /// AFK mode: repeated denials paused `auto` while the user was away.
+    Blocked(String),
+    /// AFK mode: the temperature ceiling stopped the session.
+    AfkStopped,
 }
 
 impl fmt::Display for PauseReason {
@@ -152,6 +156,10 @@ impl fmt::Display for PauseReason {
             PauseReason::EvaluatorFailed(why) => {
                 write!(f, "the evaluator gave no verdict ({why})")
             }
+            PauseReason::Blocked(why) => f.write_str(why),
+            PauseReason::AfkStopped => {
+                f.write_str("the AFK temperature ceiling stopped the session")
+            }
         }
     }
 }
@@ -159,7 +167,10 @@ impl fmt::Display for PauseReason {
 impl PauseReason {
     /// What the user is told when a goal pauses.
     pub fn notice(&self) -> String {
-        format!("Goal paused: {self}. Send a message to continue.")
+        match self {
+            PauseReason::AfkStopped => format!("Goal paused: {self}. Run /afk review to continue."),
+            _ => format!("Goal paused: {self}. Send a message to continue."),
+        }
     }
 }
 
@@ -555,9 +566,35 @@ impl SessionGoal {
         Some(reason)
     }
 
-    /// The user sent a prompt: a paused goal is evaluated again, with a fresh stretch.
+    /// Pauses the active goal for a reason that is not its own: AFK mode blocked or stopped the
+    /// session. Replaces any pause already there, such as the interrupted turn's. Returns whether
+    /// a goal was active.
+    pub fn pause(&self, reason: PauseReason) -> bool {
+        let mut state = lock(&self.state, "goal");
+        let Some(goal) = state.active.as_mut() else {
+            return false;
+        };
+        goal.pending = false;
+        goal.paused = Some(reason);
+        true
+    }
+
+    /// The evaluations an active goal has made.
+    pub fn evaluations(&self) -> u32 {
+        lock(&self.state, "goal")
+            .active
+            .as_ref()
+            .map_or(0, |goal| goal.evaluations)
+    }
+
+    /// The user sent a prompt: a paused goal is evaluated again, with a fresh stretch. A pause
+    /// the AFK temperature stop caused stays until the stop is reviewed.
     pub fn user_prompt(&self, spend_now: Spend) {
+        let stopped = self.ledger.view().afk().stopped().is_some();
         if let Some(goal) = lock(&self.state, "goal").active.as_mut() {
+            if stopped && goal.paused == Some(PauseReason::AfkStopped) {
+                return;
+            }
             goal.paused = None;
             goal.pending = false;
             goal.made_call = false;

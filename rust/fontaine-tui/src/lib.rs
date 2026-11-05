@@ -231,6 +231,9 @@ impl ReaderPause {
 
 struct Ui<R> {
     app: App,
+    /// Sees each AFK temperature stop, so a stop that lands while a turn runs, or while the
+    /// session is idle with a subagent working, is acted on at once.
+    afk_stops: tokio::sync::watch::Receiver<u64>,
     input: UnboundedReceiver<Input>,
     prompts: UnboundedReceiver<Prompt>,
     /// What every subagent run does, for the agents' own transcripts.
@@ -366,6 +369,7 @@ pub async fn drive(
         )
     });
     let mut ui = Ui {
+        afk_stops: runtime.state.afk_stop_signal(),
         app: App::new(mode, model),
         input,
         prompts,
@@ -447,6 +451,16 @@ pub async fn drive(
     ui.app.menu.sort_by(|a, b| a.name.cmp(&b.name));
     if mode == PermissionMode::Auto {
         ui.announce_auto(&runtime);
+    }
+    if runtime.state.afk().stopped.is_some() {
+        ui.app.transcript.notice(
+            "this session was stopped by the AFK temperature ceiling and no tool call will run until you review it: /afk report shows why, /afk review lets it continue",
+        );
+    }
+    if runtime.state.afk_on() {
+        ui.app.transcript.notice(
+            "AFK mode is on (--afk): nothing is asked of you; each call that would have needed approval is denied. /afk off turns it off.",
+        );
     }
     if ui.start_mcp(&mut runtime).await {
         ui.run(&mut runtime, &launch_dir).await;

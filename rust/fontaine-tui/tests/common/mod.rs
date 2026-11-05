@@ -393,6 +393,7 @@ impl World {
             append_system_prompt: None,
             json_schema: None,
             headless: false,
+            afk: false,
             scheduling: true,
             approver: Arc::new(DenyAll),
             home: Some(self.home.clone()),

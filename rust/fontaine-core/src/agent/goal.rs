@@ -88,6 +88,7 @@ impl AgentRuntime {
         self.state.append(Record::Goal {
             event: GoalEvent::Set,
             evaluations: 0,
+            reason: None,
         });
         Ok(())
     }
@@ -99,6 +100,7 @@ impl AgentRuntime {
             self.state.append(Record::Goal {
                 event: GoalEvent::Cleared,
                 evaluations: cleared.evaluations,
+                reason: None,
             });
         }
         self.forward_goal_warning();
@@ -116,9 +118,25 @@ impl AgentRuntime {
                     .status(self.tree_spend())
                     .active
                     .map_or(0, |a| a.evaluations),
+                reason: None,
             });
         }
         paused
+    }
+
+    /// AFK mode pauses the goal for `reason`, recording why in the ledger. Returns whether a goal
+    /// was active.
+    pub fn pause_goal(&self, reason: PauseReason) -> bool {
+        let text = reason.to_string();
+        if !self.session.goal().pause(reason) {
+            return false;
+        }
+        self.state.append(Record::Goal {
+            event: GoalEvent::Paused,
+            evaluations: self.session.goal().evaluations(),
+            reason: Some(text),
+        });
+        true
     }
 
     /// The user sent a prompt: a paused goal runs again.
@@ -151,6 +169,7 @@ impl AgentRuntime {
                 self.state.append(Record::Goal {
                     event,
                     evaluations: applied.evaluations,
+                    reason: None,
                 });
             }
         }

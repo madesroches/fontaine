@@ -26,6 +26,8 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `fontaine doctor [--format=text\|json] [--connect=yes\|no] [--all]` | Checks the settings layers, trust, models, MCP servers, extensions and auto memory, and exits 1 when a check fails; starts no session. See [`fontaine doctor`](doctor.md). A prompt that is exactly `doctor` runs this subcommand; write `fontaine -p -- doctor` for a literal prompt. |
 | `--permission-mode <manual\|acceptEdits\|plan\|auto\|dontAsk>` | Session mode, overriding `[permissions] default_mode`. There is no bypass mode. A headless run starts in `manual` unless one of the two says otherwise; `auto` sends calls nothing pre-approved to the [guardian](guardian.md). |
 | `--in-container` | States that the process runs inside a container; with `[guardian] profile = "minimal"` it lets the minimal guardian load when a runtime probe agrees. See [The guardian](guardian.md#the-minimal-profile). |
+| `--afk` | Runs in [AFK mode](afk.md): the same would-prompt denials, with guidance to finish the allowed work or stop and report, the temperature stop, and an `afk` object in `result`. |
+| `--afk-temperature-ceiling <n>` | The temperature at which an AFK run stops, a finite number above zero; overrides `[afk] temperature_ceiling`. A project file can only lower it. |
 | `--model <account>/<model>` | Overrides `[model] model`. See [Configuration](configuration.md#accountsname). |
 | `--effort <level>` | The main agent's reasoning effort, `off`, `low`, `medium`, `high` or `max`, overriding `[model] effort`. See [Configuration](configuration.md#model). |
 | `--output-format text\|json\|stream-json` | `text` prints the final answer, `json` one `result` object, `stream-json` one JSON object per line. |
@@ -134,7 +136,7 @@ messages of one stream-json run and end with it.
 | Code | Meaning |
 |---|---|
 | 0 | The run completed. Denied tool calls do not change this. |
-| 1 | A run error: a provider or model failure, a stop from `--max-turns` or `--max-budget-usd`, or a [goal](#goals) that ended impossible or paused. |
+| 1 | A run error: a provider or model failure, a stop from `--max-turns` or `--max-budget-usd`, a [goal](#goals) that ended impossible or paused, or an `--afk` run that was blocked by repeated denials or stopped by the temperature ceiling (`afk.outcome` says which). |
 | 2 | A configuration or usage error. |
 
 ## Questions
@@ -150,6 +152,9 @@ critical-path or protected-path call, or a call the mode does not pre-approve, b
 that is returned to the model as the tool result; the run continues and exits 0. External approval
 delegates are not supported: there is no second approval path around the permission rules. See
 [Permissions](permissions.md).
+
+With `--afk` the denial also tells the model that the user is not available and to complete the
+allowed work or stop and report; see [AFK mode](afk.md).
 
 In `auto` the guardian answers instead, and a deny comes back to the model as
 `Denied by guardian: [Rule] explanation`. An `escalate` verdict is a denial, and so is every
@@ -195,7 +200,12 @@ these is one line, in this order:
 
 `tier` is the stage of the permission pipeline that decided: `deny_rule`, `ask_rule`,
 `critical_path`, `protected_path`, `hook`, `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`,
-`screen`, `guardian`, `dont_ask`, `plan_block` or `human`. The audit log records the same values.
+`screen`, `guardian`, `dont_ask`, `plan_block`, `human`, `guardian_off` or `afk`. The audit log records the same values.
+
+Every `gate_decision` also carries `afk` (whether [AFK mode](afk.md) was on) and `converted`, which
+names the prompt that was turned into a denial because nobody could answer it (`ask_rule`, `floor`,
+`mode`, `hook`, `escalate`, `screen_escalate`, `breaker_paused` or `guardian_unavailable`), or is
+`null`.
 
 The `result` object:
 
@@ -212,6 +222,7 @@ The `result` object:
 | `usage` | `main`, `guardian`, `subagents` and `goal`, each with `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens` and `cost_usd`; the cache fields are the parts of the input read from and written to the provider's prompt cache (0 when the provider reports none); `guardian` totals every adjudication that reached the model, subagents' included (cached verdicts cost nothing); `subagents` is their model calls; `goal` is the goal evaluator's calls, including attempts that gave no verdict |
 | `account_usage` | Only when the main or the guardian account has a [`quota`](configuration.md#accountsname) source, fetched when the line is emitted (10 second timeout): one entry per such account, `{role, account, label, windows}`. `role` is `main` or `guardian`, `account` the configured account name, `label` the provider (`kimi`) and `windows` the usage windows, `{label, used_percentage, resets_at}`, with `used_percentage` the used share rounded to a whole number from 0 to 100 and `resets_at` Unix epoch seconds (left out when the provider gives none), as in Claude Code's status line `rate_limits`. A fetch that failed gives an entry without `windows` and a warning on stderr, once per account. A guardian on the main account has no entry of its own. |
 | `denials` | One entry per denied call: `tool`, `tier`, `rule`, `explanation` |
+| `afk` | Only with `--afk`, or when the session is stopped: `outcome` (`ended`, `blocked` or `stopped`), `counts` (allowed, denied, converted, and how the allowed calls ended), `temperature` (`current`, `peak`, `ceiling`, `contributing`), `review` (`links` and the `assessment` status) and `timeline` (every call of every agent). A stopped run has `subtype = "error_during_execution"`. See [AFK mode](afk.md#headless-runs). |
 | `goal` | Only when a goal was set, continued, queried or cleared: `condition`, `status` (`active`, `met`, `impossible`, `paused` or `cleared`), `evaluations` and `reason` (the evaluator's last reason, or why it paused) |
 
 Usage and cost accumulate over the session, so each turn's `result` reports the totals so far.

@@ -8,6 +8,7 @@ mod cache;
 pub mod composition;
 pub mod critique;
 pub mod env_scan;
+pub mod evasion;
 mod guardian;
 pub mod models;
 mod profile;
@@ -19,6 +20,7 @@ pub mod scanner;
 mod screen;
 pub mod structured;
 pub mod systemone;
+pub mod temperature;
 mod verdict;
 
 pub use breaker::{CONSECUTIVE_LIMIT, LoopBreaker, TOTAL_LIMIT};

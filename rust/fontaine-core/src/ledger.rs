@@ -13,9 +13,12 @@ use gix::bstr::ByteSlice;
 use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
 
+use crate::afk_report::{AfkLedgerState, AfkSource, AssessmentResult, OutcomeStatus};
+use crate::audit::Converted;
 use crate::checkpoint::RewindWhat;
 use crate::owner_only;
 use crate::project_env::ProjectEnvironment;
+use crate::tier::Tier;
 use fontaine_tools::lock::lock;
 
 pub const LEDGER_DIR: &str = "ledger";
@@ -24,7 +27,7 @@ pub const LEDGER_FILE: &str = "ledger.jsonl";
 /// Paths the pre-session file index holds before it records that it was cut short.
 pub const FILE_INDEX_CAP: usize = 50_000;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Record {
     SessionStart {
@@ -93,6 +96,27 @@ pub enum Record {
         /// A compact, credential-redacted summary of the call.
         #[serde(default)]
         summary: String,
+        /// The pipeline stage that refused the call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<Tier>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        /// The digest of the call's arguments, as the audit record carries it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        digest: Option<String>,
+        /// The absolute paths the call touches.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        paths: Vec<String>,
+        /// The would-prompt outcome this denial stands in for, when nobody could be asked.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        converted: Option<Converted>,
+        /// Why the guardian failed closed, when it did: `error`, `timeout`, `unparseable`,
+        /// `low_confidence` or `unavailable`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fail_closed: Option<String>,
+        /// The rule's explanation without the advice to the model, redacted and cut short.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        explanation: Option<String>,
     },
     Action {
         tool: String,
@@ -107,6 +131,46 @@ pub enum Record {
         /// A compact, credential-redacted summary of the arguments.
         #[serde(default)]
         summary: String,
+        /// The pipeline stage that allowed the call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tier: Option<Tier>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        /// The digest of the call's arguments, as the audit record carries it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        digest: Option<String>,
+    },
+    /// How an allowed call ended. Written by the result pipeline after the tool returned, so a
+    /// call with no outcome is one whose end was never seen.
+    ToolOutcome {
+        tool_use_id: String,
+        agent: String,
+        status: OutcomeStatus,
+    },
+    /// The human turned AFK mode on or off. The flag is session-scoped and never restored by a
+    /// resume; the records are what the report is built from.
+    Afk {
+        on: bool,
+        source: AfkSource,
+    },
+    /// Repeated denials paused `auto` while AFK was on, so nobody could resume it.
+    AfkBlocked {},
+    /// The session temperature reached its ceiling and the session was stopped. It stays stopped,
+    /// across resume and fork, until an `AfkReviewed` follows.
+    AfkStop {
+        value: f64,
+        ceiling: f64,
+        /// The ledger positions of the denials that made up the temperature.
+        contributing: Vec<u64>,
+    },
+    /// The human reviewed a stopped session and let it continue.
+    AfkReviewed {},
+    /// What the independent review of an AFK stretch found. The latest record for a stretch
+    /// replaces earlier ones.
+    AfkAssessment {
+        /// The ledger position of the `Afk` record that started the stretch.
+        stretch_seq: u64,
+        result: AssessmentResult,
     },
     /// A directory added to the workspace roots after the session started.
     AddDir {
@@ -170,6 +234,9 @@ pub enum Record {
     Goal {
         event: GoalEvent,
         evaluations: u32,
+        /// Why a goal paused when the pause did not come from the goal's own rules.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
 }
 
@@ -192,7 +259,7 @@ pub enum ScheduleEvent {
     Expired,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub seq: u64,
     pub ts_ms: u64,
@@ -255,6 +322,7 @@ pub struct LedgerView {
     pub next_agent: u64,
     pub actions: Vec<ActionEntry>,
     pub denials: Vec<DenialEntry>,
+    afk: AfkLedgerState,
     touched: HashSet<String>,
     /// Distinct resolved paths of allowed `write`, `edit` and `notebook_edit` calls, in the order
     /// first seen. Whether the call then succeeded, or a rewind reverted it, is not known here.
@@ -276,6 +344,8 @@ pub struct LedgerRecap {
     pub tools: Vec<(String, usize)>,
     pub denials: usize,
     pub last_denial: Option<DenialEntry>,
+    /// How the latest AFK stretch stands or ended; `None` when AFK was never on.
+    pub afk: Option<crate::afk_report::AfkOutcome>,
     /// Subagents spawned over the whole session.
     pub agents_spawned: usize,
 }
@@ -297,6 +367,7 @@ impl Default for LedgerView {
             next_agent: 1,
             actions: Vec::new(),
             denials: Vec::new(),
+            afk: AfkLedgerState::default(),
             touched: HashSet::new(),
             written: Vec::new(),
             written_keys: HashSet::new(),
@@ -328,6 +399,7 @@ pub struct ActionEntry {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DenialEntry {
     pub tool: String,
+    pub agent: String,
     pub rule: String,
     pub summary: String,
 }
@@ -381,6 +453,7 @@ impl LedgerView {
             tools: counts,
             denials: self.denials.len(),
             last_denial: self.denials.last().cloned(),
+            afk: self.afk.latest(),
             agents_spawned: self.agents.len(),
         }
     }
@@ -396,7 +469,14 @@ impl LedgerView {
         }
     }
 
-    fn apply(&mut self, record: &Record) {
+    /// The AFK state the records so far add up to: the open stretch's temperature, an unreviewed
+    /// stop, and how the latest stretch ended.
+    pub fn afk(&self) -> &AfkLedgerState {
+        &self.afk
+    }
+
+    fn apply(&mut self, seq: u64, record: &Record) {
+        self.afk.apply(seq, record);
         match record {
             Record::SessionStart {
                 workspace_roots,
@@ -442,6 +522,7 @@ impl LedgerView {
                 paths,
                 created,
                 summary,
+                ..
             } => {
                 self.touched.extend(created.iter().map(|p| path_key(p)));
                 if WRITING_TOOLS.contains(&tool.as_str()) {
@@ -459,12 +540,14 @@ impl LedgerView {
             }
             Record::Denial {
                 tool,
+                agent,
                 rule,
                 summary,
                 reason,
                 ..
             } => self.denials.push(DenialEntry {
                 tool: tool.clone(),
+                agent: agent.clone(),
                 rule: rule.clone().unwrap_or_else(|| reason.clone()),
                 summary: summary.clone(),
             }),
@@ -523,6 +606,12 @@ impl LedgerView {
             | Record::UserShell { .. }
             | Record::Scheduled { .. }
             | Record::SessionNamed { .. }
+            | Record::ToolOutcome { .. }
+            | Record::Afk { .. }
+            | Record::AfkBlocked {}
+            | Record::AfkStop { .. }
+            | Record::AfkReviewed {}
+            | Record::AfkAssessment { .. }
             | Record::Goal { .. } => {}
         }
     }
@@ -565,7 +654,7 @@ impl Ledger {
             }
             match serde_json::from_str::<Entry>(raw) {
                 Ok(entry) => {
-                    view.apply(&entry.record);
+                    view.apply(entry.seq, &entry.record);
                     next_seq = entry.seq + 1;
                     good_end = offset;
                 }
@@ -580,6 +669,7 @@ impl Ledger {
                 Err(e) => return Err(io::Error::other(e)),
             }
         }
+        view.afk.close_open_stretch();
         let mut file = owner_only::open(&path, true)?;
         // A complete last record can still lack its newline; the next append would join it.
         if good_end == text.len() && !text.is_empty() && !text.ends_with('\n') {
@@ -596,7 +686,8 @@ impl Ledger {
         &self.path
     }
 
-    pub fn append(&self, record: Record) -> io::Result<()> {
+    /// Appends `record` and returns its position in the ledger.
+    pub fn append(&self, record: Record) -> io::Result<u64> {
         let mut tail = lock(&self.tail, "ledger tail");
         let entry = Entry {
             seq: tail.next_seq,
@@ -610,8 +701,8 @@ impl Ledger {
         tail.file.write_all(&line)?;
         tail.file.flush()?;
         tail.next_seq += 1;
-        lock(&self.view, "ledger view").apply(&entry.record);
-        Ok(())
+        lock(&self.view, "ledger view").apply(entry.seq, &entry.record);
+        Ok(entry.seq)
     }
 
     /// What the records so far add up to.
@@ -877,6 +968,9 @@ mod tests {
                 paths: vec!["/w/new.txt".into()],
                 created: vec!["/w/new.txt".into()],
                 summary: "s".into(),
+                tier: None,
+                tool_use_id: None,
+                digest: None,
             })
             .unwrap();
         ledger
@@ -886,6 +980,13 @@ mod tests {
                 reason: "r".into(),
                 rule: None,
                 summary: String::new(),
+                tier: None,
+                tool_use_id: None,
+                digest: None,
+                paths: Vec::new(),
+                converted: None,
+                fail_closed: None,
+                explanation: None,
             })
             .unwrap();
         ledger.append(Record::ContextCleared {}).unwrap();
@@ -944,6 +1045,13 @@ mod tests {
                 reason: "r".into(),
                 rule: None,
                 summary: "rm".into(),
+                tier: None,
+                tool_use_id: None,
+                digest: None,
+                paths: Vec::new(),
+                converted: None,
+                fail_closed: None,
+                explanation: None,
             })
             .unwrap();
         say(&ledger, "three");
@@ -997,6 +1105,9 @@ mod tests {
                 paths: paths.iter().map(|p| p.to_string()).collect(),
                 created: Vec::new(),
                 summary: String::new(),
+                tier: None,
+                tool_use_id: None,
+                digest: None,
             })
             .unwrap();
     }
@@ -1029,6 +1140,13 @@ mod tests {
                 reason: "r".into(),
                 rule: Some("deny(shell)".into()),
                 summary: "rm".into(),
+                tier: None,
+                tool_use_id: None,
+                digest: None,
+                paths: Vec::new(),
+                converted: None,
+                fail_closed: None,
+                explanation: None,
             })
             .unwrap();
         let check = |ledger: &Ledger, messages: &[&str]| {

@@ -14,6 +14,16 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .notice("the guardian is already off for this session");
             return ControlFlow::Continue(());
         }
+        let afk = runtime.state.afk();
+        if afk.stopped.is_some() || afk.on.is_some() {
+            let refusal = if afk.stopped.is_some() {
+                fontaine_core::gate::AfkRefusal::Stopped
+            } else {
+                fontaine_core::gate::AfkRefusal::AfkOn
+            };
+            self.app.transcript.error(refusal.to_string());
+            return ControlFlow::Continue(());
+        }
         self.app.begin_guardian_off();
         loop {
             self.draw(runtime);
@@ -24,10 +34,12 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             let action = self.app.handle_input(input);
             match action {
                 Action::GuardianOff(true) => {
-                    runtime.state.set_guardian_off(true);
-                    self.app.transcript.notice(
-                        "guardian off for this session: every call runs without the guardian or the permission rules — /guardian-enable turns it back on",
-                    );
+                    match runtime.state.set_guardian_off(true) {
+                        Ok(()) => self.app.transcript.notice(
+                            "guardian off for this session: every call runs without the guardian or the permission rules — /guardian-enable turns it back on",
+                        ),
+                        Err(refusal) => self.app.transcript.error(refusal.to_string()),
+                    }
                     return ControlFlow::Continue(());
                 }
                 Action::GuardianOff(false) => {
@@ -48,7 +60,9 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .notice("the guardian is already on for this session");
             return;
         }
-        runtime.state.set_guardian_off(false);
-        self.app.transcript.notice("guardian on");
+        match runtime.state.set_guardian_off(false) {
+            Ok(()) => self.app.transcript.notice("guardian on"),
+            Err(refusal) => self.app.transcript.error(refusal.to_string()),
+        }
     }
 }

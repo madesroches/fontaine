@@ -1,5 +1,6 @@
 pub mod accounts;
 pub mod adjudication;
+pub mod afk_report;
 pub mod agent;
 pub mod audit;
 pub mod checkpoint;
@@ -59,6 +60,7 @@ pub mod steering;
 pub mod tasks;
 pub mod tier;
 pub mod todos;
+pub mod tool_outcome;
 pub mod tools;
 pub mod transport;
 pub mod trust;

@@ -1,3 +1,4 @@
+mod afk;
 mod appearance;
 mod auto_mode_setup;
 mod config;

@@ -119,6 +119,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[schedule] enabled` | no | no | yes |
 | `[memory] auto` | no | no | yes |
 | `[goal]` keys | no | no | yes |
+| `[afk] temperature_ceiling` | lower only, positive and finite | lower only, positive and finite | yes |
 | `[shell] max_timeout_secs` | no | no | yes |
 | `[statusline]` | no | no | no |
 | `[checkpoints]` keys | no | no | no |
@@ -926,6 +927,24 @@ max_turns = 50
 max_cost_usd = 5.0
 ```
 
+### `[afk]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `temperature_ceiling` | The [session temperature](afk.md#the-session-temperature) at which an AFK stretch is stopped. A finite number above zero. | `12.0` |
+
+The user file and `--settings` set the value, and `--afk-temperature-ceiling` overrides both for one
+session. A shared project file or a project-local file may only *lower* it: the lowest value any of
+them sets caps whatever the user, the command line or the default gave, whichever file is read
+first. A value that is zero, negative, infinite or not a number is a configuration error in every
+scope, so no scope can switch the stop off. Nothing in a session can change it: the model has no
+tool for it, and edits to settings files are a protected-path and Safety Bypass case.
+
+```toml
+[afk]
+temperature_ceiling = 8.0
+```
+
 ### `[shell]`
 
 | Key | Meaning | Default |
@@ -1248,6 +1267,8 @@ for any reason other than not existing, is a configuration error naming the path
 | `--in-container` | States that the process runs inside a container. With `[guardian] profile = "minimal"` it lets the minimal guardian load, after a runtime probe also finds a container; the flag alone is never enough. |
 | `--continue`, `--resume <id-or-name>`, `--fork-session`, `--name <name>` | Reopen the latest session of the project directory (the launch directory, or `--cd`), reopen one by id or by name, copy the one that would have been reopened under a new id, or name the session started (or, without `--fork-session`, the one reopened). See [Headless runs](headless.md#continuing-a-session). |
 | `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
+| `--afk` | Starts the session in [AFK mode](afk.md). It is your own command line, so no settings file can set it. |
+| `--afk-temperature-ceiling <n>` | Sets `[afk] temperature_ceiling` for the session (CLI scope). |
 | `--ax-screen-reader` | Prints the interface as plain labelled lines for a screen reader instead of drawing it, and prints `[Screen Reader Mode: on via flag]` first. A headless run ignores it. |
 | `FONTAINE_AX_SCREEN_READER` | `1` turns screen-reader mode on and `0` keeps it off even when `[tui] screen_reader` is `true`; the flag still turns it on. Any other value is ignored, with a warning in the conversation (or on stderr when the UI cannot start). |
 | `FONTAINE_LOG` | An `EnvFilter` directive that replaces the default `debug` filter of the debug file. On its own it creates no file and prints nothing. |
@@ -1263,5 +1284,5 @@ with code 2 and names the variable or flag.
 | Code | Meaning |
 |---|---|
 | 0 | Success. A headless run that finished exits 0 even when tool calls were denied. |
-| 1 | A run error: a provider or model failure, a failed model listing, a run stopped by `--max-turns` or `--max-budget-usd`, or a headless [goal](tui.md#goals) that ended impossible or paused. |
+| 1 | A run error: a provider or model failure, a failed model listing, a run stopped by `--max-turns` or `--max-budget-usd`, a headless [goal](tui.md#goals) that ended impossible or paused, or an `--afk` run that was blocked or stopped (see [AFK mode](afk.md)). |
 | 2 | Configuration or usage error. |

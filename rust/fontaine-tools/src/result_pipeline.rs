@@ -1,7 +1,7 @@
 //! The post-call step every tool result passes through before the agent sees it. Stages run in
 //! a fixed order whatever order they were attached in: the notifications queued for the agent,
 //! the language-server diagnostics, the instruction files a read brings into scope, the
-//! tool-result scanner, then the `post_tool_use` hooks. Notifications, diagnostics and
+//! tool-result scanner, then the `post_tool_use` hooks, then the outcome record. Notifications, diagnostics and
 //! instructions come first so that what another agent said, what a language server reported, and
 //! instruction text that arrives in a result, is scanned like any other result. With
 //! no stage attached it changes nothing.
@@ -24,6 +24,8 @@ pub enum StageKind {
     Instructions,
     Scanner,
     PostToolUse,
+    /// Sees the result last, whatever the stages before it made of it.
+    Outcome,
 }
 
 /// What the scanner stage concluded about one result, for the `tool_result` event. It carries
@@ -68,6 +70,10 @@ pub trait ResultStage: Send + Sync {
     ) -> BoxFuture<'a, (ToolOutcome, Option<ScanRecord>)> {
         Box::pin(async move { (self.process(call, outcome).await, None) })
     }
+
+    /// The call was cut short mid-run, so no result reached the stages. Only the stage that
+    /// records how calls end cares.
+    fn cancelled(&self, _call: CallView<'_>) {}
 }
 
 #[derive(Clone, Default)]
@@ -87,6 +93,13 @@ impl ResultPipeline {
             .partition_point(|(existing, _)| *existing <= kind);
         self.stages.insert(at, (kind, stage));
         self
+    }
+
+    /// Tells the stages a call ended without producing a result.
+    pub fn cancelled(&self, call: CallView<'_>) {
+        for (_, stage) in &self.stages {
+            stage.cancelled(call);
+        }
     }
 
     pub async fn run(

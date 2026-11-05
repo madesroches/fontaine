@@ -272,6 +272,23 @@ next call that needs the guardian asks you instead, and approving a call resumes
 headless run a paused session denies. This stops a model from retrying a refused action until
 something slips through.
 
+Under [AFK mode](afk.md) nothing can answer that prompt either. A converted `escalate` counts toward
+the limits like any denial, a paused breaker denies every call that needs the guardian, and the run
+is *blocked*: no turn you did not type starts and a goal pauses. A second, separate limit watches
+the severity and recency of the denials: when the [session
+temperature](afk.md#the-session-temperature) reaches its ceiling the whole agent tree stops. The
+breaker itself is not changed, and AFK never resumes it.
+
+### The end-of-stretch assessment
+
+When an AFK stretch is blocked, stopped or ended and holds at least one denial, the guardian's
+model is asked once, with no tools, whether a later call pursued a denied call's effect by another
+route. It sees the stretch's calls (redacted summaries, the decisions and the denial explanations,
+all inside an `<untrusted kind="activity">` block) and can only name call ids that exist. Unlike
+the per-call alternate-route rule in the guardian prompt, this is a look back over the whole
+stretch, and it is evidence for the report, not a decision: a failure of any kind is reported as
+"evasion assessment unavailable", never as a clean result. See [AFK mode](afk.md#links-and-the-assessment).
+
 ### Retrying a denial yourself
 
 In the terminal UI, `/denied` lists the calls the guardian denied and `r` approves one **once**.

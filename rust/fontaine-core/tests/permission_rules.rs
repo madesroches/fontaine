@@ -648,7 +648,11 @@ fn cli_params<'a>(w: &'a World, allow: &'a [String], deny: &'a [String]) -> Load
         config_dir: &w.config,
         data_dir: &w.data,
         settings_file: None,
-        cli_rules: CliRules { allow, deny },
+        cli_rules: CliRules {
+            allow,
+            deny,
+            afk_temperature_ceiling: None,
+        },
         env: &no_env,
     }
 }

@@ -1753,7 +1753,11 @@ mod provenance {
             config_dir: &w.config,
             data_dir: &w.data,
             settings_file: settings,
-            cli_rules: CliRules { allow: &[], deny },
+            cli_rules: CliRules {
+                allow: &[],
+                deny,
+                afk_temperature_ceiling: None,
+            },
             env: &super::common::no_env,
         })
         .unwrap();
@@ -2382,4 +2386,85 @@ fn layers_from_a_loaded_config_follow_the_diagnosis_order() {
     assert_eq!(labels, ["managed", "user", "project", "project-local"]);
     assert!(matches!(layers[1].outcome, config::LayerOutcome::Loaded));
     assert!(matches!(layers[2].outcome, config::LayerOutcome::Absent));
+}
+
+mod afk_ceiling {
+    use super::common::World;
+    use fontaine_core::config::{CliRules, ConfigError, LoadParams, load};
+    use fontaine_guardian::temperature::DEFAULT_CEILING;
+
+    fn ceiling(w: &World, flag: Option<f64>) -> Result<f64, ConfigError> {
+        load(&LoadParams {
+            launch_dir: &w.work,
+            config_dir: &w.config,
+            data_dir: &w.data,
+            settings_file: None,
+            cli_rules: CliRules {
+                afk_temperature_ceiling: flag,
+                ..CliRules::default()
+            },
+            env: &super::common::no_env,
+        })
+        .map(|c| c.afk.ceiling())
+    }
+
+    #[test]
+    fn the_default_is_used_when_nothing_sets_it() {
+        let w = World::new();
+        assert_eq!(ceiling(&w, None).unwrap(), DEFAULT_CEILING);
+    }
+
+    #[test]
+    fn the_user_file_and_the_flag_set_it_and_the_flag_wins() {
+        let w = World::new();
+        w.user_file("[afk]\ntemperature_ceiling = 20.0\n");
+        assert_eq!(ceiling(&w, None).unwrap(), 20.0);
+        assert_eq!(ceiling(&w, Some(5.0)).unwrap(), 5.0);
+    }
+
+    #[test]
+    fn a_project_value_can_only_lower_the_ceiling() {
+        let w = World::new();
+        w.trusted_repo();
+        w.user_file("[afk]\ntemperature_ceiling = 8.0\n");
+        w.project_file("[afk]\ntemperature_ceiling = 100.0\n");
+        assert_eq!(
+            ceiling(&w, None).unwrap(),
+            8.0,
+            "above the user value is clamped"
+        );
+        w.project_file("[afk]\ntemperature_ceiling = 3.0\n");
+        assert_eq!(ceiling(&w, None).unwrap(), 3.0);
+        // The lowest of the project files wins, whichever is read first.
+        w.local_file("[afk]\ntemperature_ceiling = 2.0\n");
+        assert_eq!(ceiling(&w, None).unwrap(), 2.0);
+        w.project_file("[afk]\ntemperature_ceiling = 1.5\n");
+        assert_eq!(ceiling(&w, None).unwrap(), 1.5);
+        // A cap also binds a higher value from the command line.
+        assert_eq!(ceiling(&w, Some(50.0)).unwrap(), 1.5);
+    }
+
+    #[test]
+    fn a_non_positive_or_non_finite_value_is_refused_in_every_scope() {
+        for value in ["0.0", "-1.0", "inf", "nan"] {
+            let text = format!("[afk]\ntemperature_ceiling = {value}\n");
+            let w = World::new();
+            w.user_file(&text);
+            assert!(ceiling(&w, None).is_err(), "user {value}");
+
+            let w = World::new();
+            w.trusted_repo();
+            w.project_file(&text);
+            assert!(ceiling(&w, None).is_err(), "project {value}");
+
+            let w = World::new();
+            w.trusted_repo();
+            w.local_file(&text);
+            assert!(ceiling(&w, None).is_err(), "project-local {value}");
+        }
+        let w = World::new();
+        for flag in [0.0, -2.0, f64::INFINITY, f64::NAN] {
+            assert!(ceiling(&w, Some(flag)).is_err(), "flag {flag}");
+        }
+    }
 }

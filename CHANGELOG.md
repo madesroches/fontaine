@@ -20,6 +20,17 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- AFK mode (#411) for working while you are away: `/afk` in the terminal UI or `--afk` on the
+  command line makes every call that would have asked you a denial (an `ask` rule, the floor, the
+  mode, a hook's `ask`, a guardian or composition escalate, the paused breaker) and tells the model
+  to finish the allowed work, reduce to an allowed subset, or stop and report. It grants no
+  authority and changes no decision. A tripped denial breaker now ends an AFK run as blocked
+  instead of waiting. `/afk report` and the headless `result.afk` object give a credential-redacted
+  timeline of every agent's calls, deterministic retry and same-target links, an independent
+  end-of-stretch assessment by the guardian model, and a session temperature that stops the whole
+  agent tree at `[afk] temperature_ceiling` (default 12.0, a project file can only lower it) until
+  `/afk review`. Audit records and `gate_decision` events gain `afk` and `converted`, the tier list
+  gains `afk`, and `fontaine-evals` gains `--sequences` with `evals/sequences/afk.jsonl`.
 - `[tui] notify` (`bell`, `osc9`, `osc777`, `off`; default `bell`) signals the terminal when an
   approval, question or other prompt that needs your answer opens, so you notice it after switching
   windows; it is also editable in `/config` (#51).

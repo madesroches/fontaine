@@ -302,6 +302,13 @@ fn the_ledger_is_append_only_and_owner_only() {
             reason: "no".into(),
             rule: None,
             summary: String::new(),
+            tier: None,
+            tool_use_id: None,
+            digest: None,
+            paths: Vec::new(),
+            converted: None,
+            fail_closed: None,
+            explanation: None,
         })
         .unwrap();
     let all = ledger.read().unwrap();
@@ -786,4 +793,105 @@ async fn a_corrupt_trust_store_is_reported_once_at_session_start() {
     let warnings = approver.0.lock().unwrap();
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("trust.toml"), "{warnings:?}");
+}
+
+mod afk_records {
+    use super::*;
+    use fontaine_core::afk_report::{AfkOutcome, AfkSource, build_latest};
+
+    fn write_lines(session: &Session, lines: &[&str]) {
+        let ledger = session.ledger.path().to_path_buf();
+        let mut text = std::fs::read_to_string(&ledger).unwrap_or_default();
+        for line in lines {
+            text.push_str(line);
+            text.push('\n');
+        }
+        std::fs::write(ledger, text).unwrap();
+    }
+
+    #[test]
+    fn records_written_before_afk_existed_still_parse() {
+        let world = World::new();
+        let session = Session::create(&world.data, SESSION_ID).unwrap();
+        write_lines(
+            &session,
+            &[
+                r#"{"seq":0,"ts_ms":1,"kind":"action","tool":"read","agent":"root","paths":[],"created":[],"summary":"a"}"#,
+                r#"{"seq":1,"ts_ms":2,"kind":"denial","tool":"shell","agent":"root","reason":"no","rule":"Git Destructive","summary":"s"}"#,
+                r#"{"seq":2,"ts_ms":3,"kind":"goal","event":"paused","evaluations":2}"#,
+            ],
+        );
+        let reopened = Ledger::open(&session.dir).unwrap();
+        let entries = reopened.read().unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(matches!(
+            &entries[1].record,
+            Record::Denial { tier: None, digest: None, paths, .. } if paths.is_empty()
+        ));
+        assert!(matches!(
+            &entries[2].record,
+            Record::Goal { reason: None, .. }
+        ));
+        let view = reopened.view();
+        assert_eq!(view.recap().denials, 1);
+        assert_eq!(view.recap().last_denial.as_ref().unwrap().agent, "root");
+    }
+
+    #[test]
+    fn an_unreviewed_stop_comes_back_on_open_and_a_review_clears_it() {
+        let world = World::new();
+        let session = Session::create(&world.data, SESSION_ID).unwrap();
+        let ledger = &session.ledger;
+        ledger
+            .append(Record::Afk {
+                on: true,
+                source: AfkSource::Command,
+            })
+            .unwrap();
+        ledger
+            .append(Record::AfkStop {
+                value: 13.5,
+                ceiling: 12.0,
+                contributing: vec![4, 6],
+            })
+            .unwrap();
+        let reopened = Ledger::open(&session.dir).unwrap();
+        let stopped = reopened.view().afk().stopped().cloned().expect("a stop");
+        assert_eq!((stopped.value, stopped.contributing), (13.5, vec![4, 6]));
+        // AFK itself is not restored: the stretch is closed on open.
+        assert_eq!(reopened.view().afk().latest(), Some(AfkOutcome::Stopped));
+        reopened.append(Record::AfkReviewed {}).unwrap();
+        assert!(reopened.view().afk().stopped().is_none());
+        let again = Ledger::open(&session.dir).unwrap();
+        assert!(again.view().afk().stopped().is_none());
+    }
+
+    #[test]
+    fn a_context_clear_keeps_what_the_report_is_built_from() {
+        let world = World::new();
+        let session = Session::create(&world.data, SESSION_ID).unwrap();
+        let ledger = &session.ledger;
+        ledger
+            .append(Record::Afk {
+                on: true,
+                source: AfkSource::Cli,
+            })
+            .unwrap();
+        ledger
+            .append(Record::Action {
+                tool: "read".into(),
+                agent: "root".into(),
+                paths: Vec::new(),
+                created: Vec::new(),
+                summary: "read a.txt".into(),
+                tier: None,
+                tool_use_id: None,
+                digest: None,
+            })
+            .unwrap();
+        ledger.append(Record::ContextCleared {}).unwrap();
+        let report = build_latest(&ledger.read().unwrap(), 12.0, true).unwrap();
+        assert_eq!(report.timeline.len(), 1);
+        assert_eq!(report.counts.allowed, 1);
+    }
 }

@@ -27,6 +27,13 @@ There is no bypass mode. The deterministic floor below applies in every mode, an
 allow rule reaches past it. In a headless run (`fontaine -p`) nothing can ask, so every call that
 would ask is denied instead; see [Headless runs](headless.md#denials).
 
+[AFK mode](afk.md) is not a mode but a flag on the session, set with `/afk` or `--afk`. While it is
+on, nothing can ask either, so the same conversion applies in the terminal UI: each would-prompt
+outcome (an `ask` rule, the floor, the mode's approval, a hook's `ask`, a guardian or composition
+`escalate`, the paused breaker) is a denial that keeps its tier and rule and ends in guidance to
+finish the allowed work or stop and report, and the guardian-unavailable dialog is skipped. It
+grants nothing and changes no decision that would have been made without it.
+
 ## The pipeline
 
 A call goes through these steps in order and the first one that decides wins.
@@ -151,7 +158,10 @@ to a prompt adds a second record with `tier = human`. The same record is project
 `tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree. The
 `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
 `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`,
-`guardian`, `dont_ask`, `plan_block` and `human`. A guardian decision also records the guardian model and profile, its
+`guardian`, `dont_ask`, `plan_block`, `human`, `guardian_off` (the [escape hatch](guardian.md) was on)
+and `afk` (a temperature stop denied the call, or the record is an AFK toggle). A record also has an
+`afk` flag, and `converted` when a prompt nobody could answer became a denial; see
+[AFK mode](afk.md#what-a-denial-says). A guardian decision also records the guardian model and profile, its
 verdict, confidence, whether the verdict came from the cache, how long the guardian took, the
 `verdict_transport` it was asked on (`tool`, a forced `submit` call, or `schema`, for an Ollama
 model with no tool support; see [Models with no tool

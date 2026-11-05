@@ -23,6 +23,8 @@ use tokio::sync::mpsc::unbounded_channel;
 pub(crate) enum TurnEnd {
     Finished(TurnOutcome),
     Interrupted,
+    /// The AFK temperature ceiling stopped the session and the turn was dropped.
+    Stopped,
     InputClosed,
 }
 
@@ -173,13 +175,15 @@ pub(crate) fn end_of_turn(end: &TurnEnd, retracted: Vec<Queued>) -> EndOfTurn {
     }
     match end {
         TurnEnd::Finished(TurnOutcome::Answer(_)) => EndOfTurn::Submit(group(retracted)),
-        TurnEnd::Finished(_) | TurnEnd::Interrupted => EndOfTurn::RestoreToInput(
-            retracted
-                .iter()
-                .map(|entry| entry.raw())
-                .collect::<Vec<_>>()
-                .join("\n\n"),
-        ),
+        TurnEnd::Finished(_) | TurnEnd::Interrupted | TurnEnd::Stopped => {
+            EndOfTurn::RestoreToInput(
+                retracted
+                    .iter()
+                    .map(|entry| entry.raw())
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
+            )
+        }
         TurnEnd::InputClosed => EndOfTurn::Nothing,
     }
 }
@@ -497,6 +501,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         while let Some(submission) = pending.pop_front() {
+            if runtime.state.afk().stopped.is_some()
+                && matches!(
+                    submission,
+                    Submission::Message(_)
+                        | Submission::Attached { .. }
+                        | Submission::Expanded { .. }
+                        | Submission::Skill { .. }
+                )
+            {
+                self.app
+                    .transcript
+                    .error("the session is stopped (AFK temperature ceiling); run /afk review");
+                self.app.restore_to_input(submission.raw());
+                continue;
+            }
             runtime.steering.set_delivery_hold(!pending.is_empty());
             let end = match submission {
                 Submission::Message(text) => {
@@ -689,6 +708,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::EditQueued
                 | Action::Server(_)
                 | Action::GuardianOff(_)
+                | Action::AfkReview(_)
                 | Action::SkillTrust(_)
                 | Action::SetupReview(_)
                 | Action::SetupComposition(_)
@@ -789,6 +809,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             );
             tokio::select! {
                 biased;
+                // Before the turn: a stopped session gets no further tool-capable model turn.
+                Ok(()) = self.afk_stops.changed() => break TurnEnd::Stopped,
                 _ = &mut changed => {}
                 _ = &mut display => {}
                 Some(event) = seen.recv() => {
@@ -837,6 +859,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Action::Submit(..)
                         | Action::Shell(_)
                         | Action::GuardianOff(_)
+                        | Action::AfkReview(_)
                         | Action::SkillTrust(_)
                         | Action::SetupReview(_)
                         | Action::SetupComposition(_)
@@ -854,6 +877,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
         };
         drop(run);
+        // A stop that lands inside the poll that also finishes the turn is still a stop.
+        let end = match end {
+            TurnEnd::Finished(_) if runtime.state.afk().stopped.is_some() => {
+                // The signal fired in the same poll; it is handled here, not again by the idle
+                // loop.
+                self.afk_stops.borrow_and_update();
+                TurnEnd::Stopped
+            }
+            other => other,
+        };
         while let Ok(event) = seen.try_recv() {
             self.on_event(runtime, event);
         }
@@ -930,7 +963,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     async fn finish_turn(&mut self, runtime: &AgentRuntime, end: &TurnEnd) {
         self.settle_turn(end);
-        if matches!(end, TurnEnd::Interrupted) {
+        if matches!(end, TurnEnd::Stopped) {
+            // Before the goal hears how the turn ended, so the stop is the reason it pauses.
+            self.afk_stopped(runtime).await;
+        }
+        if matches!(end, TurnEnd::Interrupted | TurnEnd::Stopped) {
             // Decisions the cut-short calls already made belong to this turn, not the next.
             let mut feed = runtime.state.feed().await;
             while feed.try_next().is_some() {}
@@ -956,6 +993,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             TurnEnd::Finished(_) | TurnEnd::InputClosed => {}
             TurnEnd::Interrupted => self.app.transcript.notice("interrupted"),
+            TurnEnd::Stopped => self.app.transcript.notice(
+                "stopped: the AFK temperature ceiling was reached, so the turn was cut short",
+            ),
         }
     }
 }

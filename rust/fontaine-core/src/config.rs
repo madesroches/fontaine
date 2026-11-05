@@ -759,6 +759,13 @@ pub struct GoalSection {
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct AfkSection {
+    /// The session temperature at which an AFK stretch is stopped; a positive, finite number.
+    pub temperature_ceiling: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ShellSection {
     pub max_timeout_secs: Option<u64>,
 }
@@ -1016,6 +1023,7 @@ pub struct Settings {
     pub checkpoints: Option<CheckpointsSection>,
     pub plugins: Option<PluginsSection>,
     pub goal: Option<GoalSection>,
+    pub afk: Option<AfkSection>,
     pub shell: Option<ShellSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub statusline: Option<StatuslineSection>,
@@ -1453,6 +1461,15 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         {
             return bad("goal.max_cost_usd", "must be a finite number, zero or more");
         }
+    }
+    if let Some(afk) = &s.afk
+        && let Some(v) = afk.temperature_ceiling
+        && !(v.is_finite() && v > 0.0)
+    {
+        return bad(
+            "afk.temperature_ceiling",
+            "must be a finite number above zero",
+        );
     }
     if let Some(sh) = &s.shell
         && let Some(v) = sh.max_timeout_secs
@@ -1994,6 +2011,26 @@ pub struct Goal {
     pub max_cost_usd: Option<f64>,
 }
 
+/// The merged `[afk]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Afk {
+    /// What the user file, `--settings` or `--afk-temperature-ceiling` set, or the default.
+    pub temperature_ceiling: f64,
+    /// The lowest value a project file asked for. A repository can lower the ceiling but never
+    /// raise it, and which file is read first does not matter.
+    pub ceiling_project_cap: Option<f64>,
+}
+
+impl Afk {
+    /// The temperature at which a stretch stops.
+    pub fn ceiling(&self) -> f64 {
+        self.ceiling_project_cap
+            .map_or(self.temperature_ceiling, |cap| {
+                cap.min(self.temperature_ceiling)
+            })
+    }
+}
+
 /// The merged `[shell]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shell {
@@ -2059,6 +2096,7 @@ pub struct Config {
     pub checkpoints: Checkpoints,
     pub plugins: Plugins,
     pub goal: Goal,
+    pub afk: Afk,
     pub shell: Shell,
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub statusline: Statusline,
@@ -2182,6 +2220,10 @@ impl Config {
             goal: Goal {
                 max_turns: DEFAULT_GOAL_MAX_TURNS,
                 max_cost_usd: None,
+            },
+            afk: Afk {
+                temperature_ceiling: fontaine_guardian::temperature::DEFAULT_CEILING,
+                ceiling_project_cap: None,
             },
             shell: Shell {
                 max_timeout_secs: DEFAULT_SHELL_MAX_TIMEOUT_SECS,
@@ -2467,6 +2509,14 @@ impl Config {
                 self.goal.max_cost_usd = Some(v);
             }
         }
+        if let Some(v) = s.afk.as_ref().and_then(|afk| afk.temperature_ceiling) {
+            if matches!(column, Column::Project | Column::ProjectLocal) {
+                let cap = self.afk.ceiling_project_cap.map_or(v, |held| held.min(v));
+                self.afk.ceiling_project_cap = Some(cap);
+            } else {
+                self.afk.temperature_ceiling = v;
+            }
+        }
         if let Some(v) = s.shell.as_ref().and_then(|sh| sh.max_timeout_secs) {
             self.shell.max_timeout_secs = v;
         }
@@ -2629,6 +2679,8 @@ pub type EnvLookup<'a> = &'a dyn Fn(&str) -> Option<OsString>;
 pub struct CliRules<'a> {
     pub allow: &'a [String],
     pub deny: &'a [String],
+    /// `--afk-temperature-ceiling`: loads as the CLI scope's `afk.temperature_ceiling`.
+    pub afk_temperature_ceiling: Option<f64>,
 }
 
 pub struct LoadParams<'a> {
@@ -2948,7 +3000,9 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
             Some(parse_settings_with_hint(&text, path, Column::Cli, None)?)
         }
     };
-    let flag_rules = !params.cli_rules.allow.is_empty() || !params.cli_rules.deny.is_empty();
+    let flag_rules = !params.cli_rules.allow.is_empty()
+        || !params.cli_rules.deny.is_empty()
+        || params.cli_rules.afk_temperature_ceiling.is_some();
     let cli = if flag_rules {
         let (mut settings, mut table) = cli.unwrap_or_default();
         let permissions = settings.permissions.get_or_insert_with(Default::default);
@@ -2980,6 +3034,23 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
                     .expect("a CLI settings file's rule list already parsed as an array")
                     .push(toml::Value::String(text.clone()));
             }
+        }
+        if let Some(ceiling) = params.cli_rules.afk_temperature_ceiling {
+            if !(ceiling.is_finite() && ceiling > 0.0) {
+                return Err(ConfigError::usage(
+                    "--afk-temperature-ceiling: must be a finite number above zero",
+                ));
+            }
+            settings
+                .afk
+                .get_or_insert_with(Default::default)
+                .temperature_ceiling = Some(ceiling);
+            table
+                .entry("afk")
+                .or_insert_with(|| toml::Value::Table(toml::Table::new()))
+                .as_table_mut()
+                .expect("a CLI settings file's `afk` already parsed as a table")
+                .insert("temperature_ceiling".into(), toml::Value::Float(ceiling));
         }
         Some((settings, table))
     } else {
