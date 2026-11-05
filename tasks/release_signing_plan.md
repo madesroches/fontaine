@@ -6,7 +6,7 @@
 
 Every archive Fontaine publishes, on both update channels, gets a detached minisign (ed25519)
 signature made in CI with a Fontaine-owned key for that channel: `release` follows tagged
-releases, `dev` publishes a build after every push to `main`. Each private key lives in its own
+releases, `dev` publishes the latest CI-passing build of `main`. Each private key lives in its own
 protected GitHub Environment that only the signing job can reach. Publication fails unless every
 archive has a signature that verifies against the public key checked into the repository. A
 small verification module in the `fontaine` crate, built on `minisign-verify`, is the one
@@ -28,7 +28,7 @@ release tag (#109).
   `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`. Archives are `.tar.xz` on Unix and `.zip` on
   Windows, named `fontaine-<target>.<ext>`.
 - There is no dev channel, no signing, no attestations and no installers (`installers = []`).
-- No crate depends on ed25519 or minisign. `sha2 = "=0.11.1"` is in the workspace.
+- No crate depends on ed25519 or minisign.
 - `CONTRIBUTING.md` §Releasing (line 60) is the maintainer's release checklist.
   `tasks/design/platforms.md` §Releases (line 27) is the design record.
 - The README install section (`README.md:14`) says to unpack the archive. It says nothing about
@@ -79,6 +79,8 @@ pub struct TrustedKeys { release: Option<PublicKey>, dev: Option<PublicKey> }
 
 impl TrustedKeys {
     /// The keys compiled into this binary.
+    /// Parses once into a `static OnceLock` and calls
+    /// `.expect("shipped key files parse; enforced by the shipped-keys unit test")`.
     pub fn embedded() -> &'static TrustedKeys;
     /// Parse `.pub` file contents (used by `embedded()` and by tests with disposable keys).
     pub fn from_pub_files(release: &str, dev: &str) -> Result<TrustedKeys, KeyFileError>;
@@ -147,9 +149,6 @@ pub fn verify_file(keys: &TrustedKeys, channel: Channel, archive: &Path,
     and `sha256.sum` fails;
   - at least one archive is present.
 
-  The same script is the release check and the CI test subject, so "verified before
-  publishing" and "covered by tests" are one code path.
-
 ### `release` channel workflow (`.github/workflows/release.yml`)
 
 ```
@@ -163,7 +162,9 @@ plan ─▶ build-local-artifacts ─▶ build-global-artifacts ─▶ sign (env
 - The build jobs are unchanged and reference no environment, so the signing secrets are never
   in scope for them. PRs still run only `plan`.
 - `sign` is a new job with `environment: release-signing`. It downloads the `artifacts-*`
-  workflow artifacts, installs the pinned minisign, runs `release-sign.sh release <dir> rust/fontaine/keys/release.pub`, and uploads
+  workflow artifacts, installs the pinned minisign, runs `rm -f <dir>/*-dist-manifest.json` (the
+  merged `plan-`, per-target and `global-` manifests would fail the verifier's allowlist), then
+  `release-sign.sh release <dir> rust/fontaine/keys/release.pub`, and uploads
   the `.minisig` files as `artifacts-signatures`. It checks out the repository only to read the
   scripts and `keys/`, with `persist-credentials: false`. It runs no build tools and no code from
   the artifacts.
@@ -206,7 +207,10 @@ workflow_run of CI completed on main, conclusion success, event push
 - The whole workflow runs only when `github.event.workflow_run.conclusion == 'success'`,
   `github.event.workflow_run.event == 'push'` and the repository variable
   `FONTAINE_DEV_CHANNEL` is `enabled` (job-level `if:` on the first job).
-- `concurrency: dev-channel` with `cancel-in-progress: false` serializes publication.
+- `sign` runs `rm -f <dir>/*-dist-manifest.json` on the downloaded artifacts before
+  `release-sign.sh`, as in `release.yml`.
+- `concurrency: dev-channel` with `cancel-in-progress: false` is set at the workflow level and
+  serializes publication.
 - Old dev prereleases are not pruned here; see Decisions.
 
 ### Environments (maintainer configuration, documented)
@@ -276,19 +280,20 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
    - install minisign and generate a disposable key with a dummy password, plus a second key
      that plays the wrong-channel key; set `MINISIGN_PASSWORD` in the step so the password path
      is exercised;
-   - make dummy archives and their `.sha256` files;
+   - make dummy archives, their `.sha256` files and a `sha256.sum` over the archives;
    - run `release-sign.sh` (passing the disposable public key), then `release-verify.sh` and expect success;
    - expect `release-verify.sh` to fail on each mutation: a deleted `.minisig`, a truncated
      `.minisig`, an archive signed by the other key, a tampered archive, an orphan `.minisig`,
      an empty directory, a wrong channel argument (`dev` against release-signed files), a file
-     swap (archive A and its signature renamed onto B's name, with B's `.sha256` recomputed so
-     the failure comes from the `file=` check), a checksum mismatch (one `.sha256` edited) and
+     swap (archive A and its signature renamed onto B's name, with B's `.sha256` and `sha256.sum`
+     regenerated so the failure comes only from the `file=` check), a checksum mismatch (one `.sha256` edited) and
      an unrecognised asset;
    - run `cargo test -p fontaine release_signature -- --ignored` with the fixture directory set.
    Production secrets are never referenced: the job names no environment.
 7. **`release.yml`.** Add the `sign`, `verify-draft` and `publish` jobs, make `host` create a
    draft and upload the signatures, remove `artifacts/dist-manifest.json` as well before
-   `gh release create`, and scope permissions per job. Add `sign` to `host`'s
+   `gh release create`, run `rm -f <dir>/*-dist-manifest.json` in `sign` before
+   `release-sign.sh`, and scope permissions per job. Add `sign` to `host`'s
    `needs` and `&& needs.sign.result == 'success'` to its `if:`. Give `verify-draft` and
    `publish` plain success gating. Change `announce` to `needs: [plan, publish]` with
    `if: always() && needs.publish.result == 'success'`. Set `source-tarball = false` in
@@ -296,7 +301,8 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
    every release), so every published asset is signed. Update the hand-adaptation header
    comment.
 8. **`dev.yml`.** Add the new workflow as designed, with the same strict job chain as
-   `release.yml`.
+   `release.yml`, including the `rm -f <dir>/*-dist-manifest.json` in `sign` before
+   `release-sign.sh`.
 9. **Docs.** See Documentation.
 10. **Master plan.** Add the `Build and release` Decisions lines below, the `#425` item under the
     `**Repository and release**` sub-group of Release readiness in `## Remaining work`, and update
@@ -310,7 +316,8 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
 - `rust/fontaine/keys/release.pub`, `rust/fontaine/keys/dev.pub` (new, placeholders)
 - `.github/scripts/install-minisign.sh`, `release-sign.sh`, `release-verify.sh` (new)
 - `.github/workflows/release.yml`, `.github/workflows/ci.yml`, `.github/workflows/dev.yml` (new)
-- `docs/verifying-releases.md` (new), `docs/index.md`, `README.md`, `CONTRIBUTING.md`
+- `docs/verifying-releases.md` (new), `docs/index.md`, `README.md`, `CONTRIBUTING.md`,
+  `AGENTS.md` (Essential Commands, the Linux-only list)
 - `tasks/design/platforms.md`, `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -335,8 +342,9 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
 
 - 2026-11-05: Production keys are bootstrapped by the maintainer. The repository ships
   placeholder `.pub` files that make verification and signing fail closed until then.
-- 2026-11-05: The installers' call into this verifier ships with #176, and the updater's with
-  #175. This issue ships the shared module, the CI signing and verification, and the docs.
+- 2026-11-05: The updater's call into this verifier ships with #175, and the installers'
+  minisign-CLI checks against the shared key files ship with #176. This issue ships the shared
+  module, the CI signing and verification, and the docs.
 - 2026-11-05: GitHub artifact attestations are not enabled here. They stay optional, owned by
   #176 (`github-attestations` in dist), and are never the trust root.
 - 2026-11-05: Dev prereleases are not pruned in this issue. Deleting releases and tags from CI
@@ -366,6 +374,7 @@ Lines for the master plan's `### Build and release`:
   `docs/index.md` and from the README install section.
 - `CONTRIBUTING.md` §Build and test: add the Linux-only "Release signing" CI step to the list
   of Linux-only steps.
+- `AGENTS.md` Essential Commands: add the "Release signing" step to the Linux-only list.
 - `CONTRIBUTING.md` §Releasing: the environments table, the key bootstrap, rotation, and
   revocation and recovery procedures, enabling the dev channel (`FONTAINE_DEV_CHANNEL`), and a
   step for approving the `release-signing` deployment.
