@@ -13,7 +13,7 @@ Two rounds on the `@` file-mention popup:
    returns the full list and the view windows the visible rows around the selection, the
    way the slash-command menu already does. Files touched: `complete.rs`, `view.rs`,
    `app.rs` (all `rust/fontaine-tui/src/`), `docs/tui.md`, `CHANGELOG.md`.
-2. **Round 2 (designed, not implemented):** `@task<tab>` completes to
+2. **Round 2 (done, on this branch):** `@task<tab>` completes to
    `rust/fontaine-core/src/tasks.rs` instead of `tasks/`. Directories never appear in the
    completion list at all, and `@` completion accepts the selected row on the first Tab
    instead of first extending the token to the common prefix of the matches (the `/` menu

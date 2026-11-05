@@ -729,7 +729,8 @@ pub struct FileIndex {
 }
 
 impl FileIndex {
-    /// The files under `roots` that git would not ignore, up to `cap` of them.
+    /// The files under `roots` that git would not ignore, up to `cap` of them, and the
+    /// directories met before the walk stops.
     pub fn build(roots: &[PathBuf], cap: usize) -> FileIndex {
         let mut index = FileIndex::default();
         for root in roots {
