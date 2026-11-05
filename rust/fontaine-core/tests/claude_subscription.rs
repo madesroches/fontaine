@@ -400,7 +400,8 @@ async fn versions_are_checked_before_anything_else() {
 async fn a_missing_or_hung_cli_is_a_setup_failure() {
     let claude = Claude::with_account("");
     let config_text = std::fs::read_to_string(claude.w.config.join("config.toml")).unwrap();
-    let broken = config_text.replace(&toml_path(&double()), "\"/nonexistent/claude\"");
+    let missing = double().with_file_name("nonexistent-claude");
+    let broken = config_text.replace(&toml_path(&double()), &toml_path(&missing));
     claude.w.user_file(&broken);
     let error = claude.resolve(None).await.unwrap_err();
     assert!(message(&error).contains("could not be started"), "{error}");
