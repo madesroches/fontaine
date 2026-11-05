@@ -66,7 +66,15 @@ builtin plugins are accepted. The CLI loaded them even with every setting source
 look at the CLI's managed/policy settings or the environment Fontaine passes through to it
 ```
 
-The `skills` message has the same shape, including the managed/policy-settings and environment pointer. An entry renders as its `source`, falling back to `name`
+The `skills` message:
+
+```text
+the Claude CLI loaded skills Fontaine did not ask for: foo, bar; no skills are accepted. The CLI
+loaded them even with every setting source switched off; look at the CLI's managed/policy settings
+or the environment Fontaine passes through to it
+```
+
+An entry renders as its `source`, falling back to `name`
 and then to the bare string for a string entry, and to `?` otherwise. At most 5 entries are shown,
 then `and N more`, and each entry is cut to 80 chars (`chars().take(80)`), so the CLI's output can't make the
 message unbounded. The kind stays `ErrorKind::Protocol` (non-retryable), as now; only the text
@@ -89,9 +97,14 @@ Every existing integration test then runs against a realistic init, which pins #
 2. `examples/claude_cli_double.rs`: add the bundled plugin entry to the default init.
 3. `protocol/tests.rs`: unit tests (see Testing Strategy).
 4. `tests/claude_subscription.rs`: extend `unexpected_init_customization_is_refused` to assert that
-   the plugin case's error names the plugin, and add the regression test.
+   the plugin case (entry changed to `{"name": "foo", "path": "/p", "source": "foo@market"}`) has an
+   error containing `foo@market`, and add the regression test.
 5. `docs/claude-subscription.md`: in "What a request is", say that the CLI's own builtin plugins
-   are accepted and any other plugin or skill is refused with an error naming it.
+   are accepted and any other plugin or skill is refused with an error naming it. Keep the
+   sentence saying instruction files are switched off true: one accepted builtin is
+   `cc-plugin-agents-md`, but instruction files stay off because each CLI process runs in an empty
+   private scratch directory and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` is set. Also cover the sentence
+   about what the CLI is started without.
 
 ## Files to Modify
 
@@ -120,8 +133,7 @@ Every existing integration test then runs against a realistic init, which pins #
 
 ## Documentation
 
-- `docs/claude-subscription.md`: the sentence in "What a request is" about what the CLI is started
-  without, plus what is accepted (bundled plugins) and how a refused customization is reported.
+See Implementation Steps, step 5.
 
 ## Testing Strategy
 
@@ -142,7 +154,7 @@ Integration (`tests/claude_subscription.rs`, through the double):
 - Regression for #429: with the double's default init, which now carries a bundled plugin, a basic
   `hi` request returns its text. Existing tests already exercise this once the default changes; add
   one named test, `builtin_cli_plugins_are_accepted`, so the regression is explicit.
-- `unexpected_init_customization_is_refused`: the plugin case asserts the error names the plugin.
+- `unexpected_init_customization_is_refused`: the plugin case asserts the error contains `foo@market`.
 
 ## Manual Verification
 
