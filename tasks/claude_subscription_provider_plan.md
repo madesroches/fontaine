@@ -408,8 +408,8 @@ This is an explicit limitation of the experiment, not a claim of overage prevent
   target. Core tests launch `claude_cli_double`; fontaine tests launch `fontaine_claude_cli_double`.
   There is no shell script, second fake implementation, or manifest entry.
 - Docs/decisions: `docs/{configuration,architecture,tui,headless,guardian,telemetry}.md`,
-  new `docs/claude-subscription.md`, `docs/index.md`, `tasks/design/{config,testing,sessions}.md`,
-  `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`, and this plan's completion results.
+  new `docs/claude-subscription.md`, `docs/index.md`, `tasks/design/{config,testing,sessions}.md` (`testing.md` line ~106 `claude -p` wording),
+  `AGENTS.md` (`claude -p` testing rule wording, ~line 132), `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`, and this plan's completion results.
 - No new Rust or JavaScript dependency is expected; existing tokio/futures, rig, serde, sha2,
   tempfile, and uuid cover the implementation.
 
@@ -419,6 +419,10 @@ This is an explicit limitation of the experiment, not a claim of overage prevent
   adapter. Keep the policy constraints and re-check before stable.
 - 2026-11-04 (user): Reuse existing issue #15 for the separate outbound “embed Fontaine through an
   Agent SDK” request; it is linked to #412 but is not part of this provider's scope.
+- 2026-11-04 AFK: The official `claude` CLI is a production model transport for this provider; AGENTS.md's and `tasks/design/testing.md`'s manual/eval-only rule for `claude -p` covers Claude Code baselines and tests only, and tests never run the real CLI (they use the fake `claude_cli_double`). Wording is clarified, not weakened.
+- 2026-11-04 AFK: Termination at the first complete response is treated as not proven to prevent every native retry/continuation on a CLI version; a CLI version is supported only after live qualification shows it, and unqualified versions fail closed (rejected by preflight).
+- 2026-11-04 AFK: Protocol shapes outside the initial live matrix (older signed history, transformed/compacted history, unlisted models, credit entitlements) are unsupported and fail closed until qualified live.
+- 2026-11-04 AFK: Usage-credit transitions are treated as not surfaceable early by any current CLI API; included-only use continues to require disabling credits in the Claude account, and the billing guard fails closed on any credit signal.
 
 ## Security
 
@@ -582,12 +586,4 @@ exhaust a plan merely to produce an error.
 
 ## Open Questions
 
-No policy approval gates implementation (Decisions). The remaining questions are qualification
-results, not preferences to settle by assumption:
-
-- Does immediate termination at the first complete response prevent every problematic native retry/
-  continuation on each supported CLI version, without sacrificing completed tool batches or usage?
-- Which protocol shapes outside the initial live matrix (older signed history, transformed/
-  compacted history, particular models, credit entitlements) must remain explicitly unsupported?
-- Can account-level usage-credit transitions be surfaced early enough by a future official CLI API,
-  or must included-only use continue to require disabling credits in the Claude account?
+None outstanding; qualification-only questions were resolved as conservative stances (Decisions, `AFK:`).
