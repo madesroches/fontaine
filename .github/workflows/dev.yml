@@ -1,5 +1,5 @@
-# The dev channel: every CI-passing build of `main` is signed with the dev key and published as
-# the prerelease `dev-<run_number>`. Hand-written, with the same draft, verify, publish chain as
+# The dev channel: the latest CI-passing build of `main` is signed with the dev key and published
+# as the prerelease `dev-<run_number>`; a newer build replaces a pending one, so some are skipped. Hand-written, with the same draft, verify, publish chain as
 # release.yml: only `sign` (environment `dev-signing`) sees the signing key, and `contents: write`
 # is granted per job to `host`, `verify-draft` and `publish` only. Every job builds and records
 # the head commit of the CI run (`workflow_run.head_sha`), never `github.sha`, because `main` may
@@ -12,7 +12,8 @@ defaults:
   run:
     working-directory: rust
 
-# Serializes publication; a queued run waits instead of being cancelled.
+# Serializes publication; a newer run replaces a pending one, and only
+# the running one is never cancelled.
 concurrency:
   group: dev-channel
   cancel-in-progress: false

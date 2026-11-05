@@ -86,7 +86,8 @@ behalf.
 
 Every archive is signed with a minisign key owned by Fontaine, one per channel: `release` for
 tagged releases and `dev` for the latest CI-passing build of `main`. The public keys are checked in
-under `rust/fontaine/keys/` and compiled into the binary; how users verify is in
+under `rust/fontaine/keys/` and compiled into the verifier module Fontaine's update path will use
+(Fontaine does not update itself yet); how users verify is in
 [docs/verifying-releases.md](docs/verifying-releases.md). The private keys live only in two GitHub
 Environments, which are configured in GitHub, not in the repository:
 
@@ -126,8 +127,9 @@ dev-key compromise never affects `release`.
 
 **Enabling the dev channel.** Create the `dev-signing` environment (deployment branch `main`, no
 reviewers), bootstrap the dev key, then set the repository variable `FONTAINE_DEV_CHANNEL` to
-`enabled`. Until it is set, `.github/workflows/dev.yml` skips every run and publishes nothing. Each
-later `main` build that passes CI is published as the prerelease `dev-<run number>`. Old dev
+`enabled`. Until it is set, `.github/workflows/dev.yml` skips every run and publishes nothing. A newer
+build replaces a pending one, so intermediate builds may be skipped and the channel always
+publishes the latest CI-passing build of `main`, as the prerelease `dev-<run number>`. Old dev
 prereleases are not pruned automatically.
 
 ## Golden-dataset cases

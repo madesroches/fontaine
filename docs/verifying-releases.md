@@ -13,7 +13,8 @@ this repository, so an unsigned or mis-signed archive is never public.
 | `dev` | the latest CI-passing build of `main`, published as the prerelease `dev-<n>` | the dev key | [`rust/fontaine/keys/dev.pub`](../rust/fontaine/keys/dev.pub) |
 
 The two channels use different keys, so a compromised dev key cannot sign a release. The keys are
-compiled into the `fontaine` binary.
+checked in and compiled into the verifier module that Fontaine's update path will use. Fontaine
+does not update itself yet, so today you verify a downloaded archive by hand, as below.
 
 A release is verified against `<channel>.signing.pub`, the key CI signed with, read at that
 release's tag (for `dev`, at its commit):
@@ -30,7 +31,8 @@ release's tag:
 minisign -Vm fontaine-x86_64-unknown-linux-gnu.tar.xz -p release.signing.pub
 ```
 
-Expected output ends with `Signature and comment signature verified`. The signature file must be
+Expected output includes `Signature and comment signature verified`, followed by the `Trusted
+comment:` line. The signature file must be
 named `<archive>.minisig` and sit next to the archive, or be given with `-x`.
 
 The signed trusted comment binds the signature to one archive:
@@ -55,6 +57,6 @@ The checksums catch a corrupted download; only the signature proves who made the
 ## What the signature does not cover
 
 The first install is trusted through HTTPS: the public key you verify against comes from this
-repository over the same channel as the archive. After that, the signature chain is what keeps an
-update honest. Once Fontaine's installers enable GitHub artifact attestations, `gh attestation
+repository over the same channel as the archive. Fontaine does not update itself yet; once
+it does, the signature chain will be what keeps an update honest. Once Fontaine's installers enable GitHub artifact attestations, `gh attestation
 verify` will apply as a further check; the minisign key stays the root of trust.

@@ -40,7 +40,7 @@ section. A tag without that section fails in the `plan` job.
 Every archive is signed. Fontaine owns one minisign key per channel: `release` (tagged releases)
 and `dev` (the latest CI-passing build of `main`, published by `.github/workflows/dev.yml` as the
 prerelease `dev-<run_number>` once the repository variable `FONTAINE_DEV_CHANNEL` is `enabled`).
-The public keys are in `rust/fontaine/keys/` and compiled into the binary; the private keys exist
+The public keys are in `rust/fontaine/keys/` and compiled into the verifier module Fontaine's update path will use (no self-update yet); the private keys exist
 only as secrets of the `release-signing` (tags, required reviewer) and `dev-signing` (`main`)
 GitHub Environments, which only the `sign` jobs name. The signed trusted comment binds channel,
 asset name, version and commit. Publication is draft, verify, publish: `sign` signs after the
