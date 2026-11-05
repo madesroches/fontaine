@@ -195,6 +195,22 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
 - **Terminal UI**: framed tool cards with output panes and edit diffs, a segmented status line, an approval prompt that ignores Enter for
   500 ms (Fontaine already has a 400 ms answer grace period); follow-ups in the research doc.
 
+### Kimi Code CLI (kimi) — Moonshot's own agent harness (full study: `research-kimi-harness.md`)
+
+- **What it is**: `MoonshotAI/kimi-code`, TypeScript, MIT, source read at `df90d90e` (package 2.5.1). The npm package was run in Docker on an `--internal`
+  network behind a recording proxy against the Kimi coding endpoint (`kimi-for-coding`); Fontaine ran the same tasks through the same recorder. The opencode Go
+  gateway's Kimi models could not be used (monthly allowance spent, every request 429).
+- **What lets the model iterate**: a system prompt that requires tests green on the deliverable and the user's scenario working end to end before "done"; goal mode as
+  model tools with token, turn and wall-clock budgets and `-p` exit codes 0/3/6; a repeat breaker (reminders after the 3rd, 5th and 8th identical call, a hard stop with a
+  text-only hand-off at the 12th, identical calls in one response collapsed); promotion of a foreground command to a background task at 60 s (Claude Code does the same, measured);
+  spill of results over 50,000 characters to a file. No language-server diagnostics.
+- **Not copied**: telemetry on by default with a persistent device id and host metrics (DNS for `telemetry-logs.kimi.com` and an update check with no login), "Never Ask" as the `-p`
+  default (three of four risky commands ran, including `rm -rf` of a parent and `curl | sh`; the fourth was declined by the model from a prompt rule), no OS sandbox, a short deny list of
+  command names as the dangerous-command check.
+- **Kimi model support**: the coding endpoint accepts a tool-call turn with no `reasoning_content`, honours `thinking.effort` and `thinking: {type: disabled}`, requires `temperature` 1, and
+  honours tool declarations in a mid-history system message. Fontaine lacks an effort mapping on the `kimi` account (#438) and could use the system-message form for deferred MCP tools (#439); the
+  scorecard control row does not record that `kimi-for-coding` now serves "K2.8 Preview" (#440). Thinking-off for the guardian bought no latency.
+
 ### Ecosystem / dependencies — reuse-first (user requirement)
 
 - **rig** (MIT, v0.45.0, Oct 2026, 0xPlaygrounds) — the Rust LLM framework, now split into exactly
