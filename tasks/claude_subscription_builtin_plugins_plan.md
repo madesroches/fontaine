@@ -20,7 +20,7 @@ what was loaded and say how to stop it from loading.
 - The CLI is launched by `fixed_args` (`cli.rs:668`) with `--setting-sources ""`,
   `--strict-mcp-config` and `--disable-slash-commands`, plus private settings from `base_settings`
   (`cli.rs:656`) that switch off hooks, memory, compaction and updates.
-- The test double `rust/fontaine-core/examples/claude_cli_double.rs:246` emits an init event with
+- The test double `rust/fontaine-core/examples/claude_cli_double.rs:250` emits an init event with
   `"plugins": []`, so no test sees what a real CLI reports. `init_extra` lets a scenario override
   init keys. `unexpected_init_customization_is_refused`
   (`rust/fontaine-core/tests/claude_subscription.rs:1265`) and the `"init plugins"` case in
@@ -56,26 +56,19 @@ are required, so a user plugin that happens to have one of those strings isn't m
 bundled one. `validate_init` drops bundled entries before checking `plugins`. Every other entry
 still fails, as does any `skills` entry.
 
-This is sound because a bundled plugin ships inside the CLI binary, which Fontaine already runs as
-its trusted, unmodified transport. Everything a plugin could add is checked or switched off
-separately: tools (refused unless they are Fontaine's own), MCP servers (exactly the inert
-`fontaine` one), skills (refused), hooks (`disableAllHooks`), slash commands
-(`--disable-slash-commands`), and subagents (no tools are offered, and a stream event with a
-`parent_tool_use_id` is refused).
-
 ### Diagnostics that name the customization
 
 Replace the one generic message with one per kind, which names the entries and says what to do:
 
 ```text
 the Claude CLI loaded plugins Fontaine did not ask for: foo@market, bar@market; only the CLI's
-builtin plugins are accepted. Remove or disable them in the Claude CLI profile this account uses,
-or point the account's `claude_config_dir` at a dedicated profile
+builtin plugins are accepted. The CLI loaded them even with every setting source switched off;
+look at the CLI's managed/policy settings or the environment Fontaine passes through to it
 ```
 
-The `skills` message has the same shape. An entry renders as its `source`, falling back to `name`
+The `skills` message has the same shape, including the managed/policy-settings and environment pointer. An entry renders as its `source`, falling back to `name`
 and then to the bare string for a string entry, and to `?` otherwise. At most 5 entries are shown,
-then `and N more`, and each entry is cut to 80 characters, so the CLI's output can't make the
+then `and N more`, and each entry is cut to 80 chars (`chars().take(80)`), so the CLI's output can't make the
 message unbounded. The kind stays `ErrorKind::Protocol` (non-retryable), as now; only the text
 changes.
 
@@ -93,8 +86,7 @@ Every existing integration test then runs against a realistic init, which pins #
 1. `protocol.rs`: add `is_bundled(&Value) -> bool` and `customization_error`. In `validate_init`,
    filter bundled entries out of `plugins`, and fail with the named message if any remain or if
    `skills` is non-empty.
-2. `examples/claude_cli_double.rs`: add the bundled plugin entry to the default init and update the
-   doc comment if it describes the default init.
+2. `examples/claude_cli_double.rs`: add the bundled plugin entry to the default init.
 3. `protocol/tests.rs`: unit tests (see Testing Strategy).
 4. `tests/claude_subscription.rs`: extend `unexpected_init_customization_is_refused` to assert that
    the plugin case's error names the plugin, and add the regression test.
@@ -108,6 +100,7 @@ Every existing integration test then runs against a realistic init, which pins #
 - `rust/fontaine-core/examples/claude_cli_double.rs`
 - `rust/fontaine-core/tests/claude_subscription.rs`
 - `docs/claude-subscription.md`
+- `CHANGELOG.md`: a `### Fixed` entry under `[Unreleased]` citing #429
 
 ## Trade-offs
 
@@ -141,7 +134,7 @@ Unit tests in `protocol/tests.rs` (driven through `Reader::accept`):
   fail (both fields are required).
 - A non-empty `skills` (string entry and object entry) fails with a message naming `skills` and the
   skill.
-- Seven unbundled plugins show 5 entries and `and 2 more`; a 500-character name is cut.
+- Seven unbundled plugins show 5 entries and `and 2 more`; a name of `"é".repeat(500)` is cut to 80 chars without panicking.
 - The existing `"init plugins"` case keeps failing (`{"name": "p"}` has no bundled markers).
 
 Integration (`tests/claude_subscription.rs`, through the double):
