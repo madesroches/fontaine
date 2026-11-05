@@ -112,6 +112,12 @@ impl AgentRuntime {
         self.finish_afk().await
     }
 
+    /// Whether `note_blocked` has a block to announce, so a surface can say the review is
+    /// starting before it waits on it.
+    pub fn block_unannounced(&self) -> bool {
+        self.state.block_unannounced()
+    }
+
     /// The first time the denial breaker has blocked an AFK session: the goal is paused, the
     /// stretch is reviewed, and its report comes back for the surface to announce. `None` on
     /// every later call, and while the session is not blocked.

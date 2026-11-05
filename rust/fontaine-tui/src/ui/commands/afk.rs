@@ -46,6 +46,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// Announces, once, that repeated denials have blocked an unattended session.
     pub(crate) async fn announce_blocked(&mut self, runtime: &AgentRuntime) {
+        if !runtime.block_unannounced() {
+            return;
+        }
+        self.app
+            .transcript
+            .notice("AFK: repeated denials blocked the session. Reviewing the stretch…");
+        self.draw(runtime);
         if let Some(report) = runtime.note_blocked().await {
             self.app
                 .transcript

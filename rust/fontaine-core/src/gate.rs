@@ -734,6 +734,12 @@ impl SessionState {
         }
     }
 
+    /// Whether `announce_blocked` would return true, without claiming the announcement.
+    pub fn block_unannounced(&self) -> bool {
+        self.unattended_blocked() == Some(Blocked::BreakerPaused)
+            && !self.afk_block_announced.load(Ordering::Relaxed)
+    }
+
     /// A receiver that sees each temperature stop as a change of its value.
     pub fn afk_stop_signal(&self) -> watch::Receiver<u64> {
         self.afk_stops.subscribe()

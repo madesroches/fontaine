@@ -536,6 +536,15 @@ fn stretch_bounds(entries: &[Entry]) -> Vec<(usize, usize)> {
                     last.1 = at + 1;
                 }
             }
+            // AFK is never restored on reopen, so a stretch the previous process left open
+            // ends where the new one begins.
+            Record::SessionStart { .. } | Record::Resumed { .. } => {
+                if let Some(last) = bounds.last_mut()
+                    && last.1 == usize::MAX
+                {
+                    last.1 = at;
+                }
+            }
             _ => {}
         }
     }
@@ -913,6 +922,24 @@ mod tests {
             digest: None,
             paths: &[],
         }
+    }
+
+    #[test]
+    fn a_reopen_ends_the_stretch_the_previous_process_left_open() {
+        let reopened = entry(
+            2,
+            Record::Resumed {
+                source: "old".into(),
+                how: "resume".into(),
+            },
+        );
+        let entries = vec![
+            afk_on(0),
+            action(1, "read", "main", None, "d", &[]),
+            reopened,
+            action(3, "read", "main", None, "d", &[]),
+        ];
+        assert_eq!(stretch_bounds(&entries), vec![(0, 2)]);
     }
 
     #[test]
