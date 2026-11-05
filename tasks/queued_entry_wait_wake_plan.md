@@ -29,16 +29,19 @@ model, in the wait's own answer, that the user has something pending.
   `has_deliverable_message_for`; unaffected.
 
 ## Design
-Two additions, both keeping the queue-ordering rules untouched.
+Three additions, all keeping the queue-ordering rules untouched.
 
 1. **Announce unannounced queued entries.** `SteeringState` gains `announced: usize`, the count of
    leading queue entries already announced to the model. `Steering` gains:
-   - `has_unannounced(&self) -> bool`: not held and `queued.len() > announced`.
+   - `has_unannounced(&self) -> bool`: not held and `queued.len() > max(p, announced)`, where `p`
+     is the length of the leading run of `Queued::Message` (the same `take_while` prefix `steer`
+     drains and delivers in full). Plain messages are never announced, so a lone queued
+     `Message("hi")` neither announces nor is named in the notice.
    - `take_announcement(&self) -> Option<String>`: when `has_unannounced`, returns a notice naming
-     the unannounced entries by their raw text and sets `announced = queued.len()`.
-   Maintenance of `announced`: `retract` and delivery in `steer` shrink the queue from the front,
-   so both reduce `announced` by the number of entries removed (saturating); `queue` leaves it
-   alone. The root-only check keeps this separate from `queued_for`.
+     the entries from index `max(p, announced)` onward and sets `announced = queued.len()`.
+   Maintenance of `announced`: `retract` takes the whole queue, so it resets `announced` to 0;
+   `steer` subtracts the number of messages it drained (saturating); `queue` leaves it alone. The
+   root-only check keeps this separate from `queued_for`.
 2. **Wake on it.** `CoreWake::pending` for the root agent becomes
    `tree.has_message(agent) || steering.has_deliverable_message_for(agent) ||
    steering.has_unannounced()`. Because announcing sets `announced`, the next `job_output` wait the
@@ -55,16 +58,15 @@ Two additions, both keeping the queue-ordering rules untouched.
    wrap up or change course if it concerns your current work.]
    ```
    The wrapper is fixed harness text; entry text is quoted verbatim and only the first line of
-   each entry, truncated, so a multi-line paste cannot forge a harness frame.
+   each entry, truncated with `first_line_cut` (`rust/fontaine-core/src/session.rs:907`, made
+   `pub(crate)`) at 100 chars per entry, so a multi-line paste cannot forge a harness frame.
 
 The message-delivery path, the delivery hold, retract/edit, and ledger/guardian-intent rules
 (a message becomes intent only when delivered) are unchanged. The announcement is a pointer, not
 the entry, so a queued `/afk` never becomes model-authored intent.
 
 Other blocking waits (`join_wait`, headless `wait_for_news`, `ask_user`, `schedule_wakeup`) are
-out of scope: `join_wait` already uses the same `CoreWake` predicate through its polling loop and
-gains the wake for free (its caller gets the notice via the next result only if it passes through
-the steering hook; no change needed there), and headless has no mid-turn input.
+out of scope: `join_wait` is a child's wait and reads only that child's own queue, so it is unaffected, and headless has no mid-turn input.
 
 ## Implementation Steps
 1. `rust/fontaine-core/src/steering.rs`: add `announced` to `SteeringState`; add
@@ -72,9 +74,12 @@ the steering hook; no change needed there), and headless has no mid-turn input.
    consistent; unit tests below.
 2. `rust/fontaine-tools/src/jobs.rs`: add defaulted `take_notice` to `WaitWake`.
 3. `rust/fontaine-core/src/child_runner.rs`: `CoreWake::pending` root clause and `take_notice`.
-4. `rust/fontaine-tools/src/jobs/tools.rs`: use `take_notice` in the wake branch.
+4. `rust/fontaine-tools/src/jobs/tools.rs`: use `take_notice` in the wake branch; update
+   `JobOutputTool::description()` (~280-290), "Any wait returns early when a message reaches you",
+   to also mention the user queuing input.
 5. Docs: `docs/tui.md` ("Messages during a turn"), `docs/agents.md` ("Waiting for a subagent"),
-   `docs/tools.md` (`job_output`).
+   `docs/tools.md` (`job_output`, and the monitor bullet ~395-396, "waits (for wait_secs, and until a
+   message arrives)").
 6. Master plan `## Decisions`: dated line at the end of `### Agents` (queued commands/skills wake
    a wait and are announced, not delivered); `CHANGELOG.md` entry under `### Fixed`.
 
@@ -101,12 +106,13 @@ None yet.
 
 ## Documentation
 `docs/tui.md` "Messages during a turn": a queued command or skill ends a blocking wait and the
-model is told it is pending. `docs/agents.md` and `docs/tools.md` `job_output`: the early-return
-list gains queued entries.
+model is told it is pending. `docs/agents.md` and `docs/tools.md` `job_output` and the monitor bullet: the
+early-return list gains queued entries.
 
 ## Testing Strategy
 All unit/integration, no live APIs:
-- `steering.rs`: a queued `Command` makes `has_unannounced` true; `take_announcement` returns the
+- `steering.rs`: a lone queued `Message` yields no announcement (`has_unannounced` false,
+  `take_announcement` `None`); a queued `Command` makes `has_unannounced` true; `take_announcement` returns the
   raw text once and then `None`; a second queued entry announces only the new one; `retract` and
   delivery keep `announced` consistent; a delivery hold suppresses it; `has_deliverable_message`
   behavior unchanged.
@@ -115,7 +121,8 @@ All unit/integration, no live APIs:
   during a `wait_secs: 600` subagent wait).
 - `fontaine-core` test with the real `CoreWake` and `Steering` (closes the gap that no test wakes
   a live wait through the real wake object): queue `Queued::Command`, assert `pending` flips true,
-  and after `take_notice` a fresh `pending` is false.
+  and after `take_notice` a fresh `pending` is false; also a lone `Queued::Message`: `pending` is
+  true (existing deliverable path) and `take_notice` is `None`, so the old text is kept.
 
 ## Open Questions
 None.
