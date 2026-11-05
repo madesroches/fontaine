@@ -32,7 +32,6 @@ release tag (#109).
   `tasks/design/platforms.md` §Releases (line 27) is the design record.
 - The README install section (`README.md:14`) says to unpack the archive. It says nothing about
   verifying it.
-- No updater exists (#175), and no installers either (#176).
 
 ## Design
 
