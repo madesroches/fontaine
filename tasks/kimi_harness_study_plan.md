@@ -41,14 +41,16 @@ explains a design choice. First look at the layout, to be verified rather than t
   `config.toml`, `sessions/<workDirKey>/<sessionId>/`, `session_index.jsonl`, `credentials/`,
   `logs/`.
 - Distribution is a single binary (`curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash`)
-  or npm, Node >= 22.19. Login is Kimi Code OAuth or a Moonshot Open Platform API key.
+  or npm (`@moonshot-ai/kimi-code`, Node >= 22.19). A source build needs Node >= 24.15 (root
+  `package.json` engines, `.nvmrc` 24.15.0, engine-strict) and pnpm 10.33.0 via corepack. Login is Kimi Code OAuth or a Moonshot Open Platform API key.
 - The repo ships `AGENTS.md`, `CLAUDE.md` and `todo.md`; no `SAFETY.md` is known. Treat it as
   unaudited code that runs shell commands.
 - Mechanisms to look for first, per the issue's questions: loop guards, goal or continuation
   mechanisms, timeouts, tool-error shape, diagnostics feedback, hooks, plan mode, todo and subtask
   state (`reference/tools.md`, `customization/agents.md`), the permission and sandbox model,
   compaction, the session record (`agent-core-v2/src/wire/{journal,record,repair}.ts`), and
-  telemetry (search the tree for exporters, `usage`, `telemetry`, update checks).
+  telemetry (`packages/telemetry`, `agent-core-v2/src/app/telemetry/`,
+  `apps/kimi-code/src/cli/telemetry.ts`; search the tree for exporters, `usage`, update checks).
 
 **Fontaine today.**
 
@@ -67,12 +69,15 @@ explains a design choice. First look at the layout, to be verified rather than t
   replays it, and adds an empty `reasoning_content` on tool-call turns for a moonshot or
   opencode-go/moonshot/openrouter catalog row (see the DeepSeek plan's Current State for the
   source lines; they are re-verified against the pinned rig version in step 5). Fontaine's main
-  agent sends no thinking parameter (#53 open). The guardian turns thinking off for the models
-  where it can (`opencode_go.rs` `thinking_off`).
+  agent sends no thinking parameter (#53 open). The guardian's thinking-off is sent only on the
+  opencode-go path (`opencode_go.rs` `thinking_off`); the `kimi` openai-compatible account sends
+  none (the trait default `thinking_off` is None).
 - An account's `base_url` can be overridden in a `--settings` file (the DeepSeek study's
   `proxy.toml` pattern), so Fontaine's traffic can go through a recording proxy with no code
-  change. The settings layer replaces a named account whole, so the override repeats `kind`,
-  `models` and `wires`.
+  change. The settings layer replaces a named account whole, so the `kimi` override repeats `kind`,
+  `base_url` and `models` (not `wires`, which `check_account` rejects for non-opencode-go kinds);
+  the `madesroches` override repeats `kind` and `base_url`, plus `wires` only in the Messages
+  variant.
 - Precedent and tooling to reuse: `research/deepseek-harness/scripts/` (`record_proxy.py`,
   `scrub.py`, `net.Dockerfile`, the `--internal` network + `socat` forwarder + `tcpdump` sidecar
   design, token-injecting proxy) and `research/oh-my-pi-harness/`. This plan copies and adapts
@@ -97,17 +102,27 @@ Claude Code are checked with `claude -p` where in doubt (E10), never from memory
 
 Copied from the DeepSeek study, with these Kimi-specific points:
 
-- `kimi` runs **only in a Docker container** (Node 22+ base pinned by digest, or the official
-  install script if the source build proves impractical; the choice and the resulting version are
-  recorded), with a throwaway workspace volume, a throwaway `KIMI_CODE_HOME` under
+- `kimi` runs **only in a Docker container** (a Node >= 24.15 base pinned by digest with pnpm
+  10.33.0 via corepack for a source build; a Node 22.19+ base serves only the npm install of
+  `@moonshot-ai/kimi-code@2.5.1`, or the official install script if the source build proves
+  impractical; the choice and the resulting version are recorded), with a throwaway workspace volume, a throwaway `KIMI_CODE_HOME` under
   `runs/<run>/kimi-home/`, and no host mounts besides `research/kimi-harness/runs/<run>/`.
-- **No real credential enters the container.** The harness gets a dummy key and a custom provider
-  `base_url` pointing at `fwd:<port>` (provider configuration is in
-  `docs/en/configuration/providers.md`; step 2 confirms an OpenAI-compatible Chat provider with a
-  custom `base_url` and model id can be declared, since the built-in Kimi Code provider uses
-  OAuth). The host recording proxy injects the real credential per request: for
-  `kimi-for-coding` the Kimi account key Fontaine already holds, for `opencode-go` the current
-  `go` access token read read-only from `credentials.toml`, never refreshed and never written
+- **No real credential enters the container.** The harness gets a dummy `api_key` and a custom
+  provider `base_url` pointing at `fwd:<port>`. Per the pinned docs
+  (`docs/en/configuration/providers.md@df90d90e`, `config-files.md`) a provider is
+  `[providers.<name>]` with `type`, `base_url`, `api_key`, plus `[models."<alias>"]` with
+  `provider`, `model` and a required `max_context_size`, selected by `-m <alias>`. Provider types
+  are `kimi`, `openai`, `anthropic`, `openai_responses`, `google-genai`, `vertexai`; the managed
+  OAuth provider uses `https://api.kimi.com/coding/v1`. The `kimi-for-coding` leg uses
+  `type = "kimi"` (OpenAI-compatible with any `base_url`; it sends a User-Agent and `X-Msh-*`
+  identity headers), the Go leg uses `type = "openai"` (takes a `base_url` and a per-model
+  `reasoning_key`). Credentials are not read from the shell env except via `api_key_env` or
+  `KIMI_MODEL_*`, so the dummy key goes in the config. The host recording proxy injects the real
+  credential per request: for `kimi-for-coding` the `kimi` account sets no `api_key_env`, so the
+  key is `credentials.toml` `[accounts.kimi].api_key`, which Fontaine sends as
+  `Authorization: Bearer`; the harness listener reads it read-only and injects it. For
+  `opencode-go` it is the current `madesroches` access token (`[accounts.madesroches.oauth]`)
+  read read-only from `credentials.toml`, never refreshed and never written
   (a pre-run `fontaine -p` refreshes; on mid-run expiry the proxy answers 503, the run is marked
   invalid and repeated). Hostile commands in the safety experiment can therefore find only the
   dummy key.
@@ -116,7 +131,8 @@ Copied from the DeepSeek study, with these Kimi-specific points:
   network namespace and records `egress.pcap` for the whole run, which is what answers the
   telemetry question (including update checks, plugin marketplace, remote-control and any
   analytics endpoint). Telemetry is **not** disabled for the baseline run; a second run sets
-  whatever opt-out the docs name, and the difference is recorded.
+  `KIMI_DISABLE_TELEMETRY=1` and `KIMI_CODE_NO_AUTO_UPDATE=1` (separate switches; also top-level
+  `telemetry = false` in `config.toml`), and the difference is recorded.
 - The harness's own sandbox, if any, is probed in E1 (what it selects in the container and its
   reported enforcement). No `--privileged`, seccomp or user-namespace relaxation.
 
@@ -125,17 +141,23 @@ Copied from the DeepSeek study, with these Kimi-specific points:
 Reuse `record_proxy.py` (stdlib only): reverse proxy to a configured upstream, SSE passed through,
 one JSONL record per exchange, redaction of header names and of literal secret values (dummy key,
 injected tokens, current `credentials.toml` tokens, any anonymous install id the harness writes).
-Two listeners on the docker bridge address: one for the harness (injects auth), one for Fontaine
-(passes its own `authorization` through). Upstreams:
+One `record_proxy.py` instance per upstream, each with two listeners on the docker bridge
+address: a harness port (injects auth: the Kimi API key on the Kimi upstream, the `madesroches`
+access token on the Go upstream) and a Fontaine port (passes its own `authorization` through).
+The copied `record_proxy.py` hardcodes the account name `go` (line ~26) and must be adapted to
+`madesroches`. Upstreams:
 
 - `https://api.kimi.ai/coding/v1` for `kimi-for-coding` (the Fontaine `kimi` account; the harness
   gets the same base URL via its provider config).
 - `https://opencode.ai/inference/go` for the `opencode-go` Kimi models (Chat wire; Messages wire
   probed with a `wires` override as the DeepSeek study did).
 
-Fontaine runs as `fontaine -p --settings <proxy.toml> --model kimi/kimi-for-coding` (and the
-`go/` equivalent), so both harnesses hit the same models through the same recorder and the doc can
-diff request framing side by side. Guardian exchanges (thinking-off, the guardian system prompt)
+Fontaine runs as `fontaine -p --permission-mode auto --settings <proxy.toml> --model
+kimi/kimi-for-coding` (and the `madesroches/<model>` equivalent; headless starts in `manual`,
+where would-ask outcomes are denied), so both harnesses hit the same models through the same recorder and the doc can
+diff request framing side by side. `proxy.toml` also sets `[guardian] model` to the Kimi model under test and overrides
+`[guardian.composition]` so guardian calls go through the recorder (otherwise the guardian wire
+record is empty). Guardian exchanges (thinking-off, the guardian system prompt)
 are separated from main-agent requests before any comparison and kept as the guardian wire record.
 
 ### Experiments
@@ -145,15 +167,15 @@ section in the doc.
 
 | # | Experiment | Answers |
 |---|---|---|
-| E1 | Build/install, boot headless (`kimi` print or non-interactive mode, whichever `reference/kimi-command.md` documents), record config dump, tool list, egress endpoints from the pcap, and the sandbox it selects | identity, environment, telemetry baseline, safety model |
+| E1 | Build/install, boot headless (`kimi --prompt`, `-p`, `--output-format text\|stream-json`; locked to auto permission, cannot combine with --yolo/--auto/--plan), `GET /models` on both upstreams (pick each experiment's model), record config dump, tool list, egress endpoints from the pcap, and the sandbox it selects | identity, environment, telemetry baseline, safety model |
 | E2 | One read-only question, wire captured | system-prompt sections, tool schemas, call/result format, headers and non-standard body fields, how tool results and reasoning are framed, prompt-cache hints (`cacheKey` stage), sampling parameters sent, `max_tokens`, deferred-tool behaviour |
 | E3 | Fix a failing test in a fixture repo (edit, run tests, iterate), with triggers for each loop mechanism found in the source: a repeated identical tool call, a hung command, a tool error, a lint/diagnostic failure, a user correction mid-run | iteration: loop guards, timeouts, goal/continuation, error and diagnostics feedback |
-| E4 | Risky actions (write outside the workspace, `rm -rf` of a parent, `curl \| sh`, read `~/.ssh`) under default and most-permissive permission modes, inside the container only | permission and safety model vs. the guardian and floor |
+| E4 | Risky actions (write outside the workspace, `rm -rf` of a parent, `curl \| sh`, read `~/.ssh`) under default and most-permissive permission modes (non-default modes go through `kimi acp` or the TUI, since `--prompt` is locked to auto; else Not tried), inside the container only | permission and safety model vs. the guardian and floor |
 | E5 | A long session crossing the compaction threshold (threshold lowered by config if exposed) plus one very large tool result | compaction, truncation, caching under compaction, context-window sizing for Kimi models |
-| E6 | Multi-step task with plan mode, the todo tool and one subagent; a goal/continuation command if the source has one | task representation, tracking and hand-off |
+| E6 | Multi-step task with plan mode (via `kimi acp` or the TUI, else Not tried), the todo tool and one subagent; a goal/continuation command if the source has one | task representation, tracking and hand-off |
 | E7 | Resume the E3 session, then inspect the on-disk session record (`sessions/<workDirKey>/<id>/`, `session_index.jsonl`) | session log format, durability, repair on resume, review |
 | E8 | Reasoning: tool-call turns with thinking on, thinking effort variants the harness exposes, a model switch mid-session; inspect what is stored and replayed (`reasoning_content` round-trip, stripping, effort control) | Kimi reasoning handling; compare with Fontaine's replay |
-| E9 | E2, E3 and E8 through `fontaine -p --settings proxy.toml` on the same models; separate guardian traffic; resume a session built on another model with `--resume <id> --model kimi/kimi-for-coding` and with a `go/` Kimi model | Fontaine provider-path risks: empty-reasoning fallback, tool-call-id and history legalization, sampling parameters ignored or clamped, cache-prefix stability, usage and cache accounting fields, `kimi-for-coding` quirks |
+| E9 | E2, E3 and E8 through `fontaine -p --permission-mode auto --settings proxy.toml` (which also points `[guardian] model` and `[guardian.composition]` at the recorder) on the same models; separate guardian traffic; confirm no thinking-off on the `kimi` account on the wire; resume a session built on another model with `--resume <id> --model kimi/kimi-for-coding` and with a `madesroches/` Kimi model | Fontaine provider-path risks: empty-reasoning fallback, tool-call-id and history legalization, sampling parameters ignored or clamped, cache-prefix stability, usage and cache accounting fields, `kimi-for-coding` quirks |
 | E10 | `claude -p` baselines on the same fixture for each row where Claude Code's behaviour is in doubt | the "Claude Code does it?" column |
 
 Further probes inside E2/E9 (cheap, scripted against the proxy, no harness needed): context window
@@ -202,33 +224,38 @@ tried" with the reason, so the user can supply what is missing.
    question with `path@df90d90e` citations; start from `packages/agent-core-v2/docs/en/llm.md`, the
    Kimi protocol patch, `docs/en/reference/tools.md`, `docs/en/configuration/providers.md`, the
    permission, hooks, compaction, wire/journal and telemetry code. Use Explore subagents for broad
-   sweeps; read cited files directly before quoting. Confirm how a custom OpenAI-compatible
-   provider with a base URL and key is declared, and which non-interactive mode drives scripted
-   runs.
+   sweeps; read cited files directly before quoting. Confirm the provider syntax and
+   `type` choices recorded under Environment and safety against the source.
 3. **Tooling.** Copy and adapt from `research/deepseek-harness/scripts/`: `record_proxy.py`,
    `scrub.py`, `net.Dockerfile`, a `kimi.Dockerfile` (or install-script image), `run_kimi.sh`
    (token freshness check, internal network, `fwd` and `cap` sidecars, harness run with dummy key,
-   teardown), `run_fontaine.sh`, `proxy.toml` / `proxy_messages.toml` for the `kimi` and `go`
-   accounts, a harness config template, and the fixture repos. Resolve where the proxy gets the
-   Kimi account key from (same source Fontaine reads) in this step.
+   teardown), `run_fontaine.sh`, `proxy.toml` / `proxy_messages.toml` for the `kimi` and `madesroches`
+   accounts (the `kimi` override repeats `kind`, `base_url`, `models`; the `madesroches` override
+   repeats `kind` and `base_url`, plus `wires` only in the Messages variant), a harness config
+   template, and the fixture repos. The Kimi key comes from `credentials.toml`
+   `[accounts.kimi].api_key`; the `madesroches` token from `[accounts.madesroches.oauth]`.
 4. **E1–E8** on the harness in order, recording each result in the doc as it lands. E4 runs only
    inside the container.
-5. **E9** through Fontaine, then the extra probes. Re-verify rig's reasoning-replay behaviour for
+5. **E9** through Fontaine (`--permission-mode auto`), then the extra probes. Re-verify rig's reasoning-replay behaviour for
    Kimi rows against the pinned rig version. Reproduce any 400 or mangled-history bug minimally.
 6. **E10** `claude -p` baselines for the doubtful rows.
 7. **Write the doc**: summary, both lists, experiment log, Not tried.
 8. **Follow-ups.** File and comment on issues, link them from the lists; add `## Decisions` lines
    only where the rule above applies.
-9. **Index.** Add the doc to the research list in `tasks/fontaine_harness_plan.md` (and update the
-   document count there and in the workspace tree), and add a short "Kimi Code CLI" subsection to
-   `tasks/design/research-findings.md` pointing to the deep-dive.
+9. **Index.** Add the doc to the research list in `tasks/fontaine_harness_plan.md` (add the four missing entries
+   `analysis-jev-improvements.md`, `analysis-jev-openrouter.md`, `analysis-screener-models.md`,
+   `research-hermes-harness.md` plus the Kimi doc, and set the count, now stale at "twelve", to
+   "seventeen" in the research paragraph and in the workspace tree), and add a short "Kimi Code CLI" subsection to
+   `tasks/design/research-findings.md` pointing to the deep-dive, and add a `#### Research`
+   bullet to `CHANGELOG.md`.
 
 ## Files to Modify
 
 - New: `research/research-kimi-harness.md`
 - New: `research/kimi-harness/{README.md,.gitignore,scripts/*,fixtures/*,captures/*}`
-- `tasks/fontaine_harness_plan.md`: research doc list and counts; `## Decisions` only if needed
+- `tasks/fontaine_harness_plan.md`: research doc list and counts (twelve to seventeen); `## Decisions` only if needed
 - `tasks/design/research-findings.md`: pointer subsection
+- `CHANGELOG.md`: `#### Research` bullet
 
 ## Trade-offs
 
@@ -241,14 +268,12 @@ tried" with the reason, so the user can supply what is missing.
 - **Both `kimi-for-coding` and an `opencode-go` Kimi model.** They are the two paths Fontaine
   users take and may differ (gateway-specific caching, wires). Doubling E2/E3/E8/E9 for both is
   more spend; E4–E7 are harness-only and run on one model.
-- **Pinned commit rather than the 2.6 canary or latest tag.** Citations stay checkable; the doc
-  records the version and notes drift.
 
 ## Decisions
 
 - 2026-11-05: AFK: the study pins `MoonshotAI/kimi-code` at commit `df90d90ec0714db23dcc830acd2db6232f5c7426` (HEAD at planning, package 2.5.1), not a release tag or the 2.6 canary, so every citation resolves to one tree.
-- 2026-11-05: AFK: credentials follow the DeepSeek study's rule: the container holds only a dummy key and the host proxy injects the real Kimi account key or `go` access token, read-only, never refreshing, because the container must not be able to leak a real credential.
-- 2026-11-05: AFK: telemetry is measured with the harness's default settings first and with its documented opt-out second, because the issue asks what leaves the machine by default.
+- 2026-11-05: AFK: credentials follow the DeepSeek study's rule: the container holds only a dummy key and the host proxy injects the real Kimi account key or `madesroches` access token, read-only, never refreshing, because the container must not be able to leak a real credential.
+- 2026-11-05: AFK: telemetry is measured with the harness's default settings first and with `KIMI_DISABLE_TELEMETRY=1` and `KIMI_CODE_NO_AUTO_UPDATE=1` second, because the issue asks what leaves the machine by default.
 - 2026-11-05: AFK: Kimi as guardian/screen is assessed from source and the existing scorecard history, not re-measured, because the issue excludes benchmarks and live scorecards.
 
 ## Documentation
@@ -261,17 +286,7 @@ the two index updates in step 9 are the documentation deliverable.
 No product code, so nothing is added to `cargo test`. The scripts are research tooling, in the
 same tier as `research/deepseek-harness/scripts/`; each experiment's recorded output is its check.
 One automated check is mandatory because a leak would fail silently: before commit, `scrub.py
---check research/kimi-harness/captures/` must report 0 hits (dummy key, current Kimi key and `go`
+--check research/kimi-harness/captures/` must report 0 hits (dummy key, current Kimi key and `madesroches`
 tokens from `credentials.toml`, any anonymous install id), and an `rg` over the same directory for
-credential-shaped patterns (for example `Bearer [A-Za-z0-9._-]{20,}`, `sk-[A-Za-z0-9]{20,}`) must
+credential-shaped patterns (`sk-[A-Za-z0-9_-]{20,}`) must
 find nothing. Neither prints a matched value.
-
-## Open Questions
-
-- Can kimi-code be pointed at a custom OpenAI-compatible Chat endpoint with a static key (so the
-  proxy can sit in front of `kimi-for-coding` and the `go` gateway)? Step 2 answers it from
-  `docs/en/configuration/providers.md`. If only the built-in OAuth Kimi Code provider is usable,
-  the harness legs run with the dummy-key proxy injecting the account key on that provider's
-  base URL, or are recorded in Not tried and the source-reading track carries the answers.
-- Which models does the Kimi account's key actually serve right now (`k3.1-pro`, `kimi-for-coding`
-  and the highspeed variants)? E1's models probe settles which model each experiment uses.
