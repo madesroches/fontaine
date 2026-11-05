@@ -125,8 +125,10 @@ therefore already paid for every spawn. Only *agent-sent* wakes are gated on `te
   derivation. `AgentRow.idle`, `job_output` and export read it.
 - **`finish`** returns whether the agent keeps its board tasks: `Done && !killed && retired.is_none()`. A
   `Failed` end still releases them, as today.
-- **Final ends:** killed, budget exhausted, retired. A retired agent shows `done`, so `done` now
-  always means "final"; export maps a ledger agent's `retired` end to `done` (`export.rs`). `resume` refuses a retired node with a new `Refusal::Retired(String)`, and
+- **Final ends:** killed, budget exhausted, retired. A retired `Done` agent shows `done`, so `done` now
+  always means "final"; export maps a ledger agent's `retired` end to `done` (`export.rs`). A retired
+  `Failed` agent keeps showing `failed`: every retire path appends `finished: retired` only for a
+  `Done` node, as `/clear` does, so its ledger end stays `failed` (and `--resume` already skips it). `resume` refuses a retired node with a new `Refusal::Retired(String)`, and
   `resume_blocker` reads `retired` and returns "it was retired (<why>)".
 
 ### Retirement
@@ -146,7 +148,7 @@ There is no timeout and no cap on idle agents. An agent retires only when resumi
    including descendants that `finish` or the running arm of `kill_outcome` marks `Killed`, and a
    budget-exhausted end through `conclude`. `finish` and `conclude` return the ids their cascade
    retired, and `conclude` does what `spawn::retire` does for them: release tasks, drop boards and
-   append `finished: retired`.
+   append `finished: retired` for the `Done` ones.
 2. **`/clear`.** The `IdleTeammates` refusal goes away. `clear_ended` already drops every ended node,
    idle ones included. It now returns the dropped ids, split into the `Done` ones and the
    rest, so `clear_conversation` releases all their tasks and drops their boards first, and appends
@@ -155,7 +157,7 @@ There is no timeout and no cap on idle agents. An agent retires only when resumi
 3. **Conversation rewind.** The `IdleTeammates` refusal goes away. A rewind that includes the
    conversation retires every idle agent. The refusal existed because a woken agent would be judged
    against intent the rewind dropped. Retiring keeps that property without refusing, and it closes
-   the same gap for today's human resume of a `done` child. Nodes are kept, not pruned, and show as `done` in the `/agents` panel.
+   the same gap for today's human resume of a `done` child. Nodes are kept, not pruned, and show as `done` in the `/agents` panel (a `Failed` one as `failed`).
 4. **Session end.** Unchanged: the shutdown flag refuses every wake.
 
 A node that is retired, killed while idle, or pruned takes its queued inbox first. Each `Message` note
@@ -172,7 +174,7 @@ its idle descendants under one lock and returns every id it retired. `retire_all
 Vec<String>` serves rewind. A `spawn::retire` wrapper releases tasks and drops boards for those ids,
 as `kill_agent` does for a kill. `kill_outcome`'s idle arm uses the same cascade. `kill_outcome`
 returns the `Killed` kind plus the ids its cascade retired, and `kill_agent` does the bookkeeping for
-them: release tasks, drop boards, append `finished: retired`. Idle descendants of a killed running node
+them: release tasks, drop boards, append `finished: retired` for a `Done` node only. Idle descendants of a killed running node
 are recorded by whichever cascade reaches them first; retired nodes are no longer idle, so the second
 finds nothing.
 
@@ -210,13 +212,16 @@ finds nothing.
 owner id to `Arc<TaskBoard>` and one session-wide id counter, so a task id (`t<n>`) is unique across
 every board.
 
-- **Ownership.** An agent's board is created the first time it runs `board_update create`. The
-  creator is the owner. `owned_by`'s `ROOT_AGENT` exception becomes "the board's owner", so an owner
+- **Ownership.** An agent's board is created the first time it runs `board_update create`, if it
+  holds the `agent` tool. The creator is the owner. An agent without `agent` (the built-in `worker`)
+  cannot spawn anyone to work a board, so it never owns one (see Routing). `owned_by`'s `ROOT_AGENT` exception becomes "the board's owner", so an owner
   can change, complete or release any task on its own board, as `main` can today.
 - **Visibility.** An agent sees its own board and its parent's. It owns its own, and works its
   parent's by claiming and completing tasks. A sibling's or grandparent's board is out of reach: an agent works only the
   board it was spawned to serve. `main` has no parent, so it sees only its own board.
-- **Routing, with no new argument.** `create` always goes to the caller's own board. `claim`,
+- **Routing, with no new argument.** `create` goes to the caller's own board when the caller holds
+  `agent`, and to its parent's board otherwise, so a `worker` adds tasks to the board it serves as it
+  does to `main`'s today; the parent owns those tasks' board. `claim`,
   `complete` and `release` take a task id and act on whichever of the caller's own and parent's
   boards holds it. Any other id is `invalid_args` ("no task <id> on your board or your parent's").
   `board_show` lists both boards, each labelled with its owner's name.
@@ -229,8 +234,9 @@ every board.
 - **Releasing tasks.** `release_owned_by(agent)` runs on both the agent's own board and its
   parent's board (`main` has no parent board). `/clear` and the cascade use the same helper.
 - **Tools.** Teams on means the board tools are registered and `worker` / `explore` get them, as
-  today. A `worker` spawned by a subagent inherits them as a subset, as today, and can now own a
-  board of its own. Depth is bounded by `max_depth`.
+  today. A `worker` spawned by a subagent inherits them as a subset, as today; it has no `agent`
+  tool, so it creates on its parent's board and owns none. An agent that holds `agent` (`fork`, or
+  a custom type naming it) can own a board of its own. Depth is bounded by `max_depth`.
 
 ### Working the board down: fresh agents, reminded owner
 
@@ -259,6 +265,16 @@ The owner spawns, prompted by one harness note:
   slot-free check (owner reminder and the retry of transiently refused wakes) itself on every end.
   A root reminder fires only on `TurnOutcome::Answer`: budget stops are `Stopped`, and the TUI passes
   `None` for an interrupted turn.
+- **One owner per free slot.** Free slots are one session-wide pool (`running_children` counts every
+  running subagent against `max_parallel`). The slot-free and became-claimable checks remind at most
+  as many owners as there are free slots, earliest-spawned first (`main` first), among owners with
+  claimable tasks whose dedup key changed. An owner left out keeps its old key, so it is reminded
+  when a later slot frees or at its own turn end.
+- **No root reminder in headless `-p`.** A headless run never reminds `main` (the runtime's
+  `headless` flag): `settle` runs a further turn for every root notification and `merge` keeps that
+  turn's text, so a reminder would replace the `-p` answer with a reply to the reminder. Subagent
+  owners are still reminded. In the TUI the root reminder is an ordinary root notification: like a
+  queued report, it holds off `/clear` and rewind (`has_agent_notifications`) until its turn runs.
 - **Delivery.** The note goes through the existing paths: `post_to_root` for `main`, the inbox for a
   running owner, and a `wake_idle` resume for an idle owner. It is not recorded as a user message.
 - **Deduplication.** Each owner keeps the last `(board mutation count, free slots)` it was reminded
@@ -301,8 +317,11 @@ waking do not depend on it.
 ### Surfaces
 
 - **Agent list** (`agent_list.rs:69`): `running || viewed`, plus idle rows that own an in-progress
-  task. An idle row without one leaves at once, as a `done` row does today. `ListRow`
-  (`agent_list.rs:25-38`) gains `owns_task: bool`, filled in `fontaine-tui/src/ui/mod.rs` from the boards.
+  task. An idle row without one leaves at once, as a `done` row does today. The `listed` filter runs
+  on `AgentRow` input, so `agent_list::rows()` takes the set of task-owner ids as a new input, built
+  in `fontaine-tui/src/ui/mod.rs` (the caller, ~317) from `Boards::owns_in_progress`. `ListRow` is
+  unchanged: no renderer needs ownership, and a new field would break its literals in `spinner.rs`,
+  `view.rs` and `app.rs`.
   The `ENDED_LISTED` retention arm for `Failed`, `Killed` and `BudgetExhausted` rows is unchanged,
   so a `Failed` idle row stays listed for that window.
 - **`/agents` panel:** every row with `idle` / `done` / … and the kill key on idle rows, as today.
@@ -310,8 +329,8 @@ waking do not depend on it.
   (`ui/mod.rs:368` builds `BoardRow`s per owner).
 - **Status bar, export, `job_output`:** read the derived idle state; no other change.
 - **AFK stop:** `handle_afk_stop` (`fontaine-core/src/agent/afk.rs`) kills `running_ids()` and calls
-  `spawn::retire_all_idle("afk stop")` for idle agents, so finished agents are recorded `retired`,
-  not `killed`.
+  `spawn::retire_all_idle("afk stop")` for idle agents, so finished agents are recorded `retired`
+  (a `Failed` one keeps `failed`), not `killed`.
 
 ### Agents across `--resume`
 
@@ -321,7 +340,8 @@ session therefore brings back every agent that had not ended for good, as idle a
 Claude Code resumes an agent from its transcript.
 
 - **What the ledger must hold.** The `spawned` record gains `model` (the concrete resolved reference that `tree.set_model` stores, not `$main`, so the agent revives on the exact model it used).
-  Retiring appends `finished` with status `retired`. That covers the cascade, `/clear` and rewind,
+  Retiring a `Done` node appends `finished` with status `retired`; a retired `Failed` node keeps its
+  `failed` end, which is never rebuilt anyway. That covers the cascade, `/clear` and rewind,
   so a resumed session knows which agents are final without replaying those rules. `/clear` appends `retired`
   for each pruned node that was `Done`, so pruned agents stay gone on rebuild. A pruned
   killed or failed node keeps its own `finished` end: a `retired` record would overwrite it and
@@ -382,8 +402,9 @@ Claude Code resumes an agent from its transcript.
 - **Spend:** There is no per-subtree budget.
 - **One-shot reliance:** `job_output` treats a `Done` idle agent as ended (`AgentState::Ended { status: "idle" }`; a `Failed` one reports `failed`; `render_agent_wait` gives the wake hint for `idle` and also for
   `failed`, e.g. "It failed but keeps its conversation: send_message wakes it"),
-  so a parent waiting on a child returns when the child's turn ends. Headless `settle` waits on
-  `any_running` only, so idle agents never hold a run open.
+  so a parent waiting on a child returns when the child's turn ends. Headless `settle` runs a turn
+  for each root notification and otherwise ends once `!any_running`, so idle agents never hold a run
+  open (and `main` gets no reminder there, see above).
 - **Nesting:** idle descendants follow the cascade rule. Boards nest through ownership, bounded by
   `max_depth` and `max_parallel`.
 
@@ -400,7 +421,11 @@ Claude Code resumes an agent from its transcript.
      over the whole subtree, in its idle arm too. `finish` also returns the ids its cascade
      retired. `clear_ended` returns the pruned ids, with the `Done` ones marked. Delete `retire_idle`.
    - `kill_outcome` returns the `Killed` kind plus the ids its cascade retired.
-   - `rows()` / `AgentState` use `is_idle`. `owns_task` is not on `AgentRow`; the TUI computes it (step 5).
+   - `rows()` / `AgentState` use `is_idle`. Task ownership is not on `AgentRow`; the TUI passes it to
+     `agent_list::rows()` (step 5).
+   - A warn sink on `AgentTree` that does not depend on `Teams` (`set_warn(Arc<dyn Fn(&str)>)`,
+     installed at setup over the `Approver`'s `warn`), so wake and idle warnings reach the human with
+     teams off. Today the tree's only route is `teams.gate.warn`.
 2. **Boards** (`fontaine-agents/src/tasks.rs`, `tools.rs`)
    - Add `Boards` (owner → `TaskBoard`, shared id counter, a store only for `ROOT_AGENT`'s board).
      `TaskBoard` takes its ids from the shared counter. `restore` seeds the counter from `main`'s
@@ -410,10 +435,11 @@ Claude Code resumes an agent from its transcript.
      and `Boards::release_owned_by(agent, parent)`.
    - Add a listing accessor, `Boards::all() -> Vec<(owner, Vec<Task>)>`, and
      `Boards::owns_in_progress(agent) -> bool`, which `ui/mod.rs` uses (it reads `teams.board.list()`
-     today) for `BoardRow`s and `owns_task`.
+     today) for `BoardRow`s and the task-owner set passed to `agent_list::rows()`.
    - Add a reminder check, `Boards::reminder(owner, free_slots) -> Option<String>`, with the per-owner
      dedup pair.
-   - `board_show` / `board_update`: the routing and the new descriptions.
+   - `board_show` / `board_update`: the routing (including `create` going to the parent's board for
+     a caller without the `agent` tool) and the new descriptions.
    - Remove the hand-off from `Teams` (`allow_idle_resume` stays only for the hook, and its streak
      resets on mutations of the parent's board).
 3. **Spawn and messaging** (`fontaine-agents/src/spawn.rs`)
@@ -433,36 +459,44 @@ Claude Code resumes an agent from its transcript.
      the shared task-release helper (called by `conclude`, `kill_agent`, `spawn::retire` /
      `retire_all_idle` and `clear_conversation`) and the `board_update` tool. Because `conclude` skips
     that helper on a `Done` end, `conclude` also runs the slot-free check (reminder plus retry of
-    transiently refused wakes) on every end.
-   - `kill_agent`: release tasks, drop boards and append `finished: retired` for every id the cascade
-     retired (from `kill_outcome`). Add `pub fn retire` and `retire_all_idle` wrappers that do the same.
+    transiently refused wakes) on every end. The check reminds at most one owner per free slot,
+    earliest-spawned first, and never `main` in a headless run.
+   - `kill_agent`: release tasks, drop boards and append `finished: retired` for every `Done` id the
+     cascade retired (from `kill_outcome`); a `Failed` one keeps its `failed` end. Add `pub fn retire`
+     and `retire_all_idle` wrappers that do the same.
    - Retire, kill-while-idle, `conclude`'s cascade and `/clear` take the node's inbox first: `Message`
      notes go back to their sender, `Report` notes to `post_to_root`.
    - `conclude`: for the ids the cascade retired (from `finish` or a budget-exhausted end), release
-     tasks, drop boards and append `finished: retired`, as `spawn::retire` does.
+     tasks, drop boards and append `finished: retired` for the `Done` ones, as `spawn::retire` does.
    - `SendMessageTool`: the new error text and description. Update the `agent` description.
    - Reword the "teammate" / "team" strings: `spawn.rs` (the `stays idle` warning at ~249, the
      resumed-in-a-row warning at ~256, the unread-message warning at ~337) and `tools.rs:17`
-     ("teams are off in this session").
+     ("teams are off in this session"). Those three warnings go through the tree's warn sink (step 1)
+     instead of `teams.gate.warn`, so they reach the human when teams are off.
 4. **Core** (`fontaine-core`)
    - `agent.rs::clear_conversation`: drop the `any_idle` refusal, and release tasks and drop boards
      for the ids `clear_ended` returns, and append `finished: retired` for its `Done` ones only.
    - `agent/rewind.rs`: drop the refusal. On a conversation rewind, call `spawn::retire_all_idle(why)`.
    - `session.rs` / `rewind.rs`: delete the `IdleTeammates` variants.
-   - `agent/setup.rs`: build `Boards` around the restored root board.
+   - `agent/setup.rs`: build `Boards` around the restored root board, and install the tree's warn
+     sink over the `Approver`.
    - `AgentRuntime::goal_turn_ended` (`agent/goal.rs`) runs the owner reminder for `main`, only after
-     a real model turn.
+     a real model turn and never when `headless` is set.
 5. **TUI** (`fontaine-tui`)
-   - `ListRow.owns_task`, and the `agent_list.rs` listing rule.
+   - `agent_list::rows()` takes the task-owner id set (built in `ui/mod.rs` from
+     `Boards::owns_in_progress`) and applies the listing rule to it; `ListRow` is unchanged.
    - Per-owner boards in `ui/mod.rs` and `agents_panel.rs`.
    - Test updates in `agent_list.rs`, `agents_panel.rs` and `screen.rs`.
 6. **Agents across `--resume`**
    - Ledger: `Record::Agent` gains an optional `model`, set on `spawned` to the concrete resolved reference; `AgentEvent::Spawned`
-     carries it from the `agent` tool. Retiring appends `Finished { status: "retired" }` from
-     `spawn::retire` / `retire_all_idle`. `AgentRecord` gains `model` (`fontaine-core/src/ledger.rs`,
+     carries it from the `agent` tool. Retiring a `Done` node appends `Finished { status: "retired" }`
+     from `spawn::retire` / `retire_all_idle`. `AgentRecord` gains `model` (`fontaine-core/src/ledger.rs`,
      `child_runner.rs::LedgerWindow`).
    - `AgentTree::rebuild(records, types, limits)`: adds idle, handle-less nodes for revivable
-     agents, re-deriving their tools, mode and depth (`tree.rs`). Called from `agent/setup.rs` after
+     agents, re-deriving their tools, mode and depth (`tree.rs`). fontaine-agents does not depend on
+     fontaine-core, so `records` is a plain input type defined in fontaine-agents (`RebuildRecord {
+     id, name, parent, agent_type, model }`) that `agent/setup.rs` builds from the ledger view's
+     `AgentRecord`s, as it feeds `seed_names`. Called from `agent/setup.rs` after
      `build_agent`, once root tools and posture exist; the revivable-id set is computed earlier from
      ledger and registry alone.
    - `ChildRunner::revive` (`runner.rs`) and `CoreChildRunner::revive` (`child_runner.rs`), sharing
@@ -495,7 +529,8 @@ Claude Code resumes an agent from its transcript.
      owner spawns after a deduplicated harness reminder. Reason: a fresh agent has a clean context,
      and reusing one is the owner's explicit choice through `send_message` (#435).
    - 2026-11-05 (user): Deviation from Claude Code's one team per session with a fixed lead. Any
-     agent owns a board once it creates a task, and its children work it. An agent sees only its own
+     agent holding the `agent` tool owns a board once it creates a task, and its children work it;
+     an agent without it creates on its parent's board. An agent sees only its own
      board and its parent's. Only `main`'s board is persisted. Reason: any agent can decompose its
      work and spawn agents for it (#435).
    - 2026-11-05: `teammate_idle` fires only for an agent going idle with an in-progress task on its
@@ -510,12 +545,14 @@ Claude Code resumes an agent from its transcript.
 
 ## Files to Modify
 
-- `rust/fontaine-agents/src/tree.rs`, `spawn.rs`, `tasks.rs`, `tools.rs`, `runner.rs`, `root_ledger.rs`
+- `rust/fontaine-agents/src/tree.rs` (warn sink, `RebuildRecord`), `spawn.rs` (warnings through the
+  sink), `tasks.rs`, `tools.rs`, `runner.rs`, `root_ledger.rs`
 - `rust/fontaine-tools/src/jobs.rs`, `rust/fontaine-tools/src/jobs/tools.rs` (`render_agent_wait` wake hint for `failed`), `rust/fontaine-core/src/user_hooks.rs` (stale teammate comments)
 - `rust/fontaine-core/src/ledger.rs`, `child_runner.rs` (`revive`, `LedgerWindow`)
 - `rust/fontaine-core/src/agent.rs`, `agent/rewind.rs`, `agent/setup.rs`, `session.rs`, `agent/messaging.rs`, `agent/afk.rs`, `afk_report.rs` (test `Record::Agent` literal gains `model`), `config.rs` (`teams` doc), `export.rs`, `agent/goal.rs`
   (`goal_turn_ended`), `tasks.rs` (store unchanged; doc comment)
-- `rust/fontaine-tui/src/agent_list.rs`, `agents_panel.rs`, `ui/mod.rs`, `screen.rs` (tests)
+- `rust/fontaine-tui/src/agent_list.rs` (`rows()` takes the task-owner set), `agents_panel.rs`,
+  `ui/mod.rs` (builds that set; the `rows()` call), `screen.rs` (tests)
 - `rust/fontaine-core/tests/teams.rs`, `rust/fontaine-core/tests/agent_resume.rs`,
   `rust/fontaine-agents/tests/seam.rs`, `rust/fontaine/tests/parallel_agents.rs` (wherever they
   pass `teammate`)
@@ -563,6 +600,13 @@ Claude Code resumes an agent from its transcript.
 - 2026-11-05 (user): Agents survive `--resume`: an agent is its conversation, not a process.
 - 2026-11-05: A `Failed` agent is wakeable within its session but not rebuilt on `--resume`, so `/clear`-pruned failed agents stay gone.
 - 2026-11-05: Ledgers written before this change (`/clear` wrote only `ContextCleared`, and `retire_idle` wrote no record) rebuild /clear-pruned and team-retired agents as idle and wakeable. Accepted: pre-release, only dev ledgers are affected, and the forward design appends `retired`.
+- AFK: Free slots are one session-wide pool, and a freed slot reminds at most one owner per free slot, earliest-spawned first — reminding every idle owner would cost a model turn each and all but one spawn would fail with `Refusal::Parallel`.
+- AFK: A headless `-p` run never sends `main` the owner reminder, and the plan no longer claims `settle` waits only on `any_running` — `settle` runs a turn for every root notification and `merge` keeps its text, so a reminder would replace the `-p` answer; today `main` gets no such note either.
+- AFK: Every retire path (cascade, rewind, AFK stop, `kill_outcome`'s idle arm) appends `finished: retired` only for a `Done` node, as `/clear` does, so a retired `Failed` agent keeps `failed` — the smallest change that keeps a failure visible in the ledger and export, with no new marker, and `--resume` already skips `failed`.
+- AFK: An agent without the `agent` tool (the built-in `worker`) creates tasks on its parent's board and never owns one; the subagent-owner test uses `fork` or a custom type naming `agent` — this keeps today's ability of a `worker` to add tasks to `main`'s board, and a board nobody can be spawned for is useless.
+- AFK: `AgentTree::rebuild` takes a plain `RebuildRecord { id, name, parent, agent_type, model }` defined in fontaine-agents, built by `setup.rs` from the ledger view as for `seed_names` — fontaine-agents does not depend on fontaine-core.
+- AFK: `AgentTree` gets a warn sink independent of `Teams`, installed at setup over `Approver::warn`, and the stays-idle, resumed-in-a-row and unread-message warnings use it — with teams off `teams.gate.warn` does not exist, and AGENTS.md requires such failures reach the user.
+- AFK: `agent_list::rows()` takes the set of task-owner ids (from `Boards::owns_in_progress`) as an input to the listing rule, and `ListRow` gains no `owns_task` field — the filter runs on `AgentRow` input, no renderer needs the field, and a new `ListRow` field would break its literals in `spinner.rs`, `view.rs` and `app.rs`.
 
 ## Documentation
 
@@ -620,9 +664,11 @@ and boards:
 - `resume` refuses a retired node with `Refusal::Retired`. `finish` keeps tasks only for a `Done`
   end, and returns the ids its cascade retired. `clear_ended` returns every pruned id with the `Done`
   ones marked, and `/clear` appends `retired` only for those: a pruned killed agent still exports
-  as killed.
+  as killed. An idle `Failed` agent retired by a cascade, rewind or AFK stop still shows and exports
+  as `failed`.
 - `Boards`:
-  - Ids are unique across owners. `create` lands on the caller's board.
+  - Ids are unique across owners. `create` lands on the caller's board when it holds `agent`, and
+    on its parent's board otherwise (a `worker`'s task lands on `main`'s board).
   - `claim` / `complete` / `release` route by id to the caller's own or parent's board, and refuse a
     sibling's or grandparent's task.
   - The board owner can complete or release any task on its own board, and a non-owner only its own
@@ -630,13 +676,14 @@ and boards:
   - `drop_owner` removes a board. `release_owned_by` frees an agent's tasks on its parent's board.
   - Only `main`'s board reaches the store.
 - `Boards::reminder`: a note when claimable tasks and free slots exist; none when either is zero;
-  none again until the `(mutations, free slots)` pair changes.
+  none again until the `(mutations, free slots)` pair changes. With one slot freeing and two idle
+  owners holding claimable tasks, only the earlier-spawned one is reminded.
 - Seam (`fontaine-agents/tests/seam.rs`, `rig_with` `Limits{max_parallel:1}` and the scripted runner's
   fill hook): a human-woken child of an idle subagent parent finishes while the slot is taken. The report
   stays in the parent's inbox, the parent stays idle and keeps its tasks. Freeing the slot wakes the
   parent with the report. A session-budget variant does the same with `SessionBudget`.
 - `AgentArgs` with `teammate` is rejected as an unknown field, and the schema has no `teammate`.
-- `agent_list::rows`: an idle row is listed only with `owns_task` or when viewed.
+- `agent_list::rows`: an idle row is listed only when its id is in the task-owner set or it is viewed.
 
 Integration tests through the core with `rig_core::test_utils` scripted models
 (`fontaine-core/tests/agent_resume.rs`, `teams.rs`):
@@ -650,10 +697,11 @@ Integration tests through the core with `rig_core::test_utils` scripted models
   After a conversation rewind, the idle agent shows `done`, and a later `send_message` to it errors
   with the retired reason. This replaces `clear_and_rewind_are_refused_while_a_teammate_is_idle`.
 - Board work-down:
-  - Root creates two tasks and ends its turn, and root gets one reminder note.
+  - Root creates two tasks and ends its turn, and root gets one reminder note. The same run through
+    headless `-p` gets none, and its answer is the root's own turn.
   - A `worker` that finishes its own task and goes idle is *not* handed the other task.
-  - A subagent that creates tasks gets the reminder at its turn end, and its child claims from the
-    subagent's board, not root's.
+  - A subagent that holds `agent` (a `fork`, or a custom type naming `agent`) creates tasks, gets
+    the reminder at its turn end, and its child claims from the subagent's board, not root's.
 - AFK stop (`teams.rs`): an idle worker gets `finished: retired`, a running one `killed`, and a later
   `send_message` to the idle worker errors with the retired reason.
 - `teammate_idle`: a blocking hook resumes an agent going idle with an in-progress task, capped as
