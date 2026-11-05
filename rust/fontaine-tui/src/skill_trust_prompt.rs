@@ -1,78 +1,21 @@
 //! The confirmation before `/skills trust`: the user decides to honour a skill's `allowed-tools`,
 //! so the dialog shows what the file declares now, or what changed since they last trusted it.
 
-use std::time::Instant;
-
+use crate::confirm_prompt::{Block, ConfirmPrompt};
 use fontaine_core::extensions::{Scope, Skill};
 use fontaine_core::skill_trust::{self, TrustRecord};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Line;
 
-use crate::input::wrap;
-use crate::server_prompt::ANSWER_GRACE;
-use crate::theme::Theme;
-
-pub struct SkillTrustPrompt {
-    /// Set by the app; tells two consecutive prompts apart.
-    pub(crate) id: u64,
-    opened: Instant,
-    pub name: String,
-    lines: Vec<String>,
-}
-
-impl SkillTrustPrompt {
-    /// `previous` is the record the user made for an earlier version of the file, if any.
-    pub fn new(skill: &Skill, previous: Option<&TrustRecord>) -> SkillTrustPrompt {
-        SkillTrustPrompt {
-            id: 0,
-            opened: Instant::now(),
-            name: skill.name.clone(),
-            lines: describe(skill, previous),
-        }
-    }
-
-    /// `Some(true)` records the trust, `Some(false)` leaves things as they are.
-    pub fn handle_key(&mut self, key: KeyEvent) -> Option<bool> {
-        self.handle_key_at(key, Instant::now())
-    }
-
-    pub fn handle_key_at(&mut self, key: KeyEvent, now: Instant) -> Option<bool> {
-        if key.kind != KeyEventKind::Press
-            || now.saturating_duration_since(self.opened) < ANSWER_GRACE
-            || key.modifiers.contains(KeyModifiers::CONTROL)
-        {
-            return None;
-        }
-        match key.code {
-            KeyCode::Char('y') => Some(true),
-            KeyCode::Char('n') | KeyCode::Esc => Some(false),
-            _ => None,
-        }
-    }
-
-    pub fn body(&self, width: usize, theme: &Theme) -> Vec<Line<'static>> {
-        let bold = Style::default().add_modifier(Modifier::BOLD);
-        let mut out = vec![Line::styled(
-            format!("Honour the allowed-tools of {}?", self.name),
-            bold.fg(theme.heading),
-        )];
-        for line in &self.lines {
-            if line.is_empty() {
-                out.push(Line::raw(""));
-                continue;
-            }
-            for piece in wrap(line, width) {
-                out.push(Line::raw(piece));
-            }
-        }
-        out
-    }
-
-    pub fn footer(&self) -> Vec<Line<'static>> {
-        let dim = Style::default().add_modifier(Modifier::DIM);
-        vec![Line::styled("y trusts it · n leaves it as it is", dim)]
-    }
+/// `previous` is the record the user made for an earlier version of the file, if any.
+/// `Some(true)` from the prompt records the trust, `Some(false)` leaves things as they are.
+pub fn new(skill: &Skill, previous: Option<&TrustRecord>) -> ConfirmPrompt {
+    ConfirmPrompt::new(
+        format!("Honour the allowed-tools of {}?", skill.name),
+        describe(skill, previous)
+            .into_iter()
+            .map(Block::Text)
+            .collect(),
+        "y trusts it · n leaves it as it is",
+    )
 }
 
 /// What the dialog says, one entry per line (long ones wrap when drawn).
@@ -153,7 +96,6 @@ fn section(out: &mut Vec<String>, heading: &str, lines: Vec<String>, empty: &str
 mod tests {
     use super::*;
     use fontaine_core::permission_rules::parse_rule;
-    use std::time::Duration;
 
     fn skill(tools: &[&str], body: &str) -> Skill {
         Skill {
@@ -225,19 +167,5 @@ mod tests {
         );
         assert!(lines.contains("+ !make"), "{lines}");
         assert!(lines.contains("digest: sha256:new"), "{lines}");
-    }
-
-    #[test]
-    fn only_y_trusts_and_not_before_the_grace_period() {
-        let mut prompt = SkillTrustPrompt::new(&skill(&[], ""), None);
-        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
-        let opened = prompt.opened;
-        assert_eq!(prompt.handle_key_at(y, opened), None);
-        let later = opened + Duration::from_millis(450);
-        assert_eq!(prompt.handle_key_at(y, later), Some(true));
-        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
-        assert_eq!(prompt.handle_key_at(esc, later), Some(false));
-        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(prompt.handle_key_at(enter, later), None);
     }
 }

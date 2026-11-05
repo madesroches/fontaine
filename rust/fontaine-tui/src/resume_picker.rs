@@ -4,12 +4,11 @@
 use std::time::SystemTime;
 
 use fontaine_core::session::SessionInfo;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
-/// The most rows the body shows at once.
-const MAX_ROWS: usize = 14;
+use crate::picker::{self, MAX_ROWS};
 
 /// Shown for a session that has neither a name nor a message.
 const NO_PROMPT: &str = "(no messages)";
@@ -89,27 +88,11 @@ impl ResumePicker {
             }
             KeyCode::Up | KeyCode::Down => {
                 let n = self.visible().len();
-                if n > 0 {
-                    self.selected = if key.code == KeyCode::Up {
-                        (self.selected + n - 1) % n
-                    } else {
-                        (self.selected + 1) % n
-                    };
-                }
+                self.selected = picker::step(self.selected, n, key.code == KeyCode::Up);
             }
-            KeyCode::Backspace => {
-                self.query.pop();
-                self.selected = 0;
+            _ => {
+                picker::edit_query(&mut self.query, &mut self.selected, &key);
             }
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                self.query.push(c);
-                self.selected = 0;
-            }
-            _ => {}
         }
         ResumeKey::None
     }
@@ -175,13 +158,7 @@ impl ResumePicker {
             })
             .collect();
         let window = max_rows.clamp(1, MAX_ROWS);
-        let start = if lines.len() > window {
-            self.selected
-                .saturating_sub(window / 2)
-                .min(lines.len() - window)
-        } else {
-            0
-        };
+        let start = picker::window_start(self.selected, lines.len(), window);
         out.extend(lines.into_iter().skip(start).take(window));
         out
     }
@@ -207,6 +184,7 @@ impl ResumePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
     use std::time::Duration;
 
     fn key(code: KeyCode) -> KeyEvent {

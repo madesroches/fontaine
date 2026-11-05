@@ -2,7 +2,7 @@
 //! lasting answers would add.
 
 use std::cell::Cell;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use fontaine_core::permissions::{Answer, ApprovalRequest, Offers};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -10,6 +10,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use tokio::sync::oneshot;
 
+use crate::confirm_prompt::ANSWER_GRACE;
 use crate::diff::diff_rows;
 use crate::input::{InputBuffer, wrap};
 use crate::theme::Theme;
@@ -74,9 +75,6 @@ pub struct Approval {
 }
 
 const SCROLL_STEP: usize = 5;
-
-/// Keys typed ahead during the turn must not answer a prompt that appears under them.
-const ANSWER_GRACE: Duration = Duration::from_millis(400);
 
 impl Approval {
     pub fn new(request: ApprovalRequest, reply: oneshot::Sender<Answer>) -> Approval {

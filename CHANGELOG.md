@@ -954,6 +954,9 @@ All notable changes are recorded here. The format follows
   `238157 tok · $0.0066 + unpriced`, and a fully unpriced agent reads `4.9M unpriced tok`. A token
   budget keeps the total (`238k / 500k tok`). The age is followed by ` · `, and agent counts drop a
   trailing `.0` (`200k`, not `200.0k`) (#350).
+- The four y/n confirmation prompts share one `ConfirmPrompt`, the model and resume pickers share
+  their list navigation, and the audit-record and account literals are built through constructors;
+  no behavior changes (#422).
 
 ### Fixed
 

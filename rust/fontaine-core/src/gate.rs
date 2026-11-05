@@ -19,7 +19,7 @@ use fontaine_tools::scope::Scope;
 use rig_core::completion::{UnsupportedOption, Usage};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-use crate::audit::{AuditLog, Decision, DecisionRecord, args_digest, now_rfc3339};
+use crate::audit::{AuditLog, Decision, DecisionRecord, args_digest};
 use crate::config::{PermissionMode, Slot};
 use crate::effort::Effort;
 use crate::ledger::{Ledger, Record};
@@ -533,45 +533,19 @@ impl SessionState {
         rule: &str,
         explanation: &str,
     ) {
-        crate::permissions::record_decision(
-            self,
-            &DecisionRecord {
-                ts: now_rfc3339(),
-                session_id: self.session_id.clone(),
-                agent_id: ROOT_AGENT.to_string(),
-                agent_name: None,
-                tool_use_id: None,
-                tool: tool.to_string(),
-                args_digest: args_digest(&args),
-                original_args_digest: None,
-                tier,
-                decision: Decision::Allow,
-                rule: Some(rule.to_string()),
-                confidence: None,
-                guardian_model: None,
-                latency_ms: 0,
-                guardian_profile: None,
-                guardian_verdict: None,
-                guardian_cache_hit: None,
-                verdict_transport: None,
-                guardian_latency_ms: None,
-                fail_closed_reason: None,
-                screen_risk: None,
-                screen_allow_risk: None,
-                screen_steering: None,
-                screen_scores: None,
-                screen_model: None,
-                screen_latency_ms: None,
-                screen_outcome: None,
-                guardian_dropped_input_tokens: None,
-                guardian_dropped_provider: None,
-                guardian_dropped_model: None,
-                guardian_dropped_priced: None,
-                permission_mode: self.mode().as_str().to_string(),
-                headless: false,
-                explanation: Some(explanation.to_string()),
-            },
+        let mut record = DecisionRecord::new(
+            self.session_id.clone(),
+            ROOT_AGENT.to_string(),
+            tool.to_string(),
+            args_digest(&args),
+            tier,
+            Decision::Allow,
+            self.mode().as_str().to_string(),
+            false,
         );
+        record.rule = Some(rule.to_string());
+        record.explanation = Some(explanation.to_string());
+        crate::permissions::record_decision(self, &record);
     }
 
     pub fn guardian(&self) -> Arc<Guardian> {

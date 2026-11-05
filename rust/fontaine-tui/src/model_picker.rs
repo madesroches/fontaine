@@ -3,14 +3,12 @@
 
 use fontaine_core::config::AccountKind;
 use fontaine_core::models::{AccountListing, ModelRef};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
+use crate::picker::{self, MAX_ROWS};
 use crate::theme::Theme;
-
-/// The most rows (headings included) the body shows at once.
-const MAX_ROWS: usize = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerPurpose {
@@ -251,27 +249,11 @@ impl ModelPicker {
             }
             KeyCode::Up | KeyCode::Down => {
                 let n = Self::model_count(&self.visible());
-                if n > 0 {
-                    self.selected = if key.code == KeyCode::Up {
-                        (self.selected + n - 1) % n
-                    } else {
-                        (self.selected + 1) % n
-                    };
-                }
+                self.selected = picker::step(self.selected, n, key.code == KeyCode::Up);
             }
-            KeyCode::Backspace => {
-                self.query.pop();
-                self.selected = 0;
+            _ => {
+                picker::edit_query(&mut self.query, &mut self.selected, &key);
             }
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                self.query.push(c);
-                self.selected = 0;
-            }
-            _ => {}
         }
         PickerKey::None
     }
@@ -341,16 +323,12 @@ impl ModelPicker {
             }
         }
         let window = max_rows.clamp(1, MAX_ROWS);
-        let mut start = 0;
-        if lines.len() > window {
-            start = selected_row
-                .saturating_sub(window / 2)
-                .min(lines.len() - window);
-            if let Some(h) = selected_heading
-                && selected_row - h < window
-            {
-                start = start.min(h);
-            }
+        let mut start = picker::window_start(selected_row, lines.len(), window);
+        if lines.len() > window
+            && let Some(h) = selected_heading
+            && selected_row - h < window
+        {
+            start = start.min(h);
         }
         out.extend(lines.into_iter().skip(start).take(window));
         out
@@ -377,6 +355,7 @@ impl ModelPicker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)

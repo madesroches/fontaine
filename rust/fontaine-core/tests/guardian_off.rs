@@ -63,6 +63,22 @@ async fn guardian_off_runs_a_denied_call_and_is_recorded() {
 }
 
 #[tokio::test]
+async fn the_toggle_is_audited_as_a_root_decision_with_its_explanation() {
+    let rig = Rig::new(PermissionMode::Manual);
+    rig.state.set_guardian_off(true);
+    let records = rig.audit();
+    let record = records
+        .iter()
+        .find(|r| r.rule.as_deref() == Some("guardian_off"))
+        .expect("the toggle is audited");
+    assert_eq!(record.tool, "guardian");
+    assert_eq!(record.tier, Tier::GuardianOff);
+    assert_eq!(record.decision, Decision::Allow);
+    assert_eq!(record.agent_id, "root");
+    assert_eq!(record.explanation.as_deref(), Some("guardian disabled"));
+}
+
+#[tokio::test]
 async fn guardian_off_normalizes_an_external_read_and_runs_no_floor_or_hooks() {
     let rig = Rig::new(PermissionMode::Manual);
     let outside = rig.world.root.join("outside");

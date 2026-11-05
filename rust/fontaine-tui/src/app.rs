@@ -22,8 +22,8 @@ use crate::approval::Approval;
 use crate::commands::{MenuEntry, builtin_menu, common_prefix, match_menu, parse_command};
 use crate::complete::{self, Token};
 use crate::config_panel::{ConfigKey, ConfigPanel};
+use crate::confirm_prompt::ConfirmPrompt;
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
-use crate::guardian_prompt::GuardianOffPrompt;
 use crate::history::History;
 use crate::input::{InputBuffer, MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia};
 use crate::keymap::Keymap;
@@ -33,9 +33,7 @@ use crate::provider_dialog::{DialogKey, ProviderDialog};
 use crate::question::QuestionPanel;
 use crate::resume_picker::{ResumeKey, ResumePicker};
 use crate::rewind::{RewindKey, RewindPicker};
-use crate::server_prompt::ServerPrompt;
-use crate::setup_prompt::{CompositionPrompt, SetupReviewPrompt};
-use crate::skill_trust_prompt::SkillTrustPrompt;
+use crate::setup_prompt::CompositionPrompt;
 use crate::theme::Theme;
 use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
@@ -209,12 +207,12 @@ pub struct App {
     /// no overlay.
     pub transcript_print: bool,
     /// A repository's MCP server waiting for the human's say-so.
-    pub server: Option<ServerPrompt>,
+    pub server: Option<ConfirmPrompt>,
     /// The `/guardian-disable` confirmation while it is open.
-    pub guardian_off_prompt: Option<GuardianOffPrompt>,
-    pub skill_trust_prompt: Option<SkillTrustPrompt>,
+    pub guardian_off_prompt: Option<ConfirmPrompt>,
+    pub skill_trust_prompt: Option<ConfirmPrompt>,
     /// The `/auto-mode-setup` review of the repository scan's proposals while it is open.
-    pub setup_review: Option<SetupReviewPrompt>,
+    pub setup_review: Option<ConfirmPrompt>,
     /// The `/auto-mode-setup` offer of the guardian composition while it is open.
     pub setup_composition: Option<CompositionPrompt>,
     /// The subscription quota of each account that has a source, from the pollers' last
@@ -717,7 +715,7 @@ impl App {
         self.questions.retain(|panel| !panel.is_closed());
     }
 
-    pub fn begin_server(&mut self, mut prompt: ServerPrompt) {
+    pub fn begin_server(&mut self, mut prompt: ConfirmPrompt) {
         self.servers_opened += 1;
         prompt.id = self.servers_opened;
         self.server = Some(prompt);
@@ -725,18 +723,18 @@ impl App {
 
     pub fn begin_guardian_off(&mut self) {
         self.guardian_off_opened += 1;
-        let mut prompt = GuardianOffPrompt::new();
+        let mut prompt = crate::guardian_prompt::new();
         prompt.id = self.guardian_off_opened;
         self.guardian_off_prompt = Some(prompt);
     }
 
-    pub fn begin_skill_trust(&mut self, mut prompt: SkillTrustPrompt) {
+    pub fn begin_skill_trust(&mut self, mut prompt: ConfirmPrompt) {
         self.skill_trust_opened += 1;
         prompt.id = self.skill_trust_opened;
         self.skill_trust_prompt = Some(prompt);
     }
 
-    pub fn begin_setup_review(&mut self, mut prompt: SetupReviewPrompt) {
+    pub fn begin_setup_review(&mut self, mut prompt: ConfirmPrompt) {
         self.setup_review_opened += 1;
         prompt.id = self.setup_review_opened;
         self.setup_review = Some(prompt);
@@ -2383,7 +2381,7 @@ mod tests {
         let before = app.approval.as_ref().unwrap().selected();
         press(&mut app, KeyCode::Down);
         assert_ne!(app.approval.as_ref().unwrap().selected(), before);
-        std::thread::sleep(crate::server_prompt::ANSWER_GRACE);
+        std::thread::sleep(crate::confirm_prompt::ANSWER_GRACE);
         press(&mut app, KeyCode::Enter);
         assert!(rx.try_recv().is_err(), "the question is still waiting");
         assert_eq!(app.questions.len(), 1);
@@ -3451,7 +3449,7 @@ mod tests {
             |a| a.approval = Some(approval()),
             |a| a.agents = Some(AgentsPanel::new()),
             |a| a.providers = Some(dialog_on_key_screen()),
-            |a| a.server = Some(ServerPrompt::new("s".into(), "d".into())),
+            |a| a.server = Some(crate::server_prompt::new("s", "d")),
             |a| a.denied = Some(DeniedList::new(Vec::new())),
             |a| a.begin_question("root".into(), vec![ask(false)], oneshot::channel().0),
         ];

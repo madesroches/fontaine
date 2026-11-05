@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use crate::setup_prompt::{CompositionPrompt, SetupReviewPrompt};
+use crate::setup_prompt::{self, CompositionPrompt};
 use crate::{Action, Ui};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::now_rfc3339;
@@ -214,7 +214,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         count: usize,
     ) -> Option<bool> {
         self.app
-            .begin_setup_review(SetupReviewPrompt::new(review, count));
+            .begin_setup_review(setup_prompt::new(review, count));
         loop {
             self.draw(runtime);
             let Some(input) = self.input.recv().await else {

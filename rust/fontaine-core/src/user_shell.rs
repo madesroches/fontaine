@@ -8,7 +8,7 @@ use rig_tools::{ShellArgs, ShellRun};
 use serde_json::json;
 
 use crate::agent::AgentRuntime;
-use crate::audit::{Decision, DecisionRecord, args_digest, now_rfc3339};
+use crate::audit::{Decision, DecisionRecord, args_digest};
 use crate::ledger::Record;
 use crate::permissions::record_decision;
 use crate::tier::Tier;
@@ -62,44 +62,18 @@ impl AgentRuntime {
             command: command.to_string(),
             exit_code,
         });
-        record_decision(
-            &self.state,
-            &DecisionRecord {
-                ts: now_rfc3339(),
-                session_id: self.session.id.clone(),
-                agent_id: "user".to_string(),
-                agent_name: None,
-                tool_use_id: None,
-                tool: "shell".to_string(),
-                args_digest: args_digest(&json!({ "command": command })),
-                original_args_digest: None,
-                tier: Tier::Human,
-                decision: Decision::Allow,
-                rule: Some("user_shell".to_string()),
-                confidence: None,
-                guardian_model: None,
-                latency_ms,
-                guardian_profile: None,
-                guardian_verdict: None,
-                guardian_cache_hit: None,
-                verdict_transport: None,
-                guardian_latency_ms: None,
-                fail_closed_reason: None,
-                screen_risk: None,
-                screen_allow_risk: None,
-                screen_steering: None,
-                screen_scores: None,
-                screen_model: None,
-                screen_latency_ms: None,
-                screen_outcome: None,
-                guardian_dropped_input_tokens: None,
-                guardian_dropped_provider: None,
-                guardian_dropped_model: None,
-                guardian_dropped_priced: None,
-                permission_mode: self.state.mode().as_str().to_string(),
-                headless: false,
-                explanation: None,
-            },
+        let mut record = DecisionRecord::new(
+            self.session.id.clone(),
+            "user".to_string(),
+            "shell".to_string(),
+            args_digest(&json!({ "command": command })),
+            Tier::Human,
+            Decision::Allow,
+            self.state.mode().as_str().to_string(),
+            false,
         );
+        record.rule = Some("user_shell".to_string());
+        record.latency_ms = latency_ms;
+        record_decision(&self.state, &record);
     }
 }

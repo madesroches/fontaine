@@ -2,7 +2,7 @@
 //! can approve for one retry, and the choice to make when the pinned guardian model cannot be
 //! used at all.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use fontaine_core::gate::DeniedCall;
 use fontaine_core::models::ModelRef;
@@ -12,11 +12,9 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use tokio::sync::oneshot;
 
+use crate::confirm_prompt::ANSWER_GRACE;
 use crate::input::wrap;
 use crate::theme::Theme;
-
-/// Keys typed ahead during the turn must not answer a prompt that appears under them.
-const ANSWER_GRACE: Duration = Duration::from_millis(400);
 
 /// What the human did with the denied list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -116,42 +116,16 @@ impl World {
 /// A decision record for audit-log tests that need one.
 pub fn audit_record(session_id: &str) -> fontaine_core::audit::DecisionRecord {
     use fontaine_core::audit::{Decision, DecisionRecord};
-    DecisionRecord {
-        ts: fontaine_core::audit::now_rfc3339(),
-        session_id: session_id.to_string(),
-        agent_id: "root".to_string(),
-        agent_name: None,
-        tool_use_id: None,
-        tool: "read".to_string(),
-        args_digest: String::new(),
-        original_args_digest: None,
-        tier: fontaine_core::tier::Tier::ReadOnlyFastPath,
-        decision: Decision::Allow,
-        rule: None,
-        confidence: None,
-        guardian_model: None,
-        latency_ms: 0,
-        guardian_profile: None,
-        guardian_verdict: None,
-        guardian_cache_hit: None,
-        verdict_transport: None,
-        guardian_latency_ms: None,
-        fail_closed_reason: None,
-        screen_risk: None,
-        screen_allow_risk: None,
-        screen_steering: None,
-        screen_scores: None,
-        screen_model: None,
-        screen_latency_ms: None,
-        screen_outcome: None,
-        guardian_dropped_input_tokens: None,
-        guardian_dropped_provider: None,
-        guardian_dropped_model: None,
-        guardian_dropped_priced: None,
-        permission_mode: "manual".to_string(),
-        headless: false,
-        explanation: None,
-    }
+    DecisionRecord::new(
+        session_id.to_string(),
+        "root".to_string(),
+        "read".to_string(),
+        String::new(),
+        fontaine_core::tier::Tier::ReadOnlyFastPath,
+        Decision::Allow,
+        "manual".to_string(),
+        false,
+    )
 }
 
 /// Git Bash, which the shell and the hooks run through on Windows; nothing elsewhere.

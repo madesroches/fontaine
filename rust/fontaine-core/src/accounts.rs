@@ -222,24 +222,7 @@ pub fn build(new: &NewAccount, config: &Config) -> Result<Account, RuntimeError>
     if let Some(url) = base_url {
         check_base_url(url)?;
     }
-    let account = Account {
-        kind: new.kind,
-        api_key_env: None,
-        base_url: base_url.map(str::to_string),
-        models: None,
-        wires: None,
-        context_tokens: None,
-        prompt_caching: None,
-        cache_ttl: None,
-        quota: None,
-        think: None,
-        https_proxy: None,
-        http_proxy: None,
-        no_proxy: None,
-        ca_bundle: None,
-        client_cert: None,
-        client_key: None,
-    };
+    let account = Account::new(new.kind, base_url.map(str::to_string));
     check_account(&new.name, &account)
         .map_err(|(key, message)| RuntimeError::new(format!("{key}: {message}")))?;
     Ok(account)

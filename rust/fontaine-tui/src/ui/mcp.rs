@@ -1,5 +1,5 @@
 use crate::reports::McpState;
-use crate::server_prompt::ServerPrompt;
+use crate::server_prompt;
 use crate::{Action, App, Ui};
 use fontaine_core::agent::AgentRuntime;
 
@@ -21,10 +21,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
         }
         for plan in runtime.mcp_plan().into_iter().filter(|p| p.needs_approval) {
-            self.app.begin_server(ServerPrompt::new(
-                plan.name.clone(),
-                plan.description.clone(),
-            ));
+            self.app
+                .begin_server(server_prompt::new(&plan.name, &plan.description));
             let answer = loop {
                 self.draw(runtime);
                 let Some(input) = self.input.recv().await else {

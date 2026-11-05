@@ -191,24 +191,12 @@ async fn a_guardian_whose_key_is_removed_is_unavailable_and_denies() {
 }
 
 fn late_account() -> Account {
-    Account {
-        kind: AccountKind::named("openai-compatible"),
-        api_key_env: None,
-        base_url: Some("http://127.0.0.1:9".to_string()),
-        models: Some(vec!["z1".to_string()]),
-        wires: None,
-        context_tokens: None,
-        think: None,
-        prompt_caching: None,
-        cache_ttl: None,
-        quota: None,
-        https_proxy: None,
-        http_proxy: None,
-        no_proxy: None,
-        ca_bundle: None,
-        client_cert: None,
-        client_key: None,
-    }
+    let mut account = Account::new(
+        AccountKind::named("openai-compatible"),
+        Some("http://127.0.0.1:9".to_string()),
+    );
+    account.models = Some(vec!["z1".to_string()]);
+    account
 }
 
 #[tokio::test]
