@@ -146,6 +146,8 @@ pub struct Finish {
     pub final_end: bool,
     /// The idle agents the end retired below it.
     pub retired: Vec<Retired>,
+    /// The status the node settled on, which differs from the run's when a kill landed first.
+    pub status: Option<ChildStatus>,
 }
 
 /// What `AgentTree::rebuild` needs to know about an agent an earlier process of the session
@@ -938,6 +940,7 @@ impl AgentTree {
         let name = inner.name_of(id);
         let mut keeps_tasks = false;
         let mut final_end = false;
+        let mut status = None;
         if let Some(node) = inner.nodes.get_mut(id) {
             if node.status.is_running() {
                 node.status = report.status;
@@ -949,6 +952,7 @@ impl AgentTree {
                 node.status,
                 ChildStatus::Killed | ChildStatus::BudgetExhausted
             ) || node.exhausted.is_some();
+            status = Some(node.status);
         }
         let retired = if final_end {
             inner.end_below(id, &format!("its ancestor {name} ended"), &mut handles)
@@ -964,6 +968,7 @@ impl AgentTree {
             keeps_tasks,
             final_end,
             retired,
+            status,
         }
     }
 
@@ -1537,6 +1542,29 @@ impl AgentTree {
                 .iter()
                 .any(|note| note.kind != NotificationKind::Job)
         })
+    }
+
+    /// Whether any subagent's inbox holds a message or report, mail that retiring the agent
+    /// would hand back to the root.
+    pub fn has_subagent_mail(&self) -> bool {
+        self.lock().nodes.iter().any(|(id, node)| {
+            id != ROOT_AGENT
+                && node.inbox.iter().any(|note| {
+                    matches!(
+                        note.kind,
+                        NotificationKind::Message | NotificationKind::Report
+                    )
+                })
+        })
+    }
+
+    /// Drops the root's queued owner reminders, such as when the idle agents were retired under
+    /// a conversation that was just emptied.
+    pub fn discard_root_reminders(&self) {
+        if let Some(node) = self.lock().nodes.get_mut(ROOT_AGENT) {
+            node.inbox
+                .retain(|note| note.kind != NotificationKind::Reminder);
+        }
     }
 
     /// Whether the root's inbox holds a note from a job.

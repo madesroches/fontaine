@@ -465,3 +465,66 @@ async fn an_agent_that_was_retired_or_failed_is_not_brought_back() {
     );
     assert!(built.runtime.state.agents().rows().is_empty());
 }
+
+#[tokio::test]
+async fn a_resumed_agent_whose_log_is_missing_ends_failed_and_releases_its_tasks() {
+    use common::runtime::build_keyed_with;
+    use fontaine_core::session::Session;
+
+    let w = world("");
+    let OneChild { built, .. } = with_one_child(&w, vec![]).await;
+    let session_id = built.runtime.session.id.clone();
+    drop(built);
+    let restarted = tempfile::tempdir().unwrap();
+    copy_tree(&w.data, restarted.path());
+    let session = Session::open(restarted.path(), &session_id).unwrap();
+    std::fs::remove_file(session.dir.join("logs").join("agent-1.jsonl")).unwrap();
+    let (built, _) = build_keyed_with(
+        &w,
+        Manual,
+        "dig into it",
+        vec![],
+        vec![],
+        Some(session),
+        true,
+    );
+    let tree = built.runtime.state.agents().clone();
+    assert!(tree.is_idle("agent-1"));
+    let board = tree
+        .teams()
+        .expect("teams are wired")
+        .boards
+        .get(ROOT_AGENT)
+        .expect("main has a board");
+    let task = board.create(ROOT_AGENT, "dig", "", &[]).unwrap();
+    board.claim("agent-1", &task.id).unwrap();
+
+    built
+        .runtime
+        .message_agent("agent-1", "are you there".to_string())
+        .unwrap();
+    for _ in 0..500 {
+        if tree.status_of("agent-1") == Some(ChildStatus::Failed) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(tree.status_of("agent-1"), Some(ChildStatus::Failed));
+    let reason = tree.report_of("agent-1").unwrap().reason.unwrap();
+    assert!(reason.contains("agent-1.jsonl is missing"), "{reason}");
+    assert!(!board.list().iter().any(|t| t.owner.is_some()));
+}
+
+#[tokio::test]
+async fn clear_conversation_is_refused_while_an_idle_subagent_holds_mail() {
+    let w = world("");
+    let OneChild { built, .. } = with_one_child(&w, vec![]).await;
+    let tree = built.runtime.state.agents().clone();
+    tree.take_notifications(ROOT_AGENT);
+    tree.notify_report("agent-1", ROOT_AGENT, "unread".to_string());
+    assert!(matches!(
+        built.runtime.clear_conversation().await,
+        Err(fontaine_core::session::ClearError::SubagentsRunning)
+    ));
+    assert_eq!(tree.rows().len(), 1);
+}

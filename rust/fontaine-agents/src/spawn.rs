@@ -212,6 +212,14 @@ fn conclude(
     // An agent that finished its turn keeps its tasks: it is idle, not gone. `finish` says
     // whether it ended so, because a kill can land at any point before it.
     let finish = tree.finish(id, report.clone());
+    // The report was read before a kill that can land later, so the tree's status wins; the
+    // ledger keeps the last `finished` record.
+    if finish.status == Some(ChildStatus::Killed) && report.status != ChildStatus::Killed {
+        ledger.append_event(AgentEvent::Finished {
+            agent: id.to_string(),
+            status: ChildStatus::Killed.as_str().to_string(),
+        });
+    }
     if !finish.keeps_tasks {
         release_tasks_of(tree, ledger, id, parent.as_deref());
     }
@@ -228,7 +236,6 @@ fn conclude(
         _ => "complete",
     };
     subagent_event(event, id, &name, agent_type);
-    slot_freed(tree, ledger, Some(id));
 }
 
 /// Kills an agent from outside its run. An idle agent has no watcher to conclude it, so its
@@ -359,6 +366,9 @@ pub fn watch_report(
         resume_missed(&tree, &ledger, &id, &handle);
         wake_for_inbox(&tree, &ledger, &id);
         wake_for_inbox(&tree, &ledger, &parent);
+        // After the child's own mail is resumed, so a freed slot is not taken first by another
+        // idle agent and leaves the human's unread messages undelivered.
+        slot_freed(&tree, &ledger, Some(&id));
     });
 }
 

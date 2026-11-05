@@ -56,7 +56,7 @@ task list, scheduled prompts, permission grants and mode. The transcript on scre
 way `/clear` empties it. Summarizing from a chosen point is not offered.
 
 A rewind is something you ask for in the terminal, outside the permission pipeline, and the model
-cannot request one. It is refused while a subagent runs or has a report to deliver.
+cannot request one. It is refused while a subagent runs or has a report or message to deliver.
 
 ## What the ledger keeps
 

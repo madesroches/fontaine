@@ -82,17 +82,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let rows = runtime.state.agents().rows();
         self.app.running_agents = rows.iter().filter(|r| r.status.is_running()).count();
         let main_writing = runtime.state.agents().writing_of(ROOT_AGENT);
-        let task_owners: HashSet<String> =
-            runtime
-                .state
-                .agents()
-                .teams()
-                .map_or_else(HashSet::new, |teams| {
-                    rows.iter()
-                        .filter(|row| teams.boards.owns_in_progress(&row.id))
-                        .map(|row| row.id.clone())
-                        .collect()
-                });
+        let task_owners: HashSet<String> = runtime
+            .state
+            .agents()
+            .teams()
+            .map_or_else(HashSet::new, |teams| teams.boards.in_progress_owners());
         self.refresh_agent_list(&rows, &task_owners, main_writing);
         if self.app.agents.is_some() {
             self.refresh_panel(runtime, &rows);

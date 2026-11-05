@@ -869,7 +869,7 @@ impl AgentRuntime {
     /// drops.
     pub async fn clear_conversation(&self) -> Result<(), ClearError> {
         let agents = self.state.agents();
-        if agents.any_running() || agents.has_agent_notifications() {
+        if agents.any_running() || agents.has_agent_notifications() || agents.has_subagent_mail() {
             return Err(ClearError::SubagentsRunning);
         }
         self.session.clear().await?;
@@ -877,6 +877,7 @@ impl AgentRuntime {
         // per-agent logs and the spend tally stay.
         let pruned = agents.clear_ended();
         spawn::settle_retired(agents, &self.ledger_window(), pruned);
+        agents.discard_root_reminders();
         self.end_jobs().await;
         self.reset_shell_cwd();
         self.state.append(Record::ContextCleared {});

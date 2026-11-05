@@ -534,6 +534,16 @@ impl Boards {
             .any(|(_, tasks)| in_progress_of(tasks, agent))
     }
 
+    /// The agents that hold a task in progress on any board.
+    pub fn in_progress_owners(&self) -> HashSet<String> {
+        self.all()
+            .into_iter()
+            .flat_map(|(_, tasks)| tasks)
+            .filter(|t| t.status == TaskStatus::InProgress)
+            .filter_map(|t| t.owner)
+            .collect()
+    }
+
     /// Whether `agent` holds a task in progress on the board `board_owner` owns.
     pub fn owns_in_progress_on(&self, board_owner: &str, agent: &str) -> bool {
         self.get(board_owner)

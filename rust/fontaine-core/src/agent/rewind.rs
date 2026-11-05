@@ -23,7 +23,7 @@ impl fmt::Display for RewindError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RewindError::SubagentsRunning => f.write_str(
-                "subagents are still running or have reports to deliver; /rewind is refused until they finish or are killed",
+                "subagents are still running or have reports or messages to deliver; /rewind is refused until they finish or are killed",
             ),
             RewindError::Conversation(_) => f.write_str("the conversation could not be rewound"),
         }
@@ -80,7 +80,7 @@ impl AgentRuntime {
         overwrite_changed: bool,
     ) -> Result<RewindOutcome, RewindError> {
         let agents = self.state.agents();
-        if agents.any_running() || agents.has_agent_notifications() {
+        if agents.any_running() || agents.has_agent_notifications() || agents.has_subagent_mail() {
             return Err(RewindError::SubagentsRunning);
         }
         let checkpoints = self.session.checkpoints();
@@ -91,6 +91,7 @@ impl AgentRuntime {
                 .map_err(RewindError::Conversation)?;
             // A woken agent would be judged against intent the rewind dropped.
             self.retire_idle_agents("the conversation was rewound");
+            agents.discard_root_reminders();
             self.end_jobs().await;
             self.reset_shell_cwd();
         }
