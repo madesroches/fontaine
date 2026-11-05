@@ -12,6 +12,8 @@ All notable changes are recorded here. The format follows
   which CLI 2.1.318 lists on every start and which made every request fail. Any other plugin or
   skill is still refused, and the error now names the entries and where they likely come from
   (#429).
+- The `@` file-mention popup no longer stops at the first eight matches: it now holds every
+  matching workspace file and Up/Down scroll through them, keeping the selection visible (#419).
 - A guardian or `llm` scanner call that never answers is now dropped and retried within
   `[guardian] timeout_secs` instead of using all of it and being denied as a timeout; the timeout
   stays the ceiling and the denial stays fail-closed; a model needing more than about 20 s per
