@@ -23,8 +23,9 @@ to `matches.len() - 1`, so selection scrolling is correct — it just has nothin
 into past row 8 because the list was cut.
 
 The slash-command menu solves the identical problem differently: `App::slash_menu()`
-returns an unbounded `matches`, `completion_menu_key` (`app.rs:1426-1429`) moves the
-selection through all of them, and `menu_lines` (`view.rs:575-588`) shows only a
+returns an unbounded `matches`, the slash-menu Up/Down handling inline in `App`'s key
+handler (`app.rs:1420-1433`, mutating `slash_selected`) moves the selection through all
+of them, and `menu_lines` (`view.rs:575-588`) shows only a
 `MAX_MENU_ROWS = 8` (`view.rs:17`) window that follows the selection:
 
 ```rust
@@ -48,9 +49,10 @@ Follow the slash-menu pattern; no new concepts.
    slash menu uses, so the selection always stays visible. Extract that one-line window
    computation into a small helper shared by `menu_lines` and the completion overlay
    rather than duplicating it.
-3. **`app.rs` — no change needed.** `completion_key` already clamps Down to
+3. **`app.rs` — no behavior change needed.** `completion_key` already clamps Down to
    `matches.len() - 1` and Up with `saturating_sub`, and `refresh_completion` preserves
-   the selection with `.min(matches.len() - 1)` when the query is unchanged.
+   the selection with `.min(matches.len() - 1)` when the query is unchanged. (A test is
+   added; behavior is untouched.)
 4. **`docs/tui.md` — describe scrolling.** Rewrite the "File mentions" paragraph to say
    the list holds every matching file and Up/Down scroll through them (windowed display),
    instead of "up to eight".
@@ -67,7 +69,11 @@ Follow the slash-menu pattern; no new concepts.
 3. Add a view test mirroring the existing slash-menu window test (`view.rs:832-841`):
    more matches than `MAX_MENU_ROWS`, Down past the window, assert the rendered row count
    stays at `MAX_MENU_ROWS` and the selected row is the last rendered one.
-4. Update the "File mentions" section of `docs/tui.md` (~line 320).
+4. Add an `app.rs` test for the completion-list selection clamp (none exists today —
+   `up_and_down_move_the_selection_and_clamp` at `app.rs:3187` covers the slash menu):
+   open a completion list with more than 8 matches, press Down past the end, assert
+   `selected` clamps at `matches.len() - 1`.
+5. Update the "File mentions" section of `docs/tui.md` (~line 320).
 
 ## Files to Modify
 
@@ -99,8 +105,11 @@ no change.
   function, unit tier.
 - `view.rs` unit tests (TestBackend-style, following the existing slash-menu window test):
   row count capped at the window, window follows the selection in both directions.
-- `app.rs` selection-clamping tests already cover Up/Down bounds; they keep passing with a
-  longer list.
+- `app.rs` unit test (new): open a completion list with more than 8 matches, press Down
+  past the end, assert `selected` clamps at `matches.len() - 1`. The existing selection
+  clamp test, `up_and_down_move_the_selection_and_clamp` (`app.rs:3187`), covers only
+  the slash menu; the completion-list Down clamp in `completion_key`
+  (`app.rs:1471-1478`) is not exercised past row 8 today.
 - Per the repo testing strategy for terminal layout behavior, the manual tmux check below
   confirms the real-terminal rendering that `TestBackend` cannot (overlay clipping against
   actual terminal height).
