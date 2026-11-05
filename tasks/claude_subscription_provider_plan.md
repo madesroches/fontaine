@@ -23,7 +23,7 @@ cloud-backend, paid-credit, or fallback-model routing.
 - `Account` is a strict, provider-extensible config shape (`rust/fontaine-core/src/config.rs:348-379`),
   validated through `check_account` (`config.rs:1053-1109`). Accounts are user-file/`--settings`
   only, so no additional scope rule is needed for fields under `[accounts.*]`
-  (`rust/fontaine-core/src/config_scope.rs:130`; master plan Decisions, Providers).
+  (`rust/fontaine-core/src/config_scope.rs:157`; master plan Decisions, Providers).
 - `CredentialPolicy` only covers required, optional, and Fontaine-hosted sign-in credentials
   (`providers/mod.rs:35-43`). `client_for` resolves those credentials at
   `rust/fontaine-core/src/models.rs:365-415`, and `accounts::rows` presents the same states at
@@ -43,7 +43,8 @@ cloud-backend, paid-credit, or fallback-model routing.
 - Root and `$main` subagents share the erased model transport
   (`rust/fontaine-core/src/child_runner.rs:333-356,520-568`). A single stateful Claude session
   therefore cannot serve all callers. Fontaine's turn runner drops the rig stream to cancel
-  (`turn.rs:600`) and retries retryable failures twice (`turn.rs:386-435`). Authentication,
+  (`rust/fontaine-core/src/turn.rs:598`) and retries retryable failures twice
+  (`rust/fontaine-core/src/turn.rs:386-435`). Authentication,
   allowance, and configuration failures must not be misclassified into that retry path.
 - Subscription/unpriced handling already drops cost while preserving token usage
   (`models.rs:213-217`; `turn.rs:553-574`; `fontaine-guardian/src/guardian.rs:319-326`). The span
@@ -357,8 +358,9 @@ This is an explicit limitation of the experiment, not a claim of overage prevent
      asynchronous, await guardian retry in `credentials_changed`, and include required discovery
      when installing the main-model guardian fallback. Propagate the awaits through
      `ui/commands/model.rs` (including `answer_unavailable`), `ui/mod.rs`, `ui/turn.rs`, and
-     `ui/providers.rs`; make eval `live::connect` asynchronous and await it from the runner on its
-     Tokio runtime. Update all synchronous callers/tests without adding a discovery-free wrapper.
+     `ui/providers.rs`; make eval `live::connect` (`fontaine-evals/src/live.rs:66`, currently sync) asynchronous;
+     its caller (`runner.rs:582`, inside sync `run_score`) bridges with an explicit `block_on` on
+     the existing `runtime()` helper (`runner.rs:403`). Update all synchronous callers/tests without adding a discovery-free wrapper.
    - Add the external-account flow in `fontaine-tui/src/provider_dialog.rs`, `ui/providers.rs`, and
      setup tests. `/login` gives CLI instructions and runs preflight; it never prompts for a key.
 3. **Request transport and inert inventory.**
@@ -389,10 +391,12 @@ This is an explicit limitation of the experiment, not a claim of overage prevent
 - `rust/fontaine-core/src/{config,models,accounts,child_runner}.rs` and
   `rust/fontaine-core/src/agent/models.rs` — account fields, owned environment, asynchronous
   discovery/resolution and runtime guardian operations, notices, rows, and per-agent namespaces.
-- `rust/fontaine-tui/src/{provider_dialog,setup}.rs`,
+- `rust/fontaine-tui/src/{provider_dialog,setup}.rs` (`setup.rs` passes the owned env to
+  `Switcher::new`, call at ~line 630),
   `rust/fontaine-tui/src/ui/{providers,mod,turn}.rs`, and
   `rust/fontaine-tui/src/ui/commands/model.rs` — external-CLI account flow and async guardian hosts.
-- `rust/fontaine/src/{cli,lib,auto_mode,doctor_cmd,models_cmd}.rs`,
+- `rust/fontaine/src/{cli,lib,auto_mode,doctor_cmd,models_cmd}.rs` (`auto_mode`, `doctor_cmd`,
+  `models_cmd` change only for the live `SharedEnv`),
   `rust/fontaine-evals/src/{runner,live}.rs` — live owned environment, internal inventory mode, and
   asynchronous CLI-aware live eval.
 - Tests: new `rust/fontaine-core/tests/claude_subscription.rs`,
@@ -466,8 +470,8 @@ records them instead.
 All automated coverage is offline. Use a portable Rust CLI double, following `hook_double` and
 `fake_lsp`, with scenario controls for version/auth output, argv/environment capture, stream chunks,
 history assertions, malformed output, hangs, exit status, and descendants. No live credential,
-Anthropic endpoint, or real `claude` process enters unit/integration CI. Prebuild each package's
-own example before running its suite alone from `rust/`:
+Anthropic endpoint, or real `claude` process enters unit/integration CI. When running one package's suite alone locally from `rust/`, prebuild that package's own example
+first:
 
 ```sh
 cargo build -p fontaine-core --example claude_cli_double
@@ -476,8 +480,9 @@ cargo build -p fontaine --example fontaine_claude_cli_double
 cargo test -p fontaine --test claude_subscription
 ```
 
-`cargo test -p fontaine --test claude_subscription` does not build a dependency package's examples,
-and a workspace build can mask that omission. The explicit targets produce the distinct
+A single-package `cargo test -p <pkg> --test claude_subscription` does not build a dependency
+package's examples; CI's workspace `cargo test --no-run` builds every example first, so this applies
+only to the local single-package run. The explicit targets produce the distinct
 `claude_cli_double` and `fontaine_claude_cli_double` artifacts from the one implementation.
 
 - **Config/account unit tests:** registry round trip; every accepted/rejected field; project scopes;
