@@ -106,7 +106,8 @@ another account or model.
 
 | Failure | Result |
 |---|---|
-| CLI missing, too old, not signed in, wrong plan, conflicting variable, credit-billed model, malformed protocol | exit code 1 with the corrective text; no turn runs and nothing is retried |
+| At startup: credit-billed model | exit code 2 with the corrective text; no turn runs |
+| CLI missing, too old, not signed in, wrong plan, conflicting variable, malformed protocol, or a model that turns credit-billed at request time | exit code 1 with the corrective text; no turn runs and nothing is retried |
 | Plan limit, allowance or billing error from the CLI | the same, after the run began |
 | Overloaded or server error, a stream cut short, a CLI that is silent for 180 seconds | retried twice with backoff, like any provider |
 | The CLI's version, login or model-listing probe taking too long | the same as a failed probe: not retried |
@@ -117,8 +118,7 @@ directory.
 
 ## Supported CLI versions
 
-The minimum is **2.1.318**. A version is supported only after a live run has shown it stops at the
-first complete response and sends no unsolicited request; the checks above fail closed on anything
-else. Windows runs the official executable with `taskkill /T /F` as the tree cleanup. Each request
+The minimum is **2.1.318**. The gate is a minimum only: newer versions are accepted unqualified (no
+version is live-qualified yet), and a protocol shape the adapter does not know still fails closed. Windows runs the official executable with `taskkill /T /F` as the tree cleanup. Each request
 costs a process start and a replay of the history, so latency and cache behavior differ from a
 native session.

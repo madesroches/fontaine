@@ -339,7 +339,9 @@ fn a_cut_stream_is_never_a_response() {
     // No terminal delta, then a result.
     let mut r = reader(&[]);
     accept_text_response(&mut r);
-    assert!(failure(feed(&mut r, result("success"))).contains("ended") || r.started());
+    assert!(
+        failure(feed(&mut r, result("success"))).contains("ended before the provider ended it")
+    );
     // A stop without a delta.
     let mut r = reader(&[]);
     accept_text_response(&mut r);

@@ -50,8 +50,8 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 
 A headless run on a `claude-subscription` account needs the Claude CLI signed in beforehand
 (`claude auth login`, outside Fontaine). A missing or old CLI, a login that is not a Max or Ultra
-subscription, a conflicting environment variable or a credit-billed model exits 1 before any turn
-with the corrective text on stderr; a plan limit is reported without a retry, and a stream cut
+subscription, or a conflicting environment variable exits 1 before any turn, and a credit-billed model at
+startup exits 2, with the corrective text on stderr; a plan limit is reported without a retry, and a stream cut
 short or a CLI silent for 180 seconds is retried twice. Ending the run stops the CLI and its
 descendants. Usage lines carry token counts and no cost, and `--max-budget-usd` is a usage error
 (exit code 2). See [Claude subscription](claude-subscription.md).

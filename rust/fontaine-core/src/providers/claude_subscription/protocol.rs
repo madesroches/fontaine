@@ -567,11 +567,6 @@ impl Reader {
         self.native.as_ref()
     }
 
-    /// Whether a response began, so a cut stream is a truncated one.
-    pub fn started(&self) -> bool {
-        self.messages > 0
-    }
-
     pub fn accept(&mut self, line: &[u8]) -> Result<Event, Failure> {
         let value: Value = serde_json::from_slice(line)
             .map_err(|_| protocol("the Claude CLI sent a line that is not JSON"))?;
@@ -609,7 +604,7 @@ impl Reader {
             }
             "result" => self.result(&value),
             "user" => self.denial_echo(&value),
-            // Keepalives and rate-limit bookkeeping carry no response.
+            // Ignored: a mid-response extra-usage switch is invisible to Fontaine and failing here would not prevent a charge.
             "rate_limit_event" | "keep_alive" => Ok(Event::Nothing),
             "prompt_suggestion" => Err(protocol(
                 "the Claude CLI sent an unsolicited prompt suggestion",

@@ -111,8 +111,6 @@ impl ClaudeTransport {
             }
         };
 
-        self.handshake().await.map_err(provider)?;
-
         let translated = translate(
             &body,
             betas.as_deref(),
@@ -123,6 +121,8 @@ impl ClaudeTransport {
             },
         )
         .map_err(provider)?;
+
+        self.handshake().await.map_err(provider)?;
 
         let scratch = Scratch::new().map_err(scratch_failed)?;
         let files = self
@@ -151,10 +151,14 @@ impl ClaudeTransport {
             } else if acked {
                 reader.expect_ack();
             }
-            child
-                .write_line(&frame.value, idle)
-                .await
-                .map_err(provider)?;
+            if let Err(error) = child.write_line(&frame.value, idle).await {
+                // A CLI that exited early closes its stdin; classify the exit, not the write.
+                if error.kind == ErrorKind::Protocol && child.exit_status().await.is_some() {
+                    child.settle_stderr().await;
+                    return Err(exit_failure(&child.stderr_text(), reader.native()));
+                }
+                return Err(provider(error));
+            }
             if frame.query {
                 break;
             }

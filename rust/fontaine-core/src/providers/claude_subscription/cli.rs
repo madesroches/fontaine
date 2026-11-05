@@ -22,9 +22,9 @@ use crate::owner_only;
 use fontaine_tools::lock::lock_recovering;
 use fontaine_tools::procgroup;
 
-/// The oldest CLI whose protocol this adapter was qualified against. A version is supported only
-/// once a live run has shown that it stops at the first complete response and sends no
-/// unsolicited request; anything older is refused before a turn.
+/// The oldest CLI accepted. This is a minimum only: newer versions are accepted unqualified (no
+/// version is live-qualified yet), and a protocol shape the adapter does not know still fails
+/// closed.
 pub const MIN_VERSION: (u32, u32, u32) = (2, 1, 318);
 
 /// Variables that, inherited, would change which account, backend or model the CLI uses. They

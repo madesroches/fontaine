@@ -420,9 +420,9 @@ This is an explicit limitation of the experiment, not a claim of overage prevent
 - 2026-11-04 (user): Reuse existing issue #15 for the separate outbound “embed Fontaine through an
   Agent SDK” request; it is linked to #412 but is not part of this provider's scope.
 - 2026-11-04 AFK: The official `claude` CLI is a production model transport for this provider; AGENTS.md's and `tasks/design/testing.md`'s manual/eval-only rule for `claude -p` covers Claude Code baselines and tests only, and tests never run the real CLI (they use the fake `claude_cli_double`). Wording is clarified, not weakened.
-- 2026-11-04 AFK: Termination at the first complete response is treated as not proven to prevent every native retry/continuation on a CLI version; a CLI version is supported only after live qualification shows it, and unqualified versions fail closed (rejected by preflight).
+- 2026-11-04 AFK: Termination at the first complete response is treated as not proven to prevent every native retry/continuation on a CLI version; a CLI version is supported only after live qualification shows it, and the version gate is a minimum only (2.1.318): newer versions are accepted unqualified, since no version is live-qualified yet, and unknown protocol shapes still fail closed.
 - 2026-11-04 AFK: Protocol shapes outside the initial live matrix (older signed history, transformed/compacted history, unlisted models, credit entitlements) are unsupported and fail closed until qualified live.
-- 2026-11-04 AFK: Usage-credit transitions are treated as not surfaceable early by any current CLI API; included-only use continues to require disabling credits in the Claude account, and the billing guard fails closed on any credit signal.
+- 2026-11-04 AFK: Usage-credit transitions are treated as not surfaceable early by any current CLI API; included-only use continues to require disabling credits in the Claude account, and the billing guard fails closed on any credit signal in the `initialize` model rows and result/error frames; mid-response `rate_limit_event`s are ignored (Fontaine cannot see or prevent an extra-usage switch).
 
 ## Security
 

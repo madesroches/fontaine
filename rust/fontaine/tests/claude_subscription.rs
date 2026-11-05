@@ -294,7 +294,7 @@ async fn a_credit_billed_model_is_refused() {
         {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5", "usesUsageCredits": true},
     ]}));
     let out = claude.headless(&["hello"]).await;
-    assert_ne!(out.code, Some(0));
+    assert_eq!(out.code, Some(2), "{}", out.stderr);
     assert!(out.stderr.contains("usage credits"), "{}", out.stderr);
     assert!(claude.model_runs().is_empty());
 }
