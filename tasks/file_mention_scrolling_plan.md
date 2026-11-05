@@ -27,19 +27,19 @@ Two rounds on the `@` file-mention popup:
 
 The completion list comes from `FileIndex::build`
 (`rust/fontaine-core/src/ledger.rs:730`), which only collects entries whose file type
-is a file (`kind.is_file()`); directories are skipped. `Agent::set_files`
-(`rust/fontaine-core/src/agent.rs:723`, called from `record_session_start`, and
-`refresh_files` at `agent.rs:835`) hands `index.paths` to the TUI, so the `@` list can
-never contain `tasks/`.
+is a file (`kind.is_file()`); directories are skipped. `record_session_start`
+passes `index.paths` to `Agent::set_files` (`rust/fontaine-core/src/agent.rs:723`;
+defined at `agent.rs:828`), and `refresh_files` writes `Arc::new(index.paths)` straight
+into the slot (`agent.rs:841`), so the `@` list can never contain `tasks/`.
 
-Ranking (`rust/fontaine-tui/src/complete.rs:56`) computes the basename with
+Ranking (`rust/fontaine-tui/src/complete.rs:62`) computes the basename with
 `lower.rsplit(['/', '\\']).next()`, so the basename of a trailing-slash path (`tasks/`)
 is the empty string and every directory would land in match class 2 even if it were in
 the list.
 
 `App::completion_key` (`rust/fontaine-tui/src/app.rs:1471`) accepts the selected row on
 Tab (`accept_completion`, `app.rs:603`), inserting `@{path} ` — always with a trailing
-space. The `/` menu instead narrows first: `App::slash_key` (`app.rs:1428`) extends the
+space. The `/` menu instead narrows first: `App::slash_key` (`app.rs:1397`) extends the
 token to `common_prefix` of the matches when more than one match shares a prefix longer
 than the query, and only accepts on a second Tab (`commands.rs:575`).
 
@@ -60,29 +60,32 @@ classification behind the `tracked_edit` fast path. That record must stay files-
    with a trailing `/` (on all platforms; the string is only ever matched and inserted,
    never opened).
 2. **`fontaine-core/src/agent.rs` — feed completion the directory list.**
-   `record_session_start` and `refresh_files` call `set_files` with
-   `index.completion_paths()` instead of `index.paths`.
+   `record_session_start` passes `index.completion_paths()` to `set_files`
+   (`agent.rs:723`) and `refresh_files` writes `Arc::new(index.completion_paths())` to the
+   slot (`agent.rs:841`). `completion_paths(&self)` returns a fresh `Vec`, since the later
+   `Record::FileIndex` append moves `index.paths`.
 3. **`fontaine-tui/src/complete.rs` — rank directories by their real basename.** Trim
    trailing separators before taking the basename, so `tasks/` basename-matches `task`
-   (class 0). Also skip entries equal to the query (case-insensitively): a fully typed
-   path has nothing left to complete, and a directory must not list itself among its own
-   children when the query is its path followed by `/` (accepting `tasks/` reopens the
-   list with query `tasks/`, which the directory itself would otherwise match).
-   Canonicalize candidate paths and queries to `/` for all containment, exact-match,
+   (class 0). Also skip directory entries (displayed string ends in `/`) equal to the query
+   (case-insensitively): a directory must not list itself among its own children when the
+   query is its path followed by `/` (accepting `tasks/` reopens the list with query
+   `tasks/`, which the directory itself would otherwise match). File entries are never
+   skipped, so a fully typed file path stays first.
+   Canonicalize candidate paths and queries to `/` for all containment, directory-skip,
    basename, and common-prefix comparisons while retaining the directory marker in
    displayed and inserted strings; add a mixed-separator directory-descent regression
    test. `display()` (`complete.rs:44-49`) goes through `Path::strip_prefix` and
    `to_string_lossy()`, which drop a trailing separator, so it strips the trailing
    separator before the Path operation and re-appends `/` to the result; otherwise the
    marker never reaches displayed or inserted strings, the no-trailing-space check in
-   `accept_completion` never fires, and the exact-match skip never sees `tasks/`.
+   `accept_completion` never fires, and the directory skip never sees `tasks/`.
 4. **`fontaine-tui/src/app.rs` — the `/` menu's Tab contract for `@`.**
    - `completion_key` Tab first extends the token to the common prefix of the current
      matches — the existing `common_prefix` helper, case-insensitive, spelled as in the
      first match — when there is more than one match and the prefix both starts with the
      query and is longer than it; only when nothing more can be extended does Tab accept
      the selected row. After the common-prefix `replace_range`, end the stored-list
-     borrow and call `self.refresh_completion()` so the next Tab uses the narrowed query,
+     borrow and call `self.history.reset()` and `self.refresh_completion()` so the next Tab uses the narrowed query,
      token range, matches, and selection. Enter keeps accepting the selection directly.
    - `accept_completion` inserts a match ending in `/` without the trailing space, so the
      refreshed list opens on the directory's children and the user can keep completing
@@ -108,10 +111,10 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
    `build` (depth-0 skip, file-only cap), add `completion_paths()`.
 2. `fontaine-core/src/agent.rs`: use `completion_paths()` in `record_session_start` and
    `refresh_files`; leave the `Record::FileIndex` append on `index.paths`.
-3. `fontaine-tui/src/complete.rs`: basename trimming and the exact-match skip in `rank()`, and
+3. `fontaine-tui/src/complete.rs`: basename trimming and the directory self-skip in `rank()`, and
    `display()` preserving the trailing `/`.
 4. `fontaine-tui/src/app.rs`: common-prefix narrowing on Tab in `completion_key`
-   (call `self.refresh_completion()` after `replace_range` so the stored list is fresh
+   (call `self.history.reset()` and `self.refresh_completion()` after `replace_range` so the stored list is fresh
    before the next Tab); trailing-space suppression for directory matches in
    `accept_completion`.
 5. `docs/tui.md`: "File mentions" paragraph and the main Keys table Tab row.
@@ -155,8 +158,9 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
 ### Testing Strategy (Round 2)
 
 - `complete.rs` unit tests: a directory `tasks/` basename-matches `task` ahead of a
-  longer `tasks.rs` path; a fully typed path (exact match, case-insensitive) is not
-  offered; query `tasks/` lists the children of `tasks/` but not `tasks/` itself;
+  longer `tasks.rs` path; query `tasks/` lists the children of `tasks/` but omits
+  `tasks/` itself (case-insensitive), while a fully typed file path such as `src/main.rs`
+  is still offered first;
   `rank("task", ["/w/tasks/", ...], "/w")` yields `"tasks/"` (trailing marker kept);
   a mixed-separator directory-descent regression using string inputs such as
   `/w/src\\sub/` (on Linux `Path::strip_prefix` does not treat `\` as a separator).
