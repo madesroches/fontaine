@@ -7,7 +7,7 @@ use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::ROOT_AGENT;
 
 use super::AgentRuntime;
-use crate::afk_report::{self, AfkOutcome, AfkReport, AssessmentResult};
+use crate::afk_report::{self, AfkOutcome, AfkReport, Assessment, AssessmentResult};
 use crate::gate::Blocked;
 use crate::goal::PauseReason;
 use crate::ledger::Record;
@@ -48,7 +48,10 @@ impl AgentRuntime {
                 return;
             }
         };
-        let Some(report) = report.filter(AfkReport::has_denials) else {
+        let Some(report) = report
+            .filter(AfkReport::has_denials)
+            .filter(|report| report.review.assessment == Assessment::Pending)
+        else {
             return;
         };
         let guardian = self.state.guardian();

@@ -124,12 +124,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
             };
             match self.app.handle_input(input) {
                 Action::AfkReview(true) => {
+                    let was_afk = runtime.state.afk_on();
                     if runtime.review_afk_stop() {
                         self.app.mode = runtime.state.mode();
                         self.app.afk = runtime.state.afk_on();
-                        self.app
-                            .transcript
-                            .notice("reviewed: the session can run again, now in manual mode");
+                        self.app.transcript.notice(if was_afk {
+                            "reviewed: the session can run again, now in manual mode"
+                        } else {
+                            "reviewed: the session can run again"
+                        });
                     }
                     return ControlFlow::Continue(());
                 }

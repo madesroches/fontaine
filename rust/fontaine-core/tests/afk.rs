@@ -605,7 +605,7 @@ async fn the_rebuild_before_a_turn_follows_afk_in_both_directions() {
 }
 
 #[tokio::test]
-async fn the_review_grades_the_stretch_it_is_given_not_the_latest() {
+async fn the_review_grades_the_stretch_it_is_given_not_the_latest_and_only_once() {
     use common::World;
     use common::runtime::build;
     use fontaine_core::config::PermissionMode;
@@ -642,6 +642,7 @@ async fn the_review_grades_the_stretch_it_is_given_not_the_latest() {
     state.set_mode(Afk, AfkSource::Cycle).unwrap();
     state.append(denial());
 
+    built.runtime.assess_afk(first).await;
     built.runtime.assess_afk(first).await;
     let graded: Vec<_> = built
         .runtime

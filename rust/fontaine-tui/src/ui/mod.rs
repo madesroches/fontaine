@@ -474,6 +474,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// One press of the mode key. `deferred` is true while work is in progress, when leaving
     /// AFK mode only queues the stretch's review for when that work ends.
     pub(crate) fn cycle_mode(&mut self, runtime: &AgentRuntime, deferred: bool) {
+        let pending_before = self.pending_afk_review.len();
         let mut to = statusbar::next_mode(runtime.state.mode());
         if let Err(refusal) = self.change_mode(runtime, to, AfkSource::Cycle) {
             self.app.transcript.error(refusal.to_string());
@@ -490,7 +491,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.app.transcript.notice(format!(
                 "AFK mode on: nothing is asked of you while you are away. Each call that would have needed approval is denied, and the model is told to finish the work that is allowed or stop and report. {leave} leaves it; /afk report shows what happened."
             ));
-        } else if deferred && !self.pending_afk_review.is_empty() {
+        } else if deferred && self.pending_afk_review.len() > pending_before {
             self.app
                 .transcript
                 .notice("AFK mode off; the stretch is reviewed when this work ends");
