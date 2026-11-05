@@ -1264,7 +1264,8 @@ async fn output_arriving_in_odd_chunks_with_crlf_decodes() {
 #[tokio::test]
 async fn unexpected_init_customization_is_refused() {
     for extra in [
-        json!({"plugins": [{"name": "p"}]}),
+        json!({"plugins": [{"name": "foo", "path": "/p", "source": "foo@market"}]}),
+        json!({"skills": ["foo"]}),
         json!({"tools": ["Bash"]}),
         json!({"mcp_servers": [{"name": "fontaine", "status": "failed"}]}),
         json!({"model": "claude-opus-5"}),
@@ -1278,7 +1279,23 @@ async fn unexpected_init_customization_is_refused() {
             .await
             .unwrap_err();
         assert!(!error.is_retryable(), "{extra}: {error}");
+        if extra.get("plugins").is_some() {
+            assert!(error.to_string().contains("foo@market"), "{error}");
+        }
     }
+}
+
+#[tokio::test]
+async fn builtin_cli_plugins_are_accepted() {
+    let claude = Claude::new();
+    claude.scenario(json!({"responses": [{"text": "hello"}]}));
+    let handle = main_handle(&claude).await;
+    let response = handle
+        .completion
+        .call(CompletionRequest::new("hi").max_tokens(16))
+        .await
+        .unwrap();
+    assert_eq!(response.text(), "hello");
 }
 
 #[tokio::test]

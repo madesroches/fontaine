@@ -37,6 +37,52 @@ fn protocol(message: &str) -> Failure {
     ClaudeError::new(ErrorKind::Protocol, message).boxed()
 }
 
+const SHOWN_ENTRIES: usize = 5;
+const ENTRY_CHARS: usize = 80;
+
+/// Plugins compiled into the CLI itself, which it lists even with every setting source off. Both
+/// markers are required so a user plugin carrying one of them is not mistaken for a bundled one.
+fn is_bundled(plugin: &Value) -> bool {
+    plugin.get("path").and_then(Value::as_str) == Some("builtin")
+        && plugin
+            .get("source")
+            .and_then(Value::as_str)
+            .is_some_and(|source| source.ends_with("@builtin"))
+}
+
+/// Names the offending entries so the user can find what the CLI read; the entries come from the
+/// CLI, so their number and length are capped.
+fn customization_error(kind: &str, entries: &[&Value]) -> Failure {
+    let render = |entry: &Value| -> String {
+        let text = entry
+            .get("source")
+            .and_then(Value::as_str)
+            .or_else(|| entry.get("name").and_then(Value::as_str))
+            .or_else(|| entry.as_str())
+            .unwrap_or("?");
+        text.chars().take(ENTRY_CHARS).collect()
+    };
+    let mut names: Vec<String> = entries
+        .iter()
+        .take(SHOWN_ENTRIES)
+        .map(|entry| render(entry))
+        .collect();
+    if entries.len() > SHOWN_ENTRIES {
+        names.push(format!("and {} more", entries.len() - SHOWN_ENTRIES));
+    }
+    let names = names.join(", ");
+    let accepted = if kind == "plugins" {
+        "only the CLI's builtin plugins are accepted"
+    } else {
+        "no skills are accepted"
+    };
+    protocol(&format!(
+        "the Claude CLI loaded {kind} Fontaine did not ask for: {names}; {accepted}. The CLI \
+         loaded them even with every setting source switched off; look at the CLI's \
+         managed/policy settings or the environment Fontaine passes through to it"
+    ))
+}
+
 /// Tool names as the CLI sees them: `mcp__fontaine__<name>`, with names that need length or
 /// character normalization replaced by a stable, reversible alias.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -668,14 +714,15 @@ impl Reader {
             ));
         }
         for key in ["plugins", "skills"] {
-            if init
+            let unwanted: Vec<&Value> = init
                 .get(key)
                 .and_then(Value::as_array)
-                .is_some_and(|list| !list.is_empty())
-            {
-                return Err(protocol(
-                    "the Claude CLI loaded a customization Fontaine did not ask for",
-                ));
+                .map_or(&[][..], Vec::as_slice)
+                .iter()
+                .filter(|entry| key != "plugins" || !is_bundled(entry))
+                .collect();
+            if !unwanted.is_empty() {
+                return Err(customization_error(key, &unwanted));
             }
         }
         Ok(())

@@ -531,6 +531,89 @@ fn unexpected_native_behavior_is_refused() {
     }
 }
 
+fn init_with(key: &str, value: Value) -> Value {
+    let mut init = init();
+    init[key] = value;
+    init
+}
+
+fn init_error(init: Value) -> String {
+    let mut r = reader(&[]);
+    feed(&mut r, init).unwrap_err().to_string()
+}
+
+#[test]
+fn bundled_plugins_are_accepted_and_the_stream_decodes() {
+    let plugins: Vec<Value> = [
+        "cc-plugin-agents-md",
+        "cc-plugin-telemetry",
+        "cc-plugin-privacy",
+        "cc-plugin-plugin-authoring",
+    ]
+    .iter()
+    .map(|n| json!({"name": n, "path": "builtin", "source": format!("{n}@builtin")}))
+    .collect();
+    let mut r = reader(&[]);
+    feed(&mut r, init_with("plugins", json!(plugins))).unwrap();
+    for value in [
+        message_start(),
+        stream(json!({"type": "content_block_start", "index": 0,
+                      "content_block": {"type": "text", "text": ""}})),
+    ] {
+        feed(&mut r, value).unwrap();
+    }
+}
+
+#[test]
+fn a_user_plugin_beside_bundled_ones_is_named() {
+    let message = init_error(init_with(
+        "plugins",
+        json!([
+            {"name": "cc-plugin-telemetry", "path": "builtin", "source": "cc-plugin-telemetry@builtin"},
+            {"name": "foo", "path": "/p", "source": "foo@market"},
+        ]),
+    ));
+    assert!(message.contains("plugins"), "{message}");
+    assert!(message.contains("foo@market"), "{message}");
+    assert!(!message.contains("cc-plugin-telemetry"), "{message}");
+}
+
+#[test]
+fn both_bundled_markers_are_required() {
+    for plugin in [
+        json!({"path": "builtin", "source": "x@market"}),
+        json!({"path": "/p", "source": "x@builtin"}),
+    ] {
+        let mut r = reader(&[]);
+        assert!(feed(&mut r, init_with("plugins", json!([plugin]))).is_err());
+    }
+}
+
+#[test]
+fn skills_are_refused_by_name() {
+    for entry in [json!("my-skill"), json!({"name": "my-skill"})] {
+        let message = init_error(init_with("skills", json!([entry])));
+        assert!(message.contains("skills"), "{message}");
+        assert!(message.contains("my-skill"), "{message}");
+    }
+}
+
+#[test]
+fn listed_entries_are_capped_in_number_and_length() {
+    let plugins: Vec<Value> = (0..7)
+        .map(|i| json!({"name": format!("p{i}"), "path": "/p"}))
+        .collect();
+    let message = init_error(init_with("plugins", json!(plugins)));
+    assert!(message.contains("p4"), "{message}");
+    assert!(!message.contains("p5"), "{message}");
+    assert!(message.contains("and 2 more"), "{message}");
+
+    let long = "é".repeat(500);
+    let message = init_error(init_with("plugins", json!([{"name": long}])));
+    assert!(message.contains(&"é".repeat(80)), "{message}");
+    assert!(!message.contains(&"é".repeat(81)), "{message}");
+}
+
 #[test]
 fn a_second_result_and_malformed_lines_are_refused() {
     let mut r = reader(&[]);
