@@ -35,7 +35,7 @@ pub struct PanelRow {
     pub writing: u64,
     /// Why it stopped early, when its budget ran out.
     pub stopped_because: Option<String>,
-    /// A teammate waiting for work, which is not the same as done.
+    /// Its turn ended and it can be woken, which is not the same as done.
     pub idle: bool,
 }
 

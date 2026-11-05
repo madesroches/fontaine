@@ -120,6 +120,9 @@ pub enum Killed {
 #[derive(Debug)]
 pub struct Retired {
     pub id: String,
+    /// Captured here because `/clear` prunes the node before the caller settles it.
+    pub name: String,
+    pub agent_type: String,
     pub parent: Option<String>,
     /// It was `done`, so the ledger records `finished: retired`; a node that ended otherwise keeps
     /// its own end there.
@@ -304,6 +307,8 @@ fn retire_node(node: &mut Node, why: &str) -> Retired {
     node.retired = Some(why.to_string());
     Retired {
         id: node.info.id.clone(),
+        name: node.info.name.clone(),
+        agent_type: node.info.agent_type.clone(),
         parent: node.info.parent.clone(),
         was_done,
         inbox: node.inbox.drain(..).collect(),
@@ -1564,6 +1569,10 @@ impl AgentTree {
         if let Some(node) = self.lock().nodes.get_mut(ROOT_AGENT) {
             node.inbox
                 .retain(|note| note.kind != NotificationKind::Reminder);
+        }
+        // The dedup key would otherwise keep the next turn end silent about released tasks.
+        if let Some(teams) = self.teams() {
+            teams.boards.forget_reminder(ROOT_AGENT);
         }
     }
 

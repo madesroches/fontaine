@@ -62,8 +62,8 @@ One JSON object on standard input:
 | `tool_response` | `post_tool_use` only: `{"is_error": false, "output": "..."}`. |
 | `reason`, `tier` | `permission_denied` only: why, and which part of the pipeline denied it. |
 
-The two team events send only `session_id`, `cwd`, `hook_event_name` and `agent_id` (for `task_completed`, the agent completing the task, which is not always its owner), plus their own
-field (see [below](#teams-task_completed-and-teammate_idle)): they carry no tool, so they take no
+The task-board events send only `session_id`, `cwd`, `hook_event_name` and `agent_id` (for `task_completed`, the agent completing the task, which is not always its owner), plus their own
+field (see [below](#task-boards-task_completed-and-teammate_idle)): they carry no tool, so they take no
 `matcher`.
 
 There is no `transcript_path`: Fontaine keeps no transcript file. The environment variable

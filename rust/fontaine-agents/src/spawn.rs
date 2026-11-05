@@ -91,22 +91,28 @@ pub(crate) fn task_event(event: &str, agent: &str, agent_name: &str, task: &str)
 /// that ended without finishing them, and tells the owners of boards that now have claimable work
 /// and free slots.
 fn release_tasks(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, agent: &str) {
-    release_tasks_of(tree, ledger, agent, tree.parent_of(agent).as_deref());
+    release_tasks_of(
+        tree,
+        ledger,
+        agent,
+        &tree.name_of(agent),
+        tree.parent_of(agent).as_deref(),
+    );
 }
 
 fn release_tasks_of(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
     agent: &str,
+    name: &str,
     parent: Option<&str>,
 ) {
     let Some(teams) = tree.teams() else {
         return;
     };
-    let name = tree.name_of(agent);
     let released = teams.boards.release_owned_by(agent, parent);
     for task in &released {
-        task_event("released", agent, &name, task);
+        task_event("released", agent, name, task);
         ledger.append_event(AgentEvent::TaskReleased {
             task: task.clone(),
             agent: agent.to_string(),
@@ -148,10 +154,8 @@ fn bounce(tree: &AgentTree, id: &str, notes: Vec<Notification>, why: &str) {
 /// ended some other way, which the ledger keeps.
 pub fn settle_retired(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, retired: Vec<Retired>) {
     for gone in retired {
-        let name = tree.name_of(&gone.id);
-        let type_name = tree.type_of(&gone.id).unwrap_or_default();
         bounce(tree, &gone.id, gone.inbox, "it was retired");
-        release_tasks_of(tree, ledger, &gone.id, gone.parent.as_deref());
+        release_tasks_of(tree, ledger, &gone.id, &gone.name, gone.parent.as_deref());
         if let Some(teams) = tree.teams() {
             teams.boards.drop_owner(&gone.id);
         }
@@ -160,8 +164,8 @@ pub fn settle_retired(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, retir
                 agent: gone.id.clone(),
                 status: RETIRED.to_string(),
             });
+            subagent_event("retired", &gone.id, &gone.name, &gone.agent_type);
         }
-        subagent_event("retired", &gone.id, &name, &type_name);
     }
 }
 
@@ -221,7 +225,7 @@ fn conclude(
         });
     }
     if !finish.keeps_tasks {
-        release_tasks_of(tree, ledger, id, parent.as_deref());
+        release_tasks_of(tree, ledger, id, &tree.name_of(id), parent.as_deref());
     }
     if finish.final_end
         && let Some(teams) = tree.teams()
@@ -252,7 +256,7 @@ pub fn kill_agent(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
             status: ChildStatus::Killed.as_str().to_string(),
         });
         bounce(tree, id, outcome.inbox, "it was killed");
-        release_tasks_of(tree, ledger, id, parent.as_deref());
+        release_tasks_of(tree, ledger, id, &tree.name_of(id), parent.as_deref());
         if let Some(teams) = tree.teams() {
             teams.boards.drop_owner(id);
         }
@@ -311,7 +315,7 @@ pub fn remind_owners(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, except
             tree.post_to_root(ROOT_AGENT, NotificationKind::Reminder, reminder.text);
         } else if running {
             tree.push(&owner, &owner, NotificationKind::Reminder, reminder.text);
-        } else if wake_idle(tree, ledger, &owner, reminder.text).is_err() {
+        } else if wake_idle(tree, ledger, &owner, reminder.text, Vec::new()).is_err() {
             teams.boards.forget_reminder(&owner);
         }
     }
@@ -518,7 +522,7 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
         return;
     }
     let notes = tree.take_notifications(id);
-    match wake_idle(tree, ledger, id, render_notes(&notes)) {
+    match wake_idle(tree, ledger, id, render_notes(&notes), notes.clone()) {
         Ok(()) => {}
         // Someone woke it first, or no slot is free yet: the notes wait for its next end or the
         // next slot to free.
@@ -554,12 +558,14 @@ pub enum WakeError {
 }
 
 /// Wakes an idle agent on `text`, which is not the human's words. A final refusal releases the
-/// agent's tasks: nothing is going to finish them.
+/// agent's tasks: nothing is going to finish them. `waking` is the mail `text` carries; if the
+/// agent's conversation cannot be rebuilt after `Ok`, it goes back to its senders.
 pub fn wake_idle(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
     id: &str,
     text: String,
+    waking: Vec<Notification>,
 ) -> Result<(), WakeError> {
     let refuse = |why: String| {
         release_tasks(tree, ledger, id);
@@ -568,7 +574,7 @@ pub fn wake_idle(
     if let Some(why) = tree.wake_blocker(id) {
         return refuse(why);
     }
-    match resume_inner(tree, ledger, id, text, false) {
+    match resume_inner(tree, ledger, id, text, false, waking) {
         Ok(()) => Ok(()),
         Err(Refusal::AlreadyRunning) => Err(WakeError::AlreadyRunning),
         Err(transient @ (Refusal::Parallel(_) | Refusal::SessionBudget(_))) => {
@@ -586,7 +592,7 @@ pub fn resume_child(
     id: &str,
     text: String,
 ) -> Result<(), Refusal> {
-    resume_inner(tree, ledger, id, text, true)
+    resume_inner(tree, ledger, id, text, true, Vec::new())
 }
 
 fn resume_inner(
@@ -595,6 +601,7 @@ fn resume_inner(
     id: &str,
     text: String,
     from_human: bool,
+    waking: Vec<Notification>,
 ) -> Result<(), Refusal> {
     // A node a resumed session rebuilt has no conversation handle yet: the runner builds one,
     // after the node is claimed.
@@ -628,7 +635,7 @@ fn resume_inner(
                     }
                     Err(why) => {
                         runner.discard_unread(&id);
-                        revive_failed(&tree, &ledger, &parent, &id, &type_name, &why);
+                        revive_failed(&tree, &ledger, &parent, &id, &type_name, &why, waking);
                     }
                 }
             });
@@ -672,8 +679,10 @@ fn revive_failed(
     id: &str,
     type_name: &str,
     why: &str,
+    waking: Vec<Notification>,
 ) {
-    let dropped = tree.take_notifications(id);
+    let mut dropped = waking;
+    dropped.extend(tree.take_notifications(id));
     bounce(
         tree,
         id,
@@ -951,7 +960,7 @@ impl SendMessageTool {
             kind: NotificationKind::Message,
             text: message.clone(),
         };
-        match wake_idle(&self.tree, &self.ledger, to, note.render()) {
+        match wake_idle(&self.tree, &self.ledger, to, note.render(), vec![note]) {
             Ok(()) => {}
             // Another wake won; its run reads the message from the inbox.
             Err(WakeError::AlreadyRunning) => {

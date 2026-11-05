@@ -1744,7 +1744,7 @@ async fn waking_an_agent_that_is_already_running_asks_the_caller_to_queue() {
     let id = start_worker(&team, "busy").await;
     let ledger: Arc<dyn RootLedger> = team.rig.ledger.clone();
     assert_eq!(
-        wake_idle(&team.rig.tree, &ledger, &id, "hi".into()),
+        wake_idle(&team.rig.tree, &ledger, &id, "hi".into(), Vec::new()),
         Err(WakeError::AlreadyRunning)
     );
 }
@@ -2351,6 +2351,25 @@ async fn a_rebuilt_agent_is_revived_once_on_its_first_wake() {
         .await
         .unwrap();
     assert_eq!(rig.runner.revived.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_revival_that_fails_returns_the_message_that_woke_it() {
+    let team = team_rig();
+    rebuilt(&team.rig, "agent-7", "old", "worker");
+    *team.rig.runner.revive_fail.lock().unwrap() = Some("its saved conversation is missing".into());
+    send(&team.rig, ROOT_AGENT, "old", "please look at this")
+        .await
+        .unwrap();
+    until(|| team.rig.tree.status_of("agent-7") == Some(ChildStatus::Failed)).await;
+    let notes = team.rig.tree.take_notifications(ROOT_AGENT);
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.text.contains("Your message to old was not read")
+                && n.text.contains("please look at this")),
+        "{notes:?}"
+    );
 }
 
 #[tokio::test]
