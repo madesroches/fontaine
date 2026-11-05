@@ -795,7 +795,10 @@ async fn run_child(
     };
     // Partial text only labels an interrupted child's report; a stale value is harmless.
     let partial = lock_recovering(&last_text).clone();
-    child_report(&tree, id, outcome, partial, *kill.borrow())
+    // A temperature stop ends every agent's run at its next dispatch, which can come before the
+    // surface's stop handler kills the tree; the stop is the kill either way.
+    let killed = *kill.borrow() || state.afk().stopped.is_some();
+    child_report(&tree, id, outcome, partial, killed)
 }
 
 /// How a child's run reads once it has settled. A kill that fired first settles the report as
