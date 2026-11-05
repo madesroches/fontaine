@@ -143,7 +143,10 @@ impl AgentRuntime {
             .main(text)
             .await
             .map_err(|e| RuntimeError::caused("could not resolve the model", e))?;
-        let switcher_notice = switcher.selection_notice(&handle.reference);
+        let moves_account = handle.reference.account != self.models.main.reference.account;
+        let switcher_notice = moves_account
+            .then(|| switcher.selection_notice(&handle.reference))
+            .flatten();
         let previous = std::mem::replace(&mut self.models.main, handle);
         let previous_listing = std::mem::replace(&mut self.models.main_listing, listing);
         if let Err(e) = self.rebuild() {

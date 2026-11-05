@@ -55,6 +55,27 @@ fn a_plain_request_becomes_one_querying_frame() {
 }
 
 #[test]
+fn history_may_call_a_tool_the_request_omits() {
+    let t = translated(request(json!({
+        "tools": [tool("read_file")],
+        "messages": [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "ask_user_question", "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "a"},
+            ]},
+        ],
+    })));
+    assert_eq!(
+        t.frames[1].value["message"]["content"][0]["name"],
+        "mcp__fontaine__ask_user_question"
+    );
+    assert!(t.aliases.full("ask_user_question").is_none());
+}
+
+#[test]
 fn history_is_replayed_in_order_and_only_the_last_frame_queries() {
     let t = translated(request(json!({
         "tools": [tool("read_file")],
@@ -610,12 +631,18 @@ fn native_errors_map_without_echoing_what_the_cli_said() {
 }
 
 #[test]
+fn the_reported_category_backs_an_empty_stderr() {
+    assert!(!exit_failure("", Some(&Native::Auth)).is_retryable());
+    assert!(exit_failure("", Some(&Native::Server)).is_retryable());
+}
+
+#[test]
 fn stderr_classifies_an_early_exit_without_being_shown() {
-    assert!(!exit_failure("Error: not logged in").is_retryable());
-    assert!(!exit_failure("usage limit reached for your plan").is_retryable());
-    assert!(exit_failure("segfault").is_retryable());
+    assert!(!exit_failure("Error: not logged in", None).is_retryable());
+    assert!(!exit_failure("usage limit reached for your plan", None).is_retryable());
+    assert!(exit_failure("segfault", None).is_retryable());
     assert!(
-        !exit_failure("usage limit")
+        !exit_failure("usage limit", None)
             .to_string()
             .contains("usage limit reached")
     );

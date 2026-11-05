@@ -183,7 +183,15 @@ pub fn translate(
     let tools = tool_definitions(object.get("tools"))?;
     let aliases = Aliases::new(tools.iter().map(|(name, _)| name.as_str()));
     let system = system_text(object.get("system"))?;
-    let frames = frames_of(object.get("messages"), &aliases)?;
+    // A fork replays the parent's calls to tools the child's request omits; they still need CLI
+    // names, but only the request's own tools are callable in the response.
+    let history = Aliases::new(
+        tools
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .chain(history_tool_names(object.get("messages"))),
+    );
+    let frames = frames_of(object.get("messages"), &history)?;
     let session_id = derive_session_id(seed, &system, &frames[0].value);
 
     let mut extra = Map::new();
@@ -336,6 +344,18 @@ fn system_text(system: Option<&Value>) -> Result<String, ClaudeError> {
         }
         Some(_) => Err(unsupported("the system prompt is neither text nor blocks")),
     }
+}
+
+fn history_tool_names(messages: Option<&Value>) -> impl Iterator<Item = &str> {
+    messages
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
+        .filter_map(|message| message.get("content").and_then(Value::as_array))
+        .flatten()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .filter_map(|block| block.get("name").and_then(Value::as_str))
 }
 
 fn frames_of(messages: Option<&Value>, aliases: &Aliases) -> Result<Vec<Frame>, ClaudeError> {
@@ -540,6 +560,11 @@ impl Reader {
     /// The held terminal delta, to be released after the process is stopped.
     pub fn release(&mut self) -> Option<WireFrame> {
         self.terminal.take()
+    }
+
+    /// The failure category the CLI reported before it exited, if any.
+    pub(crate) fn native(&self) -> Option<&Native> {
+        self.native.as_ref()
     }
 
     /// Whether a response began, so a cut stream is a truncated one.
@@ -960,8 +985,8 @@ pub(crate) fn classify_text(text: &str) -> Option<Native> {
 
 /// The failure for a process that ended without a complete response, classified from its
 /// stderr and exit status without showing either.
-pub fn exit_failure(stderr: &str) -> Failure {
-    match classify_text(stderr) {
+pub(crate) fn exit_failure(stderr: &str, native: Option<&Native>) -> Failure {
+    match classify_text(stderr).or_else(|| native.cloned()) {
         Some(Native::Auth) => ClaudeError::new(
             ErrorKind::Auth,
             "the Claude CLI's login was refused; run `claude auth login` outside Fontaine",

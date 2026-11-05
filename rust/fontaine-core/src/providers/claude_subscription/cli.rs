@@ -925,6 +925,20 @@ impl CliChild {
             .ok()
     }
 
+    /// Waits briefly for the stderr drain to reach EOF so the tail is complete; a grandchild
+    /// that holds the pipe open must not stall the failure.
+    pub async fn settle_stderr(&mut self) {
+        let Some(mut drain) = self.drain.take() else {
+            return;
+        };
+        if tokio::time::timeout(Duration::from_millis(500), &mut drain)
+            .await
+            .is_err()
+        {
+            drain.abort();
+        }
+    }
+
     /// What the CLI said on stderr, for classifying a failure. Never shown or logged.
     pub fn stderr_text(&self) -> String {
         // Advisory text used only to classify a failure.

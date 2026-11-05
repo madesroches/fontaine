@@ -160,7 +160,7 @@ impl ClaudeTransport {
             }
             if acked {
                 loop {
-                    let line = next(&mut child, idle).await?;
+                    let line = next(&mut child, &reader, idle).await?;
                     match reader.accept(&line)? {
                         Event::Ack => break,
                         Event::Nothing => {}
@@ -261,13 +261,14 @@ fn scratch_failed(error: std::io::Error) -> Failure {
 }
 
 /// The next stdout line, or the failure that ended the read.
-async fn next(child: &mut CliChild, idle: Duration) -> Result<Vec<u8>, Failure> {
+async fn next(child: &mut CliChild, reader: &Reader, idle: Duration) -> Result<Vec<u8>, Failure> {
     match child.next_line(idle).await {
         Ok(Some(line)) => Ok(line),
         Ok(None) => {
             // Let the exit be observed so stderr is complete before it is classified.
             child.exit_status().await;
-            Err(exit_failure(&child.stderr_text()))
+            child.settle_stderr().await;
+            Err(exit_failure(&child.stderr_text(), reader.native()))
         }
         Err(ReadFail::Idle) => Err(Box::new(read_idle_error(idle))),
         Err(ReadFail::TooLong | ReadFail::Io) => Err(provider(ClaudeError::new(
@@ -297,7 +298,7 @@ fn stream(
                 return Some((Ok(frame), Some(running)));
             }
             let child = running.child.as_mut()?;
-            let line = match next(child, running.idle).await {
+            let line = match next(child, &running.reader, running.idle).await {
                 Ok(line) => line,
                 Err(error) => {
                     if let Some(mut child) = running.child.take() {
