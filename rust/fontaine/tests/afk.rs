@@ -556,7 +556,7 @@ async fn a_failed_assessment_is_reported_unavailable_with_the_timeline_intact() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn afk_conflicts_with_an_explicit_permission_mode() {
+async fn afk_beside_another_permission_mode_is_a_usage_error() {
     let agent = Endpoint::start(Wire::Chat, vec![Turn::text("never asked")]).await;
     let judge = guardian(Vec::new(), Vec::new()).await;
     let s = sandbox(&agent, &judge, "");
@@ -564,5 +564,42 @@ async fn afk_conflicts_with_an_explicit_permission_mode() {
         .run(&["-p", "--afk", "--permission-mode", "manual", "task"])
         .await;
     assert_eq!(out.code, Some(2), "{}", out.stderr);
-    assert!(out.stderr.contains("--permission-mode"), "{}", out.stderr);
+    assert!(out.stderr.contains("two modes given"), "{}", out.stderr);
+}
+
+async fn starts_in_afk(s: &Sandbox, args: &[&str]) {
+    let mut full = vec!["-p", "--output-format", "stream-json"];
+    full.extend_from_slice(args);
+    full.push("go");
+    let out = s.run(&full).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_all_valid(&out);
+    let lines = out.lines();
+    assert_eq!(of_type(&lines, "init")[0]["permission_mode"], "afk");
+    let opened = records(s, &lines, "afk");
+    assert_eq!(opened[0]["on"], json!(true), "{opened:?}");
+    assert_eq!(opened[0]["source"], "cli", "{opened:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn permission_mode_afk_and_afk_with_it_start_in_afk() {
+    for args in [
+        &["--permission-mode", "afk"][..],
+        &["--afk", "--permission-mode", "afk"][..],
+    ] {
+        let agent = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+        let judge = guardian(Vec::new(), vec![nothing_suspected()]).await;
+        let s = sandbox(&agent, &judge, "");
+        starts_in_afk(&s, args).await;
+        let first = agent.requests().await[0].to_string();
+        assert!(first.contains("The user is away (AFK mode)"), "{first}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn default_mode_afk_starts_in_afk() {
+    let agent = Endpoint::start(Wire::Chat, vec![Turn::text("done")]).await;
+    let judge = guardian(Vec::new(), vec![nothing_suspected()]).await;
+    let s = sandbox(&agent, &judge, "\n[permissions]\ndefault_mode = \"afk\"\n");
+    starts_in_afk(&s, &[]).await;
 }

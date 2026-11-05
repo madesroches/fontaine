@@ -28,8 +28,9 @@ All notable changes are recorded here. The format follows
   increasing autonomy: manual → plan → accept edits → auto → AFK. AFK decides what runs as `auto`
   does and denies every call that would have asked; leaving it reviews the stretch as before. Bare
   `/afk` and `/afk off` are gone; `/afk report [all]`, `/afk review` (which now returns to manual)
-  and `--afk` stay. `--afk` can no longer be combined with `--permission-mode`, and `-p --afk` now
-  decides as `auto` rather than `manual` (#431).
+  stay. `afk` is accepted by `--permission-mode` and by `[permissions] default_mode` (user file and
+  `--settings` only, as for `auto`); `--afk` is shorthand for `--permission-mode afk` and a usage
+  error beside another mode, and `-p --afk` now decides as `auto` rather than `manual` (#431).
 - Release archives are signed with a detached minisign signature made in CI with a Fontaine-owned
   key, and a release is published only after its draft is downloaded and verified. There is a new
   dev channel: each CI-passing build of `main` is published as a signed prerelease `dev-<n>` once

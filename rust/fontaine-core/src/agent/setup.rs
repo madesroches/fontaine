@@ -416,7 +416,7 @@ pub(super) fn configure_state(setup: &AgentSetup, state: &SessionState) {
     attach_composition(state, setup);
 }
 
-/// Sets the AFK ceiling and, for `--afk`, enters AFK mode before the agent is built, so its
+/// Sets the AFK ceiling and, for a session asked to start in AFK, enters AFK mode before the agent is built, so its
 /// prompt already carries the AFK guidance.
 fn start_afk(setup: &AgentSetup, state: &SessionState) {
     state.set_afk_ceiling(setup.config.afk.ceiling());
@@ -428,7 +428,7 @@ fn start_afk(setup: &AgentSetup, state: &SessionState) {
     {
         setup
             .approver
-            .warn(&format!("--afk was not applied: {why}"));
+            .warn(&format!("starting in AFK mode was not applied: {why}"));
     }
 }
 

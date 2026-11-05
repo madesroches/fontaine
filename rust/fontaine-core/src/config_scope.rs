@@ -817,6 +817,7 @@ mod tests {
         assert!(is_tightening_mode(&s("dontAsk")));
         assert!(!is_tightening_mode(&s("plan")));
         assert!(!is_tightening_mode(&s("auto")));
+        assert!(!is_tightening_mode(&s("afk")));
         assert!(is_false(&b(false)));
         assert!(!is_false(&b(true)));
         assert!(is_shadow_true(&b(true)));

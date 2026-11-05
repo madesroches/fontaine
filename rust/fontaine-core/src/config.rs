@@ -218,9 +218,8 @@ pub enum PermissionMode {
     DontAsk,
     #[serde(rename = "auto")]
     Auto,
-    /// `auto` with nobody to ask. Only `--afk` and the mode carousel enter it, so no setting names it.
-    #[serde(skip_deserializing)]
-    #[schemars(skip)]
+    /// `auto` with nobody to ask.
+    #[serde(rename = "afk")]
     Afk,
 }
 
@@ -3618,11 +3617,11 @@ mod tests {
     }
 
     #[test]
-    fn afk_is_never_a_setting_and_decides_as_auto() {
+    fn afk_is_a_setting_and_decides_as_auto() {
         use super::PermissionMode::{Afk, Auto, Manual};
-        let err = toml::from_str::<super::Settings>("[permissions]\ndefault_mode = \"afk\"\n")
-            .expect_err("afk is not a configurable mode");
-        assert!(err.to_string().contains("afk"), "{err}");
+        let settings =
+            toml::from_str::<super::Settings>("[permissions]\ndefault_mode = \"afk\"\n").unwrap();
+        assert_eq!(settings.permissions.unwrap().default_mode, Some(Afk));
         assert_eq!(
             (Afk.as_str(), Afk.rules(), Auto.rules(), Manual.rules()),
             ("afk", Auto, Auto, Manual)

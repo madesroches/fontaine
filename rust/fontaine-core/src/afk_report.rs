@@ -24,7 +24,7 @@ use crate::tier::Tier;
 pub enum AfkSource {
     /// `/afk` in the terminal UI of an older session, or `/afk review` leaving a stopped stretch.
     Command,
-    /// `--afk` on the command line.
+    /// The start of the session: `--afk`, `--permission-mode afk` or `default_mode = "afk"`.
     Cli,
     /// The mode carousel (Shift+Tab or a rebound `cycle_mode` key).
     Cycle,

@@ -444,17 +444,29 @@ fn default_mode_auto_loads_from_user_and_cli_scope_and_is_unset_by_default() {
 }
 
 #[test]
-fn default_mode_auto_is_refused_from_every_project_scope() {
-    let w = World::new();
-    w.project_file("[permissions]\ndefault_mode = \"auto\"\n");
-    let err = w.load().unwrap_err();
-    assert!(matches!(err, ConfigError::Scope { .. }), "{err:?}");
-    assert_eq!(err.exit_code(), 2);
-    std::fs::remove_file(w.work.join(".fontaine/settings.toml")).unwrap();
+fn default_mode_auto_and_afk_are_refused_from_every_project_scope() {
+    for mode in ["auto", "afk"] {
+        let w = World::new();
+        w.project_file(&format!("[permissions]\ndefault_mode = \"{mode}\"\n"));
+        let err = w.load().unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err:?}");
+        assert_eq!(err.exit_code(), 2);
+        std::fs::remove_file(w.work.join(".fontaine/settings.toml")).unwrap();
 
-    w.local_file("[permissions]\ndefault_mode = \"auto\"\n");
-    let err = w.load().unwrap_err();
-    assert!(matches!(err, ConfigError::Scope { .. }), "{err:?}");
+        w.local_file(&format!("[permissions]\ndefault_mode = \"{mode}\"\n"));
+        let err = w.load().unwrap_err();
+        assert!(matches!(err, ConfigError::Scope { .. }), "{err:?}");
+    }
+}
+
+#[test]
+fn default_mode_afk_loads_from_user_scope() {
+    let w = World::new();
+    w.user_file("[permissions]\ndefault_mode = \"afk\"\n");
+    assert_eq!(
+        w.load().unwrap().permissions.default_mode,
+        Some(PermissionMode::Afk)
+    );
 }
 
 #[test]

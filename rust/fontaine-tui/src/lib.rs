@@ -463,7 +463,7 @@ pub async fn drive(
     }
     if runtime.state.afk_on() {
         ui.app.transcript.notice(
-            "AFK mode is on (--afk): nothing is asked of you; each call that would have needed approval is denied. Shift+Tab leaves it.",
+            "AFK mode is on: nothing is asked of you; each call that would have needed approval is denied. Shift+Tab leaves it.",
         );
     }
     if ui.start_mcp(&mut runtime).await {

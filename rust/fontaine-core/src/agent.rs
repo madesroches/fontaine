@@ -118,7 +118,7 @@ pub struct AgentSetup {
     pub json_schema: Option<Schema>,
     /// Nothing can be asked: every would-prompt outcome is a denial.
     pub headless: bool,
-    /// Start in AFK mode (`--afk`).
+    /// Enter AFK mode before the agent is built, for a session asked to start in it.
     pub afk: bool,
     /// Whether this surface runs scheduled prompts when the conversation is idle, so the
     /// scheduling tools are worth registering. A run that exits after its answer leaves it off.
@@ -307,12 +307,12 @@ impl AgentRuntime {
             launch_instructions: loaded,
             prompt_afk: state.afk_on(),
             instruction_stage,
+            start_mode: state.mode(),
             state,
             session: setup.session,
             guardian_quota: models::guardian_quota_slot(setup.models.guardian.as_ref()),
             models: setup.models,
             config: setup.config,
-            start_mode: setup.mode,
             guardian_profile: setup.guardian_profile,
             notices: setup.notices,
             startup_warnings: setup.startup_warnings,

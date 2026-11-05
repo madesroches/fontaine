@@ -30,12 +30,12 @@ edits, auto, AFK, and back to manual. The status bar shows `⏵⏵⏵ AFK mode o
 | `/plan` | Leaves AFK for plan mode, with the same review. |
 | `/afk report [all]` | Shows the report of the latest stretch, or of every stretch. |
 | `/afk review` | Lets a [stopped](#the-stop) session run again, in `manual` if AFK was on. |
-| `--afk` | Starts the session in AFK mode, in the terminal UI and in `-p`. It conflicts with `--permission-mode`. |
+| `--permission-mode afk`, or `[permissions] default_mode = "afk"` | Starts the session in AFK mode, in the terminal UI and in `-p`. `default_mode = "afk"` loads only from the user file and `--settings`, as `auto` does. |
+| `--afk` | Shorthand for `--permission-mode afk`. Combined with another `--permission-mode` it is a usage error. |
 
 `/afk` takes only `report [all]` and `review`; Shift+Tab enters and leaves AFK mode.
 
-Nothing but these can enter AFK: not a settings key (`default_mode = "afk"` is rejected), not a
-tool, not a scheduled prompt, not the model, and a repository cannot. Typing a message does not end
+Nothing but these can enter AFK: not a tool, not a scheduled prompt, not the model, and a repository cannot. Typing a message does not end
 AFK, so a stray keypress cannot reopen approvals; leaving takes a deliberate press of the cycle key,
 and it only makes the session ask you again.
 
@@ -200,8 +200,8 @@ request, exits 1 with `error_during_execution` and `afk.outcome = "stopped"`.
 
 ## Headless runs
 
-`fontaine -p --afk` runs in AFK mode, which decides as `auto` (the `init` event reports `auto`, the
-mode the run started in), converts the would-prompt outcomes to denials as a headless run already
+`fontaine -p --afk` runs in AFK mode, which decides as `auto` (the `init` event reports `afk`, the
+mode in effect once the run starts), converts the would-prompt outcomes to denials as a headless run already
 does, switches to the AFK guidance and prompt, enables the temperature stop, runs the assessment and adds an `afk` object to the `result`
 event:
 

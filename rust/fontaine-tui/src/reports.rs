@@ -460,7 +460,7 @@ pub fn memory(entries: &[MemoryEntry], auto: &AutoMemory<'_>) -> String {
 fn afk_outcome_words(report: &AfkReport) -> String {
     let source = match report.stretch.source {
         fontaine_core::afk_report::AfkSource::Command => "/afk",
-        fontaine_core::afk_report::AfkSource::Cli => "--afk",
+        fontaine_core::afk_report::AfkSource::Cli => "the session start",
         fontaine_core::afk_report::AfkSource::Cycle => "Shift+Tab",
         fontaine_core::afk_report::AfkSource::Plan => "/plan",
     };
