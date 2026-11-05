@@ -133,9 +133,7 @@ removes those rules instead. **Pick: the unified model.**
 
 ### Retirement
 
-There is no timeout and no cap on idle agents. An idle agent spends nothing and holds no
-`max_parallel` slot, and its conversation is already kept today. Claude Code keeps every completed
-agent resumable for the session. An agent retires only when resuming it no longer makes sense:
+There is no timeout and no cap on idle agents. An agent retires only when resuming it no longer makes sense:
 
 1. **Cascade on a final end.** When an agent is killed, runs out of budget, or retires, every idle
    descendant retires with it. Their tasks are released, and the boards they own are dropped (see
@@ -181,7 +179,13 @@ as `kill_agent` does for a kill. `kill_outcome`'s idle arm uses the same cascade
   it errors with `"<name> cannot be woken: <why>; start a new agent with the context it needs"`.
 - **A report to an idle parent wakes it.** In `watch_report`, a running parent gets `notify_report`
   as today. An idle parent gets the report queued and is woken through `wake_for_inbox`. A final
-  parent falls back to `post_to_root` as today. This only fires when something woke the child: the
+  parent falls back to `post_to_root` as today. `AgentTree::push` (and so `notify_report`) also
+  queues to an idle, wakeable node, so the report is in the parent's inbox before
+  `wake_for_inbox(parent)` runs. The parent is woken only after the child's `conclude` has freed the
+  child's slot. A transient refusal (`Refusal::Parallel`, `SessionBudget`) requeues every taken note,
+  reports included, as the `AlreadyRunning` arm does, and does not release tasks; the wake is
+  retried when the next slot frees, from the same slot-free hook the owner reminder uses. Only a
+  final refusal releases the node's tasks. This only fires when something woke the child: the
   human typing into it, or a sibling's message. A subagent still joins its own running children
   before it goes idle (2026-10-30 #326).
 - **`wake_for_inbox`** runs for every agent that goes idle, closing the race where a message arrives
@@ -208,7 +212,9 @@ every board.
   `board_show` lists both boards, each labelled with its owner's name.
 - **Lifetime and persistence.** `main`'s board is persisted and restored exactly as the session's
   board is today (`fontaine-core/src/tasks.rs`). A subagent's board is in memory only, matching the
-  rule that only the root's todo list is saved. It is dropped when its owner ends for good or is
+  rule that only the root's todo list is saved. Because ids are shared, `main`'s snapshot is saved
+  with the shared counter's `next` whenever any board mints a task, so ids minted on subagent boards
+  are not re-minted after `--resume`. It is dropped when its owner ends for good or is
   pruned by `/clear`. An idle owner keeps its board.
 - **Releasing tasks.** `release_owned_by(agent)` runs on both the agent's own board and its
   parent's board (`main` has no parent board). `/clear` and the cascade use the same helper.
@@ -229,7 +235,9 @@ The owner spawns, prompted by one harness note:
 
 - **When the note is sent.** It goes to the owner of a board with claimable tasks (pending, unowned,
   unblocked) when `max_parallel` has free slots. The check runs at two points:
-  - the owner's turn end: the root's `after_turn`, or `watch_report` for a subagent before it is
+  - the owner's turn end: `AgentRuntime::goal_turn_ended` (`fontaine-core/src/agent/goal.rs`, the
+    root turn-end hook shared by headless and the TUI) for `main`, run only after a real model turn
+    (not a stop-before-call or a budget stop), or `watch_report` for a subagent before it is
     finished, which keeps it running for one more turn;
   - a slot freeing up or a task on its board becoming claimable while the owner is idle or between
     turns.
@@ -240,8 +248,10 @@ The owner spawns, prompted by one harness note:
 - **Delivery.** The note goes through the existing paths: `post_to_root` for `main`, the inbox for a
   running owner, and a `wake_idle` resume for an idle owner. It is not recorded as a user message.
 - **Deduplication.** Each owner keeps the last `(board mutation count, free slots)` it was reminded
-  at, and gets no new note until that pair changes. An owner that ignores a note is not nagged, and
-  no loop sustains itself. This replaces `Teams::allow_idle_resume`'s role for the hand-off.
+  at, and gets no new note until that pair changes. An owner's free slots count its own slot as
+  free (`max_parallel - running_children + (owner is running ? 1 : 0)`), and an owner's own idle end
+  does not trigger its own reminder, so the pair is the same at its turn end and at its idle end.
+  An owner that ignores a note is not nagged, and no loop sustains itself. This replaces `Teams::allow_idle_resume`'s role for the hand-off.
 - **Who spawns.** Always the owner, through an ordinary `agent` call. Every spawn passes the floor and
   the `spawn` tier (asks in `manual` / `acceptEdits`). The owner picks the type, model and prompt.
   Board text is agent-written, untrusted data, never a spawn prompt on its own. The spawned agent
@@ -303,7 +313,8 @@ Claude Code resumes an agent from its transcript.
   walked in spawn order. Each agent whose last `finished` status is `done` or `failed` becomes an
   idle node with no handle:
   - Its type comes from the current registry.
-  - Its tools are re-derived as the type's toolset cut to its rebuilt parent's, as at spawn.
+  - Its tools are re-derived as the type's toolset cut to the parent's, without `agent` at
+    `max_depth`, as at spawn.
   - Its mode is `own_mode` against the parent's posture, so it is never looser than the parent, and
     the session itself resumes in the default mode (P6).
   - Its depth comes from the parent chain.
@@ -319,8 +330,10 @@ Claude Code resumes an agent from its transcript.
   `CoreChildRunner` builds the rig agent over the existing per-agent log without launching a run.
   `wake_idle` and `message_agent` stay sync: for a handle-less node they claim it with
   `tree.resume` as usual, then spawn a task that awaits `revive`, installs the handle and starts
-  the run. A missing log or an unavailable model ends that run as `Failed` with
-  that reason through the normal report path, which also releases the node's tasks.
+  the run. A missing log or an unavailable model ends that run as `Failed`: the spawned task builds
+  a `Failed` `ChildReport` with the reason, queues the same parent/root note `watch_report` builds,
+  and calls `conclude` (through a `pub` wrapper if needed), which also releases the node's tasks.
+  Steering mail queued during the pending revive is dropped, and the failure text names it.
   `rig_memory::load` returns an empty conversation for a missing file, so `CoreChildRunner::revive`
   checks that the agent's log exists and returns an error otherwise.
 - **Model.** The agent revives on the recorded model. A record from before this change has none,
@@ -365,7 +378,7 @@ Claude Code resumes an agent from its transcript.
 2. **Boards** (`fontaine-agents/src/tasks.rs`, `tools.rs`)
    - Add `Boards` (owner → `TaskBoard`, shared id counter, a store only for `ROOT_AGENT`'s board).
      `TaskBoard` takes its ids from the shared counter. `restore` seeds the counter from `main`'s
-     snapshot.
+     snapshot, and the snapshot is saved with the counter's `next` on any board's mint.
    - `owned_by`: the board owner replaces `ROOT_AGENT`.
    - Add `Boards::own(agent)`, `Boards::find(agent, parent, task_id)`, `Boards::drop_owner(agent)`
      and `Boards::release_owned_by(agent, parent)`.
@@ -383,7 +396,9 @@ Claude Code resumes an agent from its transcript.
      - For any `Done` end, first resume on queued inbox mail, then on a `teammate_idle` block when the
        agent owns an in-progress parent-board task, then on the owner reminder.
      - Use the new idle report line. A report to an idle parent queues and wakes it, and
-       `wake_for_inbox` runs for every idle end.
+       `wake_for_inbox` runs for every idle end. `push` / `notify_report` queue to an idle node, the
+       wake happens after `conclude` frees the child's slot, and a transient refusal requeues every
+       taken note (reports included) without releasing tasks, retried from the slot-free hook.
      - Delete `retire_finished_team` and the claimable-task branch.
    - A slot freeing up or a task becoming claimable runs the reminder for idle owners. It hooks into
      the shared task-release helper (called by `conclude`, `kill_agent`, `spawn::retire` /
@@ -402,7 +417,8 @@ Claude Code resumes an agent from its transcript.
    - `agent/rewind.rs`: drop the refusal. On a conversation rewind, call `spawn::retire_all_idle(why)`.
    - `session.rs` / `rewind.rs`: delete the `IdleTeammates` variants.
    - `agent/setup.rs`: build `Boards` around the restored root board.
-   - The root's `after_turn` runs the owner reminder for `main`.
+   - `AgentRuntime::goal_turn_ended` (`agent/goal.rs`) runs the owner reminder for `main`, only after
+     a real model turn.
 5. **TUI** (`fontaine-tui`)
    - `ListRow.owns_task`, and the `agent_list.rs` listing rule.
    - Per-owner boards in `ui/mod.rs` and `agents_panel.rs`.
@@ -460,8 +476,8 @@ Claude Code resumes an agent from its transcript.
 - `rust/fontaine-agents/src/tree.rs`, `spawn.rs`, `tasks.rs`, `tools.rs`, `runner.rs`, `root_ledger.rs`
 - `rust/fontaine-tools/src/jobs.rs`, `rust/fontaine-core/src/user_hooks.rs` (stale teammate comments)
 - `rust/fontaine-core/src/ledger.rs`, `child_runner.rs` (`revive`, `LedgerWindow`)
-- `rust/fontaine-core/src/agent.rs`, `agent/rewind.rs`, `agent/setup.rs`, `session.rs`, `agent/messaging.rs`, `config.rs` (`teams` doc), `export.rs`, the root
-  `after_turn` path, `tasks.rs` (store unchanged; doc comment)
+- `rust/fontaine-core/src/agent.rs`, `agent/rewind.rs`, `agent/setup.rs`, `session.rs`, `agent/messaging.rs`, `config.rs` (`teams` doc), `export.rs`, `agent/goal.rs`
+  (`goal_turn_ended`), `tasks.rs` (store unchanged; doc comment)
 - `rust/fontaine-tui/src/agent_list.rs`, `agents_panel.rs`, `ui/mod.rs`, `screen.rs` (tests)
 - `rust/fontaine-core/tests/teams.rs`, `rust/fontaine-core/tests/agent_resume.rs`,
   `rust/fontaine-agents/tests/seam.rs`, `rust/fontaine/tests/parallel_agents.rs` (wherever they
