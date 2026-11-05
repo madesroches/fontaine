@@ -364,12 +364,17 @@ pub fn watch_report(
             finished_turn,
         );
         resume_missed(&tree, &ledger, &id, &handle);
-        wake_for_inbox(&tree, &ledger, &id);
-        wake_for_inbox(&tree, &ledger, &parent);
-        // After the child's own mail is resumed, so a freed slot is not taken first by another
-        // idle agent and leaves the human's unread messages undelivered.
-        slot_freed(&tree, &ledger, Some(&id));
+        after_end(&tree, &ledger, &parent, &id);
     });
+}
+
+/// Retries the wakes an end may have left pending, then hands its slot on.
+fn after_end(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, parent: &str, id: &str) {
+    wake_for_inbox(tree, ledger, id);
+    wake_for_inbox(tree, ledger, parent);
+    // After the child's own mail is resumed, so a freed slot is not taken first by another
+    // idle agent and leaves the human's unread messages undelivered.
+    slot_freed(tree, ledger, Some(id));
 }
 
 /// Queues a run's report for its parent and concludes the run.
@@ -621,7 +626,10 @@ fn resume_inner(
                             &tree, &ledger, parent, &id, type_name, &handle, text, from_human,
                         );
                     }
-                    Err(why) => revive_failed(&tree, &ledger, &parent, &id, &type_name, &why),
+                    Err(why) => {
+                        runner.discard_unread(&id);
+                        revive_failed(&tree, &ledger, &parent, &id, &type_name, &why);
+                    }
                 }
             });
         }
@@ -680,6 +688,7 @@ fn revive_failed(
         )),
     };
     finish_run(tree, ledger, parent, id, type_name, &report, false);
+    after_end(tree, ledger, parent, id);
 }
 
 /// Resumes a child that ended with the human's messages still unread, as Claude Code does. This

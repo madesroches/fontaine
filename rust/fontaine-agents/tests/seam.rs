@@ -172,6 +172,7 @@ struct FakeRunner {
     /// The agents revived, with the handle each got.
     revived: Mutex<Vec<(String, Arc<FakeChild>)>>,
     revive_fail: Mutex<Option<String>>,
+    discarded: Mutex<Vec<String>>,
 }
 
 impl FakeRunner {
@@ -185,6 +186,10 @@ impl FakeRunner {
 }
 
 impl ChildRunner for FakeRunner {
+    fn discard_unread(&self, id: &str) {
+        self.discarded.lock().unwrap().push(id.to_string());
+    }
+
     fn revive<'a>(
         &'a self,
         request: RevivalRequest,
@@ -2363,6 +2368,7 @@ async fn a_revival_that_fails_ends_the_run_failed_and_releases_the_tasks() {
         team.rig.tree.status_of("agent-7"),
         Some(ChildStatus::Failed)
     );
+    assert_eq!(*team.rig.runner.discarded.lock().unwrap(), ["agent-7"]);
     let notes = team.rig.tree.take_notifications(ROOT_AGENT);
     assert!(
         notes

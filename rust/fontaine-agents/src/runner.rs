@@ -133,4 +133,7 @@ pub trait ChildRunner: Send + Sync {
     ) -> BoxFuture<'a, Result<Arc<dyn ChildHandle>, String>> {
         Box::pin(async { Err("this runner cannot revive an agent".to_string()) })
     }
+
+    /// Drops what the human typed to `id` while its revival was pending, which no run will read.
+    fn discard_unread(&self, _id: &str) {}
 }

@@ -688,6 +688,10 @@ impl ChildRunner for CoreChildRunner {
         })
     }
 
+    fn discard_unread(&self, id: &str) {
+        self.context.steering.take_pending_for(id);
+    }
+
     fn revive<'a>(
         &'a self,
         request: RevivalRequest,
