@@ -72,8 +72,11 @@ impl Claude {
     }
 
     fn log(&self) -> Vec<Value> {
-        std::fs::read_to_string(self.dir.join("log.jsonl"))
-            .unwrap_or_default()
+        let text = std::fs::read_to_string(self.dir.join("log.jsonl")).unwrap_or_default();
+        // A double still alive (a silent run is killed asynchronously) may be mid-append; an
+        // entry without its newline is not complete yet.
+        let complete = text.rfind('\n').map_or("", |end| &text[..end]);
+        complete
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
             .collect()

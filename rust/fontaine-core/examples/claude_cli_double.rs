@@ -99,7 +99,10 @@ impl Double {
             .append(true)
             .open(dir.join("log.jsonl"))
             .expect("open the log");
-        writeln!(file, "{entry}").expect("write the log");
+        // One write call: formatting straight into the unbuffered file issues a write per
+        // fragment, so a reader racing a live double sees a torn line.
+        file.write_all(format!("{entry}\n").as_bytes())
+            .expect("write the log");
     }
 
     /// The number of model processes started so far, this one included.
