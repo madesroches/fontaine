@@ -87,7 +87,7 @@ impl std::fmt::Display for AfkRefusal {
                 "the guardian is disabled for this session: run /guardian-enable first"
             }
             AfkRefusal::AfkOn => {
-                "AFK mode is on: leave it with Shift+Tab before disabling the guardian"
+                "AFK mode is on: leave it with the mode-cycle key before disabling the guardian"
             }
             AfkRefusal::Stopped => {
                 "the session is stopped by the AFK temperature ceiling: run /afk review first"

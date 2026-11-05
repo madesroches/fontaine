@@ -32,7 +32,7 @@ edits, auto, AFK, and back to manual. The status bar shows `⏵⏵⏵ AFK mode o
 | `/afk review` | Lets a [stopped](#the-stop) session run again, in `manual` if AFK was on. |
 | `--afk` | Starts the session in AFK mode, in the terminal UI and in `-p`. It conflicts with `--permission-mode`. |
 
-`/afk` and `/afk off` no longer toggle anything; they say to use Shift+Tab.
+`/afk` takes only `report [all]` and `review`; Shift+Tab enters and leaves AFK mode.
 
 Nothing but these can enter AFK: not a settings key (`default_mode = "afk"` is rejected), not a
 tool, not a scheduled prompt, not the model, and a repository cannot. Typing a message does not end

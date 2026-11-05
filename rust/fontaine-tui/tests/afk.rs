@@ -124,8 +124,7 @@ async fn afk_and_the_guardian_escape_hatch_refuse_each_other() {
         ui.press(KeyCode::BackTab);
         ui.wait_for("AFK mode on").await;
         ui.send("/guardian-disable");
-        ui.wait_for("leave it with shift+tab before disabling the guardian")
-            .await;
+        ui.wait_for("leave it with the mode-cycle key").await;
         ui.press(KeyCode::BackTab);
         ui.wait_for("AFK: ended.").await;
 

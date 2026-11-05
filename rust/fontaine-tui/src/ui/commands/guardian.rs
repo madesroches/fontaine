@@ -19,9 +19,11 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             let message = if afk.stopped.is_some() {
                 fontaine_core::gate::AfkRefusal::Stopped.to_string()
             } else {
-                let key = crate::statusbar::cycle_keys(&self.app)
-                    .unwrap_or_else(|| "the mode key".to_string());
-                format!("AFK mode is on: leave it with {key} before disabling the guardian")
+                let refusal = fontaine_core::gate::AfkRefusal::AfkOn.to_string();
+                match crate::statusbar::cycle_keys(&self.app) {
+                    Some(key) => format!("{refusal} ({key})"),
+                    None => refusal,
+                }
             };
             self.app.transcript.error(message);
             return ControlFlow::Continue(());
