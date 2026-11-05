@@ -11,7 +11,7 @@ use fontaine_agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus
 use fontaine_agents::tree::{AgentTree, Notification, NotificationKind};
 use fontaine_guardian::WireIds;
 use fontaine_tools::error_chain::chain;
-use fontaine_tools::gate::CallView;
+use fontaine_tools::gate::{CallView, ROOT_AGENT};
 use fontaine_tools::jobs::{WAKE_POLL, WaitWake};
 use fontaine_tools::kills::{KILL_GRACE, KillSwitches};
 use fontaine_tools::lock::{lock, lock_recovering, read};
@@ -194,8 +194,8 @@ async fn screened_notes(
     }
 }
 
-/// What ends a parked `job_output` wait early: a message from another agent, and a message the
-/// user typed to the waiting agent meanwhile.
+/// What ends a parked `job_output` wait early: a message from another agent, a message the
+/// user typed to the waiting agent meanwhile, and for the root a command or skill the user queued.
 pub struct CoreWake {
     pub tree: Arc<AgentTree>,
     pub steering: Steering,
@@ -203,7 +203,15 @@ pub struct CoreWake {
 
 impl WaitWake for CoreWake {
     fn pending(&self, agent: &str) -> bool {
-        self.tree.has_message(agent) || self.steering.has_deliverable_message_for(agent)
+        self.tree.has_message(agent)
+            || self.steering.has_deliverable_message_for(agent)
+            || (agent == ROOT_AGENT && self.steering.has_unannounced())
+    }
+
+    fn take_notice(&self, agent: &str) -> Option<String> {
+        (agent == ROOT_AGENT)
+            .then(|| self.steering.take_announcement())
+            .flatten()
     }
 }
 
@@ -839,9 +847,9 @@ pub fn spend(usage: &rig_core::completion::Usage) -> Spend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::steering::Queued;
     use fontaine_agents::mode::ModeSetting;
     use fontaine_agents::registry::TypeOrigin;
-    use fontaine_tools::gate::ROOT_AGENT;
 
     fn typed(tools: &[&str]) -> AgentType {
         AgentType {
@@ -962,5 +970,29 @@ mod tests {
         assert!(wake.pending("agent-1"));
         assert!(!wake.pending("agent-2"));
         assert!(!wake.pending(ROOT_AGENT));
+    }
+
+    #[test]
+    fn a_queued_command_wakes_the_root_wait_once_and_a_lone_message_has_no_notice() {
+        let tree = Arc::new(AgentTree::new(fontaine_agents::tree::Limits::default(), 1));
+        let steering = Steering::default();
+        let wake = CoreWake {
+            tree,
+            steering: steering.clone(),
+        };
+        assert!(!wake.pending(ROOT_AGENT));
+        steering.queue(Queued::Command("/afk".into()));
+        assert!(wake.pending(ROOT_AGENT));
+        assert!(!wake.pending("agent-1"));
+        assert!(
+            wake.take_notice(ROOT_AGENT)
+                .is_some_and(|n| n.contains("/afk"))
+        );
+        assert!(!wake.pending(ROOT_AGENT));
+
+        steering.retract();
+        steering.queue(Queued::Message("hi".into()));
+        assert!(wake.pending(ROOT_AGENT));
+        assert_eq!(wake.take_notice(ROOT_AGENT), None);
     }
 }

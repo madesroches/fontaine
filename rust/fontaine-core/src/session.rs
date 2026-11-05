@@ -904,7 +904,7 @@ fn scan_ledger(path: &Path, wanted: Option<&str>) -> io::Result<Scan> {
     Ok(scan)
 }
 
-fn first_line_cut(text: &str, chars: usize) -> Option<String> {
+pub(crate) fn first_line_cut(text: &str, chars: usize) -> Option<String> {
     let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
     let mut cut: String = line.chars().take(chars).collect();
     if line.chars().count() > chars {

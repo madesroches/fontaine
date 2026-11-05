@@ -66,8 +66,8 @@ result, and never a second time.
 - **Only the parent.** Only the agent that started a subagent may wait on it; any other id is
   refused.
 - **Early return.** A wait of any kind also returns when a message from another agent reaches
-  the waiter or, in the main conversation, when you type one. The message is delivered with
-  that result.
+  the waiter or, in the main conversation, when you type one or queue a command or skill. A message is delivered
+  with that result; a queued command or skill is only named in it, and runs when the turn ends.
 - **Interrupted.** Interrupting a wait or a turn (Esc) leaves every subagent running; their
   reports arrive later as usual. Stop one from the agents panel. `/clear`, `/rewind` and
   `/branch` are refused while any subagent runs or its report waits to be delivered; run them

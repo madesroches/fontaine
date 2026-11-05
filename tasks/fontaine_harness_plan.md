@@ -413,6 +413,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-03: A subagent's in-flight messages go to a separate `<id>.inflight` log, emptied at settle and shown by `/export`, because rig's final save refuses a log that moved under it.
 - 2026-11-03: A journal kept by an `Error` settle (the agent's log lacks the run's messages) is carried through the next run rather than discarded; the journal is cut back at settle to the whole-line byte length recorded at run start (`replace_log_async` takes raw bytes, so the prefix is exact), so nothing already journaled is lost.
 - 2026-11-03: A kill loses the last assistant turn whose tools are still running, with that batch's results; accepted, no provisional record of uncommitted messages.
+- 2026-11-05: A command, skill or `!` line the user queues while the root is parked in a `job_output` wait ends the wait and is named in its answer (first line only, once), but is not delivered to the model; it still runs after the turn in typed order, and a plain message queued behind it neither wakes nor is named. Reason: delivering it would reorder the user's input and make `/afk`-style text model-visible intent (#434).
 
 ### Build and release
 

@@ -416,7 +416,9 @@ as yours for the [guardian](guardian.md).
   runs when the turn ends, in the order typed: a skill runs as its expanded prompt, a built-in
   command does exactly what it would have done had it been submitted at that moment. Neither is
   steered into the running turn, and a message queued behind one waits with it rather than
-  overtaking it. Unknown slash names and `/loop` are refused with a one-line hint that replaces
+  overtaking it. If the model is parked in a blocking wait, a queued command or skill ends it and the
+  wait's result tells the model the entry is pending (its first line, quoted); the entry itself still
+  runs after the turn. Unknown slash names and `/loop` are refused with a one-line hint that replaces
   the status bar's key hints until the next input event (key, paste or resize), or the end of the
   turn; it adds nothing to the transcript, and the input stays. The line renderer has no status
   bar, so there the refusal is a transcript notice. `/loop` is refused until #298.
