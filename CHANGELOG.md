@@ -20,6 +20,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Release archives are signed with a detached minisign signature made in CI with a Fontaine-owned
+  key, and a release is published only after its draft is downloaded and verified. There is a new
+  dev channel: each CI-passing build of `main` is published as a signed prerelease `dev-<n>` once
+  the maintainer enables it. The `fontaine` crate gains the signature verifier the updater and
+  installers build on, and `docs/verifying-releases.md` explains manual verification (#425).
 - AFK mode (#411) for working while you are away: `/afk` in the terminal UI or `--afk` on the
   command line makes every call that would have asked you a denial (an `ask` rule, the floor, the
   mode, a hook's `ask`, a guardian or composition escalate, the paused breaker) and tells the model

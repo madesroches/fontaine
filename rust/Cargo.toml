@@ -89,6 +89,8 @@ brush-parser = "=0.4.0"
 toml_edit = "=0.25.17"
 yaml-rust2 = "=0.13.0"
 sha2 = "=0.11.1"
+minisign-verify = "=0.3.0"
+minisign = "=0.10.0"
 serde_jcs = "=0.2.0"
 async-lsp = { version = "=0.2.4", default-features = false, features = ["omni-trait", "tracing"] }
 lsp-types = "=0.95.1"
@@ -112,6 +114,8 @@ libc = "0.2.191"
 cargo-dist-version = "0.32.0"
 ci = "github"
 installers = []
+# GitHub attaches source archives to every release; none is signed, so none is published by dist.
+source-tarball = false
 targets = [
     "x86_64-unknown-linux-gnu",
     "aarch64-apple-darwin",

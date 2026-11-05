@@ -149,6 +149,9 @@ Apart from the ticked repo-side items, each item needs live provider keys, a liv
   - [x] #78 (Git Bash collapses `\\` on Windows) and #73 (`webfetch` 403 without a User-Agent)
         fixed. (2026-10-23)
 - **Repository and release**
+  - [ ] Release signing (#425): every archive on the `release` and `dev` channels signed with a
+        Fontaine-owned minisign key, verified before publication; the maintainer bootstraps the keys
+        and the `release-signing` / `dev-signing` environments (`CONTRIBUTING.md` §Releasing). Blocks #175, #176 and #109.
   - [x] Turn on GitHub private vulnerability reporting (`SECURITY.md` promises it; it is off today). (2026-10-23)
   - [x] `CHANGELOG.md` entry for 0.1.0. (2026-10-23)
   - [x] Release archives carry LICENSE/README/CHANGELOG; release notes from the changelog;
@@ -192,9 +195,10 @@ The model layer, agent runtime, memory/compaction, base tools, and MCP come from
 Per the micromegas convention, the Cargo workspace lives at `rust/Cargo.toml` and **every crate
 sits directly under `rust/`** — the root directories are only `rust/`, `evals/`, `analytics/`, `docs/`, `tasks/`,
 `research/`, plus root files `README.md`, `LICENSE`, `CHANGELOG.md`, `CONTRIBUTING.md`, `SECURITY.md`, `AGENTS.md`, `.gitignore`,
-`.github/workflows/release.yml` (cargo-dist release build; see `design/platforms.md` §Releases) and
+`.github/workflows/release.yml` (cargo-dist release build, signed and draft-verified before publication; see `design/platforms.md` §Releases),
+`.github/workflows/dev.yml` (the signed dev channel), `.github/scripts/` (minisign install, sign and verify scripts), `rust/fontaine/keys/` (the channels' public keys) and
 `.github/workflows/ci.yml` (GitHub Actions; matrix `ubuntu-latest`, `macos-latest`, `windows-latest`, each job installs the toolchain pinned in `rust/rust-toolchain.toml` and from `rust/` runs `cargo fmt --check`,
-`cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo deny check` (version-pinned cargo-deny, config `rust/deny.toml`), then the offline eval fixture run (Phase 3 adds the `--guardian none` eval run: `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none`; the release plan (`dist plan`) runs once per PR, in the Release workflow's `plan` job, not in `ci.yml`; Phase 6 adds `cargo clippy --all-targets --features fontaine/pg2 -- -D warnings` and `cargo test --features fontaine/pg2`, Linux only, with `cargo check --features fontaine/pg2` on macOS and Windows; the two `fixture` eval runs are Linux only; a `changes` job skips the Rust steps for PRs touching only `tasks/` or `AGENTS.md`; PR runs restore but do not save the cache, and superseded PR runs are cancelled) — see
+`cargo clippy --all-targets -- -D warnings`, `cargo test`, `cargo deny check` (version-pinned cargo-deny, config `rust/deny.toml`), then the offline eval fixture run (Phase 3 adds the `--guardian none` eval run: `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none`; the release plan (`dist plan`) runs once per PR, in the Release workflow's `plan` job, not in `ci.yml`; Phase 6 adds `cargo clippy --all-targets --features fontaine/pg2 -- -D warnings` and `cargo test --features fontaine/pg2`, Linux only, with `cargo check --features fontaine/pg2` on macOS and Windows; the two `fixture` eval runs and the "Release signing" step (real minisign CLI and scripts against disposable keys, then the ignored `release_signature` interop test) are Linux only; a `changes` job skips the Rust steps for PRs touching only `tasks/` or `AGENTS.md`; PR runs restore but do not save the cache, and superseded PR runs are cancelled) — see
 `design/testing.md` §Testing Strategy).
 
 ```
@@ -420,6 +424,8 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-25: Narrows the 2026-10-21 "every CI step runs on all three OSes": compile, lint and test coverage stays on all three, Linux runs pg2 clippy and test, macOS and Windows run `cargo check --features fontaine/pg2`; only the pure-scoring `fixture` evals are Linux-only (`--guardian none` stays everywhere; required check names unchanged). Reason: Windows CI took ~32 min vs ~8 on Ubuntu (#178).
 - 2026-11-04: CI builds with `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_DEV_DEBUG=0`, the Linux job frees the runner's preinstalled .NET, Android, GHC and CodeQL trees first, and runs `cargo clean` before the pg2 tests. Reason: the ~140 integration-test binaries are ~250 MB each with debug info (~147 MB without) and the free GitHub runner has ~14 GB of disk, so the Linux job ran out of space linking them; the default linker (rust-lld) was not the cause and is unchanged.
 
+- 2026-11-05: Release signing — separate Fontaine-owned minisign keys for `release` and `dev`, public keys checked in at `rust/fontaine/keys/` and compiled in, private keys only in the `release-signing` (tags, required reviewer) and `dev-signing` (main) GitHub Environments. Every archive is signed, published as a draft, re-downloaded and verified, then published. Reason: update trust anchored to Fontaine's keys (#175/#176), with a dev-key compromise unable to reach `release`.
+- 2026-11-05: The dev channel publishes each verified `main` build as prerelease `dev-<run_number>`, gated on the repository variable `FONTAINE_DEV_CHANNEL`. Reason: the same draft-verify-publish gate as `release`, and no red `main` before the dev key exists.
 ### Config
 
 - 2026-10-21: Unknown config keys and sections are a config error (exit 2) (Claude Code ignores them): a misspelled `[permisions]` must not silently drop deny rules.

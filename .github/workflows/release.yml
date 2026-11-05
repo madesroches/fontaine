@@ -19,10 +19,14 @@
 # also copy the root `CHANGELOG.md` into `rust/`, where dist looks for release notes, and `plan`
 # fails a tag with no changelog section. `plan` retries the whole dist install (the installer
 # script and the archive it fetches), since one transient error from GitHub Releases would
-# otherwise turn a PR red.
+# otherwise turn a PR red. The signing chain is also hand-written: after the build jobs, `sign`
+# (environment `release-signing`, the only job that sees the signing key) signs every archive,
+# `host` creates a draft release, `verify-draft` re-downloads and verifies it, and only then does
+# `publish` make it public. `contents: write` is granted per job, to `host`, `verify-draft` and
+# `publish` only. See docs/verifying-releases.md.
 name: Release
 permissions:
-  "contents": "write"
+  "contents": "read"
 
 defaults:
   run:
@@ -64,6 +68,8 @@ jobs:
       tag: ${{ !github.event.pull_request && github.ref_name || '' }}
       tag-flag: ${{ !github.event.pull_request && format('--tag={0}', github.ref_name) || '' }}
       publishing: ${{ !github.event.pull_request }}
+      sign-version: ${{ steps.sign-meta.outputs.version }}
+      sign-commit: ${{ steps.sign-meta.outputs.commit }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -112,6 +118,14 @@ jobs:
             echo "::error::CHANGELOG.md has no section for ${{ github.ref_name }}; add '## [X.Y.Z] - YYYY-MM-DD' before tagging"
             exit 1
           fi
+      # The values `sign` and `verify-draft` bind into every signature; dist already requires the
+      # tag to match the workspace version.
+      - id: sign-meta
+        if: ${{ !github.event.pull_request }}
+        shell: bash
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
       - name: "Upload dist-manifest.json"
         uses: actions/upload-artifact@v7
         with:
@@ -242,14 +256,61 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             rust/${{ env.BUILD_MANIFEST_NAME }}
-  # Determines if we should publish/announce
+  # Signs every archive. The only job in the workflow that names an environment, so the signing
+  # secrets are in scope here and nowhere else; it runs no build tools and no code from the
+  # artifacts it downloads.
+  sign:
+    needs:
+      - plan
+      - build-local-artifacts
+      - build-global-artifacts
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    runs-on: "ubuntu-22.04"
+    environment: release-signing
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Fetch artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+      - name: Remove the dist manifests
+        run: rm -f artifacts/*-dist-manifest.json
+      - name: Install minisign
+        run: .github/scripts/install-minisign.sh
+      - name: Sign and verify
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
+          SIGN_COMMIT: ${{ needs.plan.outputs.sign-commit }}
+        run: .github/scripts/release-sign.sh release artifacts rust/fontaine/keys/release.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
+      - name: Upload signatures
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-signatures
+          path: artifacts/*.minisig
+
+  # Creates the draft release; nothing is public until `publish`
   host:
     needs:
       - plan
       - build-local-artifacts
       - build-global-artifacts
-    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is fine)
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+      - sign
+    # Only run if we're "publishing", and only if plan, local and global didn't fail (skipped is
+    # fine). A failed or skipped `sign` never reaches here.
+    if: ${{ always() && needs.sign.result == 'success' && needs.plan.result == 'success' && needs.plan.outputs.publishing == 'true' && (needs.build-global-artifacts.result == 'skipped' || needs.build-global-artifacts.result == 'success') && (needs.build-local-artifacts.result == 'skipped' || needs.build-local-artifacts.result == 'success') }}
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     runs-on: "ubuntu-22.04"
@@ -300,8 +361,9 @@ jobs:
       - name: Cleanup
         working-directory: ${{ github.workspace }}
         run: |
-          # Remove the granular manifests
-          rm -f artifacts/*-dist-manifest.json
+          # Remove the granular manifests and the merged one, so the published assets match
+          # what `verify-draft` allows
+          rm -f artifacts/*-dist-manifest.json artifacts/dist-manifest.json
       - name: Create GitHub Release
         working-directory: ${{ github.workspace }}
         env:
@@ -313,16 +375,58 @@ jobs:
           # Write and read notes from a file to avoid quoting breaking things
           echo "$ANNOUNCEMENT_BODY" > $RUNNER_TEMP/notes.txt
 
-          gh release create "${{ needs.plan.outputs.tag }}" --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+          gh release create "${{ needs.plan.outputs.tag }}" --draft --target "$RELEASE_COMMIT" $PRERELEASE_FLAG --title "$ANNOUNCEMENT_TITLE" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+
+  # Downloads exactly what users would fetch from the draft and verifies it.
+  verify-draft:
+    needs:
+      - plan
+      - host
+    runs-on: "ubuntu-22.04"
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install minisign
+        run: .github/scripts/install-minisign.sh
+      - name: Download the draft
+        run: gh release download "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --dir draft
+      - name: Verify
+        env:
+          SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
+          SIGN_COMMIT: ${{ needs.plan.outputs.sign-commit }}
+        run: .github/scripts/release-verify.sh release draft rust/fontaine/keys/release.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
+
+  # The only step that makes the release public.
+  publish:
+    needs:
+      - plan
+      - verify-draft
+    runs-on: "ubuntu-22.04"
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - name: Publish the draft
+        run: gh release edit "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false
 
   announce:
     needs:
       - plan
-      - host
-    # use "always() && ..." to allow us to wait for all publish jobs while
-    # still allowing individual publish jobs to skip themselves (for prereleases).
-    # "host" however must run to completion, no skipping allowed!
-    if: ${{ always() && needs.host.result == 'success' }}
+      - publish
+    # "publish" must run to completion, no skipping allowed!
+    if: ${{ always() && needs.publish.result == 'success' }}
     runs-on: "ubuntu-22.04"
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

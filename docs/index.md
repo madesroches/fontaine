@@ -44,6 +44,8 @@ describe what the current build does; each page covers one topic.
   `/clear`, `/compact`, `/btw` (side questions), `/recap` (session report),
   `/cost` and `/usage` (token usage and spend by source), `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,
   `/rename`, `/export` and `/rewind`, `/afk`, the agents panel and the workspace trust prompt.
+- [Verifying releases](verifying-releases.md): what is signed on the `release` and `dev` channels,
+  the public keys, and how to verify an archive with `minisign` and `sha256sum`.
 - [Checkpoints and /rewind](checkpoints.md): what `write` and `edit` save before they change a
   file, `/rewind` and Esc Esc, restoring code, the conversation or both, and what is not tracked.
 - [Terminal setup](terminal.md): newline keys for each terminal, tmux, Option as Meta on macOS,

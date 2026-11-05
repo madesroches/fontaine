@@ -16,7 +16,8 @@ This repository is under construction. The documentation describes what the curr
 Binaries for Linux, macOS and Windows are attached to each
 [GitHub Release](https://github.com/madesroches/fontaine/releases). Unpack the archive for your
 platform and put `fontaine` on your `PATH`; the archive also holds the license, readme and
-changelog. With the Rust toolchain you can instead install from
+changelog. Each archive has a detached signature; see
+[Verifying releases](docs/verifying-releases.md). With the Rust toolchain you can instead install from
 source:
 
 ```

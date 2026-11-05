@@ -101,6 +101,112 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: cargo test --doc
 
+      - name: Release signing
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
+        # Names no environment, so no production secret is in scope; the keys are disposable.
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts="$GITHUB_WORKSPACE/.github/scripts"
+          "$scripts/install-minisign.sh"
+          work="$(mktemp -d)"
+          export MINISIGN_PASSWORD="dummy-password"
+          version="0.0.0-ci"
+          commit="0123456789abcdef"
+
+          genkey() {
+            printf '%s\n%s\n' "$MINISIGN_PASSWORD" "$MINISIGN_PASSWORD" \
+              | minisign -G -f -p "$work/$1.pub" -s "$work/$1.key" >/dev/null
+          }
+          genkey main
+          genkey other
+
+          # Archive contents are arbitrary bytes; only the names and the checksums matter.
+          make_fixture() {
+            local d="$1"
+            mkdir -p "$d"
+            head -c 4096 /dev/urandom > "$d/fontaine-x86_64-unknown-linux-gnu.tar.xz"
+            head -c 4096 /dev/urandom > "$d/fontaine-aarch64-apple-darwin.tar.xz"
+            head -c 4096 /dev/urandom > "$d/fontaine-x86_64-pc-windows-msvc.zip"
+            (cd "$d" && for f in fontaine-*; do sha256sum -b "$f" > "$f.sha256"; done \
+              && sha256sum -b fontaine-*.tar.xz fontaine-*.zip > sha256.sum)
+          }
+
+          sign() { # sign <dir> <keyname> <channel>
+            MINISIGN_SECRET_KEY="$(cat "$work/$2.key")" \
+              "$scripts/release-sign.sh" "$3" "$1" "$work/main.pub" "$version" "$commit"
+          }
+          verify() { "$scripts/release-verify.sh" "${2:-release}" "$1" "$work/main.pub" "${3:-$version}" "${4:-$commit}"; }
+
+          pristine="$work/pristine"
+          make_fixture "$pristine"
+          sign "$pristine" main release
+          verify "$pristine"
+
+          # The signer must refuse a key that does not match the public key it checks against.
+          bad="$work/signer-wrong-key"
+          make_fixture "$bad"
+          if sign "$bad" other release; then echo "::error::signing with the wrong key passed"; exit 1; fi
+
+          expect_fail() { # expect_fail <name> <mutation function> [verify args...]
+            local name="$1" mutate="$2"
+            shift 2
+            local d="$work/case-$name"
+            cp -r "$pristine" "$d"
+            "$mutate" "$d"
+            if verify "$d" "$@" >/dev/null 2>&1; then
+              echo "::error::verify passed on '$name'"
+              exit 1
+            fi
+            echo "ok: '$name' rejected"
+          }
+
+          a=fontaine-x86_64-unknown-linux-gnu.tar.xz
+          b=fontaine-aarch64-apple-darwin.tar.xz
+          m_deleted_sig() { rm "$1/$a.minisig"; }
+          m_truncated_sig() { head -c 100 "$1/$a.minisig" > "$1/t" && mv "$1/t" "$1/$a.minisig"; }
+          m_other_key() {
+            MINISIGN_SECRET_KEY="$(cat "$work/other.key")" \
+              "$scripts/release-sign.sh" release "$1" "$work/other.pub" "$version" "$commit"
+          }
+          m_tampered() { echo x >> "$1/$a"; }
+          m_orphan() { cp "$1/$a.minisig" "$1/fontaine-orphan.tar.xz.minisig"; }
+          m_empty() { rm -f "$1"/*; }
+          m_swap() {
+            cp "$1/$a" "$1/$b"
+            cp "$1/$a.minisig" "$1/$b.minisig"
+            (cd "$1" && sha256sum -b "$b" > "$b.sha256" \
+              && sha256sum -b fontaine-*.tar.xz fontaine-*.zip > sha256.sum)
+          }
+          m_checksum() { echo "0000000000000000000000000000000000000000000000000000000000000000 *$a" > "$1/$a.sha256"; }
+          m_unrecognised() { echo x > "$1/notes.txt"; }
+
+          expect_fail deleted-minisig m_deleted_sig
+          expect_fail truncated-minisig m_truncated_sig
+          expect_fail signed-by-other-key m_other_key
+          expect_fail tampered-archive m_tampered
+          expect_fail orphan-minisig m_orphan
+          expect_fail empty-directory m_empty
+          expect_fail wrong-channel true dev
+          expect_fail file-swap m_swap
+          expect_fail checksum-mismatch m_checksum
+          expect_fail wrong-version true release "9.9.9" "$commit"
+          expect_fail wrong-commit true release "$version" "ffffffff"
+          expect_fail unrecognised-asset m_unrecognised
+
+          # The signer with zero archives must fail too.
+          mkdir "$work/none"
+          if MINISIGN_SECRET_KEY="$(cat "$work/main.key")" \
+            "$scripts/release-sign.sh" release "$work/none" "$work/main.pub" "$version" "$commit" 2>/dev/null; then
+            echo "::error::release-sign.sh passed with no archives"; exit 1
+          fi
+
+          cp "$work/main.pub" "$pristine/release.pub"
+          cp "$work/other.pub" "$pristine/dev.pub"
+          FONTAINE_SIGNING_FIXTURE_DIR="$pristine" cargo test -p fontaine --lib \
+            release_signature::tests::cli_interop -- --ignored --exact 2>&1 | tee "$work/interop.log"
+          grep -q 'test result: ok. 1 passed' "$work/interop.log"
+
       - name: Test (pg2)
         if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
         # The default-feature test binaries are not reused by this build and would not fit beside it.
