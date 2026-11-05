@@ -163,6 +163,12 @@ pub trait AgentWaits: Send + Sync {
 pub trait WaitWake: Send + Sync {
     /// Whether something the caller should read now is waiting for it.
     fn pending(&self, agent: &str) -> bool;
+
+    /// What to tell `agent` about the news that ended its wait, when the wake itself does not
+    /// carry it. Taking it marks it told, so the next wait parks.
+    fn take_notice(&self, _agent: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Why a job was told to stop. The first request wins.

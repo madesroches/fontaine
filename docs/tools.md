@@ -349,7 +349,7 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
   With an `id` it returns what the job printed since it was last read and whether it still runs.
   `wait_secs` (no ceiling) waits for the job to end or the wait to elapse, then returns what it
   printed (output alone does not end the wait; use [`monitor`](#monitor) for that), so the model has no need to poll with `sleep`; any wait returns early when a message from
-  another agent arrives or you type one. A job that ended and was already reported in a notification
+  another agent arrives, you type one, or you queue a command, skill or `!` line (the result then names it). A job that ended and was already reported in a notification
   answers with a short marker instead of its output. On a monitor the same call waits instead: it
   reports that a notification was posted, the monitor ended, or it is still running — never output
   bytes. A zero `wait_secs` asks for the status at once.
@@ -393,7 +393,7 @@ own: allow it with a `monitor(...)` rule or leave it to the guardian.
   session stops it; a command that never ends, like `tail -f`, should be cancelled when it is no
   longer needed. With one it also ends at that timeout. It posts a final notice when it ends on
   its own; `job_cancel` stops it early and posts nothing. `job_output` on a monitor never returns
-  output — it waits (for `wait_secs`, and until a message arrives) and reports whether a
+  output — it waits (for `wait_secs`, and until a message arrives or you queue a command, skill or `!` line) and reports whether a
   notification was posted, the monitor ended, or it still runs; its lines and its final notice
   always arrive as notifications.
 - Like `job_cancel` it is for the main conversation only, and it counts against the limit

@@ -415,11 +415,16 @@ impl AgentWaits for FakeAgents {
 struct FakeWake {
     after: Duration,
     since: Instant,
+    notice: Option<String>,
 }
 
 impl WaitWake for FakeWake {
     fn pending(&self, _agent: &str) -> bool {
         self.since.elapsed() >= self.after
+    }
+
+    fn take_notice(&self, _agent: &str) -> Option<String> {
+        self.notice.clone()
     }
 }
 
@@ -427,13 +432,14 @@ fn waiting_session(
     answer: Option<AgentWaitError>,
     wake_after: Duration,
 ) -> (Dirs, Vec<Registered>, Asked) {
-    waiting_session_with(answer, None, wake_after)
+    waiting_session_with(answer, None, wake_after, None)
 }
 
 fn waiting_session_with(
     answer: Option<AgentWaitError>,
     ended: Option<AgentDelivery>,
     wake_after: Duration,
+    notice: Option<&str>,
 ) -> (Dirs, Vec<Registered>, Asked) {
     let d = Dirs::new();
     let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
@@ -446,6 +452,7 @@ fn waiting_session_with(
     env.wait_wake = Some(Arc::new(FakeWake {
         after: wake_after,
         since: Instant::now(),
+        notice: notice.map(String::from),
     }));
     let tools = registry(&env);
     (d, tools, asked)
@@ -518,7 +525,7 @@ async fn an_ended_subagent_is_described_by_how_its_report_was_delivered() {
             "Its report was already delivered to you.",
         ),
     ] {
-        let (_d, tools, _asked) = waiting_session_with(None, Some(delivery), Duration::ZERO);
+        let (_d, tools, _asked) = waiting_session_with(None, Some(delivery), Duration::ZERO, None);
         let out = run_as_child(&tools, "job_output", json!({"id": "agent-1"}))
             .await
             .unwrap();
@@ -600,6 +607,32 @@ async fn an_omitted_wait_means_until_it_ends_for_a_subagent_and_now_for_a_job() 
 }
 
 #[tokio::test]
+async fn a_wake_with_a_notice_appends_it_in_place_of_the_fixed_text() {
+    let (_d, tools, _) = waiting_session_with(
+        None,
+        None,
+        Duration::ZERO,
+        Some("[Stopped waiting: the user queued input while you waited: `/afk`.]"),
+    );
+    let started = Instant::now();
+    let out = text(
+        &call(
+            &tools,
+            "job_output",
+            json!({"id": "agent-1", "wait_secs": 600}),
+        )
+        .await
+        .unwrap(),
+    );
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(
+        out.ends_with("\n[Stopped waiting: the user queued input while you waited: `/afk`.]"),
+        "{out}"
+    );
+    assert!(!out.contains("new input arrived"), "{out}");
+}
+
+#[tokio::test]
 async fn a_message_ends_any_wait_early_with_the_zero_wait_answer() {
     let (_d, tools, _) = waiting_session(None, Duration::from_millis(300));
     let started = Instant::now();
@@ -615,7 +648,7 @@ async fn a_message_ends_any_wait_early_with_the_zero_wait_answer() {
     );
     assert_eq!(
         out,
-        "[agent-1 is running, 3m00s old]\n[Stopped waiting: a message arrived.]"
+        "[agent-1 is running, 3m00s old]\n[Stopped waiting: new input arrived.]"
     );
 
     let shown = text(
@@ -638,7 +671,7 @@ async fn a_message_ends_any_wait_early_with_the_zero_wait_answer() {
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(
         out.starts_with("(no new output)\n[job-")
-            && out.ends_with("[Stopped waiting: a message arrived.]"),
+            && out.ends_with("[Stopped waiting: new input arrived.]"),
         "{out}"
     );
 }

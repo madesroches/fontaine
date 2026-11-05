@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- A command, skill or `!` line queued while the model waits in `job_output` now ends the wait and
+  tells the model the entry is pending, instead of leaving it parked for the full `wait_secs`; the
+  entry still runs after the turn (#434).
 - `claude-subscription` now accepts the plugins bundled into the Claude CLI itself (`@builtin`),
   which CLI 2.1.318 lists on every start and which made every request fail. Any other plugin or
   skill is still refused, and the error now names the entries and where they likely come from
