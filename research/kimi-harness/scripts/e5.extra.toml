@@ -1,0 +1,8 @@
+
+[models."kc-small"]
+provider = "kimiapi"
+model = "kimi-for-coding"
+max_context_size = 24000
+capabilities = [ "thinking", "always_thinking", "tool_use" ]
+support_efforts = [ "low", "high", "max" ]
+default_effort = "low"

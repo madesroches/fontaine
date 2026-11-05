@@ -1,0 +1,13 @@
+DNS queries (name, type, count):
+  code.kimi.com A x4
+  code.kimi.com.home A x4
+  code.kimi.com.ubisoft.org A x4
+  fwd A x1
+  telemetry-logs.kimi.com A x8
+  telemetry-logs.kimi.com.home A x8
+  telemetry-logs.kimi.com.ubisoft.org A x8
+destinations (proto, ip, port, packets):
+   tcp 172.18.0.2 18080 x58
+   tcp 172.18.0.3 57356 x56
+
+tz=UTC lang=unset

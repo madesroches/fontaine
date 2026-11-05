@@ -1,0 +1,32 @@
+[
+ {
+  "label": "reasoning_present",
+  "status": 200,
+  "content": "It's currently 12:00 UTC.",
+  "finish": "stop"
+ },
+ {
+  "label": "reasoning_absent",
+  "status": 200,
+  "content": "It\u2019s 12:00 UTC.",
+  "finish": "stop"
+ },
+ {
+  "label": "reasoning_empty_string",
+  "status": 200,
+  "content": "It\u2019s 12:00 UTC.",
+  "finish": "stop"
+ },
+ {
+  "label": "reasoning_absent_content_empty_string",
+  "status": 200,
+  "content": "It\u2019s 12:00 UTC.",
+  "finish": "stop"
+ },
+ {
+  "label": "reasoning_absent_thinking_disabled",
+  "status": 200,
+  "content": "It's currently **12:00 UTC** (noon in Coordinated Universal Time).",
+  "finish": "stop"
+ }
+]

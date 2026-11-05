@@ -1,0 +1,38 @@
+[
+ {
+  "label": "system_tools_message",
+  "status": 200,
+  "tool_calls": [
+   "take_screenshot"
+  ],
+  "content": "",
+  "usage": {
+   "prompt_tokens": 395,
+   "completion_tokens": 38,
+   "total_tokens": 433,
+   "completion_tokens_details": {
+    "reasoning_tokens": 1
+   }
+  }
+ },
+ {
+  "label": "control_no_declaration",
+  "status": 200,
+  "tool_calls": [
+   "select_tools"
+  ],
+  "content": "",
+  "usage": {
+   "prompt_tokens": 302,
+   "completion_tokens": 56,
+   "total_tokens": 358,
+   "cached_tokens": 256,
+   "completion_tokens_details": {
+    "reasoning_tokens": 1
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 256
+   }
+  }
+ }
+]

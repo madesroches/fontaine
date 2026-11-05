@@ -1,0 +1,9 @@
+--- /home/mad/fontaine/research/kimi-harness/scripts/../fixtures/repo-failing/calc.py	2026-11-05 18:16:47.662114272 -0500
++++ /home/mad/fontaine/research/kimi-harness/scripts/../runs/e3-fix/ws/calc.py	2026-11-05 18:21:57.545164601 -0500
+@@ -1,5 +1,5 @@
+ def mean(xs):
+-    return sum(xs) / (len(xs) - 1)
++    return sum(xs) / len(xs)
+ 
+ 
+ def clamp(x, lo, hi):

@@ -1,0 +1,21 @@
+kimi version 2.5.1
+• Let me look at the files to understand what's needed.
+
+• Two bugs:
+  1. `mean` divides by `len(xs) - 1` — should be `len(xs)`. For [1,2,3]: sum=6, len-1=2 → 3.0 ≠ 2. Fix: divide by len(xs).
+  2. `clamp(5, 0, 3)` → max(lo, min(x, hi)) = max(0, min(5, 3)) = max(0,3) = 3. That actually passes. Wait, the test expects 3 and clamp returns 3. So clamp is fine? Let me double check: min(5,3)=3, max(0,3)=3. Yes, passes.
+
+  So only mean is broken. Fix calc.py.
+
+test_clamp (test_calc.T.test_clamp) ... 
+ok
+test_mean (test_calc.T.test_mean) ... ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.000s
+
+OK
+• Both tests pass. Also there's a stale __pycache__ — the pyc files were created before my edit, but Python will recompile since source mtime changed. Not an issue. The goal is complete.
+
+Goal [complete] (turns: 1, tokens: 593)
+To resume this session: kimi -r session_1167fd1d-f633-491a-b391-a305686690cf

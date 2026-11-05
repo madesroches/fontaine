@@ -1,0 +1,292 @@
+[
+ {
+  "id": "kimi-k2.7-code",
+  "object": "model",
+  "created": 1793920582,
+  "owned_by": "opencode",
+  "name": "Kimi K2.7 Code",
+  "canonical_id": "moonshotai/kimi-k2.7-code",
+  "type": "chat",
+  "description": "Coding-focused Kimi model, stronger on long-horizon repo work with less overthinking",
+  "family": "kimi-k2",
+  "open_weights": true,
+  "knowledge": "2025-01",
+  "release_date": "2026-06-12",
+  "last_updated": "2026-06-12",
+  "modalities": {
+   "input": [
+    "text",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/heic",
+    "image/heif",
+    "video/mp4",
+    "video/mpeg",
+    "video/mov",
+    "video/avi",
+    "video/x-flv",
+    "video/mpg",
+    "video/webm",
+    "video/wmv",
+    "video/3gpp"
+   ],
+   "output": [
+    "text"
+   ]
+  },
+  "capabilities": {
+   "tools": {
+    "supported": true
+   },
+   "reasoning": {
+    "supported": true
+   },
+   "structured_output": true,
+   "temperature": false,
+   "top_p": false,
+   "top_k": false,
+   "system_updates": true,
+   "effort_updates": false
+  },
+  "limit": {
+   "context": 262144,
+   "output": 262144
+  },
+  "cost": {
+   "text": {
+    "input": {
+     "price": 0.95,
+     "cache": {
+      "read": 0.19
+     }
+    },
+    "output": {
+     "price": 4
+    }
+   }
+  },
+  "api": {
+   "chat-completions": {
+    "base_url": "https://opencode.ai/inference/go/openai/v1",
+    "sdk": {
+     "aisdk": "@ai-sdk/openai-compatible",
+     "opencodeai": "@opencode/ai/providers/openai-compatible"
+    },
+    "compatibility": {
+     "reasoning_field": "reasoning_content"
+    },
+    "capabilities": {
+     "tools": {
+      "strict": true,
+      "choice": [
+       "auto",
+       "none"
+      ],
+      "updates": false
+     }
+    }
+   }
+  }
+ },
+ {
+  "id": "kimi-k3",
+  "object": "model",
+  "created": 1793920582,
+  "owned_by": "opencode",
+  "name": "Kimi K3",
+  "canonical_id": "moonshotai/kimi-k3",
+  "type": "chat",
+  "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
+  "family": "kimi-k3",
+  "open_weights": true,
+  "release_date": "2026-07-16",
+  "last_updated": "2026-07-16",
+  "modalities": {
+   "input": [
+    "text",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/heic",
+    "image/heif",
+    "video/mp4",
+    "video/mpeg",
+    "video/mov",
+    "video/avi",
+    "video/x-flv",
+    "video/mpg",
+    "video/webm",
+    "video/wmv",
+    "video/3gpp"
+   ],
+   "output": [
+    "text"
+   ]
+  },
+  "capabilities": {
+   "tools": {
+    "supported": true
+   },
+   "reasoning": {
+    "supported": true,
+    "effort": [
+     "max"
+    ]
+   },
+   "structured_output": true,
+   "temperature": false,
+   "top_p": false,
+   "top_k": false,
+   "system_updates": true,
+   "effort_updates": false
+  },
+  "limit": {
+   "context": 1048576,
+   "output": 131072
+  },
+  "cost": {
+   "text": {
+    "input": {
+     "price": 3,
+     "cache": {
+      "read": 0.3,
+      "write": 3
+     }
+    },
+    "output": {
+     "price": 15
+    }
+   }
+  },
+  "api": {
+   "chat-completions": {
+    "base_url": "https://opencode.ai/inference/go/openai/v1",
+    "sdk": {
+     "aisdk": "@ai-sdk/openai-compatible",
+     "opencodeai": "@opencode/ai/providers/openai-compatible"
+    },
+    "compatibility": {
+     "reasoning_field": "reasoning_content"
+    },
+    "capabilities": {
+     "tools": {
+      "strict": true,
+      "choice": [
+       "auto",
+       "none",
+       "required"
+      ],
+      "updates": true
+     }
+    }
+   }
+  }
+ },
+ {
+  "id": "kimi-k3.1-pro",
+  "object": "model",
+  "created": 1793920582,
+  "owned_by": "opencode",
+  "name": "Kimi K3.1 Pro",
+  "canonical_id": "moonshotai/kimi-k3.1-pro",
+  "type": "chat",
+  "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+  "family": "kimi-k3",
+  "open_weights": false,
+  "release_date": "2026-10-23",
+  "last_updated": "2026-10-23",
+  "modalities": {
+   "input": [
+    "text",
+    "image/jpeg",
+    "image/png",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/heic",
+    "image/heif",
+    "video/mp4",
+    "video/mpeg",
+    "video/mov",
+    "video/avi",
+    "video/x-flv",
+    "video/mpg",
+    "video/webm",
+    "video/wmv",
+    "video/3gpp"
+   ],
+   "output": [
+    "text"
+   ]
+  },
+  "capabilities": {
+   "tools": {
+    "supported": true
+   },
+   "reasoning": {
+    "supported": true,
+    "default": {
+     "type": "effort",
+     "value": "max"
+    },
+    "effort": [
+     "low",
+     "high",
+     "max"
+    ]
+   },
+   "structured_output": true,
+   "temperature": false,
+   "top_p": false,
+   "top_k": false,
+   "system_updates": false,
+   "effort_updates": false
+  },
+  "limit": {
+   "context": 1048576,
+   "output": 131072
+  },
+  "cost": {
+   "text": {
+    "input": {
+     "price": 2,
+     "cache": {
+      "read": 0.2,
+      "write": 2
+     }
+    },
+    "output": {
+     "price": 10
+    }
+   }
+  },
+  "api": {
+   "chat-completions": {
+    "base_url": "https://opencode.ai/inference/go/openai/v1",
+    "sdk": {
+     "aisdk": "@ai-sdk/openai-compatible",
+     "opencodeai": "@opencode/ai/providers/openai-compatible"
+    },
+    "compatibility": {
+     "reasoning_field": "reasoning_content"
+    },
+    "capabilities": {
+     "tools": {
+      "strict": true,
+      "choice": [
+       "auto",
+       "none",
+       "required"
+      ],
+      "updates": false
+     }
+    }
+   }
+  }
+ }
+]

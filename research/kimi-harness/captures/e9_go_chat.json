@@ -1,0 +1,62 @@
+[
+ {
+  "path": "/openai/v1/chat/completions",
+  "status": 429,
+  "error": {
+   "type": "GoUsageLimitError",
+   "message": "Go usage limit exceeded"
+  },
+  "headers_sent": [
+   "x-opencode-session"
+  ],
+  "body_keys": {
+   "model": "kimi-k3",
+   "messages": "<2 items>",
+   "tools": "<21 items>",
+   "stream_options": {
+    "include_usage": true
+   },
+   "stream": true
+  }
+ },
+ {
+  "path": "/openai/v1/chat/completions",
+  "status": 429,
+  "error": {
+   "type": "GoUsageLimitError",
+   "message": "Go usage limit exceeded"
+  },
+  "headers_sent": [
+   "x-opencode-session"
+  ],
+  "body_keys": {
+   "model": "kimi-k3",
+   "messages": "<2 items>",
+   "tools": "<21 items>",
+   "stream_options": {
+    "include_usage": true
+   },
+   "stream": true
+  }
+ },
+ {
+  "path": "/openai/v1/chat/completions",
+  "status": 429,
+  "error": {
+   "type": "GoUsageLimitError",
+   "message": "Go usage limit exceeded"
+  },
+  "headers_sent": [
+   "x-opencode-session"
+  ],
+  "body_keys": {
+   "model": "kimi-k3",
+   "messages": "<2 items>",
+   "tools": "<21 items>",
+   "stream_options": {
+    "include_usage": true
+   },
+   "stream": true
+  }
+ }
+]

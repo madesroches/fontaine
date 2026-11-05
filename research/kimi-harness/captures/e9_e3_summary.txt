@@ -1,0 +1,113 @@
+#0 POST /chat/completions -> 200 3.676s
+  keys: {'model': 'kimi-for-coding', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools: 21
+   system     20632c extra=[]
+   user         100c extra=[]
+  resp: finish=tool_calls reasoning_chars=29 text_chars=0 calls=['ls'] usage={'prompt_tokens': 10441, 'completion_tokens': 76, 'total_tokens': 10517, 'cached_tokens': 5632, 'completion_tokens_details': {'reasoning_tokens': 8}, 'prompt_tokens_details': {'cached_tokens': 5632}}
+#1 POST /chat/completions -> 200 3.883s
+  keys: {'model': 'kimi-for-coding', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools: 21
+   system     20632c extra=[]
+   user         100c extra=[]
+   assistant      4c extra=['reasoning_content', 'tool_calls']
+   tool          21c extra=['tool_call_id'] id=tool_Y5xEaDyMrjlHJDzj3wxlD8yV
+  resp: finish=tool_calls reasoning_chars=0 text_chars=0 calls=['read', 'read'] usage={'prompt_tokens': 10550, 'completion_tokens': 122, 'total_tokens': 10672, 'cached_tokens': 10240, 'completion_tokens_details': {'reasoning_tokens': 1}, 'prompt_tokens_details': {'cached_tokens': 10240}}
+#2 POST /chat/completions -> 200 3.224s
+  keys: {'model': 'kimi-for-coding', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools: 21
+   system     20632c extra=[]
+   user         100c extra=[]
+   assistant      4c extra=['reasoning_content', 'tool_calls']
+   tool          21c extra=['tool_call_id'] id=tool_Y5xEaDyMrjlHJDzj3wxlD8yV
+   assistant      4c extra=['tool_calls']
+   tool         104c extra=['tool_call_id'] id=tool_Kb3bn2vOJ22EQM7U86edZuhC
+   tool         265c extra=['tool_call_id'] id=tool_FLgWjgySRLFLO3iD58em3gTK
+  resp: finish=tool_calls reasoning_chars=0 text_chars=0 calls=['shell'] usage={'prompt_tokens': 10829, 'completion_tokens': 80, 'total_tokens': 10909, 'cached_tokens': 10496, 'completion_tokens_details': {'reasoning_tokens': 1}, 'prompt_tokens_details': {'cached_tokens': 10496}}
+#3 POST /chat/completions -> 200 5.216s
+  keys: {'model': 'kimi-for-coding', 'tool_choice': 'required', 'max_tokens': 1024}
+  tools: 1
+   system     30940c extra=[]
+   user       14726c extra=[]
+  resp: finish=None reasoning_chars=0 text_chars=0 calls=[] usage=None
+#4 POST /chat/completions -> 200 3.021s
+  keys: {'model': 'kimi-for-coding', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools: 21
+   system     20632c extra=[]
+   user         100c extra=[]
+   assistant      4c extra=['reasoning_content', 'tool_calls']
+   tool          21c extra=['tool_call_id'] id=tool_Y5xEaDyMrjlHJDzj3wxlD8yV
+   assistant      4c extra=['tool_calls']
+   tool         104c extra=['tool_call_id'] id=tool_Kb3bn2vOJ22EQM7U86edZuhC
+   tool         265c extra=['tool_call_id'] id=tool_FLgWjgySRLFLO3iD58em3gTK
+   assistant      4c extra=['tool_calls']
+   tool          46c extra=['tool_call_id'] id=tool_FaXSMRVKGM7OSd9TRgBFUE9h
+  resp: finish=tool_calls reasoning_chars=0 text_chars=0 calls=['shell'] usage={'prompt_tokens': 10953, 'completion_tokens': 81, 'total_tokens': 11034, 'cached_tokens': 10752, 'completion_tokens_details': {'reasoning_tokens': 1}, 'prompt_tokens_details': {'cached_tokens': 10752}}
+#5 POST /chat/completions -> 200 6.18s
+  keys: {'model': 'kimi-for-coding', 'tool_choice': 'required', 'max_tokens': 1024}
+  tools: 1
+   system     30940c extra=[]
+   user       14829c extra=[]
+  resp: finish=None reasoning_chars=0 text_chars=0 calls=[] usage=None
+#6 POST /chat/completions -> 200 4.863s
+  keys: {'model': 'kimi-for-coding', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools: 21
+   system     20632c extra=[]
+   user         100c extra=[]
+   assistant      4c extra=['reasoning_content', 'tool_calls']
+   tool          21c extra=['tool_call_id'] id=tool_Y5xEaDyMrjlHJDzj3wxlD8yV
+   assistant      4c extra=['tool_calls']
+   tool         104c extra=['tool_call_id'] id=tool_Kb3bn2vOJ22EQM7U86edZuhC
+   tool         265c extra=['tool_call_id'] id=tool_FLgWjgySRLFLO3iD58em3gTK
+   assistant      4c extra=['tool_calls']
+   tool          46c extra=['tool_call_id'] id=tool_FaXSMRVKGM7OSd9TRgBFUE9h
+   assistant      4c extra=['tool_calls']
+   tool         597c extra=['tool_call_id'] id=tool_JB94OdZyohViMeThW1Fo9u6u
+  resp: finish=tool_calls reasoning_chars=58 text_chars=86 calls=['edit'] usage={'prompt_tokens': 11198, 'completion_tokens': 170, 'total_tokens': 11368, 'cached_tokens': 10752, 'completion_tokens_details': {'reasoning_tokens': 22}, 'prompt_tokens_details': {'cached_tokens': 10752}}
+#7 POST /chat/completions -> 200 11.015s
+  keys: {'model': 'kimi-for-coding', 'tool_choice': 'required', 'max_tokens': 1024}
+  tools: 1
+   system     30940c extra=[]
+   user       15043c extra=[]
+  resp: finish=None reasoning_chars=0 text_chars=0 calls=[] usage=None
+#8 POST /chat/completions -> 200 3.12s
+  keys: {'model': 'kimi-for-coding', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools: 21
+   system     20632c extra=[]
+   user         100c extra=[]
+   assistant      4c extra=['reasoning_content', 'tool_calls']
+   tool          21c extra=['tool_call_id'] id=tool_Y5xEaDyMrjlHJDzj3wxlD8yV
+   assistant      4c extra=['tool_calls']
+   tool         104c extra=['tool_call_id'] id=tool_Kb3bn2vOJ22EQM7U86edZuhC
+   tool         265c extra=['tool_call_id'] id=tool_FLgWjgySRLFLO3iD58em3gTK
+   assistant      4c extra=['tool_calls']
+   tool          46c extra=['tool_call_id'] id=tool_FaXSMRVKGM7OSd9TRgBFUE9h
+   assistant      4c extra=['tool_calls']
+   tool         597c extra=['tool_call_id'] id=tool_JB94OdZyohViMeThW1Fo9u6u
+   assistant     86c extra=['reasoning_content', 'tool_calls']
+   tool         157c extra=['tool_call_id'] id=tool_TfMqfhzUZC5gY6GlfhT31Wb8
+  resp: finish=tool_calls reasoning_chars=0 text_chars=0 calls=['shell'] usage={'prompt_tokens': 11451, 'completion_tokens': 81, 'total_tokens': 11532, 'cached_tokens': 11008, 'completion_tokens_details': {'reasoning_tokens': 1}, 'prompt_tokens_details': {'cached_tokens': 11008}}
+#9 POST /chat/completions -> 200 6.4s
+  keys: {'model': 'kimi-for-coding', 'tool_choice': 'required', 'max_tokens': 1024}
+  tools: 1
+   system     30940c extra=[]
+   user       15003c extra=[]
+  resp: finish=None reasoning_chars=0 text_chars=0 calls=[] usage=None
+#10 POST /chat/completions -> 200 4.672s
+  keys: {'model': 'kimi-for-coding', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools: 21
+   system     20632c extra=[]
+   user         100c extra=[]
+   assistant      4c extra=['reasoning_content', 'tool_calls']
+   tool          21c extra=['tool_call_id'] id=tool_Y5xEaDyMrjlHJDzj3wxlD8yV
+   assistant      4c extra=['tool_calls']
+   tool         104c extra=['tool_call_id'] id=tool_Kb3bn2vOJ22EQM7U86edZuhC
+   tool         265c extra=['tool_call_id'] id=tool_FLgWjgySRLFLO3iD58em3gTK
+   assistant      4c extra=['tool_calls']
+   tool          46c extra=['tool_call_id'] id=tool_FaXSMRVKGM7OSd9TRgBFUE9h
+   assistant      4c extra=['tool_calls']
+   tool         597c extra=['tool_call_id'] id=tool_JB94OdZyohViMeThW1Fo9u6u
+   assistant     86c extra=['reasoning_content', 'tool_calls']
+   tool         157c extra=['tool_call_id'] id=tool_TfMqfhzUZC5gY6GlfhT31Wb8
+   assistant      4c extra=['tool_calls']
+   tool         195c extra=['tool_call_id'] id=tool_I84Tym6gNwyoyDIDx6YajxIh
+  resp: finish=stop reasoning_chars=0 text_chars=370 calls=[] usage={'prompt_tokens': 11605, 'completion_tokens': 135, 'total_tokens': 11740, 'cached_tokens': 11264, 'completion_tokens_details': {'reasoning_tokens': 1}, 'prompt_tokens_details': {'cached_tokens': 11264}}

@@ -1,0 +1,4 @@
+2026-11-05T23:35:35.415Z WARN  corrupted wire journal truncated to its valid prefix  scope=sessions/wd_ws_b4e29903df12/session_141f6036-b653-4895-9da3-b8c8766b1501/agents/main key=wire.jsonl lineNumber=81 reason=truncated outcome=repaired droppedCount=1 backupCreated=true
+file-history
+wire.jsonl
+wire.jsonl.bak

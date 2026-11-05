@@ -1,0 +1,7 @@
+DNS queries (name, type, count):
+  fwd A x1
+destinations (proto, ip, port, packets):
+   tcp 172.18.0.2 18080 x62
+   tcp 172.18.0.3 42614 x57
+
+tz=UTC lang=unset

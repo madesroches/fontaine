@@ -1,0 +1,21 @@
+#0 POST /chat/completions -> 200 2.611s
+  keys: {'model': 'kimi-for-coding', 'prompt_cache_key': 'session_141f6036-b653-4895-9da3-b8c8766b1501', 'thinking': {'type': 'enabled', 'effort': 'max', 'keep': 'all'}, 'max_completion_tokens': 1034414, 'stream': True, 'stream_options': {'include_usage': True}}
+  tools: 25
+   system     10161c extra=[]
+   user         100c extra=[]
+   user         273c extra=[]
+   user         452c extra=[]
+   assistant      4c extra=['tool_calls', 'reasoning_content']
+   tool         197c extra=['tool_call_id'] id=tool_NjKftduXlyg6YiAJpptxobxS
+   assistant      4c extra=['tool_calls', 'reasoning_content']
+   tool         689c extra=['tool_call_id'] id=tool_jiQWeJ71LcDklGuJF3flEbWX
+   assistant      4c extra=['tool_calls', 'reasoning_content']
+   tool         115c extra=['tool_call_id'] id=tool_rPUTtq56qQFLmCthtaMRjfTI
+   assistant     72c extra=['tool_calls', 'reasoning_content']
+   tool         138c extra=['tool_call_id'] id=tool_lhVYXGSBcgIlzPewUkvLZAsq
+   assistant      4c extra=['tool_calls', 'reasoning_content']
+   tool         207c extra=['tool_call_id'] id=tool_gC94VcPPbjLqXb8lXPR21C0n
+   assistant    282c extra=['reasoning_content']
+   user          61c extra=[]
+   user         452c extra=[]
+  resp: finish=stop reasoning_chars=67 text_chars=132 calls=[] usage={'prompt_tokens': 14164, 'completion_tokens': 72, 'total_tokens': 14236, 'cached_tokens': 13824, 'completion_tokens_details': {'reasoning_tokens': 16}, 'prompt_tokens_details': {'cached_tokens': 13824}}

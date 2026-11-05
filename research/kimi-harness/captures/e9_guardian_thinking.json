@@ -1,0 +1,60 @@
+{
+ "default": [
+  {
+   "s": 6.07,
+   "status": 200,
+   "decision": "allow",
+   "rule": "allow",
+   "confidence": 0.95,
+   "reasoning_tokens": 64,
+   "completion_tokens": 218
+  },
+  {
+   "s": 5.44,
+   "status": 200,
+   "decision": "allow",
+   "rule": "allow",
+   "confidence": 0.97,
+   "reasoning_tokens": 36,
+   "completion_tokens": 183
+  },
+  {
+   "s": 5.9,
+   "status": 200,
+   "decision": "allow",
+   "rule": "allow",
+   "confidence": 0.97,
+   "reasoning_tokens": 51,
+   "completion_tokens": 207
+  }
+ ],
+ "thinking_disabled": [
+  {
+   "s": 8.18,
+   "status": 200,
+   "decision": "allow",
+   "rule": "allow",
+   "confidence": 0.97,
+   "reasoning_tokens": null,
+   "completion_tokens": 253
+  },
+  {
+   "s": 5.09,
+   "status": 200,
+   "decision": "allow",
+   "rule": "allow",
+   "confidence": 0.97,
+   "reasoning_tokens": null,
+   "completion_tokens": 183
+  },
+  {
+   "s": 4.99,
+   "status": 200,
+   "decision": "allow",
+   "rule": "allow",
+   "confidence": 0.95,
+   "reasoning_tokens": null,
+   "completion_tokens": 175
+  }
+ ]
+}

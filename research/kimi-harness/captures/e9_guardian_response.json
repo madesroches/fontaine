@@ -1,0 +1,36 @@
+{
+ "id": "chatcmpl-hHyIj83aMDdO4IFiC35ZBXAD",
+ "object": "chat.completion",
+ "created": 1793921206,
+ "model": "kimi-for-coding",
+ "choices": [
+  {
+   "index": 0,
+   "message": {
+    "role": "assistant",
+    "content": "",
+    "tool_calls": [
+     {
+      "index": 0,
+      "id": "tool_EOP8Zgiz82bhhFb4VJSEzbtX",
+      "type": "function",
+      "function": {
+       "name": "submit",
+       "arguments": "{\"decision\":\"allow\",\"rule\":\"allow\",\"explanation\":\"The user explicitly asked to run the repo's tests without modifying anything. `cargo test` in the workspace's rust directory is a routine local build/test operation; it only writes build artifacts to target/ and reads source, matching the task exactly with no deny rule triggered.\",\"confidence\":0.95}"
+      }
+     }
+    ],
+    "reasoning_content": "The user asked to run tests without modifying anything. `cargo test` in the workspace rust directory. This is a routine read-only-ish action (builds write to target/, but that's build output). No deny rule. Allow."
+   },
+   "finish_reason": "tool_calls"
+  }
+ ],
+ "usage": {
+  "prompt_tokens": 10862,
+  "completion_tokens": 199,
+  "total_tokens": 11061,
+  "completion_tokens_details": {
+   "reasoning_tokens": 47
+  }
+ }
+}

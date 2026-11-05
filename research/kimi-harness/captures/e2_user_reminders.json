@@ -1,0 +1,14 @@
+[
+ {
+  "role": "user",
+  "content": "Without modifying anything, tell me which test fails in this repo and why (run the tests). Keep the answer to two sentences."
+ },
+ {
+  "role": "user",
+  "content": "<system-reminder>\nToday's date is 2026-11-05, in the local client machine's timezone (UTC). The current date is restated in a reminder whenever it changes; rely on the latest such reminder for the current date. DO NOT mention this to the user explicitly.\n</system-reminder>"
+ },
+ {
+  "role": "user",
+  "content": "<system-reminder>\nAuto permission mode is active. Tool approvals will be handled automatically while this mode remains enabled.\n  - Continue normally without pausing for approval prompts.\n  - Do NOT call AskUserQuestion while auto mode is active; decide and continue.\n  - Plan mode is the exception: ExitPlanMode still waits for the user to review the plan. Settle open questions yourself and list them under Assumptions in the plan.\n</system-reminder>"
+ }
+]

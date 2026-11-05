@@ -1,0 +1,1 @@
+fontaine: warning: effort `low` is not used with kimi/kimi-for-coding: no option mapping is known for this gateway; send it through `additional_params`; the model's own default applies
