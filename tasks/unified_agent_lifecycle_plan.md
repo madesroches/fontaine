@@ -1,5 +1,7 @@
 # Unified Agent Lifecycle Plan
 
+**GitHub Issue**: https://github.com/madesroches/fontaine/issues/435
+
 Issue: [#435](https://github.com/madesroches/fontaine/issues/435), including the maintainer's comment
 asking for a comparison of a unified agent model with the narrower "idle for all" fix.
 
