@@ -127,8 +127,6 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
 6. `CHANGELOG.md`: extend the existing Round 1 #419 entry under `[Unreleased]` → `Fixed`
    ("The `@` file-mention popup no longer stops at the first eight matches...") rather
    than adding a second.
-7. Master plan `## Decisions`: append the decision line at the end of the `### TUI`
-   subsection of `tasks/fontaine_harness_plan.md`.
 
 ### Files to Modify (Round 2)
 
@@ -138,7 +136,6 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
 - `rust/fontaine-tui/src/app.rs`
 - `docs/tui.md`
 - `CHANGELOG.md`
-- `tasks/fontaine_harness_plan.md`
 
 ### Trade-offs
 
@@ -150,19 +147,10 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
   `Vec<String>` end to end — the popup, the ranking and the input edit — so a marker
   inside the string is the smallest change; `rank()` already treats both separator
   flavours.
-- **Tab narrows before accepting** (vs. accepting on the first Tab as today): matches the
-  `/` menu's contract since #294, which is the behavior the maintainer pointed at as
-  working; it also means a shared stem (for example `tasks/` and a top-level `tasks.rs`
+- **Tab narrows before accepting** (vs. accepting on the first Tab as today): matches
+  Claude Code's `@` completion and the `/` menu's contract since #294, which is the
+  behavior the maintainer pointed at as working; it also means a shared stem (for example `tasks/` and a top-level `tasks.rs`
   under `@task`) pauses on the stem instead of jumping into the top-ranked row.
-
-### Decisions (to record in the master plan on merge)
-
-- 2026-11-05: `@` completion offers directories, marked with a trailing `/` and inserted
-  without the trailing space so they can be completed into, and Tab extends the token to
-  the longest common prefix of the matches before accepting the selected row — both
-  mirroring the `/` menu (#294). Unlike Claude Code, which accepts the selected row on the
-  first Tab, `@` now narrows to the common prefix first. The ledger's `Record::FileIndex` stays files-only so
-  `existence()` and the `tracked_edit` fast path are unchanged (#419).
 
 ### Testing Strategy (Round 2)
 
@@ -187,3 +175,7 @@ class). Their common prefix is empty, so there is nothing to extend, and Tab acc
   (`rust/fontaine-core/tests/memory.rs`):
   add a workspace `src/main.rs` fixture and assert that after `record_session_start()`
   `runtime.files` contains both the file path and a trailing-slash `src/` entry.
+
+## Decisions
+
+- AFK: No master-plan Decisions entry for Round 2 — Claude Code 2.1.318's `@` completion also narrows Tab to the longest common prefix (`findLongestCommonPrefix` in the `file` branch of `autocomplete:accept`) and lists directories with a trailing separator, so nothing deviates; `Record::FileIndex` staying files-only is internal.
