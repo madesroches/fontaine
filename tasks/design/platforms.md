@@ -37,6 +37,20 @@ Archives carry the root `LICENSE`, `README.md` and `CHANGELOG.md` through `inclu
 workflow stages the changelog into `rust/` so dist builds the release notes from the version's
 section. A tag without that section fails in the `plan` job.
 
+Every archive is signed. Fontaine owns one minisign key per channel: `release` (tagged releases)
+and `dev` (the latest CI-passing build of `main`, published by `.github/workflows/dev.yml` as the
+prerelease `dev-<run_number>` once the repository variable `FONTAINE_DEV_CHANNEL` is `enabled`).
+The public keys are in `rust/fontaine/keys/` and compiled into the verifier module Fontaine's update path will use (no self-update yet); the private keys exist
+only as secrets of the `release-signing` (tags, required reviewer) and `dev-signing` (`main`)
+GitHub Environments, which only the `sign` jobs name. The signed trusted comment binds channel,
+asset name, version and commit. Publication is draft, verify, publish: `sign` signs after the
+build jobs, `host` creates a draft release, `verify-draft` downloads it and checks it with
+`.github/scripts/release-verify.sh`, and only then does `publish` make it public, so a failure
+leaves nothing public. The `fontaine` crate's `release_signature` module is the one Rust verifier
+(for the updater and `fontaine update`); CI checks the archives with the upstream minisign CLI,
+pinned and checksum-verified, and an ignored test proves the two agree on the CLI's output.
+Key bootstrap, rotation and recovery are in `CONTRIBUTING.md`.
+
 Directories come from the `dirs` crate: config dir = `dirs::config_dir()/fontaine` (Linux
 `~/.config/fontaine`; macOS and Windows platform defaults, Windows under `%APPDATA%`), data dir =
 `dirs::data_dir()/fontaine` (Linux `~/.local/share/fontaine`). `FONTAINE_CONFIG_DIR` and

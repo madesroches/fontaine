@@ -16,7 +16,8 @@ cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 ```
 
 CI runs `cargo fmt --check`, clippy, `cargo test`, `cargo deny check` and the `--guardian none` eval
-on Linux, macOS and Windows; the two `fixture` eval runs, plus clippy and tests with
+on Linux, macOS and Windows; the two `fixture` eval runs, the "Release signing" step (the real minisign CLI and the
+`.github/scripts/` signing scripts against disposable keys), plus clippy and tests with
 `--features fontaine/pg2`, run on Linux only (macOS and Windows get a `cargo check --features
 fontaine/pg2`). Pull requests that touch only `tasks/` or `AGENTS.md` skip the Rust
 steps. The last command above is a local check that the Windows code compiles. Tests never call
@@ -75,7 +76,61 @@ behalf.
    `cp ../CHANGELOG.md CHANGELOG.md && dist plan --tag vX.Y.Z --output-format=json | jq .announcement_changelog`
    (non-null), then remove the copy.
 5. Merge to `main`, then tag `vX.Y.Z` on the resulting merge commit on `main` and push the tag.
-   The release workflow builds the archives and publishes the GitHub Release.
+   The release workflow builds the archives, then pauses the `sign` job for your approval.
+6. Approve the `release-signing` deployment in the run. `sign` signs every archive, `host` creates
+   a draft release, `verify-draft` downloads the draft and verifies it, and `publish` makes it
+   public. If anything fails the draft stays a draft and nothing is public; delete the draft and
+   the tag before retrying.
+
+### Signing keys and environments
+
+Every archive is signed with a minisign key owned by Fontaine, one per channel: `release` for
+tagged releases and `dev` for the latest CI-passing build of `main`. The public keys are checked in
+under `rust/fontaine/keys/` and compiled into the verifier module Fontaine's update path will use
+(Fontaine does not update itself yet); how users verify is in
+[docs/verifying-releases.md](docs/verifying-releases.md). The private keys live only in two GitHub
+Environments, which are configured in GitHub, not in the repository:
+
+| Environment | Secrets | Deployment rule | Reviewers |
+|---|---|---|---|
+| `release-signing` | `MINISIGN_SECRET_KEY`, `MINISIGN_PASSWORD` (release key) | tags matching `v*` only | maintainer, required |
+| `dev-signing` | same names (dev key) | branch `main` only | none |
+
+Only the `sign` jobs name an environment, and the deployment rules refuse runs from any other ref,
+pull requests included.
+
+Until the keys are bootstrapped, the four files under `rust/fontaine/keys/` hold a placeholder
+comment, every verification fails with "no key for this channel", and the signing jobs fail their
+post-sign check, so nothing can be published.
+
+**Bootstrap.** For each channel, with the stock minisign CLI, run
+`minisign -G -p <channel>.pub -s <channel>.key`. Commit the `.pub` file over both
+`rust/fontaine/keys/<channel>.pub` and `rust/fontaine/keys/<channel>.signing.pub`, put the key
+file's content and its password into that channel's environment secrets, then move the secret key
+to an encrypted offline backup and delete the working copy. The two channels must use different
+keys. Never generate production keys in CI or with an agent.
+
+**Rotation (per channel).** Generate the new pair. Commit the new public key to
+`<channel>.pub` only, leaving the old key in `<channel>.signing.pub`. Release N (for `dev`, the
+first build of a commit with the new `<channel>.pub`) is signed with the old key, checked against
+`<channel>.signing.pub`, and embeds the new key. After N is published, swap the environment secret
+and commit the new key to `<channel>.signing.pub`; builds started between the two steps fail their
+post-sign check and publish nothing. N+1 and later are signed with the new key. Binaries older than
+N cannot verify N+1, so they must update to N first or reinstall.
+
+**Revocation and recovery (compromise or loss).** There is no online revocation list. Remove the
+environment secret at once, publish a security advisory, generate a new pair, commit it to both
+`<channel>.pub` and `<channel>.signing.pub`, put it in the environment secrets, and ship a release
+signed with and embedding it. Installed binaries cannot verify that release, so users must reinstall
+through the HTTPS installer or a manual download verified against the new key in the repository. A
+dev-key compromise never affects `release`.
+
+**Enabling the dev channel.** Create the `dev-signing` environment (deployment branch `main`, no
+reviewers), bootstrap the dev key, then set the repository variable `FONTAINE_DEV_CHANNEL` to
+`enabled`. Until it is set, `.github/workflows/dev.yml` skips every run and publishes nothing. A newer
+build replaces a pending one, so intermediate builds may be skipped and the channel always
+publishes the latest CI-passing build of `main`, as the prerelease `dev-<run number>`. Old dev
+prereleases are not pruned automatically.
 
 ## Golden-dataset cases
 

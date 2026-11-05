@@ -1,0 +1,320 @@
+# The dev channel: the latest CI-passing build of `main` is signed with the dev key and published
+# as the prerelease `dev-<run_number>`; a newer build replaces a pending one, so some are skipped. Hand-written, with the same draft, verify, publish chain as
+# release.yml: only `sign` (environment `dev-signing`) sees the signing key, and `contents: write`
+# is granted per job to `host`, `verify-draft` and `publish` only. Every job builds and records
+# the head commit of the CI run (`workflow_run.head_sha`), never `github.sha`, because `main` may
+# have moved on by the time this workflow starts. See docs/verifying-releases.md.
+name: Dev channel
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: rust
+
+# Serializes publication; a newer run replaces a pending one, and only
+# the running one is never cancelled.
+concurrency:
+  group: dev-channel
+  cancel-in-progress: false
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+env:
+  HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+
+jobs:
+  plan:
+    # The repository variable keeps `main` green before the dev environment and key exist; a
+    # skipped run publishes nothing.
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && vars.FONTAINE_DEV_CHANNEL == 'enabled' }}
+    runs-on: "ubuntu-22.04"
+    outputs:
+      val: ${{ steps.plan.outputs.manifest }}
+      tag: ${{ steps.meta.outputs.tag }}
+      sign-version: ${{ steps.meta.outputs.version }}
+      sign-commit: ${{ steps.meta.outputs.commit }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Install dist
+        shell: bash
+        run: |
+          for attempt in 1 2 3; do
+            if curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh | sh; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep 5
+            fi
+          done
+          exit 1
+      - name: Cache dist
+        uses: actions/upload-artifact@v7
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/dist
+      - id: plan
+        run: |
+          dist plan --output-format=json > plan-dist-manifest.json
+          echo "dist ran successfully"
+          cat plan-dist-manifest.json
+          echo "manifest=$(jq -c "." plan-dist-manifest.json)" >> "$GITHUB_OUTPUT"
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+      # `run_number` is this workflow's own, not CI's: a re-run of CI keeps CI's number and
+      # would collide.
+      - id: meta
+        shell: bash
+        run: |
+          base="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "fontaine") | .version')"
+          if [ -z "$base" ]; then
+            echo "::error::could not read the fontaine package version"
+            exit 1
+          fi
+          echo "version=${base}-dev.${GITHUB_RUN_NUMBER}+${HEAD_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "commit=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "tag=dev-${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+      - name: "Upload dist-manifest.json"
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-plan-dist-manifest
+          path: rust/plan-dist-manifest.json
+
+  build-local-artifacts:
+    name: build-local-artifacts (${{ join(matrix.targets, ', ') }})
+    needs:
+      - plan
+    if: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix.include != null }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.val).ci.github.artifacts_matrix }}
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.container && matrix.container.image || null }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
+    steps:
+      - name: enable windows longpaths
+        run: |
+          git config --global core.longpaths true
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Install Rust non-interactively if not already installed
+        if: ${{ matrix.container }}
+        run: |
+          if ! command -v cargo > /dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+            echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          fi
+      - name: Install dist
+        run: ${{ matrix.install_dist.run }}
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: rust/target/distrib/
+          merge-multiple: true
+      - name: Install dependencies
+        run: |
+          ${{ matrix.packages_install }}
+      - name: Build artifacts
+        run: |
+          dist build --print=linkage --output-format=json ${{ matrix.dist_args }} > dist-manifest.json
+          echo "dist ran successfully"
+      - id: cargo-dist
+        name: Post-build
+        shell: bash
+        run: |
+          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+          dist print-upload-files-from-manifest --manifest dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: "Upload artifacts"
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-build-local-${{ join(matrix.targets, '_') }}
+          path: |
+            ${{ steps.cargo-dist.outputs.paths }}
+            rust/${{ env.BUILD_MANIFEST_NAME }}
+
+  build-global-artifacts:
+    needs:
+      - plan
+      - build-local-artifacts
+    runs-on: "ubuntu-22.04"
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      BUILD_MANIFEST_NAME: target/distrib/global-dist-manifest.json
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+          submodules: recursive
+      - name: Install cached dist
+        uses: actions/download-artifact@v8
+        with:
+          name: cargo-dist-cache
+          path: ~/.cargo/bin/
+      - run: chmod +x ~/.cargo/bin/dist
+      - name: Fetch local artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: rust/target/distrib/
+          merge-multiple: true
+      - id: cargo-dist
+        shell: bash
+        run: |
+          dist build --output-format=json "--artifacts=global" > dist-manifest.json
+          echo "dist ran successfully"
+
+          echo "paths<<EOF" >> "$GITHUB_OUTPUT"
+          jq --raw-output ".upload_files[]" dist-manifest.json >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      - name: "Upload artifacts"
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-build-global
+          path: |
+            ${{ steps.cargo-dist.outputs.paths }}
+            rust/${{ env.BUILD_MANIFEST_NAME }}
+
+  # The only job that names an environment, so the dev signing secrets are in scope here and
+  # nowhere else. It runs no build tools and no code from the artifacts it downloads.
+  sign:
+    needs:
+      - plan
+      - build-local-artifacts
+      - build-global-artifacts
+    runs-on: "ubuntu-22.04"
+    environment: dev-signing
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - name: Fetch artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+      - name: Remove the dist manifests
+        run: rm -f artifacts/*-dist-manifest.json
+      - name: Install minisign
+        run: .github/scripts/install-minisign.sh
+      - name: Sign and verify
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
+          SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
+          SIGN_COMMIT: ${{ needs.plan.outputs.sign-commit }}
+        run: .github/scripts/release-sign.sh dev artifacts rust/fontaine/keys/dev.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
+      - name: Upload signatures
+        uses: actions/upload-artifact@v7
+        with:
+          name: artifacts-signatures
+          path: artifacts/*.minisig
+
+  # Creates the draft prerelease; nothing is public until `publish`.
+  host:
+    needs:
+      - plan
+      - build-local-artifacts
+      - build-global-artifacts
+      - sign
+    # A failed or skipped `sign` never reaches here.
+    if: ${{ always() && needs.sign.result == 'success' && needs.plan.result == 'success' }}
+    runs-on: "ubuntu-22.04"
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - name: Download GitHub Artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: artifacts
+          merge-multiple: true
+      - name: Remove the dist manifests
+        run: rm -f artifacts/*-dist-manifest.json artifacts/dist-manifest.json
+      - name: Create the draft prerelease
+        env:
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ needs.plan.outputs.sign-version }}
+          COMMIT: ${{ needs.plan.outputs.sign-commit }}
+        run: |
+          printf 'Dev build of `main` at %s (version %s).\n\nSigned with the dev key; see docs/verifying-releases.md.\n' "$COMMIT" "$VERSION" > "$RUNNER_TEMP/notes.txt"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --prerelease --latest=false --target "$COMMIT" --title "Dev build $TAG" --notes-file "$RUNNER_TEMP/notes.txt" artifacts/*
+
+  # Downloads exactly what users would fetch from the draft and verifies it.
+  verify-draft:
+    needs:
+      - plan
+      - host
+    runs-on: "ubuntu-22.04"
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - name: Install minisign
+        run: .github/scripts/install-minisign.sh
+      - name: Download the draft
+        run: gh release download "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --dir draft
+      - name: Verify
+        env:
+          SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
+          SIGN_COMMIT: ${{ needs.plan.outputs.sign-commit }}
+        run: .github/scripts/release-verify.sh dev draft rust/fontaine/keys/dev.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
+
+  # The only step that makes the prerelease public. It stays a prerelease and never becomes
+  # "latest".
+  publish:
+    needs:
+      - plan
+      - verify-draft
+    runs-on: "ubuntu-22.04"
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - name: Publish the draft
+        run: gh release edit "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false

@@ -5,6 +5,7 @@ pub mod headless;
 mod models_cmd;
 mod plugin;
 mod plugin_auto_update;
+pub mod release_signature;
 pub mod telemetry;
 
 use std::ffi::OsString;
