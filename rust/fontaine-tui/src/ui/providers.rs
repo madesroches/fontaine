@@ -249,6 +249,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             | Action::EditQueued
                             | Action::Shell(_)
                             | Action::GuardianOff(_)
+                            | Action::AfkReview(_)
                             | Action::SkillTrust(_)
                             | Action::SetupReview(_)
                             | Action::SetupComposition(_)

@@ -43,7 +43,7 @@ use crate::memory;
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
 use crate::native_search;
 use crate::notice::Notice;
-use crate::permissions::{Approver, PermissionPipeline};
+use crate::permissions::{AfkApprover, Approver, PermissionPipeline};
 use crate::project_env::{self, ProjectEnvironment};
 use crate::prompt;
 use crate::runtime_error::RuntimeError;
@@ -56,6 +56,7 @@ use crate::tools;
 use crate::trust;
 use crate::workspace::{self, RootSource};
 
+mod afk;
 mod build;
 mod goal;
 mod lsp;
@@ -117,6 +118,8 @@ pub struct AgentSetup {
     pub json_schema: Option<Schema>,
     /// Nothing can be asked: every would-prompt outcome is a denial.
     pub headless: bool,
+    /// Start in AFK mode (`--afk`).
+    pub afk: bool,
     /// Whether this surface runs scheduled prompts when the conversation is idle, so the
     /// scheduling tools are worth registering. A run that exits after its answer leaves it off.
     pub scheduling: bool,
@@ -256,6 +259,10 @@ impl AgentRuntime {
         let tree = setup::agent_tree(&setup);
         let agent_types = Arc::new(build_agent_types(&setup.config, &setup.extensions));
         let state = setup::session_state(&setup, &tree, &agent_types);
+        // Every approver call site below this line, the pipeline's, the children's and the
+        // questions', goes through the AFK backstop.
+        setup.approver = Arc::new(AfkApprover::new(setup.approver.clone(), state.clone()));
+        setup::start_afk(&setup, &state);
         setup::attach_composition(&state, &setup);
         let setup::Gates {
             pipeline,

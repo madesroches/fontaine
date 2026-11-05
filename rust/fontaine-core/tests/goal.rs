@@ -71,6 +71,9 @@ impl Fixture {
                 paths: Vec::new(),
                 created: Vec::new(),
                 summary: "ls".into(),
+                tier: None,
+                tool_use_id: None,
+                digest: None,
             })
             .unwrap();
     }
@@ -891,7 +894,9 @@ fn goal_records(runtime: &fontaine_core::agent::AgentRuntime) -> Vec<(GoalEvent,
         .unwrap()
         .into_iter()
         .filter_map(|entry| match entry.record {
-            Record::Goal { event, evaluations } => Some((event, evaluations)),
+            Record::Goal {
+                event, evaluations, ..
+            } => Some((event, evaluations)),
             _ => None,
         })
         .collect()
@@ -1125,6 +1130,7 @@ fn a_goal_record_adds_nothing_to_what_the_user_asked() {
         .append(Record::Goal {
             event: GoalEvent::Set,
             evaluations: 0,
+            reason: None,
         })
         .unwrap();
     assert_eq!(f.ledger.view().user_messages, ["/goal the build is green"]);
@@ -1198,4 +1204,75 @@ async fn a_compaction_is_debited_to_the_root_so_a_goal_counts_it() {
         "{result:?}"
     );
     assert_eq!(runtime.tree_spend().tokens() - before.tokens(), 730);
+}
+
+#[tokio::test]
+async fn an_afk_pause_stops_the_next_step_and_is_recorded_with_its_reason() {
+    use fontaine_core::afk_report::AfkSource;
+
+    let world = World::new();
+    let (runtime, _) = runtime_with_evaluator(&world, Vec::new(), ScannerStart::default());
+    runtime.set_goal("done").unwrap();
+    runtime.goal_turn_ended(Some(&answer()));
+    assert!(runtime.next_goal_step().is_some());
+
+    assert!(runtime.pause_goal(PauseReason::Blocked("breaker tripped".into())));
+    assert!(runtime.next_goal_step().is_none());
+    let records = runtime.session.ledger.read().unwrap();
+    let reason = records.iter().rev().find_map(|e| match &e.record {
+        Record::Goal {
+            event: GoalEvent::Paused,
+            reason,
+            ..
+        } => Some(reason.clone()),
+        _ => None,
+    });
+    assert_eq!(reason, Some(Some("breaker tripped".to_string())));
+
+    // A user prompt clears a blocked pause...
+    runtime.goal_user_prompt();
+    assert!(
+        runtime
+            .session
+            .goal()
+            .status(runtime.tree_spend())
+            .active
+            .unwrap()
+            .paused
+            .is_none()
+    );
+
+    // ...but not a stop that waits for its review.
+    runtime.state.set_afk(true, AfkSource::Command).unwrap();
+    runtime.state.afk_stop(13.0, 12.0, vec![1]);
+    runtime.pause_goal(PauseReason::AfkStopped);
+    runtime.goal_user_prompt();
+    let paused = runtime
+        .session
+        .goal()
+        .status(runtime.tree_spend())
+        .active
+        .unwrap()
+        .paused;
+    assert_eq!(paused, Some(PauseReason::AfkStopped));
+    assert!(runtime.next_goal_step().is_none());
+    runtime.state.afk_review();
+    runtime.goal_user_prompt();
+    assert!(
+        runtime
+            .session
+            .goal()
+            .status(runtime.tree_spend())
+            .active
+            .unwrap()
+            .paused
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn pausing_with_no_goal_does_nothing() {
+    let world = World::new();
+    let (runtime, _) = runtime_with_evaluator(&world, Vec::new(), ScannerStart::default());
+    assert!(!runtime.pause_goal(PauseReason::AfkStopped));
 }

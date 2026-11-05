@@ -13,3 +13,18 @@ pub fn new() -> ConfirmPrompt {
         "y turns it off · n leaves it on",
     )
 }
+
+/// The confirmation before `/afk review` lets a stopped session run again. `summary` is the
+/// report's headline, so the user has read what stopped it before answering.
+pub fn afk_review(summary: String) -> ConfirmPrompt {
+    ConfirmPrompt::new(
+        "Let the stopped session continue?".into(),
+        vec![
+            Block::Text(summary),
+            Block::Text(
+                "Nothing is cleared except the stop: the denials, the temperature peak and the report stay. AFK mode stays off, and the denial breaker keeps its state. Read the report with /afk report first if you have not.".into(),
+            ),
+        ],
+        "y lets it continue · n leaves it stopped",
+    )
+}

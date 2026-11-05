@@ -118,7 +118,7 @@ jobs:
 
       - name: Eval fixture run (default profile)
         if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
-        run: cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture
+        run: cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture --sequences ../evals/sequences/afk.jsonl
 
       - name: Eval fixture run (minimal profile)
         if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'

@@ -19,7 +19,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let paused = match end {
             TurnEnd::Finished(outcome) => runtime.goal_turn_ended(Some(outcome)),
             TurnEnd::Interrupted => runtime.goal_turn_ended(None),
-            TurnEnd::InputClosed => None,
+            // The stop handler paused the goal before the turn's end was reported.
+            TurnEnd::Stopped | TurnEnd::InputClosed => None,
         };
         if let Some(reason) = paused {
             self.app.transcript.notice(reason.notice());

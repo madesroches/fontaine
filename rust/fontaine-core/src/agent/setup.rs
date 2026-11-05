@@ -410,6 +410,19 @@ pub(super) fn session_state(
     }))
 }
 
+/// Sets the AFK ceiling and, for `--afk`, starts the stretch before the agent is built, so its
+/// prompt already carries the AFK guidance.
+pub(super) fn start_afk(setup: &AgentSetup, state: &SessionState) {
+    state.set_afk_ceiling(setup.config.afk.ceiling());
+    if setup.afk
+        && let Err(why) = state.set_afk(true, crate::afk_report::AfkSource::Cli)
+    {
+        setup
+            .approver
+            .warn(&format!("--afk was not applied: {why}"));
+    }
+}
+
 /// Puts the configured composition on the state. One that cannot be built is reported and left
 /// off.
 pub(super) fn attach_composition(state: &SessionState, setup: &AgentSetup) {
@@ -603,6 +616,12 @@ pub(super) fn result_pipeline(
             Arc::new(PostHookStage::new(post_hooks, state.clone())),
         );
     }
+    let results = results.with_stage(
+        StageKind::Outcome,
+        Arc::new(crate::tool_outcome::OutcomeStage {
+            state: state.clone(),
+        }),
+    );
     (Arc::new(results), llm_scanner)
 }
 
@@ -751,6 +770,7 @@ fn child_runner(
                     scheduling: None,
                     output_style: None,
                     append: Some(&layer),
+                    afk: preamble_state.afk_on(),
                 })
             }),
             approver: approver.clone(),

@@ -22,13 +22,14 @@ use fontaine_tools::todo::TodoTool;
 use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext};
 use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
+use rig_core::{ErrorKind, ErrorReport};
 
 use super::{SessionModels, Setup};
 use crate::checkpoint::StoreCapture;
 use crate::child_runner::{CoreChildRunner, CoreWake, LedgerWindow};
 use crate::config::Config;
 use crate::fork_context::ParentContextHook;
-use crate::gate::SessionState;
+use crate::gate::{AFK_STOPPED_MESSAGE, SessionState};
 use crate::instructions::{self, InstructionStage, Loaded, Sources};
 use crate::memory;
 use crate::models::{ModelRef, Models};
@@ -52,6 +53,14 @@ pub(crate) struct CurrentCall {
 
 impl AgentHook for CurrentCall {
     async fn on_dispatch(&self, _ctx: &HookContext, event: DispatchEvent<'_>) -> DispatchAction {
+        // A temperature stop ends every agent's run here, before the next model request or tool
+        // call leaves, rather than at the next await the surface happens to poll.
+        if self.state.afk().stopped.is_some() {
+            return DispatchAction::Deny(ErrorReport::new(
+                ErrorKind::Cancelled,
+                AFK_STOPPED_MESSAGE,
+            ));
+        }
         if event.tool_name().is_some()
             && let Some(call) = event.call_id
         {
@@ -154,6 +163,7 @@ fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
             .as_ref()
             .map(|(name, text)| (name.as_str(), text.as_str())),
         append: p.setup.append_system_prompt.as_deref(),
+        afk: p.state.afk_on(),
     });
     (pieces, sources, loaded)
 }

@@ -42,7 +42,8 @@
         "dont_ask",
         "plan_block",
         "human",
-        "guardian_off"
+        "guardian_off",
+        "afk"
       ]
     },
     "usage_bucket": {
@@ -184,6 +185,20 @@
             "screen_outcome": { "enum": ["stop", "allow", "deny", "pass", "unavailable", null] },
             "fail_closed_reason": {
               "enum": ["error", "timeout", "unparseable", "low_confidence", "unavailable", null]
+            },
+            "afk": { "type": "boolean" },
+            "converted": {
+              "enum": [
+                "ask_rule",
+                "floor",
+                "mode",
+                "escalate",
+                "screen_escalate",
+                "breaker_paused",
+                "guardian_unavailable",
+                "hook",
+                null
+              ]
             }
           }
         }
@@ -297,6 +312,7 @@
                 "reason": { "type": ["string", "null"] }
               }
             },
+            "afk": { "$ref": "#/$defs/afk" },
             "denials": {
               "type": "array",
               "items": {
@@ -313,6 +329,111 @@
           }
         }
       ]
+    },
+    "afk": {
+      "type": "object",
+      "description": "Present when the run used --afk or the session is stopped: the report of the latest AFK stretch.",
+      "required": ["outcome", "counts", "temperature", "review", "timeline"],
+      "properties": {
+        "outcome": { "enum": ["active", "ended", "blocked", "stopped"] },
+        "counts": {
+          "type": "object",
+          "required": [
+            "allowed",
+            "denied",
+            "converted",
+            "succeeded",
+            "failed",
+            "cancelled",
+            "unknown"
+          ],
+          "properties": {
+            "allowed": { "type": "integer", "minimum": 0 },
+            "denied": { "type": "integer", "minimum": 0 },
+            "converted": { "type": "integer", "minimum": 0 },
+            "succeeded": { "type": "integer", "minimum": 0 },
+            "failed": { "type": "integer", "minimum": 0 },
+            "cancelled": { "type": "integer", "minimum": 0 },
+            "unknown": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "temperature": {
+          "type": "object",
+          "required": ["current", "peak", "ceiling", "contributing"],
+          "properties": {
+            "current": { "type": "number", "minimum": 0 },
+            "peak": { "type": "number", "minimum": 0 },
+            "ceiling": { "type": "number", "exclusiveMinimum": 0 },
+            "contributing": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["seq", "weight", "remaining"],
+                "properties": {
+                  "seq": { "type": "integer", "minimum": 0 },
+                  "weight": { "type": "number", "minimum": 0 },
+                  "remaining": { "type": "number", "minimum": 0 }
+                }
+              }
+            }
+          }
+        },
+        "review": {
+          "type": "object",
+          "required": ["links", "assessment"],
+          "properties": {
+            "links": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["denial_seq", "attempt_seq", "kind", "reason"],
+                "properties": {
+                  "denial_seq": { "type": "integer", "minimum": 0 },
+                  "attempt_seq": { "type": "integer", "minimum": 0 },
+                  "kind": { "enum": ["exact_retry", "same_target_other_tool", "suspected"] },
+                  "reason": { "type": "string" }
+                }
+              }
+            },
+            "assessment": {
+              "type": "object",
+              "required": ["status"],
+              "properties": {
+                "status": {
+                  "enum": [
+                    "no_denials",
+                    "pending",
+                    "no_suspected_evasion",
+                    "found",
+                    "unavailable"
+                  ]
+                },
+                "reason": { "type": "string" }
+              }
+            }
+          }
+        },
+        "timeline": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["seq", "agent", "agent_name", "tool", "summary", "decision"],
+            "properties": {
+              "seq": { "type": "integer", "minimum": 0 },
+              "ts_ms": { "type": "integer", "minimum": 0 },
+              "agent": { "type": "string" },
+              "agent_name": { "type": "string" },
+              "tool": { "type": "string" },
+              "summary": { "type": "string" },
+              "decision": { "enum": ["allowed", "denied", "converted"] },
+              "tier": { "oneOf": [{ "$ref": "#/$defs/tier" }, { "type": "null" }] },
+              "rule": { "type": ["string", "null"] },
+              "explanation": { "type": ["string", "null"] },
+              "outcome": { "enum": ["ok", "error", "cancelled", null] }
+            }
+          }
+        }
+      }
     },
     "user_input": {
       "type": "object",

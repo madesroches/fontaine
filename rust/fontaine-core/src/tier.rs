@@ -32,10 +32,13 @@ pub enum Tier {
     /// The session escape hatch `/guardian-disable` is on: the call ran before the floor and
     /// the guardian, so nothing judged it.
     GuardianOff,
+    /// AFK mode: the temperature ceiling stopped the session, so every call is denied until the
+    /// user has reviewed it; also the tier of the audit events that toggle AFK.
+    Afk,
 }
 
 impl Tier {
-    pub const ALL: [Tier; 19] = [
+    pub const ALL: [Tier; 20] = [
         Tier::DenyRule,
         Tier::AskRule,
         Tier::CriticalPath,
@@ -55,6 +58,7 @@ impl Tier {
         Tier::PlanBlock,
         Tier::Human,
         Tier::GuardianOff,
+        Tier::Afk,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -78,6 +82,7 @@ impl Tier {
             Tier::PlanBlock => "plan_block",
             Tier::Human => "human",
             Tier::GuardianOff => "guardian_off",
+            Tier::Afk => "afk",
         }
     }
 }

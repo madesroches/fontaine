@@ -829,6 +829,7 @@ async fn the_ledger_records_the_session_the_messages_and_the_decisions() {
             "file_index",
             "user_message",
             "action",
+            "tool_outcome",
             "denial"
         ]
     );
@@ -842,7 +843,8 @@ async fn the_ledger_records_the_session_the_messages_and_the_decisions() {
     );
     assert_eq!(records[2]["text"], "VERBATIM user words");
     assert_eq!(records[3]["tool"], "read");
-    assert_eq!(records[4]["tool"], "shell");
+    assert_eq!(records[4]["status"], "ok");
+    assert_eq!(records[5]["tool"], "shell");
 }
 
 #[cfg(unix)]

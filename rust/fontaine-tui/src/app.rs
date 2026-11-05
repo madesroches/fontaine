@@ -114,6 +114,8 @@ pub enum Action {
     OpenPicker(ModelSlot),
     /// The human answered the `/guardian-disable` confirmation.
     GuardianOff(bool),
+    /// The human answered the `/afk review` confirmation.
+    AfkReview(bool),
     /// The human answered the `/skills trust` confirmation.
     SkillTrust(bool),
     /// The human answered the `/auto-mode-setup` review of the scan's proposals.
@@ -210,6 +212,8 @@ pub struct App {
     pub server: Option<ConfirmPrompt>,
     /// The `/guardian-disable` confirmation while it is open.
     pub guardian_off_prompt: Option<ConfirmPrompt>,
+    /// The `/afk review` confirmation while it is open.
+    pub afk_review_prompt: Option<ConfirmPrompt>,
     pub skill_trust_prompt: Option<ConfirmPrompt>,
     /// The `/auto-mode-setup` review of the repository scan's proposals while it is open.
     pub setup_review: Option<ConfirmPrompt>,
@@ -222,6 +226,10 @@ pub struct App {
     pub usage_as_of: std::time::SystemTime,
     /// The escape hatch is on; the status bar says so for as long as it stays on.
     pub guardian_off: bool,
+    /// AFK mode is on; the status bar says so.
+    pub afk: bool,
+    /// A temperature stop waits for `/afk review`; the status bar says so.
+    pub afk_stopped: bool,
     /// The `/model` or `/guardian-model` picker while it is open.
     pub models: Option<ModelPicker>,
     /// The `/resume` picker while it is open.
@@ -288,6 +296,7 @@ pub struct App {
     approvals_opened: u64,
     servers_opened: u64,
     guardian_off_opened: u64,
+    afk_review_opened: u64,
     skill_trust_opened: u64,
     setup_review_opened: u64,
     setup_composition_opened: u64,
@@ -376,12 +385,15 @@ impl App {
             transcript_print: false,
             server: None,
             guardian_off_prompt: None,
+            afk_review_prompt: None,
             skill_trust_prompt: None,
             setup_review: None,
             setup_composition: None,
             usage: Vec::new(),
             usage_as_of: std::time::SystemTime::UNIX_EPOCH,
             guardian_off: false,
+            afk: false,
+            afk_stopped: false,
             models: None,
             resume: None,
             rewind: None,
@@ -417,6 +429,7 @@ impl App {
             approvals_opened: 0,
             servers_opened: 0,
             guardian_off_opened: 0,
+            afk_review_opened: 0,
             skill_trust_opened: 0,
             setup_review_opened: 0,
             setup_composition_opened: 0,
@@ -728,6 +741,12 @@ impl App {
         self.guardian_off_prompt = Some(prompt);
     }
 
+    pub fn begin_afk_review(&mut self, mut prompt: ConfirmPrompt) {
+        self.afk_review_opened += 1;
+        prompt.id = self.afk_review_opened;
+        self.afk_review_prompt = Some(prompt);
+    }
+
     pub fn begin_skill_trust(&mut self, mut prompt: ConfirmPrompt) {
         self.skill_trust_opened += 1;
         prompt.id = self.skill_trust_opened;
@@ -764,6 +783,9 @@ impl App {
         }
         if let Some(p) = &self.guardian_off_prompt {
             return Some((PromptKind::GuardianOff, p.id));
+        }
+        if let Some(p) = &self.afk_review_prompt {
+            return Some((PromptKind::AfkReview, p.id));
         }
         if let Some(p) = &self.skill_trust_prompt {
             return Some((PromptKind::Skills, p.id));
@@ -847,6 +869,7 @@ impl App {
                     || self.unavailable.is_some()
                     || self.server.is_some()
                     || self.guardian_off_prompt.is_some()
+                    || self.afk_review_prompt.is_some()
                     || self.skill_trust_prompt.is_some()
                     || self.setup_review.is_some()
                     || self.setup_composition.is_some()
@@ -936,6 +959,7 @@ impl App {
             || self.unavailable.is_some()
             || self.server.is_some()
             || self.guardian_off_prompt.is_some()
+            || self.afk_review_prompt.is_some()
             || self.skill_trust_prompt.is_some()
             || self.setup_review.is_some()
             || self.models.is_some()
@@ -1007,6 +1031,15 @@ impl App {
                 Some(answer) => {
                     self.guardian_off_prompt = None;
                     Action::GuardianOff(answer)
+                }
+                None => Action::None,
+            };
+        }
+        if let Some(prompt) = &mut self.afk_review_prompt {
+            return match prompt.handle_key(key) {
+                Some(answer) => {
+                    self.afk_review_prompt = None;
+                    Action::AfkReview(answer)
                 }
                 None => Action::None,
             };
@@ -1768,6 +1801,8 @@ mod tests {
             permission_mode: "manual".into(),
             headless: false,
             explanation: None,
+            afk: false,
+            converted: None,
         }
     }
 

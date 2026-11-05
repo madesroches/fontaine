@@ -26,12 +26,13 @@ use serde_json::Value;
 use tracing::Instrument;
 
 use crate::adjudication::{self, action_summary};
-use crate::audit::{Decision, DecisionRecord, args_digest};
+use crate::audit::{Converted, Decision, DecisionRecord, args_digest};
 use crate::config::PermissionMode;
 use crate::destructive::touched_paths;
 use crate::floor::{self, CriticalEnv};
 use crate::gate::{
-    CompositionStage, DeniedCall, RetrySource, SessionState, UNREGISTERED_AGENT, permission_mode,
+    AFK_STOPPED_MESSAGE, CompositionStage, DeniedCall, RetrySource, SessionState,
+    UNREGISTERED_AGENT, permission_mode,
 };
 use crate::ledger::{Existence, Record};
 use crate::permission_rules::{
@@ -151,6 +152,59 @@ impl Approver for DenyAll {
     /// With no interface to show it on, a notice goes to stderr.
     fn notice(&self, message: &str) {
         eprintln!("fontaine: {message}");
+    }
+}
+
+/// Wraps the session's approver so that nothing can reach the user while AFK mode is on: a
+/// prompt is denied, a question goes unanswered and the guardian-unavailable dialog is skipped.
+/// The pipeline already converts every would-prompt outcome with the right words and audit
+/// fields; this is the backstop for any call site that asks anyway.
+pub struct AfkApprover {
+    inner: Arc<dyn Approver>,
+    state: Arc<SessionState>,
+}
+
+impl AfkApprover {
+    pub fn new(inner: Arc<dyn Approver>, state: Arc<SessionState>) -> AfkApprover {
+        AfkApprover { inner, state }
+    }
+}
+
+impl Approver for AfkApprover {
+    fn approve<'a>(&'a self, request: ApprovalRequest) -> BoxFuture<'a, Answer> {
+        if self.state.afk_on() {
+            return Box::pin(async { Answer::Deny { feedback: None } });
+        }
+        self.inner.approve(request)
+    }
+
+    fn notice(&self, message: &str) {
+        self.inner.notice(message);
+    }
+
+    fn warn(&self, message: &str) {
+        self.inner.warn(message);
+    }
+
+    fn guardian_unavailable<'a>(
+        &'a self,
+        info: GuardianUnavailable,
+    ) -> BoxFuture<'a, UnavailableChoice> {
+        if self.state.afk_on() {
+            return Box::pin(async { UnavailableChoice::Deny });
+        }
+        self.inner.guardian_unavailable(info)
+    }
+
+    fn ask_user<'a>(
+        &'a self,
+        agent: &'a str,
+        questions: Vec<Question>,
+    ) -> BoxFuture<'a, QuestionReply> {
+        if self.state.afk_on() {
+            return Box::pin(async { QuestionReply::Unavailable });
+        }
+        self.inner.ask_user(agent, questions)
     }
 }
 
@@ -441,17 +495,69 @@ enum Verdict {
         tier: Tier,
         rule: Option<String>,
         why: String,
+        /// Set when a prompt nobody could answer became this denial.
+        converted: Option<Converted>,
     },
     Prompt(Prompt),
     /// Nothing before the mode pre-approved or refused the call: the guardian decides.
     Guardian,
 }
 
-fn denied(tool: &str, why: &str) -> String {
-    format!(
-        "`{tool}` was denied: {why}. Do not retry it or look for another route to the same \
-         effect; tell the user what you could not do."
-    )
+/// Who is missing when a would-prompt outcome has to become a denial.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NoHuman {
+    /// A headless run: nobody is there to ask.
+    Headless,
+    /// AFK mode: the user is there in principle, but away.
+    Afk,
+}
+
+impl NoHuman {
+    /// The reason fragment that follows the original reason of a converted prompt.
+    fn clause(self) -> &'static str {
+        match self {
+            NoHuman::Headless => "a headless run cannot ask the user",
+            NoHuman::Afk => "the user is away (AFK mode)",
+        }
+    }
+}
+
+/// What a denied model is told to do next in AFK mode: finish what the rules still allow, or stop
+/// and report. It never says to ask, and never to route around the denial.
+const AFK_RECOVERY: &str = "The user is not available. Do not retry this call, evade the denial, or use another tool to achieve the same denied effect. Complete the rest of the request through independently allowed work; if the whole request cannot be done within those bounds, reduce it to a useful allowed subset. If no useful allowed progress remains, stop and report what was completed, what was blocked and why, and what remains. Do not ask for approval.";
+
+const ATTENDED_RECOVERY: &str = "Do not retry it or look for another route to the same effect; tell the user what you could not do.";
+
+/// The one sentence every denial ends with. Attended and headless runs get the same words.
+fn recovery(no_human: Option<NoHuman>) -> &'static str {
+    match no_human {
+        Some(NoHuman::Afk) => AFK_RECOVERY,
+        Some(NoHuman::Headless) | None => ATTENDED_RECOVERY,
+    }
+}
+
+fn denied_text(tool: &str, why: &str, no_human: Option<NoHuman>) -> String {
+    format!("`{tool}` was denied: {why}. {}", recovery(no_human))
+}
+
+/// Which kind of would-prompt outcome a prompt of this tier was.
+fn converted_of(tier: Tier) -> Converted {
+    match tier {
+        Tier::Guardian => Converted::BreakerPaused,
+        Tier::AskRule => Converted::AskRule,
+        Tier::CriticalPath | Tier::ProtectedPath => Converted::Floor,
+        Tier::Hook => Converted::Hook,
+        _ => Converted::Mode,
+    }
+}
+
+/// A denial as the pipeline carries it: what the model is told, the rule's own explanation, and
+/// what it stands in for.
+struct Refusal {
+    message: String,
+    why: String,
+    converted: Option<Converted>,
+    fail_closed: Option<&'static str>,
 }
 
 /// The file-tool calls a read-only shell command stands for: every path the pre-classifier
@@ -528,6 +634,17 @@ fn secret_read_calls(
             Some((pattern, calls))
         })
         .collect()
+}
+
+/// What the ledger keeps of a denial's reason: the rule's own words, redacted and cut short.
+fn explanation_of(why: &str) -> String {
+    let text = rig_core::redact::text(why);
+    let text = text.trim();
+    if text.chars().count() <= adjudication::SUMMARY_CHARS {
+        return text.to_string();
+    }
+    let cut: String = text.chars().take(adjudication::SUMMARY_CHARS - 1).collect();
+    format!("{cut}…")
 }
 
 impl PermissionPipeline {
@@ -710,6 +827,7 @@ impl PermissionPipeline {
                 tier: Tier::Hook,
                 rule: Some(id.clone()),
                 why,
+                converted: None,
             };
         }
         if let Some(rule) = rules
@@ -721,6 +839,7 @@ impl PermissionPipeline {
                 tier: Tier::DenyRule,
                 rule: Some(rule.label()),
                 why: format!("the permission rule `{}` forbids it", rule.label()),
+                converted: None,
             };
         }
         if let Some(why) = self.state.child_restriction(call.agent, &ctx) {
@@ -728,6 +847,7 @@ impl PermissionPipeline {
                 tier: Tier::DenyRule,
                 rule: Some("agent tools".to_string()),
                 why,
+                converted: None,
             };
         }
         if (mode == PermissionMode::Plan || plan_block) && edit_class {
@@ -735,6 +855,7 @@ impl PermissionPipeline {
                 tier: Tier::PlanBlock,
                 rule: None,
                 why: "plan mode never edits files; leave plan mode to make changes".to_string(),
+                converted: None,
             };
         }
 
@@ -831,6 +952,7 @@ impl PermissionPipeline {
                 tier: Tier::Mode,
                 rule: None,
                 why: format!("its arguments could not be read ({why})"),
+                converted: None,
             };
         }
 
@@ -887,6 +1009,7 @@ impl PermissionPipeline {
                         tier: Tier::DenyRule,
                         rule: Some(rule.label()),
                         why: format!("the permission rule `{}` forbids it", rule.label()),
+                        converted: None,
                     };
                 }
                 if let Some(rule) = ruled_hit(&rules.ask, &reads, &scope, home, Posture::Ask) {
@@ -1003,6 +1126,7 @@ impl PermissionPipeline {
                 tier: Tier::Mode,
                 rule: None,
                 why,
+                converted: None,
             };
         }
         let needs_approval = || Prompt {
@@ -1039,6 +1163,7 @@ impl PermissionPipeline {
                     tier: Tier::DontAsk,
                     rule: None,
                     why: "dontAsk mode only runs calls that are pre-approved".to_string(),
+                    converted: None,
                 },
             };
         }
@@ -1047,6 +1172,7 @@ impl PermissionPipeline {
                 tier: Tier::DontAsk,
                 rule: None,
                 why: "dontAsk mode only runs calls that are pre-approved".to_string(),
+                converted: None,
             },
             PermissionMode::Manual => self.would_prompt(mode, needs_approval()),
             // Plan mode never edits (refused above); what is left is consequential, and the
@@ -1157,7 +1283,35 @@ impl PermissionPipeline {
         }
     }
 
-    /// A prompt becomes a denial when nobody can answer it: in a headless run and in `dontAsk`.
+    /// Who cannot be asked right now, AFK first: a headless run with AFK on is told the AFK
+    /// guidance, but it never has anyone to ask either way.
+    fn no_human(&self) -> Option<NoHuman> {
+        if self.state.afk_on() {
+            Some(NoHuman::Afk)
+        } else if self.headless {
+            Some(NoHuman::Headless)
+        } else {
+            None
+        }
+    }
+
+    /// The words of a denial for `tool`, ending in what to do next.
+    fn denied(&self, tool: &str, why: &str) -> String {
+        denied_text(tool, why, self.no_human())
+    }
+
+    /// A refusal that stands for nothing: the call is simply not allowed.
+    fn refuse(&self, tool: &str, why: &str) -> Refusal {
+        Refusal {
+            message: self.denied(tool, why),
+            why: why.to_string(),
+            converted: None,
+            fail_closed: None,
+        }
+    }
+
+    /// A prompt becomes a denial when nobody can answer it: in a headless run, in AFK mode and
+    /// in `dontAsk`.
     fn would_prompt(&self, mode: PermissionMode, prompt: Prompt) -> Verdict {
         if mode == PermissionMode::DontAsk {
             return Verdict::Deny {
@@ -1167,13 +1321,15 @@ impl PermissionPipeline {
                     "dontAsk mode denies what would need approval: {}",
                     prompt.reason
                 ),
+                converted: Some(Converted::Mode),
             };
         }
-        if self.headless {
+        if let Some(no_human) = self.no_human() {
             return Verdict::Deny {
                 tier: prompt.tier,
                 rule: prompt.rule,
-                why: format!("{}, and a headless run cannot ask the user", prompt.reason),
+                why: format!("{}, and {}", prompt.reason, no_human.clause()),
+                converted: Some(converted_of(prompt.tier)),
             };
         }
         Verdict::Prompt(prompt)
@@ -1197,6 +1353,7 @@ impl PermissionPipeline {
             cx.mode.as_str().to_string(),
             self.headless,
         );
+        record.afk = self.state.afk_on();
         record.agent_name = self
             .state
             .agents()
@@ -1265,16 +1422,32 @@ impl PermissionPipeline {
             paths,
             created,
             summary: action_summary(cx.call.tool, &cx.args),
+            tier: Some(tier),
+            tool_use_id: cx.tool_use_id.clone(),
+            digest: Some(cx.digest.clone()),
         }
     }
 
-    fn denial(&self, cx: &CallCtx<'_>, tier: Tier, rule: Option<&str>, reason: &str) -> Record {
+    fn denial(
+        &self,
+        cx: &CallCtx<'_>,
+        tier: Tier,
+        rule: Option<&str>,
+        refusal: &Refusal,
+    ) -> Record {
         Record::Denial {
             tool: cx.call.tool.to_string(),
             agent: cx.call.agent.to_string(),
-            reason: reason.to_string(),
+            reason: refusal.message.clone(),
             rule: Some(rule.unwrap_or(tier.as_str()).to_string()),
             summary: action_summary(cx.call.tool, &cx.args),
+            tier: Some(tier),
+            tool_use_id: cx.tool_use_id.clone(),
+            digest: Some(cx.digest.clone()),
+            paths: touched_paths(cx.call.tool, &cx.args, &self.state.scope()),
+            converted: refusal.converted,
+            fail_closed: refusal.fail_closed.map(str::to_string),
+            explanation: Some(explanation_of(&refusal.why)),
         }
     }
 
@@ -1297,22 +1470,26 @@ impl PermissionPipeline {
         cx: &CallCtx<'_>,
         tier: Tier,
         rule: Option<String>,
-        message: String,
+        refusal: Refusal,
     ) -> GateDecision {
         Self::note(tier, Decision::Deny);
-        self.emit(self.record(
+        let mut record = self.record(
             cx,
             tier,
             Decision::Deny,
             rule.clone(),
-            Some(message.clone()),
-        ));
+            Some(refusal.message.clone()),
+        );
+        record.converted = refusal.converted;
+        self.emit(record);
         self.state
-            .append(self.denial(cx, tier, rule.as_deref(), &message));
+            .append(self.denial(cx, tier, rule.as_deref(), &refusal));
         // The deterministic floor and the mode have no retry grant to give, so a hook's `retry`
         // changes nothing here; the hook still hears about the denial.
-        self.denied_hooks(cx, tier, &message).await;
-        GateDecision::Deny { message }
+        self.denied_hooks(cx, tier, &refusal.message).await;
+        GateDecision::Deny {
+            message: refusal.message,
+        }
     }
 
     /// Tells the `permission_denied` hooks about a denial. Returns whether one of them, one the
@@ -1391,10 +1568,37 @@ impl PermissionPipeline {
                     &cx,
                     Tier::DenyRule,
                     Some("agent registry".to_string()),
-                    denied(call.tool, UNREGISTERED_AGENT),
+                    self.refuse(call.tool, UNREGISTERED_AGENT),
                 )
                 .await;
         };
+        // A temperature stop denies every call of every agent, before the escape hatch and the
+        // floor. It can only deny.
+        if self.state.afk().stopped.is_some() {
+            let cx = CallCtx {
+                call: &call,
+                digest: args_digest(call.args),
+                original_digest: None,
+                args: call.args.clone(),
+                arg_error: None,
+                tool_use_id,
+                mode,
+                started,
+            };
+            return self
+                .deny(
+                    &cx,
+                    Tier::Afk,
+                    Some("afk_stopped".to_string()),
+                    Refusal {
+                        message: AFK_STOPPED_MESSAGE.to_string(),
+                        why: AFK_STOPPED_MESSAGE.to_string(),
+                        converted: None,
+                        fail_closed: None,
+                    },
+                )
+                .await;
+        }
         // The interactive-only escape hatch: every root call runs before the floor and the
         // guardian. Children are never loosened by it, and no call from an unregistered agent
         // reaches it.
@@ -1446,8 +1650,17 @@ impl PermissionPipeline {
 
         match self.evaluate(&call, &judged, &cx, &hook, mode, plan_block) {
             Verdict::Allow { tier, rule } => self.allow(&cx, tier, rule),
-            Verdict::Deny { tier, rule, why } => {
-                self.deny(&cx, tier, rule, denied(call.tool, &why)).await
+            Verdict::Deny {
+                tier,
+                rule,
+                why,
+                converted,
+            } => {
+                let refusal = Refusal {
+                    converted,
+                    ..self.refuse(call.tool, &why)
+                };
+                self.deny(&cx, tier, rule, refusal).await
             }
             Verdict::Prompt(prompt) => self.prompt_or_ask(&cx, prompt).await,
             Verdict::Guardian => self.guardian_branch(&cx, &hook).await,
@@ -1458,22 +1671,31 @@ impl PermissionPipeline {
     async fn prompt_or_ask(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
         Self::note(prompt.tier, Decision::Prompt);
         self.emit(self.record(cx, prompt.tier, Decision::Prompt, prompt.rule.clone(), None));
-        self.ask_human(cx, prompt).await
+        self.ask_human(cx, prompt, None).await
     }
 
     /// A prompt that nobody can answer is a denial; otherwise it is asked.
     async fn human_or_deny(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
         match self.would_prompt(cx.mode, prompt) {
             Verdict::Prompt(prompt) => self.prompt_or_ask(cx, prompt).await,
-            Verdict::Deny { tier, rule, why } => {
-                self.deny(cx, tier, rule, denied(cx.call.tool, &why)).await
+            Verdict::Deny {
+                tier,
+                rule,
+                why,
+                converted,
+            } => {
+                let refusal = Refusal {
+                    converted,
+                    ..self.refuse(cx.call.tool, &why)
+                };
+                self.deny(cx, tier, rule, refusal).await
             }
             Verdict::Allow { .. } | Verdict::Guardian => {
                 self.deny(
                     cx,
                     Tier::Guardian,
                     None,
-                    denied(cx.call.tool, "it needs the user's approval"),
+                    self.refuse(cx.call.tool, "it needs the user's approval"),
                 )
                 .await
             }
@@ -1607,7 +1829,7 @@ impl PermissionPipeline {
             },
             Decided::Guardian(adjudication) => *adjudication,
         };
-        if adjudication.fail_closed == Some(FailClosed::Unavailable) && !self.headless {
+        if adjudication.fail_closed == Some(FailClosed::Unavailable) && self.no_human().is_none() {
             let info = GuardianUnavailable {
                 model: adjudication.model.clone(),
                 reason: self
@@ -1735,7 +1957,7 @@ impl PermissionPipeline {
             screened.annotate(&mut record);
             record
         };
-        if !self.headless {
+        let Some(no_human) = self.no_human() else {
             Self::note(Tier::Screen, Decision::Prompt);
             self.emit(annotated(Decision::Prompt, None));
             return self
@@ -1747,20 +1969,28 @@ impl PermissionPipeline {
                         reason,
                         forced: true,
                     },
+                    None,
                 )
                 .await;
-        }
-        let message = denied(
-            cx.call.tool,
-            &format!("{reason}, and a headless run cannot ask the user"),
-        );
+        };
+        let refusal = Refusal {
+            converted: Some(Converted::ScreenEscalate),
+            ..self.refuse(
+                cx.call.tool,
+                &format!("{reason}, and {}", no_human.clause()),
+            )
+        };
         // The composition has nothing to retry, so a hook's retry offer is dropped.
         self.denied_hooks(cx, Tier::Screen, &reason).await;
         Self::note(Tier::Screen, Decision::Deny);
-        self.emit(annotated(Decision::Deny, Some(message.clone())));
+        let mut record = annotated(Decision::Deny, Some(refusal.message.clone()));
+        record.converted = refusal.converted;
+        self.emit(record);
         self.state
-            .append(self.denial(cx, Tier::Screen, Some(&rule), &message));
-        GateDecision::Deny { message }
+            .append(self.denial(cx, Tier::Screen, Some(&rule), &refusal));
+        GateDecision::Deny {
+            message: refusal.message,
+        }
     }
 
     /// A node of the composition denied the call outright: no prompt, in any surface.
@@ -1772,7 +2002,7 @@ impl PermissionPipeline {
         why: &str,
     ) -> GateDecision {
         let reason = format!("the guardian composition denied this call at {node}: {why}");
-        let message = denied(cx.call.tool, &reason);
+        let refusal = self.refuse(cx.call.tool, &reason);
         self.denied_hooks(cx, Tier::Screen, &reason).await;
         Self::note(Tier::Screen, Decision::Deny);
         let mut record = self.record(
@@ -1780,13 +2010,15 @@ impl PermissionPipeline {
             Tier::Screen,
             Decision::Deny,
             Some(node.to_string()),
-            Some(message.clone()),
+            Some(refusal.message.clone()),
         );
         screened.annotate(&mut record);
         self.emit(record);
         self.state
-            .append(self.denial(cx, Tier::Screen, Some(node), &message));
-        GateDecision::Deny { message }
+            .append(self.denial(cx, Tier::Screen, Some(node), &refusal));
+        GateDecision::Deny {
+            message: refusal.message,
+        }
     }
 
     /// Acts on what the guardian came to.
@@ -1798,6 +2030,7 @@ impl PermissionPipeline {
     ) -> GateDecision {
         let call = cx.call;
         let rule = adjudication.rule.as_str().to_string();
+        let no_human = self.no_human();
         match adjudication.decision {
             GuardianDecision::Allow => {
                 self.state.guardian_allowed();
@@ -1812,7 +2045,7 @@ impl PermissionPipeline {
                     args: cx.args.clone(),
                 }
             }
-            GuardianDecision::Escalate if !self.headless => {
+            GuardianDecision::Escalate if no_human.is_none() => {
                 Self::note(Tier::Guardian, Decision::Prompt);
                 self.emit(Self::with_guardian(
                     self.record(
@@ -1836,21 +2069,31 @@ impl PermissionPipeline {
                         rule: Some(rule),
                         forced: true,
                     },
+                    Some(Converted::Escalate),
                 )
                 .await
             }
             GuardianDecision::Deny | GuardianDecision::Escalate => {
-                let why = if adjudication.decision == GuardianDecision::Escalate {
-                    format!(
-                        "{}, and a headless run cannot ask the user",
-                        adjudication.explanation.trim_end_matches('.')
-                    )
-                } else {
-                    adjudication.explanation.clone()
+                let escalated = adjudication.decision == GuardianDecision::Escalate;
+                let why = match no_human {
+                    Some(no_human) if escalated => format!(
+                        "{}, and {}",
+                        adjudication.explanation.trim_end_matches('.'),
+                        no_human.clause()
+                    ),
+                    _ => adjudication.explanation.clone(),
                 };
-                let mut message = format!(
-                    "Denied by guardian: [{rule}] {why}. Do not retry it or look for another route to the same effect; tell the user what you could not do."
-                );
+                let converted = if escalated {
+                    Some(Converted::Escalate)
+                } else if adjudication.fail_closed == Some(FailClosed::Unavailable)
+                    && no_human.is_some()
+                {
+                    Some(Converted::GuardianUnavailable)
+                } else {
+                    None
+                };
+                let mut message =
+                    format!("Denied by guardian: [{rule}] {why}. {}", recovery(no_human));
                 // A user's `permission_denied` hook may allow exactly one retry, as `/denied`
                 // then `r` does. It is asked first so the agent is told the truth.
                 let retry = self
@@ -1868,7 +2111,7 @@ impl PermissionPipeline {
                     );
                 }
                 Self::note(Tier::Guardian, Decision::Deny);
-                let record = Self::with_guardian(
+                let mut record = Self::with_guardian(
                     self.record(
                         cx,
                         Tier::Guardian,
@@ -1879,8 +2122,15 @@ impl PermissionPipeline {
                     &adjudication,
                     screened,
                 );
+                record.converted = converted;
+                let refusal = Refusal {
+                    message: message.clone(),
+                    why: why.clone(),
+                    converted,
+                    fail_closed: adjudication.fail_closed.map(FailClosed::as_str),
+                };
                 self.state
-                    .append(self.denial(cx, Tier::Guardian, Some(&rule), &message));
+                    .append(self.denial(cx, Tier::Guardian, Some(&rule), &refusal));
                 self.state.record_denied(DeniedCall {
                     tool: call.tool.to_string(),
                     agent: call.agent.to_string(),
@@ -1895,9 +2145,15 @@ impl PermissionPipeline {
                 // The list a surface reads when it sees this event is complete before the event.
                 self.emit(record);
                 if self.state.guardian_denied() {
-                    self.approver.notice(
-                        "auto mode paused after repeated guardian denials: the next call that needs the guardian asks you, and approving it resumes auto mode",
-                    );
+                    let afk = self.state.afk_on();
+                    if afk {
+                        self.state.append(Record::AfkBlocked {});
+                    }
+                    self.approver.notice(if afk {
+                        "auto mode paused after repeated guardian denials: calls that need the guardian are denied while AFK is on; after /afk off the next such call asks you"
+                    } else {
+                        "auto mode paused after repeated guardian denials: the next call that needs the guardian asks you, and approving it resumes auto mode"
+                    });
                 }
                 GateDecision::Deny { message }
             }
@@ -1919,14 +2175,29 @@ impl PermissionPipeline {
         }
     }
 
-    async fn ask_human(&self, cx: &CallCtx<'_>, prompt: Prompt) -> GateDecision {
+    /// `converted` names what an AFK toggle racing the prompt turns it into; `None` infers it
+    /// from the tier.
+    async fn ask_human(
+        &self,
+        cx: &CallCtx<'_>,
+        prompt: Prompt,
+        converted: Option<Converted>,
+    ) -> GateDecision {
         let call = cx.call;
         if let Some(why) = self.state.agents().exhausted_of(call.agent) {
-            let message = denied(call.tool, &why.describe());
-            self.emit(self.record(cx, Tier::Human, Decision::Deny, None, Some(message.clone())));
+            let refusal = self.refuse(call.tool, &why.describe());
+            self.emit(self.record(
+                cx,
+                Tier::Human,
+                Decision::Deny,
+                None,
+                Some(refusal.message.clone()),
+            ));
             self.state
-                .append(self.denial(cx, Tier::Human, None, &message));
-            return GateDecision::Deny { message };
+                .append(self.denial(cx, Tier::Human, None, &refusal));
+            return GateDecision::Deny {
+                message: refusal.message,
+            };
         }
         let args = cx.args.clone();
         let scope = self.state.scope();
@@ -1972,6 +2243,19 @@ impl PermissionPipeline {
             proposed_rule: proposed.as_ref().map(ToString::to_string),
             preview,
         };
+        // AFK can be turned on while this decision was in flight, and nobody is there to answer.
+        if let Some(no_human) = self.no_human() {
+            let refusal = Refusal {
+                converted: Some(converted.unwrap_or_else(|| converted_of(prompt.tier))),
+                ..self.refuse(
+                    call.tool,
+                    &format!("{}, and {}", prompt.reason, no_human.clause()),
+                )
+            };
+            return self
+                .deny(cx, prompt.tier, prompt.rule.clone(), refusal)
+                .await;
+        }
         let _waiting = self.state.wait_on_human(call.agent);
         let answer = self
             .approver
@@ -2047,23 +2331,30 @@ impl PermissionPipeline {
                 GateDecision::Allow { args }
             }
             Answer::Deny { feedback } => {
-                let message = match feedback.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
-                    Some(feedback) => format!(
-                        "The user denied this `{}` call: {feedback}. Do not retry it as it was.",
-                        call.tool
-                    ),
-                    None => denied(call.tool, "the user declined it"),
+                let refusal = match feedback.as_deref().map(str::trim).filter(|f| !f.is_empty()) {
+                    Some(feedback) => Refusal {
+                        message: format!(
+                            "The user denied this `{}` call: {feedback}. Do not retry it as it was.",
+                            call.tool
+                        ),
+                        why: format!("the user declined it: {feedback}"),
+                        converted: None,
+                        fail_closed: None,
+                    },
+                    None => self.refuse(call.tool, "the user declined it"),
                 };
                 self.emit(self.record(
                     cx,
                     Tier::Human,
                     Decision::Deny,
                     None,
-                    Some(message.clone()),
+                    Some(refusal.message.clone()),
                 ));
                 self.state
-                    .append(self.denial(cx, Tier::Human, None, &message));
-                GateDecision::Deny { message }
+                    .append(self.denial(cx, Tier::Human, None, &refusal));
+                GateDecision::Deny {
+                    message: refusal.message,
+                }
             }
         }
     }

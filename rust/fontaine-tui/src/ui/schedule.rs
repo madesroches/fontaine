@@ -110,6 +110,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             LoopRequest::List => self.list_schedule(&scheduler),
             LoopRequest::Stop(id) => self.stop_schedule(&scheduler, id.as_deref()),
             LoopRequest::Every(interval) => {
+                if self.refuse_if_stopped(runtime, typed) {
+                    return Continue(());
+                }
                 let Some(prompt) = self.start_interval(&scheduler, interval) else {
                     return Continue(());
                 };
@@ -118,6 +121,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     .await;
             }
             LoopRequest::SelfPaced(prompt) => {
+                if self.refuse_if_stopped(runtime, typed) {
+                    return Continue(());
+                }
                 match scheduler.begin_loop(&prompt) {
                     Ok(_) => {}
                     Err(ScheduleError::LoopActive) => {

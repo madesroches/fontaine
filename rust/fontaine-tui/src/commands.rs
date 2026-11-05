@@ -7,6 +7,8 @@ pub enum Command {
     AddDir(String),
     Denied,
     Agents,
+    /// `/afk`, `/afk off`, `/afk report [all]` or `/afk review`.
+    Afk(String),
     /// `/todos`: shows or hides the expanded task list.
     Todos,
     /// `/transcript`: shows or hides the full transcript view.
@@ -109,6 +111,7 @@ impl Command {
             | Command::Effort(_)
             | Command::Goal(_)
             | Command::Loop(_)
+            | Command::Afk(_)
             | Command::Init(_) => true,
             Command::OutputStyle(argument) | Command::Plan(argument) => !argument.is_empty(),
             _ => false,
@@ -158,6 +161,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: Some("<path>"),
         description: "add a workspace root",
         command: Command::AddDir,
+    },
+    Builtin {
+        name: "afk",
+        aliases: &[],
+        hint: Some("[off | report [all] | review]"),
+        description: "work while you are away: nothing asks you, denials end in a report",
+        command: Command::Afk,
     },
     Builtin {
         name: "agents",
@@ -714,6 +724,29 @@ fn interval(
     }))
 }
 
+/// What `/afk` is asked for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AfkRequest {
+    On,
+    Off,
+    Report { all: bool },
+    Review,
+}
+
+/// Reads the argument of `/afk`.
+pub fn parse_afk(argument: &str) -> Result<AfkRequest, String> {
+    let mut words = argument.split_whitespace();
+    let request = match (words.next(), words.next(), words.next()) {
+        (None, ..) => AfkRequest::On,
+        (Some("off"), None, _) => AfkRequest::Off,
+        (Some("review"), None, _) => AfkRequest::Review,
+        (Some("report"), None, _) => AfkRequest::Report { all: false },
+        (Some("report"), Some("all"), None) => AfkRequest::Report { all: true },
+        _ => return Err("usage: /afk, /afk off, /afk report [all], /afk review".to_string()),
+    };
+    Ok(request)
+}
+
 /// Reads the argument of `/loop`.
 pub fn parse_loop(argument: &str) -> Result<LoopRequest, String> {
     let argument = argument.trim();
@@ -988,6 +1021,27 @@ mod tests {
         let menu = builtin_menu();
         let btw = menu.iter().find(|e| e.name == "btw").expect("a btw row");
         assert!(btw.requires_argument());
+    }
+
+    #[test]
+    fn afk_parses_its_four_forms_and_refuses_the_rest() {
+        assert_eq!(parse_command("/afk"), Some(Command::Afk(String::new())));
+        assert_eq!(parse_afk(""), Ok(AfkRequest::On));
+        assert_eq!(parse_afk("off"), Ok(AfkRequest::Off));
+        assert_eq!(parse_afk("review"), Ok(AfkRequest::Review));
+        assert_eq!(parse_afk("report"), Ok(AfkRequest::Report { all: false }));
+        assert_eq!(
+            parse_afk("report all"),
+            Ok(AfkRequest::Report { all: true })
+        );
+        for bad in ["on", "report some", "off now", "review all"] {
+            assert!(parse_afk(bad).is_err(), "{bad}");
+        }
+        for text in ["/afk", "/afk off", "/afk report", "/afk review"] {
+            let command = parse_command(text).expect("a command");
+            assert!(command.main_only(), "{text}");
+            assert!(!command.runs_mid_turn(), "{text}");
+        }
     }
 
     #[test]

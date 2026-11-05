@@ -219,9 +219,9 @@ async fn the_switch_path_is_silent_while_the_guardian_is_off_and_when_the_remind
     let (runtime, _) = start(&w, PermissionMode::Manual);
     runtime.record_session_start().await;
     runtime.state.set_mode(PermissionMode::Auto);
-    runtime.state.set_guardian_off(true);
+    runtime.state.set_guardian_off(true).unwrap();
     assert!(runtime.setup_notice_on_auto().is_none());
-    runtime.state.set_guardian_off(false);
+    runtime.state.set_guardian_off(false).unwrap();
     assert!(runtime.setup_notice_on_auto().is_some());
 
     let w = world_with_remote();

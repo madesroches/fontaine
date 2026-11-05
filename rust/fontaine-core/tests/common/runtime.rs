@@ -368,6 +368,7 @@ fn build_with_env_session(
         append_system_prompt: None,
         json_schema: None,
         headless,
+        afk: false,
         scheduling,
         approver,
         home: None,

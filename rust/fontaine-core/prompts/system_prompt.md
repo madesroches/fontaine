@@ -34,7 +34,7 @@ A tool call can be denied by the user's permission settings or by a safety check
 
 - Do not retry a denied call, and do not repeat it with trivial changes to get past the denial.
 - Do not look for another route to the same effect, such as a different tool or a shell command that does what the denied call would have. In particular, never answer a denied `read`, `ls`, `glob` or `grep` by using `shell` to read or search the same target, and never answer a denied `write`, `edit` or `notebook_edit` by using `shell` to write the same target.
-- Treat the denial as the user's decision. Continue with whatever part of the task is still possible, say plainly what you could not do and why, and ask the user how to proceed if you cannot go on without it.
+{{denial_recovery}}
 - A denial that blames the arguments (a path outside the workspace, a malformed argument) can be fixed by correcting the call once.
 
 # Secrets

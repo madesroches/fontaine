@@ -9,6 +9,7 @@ format and the runner that reads it.
 ```
 evals/
 ├── dataset/*.jsonl      one JSON object per line, one case each
+├── sequences/*.jsonl    sequence cases (AFK temperature and evasion), named with --sequences
 ├── baselines/*.jsonl    Claude Code outcomes recorded by `baseline capture`
 ├── scorecards/*.json    live-run reports behind the published scorecard
 └── README.md            this page
@@ -58,7 +59,7 @@ Each line of a `.jsonl` file is one case. Unknown fields are rejected.
 `{"decision": ..., "tier": ...}` for `pipeline` cases. `tier` and `expected_tier` use the decision
 tier names: `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
 `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`, `guardian`, `dont_ask`, `plan_block`,
-`human`.
+`human`, `guardian_off`, `afk`.
 
 ### Categories
 
@@ -144,6 +145,7 @@ cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian screen:conv
 | Flag | Meaning |
 |---|---|
 | `--dataset <dir>` | Directory of `*.jsonl` cases. Required. |
+| `--sequences <file>` | A `*.jsonl` file of sequence cases, scored after the dataset; see [Sequence cases](#sequence-cases). Only with `--guardian fixture` or `live:`; a usage error otherwise. No default, and it is not derived from `--dataset`. |
 | `--guardian <mode>` | `fixture`, `none`, `live:<account>/<model>` or `screen:<model>`. Required. |
 | `--guardian fixture` | Score each case's canned `fixture_verdict`. Offline and deterministic; needs no model. |
 | `--guardian none` | Run each `pipeline` case through the real permission pipeline and score what it decides. Offline; needs no model. See [No-guardian mode](#no-guardian-mode). |
@@ -366,6 +368,21 @@ and prints `DIFF <id>` for every case whose outcome differs. Fontaine `allow` ma
 run is listed as `UNMATCHED`. It exits 0 when no outcome differs, 1 when any does, and 2 when a
 file cannot be read.
 
+### Sequence cases
+
+A case in `dataset/` is one call. The AFK slice needs a run of decisions, so it has its own file
+and case type, `sequences/afk.jsonl`, which the dataset loader never reads. Unknown fields are
+rejected, and a pair or ceiling that cannot hold is a load error. Two kinds, told apart by `kind`:
+
+| Kind | Fields | Scored by |
+|---|---|---|
+| `temperature` | `id`, `description`, `steps` (each `{tool, decision: allow\|deny, tier, rule, digest, paths, converted, fail_closed}`), `expected` (`stop` or `continue`), `ceiling` (optional, default 12.0) | Replaying the steps through the tracker a session uses, with no model. The scorecard reports the false-stop and false-continue rates. |
+| `evasion` | `id`, `description`, `attempts` (each `{id, agent, tool, summary, decision: allowed\|denied\|converted, rule, explanation}`), `expected` and `fixture_verdict` (lists of `[denied, later]` attempt ids) | `fixture` answers with `fixture_verdict`; `live:` asks the guardian model through the end-of-stretch assessment and compares the named pairs with `expected` exactly. |
+
+CI passes `--sequences ../evals/sequences/afk.jsonl` on the default-profile fixture step only. A
+failed sequence fails a `fixture` run; a `live:` run reports it and exits 0, as it does for the
+dataset. See [the scorecard](../docs/evals.md#the-afk-sequence-slice).
+
 ### Exit codes
 
 | Code | Meaning |
@@ -374,7 +391,7 @@ file cannot be read.
 | 0 | `live:`: the report was written, whatever the scores. A live run is a measurement, not a gate. |
 | 0 | `screen:`: the report was written, whatever the scores. |
 | 1 | `live:` or `screen:`: a case failed closed on infrastructure (`error`, `unavailable`, `timeout` or `unparseable`), so the measurement is unreliable. |
-| 1 | A case failed schema validation, a rule string did not parse, a `fixture_verdict` differs from `expected`, or a pipeline `fixture_verdict.tier` differs from `expected_tier`. In `none` mode: a pipeline decision differs from `expected` or its tier from `expected_tier`. |
+| 1 | A case failed schema validation, a rule string did not parse, a `fixture_verdict` differs from `expected`, or a pipeline `fixture_verdict.tier` differs from `expected_tier`; in a `fixture` run also a sequence case that failed. In `none` mode: a pipeline decision differs from `expected` or its tier from `expected_tier`. |
 | 2 | Usage error: bad flags, an unreadable or empty dataset directory, an unsupported `--guardian`, a `screen:` run with `--profile minimal`, a `--screen-*` flag without `screen:`, a `--screen-framing` other than `verdict`, `employee` or `employee-levels`, a `--screen-max-cost-usd` that is not a positive number, a `--screen-api-key-file` that is unreadable, empty or holds whitespace, or a key with an `http://` non-loopback `--screen-url`, a `--screen-reference` that is unreadable or was scored on another dataset version, a `live:` account that is unknown or has no credential, a filter that selects nothing, an unwritable `--out` or `--models-file`, a `--resume` sidecar written for another dataset version, guardian, profile or filter, or a sidecar left in the way of a live run started without `--resume`. |
 
 `baseline capture` and `baseline diff` use the same codes for usage errors, and exit 1 as

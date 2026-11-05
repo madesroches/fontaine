@@ -113,7 +113,9 @@ The bar shows the permission mode, the directory the shell is in with the git br
 hint rendered from the effective [keybindings](#remapping-the-keys). With [vim input
 mode](#vim-input-mode) on, the bar also shows `vim:insert` or `vim:normal` after the mode. The
 mode labels are `manual`,
-`⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`.
+`⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on` and `dontAsk`. While [AFK mode](afk.md) is on the bar adds ` AFK `, and
+` AFK STOPPED ` (reversed) while a temperature stop waits for `/afk review`, next to the guardian-off
+chip.
 
 ### Subscription quota
 
@@ -174,6 +176,7 @@ data, plus Fontaine extensions:
 | `mode` | `manual`, `acceptEdits`, `plan`, `auto` or `dontAsk` |
 | `guardian.model` | The live guardian's label, or `null` when unavailable |
 | `guardian.off` | Whether the guardian is disabled for this session |
+| `afk.on`, `afk.stopped` | Whether [AFK mode](afk.md) is on, and whether the temperature ceiling has stopped the session |
 | `recent_verdicts` | Last 5 gate decisions with a guardian verdict: `{tool, decision, rule, guardian_verdict}` |
 | `account_usage` | Main and guardian account usage windows, in the same shape as headless output |
 | `context_window.used_percentage` | Context used as a percentage of the model's window, when known |
@@ -566,6 +569,7 @@ error: an export never overwrites.
 | Command | Action |
 |---|---|
 | `/add-dir <path>` | Adds a workspace root. The path is validated and canonicalized like `--add-dir`; file tools may reach it from the next turn, with the conversation kept. Until then a file-tool call naming a path outside the roots is adjudicated like any unapproved call: the write tools (`write`, `edit`, `notebook_edit`) ask here, are judged by the guardian in `auto` and are denied in `dontAsk` and headless runs, while `lsp` is refused outright, with a hint naming this command and the session's scratch directory, which is always a root. The read-only tools (`read`, `ls`, `glob`, `grep`) ask or go to the guardian like any unapproved call. See [Permissions](permissions.md#the-pipeline). Only between turns. |
+| `/afk`, `/afk off`, `/afk report [all]`, `/afk review` | [AFK mode](afk.md) for working while you are away: nothing is asked of you, each call that would have needed approval is denied with guidance to finish the allowed work or stop and report. `/afk` turns it on (it says so when the session is not in `auto`), `/afk off` turns it off, reviews the stretch and shows its outcome, `/afk report` shows the [report](afk.md#the-report) in the transcript (`all` lists every stretch), and `/afk review` shows it and, after a confirmation, lets a session [stopped by the temperature ceiling](afk.md#the-stop) run again with AFK off. Only between turns, only in the main conversation, and only here: no setting or tool turns AFK on. `/afk` is refused while the guardian is disabled, and `/guardian-disable` while AFK is on or stopped. |
 | `/agents`, `/tasks` | Opens the [agents panel](#the-agents-panel): every subagent, ended ones included until a `/clear` prunes them, and the background jobs. |
 | `/auto-mode-setup` | Collects this project's [environment facts](guardian.md#project-environment) (GitHub API through `gh`, repository files and, in a trusted workspace, a scan by the guardian's model) while the screen stays live; Esc cancels. The scan's proposals are shown in the transcript and in a review prompt (`y` saves them, `n` discards them), entries that relax the guardian first. The facts are stored as `fontaine auto-mode setup` stores them and apply to this session from the next guardian call; the report ends with `applied to this session`. A last prompt offers the guardian's [allow screen](guardian.md#setting-up-the-composition): the hosted screen on an `openrouter` account whose key resolves (one confirmation that states guardian state is sent to OpenRouter and Typesafe), or a local one (safe or fast, then a confirmation); it writes the user settings file and applies from the next session. The startup warning in `auto` points here. |
 | `/branch [<name>]`, `/fork` | Copies the session under a new id and carries on in the copy; the original is left as it was. Only between turns, and refused while a subagent runs. See [Sessions](#sessions). |
@@ -677,6 +681,7 @@ reachable. Each line is left out when it has nothing to say:
 - the tool calls by tool, most used first;
 - the calls denied, with the latest one's tool, rule and summary;
 - the subagents spawned, and how many are running now;
+- once AFK mode has run, how the latest stretch stands (`afk: blocked — /afk report`);
 - the permission mode.
 
 Everything except the first line covers the whole session, earlier runs of a resumed session
@@ -955,6 +960,9 @@ there is nothing yet.
 
 ## Scheduled prompts
 
+While [AFK mode](afk.md) is blocked or stopped, no scheduled prompt fires and no notification turn
+starts; the tasks stay listed and are not deleted, and fire again once the session can run turns.
+
 The terminal UI can run a prompt again later, while the conversation is idle. There are two ways
 to set it up, and both end up as tasks in the same per-session schedule.
 
@@ -1037,6 +1045,13 @@ The transcript then says `Goal paused: <why>. Send a message to continue.` The n
 send starts a fresh stretch and the goal is evaluated again after its turn. Text you type while a
 goal turn or an evaluation runs is queued as for any turn, and is sent as your next turn ahead of
 the goal's.
+
+**AFK.** In [AFK mode](afk.md) a goal still pauses itself the usual ways, and also when the
+session is *blocked* by repeated denials (`Goal paused: the denial breaker tripped while the user
+was away`) or *stopped* by the temperature ceiling (`Goal paused: the AFK temperature ceiling
+stopped the session. Run /afk review to continue.`). A stop's pause survives a message; only
+`/afk review` lifts it. While the session is blocked or stopped, no goal evaluation or goal turn
+starts.
 
 A goal is saved with the session (`goal.json`) and comes back on `--continue`, `--resume` and
 `--fork-session` with its counters reset: the clock, the evaluations and the spend baseline start

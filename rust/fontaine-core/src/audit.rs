@@ -43,6 +43,35 @@ impl std::fmt::Display for Decision {
     }
 }
 
+/// Which would-prompt outcome a denial stands in for, when nobody could be asked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Converted {
+    AskRule,
+    Floor,
+    Mode,
+    Escalate,
+    ScreenEscalate,
+    BreakerPaused,
+    GuardianUnavailable,
+    Hook,
+}
+
+impl Converted {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Converted::AskRule => "ask_rule",
+            Converted::Floor => "floor",
+            Converted::Mode => "mode",
+            Converted::Escalate => "escalate",
+            Converted::ScreenEscalate => "screen_escalate",
+            Converted::BreakerPaused => "breaker_paused",
+            Converted::GuardianUnavailable => "guardian_unavailable",
+            Converted::Hook => "hook",
+        }
+    }
+}
+
 /// One gate decision. A prompt that a human then answers adds a second record with
 /// `tier = human`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -126,6 +155,13 @@ pub struct DecisionRecord {
     pub guardian_dropped_priced: Option<bool>,
     pub permission_mode: String,
     pub headless: bool,
+    /// AFK mode was on when the decision was made.
+    #[serde(default)]
+    pub afk: bool,
+    /// The would-prompt outcome this denial stands in for, when nobody could be asked. The tier,
+    /// rule and guardian fields keep what the original outcome was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub converted: Option<Converted>,
     /// The guardian's reason sentence, or what the model was told for a denial.
     pub explanation: Option<String>,
 }
@@ -179,6 +215,8 @@ impl DecisionRecord {
             guardian_dropped_priced: None,
             permission_mode,
             headless,
+            afk: false,
+            converted: None,
             explanation: None,
         }
     }
@@ -291,6 +329,7 @@ mod tests {
         );
         assert_eq!(r.latency_ms, 0);
         assert!(r.headless);
+        assert!(!r.afk && r.converted.is_none());
         assert_eq!((r.session_id.as_str(), r.agent_id.as_str()), ("s", "root"));
         assert!(
             r.agent_name.is_none()

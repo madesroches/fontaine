@@ -146,8 +146,8 @@ From `rust/`:
 
 - `cargo fmt --check` / `cargo clippy --all-targets -- -D warnings` / `cargo test` /
   `cargo deny check` /
-  `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture` and the same with
-  `--profile minimal` — the core CI steps; the two `fixture` evals and the pg2 clippy/test run on
+  `cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture --sequences ../evals/sequences/afk.jsonl`
+  and the same with `--profile minimal` (without `--sequences`) — the core CI steps; the two `fixture` evals and the pg2 clippy/test run on
   Linux only (macOS and Windows run `cargo check --features fontaine/pg2`), everything else on all
   three OSes. Later phases add steps (`--guardian none` eval run); `dist plan` runs once per PR in
   `release.yml`'s `plan` job. The master plan's workspace layout lists the full `ci.yml` step set.

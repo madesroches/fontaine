@@ -501,6 +501,9 @@ mod tests {
                 paths: vec![old.clone()],
                 created: vec![old.clone()],
                 summary: "s".into(),
+                tier: None,
+                tool_use_id: None,
+                digest: None,
             })
             .unwrap();
         let view = ledger.view();

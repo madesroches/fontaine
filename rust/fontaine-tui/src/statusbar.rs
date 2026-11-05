@@ -244,6 +244,21 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    if app.afk_stopped {
+        spans.push(Span::styled(
+            " AFK STOPPED ",
+            Style::default()
+                .fg(app.theme.warning)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        ));
+    } else if app.afk {
+        spans.push(Span::styled(
+            " AFK ",
+            Style::default()
+                .fg(app.theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     let effort = app
         .effort
         .map_or_else(String::new, |level| format!(" · effort {level}"));

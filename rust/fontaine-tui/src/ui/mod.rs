@@ -62,6 +62,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
     fn draw(&mut self, runtime: &AgentRuntime) {
         self.app.mode = runtime.state.mode();
         self.app.guardian_off = runtime.state.guardian_off();
+        let afk = runtime.state.afk();
+        self.app.afk = afk.on.is_some();
+        self.app.afk_stopped = afk.stopped.is_some();
         self.app.model = runtime.models.main.reference.to_string();
         self.app.effort = runtime.state.effort();
         self.app.model_accepts_images = runtime
@@ -206,6 +209,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             context.1,
             cost_total_usd,
         )
+        .with_afk(self.app.afk, self.app.afk_stopped)
     }
 
     /// Runs the configured command with the given payload, publishing the result back to
@@ -469,16 +473,20 @@ impl<R: FnMut(&mut App)> Ui<R> {
             if self.drain_deferred(runtime).await.is_break() {
                 return;
             }
+            self.announce_blocked(runtime).await;
+            // While AFK is blocked or stopped nothing the user did not type may start a turn:
+            // not news, not a scheduled prompt, not a goal step. Jobs stay listed, not deleted.
+            let held = runtime.unattended_blocked().is_some();
             // A subagent that finished while nothing was running has news for the
             // main conversation, which gets a turn of its own to read it.
-            if tree.has_notifications(ROOT_AGENT) {
+            if !held && tree.has_notifications(ROOT_AGENT) {
                 if self.notification_turn(runtime, launch_dir).await.is_break() {
                     return;
                 }
                 continue;
             }
             let mut tick = None;
-            if runtime.config.schedule.enabled {
+            if runtime.config.schedule.enabled && !held {
                 let scheduler = runtime.session.scheduler().clone();
                 if let Some(fired) = scheduler.due() {
                     self.show_scheduler_warning(runtime);
@@ -494,7 +502,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.show_scheduler_warning(runtime);
                 tick = scheduler.until_next_wake().map(|wait| wait.min(IDLE_POLL));
             }
-            if let Some(flow) = self.goal_step(runtime, launch_dir).await {
+            if !held && let Some(flow) = self.goal_step(runtime, launch_dir).await {
                 if flow.is_break() {
                     return;
                 }
@@ -518,7 +526,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let [main_quota, guardian_quota] = &mut self.quota_rx;
             let mut statusline_rx = self.statusline_rx.as_mut();
             let statusline_result_rx = &mut self.statusline_result_rx;
+            let afk_stops = &mut self.afk_stops;
+            let mut stopped = false;
             let action = tokio::select! {
+                // A stop tripped while the main turn is idle, such as by a running subagent.
+                Ok(()) = afk_stops.changed() => {
+                    stopped = true;
+                    Action::None
+                }
                 input = self.input.recv() => match input {
                     Some(input) => self.app.handle_input(input),
                     None => return,
@@ -563,6 +578,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     }
                 } => Action::None,
             };
+            if stopped {
+                self.afk_stopped(runtime).await;
+            }
             self.finish_statusline();
             if matches!(action, Action::None)
                 && statusline_tick.is_some_and(|t| t == Duration::ZERO)
@@ -623,6 +641,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::Queue(_)
                 | Action::Command { .. }
                 | Action::GuardianOff(_)
+                | Action::AfkReview(_)
                 | Action::SkillTrust(_)
                 | Action::SetupReview(_)
                 | Action::SetupComposition(_) => {}
@@ -881,6 +900,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.guardian_enable(runtime);
                 Continue(CommandOutcome::Done)
             }
+            Command::Afk(argument) => match self.afk_command(runtime, &argument).await {
+                Break(()) => Break(()),
+                Continue(()) => Continue(CommandOutcome::Done),
+            },
             Command::Login(account) => {
                 self.login(runtime, &account).await;
                 // The dialog stays open after the log-in it started; replay waits for it.
@@ -912,6 +935,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     Continue(CommandOutcome::Done)
                 }
                 GoalArg::Set(condition) => {
+                    if self.refuse_if_stopped(runtime, raw) {
+                        return Continue(CommandOutcome::Done);
+                    }
                     if let Err(e) = runtime.set_goal(&condition) {
                         self.app
                             .transcript
@@ -947,6 +973,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app
                         .transcript
                         .error(format!("/init takes no argument, not `{argument}`"));
+                    return Continue(CommandOutcome::Done);
+                }
+                if self.refuse_if_stopped(runtime, raw) {
                     return Continue(CommandOutcome::Done);
                 }
                 let (target, existing) = instructions::init_target(&runtime.primary_root());
@@ -1036,6 +1065,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app.transcript.error(format!(
                         "unknown command /{name}; type / to see the commands and skills"
                     ));
+                    return Continue(CommandOutcome::Done);
+                }
+                if self.refuse_if_stopped(runtime, raw) {
                     return Continue(CommandOutcome::Done);
                 }
                 match self

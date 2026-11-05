@@ -14,6 +14,9 @@ describe what the current build does; each page covers one topic.
   read-only fast path, the shell and web fetch settings.
 - [Permissions](permissions.md): the modes, the deterministic floor, the `Tool(specifier)` rules and
   allow rules, and the shell pre-classifier.
+- [AFK mode](afk.md): working while you are away: every would-prompt outcome becomes a denial with
+  recovery guidance, the report of everything the agents tried, the session temperature and the
+  stop that follows it, and `--afk` for headless runs.
 - [The guardian](guardian.md): what `auto` mode asks a separate model, what it sees, how every
   failure becomes a denial, how to choose the guardian model, and the container-mode profile.
 - [Subagents](agents.md): the `agent` and `send_message` tools, asynchronous subagents, agent types
@@ -40,7 +43,7 @@ describe what the current build does; each page covers one topic.
   `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/plan`, `/copy`, `/expand`, `/memory`, `/init`,
   `/clear`, `/compact`, `/btw` (side questions), `/recap` (session report),
   `/cost` and `/usage` (token usage and spend by source), `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,
-  `/rename`, `/export` and `/rewind`, the agents panel and the workspace trust prompt.
+  `/rename`, `/export` and `/rewind`, `/afk`, the agents panel and the workspace trust prompt.
 - [Checkpoints and /rewind](checkpoints.md): what `write` and `edit` save before they change a
   file, `/rewind` and Esc Esc, restoring code, the conversation or both, and what is not tracked.
 - [Terminal setup](terminal.md): newline keys for each terminal, tmux, Option as Meta on macOS,

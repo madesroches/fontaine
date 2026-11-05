@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use fontaine_agents::registry::TypeOrigin;
+use fontaine_core::afk_report::{AfkOutcome, AfkReport, Attempt, LinkKind};
 use fontaine_core::config::{Hook, Hooks, McpServer, Origin, PermissionMode, Slot};
 use fontaine_core::context::ContextUsage;
 use fontaine_core::extensions::{Extensions, Scope};
@@ -17,6 +18,7 @@ use fontaine_core::permission_rules::SourcedRule;
 use fontaine_core::plugins::Registry;
 use fontaine_core::skill_trust::TrustState;
 use fontaine_core::usage_ledger::{Bucket, UsageSource};
+use fontaine_guardian::evasion::AttemptDecision;
 use fontaine_tools::display::compact_count;
 
 use crate::commands::{BUILTINS, MenuEntry, is_builtin};
@@ -455,6 +457,133 @@ pub fn memory(entries: &[MemoryEntry], auto: &AutoMemory<'_>) -> String {
     out
 }
 
+fn afk_outcome_words(report: &AfkReport) -> String {
+    let source = match report.stretch.source {
+        fontaine_core::afk_report::AfkSource::Command => "/afk",
+        fontaine_core::afk_report::AfkSource::Cli => "--afk",
+    };
+    let span = match (report.stretch.ended_ts_ms, report.stretch.started_ts_ms) {
+        (Some(end), start) => format!(", lasted {}s", end.saturating_sub(start) / 1000),
+        (None, _) => String::new(),
+    };
+    format!("{} (started by {source}{span})", report.outcome.as_str())
+}
+
+fn afk_attempt_line(attempt: &Attempt, start_ms: u64) -> String {
+    let decision = match attempt.decision {
+        AttemptDecision::Allowed => "allowed".to_string(),
+        AttemptDecision::Denied => "denied".to_string(),
+        AttemptDecision::Converted => "denied (needed approval)".to_string(),
+    };
+    let mut line = format!(
+        "  #{} +{}s {} {} {decision}",
+        attempt.seq,
+        attempt.ts_ms.saturating_sub(start_ms) / 1000,
+        attempt.agent_name,
+        attempt.tool,
+    );
+    if let Some(rule) = &attempt.rule {
+        let _ = write!(line, " [{rule}]");
+    }
+    if !attempt.summary.is_empty() {
+        let _ = write!(line, ": {}", one_line(&attempt.summary));
+    }
+    if attempt.decision == AttemptDecision::Allowed {
+        let _ = write!(
+            line,
+            " — {}",
+            match attempt.outcome {
+                Some(fontaine_core::afk_report::OutcomeStatus::Ok) => "succeeded",
+                Some(fontaine_core::afk_report::OutcomeStatus::Error) => "failed",
+                Some(fontaine_core::afk_report::OutcomeStatus::Cancelled) => "cancelled",
+                None => "outcome not recorded",
+            }
+        );
+    } else if let Some(why) = &attempt.explanation {
+        let _ = write!(line, " — {}", one_line(why));
+    }
+    line
+}
+
+/// The `/afk report` text: the outcome, the temperature, the security review, then every call
+/// of the stretch in order. Credential-shaped text was redacted when the ledger recorded it.
+pub fn afk_report(report: &AfkReport) -> String {
+    let counts = &report.counts;
+    let mut lines = vec![
+        "AFK report".to_string(),
+        format!("outcome: {}", afk_outcome_words(report)),
+        format!(
+            "calls: {} allowed ({} succeeded, {} failed, {} cancelled, {} outcome not recorded), {} denied ({} needed approval nobody could give)",
+            counts.allowed,
+            counts.succeeded,
+            counts.failed,
+            counts.cancelled,
+            counts.unknown,
+            counts.denied,
+            counts.converted,
+        ),
+    ];
+    let temperature = &report.temperature;
+    lines.push(format!(
+        "temperature: {:.1} now, peak {:.1}{}, ceiling {:.1}",
+        temperature.current,
+        temperature.peak,
+        temperature
+            .peak_seq
+            .map_or(String::new(), |seq| format!(" at #{seq}")),
+        temperature.ceiling,
+    ));
+    let mut top: Vec<_> = temperature.contributing.iter().collect();
+    top.sort_by(|a, b| b.weight.total_cmp(&a.weight));
+    for c in top.into_iter().take(3) {
+        lines.push(format!(
+            "  denial #{} added {:.1} (now {:.1})",
+            c.seq, c.weight, c.remaining
+        ));
+    }
+    lines.push("security review:".to_string());
+    for link in &report.review.links {
+        let kind = match link.kind {
+            LinkKind::ExactRetry => "retry",
+            LinkKind::SameTargetOtherTool => "same target by another tool",
+            LinkKind::Suspected => "suspected evasion",
+        };
+        lines.push(format!(
+            "  {kind}: call #{} after the denial of #{} — {}",
+            link.attempt_seq,
+            link.denial_seq,
+            one_line(&link.reason)
+        ));
+    }
+    lines.push(format!("  {}", report.review.assessment.describe()));
+    lines.push("timeline:".to_string());
+    if report.timeline.is_empty() {
+        lines.push("  no calls were made".to_string());
+    }
+    lines.extend(
+        report
+            .timeline
+            .iter()
+            .map(|attempt| afk_attempt_line(attempt, report.stretch.started_ts_ms)),
+    );
+    lines.join("\n")
+}
+
+/// The one-paragraph notice after a stretch ends, blocks or stops.
+pub fn afk_outcome_notice(report: &AfkReport) -> String {
+    let counts = &report.counts;
+    let head = match report.outcome {
+        AfkOutcome::Blocked => "AFK: blocked — repeated denials paused auto mode.",
+        AfkOutcome::Stopped => "AFK: stopped — the temperature ceiling was reached.",
+        AfkOutcome::Ended => "AFK: ended.",
+        AfkOutcome::Active => "AFK:",
+    };
+    format!(
+        "{head} {} allowed, {} denied, temperature {:.1} (peak {:.1}). Full report: /afk report",
+        counts.allowed, counts.denied, report.temperature.current, report.temperature.peak
+    )
+}
+
 fn window_label(window: u32) -> String {
     compact_count(u64::from(window))
 }
@@ -551,6 +680,9 @@ pub fn recap(input: &RecapInput) -> String {
             "subagents: {} spawned, {} running now",
             recap.agents_spawned, input.subagents_running
         ));
+    }
+    if let Some(outcome) = recap.afk {
+        lines.push(format!("afk: {} — /afk report", outcome.as_str()));
     }
     if lines.is_empty() {
         lines.push("nothing has happened in this session yet".to_string());
@@ -815,9 +947,11 @@ mod tests {
             denials: 2,
             last_denial: Some(DenialEntry {
                 tool: "shell".into(),
+                agent: "root".into(),
                 rule: "deny(shell)".into(),
                 summary: "rm -rf x".into(),
             }),
+            afk: Some(fontaine_core::afk_report::AfkOutcome::Blocked),
             agents_spawned: 3,
         };
         let text = super::recap(&RecapInput {
@@ -835,6 +969,7 @@ mod tests {
         assert!(text.contains("tool calls: shell 4, write 1"));
         assert!(text.contains("denials: 2, latest shell (deny(shell)): rm -rf x"));
         assert!(text.contains("subagents: 3 spawned, 1 running now"));
+        assert!(text.contains("afk: blocked — /afk report"));
         assert!(text.ends_with("mode: manual"));
     }
 

@@ -507,6 +507,10 @@ pub const KEYS: &[KeyRow] = &[
         .max_turns
         .to_string()),
     row!("goal.max_cost_usd", Scalar, |c, _| opt(c.goal.max_cost_usd)),
+    row!("afk.temperature_ceiling", Scalar, |c, _| c
+        .afk
+        .ceiling()
+        .to_string()),
     row!("checkpoints.enabled", Scalar, |c, _| c
         .checkpoints
         .enabled

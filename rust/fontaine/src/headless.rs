@@ -1,6 +1,7 @@
 //! The non-interactive surface, `fontaine -p`. Its output is a versioned contract: see
 //! `docs/headless.md` and `docs/schemas/headless-v1.schema.json`.
 
+mod afk;
 mod goal;
 
 use std::collections::HashSet;
@@ -8,8 +9,9 @@ use std::io::{IsTerminal, Write};
 use std::path::Path;
 
 use fontaine_core::RuntimeError;
+use fontaine_core::afk_report::{AfkOutcome, AfkReport, AfkSource};
 use fontaine_core::agent::AgentRuntime;
-use fontaine_core::audit::{Decision, DecisionRecord};
+use fontaine_core::audit::{Converted, Decision, DecisionRecord};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
@@ -58,6 +60,11 @@ enum Input {
 }
 
 impl Input {
+    /// Whether no further message can follow. A stream of lines cannot say before it ends.
+    fn is_exhausted(&self) -> bool {
+        matches!(self, Input::Single(None))
+    }
+
     /// The next user message, `None` at the end of input. An error is a usage error.
     async fn next(&mut self) -> Result<Option<String>, String> {
         match self {
@@ -349,6 +356,7 @@ fn result_event(
     usage: &Usage,
     goal: Option<&goal::GoalReport>,
     account_usage: &[Value],
+    afk: Option<&AfkReport>,
 ) -> Value {
     let (totals, guardian, subagents) = (&usage.main, &usage.guardian, &usage.subagents);
     let mut fields = json!({
@@ -401,6 +409,9 @@ fn result_event(
     }
     if let (Some(goal), Some(map)) = (goal, fields.as_object_mut()) {
         map.insert("goal".into(), goal.json());
+    }
+    if let (Some(report), Some(map)) = (afk, fields.as_object_mut()) {
+        map.insert("afk".into(), afk::result_object(report));
     }
     if let (false, Some(map)) = (account_usage.is_empty(), fields.as_object_mut()) {
         map.insert("account_usage".into(), account_usage.to_vec().into());
@@ -481,6 +492,8 @@ fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Value {
             "screen_steering": record.screen_steering,
             "screen_scores": record.screen_scores,
             "screen_outcome": record.screen_outcome,
+            "afk": record.afk,
+            "converted": record.converted.map(Converted::as_str),
         }),
     )
 }
@@ -554,6 +567,7 @@ async fn run_one(
     };
     let ids = runtime.models.main.wire_ids();
     let (model, provider) = (ids.model, ids.provider);
+    let mut stops = runtime.state.afk_stop_signal();
     let turn = run_turn(
         TurnParams {
             agent: &runtime.agent,
@@ -574,8 +588,19 @@ async fn run_one(
             generation_options: runtime.turn_generation_options(),
         },
         &mut on_event,
-    )
-    .await;
+    );
+    // The stop comes first: a stopped session gets no further tool-capable model turn.
+    let turn = tokio::select! {
+        biased;
+        Ok(()) = stops.changed() => None,
+        outcome = turn => Some(outcome),
+    };
+    // A stop that lands inside the poll that also finishes the turn is still a stop.
+    let turn = turn.filter(|_| runtime.state.afk().stopped.is_none());
+    let Some(turn) = turn else {
+        runtime.handle_afk_stop().await;
+        return afk::stopped_outcome(started, denials);
+    };
 
     let (subtype, text, error) = match turn {
         TurnOutcome::Answer(text) => (Subtype::Success, text, None),
@@ -640,6 +665,8 @@ enum News {
     /// Reports or messages for the main conversation, as the prompt of a further turn.
     Prompt(String),
     OverBudget,
+    /// The AFK temperature ceiling stopped the session.
+    Stopped,
     /// Nothing is running and nothing is waiting.
     Done,
 }
@@ -648,10 +675,19 @@ enum News {
 /// no subagent is left running.
 async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> News {
     let tree = runtime.state.agents().clone();
+    let mut stops = runtime.state.afk_stop_signal();
     loop {
         let changed = tree.changed().notified();
         tokio::pin!(changed);
         changed.as_mut().enable();
+        if runtime.state.afk().stopped.is_some() {
+            return News::Stopped;
+        }
+        // Blocked: no notification turn starts. The children's reports are dropped with the
+        // run, which kills what is left.
+        if runtime.unattended_blocked().is_some() {
+            return News::Done;
+        }
         if let Some(prompt) = runtime.notification_prompt().await {
             return News::Prompt(prompt);
         }
@@ -668,6 +704,7 @@ async fn wait_for_news(runtime: &AgentRuntime, over_cap: &dyn Fn() -> bool) -> N
         }
         tokio::select! {
             _ = &mut changed => {}
+            Ok(()) = stops.changed() => return News::Stopped,
             _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
         }
     }
@@ -747,6 +784,12 @@ async fn settle(
                 runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
                 outcome = merge(outcome, stop);
             }
+            News::Stopped => {
+                runtime.handle_afk_stop().await;
+                let stop = afk::stopped_outcome(std::time::Instant::now(), Vec::new());
+                runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
+                outcome = merge(outcome, stop);
+            }
             News::Done => break,
         }
     }
@@ -759,6 +802,8 @@ struct Handled {
     goal: Option<goal::GoalReport>,
     /// The message ran turns under a goal, so how the goal ended says how the run did.
     goal_ran: bool,
+    /// The AFK report, while AFK is on or a stop stands.
+    afk: Option<AfkReport>,
 }
 
 /// One user message. `/goal <condition>` keeps running turns after the first until the
@@ -770,6 +815,15 @@ async fn handle_message(
     text: String,
 ) -> Handled {
     let session_id = runtime.session.id.clone();
+    if runtime.state.afk().stopped.is_some() {
+        // A stopped session denies every call; no model request is made on its behalf.
+        return Handled {
+            outcome: afk::stopped_outcome(std::time::Instant::now(), Vec::new()),
+            goal: None,
+            goal_ran: false,
+            afk: afk_report(runtime),
+        };
+    }
     let mut involved = runtime.session.goal().is_active();
     let prompt = match goal::command(&text) {
         None => {
@@ -787,6 +841,7 @@ async fn handle_message(
                 outcome,
                 goal,
                 goal_ran: false,
+                afk: afk_report(runtime),
             };
         }
         Some(GoalArg::Clear) => {
@@ -795,6 +850,7 @@ async fn handle_message(
                 outcome,
                 goal,
                 goal_ran: false,
+                afk: afk_report(runtime),
             };
         }
         Some(GoalArg::Set(condition)) => {
@@ -811,6 +867,7 @@ async fn handle_message(
                     outcome,
                     goal: None,
                     goal_ran: false,
+                    afk: afk_report(runtime),
                 };
             }
             involved = true;
@@ -828,6 +885,10 @@ async fn handle_message(
     let mut outcome = settle(runtime, options, stream_events, outcome).await;
     let mut ended = None;
     while involved && outcome.subtype == Subtype::Success {
+        // Blocked or stopped: no goal turn starts. The goal is paused with the reason below.
+        if runtime.unattended_blocked().is_some() {
+            break;
+        }
         let Some(pending) = runtime.next_goal_step() else {
             break;
         };
@@ -864,6 +925,8 @@ async fn handle_message(
             Step::Pause(_) => break,
         }
     }
+    // The first time the breaker blocks an AFK run, the goal is paused and the stretch reviewed.
+    let blocked = runtime.note_blocked().await;
     let goal = if involved {
         goal::report(runtime, ended)
     } else {
@@ -873,7 +936,49 @@ async fn handle_message(
         outcome,
         goal,
         goal_ran: involved,
+        afk: match blocked {
+            Some(report) => Some(report),
+            None => afk_report(runtime),
+        },
     }
+}
+
+/// The report of the AFK stretch, while AFK is on or a stop stands, built from the ledger alone.
+/// The paid evasion review runs once, when the run ends.
+fn afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
+    let stopped = runtime.state.afk().stopped.is_some();
+    if !runtime.state.afk_on() && !stopped {
+        return None;
+    }
+    match runtime.afk_reports(false) {
+        Ok(mut reports) => reports.pop().map(ended),
+        Err(e) => {
+            runtime
+                .approver()
+                .warn(&fontaine_tools::error_chain::chain(&e));
+            None
+        }
+    }
+}
+
+/// The run is the stretch, so it has ended by the time a consumer reads its result.
+fn ended(mut report: AfkReport) -> AfkReport {
+    if report.outcome == AfkOutcome::Active {
+        report.outcome = AfkOutcome::Ended;
+    }
+    report
+}
+
+/// The report of a stretch still running as the run ends, after its evasion review. A stretch
+/// stopped or blocked was reviewed when it ended, and one that is over needs no review.
+async fn final_afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
+    if !runtime.state.afk_on()
+        || runtime.state.afk().stopped.is_some()
+        || runtime.unattended_blocked().is_some()
+    {
+        return None;
+    }
+    runtime.finish_afk().await.map(ended)
 }
 
 /// Runs the headless session and returns the process exit code: 0 completed, 1 run error or a
@@ -897,6 +1002,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
 
     let mut last: Option<Handled> = None;
     let mut goal_failure: Option<String> = None;
+    let mut reviewed = false;
     let mut code = 0u8;
     let mut usage_warned = HashSet::new();
     loop {
@@ -910,7 +1016,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
                 return 2;
             }
         };
-        let handled = match runtime.refresh_native_search() {
+        let mut handled = match runtime.refresh_native_search() {
             Ok(()) => handle_message(&runtime, &options, stream_events, text).await,
             Err(e) => Handled {
                 outcome: Outcome {
@@ -926,10 +1032,10 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
                 },
                 goal: None,
                 goal_ran: false,
+                afk: afk_report(&runtime),
             },
         };
-        let outcome = &handled.outcome;
-        let failed = outcome.subtype != Subtype::Success;
+        let failed = handled.outcome.subtype != Subtype::Success;
         // A goal that ended impossible or paused did not finish the task, even when the turn
         // itself answered. A failed turn already says why.
         goal_failure = handled
@@ -937,6 +1043,21 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             .as_ref()
             .and_then(goal::GoalReport::failure)
             .filter(|_| handled.goal_ran && !failed);
+        // A blocked or stopped AFK run did not finish what it was asked, whether or not a goal
+        // ran and whatever its last turn answered.
+        // The review is paid for once, with the message that ends the run.
+        if (input.is_exhausted() || failed || goal_failure.is_some())
+            && !reviewed
+            && let Some(report) = final_afk_report(&runtime).await
+        {
+            handled.afk = Some(report);
+            reviewed = true;
+        }
+        let outcome = &handled.outcome;
+        let afk_failure = handled.afk.as_ref().and_then(afk::failure);
+        if afk_failure.is_some() {
+            goal_failure = goal_failure.or(afk_failure);
+        }
         if failed {
             runtime.state.agents().kill_all();
             runtime.state.agents().settled(KILL_SETTLE).await;
@@ -951,6 +1072,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
                 &Usage::of(&runtime),
                 handled.goal.as_ref(),
                 &account_usage,
+                handled.afk.as_ref(),
             ));
         }
         last = Some(handled);
@@ -958,6 +1080,16 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             code = 1;
             break;
         }
+    }
+    if !reviewed
+        && let Some(last) = last.as_mut()
+        && let Some(report) = final_afk_report(&runtime).await
+    {
+        last.afk = Some(report);
+    }
+    // The run was the AFK stretch: close it in the ledger.
+    if let Err(e) = runtime.state.set_afk(false, AfkSource::Cli) {
+        eprintln!("fontaine: {e}");
     }
     runtime.state.agents().kill_all();
     runtime.state.agents().settled(KILL_SETTLE).await;
@@ -979,6 +1111,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
                 &Usage::of(&runtime),
                 last.goal.as_ref(),
                 &account_usage,
+                last.afk.as_ref(),
             ));
         }
         OutputFormat::Text => {
@@ -1042,7 +1175,7 @@ mod tests {
             goal: bucket(30, 31),
             subagents: bucket(20, 21),
         };
-        let result = result_event("s", &outcome, &usage, None, &[]);
+        let result = result_event("s", &outcome, &usage, None, &[], None);
         assert_eq!(result["num_turns"], 3);
         assert_eq!(result["usage"]["main"]["input_tokens"], 3000);
         assert_eq!(result["usage"]["main"]["cache_read_input_tokens"], 1700);

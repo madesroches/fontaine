@@ -392,18 +392,19 @@ where
                     },
                     None => run(context, allowed.clone()).instrument(span.clone()).await,
                 };
+                let view = CallView {
+                    tool: name,
+                    risk,
+                    args: &allowed,
+                    agent: &agent,
+                    annotations,
+                    requires_user_interaction,
+                    synthetic: false,
+                };
                 if cut_short {
+                    guard.results.cancelled(view);
                     outcome
                 } else {
-                    let view = CallView {
-                        tool: name,
-                        risk,
-                        args: &allowed,
-                        agent: &agent,
-                        annotations,
-                        requires_user_interaction,
-                        synthetic: false,
-                    };
                     let (outcome, record) = guard
                         .results
                         .run(view, outcome)

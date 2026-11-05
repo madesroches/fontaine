@@ -96,6 +96,7 @@ fn load_params<'a>(cli: &'a Cli, host: &'a Host, dirs: &'a Dirs) -> LoadParams<'
         cli_rules: CliRules {
             allow: &cli.allowed_tools,
             deny: &cli.disallowed_tools,
+            afk_temperature_ceiling: cli.afk_temperature_ceiling,
         },
         env: &*host.env,
     }
@@ -987,6 +988,7 @@ fn agent_setup(
         append_system_prompt: cli.append_system_prompt.clone(),
         json_schema,
         headless,
+        afk: cli.afk,
         approver: Arc::new(DenyAll),
         home: prep.home,
         user_config: Some(dirs.config.join(config::USER_FILE)),

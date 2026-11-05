@@ -263,6 +263,13 @@ async fn the_guardian_request_after_a_rewind_omits_the_retracted_prompt_but_keep
         reason: "no".into(),
         rule: Some("deny_rule".into()),
         summary: "rm -rf".into(),
+        tier: None,
+        tool_use_id: None,
+        digest: None,
+        paths: Vec::new(),
+        converted: None,
+        fail_closed: None,
+        explanation: None,
     });
     say(&built, "change a").await;
     let plan = built.runtime.rewind_plan(2).unwrap();
