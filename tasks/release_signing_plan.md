@@ -84,18 +84,20 @@ impl TrustedKeys {
 
 pub struct Verified { pub channel: Channel, pub file: String, pub version: String, pub commit: String }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug)]
 pub enum VerifyError {
     NoKeyForChannel(Channel),
     MissingSignature,
-    MalformedSignature(#[source] minisign_verify::Error),
+    MalformedSignature(minisign_verify::Error),
     WrongKey { channel: Channel },   // key ID is not this channel's key (e.g. the other channel's)
-    BadSignature(#[source] minisign_verify::Error),
+    BadSignature(minisign_verify::Error),
     MalformedTrustedComment,
     ChannelMismatch { expected: Channel, found: String },
     FileMismatch { expected: String, found: String },
-    Io(#[source] std::io::Error),
+    Io(std::io::Error),
 }
+// Display and Error (with source() for the wrapped errors) are written by hand; the
+// workspace has no thiserror.
 
 pub fn verify_file(keys: &TrustedKeys, channel: Channel, archive: &Path,
                    signature: Option<&str>) -> Result<Verified, VerifyError>;
@@ -104,8 +106,12 @@ pub fn verify_file(keys: &TrustedKeys, channel: Channel, archive: &Path,
 - The function takes the signature text as `Option<&str>`, so a missing signature has its own
   variant instead of turning into an I/O error at a guessed path. Callers fetch `<archive>.minisig`
   themselves.
-- It hashes the archive in a stream (`minisign_verify::StreamVerifier`), because archives are
-  tens of MB.
+- It hashes the archive in a stream (`PublicKey::verify_stream(&Signature)`, then `.update()`
+  and `.finalize()`), because archives are tens of MB. The trusted comment is parsed only after
+  `finalize()` succeeds.
+- The `minisign_verify::Error` mapping: `MalformedSignature` ← `InvalidEncoding`,
+  `UnsupportedAlgorithm`, `UnexpectedAlgorithm` or `UnsupportedLegacyMode`; `WrongKey` ←
+  `UnexpectedKeyId`; `BadSignature` ← `InvalidSignature`; `Io` ← archive read errors.
 - The error enum is typed because callers dispatch on it: the updater reports why, and CI tests
   each class. Only `Verified` means success. Every other outcome, including I/O, is a failure,
   and the caller must leave the installed binary untouched.
@@ -115,7 +121,9 @@ pub fn verify_file(keys: &TrustedKeys, channel: Channel, archive: &Path,
 ### CI signing tool
 
 - The signing and verification jobs use the upstream `minisign` CLI at a pinned version: the
-  release tarball from `jedisct1/minisign`, checked against a pinned sha256 before it runs.
+  minisign 0.12 (asset `minisign-0.12-linux.tar.gz` from `jedisct1/minisign`), checked against
+  a sha256 recorded at implementation time before it runs. The scripts use the x86_64 linux
+  binary inside the tarball.
 - `.github/scripts/release-sign.sh <channel> <dir>` signs every `fontaine-*.tar.xz` and
   `fontaine-*.zip` in `<dir>`, using the secret key and password from the environment
   (`MINISIGN_SECRET_KEY`, `MINISIGN_PASSWORD`, written to a `0600` temp file and removed on
@@ -126,6 +134,8 @@ pub fn verify_file(keys: &TrustedKeys, channel: Channel, archive: &Path,
   - `minisign -V -p <pubkey> -m <archive>` passes;
   - the trusted comment has the exact binding above for `<channel>` and that basename;
   - every `.sha256` matches its archive;
+  - no asset is unrecognised: anything other than `fontaine-*` archives, `.minisig`, `.sha256`
+    and `sha256.sum` fails;
   - at least one archive is present.
 
   The same script is the release check and the CI test subject, so "verified before
@@ -154,26 +164,40 @@ plan ─▶ build-local-artifacts ─▶ build-global-artifacts ─▶ sign (env
   exactly what users will fetch, and runs `release-verify.sh release`.
 - `publish` flips the draft to published, only after `verify-draft` succeeds. If anything fails,
   the draft stays a draft and nothing is public.
-- Per-job `permissions`: `contents: read` by default. Only `host` and `publish` get
-  `contents: write`.
+- Per-job `permissions`: `contents: read` by default. Only `host`, `verify-draft` and `publish`
+  get `contents: write`: a draft release is visible only to users with push access.
+  `verify-draft` names no environment, so no signing secret is in scope for it.
+- Job gating is a strict chain. `host` has `needs: [plan, build-local-artifacts,
+  build-global-artifacts, sign]` and `if: always() && needs.sign.result == 'success'` (plus the
+  existing conditions on the build jobs), so a failed `sign` can never reach `host`.
+  `verify-draft` and `publish` use plain `needs:` success gating. `announce` has
+  `needs: [plan, publish]` and `if: always() && needs.publish.result == 'success'`.
 
 ### `dev` channel workflow (`.github/workflows/dev.yml`, new)
 
 ```
-push to main ─▶ build (dist build --artifacts=local per target, no tag, no secrets)
+workflow_run of CI completed on main, conclusion success, event push
+             ─▶ build (dist build --artifacts=local per target, no tag, no secrets)
              ─▶ global (sha256.sum) ─▶ sign (env: dev-signing, main only, no reviewer)
              ─▶ draft prerelease dev-<run_number> ─▶ verify-draft (vs keys/dev.pub)
              ─▶ publish (--draft=false, stays --prerelease, never "latest")
 ```
 
+- The trigger is `workflow_run` on the `CI` workflow (`types: [completed]`, `branches: [main]`),
+  so a dev build is signed only after the build and tests passed. Every job checks out, builds
+  and records `github.event.workflow_run.head_sha`, never `github.sha`.
 - The build matrix comes from `dist plan` in the same way as in `release.yml`. The trusted
-  comment's `version` is `<cargo version>-dev.<run_number>+<short sha>`. #175 owns how the
+  comment's `version` is `<cargo version>-dev.<run_number>+<short head sha>`. #175 owns how the
   updater orders dev builds; this field only gives it the data.
+- Job gating and permissions follow `release.yml`: `sign` is needed by `host` with
+  `needs.sign.result == 'success'`, `verify-draft` and `publish` use plain success gating, and
+  only `host`, `verify-draft` and `publish` get `contents: write`.
 - Draft, then verify, then publish is the "verify before visible to updaters" gate. A draft
   release is invisible to unauthenticated API clients, so an updater can never see an
   unverified dev build.
-- The whole workflow runs only when the repository variable `FONTAINE_DEV_CHANNEL` is `enabled`
-  (job-level `if:` on the first job). This keeps `main` green until the maintainer has created
+- The whole workflow runs only when `github.event.workflow_run.conclusion == 'success'`,
+  `github.event.workflow_run.event == 'push'` and the repository variable
+  `FONTAINE_DEV_CHANNEL` is `enabled` (job-level `if:` on the first job). This keeps `main` green until the maintainer has created
   the `dev-signing` environment and bootstrapped the dev key. When the variable is not set,
   nothing is built and nothing is published, so skipping can never publish an unsigned
   artifact.
@@ -214,7 +238,9 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
 1. **Placeholders.** Add `rust/fontaine/keys/release.pub` and `rust/fontaine/keys/dev.pub`
    holding the bootstrap placeholder comment line.
 2. **Dependencies.** In `rust/Cargo.toml`, add `minisign-verify = "=0.3.0"` (runtime) and
-   `minisign = "=0.10.0"` (dev-only, for disposable test keys). Run `cargo deny check`, and if
+   `minisign = "=0.10.0"` (dev-only, for disposable test keys) to the workspace dependencies. In
+   `rust/fontaine/Cargo.toml`, add `minisign-verify.workspace = true` under `[dependencies]` and
+   `minisign.workspace = true` under `[dev-dependencies]`. Run `cargo deny check`, and if
    their licenses (MIT / ISC) are not yet allowed, update `rust/deny.toml`.
 3. **Verification module.** Write `rust/fontaine/src/release_signature.rs` as designed and
    export it from `rust/fontaine/src/lib.rs`. Unit tests use the `minisign` crate to make
@@ -222,7 +248,9 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
    - a valid signature returns `Verified` with the parsed fields;
    - a missing signature returns `MissingSignature`;
    - malformed signatures (truncated base64, garbage, an empty string, a legacy non-prehashed
-     signature) return `MalformedSignature`;
+     signature) return `MalformedSignature`; the legacy fixture cannot come from minisign
+     0.10's `sign()`, which always signs prehashed, so it re-encodes a prehashed signature
+     with the algorithm tag `Ed`;
    - a signature from another key returns `WrongKey`;
    - a signature from the dev key checked on the release channel returns `WrongKey`;
    - a tampered archive returns `BadSignature`;
@@ -236,7 +264,9 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
    `release-sign.sh`, so the CLI's output format and the Rust verifier cannot drift apart.
 5. **Scripts.** Write `.github/scripts/release-sign.sh` and `.github/scripts/release-verify.sh`
    (bash, `set -euo pipefail`), plus `.github/scripts/install-minisign.sh` for the pinned
-   download and sha256 check.
+   download and sha256 check: minisign 0.12, asset `minisign-0.12-linux.tar.gz` from
+   `jedisct1/minisign`, its sha256 recorded at implementation time. The script uses the x86_64
+   linux binary inside the tarball.
 6. **CI coverage (`ci.yml`, Linux job).** Add a "Release signing" step:
    - install minisign and generate a disposable passwordless key, plus a second key that plays
      the wrong-channel key;
@@ -244,20 +274,30 @@ settings live in GitHub, not in the repository, so configuring them is a maintai
    - run `release-sign.sh`, then `release-verify.sh` and expect success;
    - expect `release-verify.sh` to fail on each mutation: a deleted `.minisig`, a truncated
      `.minisig`, an archive signed by the other key, a tampered archive, an orphan `.minisig`,
-     an empty directory and a wrong `--channel`;
+     an empty directory, a wrong channel argument (`dev` against release-signed files), a file
+     swap (archive A and its signature renamed onto B's name, with B's `.sha256` recomputed so
+     the failure comes from the `file=` check), a checksum mismatch (one `.sha256` edited) and
+     an unrecognised asset;
    - run `cargo test -p fontaine release_signature -- --ignored` with the fixture directory set.
    Production secrets are never referenced: the job names no environment.
 7. **`release.yml`.** Add the `sign`, `verify-draft` and `publish` jobs, make `host` create a
-   draft and upload the signatures, and scope permissions per job. Update the hand-adaptation
-   header comment.
-8. **`dev.yml`.** Add the new workflow as designed.
+   draft and upload the signatures, and scope permissions per job. Add `sign` to `host`'s
+   `needs` and `&& needs.sign.result == 'success'` to its `if:`. Give `verify-draft` and
+   `publish` plain success gating. Change `announce` to `needs: [plan, publish]` with
+   `if: always() && needs.publish.result == 'success'`. Set `source-tarball = false` in
+   `[workspace.metadata.dist]` in `rust/Cargo.toml` (GitHub already attaches source archives to
+   every release), so every published asset is signed. Update the hand-adaptation header
+   comment.
+8. **`dev.yml`.** Add the new workflow as designed, with the same strict job chain as
+   `release.yml`.
 9. **Docs.** See Documentation.
 10. **Master plan.** Add the `Build and release` Decisions lines below, and the `#425` item under
     Release readiness in `## Remaining work`.
 
 ## Files to Modify
 
-- `rust/Cargo.toml`, `rust/fontaine/Cargo.toml`, `rust/deny.toml` (if needed)
+- `rust/Cargo.toml` (dependencies; `source-tarball = false`), `rust/fontaine/Cargo.toml`,
+  `rust/deny.toml` (if needed)
 - `rust/fontaine/src/release_signature.rs` (new), `rust/fontaine/src/lib.rs`
 - `rust/fontaine/keys/release.pub`, `rust/fontaine/keys/dev.pub` (new, placeholders)
 - `.github/scripts/install-minisign.sh`, `release-sign.sh`, `release-verify.sh` (new)
@@ -327,11 +367,9 @@ Lines for the master plan's `### Build and release`:
 - **Unit (`release_signature`)**: every `VerifyError` class with disposable keys from the
   `minisign` crate (step 3), and the shipped-key-files test.
 - **CI script coverage (`ci.yml` Linux)**: the real CLI and the real scripts run against
-  disposable keys for the valid, missing, malformed, wrong-key, tampered, orphan, empty and
-  wrong-channel cases. Then the ignored interop test runs on the CLI output. This tier is needed
-  because the scripts and the CLI's file format are what actually gate publication, and a unit
-  test against the Rust crate cannot exercise them. A failure there is silent: it would publish
-  something unverified, or stop all publication.
+  disposable keys for the valid, missing, malformed, wrong-key, tampered, orphan, empty,
+  wrong-channel, file-swap, checksum-mismatch and unrecognised-asset cases. Then the ignored
+  interop test runs on the CLI output.
 - `cargo fmt --check`, `clippy -D warnings`, `cargo test` and `cargo deny check` as usual.
   `dist plan` keeps passing on the PR's `plan` job.
 
@@ -346,7 +384,8 @@ because they depend on GitHub-side environment settings and real tags, which no 
 2. Download an archive and its signature, then run `minisign -Vm <archive> -p rust/fontaine/keys/release.pub`.
    Expected: `Signature and comment signature verified`, with the trusted comment binding
    `channel=release` and the file name.
-3. Set `FONTAINE_DEV_CHANNEL=enabled` and merge a PR. Expected: a published prerelease
+3. Set `FONTAINE_DEV_CHANNEL=enabled` and merge a PR. Expected: once CI succeeds on the merge
+   commit, a published prerelease
    `dev-<n>`, with no approval prompt, whose archives verify against `dev.pub` and fail against
    `release.pub`.
 4. Open a PR that adds `environment: release-signing` to a job. Expected: the deployment is
