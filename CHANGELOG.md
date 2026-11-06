@@ -40,6 +40,9 @@ All notable changes are recorded here. The format follows
 
 - Any finished subagent can be woken by `send_message`. The `teammate` argument is removed, any
   agent can own a task board, and claimable tasks go to fresh agents (#435).
+- `--resume` brings back the agents whose last run ended `done` as idle agents that a message wakes
+  from their saved conversation. `/clear` and a conversation rewind retire idle agents instead of
+  refusing (#435).
 - AFK is now a permission mode, `afk`, at the end of the Shift+Tab cycle, which is reordered by
   increasing autonomy: manual → plan → accept edits → auto → AFK. AFK decides what runs as `auto`
   does and denies every call that would have asked; leaving it reviews the stretch as before. Bare
