@@ -55,7 +55,10 @@ docker run -d --name "cap-$NAME" --network "container:kimi-$NAME" --cap-add NET_
   tcpdump -i any -p -U -w /run/study/egress.pcap >/dev/null
 sleep 1
 { echo "tz=$(docker exec kimi-$NAME date +%Z) lang=$(docker exec kimi-$NAME sh -c 'echo ${LANG:-unset}')"; } > "$RUN/locale.txt"
-if [ -n "${STALL:-}" ]; then docker exec -d "kimi-$NAME" node /run/study/stall.mjs; fi
+if [ -n "${STALL:-}" ]; then
+  cp "$HERE/fixtures/stall.mjs" "$RUN/stall.mjs"
+  docker exec -d "kimi-$NAME" node /run/study/stall.mjs
+fi
 [ -n "${PRE:-}" ] && docker exec "kimi-$NAME" sh -c "$PRE" > "$RUN/pre.out" 2>&1 || true
 set +e
 if [ -n "${NOPROMPT:-}" ]; then

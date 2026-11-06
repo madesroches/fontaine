@@ -592,7 +592,7 @@ All notable changes are recorded here. The format follows
   experiments against a local Ollama model and a fake Grafana and TeamCity service: what makes a
   cheap unattended watcher work, where small models fail, and the follow-ups #258–#264 (#253).
 - A study of Moonshot's Kimi Code CLI, with Docker experiments behind a recording proxy and the same tasks run through Fontaine: what lets the
-  model iterate, what the Kimi coding endpoint accepts, what the harness sends by default, and the follow-ups #438-#440 (#156).
+  model iterate, what the Kimi coding endpoint accepts, what the harness sends by default, and the follow-ups #438–#440 (#156).
 
 #### Sessions
 
