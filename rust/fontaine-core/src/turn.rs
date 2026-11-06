@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::audit::DecisionRecord;
 use crate::gate::{DecisionFeed, Published, SessionState};
+use crate::ledger::Record;
 use crate::preview::DiffPreview;
 use crate::usage_ledger::UsageSource;
 
@@ -325,6 +326,9 @@ pub struct Drive<'a> {
     pub span: tracing::Span,
 }
 
+/// The most of a failure's text the ledger keeps.
+const FAILURE_RECORD_CHARS: usize = 2_000;
+
 /// The stable class of a failed model request. Other failures (the turn limit, a cancel, the
 /// memory store, an unknown tool) are not failed API requests. The message is not exported: a
 /// provider's can echo the request.
@@ -424,7 +428,15 @@ pub async fn drive(
             DriveEnd::Failed(error) => error,
         };
         if attempt == MAX_RETRIES || !retryable(&error) {
-            return TurnOutcome::Failed(failure_text(&error, params.native_search));
+            let message = failure_text(&error, params.native_search);
+            if let Some(class) = error_class(&error) {
+                params.state.append(Record::RequestFailed {
+                    agent: params.agent_id.to_string(),
+                    class: class.to_string(),
+                    message: message.chars().take(FAILURE_RECORD_CHARS).collect(),
+                });
+            }
+            return TurnOutcome::Failed(message);
         }
         tokio::time::sleep(BACKOFF * (1 << attempt)).await;
         params.prompt = RETRY_NOTE.to_string();

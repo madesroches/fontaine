@@ -10,7 +10,10 @@
 //! it prints), `auth_raw`, `auth_exit`, `auth_sleep_ms`, `models`, `init_hang`, `init_extra` (a
 //! JSON object merged into `system/init`), `responses`: one script per model process, the last
 //! repeating. A script has `text`, `thinking`, `tool_use`, `stop_reason`, `usage`,
-//! `total_cost_usd`, `result_subtype`, `result_extra`, `denial_echo`, `events` (raw lines that
+//! `total_cost_usd`, `result_subtype`, `result_extra`, `denial_echo` (the error result after the
+//! stop, as CLI 2.1.318 sends it), `denial: "mid_stream"` (CLI 2.1.319's order: the denial
+//! events inside the tool block, the result after `message_stop`), `thinking_tokens` (one
+//! estimate inside the thinking block), `events` (raw lines that
 //! replace everything generated), `before` and `after_stop` (raw lines added), `drop_after`,
 //! `exit_code`, `stderr`, `hang_before_output`, `hang_after_result`, `chunked` and `descendant`.
 //!
@@ -329,6 +332,7 @@ impl Double {
                 "content": [], "stop_reason": null, "usage": start_usage,
             },
         })));
+        let mid_stream = script.get("denial").and_then(Value::as_str) == Some("mid_stream");
         let mut index = 0;
         if let Some(thinking) = script.get("thinking") {
             out.push(stream(json!({
@@ -339,6 +343,14 @@ impl Double {
                 "type": "content_block_delta", "index": index,
                 "delta": {"type": "thinking_delta", "thinking": thinking["thinking"]},
             })));
+            if script.get("thinking_tokens").and_then(Value::as_bool) == Some(true) {
+                out.push(
+                    json!({"type": "system", "subtype": "thinking_tokens",
+                        "estimated_tokens": 12, "estimated_tokens_delta": 12,
+                        "session_id": "double", "uuid": "double"})
+                    .to_string(),
+                );
+            }
             out.push(stream(json!({
                 "type": "content_block_delta", "index": index,
                 "delta": {"type": "signature_delta", "signature": thinking["signature"]},
@@ -378,12 +390,15 @@ impl Double {
                 call["name"] = json!(tools.first().cloned().unwrap_or_default());
             }
             let call = &call;
+            let id = call.get("id").cloned().unwrap_or(json!("toolu_double"));
+            let mut block = json!({
+                "type": "tool_use", "id": id, "name": call["name"], "input": {},
+            });
+            if mid_stream {
+                block["caller"] = json!({"type": "direct"});
+            }
             out.push(stream(json!({
-                "type": "content_block_start", "index": index,
-                "content_block": {
-                    "type": "tool_use", "id": call.get("id").cloned().unwrap_or(json!("toolu_double")),
-                    "name": call["name"], "input": {},
-                },
+                "type": "content_block_start", "index": index, "content_block": block,
             })));
             let input = call.get("input").cloned().unwrap_or(json!({})).to_string();
             let (first, second) = input.split_at(input.len() / 2);
@@ -393,9 +408,25 @@ impl Double {
                     "delta": {"type": "input_json_delta", "partial_json": part},
                 })));
             }
+            if mid_stream {
+                out.push(
+                    json!({"type": "assistant", "message": {"role": "assistant", "model": model, "content": []}})
+                        .to_string(),
+                );
+                out.push(
+                    json!({"type": "system", "subtype": "permission_denied",
+                        "tool_name": call["name"], "tool_use_id": id,
+                        "decision_reason_type": "mode", "message": "denied",
+                        "session_id": "double", "uuid": "double"})
+                    .to_string(),
+                );
+            }
             out.push(stream(
                 json!({"type": "content_block_stop", "index": index}),
             ));
+            if mid_stream {
+                out.push(denial_echo_line(&id));
+            }
         }
         out.push(stream(json!({
             "type": "message_delta",
@@ -403,17 +434,21 @@ impl Double {
             "usage": {"output_tokens": usage["output_tokens"]},
         })));
         out.push(stream(json!({"type": "message_stop"})));
-        out.push(
-            json!({"type": "assistant", "message": {"role": "assistant", "model": model, "content": []}})
-                .to_string(),
-        );
-        if script.get("denial_echo").and_then(Value::as_bool) == Some(true) {
+        if mid_stream {
+            out.push(json!({"type": "rate_limit_event"}).to_string());
+        } else {
             out.push(
-                json!({"type": "user", "message": {"role": "user", "content": [
-                    {"type": "tool_result", "tool_use_id": "toolu_double", "is_error": true, "content": "denied"}
-                ]}})
-                .to_string(),
+                json!({"type": "assistant", "message": {"role": "assistant", "model": model, "content": []}})
+                    .to_string(),
             );
+        }
+        if script.get("denial_echo").and_then(Value::as_bool) == Some(true) {
+            let id = script
+                .get("tool_use")
+                .and_then(|call| call.get("id"))
+                .cloned()
+                .unwrap_or(json!("toolu_double"));
+            out.push(denial_echo_line(&id));
         }
         if let Some(lines) = script.get("after_stop").and_then(Value::as_array) {
             out.extend(lines.iter().map(raw_line));
@@ -434,7 +469,7 @@ impl Double {
                 "is_error",
                 json!(subtype != "success" && subtype != "error_max_turns"),
             ),
-            ("num_turns", json!(1)),
+            ("num_turns", json!(if mid_stream { 2 } else { 1 })),
             ("result", json!("")),
             (
                 "total_cost_usd",
@@ -450,6 +485,13 @@ impl Double {
         out.push(Value::Object(result).to_string());
         out
     }
+}
+
+fn denial_echo_line(id: &Value) -> String {
+    json!({"type": "user", "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": id, "is_error": true, "content": "denied"}
+    ]}})
+    .to_string()
 }
 
 fn raw_line(value: &Value) -> String {

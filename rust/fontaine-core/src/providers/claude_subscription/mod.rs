@@ -101,6 +101,12 @@ impl ClaudeError {
         self
     }
 
+    /// Appends `detail` to the message, keeping the source.
+    pub fn with_detail(mut self, detail: &str) -> Self {
+        self.message.push_str(detail);
+        self
+    }
+
     /// The failure as a non-retryable provider error that keeps the typed error as its source.
     pub fn provider(self) -> ProviderError {
         ProviderError::request(self)

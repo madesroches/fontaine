@@ -5,7 +5,7 @@
 //! Nothing here touches a process, so every refusal and every terminal-state rule is a unit
 //! test.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use rig_core::error::ProviderError;
 use rig_core::wire::WireFrame;
@@ -13,7 +13,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::cli::limit_error;
-use super::{ClaudeError, ErrorKind};
+use super::{ClaudeError, ErrorKind, claude_error};
 
 /// What the CLI calls a tool of the `fontaine` MCP server.
 pub const TOOL_PREFIX: &str = "mcp__fontaine__";
@@ -559,8 +559,56 @@ pub(crate) enum Native {
     Invalid,
 }
 
+/// One tool call the response announced, as the CLI named it.
+struct Call {
+    cli_name: String,
+    denied: bool,
+    echoed: bool,
+}
+
+/// The most accepted-event labels the trail keeps.
+const TRAIL_ENTRIES: usize = 64;
+
+/// A name from the CLI's output is shown only when it is plain, so an error built from it stays
+/// text made of names rather than raw output.
+fn safe_name(name: Option<&str>) -> String {
+    match name {
+        None => "(none)".to_string(),
+        Some(name)
+            if (1..=64).contains(&name.len())
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-')) =>
+        {
+            name.to_string()
+        }
+        Some(_) => "?".to_string(),
+    }
+}
+
+/// The event a stdout line carries, as a name safe to show: `type`, plus `/subtype` for a
+/// system event or a result and `/<event type>` for a stream event.
+fn label_of(value: &Value) -> String {
+    let text = |v: Option<&Value>| v.and_then(Value::as_str).map(str::to_string);
+    let kind = text(value.get("type"));
+    let mut label = safe_name(kind.as_deref());
+    let inner = match kind.as_deref() {
+        Some("system" | "result") => Some(text(value.get("subtype"))),
+        Some("stream_event") => Some(text(value.get("event").and_then(|e| e.get("type")))),
+        _ => None,
+    };
+    if let Some(inner) = inner {
+        label.push('/');
+        label.push_str(&safe_name(inner.as_deref()));
+    }
+    label
+}
+
 pub struct Reader {
     expect: Expect,
+    calls: BTreeMap<String, Call>,
+    trail: VecDeque<(String, u32)>,
+    trail_cut: bool,
     phase: Phase,
     init_seen: bool,
     messages: u32,
@@ -581,6 +629,9 @@ impl Reader {
     pub fn new(expect: Expect) -> Self {
         Reader {
             expect,
+            calls: BTreeMap::new(),
+            trail: VecDeque::new(),
+            trail_cut: false,
             phase: Phase::Ack,
             init_seen: false,
             messages: 0,
@@ -613,16 +664,68 @@ impl Reader {
         self.native.as_ref()
     }
 
+    /// The labels of the events accepted so far, repeats collapsed, oldest cut first.
+    pub fn trail(&self) -> String {
+        let mut parts: Vec<String> = Vec::new();
+        if self.trail_cut {
+            parts.push("…".to_string());
+        }
+        parts.extend(self.trail.iter().map(|(label, n)| {
+            if *n > 1 {
+                format!("{label} ×{n}")
+            } else {
+                label.clone()
+            }
+        }));
+        parts.join(" → ")
+    }
+
+    fn remember(&mut self, label: String) {
+        match self.trail.back_mut() {
+            Some((last, n)) if *last == label => *n += 1,
+            _ => {
+                self.trail.push_back((label, 1));
+                if self.trail.len() > TRAIL_ENTRIES {
+                    self.trail.pop_front();
+                    self.trail_cut = true;
+                }
+            }
+        }
+    }
+
     pub fn accept(&mut self, line: &[u8]) -> Result<Event, Failure> {
-        let value: Value = serde_json::from_slice(line)
-            .map_err(|_| protocol("the Claude CLI sent a line that is not JSON"))?;
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            return Err(ClaudeError::new(
+                ErrorKind::Protocol,
+                "the Claude CLI sent a line that is not JSON",
+            )
+            .with_detail(" (event: (not JSON))")
+            .boxed());
+        };
+        let label = label_of(&value);
+        match self.dispatch(&value) {
+            Ok(event) => {
+                self.remember(label);
+                Ok(event)
+            }
+            Err(error) => Err(match claude_error(&error) {
+                Some(typed) if typed.kind == ErrorKind::Protocol => typed
+                    .clone()
+                    .with_detail(&format!(" (event: {label})"))
+                    .boxed(),
+                _ => error,
+            }),
+        }
+    }
+
+    fn dispatch(&mut self, value: &Value) -> Result<Event, Failure> {
         let kind = value
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default();
         match kind {
-            "system" => self.system(&value),
-            "stream_event" => self.stream_event(&value),
+            "system" => self.system(value),
+            "stream_event" => self.stream_event(value),
             "assistant" => {
                 if let Some(category) = value.get("error").and_then(Value::as_str) {
                     self.native = Some(match category {
@@ -648,8 +751,8 @@ impl Reader {
                 }
                 Ok(Event::Nothing)
             }
-            "result" => self.result(&value),
-            "user" => self.denial_echo(&value),
+            "result" => self.result(value),
+            "user" => self.denial_echo(value),
             // Ignored: a mid-response extra-usage switch is invisible to Fontaine and failing here would not prevent a charge.
             "rate_limit_event" | "keep_alive" => Ok(Event::Nothing),
             "prompt_suggestion" => Err(protocol(
@@ -670,10 +773,37 @@ impl Reader {
             }
             Some("status") => Ok(Event::Nothing),
             Some("api_retry") => Err(protocol("the Claude CLI retried the request on its own")),
+            Some("permission_denied") => self.permission_denied(value),
+            Some("thinking_tokens") => {
+                if self.phase == Phase::Ack || !self.init_seen {
+                    return Err(protocol(
+                        "the Claude CLI sent a thinking estimate outside a response",
+                    ));
+                }
+                Ok(Event::Nothing)
+            }
             _ => Err(protocol(
                 "the Claude CLI sent a system event this adapter does not accept",
             )),
         }
+    }
+
+    /// The CLI's report that it denied a call: accepted only for a call this response announced,
+    /// under the name it announced, once. Its message is never read.
+    fn permission_denied(&mut self, value: &Value) -> Result<Event, Failure> {
+        let call = value
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .and_then(|id| self.calls.get_mut(id))
+            .filter(|call| {
+                !call.denied
+                    && value.get("tool_name").and_then(Value::as_str) == Some(&call.cli_name)
+            })
+            .ok_or_else(|| {
+                protocol("the Claude CLI reported a denial for no call of this response")
+            })?;
+        call.denied = true;
+        Ok(Event::Nothing)
     }
 
     fn validate_init(&self, init: &Value) -> Result<(), Failure> {
@@ -784,23 +914,41 @@ impl Reader {
                 match block.get("type").and_then(Value::as_str) {
                     Some("text" | "thinking" | "redacted_thinking") => {}
                     Some("tool_use") => {
-                        let name = block
+                        let cli_name = block
                             .get("name")
                             .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        match self.expect.aliases.restore(name) {
+                            .unwrap_or_default()
+                            .to_string();
+                        let restored = self.expect.aliases.restore(&cli_name).map(str::to_string);
+                        if restored.is_none() && cli_name != TOLERATED_BUILTIN {
+                            return Err(protocol(
+                                "the Claude CLI called a tool Fontaine did not define",
+                            ));
+                        }
+                        let id = block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .ok_or_else(|| protocol("a tool call has no id"))?
+                            .to_string();
+                        if self.calls.contains_key(&id) {
+                            return Err(protocol("the Claude CLI reused a tool call id"));
+                        }
+                        self.calls.insert(
+                            id,
+                            Call {
+                                cli_name,
+                                denied: false,
+                                echoed: false,
+                            },
+                        );
+                        match restored {
                             Some(original) => {
-                                let original = original.to_string();
                                 block.insert("name".to_string(), Value::String(original));
                             }
-                            None if name == TOLERATED_BUILTIN => {
+                            None => {
                                 self.suppressed.insert(index);
                                 return Ok(Event::Nothing);
-                            }
-                            None => {
-                                return Err(protocol(
-                                    "the Claude CLI called a tool Fontaine did not define",
-                                ));
                             }
                         }
                     }
@@ -872,29 +1020,33 @@ impl Reader {
         }
     }
 
-    /// The tool result a denied call leaves in the output: tolerated only after a tool-use
-    /// stop, and only as an error. Anything else is native tool execution.
-    fn denial_echo(&self, value: &Value) -> Result<Event, Failure> {
-        let denied = self.stopped
-            && self.stop_reason.as_deref() == Some("tool_use")
-            && value
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(Value::as_array)
-                .is_some_and(|blocks| {
-                    !blocks.is_empty()
-                        && blocks.iter().all(|block| {
-                            block.get("type").and_then(Value::as_str) == Some("tool_result")
-                                && block.get("is_error").and_then(Value::as_bool) == Some(true)
-                        })
-                });
-        if denied {
-            Ok(Event::Nothing)
-        } else {
-            Err(protocol(
-                "the Claude CLI executed a native tool or permission request",
-            ))
+    /// The tool results a denied call leaves in the output: tolerated only as errors answering
+    /// calls this response announced, once each. Anything else is native tool execution.
+    fn denial_echo(&mut self, value: &Value) -> Result<Event, Failure> {
+        let refused = || protocol("the Claude CLI executed a native tool or permission request");
+        let blocks = value
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+            .filter(|blocks| !blocks.is_empty())
+            .ok_or_else(refused)?;
+        let mut ids = BTreeSet::new();
+        for block in blocks {
+            let answers = block.get("type").and_then(Value::as_str) == Some("tool_result")
+                && block.get("is_error").and_then(Value::as_bool) == Some(true);
+            let id = block.get("tool_use_id").and_then(Value::as_str);
+            match id.filter(|_| answers) {
+                Some(id)
+                    if self.calls.get(id).is_some_and(|call| !call.echoed) && ids.insert(id) => {}
+                _ => return Err(refused()),
+            }
         }
+        for id in ids {
+            if let Some(call) = self.calls.get_mut(id) {
+                call.echoed = true;
+            }
+        }
+        Ok(Event::Nothing)
     }
 
     fn result(&mut self, value: &Value) -> Result<Event, Failure> {
@@ -947,6 +1099,9 @@ impl Reader {
                     protocol("the Claude CLI's result contradicts its response")
                 },
             );
+        }
+        if !tool_stop && self.calls.values().any(|call| call.denied || call.echoed) {
+            return Err(protocol("the Claude CLI's result contradicts its response"));
         }
         if let (Some(streamed), Some(reported)) = (
             self.streamed_output_tokens,

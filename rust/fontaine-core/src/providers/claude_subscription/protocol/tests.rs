@@ -389,7 +389,7 @@ fn tool_names_are_restored_and_the_stop_may_be_max_turns() {
     // A denied call's echo is tolerated, only as an error.
     assert!(is_nothing(feed(
         &mut r,
-        json!({"type": "user", "message": {"content": [{"type": "tool_result", "is_error": true}]}}),
+        json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t", "is_error": true}]}}),
     )));
     assert!(matches!(
         feed(&mut r, result("error_max_turns")),
@@ -731,4 +731,218 @@ fn stderr_classifies_an_early_exit_without_being_shown() {
             .to_string()
             .contains("usage limit reached")
     );
+}
+
+const READ: &str = "mcp__fontaine__read_file";
+
+fn tool_start(r: &mut Reader, index: u64, id: &str, name: &str) -> Result<Event, Failure> {
+    feed(
+        r,
+        stream(json!({"type": "content_block_start", "index": index,
+                      "content_block": {"type": "tool_use", "id": id, "name": name,
+                                        "caller": {"type": "direct"}, "input": {}}})),
+    )
+}
+
+fn stop_block(r: &mut Reader, index: u64) {
+    feed(
+        r,
+        stream(json!({"type": "content_block_stop", "index": index})),
+    )
+    .unwrap();
+}
+
+fn denied(id: &str, name: &str) -> Value {
+    json!({"type": "system", "subtype": "permission_denied", "tool_name": name,
+           "tool_use_id": id, "decision_reason_type": "mode", "message": "UNIQUE-RAW"})
+}
+
+fn echo(ids: &[&str]) -> Value {
+    let blocks: Vec<Value> = ids
+        .iter()
+        .map(|id| json!({"type": "tool_result", "tool_use_id": id, "is_error": true}))
+        .collect();
+    json!({"type": "user", "message": {"content": blocks}})
+}
+
+fn started(tools: &[&str]) -> Reader {
+    let mut r = reader(tools);
+    feed(&mut r, init()).unwrap();
+    feed(&mut r, message_start()).unwrap();
+    r
+}
+
+fn finish_tool_use(r: &mut Reader) -> Result<Event, Failure> {
+    feed(r, terminal("tool_use")).unwrap();
+    feed(r, stream(json!({"type": "message_stop"}))).unwrap();
+    feed(r, result("error_max_turns"))
+}
+
+#[test]
+fn the_mid_stream_denial_order_of_cli_2_1_319_completes() {
+    let mut r = started(&["read_file"]);
+    tool_start(&mut r, 0, "toolu_A", READ).unwrap();
+    feed(&mut r, json!({"type": "assistant", "message": {}})).unwrap();
+    assert!(is_nothing(feed(&mut r, denied("toolu_A", READ))));
+    stop_block(&mut r, 0);
+    assert!(is_nothing(feed(&mut r, echo(&["toolu_A"]))));
+    feed(&mut r, json!({"type": "rate_limit_event"})).unwrap();
+    assert!(matches!(finish_tool_use(&mut r), Ok(Event::Complete)));
+}
+
+#[test]
+fn parallel_calls_interleave_their_denials_and_echoes() {
+    let mut r = started(&["read_file"]);
+    tool_start(&mut r, 0, "toolu_A", READ).unwrap();
+    assert!(is_nothing(feed(&mut r, denied("toolu_A", READ))));
+    stop_block(&mut r, 0);
+    tool_start(&mut r, 1, "toolu_B", READ).unwrap();
+    assert!(is_nothing(feed(&mut r, echo(&["toolu_A"]))));
+    assert!(is_nothing(feed(&mut r, denied("toolu_B", READ))));
+    stop_block(&mut r, 1);
+    assert!(is_nothing(feed(&mut r, echo(&["toolu_B"]))));
+    assert!(matches!(finish_tool_use(&mut r), Ok(Event::Complete)));
+}
+
+#[test]
+fn a_denial_is_matched_to_a_call_the_response_made() {
+    let mut r = started(&["read_file"]);
+    tool_start(&mut r, 0, "toolu_A", READ).unwrap();
+    let unknown = failure(feed(&mut r, denied("toolu_other", READ)));
+    assert!(
+        unknown.contains("(event: system/permission_denied)"),
+        "{unknown}"
+    );
+    assert!(!unknown.contains("UNIQUE-RAW"));
+    assert!(feed(&mut r, denied("toolu_A", "mcp__fontaine__other")).is_err());
+    assert!(is_nothing(feed(&mut r, denied("toolu_A", READ))));
+    assert!(feed(&mut r, denied("toolu_A", READ)).is_err());
+}
+
+#[test]
+fn an_echo_must_answer_an_unanswered_call_with_an_error() {
+    let mut r = started(&["read_file"]);
+    tool_start(&mut r, 0, "toolu_A", READ).unwrap();
+    assert!(feed(&mut r, echo(&["toolu_other"])).is_err());
+    assert!(feed(&mut r, echo(&[])).is_err());
+    let mixed = json!({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_A", "is_error": true},
+        {"type": "tool_result", "tool_use_id": "toolu_A", "is_error": false},
+    ]}});
+    assert!(feed(&mut r, mixed).is_err());
+    assert!(is_nothing(feed(&mut r, echo(&["toolu_A"]))));
+    assert!(feed(&mut r, echo(&["toolu_A"])).is_err());
+}
+
+#[test]
+fn a_denial_next_to_an_end_turn_stop_contradicts_the_response() {
+    let mut r = started(&["read_file"]);
+    tool_start(&mut r, 0, "toolu_A", READ).unwrap();
+    feed(&mut r, denied("toolu_A", READ)).unwrap();
+    stop_block(&mut r, 0);
+    feed(&mut r, terminal("end_turn")).unwrap();
+    feed(&mut r, stream(json!({"type": "message_stop"}))).unwrap();
+    let error = failure(feed(&mut r, result("success")));
+    assert!(error.contains("contradicts"), "{error}");
+}
+
+#[test]
+fn a_suppressed_end_conversation_call_may_be_denied() {
+    let mut r = started(&["read_file"]);
+    assert!(is_nothing(tool_start(
+        &mut r,
+        0,
+        "toolu_E",
+        "EndConversation"
+    )));
+    assert!(is_nothing(feed(
+        &mut r,
+        denied("toolu_E", "EndConversation")
+    )));
+    stop_block(&mut r, 0);
+    assert!(is_nothing(feed(&mut r, echo(&["toolu_E"]))));
+    assert!(matches!(finish_tool_use(&mut r), Ok(Event::Complete)));
+}
+
+#[test]
+fn a_missing_or_reused_tool_call_id_is_refused() {
+    let mut r = started(&["read_file"]);
+    let missing = feed(
+        &mut r,
+        stream(json!({"type": "content_block_start", "index": 0,
+                      "content_block": {"type": "tool_use", "name": READ, "input": {}}})),
+    );
+    assert!(failure(missing).contains("no id"));
+    tool_start(&mut r, 0, "toolu_A", READ).unwrap();
+    assert!(failure(tool_start(&mut r, 1, "toolu_A", READ)).contains("reused"));
+}
+
+#[test]
+fn thinking_estimates_are_accepted_in_a_response_only() {
+    let estimate = json!({"type": "system", "subtype": "thinking_tokens",
+                          "estimated_tokens": 5, "estimated_tokens_delta": 5});
+    let mut r = started(&[]);
+    assert!(is_nothing(feed(&mut r, estimate.clone())));
+    let mut r = Reader::new(Expect {
+        models: vec!["claude-sonnet-5-5".into()],
+        aliases: Aliases::default(),
+    });
+    r.expect_ack();
+    feed(&mut r, init()).unwrap();
+    assert!(feed(&mut r, estimate).is_err());
+}
+
+#[test]
+fn other_system_events_are_refused_by_name() {
+    let mut r = started(&[]);
+    for subtype in ["model_fallback", "notification"] {
+        let error = failure(feed(&mut r, json!({"type": "system", "subtype": subtype})));
+        assert!(
+            error.contains("does not accept")
+                && error.ends_with(&format!("(event: system/{subtype})")),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn rejected_events_are_named_without_echoing_raw_output() {
+    let mut r = started(&[]);
+    let unknown = failure(feed(&mut r, stream(json!({"type": "surprise"}))));
+    assert!(
+        unknown.ends_with("(event: stream_event/surprise)"),
+        "{unknown}"
+    );
+    for subtype in ["x".repeat(65), "a b".to_string()] {
+        let error = failure(feed(&mut r, json!({"type": "system", "subtype": subtype})));
+        assert!(error.ends_with("(event: system/?)"), "{error}");
+    }
+    let none = failure(feed(&mut r, json!({"type": "system"})));
+    assert!(none.ends_with("(event: system/(none))"), "{none}");
+    let text = r.accept(b"not json").unwrap_err().to_string();
+    assert!(text.ends_with("(event: (not JSON))"), "{text}");
+    // A truncation is not a protocol failure and is not relabelled.
+    let mut r = started(&["read_file"]);
+    tool_start(&mut r, 0, "toolu_A", READ).unwrap();
+    feed(&mut r, terminal("tool_use")).unwrap();
+    let cut = feed(&mut r, stream(json!({"type": "message_stop"}))).unwrap_err();
+    assert!(matches!(*cut, ProviderError::Truncated));
+}
+
+#[test]
+fn the_trail_collapses_repeats_and_drops_the_oldest() {
+    let mut r = started(&[]);
+    assert_eq!(r.trail(), "system/init → stream_event/message_start");
+    for _ in 0..3 {
+        feed(&mut r, json!({"type": "rate_limit_event"})).unwrap();
+    }
+    assert!(r.trail().ends_with("rate_limit_event ×3"), "{}", r.trail());
+    let mut r = started(&[]);
+    for _ in 0..80 {
+        feed(&mut r, json!({"type": "system", "subtype": "status"})).unwrap();
+        feed(&mut r, json!({"type": "rate_limit_event"})).unwrap();
+    }
+    let trail = r.trail();
+    assert!(trail.starts_with("… → "), "{trail}");
+    assert_eq!(trail.split(" → ").count(), 65);
 }

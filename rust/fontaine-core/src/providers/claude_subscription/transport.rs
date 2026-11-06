@@ -21,7 +21,7 @@ use serde_json::json;
 use super::cli::{ChildFiles, Cli, CliChild, ReadFail, Scratch, fixed_args, scratch_error};
 use super::inventory::INVENTORY_FLAG;
 use super::protocol::{Event, Expect, Failure, Reader, SessionSeed, exit_failure, translate};
-use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, read_idle_error};
+use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error, read_idle_error};
 
 /// How the inert inventory is started: this executable in its hidden mode, unless a test
 /// supplies another program.
@@ -165,7 +165,10 @@ impl ClaudeTransport {
             if acked {
                 loop {
                     let line = next(&mut child, &reader, idle).await?;
-                    match reader.accept(&line)? {
+                    let event = reader
+                        .accept(&line)
+                        .inspect_err(|e| rejected(&line, &reader, e))?;
+                    match event {
                         Event::Ack => break,
                         Event::Nothing => {}
                         Event::Frame(_) | Event::Complete => {
@@ -289,6 +292,32 @@ struct Running {
     pending: VecDeque<WireFrame>,
 }
 
+/// The most of a rejected line the debug file keeps.
+const LOGGED_LINE_BYTES: usize = 4096;
+
+/// Records a protocol rejection for the owner-only debug file: the failure, the events accepted
+/// before it and the line itself. A module-target event never reaches an export backend.
+fn rejected(line: &[u8], reader: &Reader, error: &ProviderError) {
+    if !claude_error(error).is_some_and(|e| e.kind == ErrorKind::Protocol) {
+        return;
+    }
+    let mut shown = String::from_utf8_lossy(line).into_owned();
+    if shown.len() > LOGGED_LINE_BYTES {
+        let mut end = LOGGED_LINE_BYTES;
+        while !shown.is_char_boundary(end) {
+            end -= 1;
+        }
+        shown.truncate(end);
+        shown.push_str(&format!("…({} bytes)", line.len()));
+    }
+    tracing::debug!(
+        error = %fontaine_tools::error_chain::chain(error),
+        trail = %reader.trail(),
+        line = %shown,
+        "the Claude CLI sent an event this adapter rejected"
+    );
+}
+
 /// The reply as a stream of Messages events. The terminal delta is held back until the response
 /// and the final result are validated and the process is stopped, because rig ends its read at
 /// that delta.
@@ -311,7 +340,11 @@ fn stream(
                     return Some((Err(*error), None));
                 }
             };
-            match running.reader.accept(&line) {
+            let accepted = running.reader.accept(&line);
+            if let Err(error) = &accepted {
+                rejected(&line, &running.reader, error);
+            }
+            match accepted {
                 Ok(Event::Frame(frame)) => return Some((Ok(frame), Some(running))),
                 Ok(Event::Nothing | Event::Ack) => {}
                 Ok(Event::Complete) => {

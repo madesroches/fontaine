@@ -79,7 +79,9 @@ resumed or persisted by the CLI; Fontaine's ledger and session store are the onl
 request's tools reach the model through an inert tool inventory (a hidden mode of the `fontaine`
 executable): it lists the schemas and refuses every call, so the CLI never executes anything.
 Fontaine receives the model's tool call and runs it itself, through the same gate as for any other
-account.
+account. The CLI reports each call it refused (a `permission_denied` event and an error tool
+result); those reports are accepted only for a call the same response made, under the name it was
+announced with, and once each.
 
 The CLI is started with its own memory, instruction files, compaction, hooks, subagents, retries,
 fallbacks, prompt suggestions, tool search and updates switched off, and refuses to start a
@@ -111,10 +113,14 @@ another account or model.
 | Failure | Result |
 |---|---|
 | At startup: credit-billed model | exit code 2 with the corrective text; no turn runs |
-| CLI missing, too old, not signed in, wrong plan, conflicting variable, malformed protocol, or a model that turns credit-billed at request time | exit code 1 with the corrective text; no turn runs and nothing is retried |
+| CLI missing, too old, not signed in, wrong plan, conflicting variable, malformed protocol, or a model that turns credit-billed at request time | exit code 1 with the corrective text; no turn runs and nothing is retried. A protocol failure names the rejected event, such as `(event: system/notification)` |
 | Plan limit, allowance or billing error from the CLI | the same, after the run began |
 | Overloaded or server error, a stream cut short, a CLI that is silent for 180 seconds | retried twice with backoff, like any provider |
 | The CLI's version, login or model-listing probe taking too long | the same as a failed probe: not retried |
+
+With `--debug-file`, a protocol failure also writes the rejected line (cut to 4 KiB) and the events
+accepted before it to the debug file. A failed request is recorded in the session ledger as
+`request_failed`.
 
 A guardian on this account fails closed like any other: a verdict that cannot be read is a denial.
 Pressing Esc or ending a headless run stops the CLI and its descendants and removes the temporary
@@ -123,6 +129,8 @@ directory.
 ## Supported CLI versions
 
 The minimum is **2.1.318**. The gate is a minimum only: newer versions are accepted unqualified (no
-version is live-qualified yet), and a protocol shape the adapter does not know still fails closed. Windows runs the official executable with `taskkill /T /F` as the tree cleanup. Each request
+version is live-qualified yet), and a protocol shape the adapter does not know still fails closed. The order 2.1.319 uses to report a
+denied call, inside the response before its stop, is supported alongside the earlier order after
+the stop. Windows runs the official executable with `taskkill /T /F` as the tree cleanup. Each request
 costs a process start and a replay of the history, so latency and cache behavior differ from a
 native session.
