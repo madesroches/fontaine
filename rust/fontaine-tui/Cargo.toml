@@ -11,6 +11,7 @@ fontaine-agents.workspace = true
 fontaine-core.workspace = true
 fontaine-guardian.workspace = true
 fontaine-tools.workspace = true
+chrono.workspace = true
 crossterm.workspace = true
 futures.workspace = true
 pulldown-cmark.workspace = true

@@ -1844,6 +1844,7 @@ dependencies = [
 name = "fontaine-tui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "crossterm",
  "fontaine-agents",
  "fontaine-core",
