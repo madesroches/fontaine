@@ -78,6 +78,7 @@ The CLI's OAuth credentials and Anthropic's undocumented usage endpoints are nev
 ### Parser and shared slot: `claude_subscription/usage.rs` (new)
 
 ```text
+#[derive(Debug)]
 pub struct Usage { latest: Mutex<Option<Quota>> }          // interior-mutable slot
 impl Usage {
     pub fn new() -> Self;
@@ -173,7 +174,7 @@ bare frame and every existing script behaviour are unchanged.
 - `rust/fontaine-core/src/quota.rs`
 - `rust/fontaine-core/src/providers/claude_subscription/{usage.rs (new), protocol.rs, protocol/tests.rs, mod.rs, transport.rs}`
 - `rust/fontaine-core/examples/claude_cli_double.rs`
-- `docs/{configuration.md, tui.md, claude-subscription.md}`, `CHANGELOG.md`
+- `docs/{configuration.md, tui.md, claude-subscription.md, headless.md}`, `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -216,6 +217,10 @@ bare frame and every existing script behaviour are unchanged.
   (API-key session, pre-first-turn) means no segment.
 - `docs/claude-subscription.md`: the usage figures come from the CLI's own stream events and
   never leave the machine.
+- `docs/headless.md`: the `account_usage` row says any account with a quota source gets an
+  entry (including `claude-subscription`, which needs no `quota` key), with label example
+  `claude`; a windowless entry means no data yet or a failed fetch (the latter also warns on
+  stderr, once per account).
 - `CHANGELOG.md`: Added entry.
 
 ## Testing Strategy
