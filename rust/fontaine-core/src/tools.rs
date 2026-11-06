@@ -8,7 +8,7 @@ use fontaine_tools::checkpoint::PreImages;
 use fontaine_tools::gate::ToolGate;
 use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::{Guard, GuardedTool};
-use fontaine_tools::jobs::{AgentWaits, Jobs, WaitWake};
+use fontaine_tools::jobs::{AgentKills, AgentWaits, Jobs, WaitWake};
 use fontaine_tools::kills::KillSwitches;
 use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::result_pipeline::ResultPipeline;
@@ -109,6 +109,8 @@ pub struct RegistryParams {
     pub scratch: Option<std::path::PathBuf>,
     /// How `job_output` waits on a subagent; `None` refuses agent ids.
     pub agent_waits: Option<Arc<dyn AgentWaits>>,
+    /// How `job_cancel` stops a subagent; `None` refuses agent ids.
+    pub agent_kills: Option<Arc<dyn AgentKills>>,
     /// What ends a `job_output` wait early.
     pub wait_wake: Option<Arc<dyn WaitWake>>,
     pub extension: Option<ExtensionTools>,
@@ -158,6 +160,7 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         network: params.network,
         jobs: params.jobs,
         agent_waits: params.agent_waits,
+        agent_kills: params.agent_kills,
         wait_wake: params.wait_wake,
         shell_cwd: params.shell_cwd,
         scratch: params.scratch,

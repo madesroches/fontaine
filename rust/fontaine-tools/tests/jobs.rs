@@ -10,7 +10,8 @@ use common::{AllowAll, Dirs, call, env_with, registry, scope, text, tool};
 use fontaine_tools::builtins::Registered;
 use fontaine_tools::gate::AgentId;
 use fontaine_tools::jobs::{
-    AgentDelivery, AgentState, AgentWaitError, AgentWaits, JobNote, JobSink, Jobs, WaitWake,
+    AgentDelivery, AgentKilled, AgentKills, AgentState, AgentWaitError, AgentWaits, JobNote,
+    JobSink, Jobs, WaitWake,
 };
 use futures::future::BoxFuture;
 use rig_core::tool::ToolContext;
@@ -834,4 +835,101 @@ async fn the_monitor_start_message_names_its_timeout_or_says_it_has_none() {
     let description = tool(&tools, "monitor").tool.definition().description;
     assert!(!description.contains("default 300"), "{description}");
     jobs.terminate_all().await;
+}
+
+type KillsAsked = Arc<Mutex<Vec<(String, String)>>>;
+
+struct FakeKills {
+    asked: KillsAsked,
+    answer: Result<bool, AgentWaitError>,
+}
+
+impl AgentKills for FakeKills {
+    fn kill(&self, caller: &str, id: &str) -> Result<AgentKilled, AgentWaitError> {
+        self.asked
+            .lock()
+            .unwrap()
+            .push((caller.to_string(), id.to_string()));
+        self.answer.map(|stopped| AgentKilled {
+            id: "agent-23".into(),
+            name: "fixer".into(),
+            stopped,
+        })
+    }
+}
+
+fn killing_session(answer: Result<bool, AgentWaitError>) -> (Dirs, Vec<Registered>, KillsAsked) {
+    let d = Dirs::new();
+    let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
+    let asked = Arc::default();
+    env.agent_kills = Some(Arc::new(FakeKills {
+        asked: Arc::clone(&asked),
+        answer,
+    }));
+    let tools = registry(&env);
+    (d, tools, asked)
+}
+
+#[tokio::test]
+async fn job_cancel_stops_a_subagent_by_id_or_name_from_a_subagent() {
+    let (_d, tools, asked) = killing_session(Ok(true));
+    for id in ["agent-23", "fixer"] {
+        let out = run_as_child(&tools, "job_cancel", json!({"id": id}))
+            .await
+            .unwrap();
+        assert!(out.starts_with("agent-23 (fixer) stopped."), "{out}");
+        assert!(out.contains("cannot be resumed"), "{out}");
+    }
+    assert_eq!(
+        asked.lock().unwrap().clone(),
+        vec![
+            ("child-1".to_string(), "agent-23".to_string()),
+            ("child-1".to_string(), "fixer".to_string())
+        ]
+    );
+    let refused = run_as_child(&tools, "job_cancel", json!({"id": "job-0000"}))
+        .await
+        .unwrap_err();
+    assert!(
+        refused.contains("only available to the main agent"),
+        "{refused}"
+    );
+    let described = tool(&tools, "job_cancel").tool.definition().description;
+    assert!(described.contains("subagent"), "{described}");
+}
+
+#[tokio::test]
+async fn job_cancel_on_an_ended_agent_says_so_and_ownership_errors_match_job_output() {
+    let (_d, tools, _) = killing_session(Ok(false));
+    let out = run_as_child(&tools, "job_cancel", json!({"id": "agent-23"}))
+        .await
+        .unwrap();
+    assert!(out.contains("had already ended"), "{out}");
+    let (_d, tools, _) = killing_session(Err(AgentWaitError::NotYours));
+    let refused = run_as_child(&tools, "job_cancel", json!({"id": "agent-9"}))
+        .await
+        .unwrap_err();
+    assert!(
+        refused.contains("is not a subagent you started"),
+        "{refused}"
+    );
+    let (_d, tools, _) = killing_session(Err(AgentWaitError::Unknown));
+    let refused = run_as_child(&tools, "job_cancel", json!({"id": "agent-9"}))
+        .await
+        .unwrap_err();
+    assert!(refused.contains("no subagent `agent-9`"), "{refused}");
+}
+
+#[tokio::test]
+async fn job_cancel_on_an_agent_ref_without_subagents_is_refused() {
+    let (_d, tools, _, _) = session();
+    let refused = call(&tools, "job_cancel", json!({"id": "agent-1"}))
+        .await
+        .unwrap_err();
+    assert!(
+        refused
+            .model_output()
+            .render()
+            .contains("there are no subagents in this session")
+    );
 }

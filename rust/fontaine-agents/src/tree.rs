@@ -1789,6 +1789,20 @@ impl AgentTree {
         })
     }
 
+    /// The id of `id` (an id or name) when `caller` started it.
+    pub fn owned_child(&self, caller: &str, id: &str) -> Result<String, AgentWaitError> {
+        let inner = self.lock();
+        let id = inner.resolve_target(id);
+        let node = inner
+            .nodes
+            .get(id.as_str())
+            .ok_or(AgentWaitError::Unknown)?;
+        if node.info.parent.as_deref() != Some(caller) {
+            return Err(AgentWaitError::NotYours);
+        }
+        Ok(id)
+    }
+
     /// Where `id` stands for `caller`, who must have started it.
     fn agent_state(&self, caller: &str, id: &str) -> Result<AgentState, AgentWaitError> {
         let inner = self.lock();

@@ -179,6 +179,7 @@ fn params(rig: &Rig) -> RegistryParams {
         shell_cwd: Default::default(),
         scratch: None,
         agent_waits: None,
+        agent_kills: None,
         wait_wake: None,
         network: Default::default(),
         extension: Some(extension()),

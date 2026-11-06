@@ -69,7 +69,7 @@ result, and never a second time.
   the waiter or, in the main conversation, when you type one or queue a command, skill or `!` line. A message is delivered
   with that result; a queued command, skill or `!` line is only named in it, and runs when the turn ends.
 - **Interrupted.** Interrupting a wait or a turn (Esc) leaves every subagent running; their
-  reports arrive later as usual. Stop one from the agents panel. `/clear`, `/rewind` and
+  reports arrive later as usual. Stop one from the agents panel, or with `job_cancel` (the model can too). `/clear`, `/rewind` and
   `/branch` are refused while any subagent runs or its report waits to be delivered; run them
   again once it ends or you stop it.
 
@@ -107,8 +107,8 @@ effort = "low"
 
 `tools` names built-in or `mcp__` tools; leave it out to give the type every tool its parent has.
 The toolset a subagent really gets is that list **cut down to what its parent has**: a type can
-never reach a tool its parent lacks. A type whose `tools` names `agent` also gets `job_output` (when its parent has it), which it
-needs to wait for the subagents it starts; `disallowed` can still remove it. `agent` is
+never reach a tool its parent lacks. A type whose `tools` names `agent` also gets `job_output` and `job_cancel` (when its parent has them), which it
+needs to wait for and stop the subagents it starts; `disallowed` can still remove it. `agent` is
 withheld from a subagent at the nesting limit.
 A subagent with `todo_write` keeps its own list, which is not shown in the UI and not saved with the session.
 
@@ -407,6 +407,8 @@ included until a `/clear` prunes them, its status (an agent waiting to be woken 
 prompts appear like any other, labelled with its id, whichever transcript is on screen, so none
 hides behind another. While a subagent's model is mid-step, its row shows how many characters it
 has written so far (`· writing 4.2k chars`), since its usage only updates when the call ends.
+
+The model can stop a subagent it started with `job_cancel` (by id or name), and a subagent can stop its own children; the effect is the same as the panel's kill and, like it, final.
 
 Killing a subagent stops it at the next boundary: the in-flight model stream ends before the next
 request, an in-flight tool call or permission wait is cut short at the same gate every call

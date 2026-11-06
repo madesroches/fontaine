@@ -366,8 +366,8 @@ mod tests {
             if matches!(d.destructive, Destructive::FileWrite) || d.specifier == Specifier::Path {
                 assert!(!d.path_free, "{} names a path", d.name);
             }
-            // `job_cancel` stops only a process this session started, by id, and names no path:
-            // the one tool that is never destructive yet not read-only.
+            // `job_cancel` stops only a process or subagent this session started, by id, and
+            // names no path: the one tool that is never destructive yet not read-only.
             if d.destructive == Destructive::Never && d.name != "job_cancel" {
                 assert_eq!(d.risk, RiskClass::ReadOnly, "{}", d.name);
             }

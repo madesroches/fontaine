@@ -119,9 +119,10 @@ impl AgentType {
     pub fn toolset(&self, parent: &[String]) -> Vec<String> {
         let wanted: Option<Vec<&str>> = self.tools.as_ref().map(|tools| {
             let mut wanted: Vec<&str> = tools.iter().map(|t| entry_tool(t)).collect();
-            // A child that can start subagents needs the tool that waits for them.
+            // A child that can start subagents needs the tools that wait for and stop them.
             if wanted.contains(&"agent") {
                 wanted.push("job_output");
+                wanted.push("job_cancel");
             }
             wanted
         });
@@ -336,6 +337,23 @@ mod tests {
             ty.toolset(&names(&["read", "agent", "job_output", "shell"])),
             names(&["read", "agent", "job_output"])
         );
+        assert_eq!(
+            ty.toolset(&names(&[
+                "read",
+                "agent",
+                "job_output",
+                "job_cancel",
+                "shell"
+            ])),
+            names(&["read", "agent", "job_output", "job_cancel"])
+        );
+        ty.disallowed = names(&["job_cancel"]);
+        assert_eq!(
+            ty.toolset(&names(&["read", "agent", "job_output", "job_cancel"])),
+            names(&["read", "agent", "job_output"]),
+            "a disallowed job_cancel is not granted"
+        );
+        ty.disallowed = Vec::new();
         assert_eq!(
             ty.toolset(&names(&["read", "agent", "shell"])),
             names(&["read", "agent"]),

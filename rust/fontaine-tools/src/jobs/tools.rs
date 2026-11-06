@@ -13,8 +13,9 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    AgentDelivery, AgentState, AgentWaitError, AgentWaits, End, EndInfo, JobError, JobInfo,
-    JobOutput, Jobs, MAX_RUNNING, MonitorSpec, Read, Start, WaitWake, cut, format_age,
+    AgentDelivery, AgentKilled, AgentKills, AgentState, AgentWaitError, AgentWaits, End, EndInfo,
+    JobError, JobInfo, JobOutput, Jobs, MAX_RUNNING, MonitorSpec, Read, Start, WaitWake, cut,
+    format_age,
 };
 use crate::builtins::ShellTool;
 use crate::error_chain::chain;
@@ -355,11 +356,55 @@ pub struct JobCancelArgs {
     pub id: String,
 }
 
-/// Stops a background job or monitor.
-#[derive(Clone, Debug)]
+/// Stops a background job or monitor, or a subagent the caller started.
+#[derive(Clone)]
 pub struct JobCancelTool {
     pub jobs: Arc<Jobs>,
     pub limit: OutputLimit,
+    pub agents: Option<Arc<dyn AgentKills>>,
+}
+
+impl std::fmt::Debug for JobCancelTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobCancelTool")
+            .field("limit", &self.limit)
+            .finish_non_exhaustive()
+    }
+}
+
+impl JobCancelTool {
+    fn stop_agent(&self, caller: &str, id: &str) -> Result<String, ToolExecutionError> {
+        let Some(agents) = &self.agents else {
+            return Err(ToolExecutionError::invalid_args(
+                "there are no subagents in this session",
+            ));
+        };
+        match agents.kill(caller, id) {
+            Ok(killed) => Ok(render_agent_kill(&killed)),
+            Err(AgentWaitError::Unknown) => Err(ToolExecutionError::invalid_args(format!(
+                "no subagent `{id}`"
+            ))),
+            Err(AgentWaitError::NotYours) => Err(ToolExecutionError::invalid_args(format!(
+                "`{id}` is not a subagent you started"
+            ))),
+        }
+    }
+}
+
+fn render_agent_kill(killed: &AgentKilled) -> String {
+    let who = if killed.name == killed.id {
+        killed.id.clone()
+    } else {
+        format!("{} ({})", killed.id, killed.name)
+    };
+    if killed.stopped {
+        format!(
+            "{who} stopped. It cannot be resumed; start a new agent for the work, or \
+             `send_message` an agent to redirect it instead."
+        )
+    } else {
+        format!("{who} had already ended; left as it is.")
+    }
 }
 
 impl Tool for JobCancelTool {
@@ -373,7 +418,9 @@ impl Tool for JobCancelTool {
         format!(
             "Stop a background job or monitor you started, with its whole process group \
              (SIGTERM, then SIGKILL after {grace}s), and return what it printed since you last \
-             read it. A job that already ended is left as it is."
+             read it. A job that already ended is left as it is. Also stops a subagent you \
+             started (`agent-N` or its name), with the agents it started; stopping a subagent \
+             is final: it cannot be resumed and delivers no report."
         )
     }
 
@@ -381,7 +428,7 @@ impl Tool for JobCancelTool {
         json!({
             "type": "object",
             "properties": {
-                "id": { "type": "string", "description": "The job to stop, such as `job-3f2a`." },
+                "id": { "type": "string", "description": "The job to stop, such as `job-3f2a`, or the subagent, such as `agent-3` or its name." },
             },
             "required": ["id"],
             "additionalProperties": false,
@@ -397,6 +444,9 @@ impl Tool for JobCancelTool {
         context: &mut ToolContext,
         args: JobCancelArgs,
     ) -> Result<String, ToolExecutionError> {
+        if is_subagent_ref(&args.id) {
+            return self.stop_agent(&caller(context), &args.id);
+        }
         root_only(context, "job_cancel")?;
         let read = self
             .jobs

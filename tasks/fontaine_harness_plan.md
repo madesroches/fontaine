@@ -427,6 +427,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-05: `teammate_idle` fires only for an agent going idle with an in-progress task on its parent's board, as a gate on unfinished work (#435).
 - 2026-11-05 (user): A `--resume`d session rebuilds only the agents whose last end was `done` as idle, from the ledger and its per-agent log; failed agents are not rebuilt. Its handle is built lazily on the first wake, its tools and mode are re-derived (never looser than its parent's), and its per-agent spend starts over. Claude Code parity: an agent resumes from its transcript (#435).
 - 2026-11-05 (amends the 2026-11-02 wake line): the idle hand-off note is no longer a wake, and the cap of 3 covers only the `teammate_idle` resume. The owner reminder is deduplicated, not capped. A wake is still never recorded as a user message (#435).
+- 2026-11-06: Deviation from the 2026-10-30 "the agents panel stays the way to kill one" line: `job_cancel` also stops a subagent the caller started (any caller, own children only), matching Claude Code's `TaskStop`; a kill stays final and the human's panel kill is unchanged (#463).
 
 ### Build and release
 

@@ -189,7 +189,7 @@ projected onto `tool_decision` as `guardian.dropped_input_tokens`, `guardian.dro
 `shell` is judged when it is called; a command that later moves to the background, or that was
 started with `run_in_background`, is not asked about again. `job_output` is read-only and names no
 path, so it takes the fast path. `job_cancel` is an `arbitrary` tool that can only signal a process
-this session started, by id. `monitor` is an `arbitrary` tool with `shell`'s command analysis: the
+or stop a subagent this session started, by id. `monitor` is an `arbitrary` tool with `shell`'s command analysis: the
 critical-path floor, the destructive class and `shell` deny and ask rules (and hook matchers) cover
 it, so a `shell(git push)` deny also stops a `monitor` that runs `git push`. An allow rule does not
 cross over: `shell(...)` allows are for `shell` only, and the read-only pre-classifier never
