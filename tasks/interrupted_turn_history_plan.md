@@ -111,8 +111,18 @@ Steps:
 4. Only after the append succeeds, empty the journal: `replace_log_async` to zero bytes,
    the same cut `InflightHook::cut_back(0)` makes. Factor `cut_back`'s body into a free
    function `cut_journal(store, log, keep)` that both use. If the append fails, the journal
-   stays and the fold before the next root run (see §3) folds it, so nothing is lost and
-   nothing doubles.
+   stays and the fold before the next root run (see §3) folds it, so nothing is lost.
+   The append and the cut are not atomic: if the append lands and the cut fails, the journal
+   is still full at the next fold. So before step 3, when the journal is non-empty, record
+   `log`'s message count and the journal's byte length in a sidecar `<log>.inflight.fold`
+   (replaced, one entry); if that write fails, return the error without appending. Clear the
+   sidecar after the cut. A fold that finds a sidecar whose journal length matches the
+   journal and whose count plus the journal's message count plus one equals `log`'s count
+   knows the append landed: it only cuts the journal and clears the sidecar. In every other
+   case (no sidecar, a stale one, a count that does not fit) it folds as usual, so a
+   mismatch can at worst double a turn, never drop one. Comparing contents instead could
+   match an earlier identical folded turn and drop the new one; a doubled turn would repeat
+   tool-call ids and make the next request invalid.
 
 **Pairing.** A consecutive user message (the marker
 after a tool-result message, then the next prompt) is already a shape the conversation carries
@@ -228,6 +238,8 @@ issue accepts this for a first cut.
 - 2026-11-06: The surface passes its sent prompt as the fold's fallback instead of journaling in `on_run_start`, because a completion-call hook can patch the prompt and risk a duplicated or stale one.
 - 2026-11-06: No synthetic tool results, because the journal never strands a tool call; keeping an in-flight batch's results is a follow-up.
 - 2026-11-06: Accepted: when `RecoveryHook`'s append fails for a failed attempt and a retry in the same `run_turn` succeeds, the carried journal outlives the run and may be folded out of order later; this needs two store failures.
+- AFK: Guard the fold with `main`'s message count and the journal's byte length recorded in a `<log>.inflight.fold` sidecar before the append, and only cut when they show the append landed, folding normally on any mismatch — a doubled turn repeats tool-call ids and breaks the next request, and a content check could match an earlier identical turn and lose the new one.
+- AFK: Accept the `SessionEnded` marker for the rare in-process pre-run fold after a failed fold, no new marker variant — it only arises after a store failure and the wording still tells the model the turn did not finish.
 
 ## Documentation
 
@@ -259,6 +271,9 @@ integration test.
   - Each `Unsettled` cause produces its marker text.
   - An append failure (a MemoryStore wrapper that fails appends and replaces to the `main`
     log only) returns the error and leaves the journal unchanged.
+  - A fold whose append landed but whose cut failed (sidecar count + journal + marker) is
+    cut without a second append at the next fold; a sidecar whose count equals `main`'s, or
+    whose journal length does not match, folds normally.
 - **Core integration, `fontaine-core/tests/turn_recovery.rs`** (scripted models): run a root
   turn with a tool call whose second request is held, drop the `run_turn` future, call
   `keep_unsettled_turn(User, ..)`, and assert the stored conversation holds the prompt, the
