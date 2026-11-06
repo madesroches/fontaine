@@ -37,7 +37,7 @@ impl InventoryCommand {
     /// and `fontaine-evals` do.
     pub fn current_exe() -> std::io::Result<Self> {
         Ok(InventoryCommand {
-            program: std::env::current_exe()?,
+            program: running_image()?,
             leading: vec![OsString::from(INVENTORY_FLAG)],
         })
     }
@@ -45,6 +45,25 @@ impl InventoryCommand {
     pub fn new(program: PathBuf, leading: Vec<OsString>) -> Self {
         InventoryCommand { program, leading }
     }
+}
+
+/// The executable image this process runs. On Linux, once a rebuild replaces the binary,
+/// `current_exe` reads `<path> (deleted)`, a path the CLI cannot spawn, so every inventory started
+/// from it fails. `/proc/<pid>/exe` keeps naming the running image, deleted or not, for as long as
+/// this process lives, which outlasts every CLI it launches. It is this process's pid rather than
+/// `self`, because the CLI resolves the path in its own process.
+#[cfg(target_os = "linux")]
+fn running_image() -> std::io::Result<PathBuf> {
+    let image = PathBuf::from(format!("/proc/{}/exe", std::process::id()));
+    if image.exists() {
+        return Ok(image);
+    }
+    std::env::current_exe()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn running_image() -> std::io::Result<PathBuf> {
+    std::env::current_exe()
 }
 
 /// Which model one transport serves and whose requests it carries.
@@ -376,4 +395,30 @@ fn stream(
             }
         }
     })
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_inventory_runs_the_image_of_this_process_not_its_path() {
+        let command = InventoryCommand::current_exe().expect("this executable");
+        assert_eq!(
+            command.program,
+            PathBuf::from(format!("/proc/{}/exe", std::process::id()))
+        );
+        assert_eq!(
+            std::fs::canonicalize(&command.program).expect("the image resolves"),
+            std::fs::canonicalize(std::env::current_exe().expect("own path")).expect("own path")
+        );
+        assert_eq!(command.leading, vec![OsString::from(INVENTORY_FLAG)]);
+
+        let status = std::process::Command::new(&command.program)
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("the image starts from its /proc path");
+        assert!(status.success());
+    }
 }

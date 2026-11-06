@@ -8,6 +8,13 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `claude-subscription` subagents no longer fail with "did not start exactly the inert tool
+  inventory" after the running `fontaine` binary is rebuilt in place (for example by
+  `cargo build` while running from `target/`): on Linux the inventory is now started from the
+  running image, `/proc/<pid>/exe`, rather than a path that then reads `(deleted)`. The rejection
+  now names the MCP servers and statuses the CLI reported, and a call to or an offer of a tool
+  the request did not define names that tool and the tools the request did define, so the
+  `request_failed` ledger record identifies it without a debug file (#458).
 - `claude-subscription` no longer fails every tool-using turn on Claude CLI 2.1.319: its
   `permission_denied` event and the denial echo, now sent before the response stops, are accepted
   when they match a tool call the response made, and so is the `thinking_tokens` estimate. A

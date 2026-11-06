@@ -122,9 +122,12 @@ another account or model.
 | Overloaded or server error, a stream cut short, a CLI that is silent for 180 seconds | retried twice with backoff, like any provider |
 | The CLI's version, login or model-listing probe taking too long | the same as a failed probe: not retried |
 
-With `--debug-file`, a protocol failure also writes the rejected line (cut to 4 KiB) and the events
-accepted before it to the debug file. A failed request is recorded in the session ledger as
-`request_failed`.
+A protocol failure names what the CLI did wrong: the MCP servers and statuses it reported when the
+inert tool inventory did not start (a `failed` inventory is one the CLI could not start or talk to),
+or the tool it called or offered that the request did not define, alongside the tools the request
+did define. With `--debug-file`, a protocol failure also writes the rejected line (cut to 4 KiB)
+and the events accepted before it to the debug file. A failed request is recorded in the session
+ledger as `request_failed`, with the same text.
 
 A guardian on this account fails closed like any other: a verdict that cannot be read is a denial.
 Pressing Esc or ending a headless run stops the CLI and its descendants and removes the temporary

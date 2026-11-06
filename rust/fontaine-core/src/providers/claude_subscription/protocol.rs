@@ -52,6 +52,27 @@ fn is_bundled(plugin: &Value) -> bool {
             .is_some_and(|source| source.ends_with("@builtin"))
 }
 
+/// At most `shown` names, each cut to `ENTRY_CHARS`, then a count of the rest. Names that come
+/// from the CLI are untrusted, so a rejection quoting them stays short.
+fn capped_list(names: impl ExactSizeIterator<Item = String>, shown: usize) -> String {
+    let total = names.len();
+    let mut listed: Vec<String> = names
+        .take(shown)
+        .map(|name| name.chars().take(ENTRY_CHARS).collect())
+        .collect();
+    if total > shown {
+        listed.push(format!("and {} more", total - shown));
+    }
+    listed.join(", ")
+}
+
+fn quoted(name: &str) -> String {
+    format!("`{}`", name.chars().take(ENTRY_CHARS).collect::<String>())
+}
+
+/// How many of a request's own tools a rejected call is shown against.
+const SHOWN_DEFINED: usize = 40;
+
 /// Names the offending entries so the user can find what the CLI read; the entries come from the
 /// CLI, so their number and length are capped.
 fn customization_error(kind: &str, entries: &[&Value]) -> Failure {
@@ -62,17 +83,9 @@ fn customization_error(kind: &str, entries: &[&Value]) -> Failure {
             .or_else(|| entry.get("name").and_then(Value::as_str))
             .or_else(|| entry.as_str())
             .unwrap_or("?");
-        text.chars().take(ENTRY_CHARS).collect()
+        text.to_string()
     };
-    let mut names: Vec<String> = entries
-        .iter()
-        .take(SHOWN_ENTRIES)
-        .map(|entry| render(entry))
-        .collect();
-    if entries.len() > SHOWN_ENTRIES {
-        names.push(format!("and {} more", entries.len() - SHOWN_ENTRIES));
-    }
-    let names = names.join(", ");
+    let names = capped_list(entries.iter().map(|entry| render(entry)), SHOWN_ENTRIES);
     let accepted = if kind == "plugins" {
         "only the CLI's builtin plugins are accepted"
     } else {
@@ -82,6 +95,42 @@ fn customization_error(kind: &str, entries: &[&Value]) -> Failure {
         "the Claude CLI loaded {kind} Fontaine did not ask for: {names}; {accepted}. The CLI \
          loaded them even with every setting source switched off; look at the CLI's \
          managed/policy settings or the environment Fontaine passes through to it"
+    ))
+}
+
+/// Names each MCP server the CLI reported with its status. A `failed` inventory is one the CLI
+/// could not start or talk to, so the text names the executable by its role.
+fn inventory_error(servers: &[Value]) -> Failure {
+    let field = |server: &Value, key: &str| -> String {
+        server
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or("?")
+            .to_string()
+    };
+    let reported = if servers.is_empty() {
+        "none".to_string()
+    } else {
+        capped_list(
+            servers
+                .iter()
+                .map(|server| format!("{} ({})", field(server, "name"), field(server, "status"))),
+            SHOWN_ENTRIES,
+        )
+    };
+    let failed = servers.iter().any(|server| {
+        server.get("name").and_then(Value::as_str) == Some("fontaine")
+            && server.get("status").and_then(Value::as_str) == Some("failed")
+    });
+    let hint = if failed {
+        "; the CLI could not start or talk to the inventory, which is this \
+         executable run with `--internal-claude-inventory`"
+    } else {
+        ""
+    };
+    protocol(&format!(
+        "the Claude CLI did not start exactly the inert tool inventory; it reported MCP \
+         servers: {reported}{hint}"
     ))
 }
 
@@ -118,6 +167,11 @@ impl Aliases {
     /// The name the MCP inventory lists `name` under.
     pub fn short(&self, name: &str) -> Option<&str> {
         self.short.get(name).map(String::as_str)
+    }
+
+    /// The Fontaine names of the request's tools.
+    pub fn names(&self) -> impl ExactSizeIterator<Item = &str> {
+        self.short.keys().map(String::as_str)
     }
 
     /// The Fontaine name behind a CLI name.
@@ -836,9 +890,10 @@ impl Reader {
                 let name = tool.as_str().unwrap_or_default();
                 let ours = self.expect.aliases.restore(name).is_some();
                 if !(ours || name == TOLERATED_BUILTIN) {
-                    return Err(protocol(
-                        "the Claude CLI offers a tool Fontaine did not define",
-                    ));
+                    return Err(protocol(&format!(
+                        "the Claude CLI offers a tool Fontaine did not define: {}",
+                        quoted(name)
+                    )));
                 }
             }
         }
@@ -853,9 +908,7 @@ impl Reader {
                 Some("connected" | "pending")
             );
         if !one_inert {
-            return Err(protocol(
-                "the Claude CLI did not start exactly the inert tool inventory",
-            ));
+            return Err(inventory_error(servers));
         }
         for key in ["plugins", "skills"] {
             let unwanted: Vec<&Value> = init
@@ -870,6 +923,24 @@ impl Reader {
             }
         }
         Ok(())
+    }
+
+    /// Names the call and the tools the request defined, so the ledger tells a hallucinated name
+    /// from a Fontaine tool outside this agent's set or a CLI built-in.
+    fn undefined_call(&self, cli_name: &str) -> Failure {
+        let defined = self.expect.aliases.names();
+        let defined = if defined.len() == 0 {
+            "this request defines no tools".to_string()
+        } else {
+            format!(
+                "this request defines {}",
+                capped_list(defined.map(str::to_string), SHOWN_DEFINED)
+            )
+        };
+        protocol(&format!(
+            "the Claude CLI called a tool Fontaine did not define: {}; {defined}",
+            quoted(cli_name)
+        ))
     }
 
     fn stream_event(&mut self, value: &Value) -> Result<Event, Failure> {
@@ -935,9 +1006,7 @@ impl Reader {
                             .to_string();
                         let restored = self.expect.aliases.restore(&cli_name).map(str::to_string);
                         if restored.is_none() && cli_name != TOLERATED_BUILTIN {
-                            return Err(protocol(
-                                "the Claude CLI called a tool Fontaine did not define",
-                            ));
+                            return Err(self.undefined_call(&cli_name));
                         }
                         let id = block
                             .get("id")
