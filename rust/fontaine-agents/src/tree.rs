@@ -1296,7 +1296,13 @@ impl AgentTree {
             let mut handles = Vec::new();
             let (killed, inbox) = if idle {
                 // Nothing runs: no watcher will conclude it, and no report is queued for a kill.
-                // `spawn::kill_agent` records the end and returns its tasks.
+                // `spawn::kill_agent` records the end and returns its tasks. A rebuilt node has
+                // no report, which `settled` would wait on for a run that does not exist.
+                node.report.get_or_insert_with(|| ChildReport {
+                    status: ChildStatus::Killed,
+                    text: String::new(),
+                    reason: Some("killed while idle".to_string()),
+                });
                 (Killed::Idle, node.inbox.drain(..).collect())
             } else {
                 handles.extend(node.handle.clone());
@@ -3192,6 +3198,18 @@ mod tests {
         assert!(tree.tools_of("agent-1").contains(&"read".to_string()));
         assert!(tree.deliver(ROOT_AGENT, "agent-1", "hi".into()).is_err());
         assert!(tree.resume("agent-1").is_ok(), "a rebuilt node resumes");
+    }
+
+    #[tokio::test]
+    async fn killing_a_rebuilt_idle_node_does_not_stall_settled() {
+        let tree = tree(8);
+        tree.set_root_tools(|| ["read", "agent"].map(String::from).to_vec());
+        let types = AgentTypes::builtin();
+        tree.rebuild(&[(record("agent-1", ROOT_AGENT, "worker"), true)], &types);
+        assert_eq!(tree.kill_outcome("agent-1").unwrap().killed, Killed::Idle);
+        let start = tokio::time::Instant::now();
+        tree.settled(Duration::from_secs(5)).await;
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[test]
