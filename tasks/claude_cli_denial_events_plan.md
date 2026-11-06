@@ -22,9 +22,7 @@ ledger.
   dispatches on the top-level `type`; an unknown type fails with a fixed message that does not
   name it (`:658`).
 - `Reader::system` (`protocol.rs:664`) accepts `init` and `status`, refuses `api_retry`, and
-  refuses everything else with a message that does not name the subtype (`:673`). The working
-  tree that started this issue had a local change appending the subtype; it was set aside, not
-  committed (see Decisions).
+  refuses everything else with a message that does not name the subtype (`:673`).
 - `Reader::denial_echo` (`protocol.rs:877`) accepts a `user` event only when
   `self.stopped && stop_reason == "tool_use"` and every block is an `is_error` `tool_result`. It
   does not check which call the result answers.
@@ -76,9 +74,7 @@ A thinking turn: `content_block_start {thinking}` is followed by one or more
 A history replay is acknowledged as today (zero-turn `result`, then a second `system init`).
 
 So the denial events arrive before `message_stop`, while `stopped` is still false. Fixing only
-`permission_denied` would move the failure to the echo, which the issue did not anticipate. The
-issue's proposed acceptance condition (`stopped`, `stop_reason == tool_use`) cannot hold for
-either event.
+`permission_denied` would move the failure to the echo, which the issue did not anticipate.
 
 ### How Hermes handles the same thing
 
@@ -88,9 +84,7 @@ Hermes' `claude-subscription-directsdk` plugin (NousResearch/hermes-official-plu
 dispatches only on `assistant`, `result` and `stream_event` and **silently drops every other
 line**: all `system` subtypes, the `user` echo, rate-limit events. Its checks come afterwards:
 exactly one `result`, at least one assistant message, a `message_stop`, and `error_max_turns` only
-alongside tool calls. Hermes is therefore immune to this bug, but it also cannot see a
-`model_fallback`, a `compact_boundary`, a hook or a background task, or tell an echo of a denied
-call from a tool that really ran. Fontaine keeps its allowlist (see Trade-offs).
+alongside tool calls. Fontaine keeps its allowlist (see Trade-offs).
 
 ## Design
 
@@ -161,14 +155,11 @@ each:
 | `permission_denied` | accept, matched (section 2) | the denial the adapter relies on |
 | `thinking_tokens` | accept | estimate only; observed on 2.1.319 thinking turns |
 | `api_retry` | refuse (unchanged) | retries are Fontaine's |
-| `model_fallback` | refuse, with its own message | model pinning |
-| `compact_boundary` | refuse, with its own message | compaction is off; history is Fontaine's |
-| `hook_*` | refuse, with one message for the family | hooks are disabled |
-| `task_*` | refuse, with one message for the family | background tasks are disabled |
+| `model_fallback` | refuse (catch-all, named by the event label) | model pinning |
+| `compact_boundary` | refuse (catch-all, named by the event label) | compaction is off; history is Fontaine's |
+| `hook_*` | refuse (catch-all, named by the event label) | hooks are disabled |
+| `task_*` | refuse (catch-all, named by the event label) | background tasks are disabled |
 | `informational`, `notification`, `turn_duration`, anything else | refuse, naming the subtype | not observed in the adapter's configuration; their payloads are unqualified |
-
-The named refusals reuse the existing "the Claude CLI ... on its own" wording style, e.g.
-`the Claude CLI fell back to another model on its own`.
 
 ### 7. Name the rejected event in every `Protocol` failure
 
@@ -223,11 +214,14 @@ its retries (`turn.rs:427`), for any provider and any agent:
 /// `api_error` telemetry event carries; `message` is the failure as shown to the user.
 RequestFailed {
     agent: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    class: Option<String>,
+    class: String,
     message: String,
 },
 ```
+
+It is appended only when `error_class(&error)` is `Some`: a cancelled turn (the kill hook ends every
+killed subagent that way), a memory failure or an unknown tool call is not a request failure and
+writes nothing.
 
 - `message` is `failure_text` cut to 2,000 characters. The ledger is local and already holds the
   user's messages verbatim, so a provider message that echoes the request adds no exposure. It is
@@ -245,8 +239,7 @@ API error as a system entry, so this is not a deviation.
 1. **Reader call tracking and denial events**: in `protocol.rs`:
    - Add `Call`, `calls`, and the id recording in `content_block_start` (restored and suppressed
      tool blocks).
-   - Add the `permission_denied` and `thinking_tokens` arms and the named refusals for
-     `model_fallback`, `compact_boundary`, `hook_*` and `task_*` in `Reader::system`.
+   - Add the `permission_denied` and `thinking_tokens` arms in `Reader::system`.
    - Rewrite `denial_echo` as in Design 3.
    - Add the terminal-consistency check in `Reader::result`.
 2. **Labels and detail**: add `safe_name`, the label computation in `accept`, the
@@ -256,9 +249,8 @@ API error as a system entry, so this is not a deviation.
 4. **Transport logging**: add `rejected(...)` in `transport.rs` and call it at both `accept`
    sites before the error is returned.
 5. **Ledger record**: add `Record::RequestFailed` in `ledger.rs` (and its replay arm). Append it in
-   `turn::drive` on the final `Failed` return, using `error_class` and `failure_text`. Check any
-   other exhaustive `match` on `Record` (`afk_report.rs`) compiles with a wildcard or an explicit
-   no-op.
+   `turn::drive` on the final `Failed` return when `error_class` is `Some`, using `error_class`
+   and `failure_text`.
 6. **Test double**: in `claude_cli_double.rs`, add a script key `denial: "mid_stream"` that emits
    the 2.1.319 order for every scripted call:
    - `content_block_start` with `caller: {type: direct}`, then the deltas, `assistant`,
@@ -266,9 +258,14 @@ API error as a system entry, so this is not a deviation.
    - after all blocks: `message_delta`, `message_stop`, `rate_limit_event`, and
      `result error_max_turns` with `num_turns: 2`.
 
-   Add a `thinking_tokens: true` key that inserts a `thinking` block with one `thinking_tokens`
-   event before the text. Keep the existing `denial_echo: true` behavior (post-stop order) for
-   2.1.318.
+   Every echo, the existing `denial_echo: true` one included, and the new `permission_denied` use
+   each scripted call's `id` (read as at `:384`, defaulting to `toolu_double`) instead of the
+   hard-coded `toolu_double`, because the reader now refuses an echo naming no recorded call.
+
+   Add a `thinking_tokens: true` key that inserts one `system/thinking_tokens` line inside the
+   existing `thinking` block. Keep the existing `denial_echo: true` behavior (post-stop order) for
+   2.1.318. Add both new keys (`denial`, `thinking_tokens`) to the doc comment listing the script
+   keys at the top of the file.
 7. **Tests**: see Testing Strategy.
 8. **Docs**: see Documentation.
 
@@ -280,10 +277,10 @@ API error as a system entry, so this is not a deviation.
 - `rust/fontaine-core/src/providers/claude_subscription/transport.rs`
 - `rust/fontaine-core/src/ledger.rs`
 - `rust/fontaine-core/src/turn.rs`
-- `rust/fontaine-core/src/afk_report.rs` (only if its `Record` match is exhaustive)
 - `rust/fontaine-core/examples/claude_cli_double.rs`
 - `rust/fontaine/tests/claude_subscription.rs`
 - `docs/claude-subscription.md`, `docs/architecture.md`
+- `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -298,8 +295,6 @@ API error as a system entry, so this is not a deviation.
   before the stop, so no position rule works across 2.1.318 and 2.1.319. Matching the id and the
   CLI tool name to a call the response announced is order-independent and stricter than the old
   position rule.
-- **Requiring `permission_denied` before the echo** would be stricter still, but breaks the
-  minimum supported CLI, which may send only the echo. Rejected.
 - **Logging every accepted event vs. a trail logged on failure.** Logging each line at debug
   would flood the debug file with deltas on every request. A bounded, collapsed trail emitted
   only with a rejection gives the position of the bad event at no cost on success.
@@ -322,6 +317,7 @@ API error as a system entry, so this is not a deviation.
   - "Supported CLI versions": 2.1.319's mid-stream denial order is supported.
 - `docs/architecture.md` session-ledger bullet: add `request_failed`, a model request that ended
   an agent's turn, with its error class and message.
+- `CHANGELOG.md`: a `### Fixed` entry under `[Unreleased]` citing #448.
 
 ## Testing Strategy
 
@@ -333,7 +329,8 @@ Unit tests in `protocol/tests.rs` (all reader logic is reachable with constructe
   `Event::Complete`.
 - Two parallel calls with interleaved denials and echoes complete.
 - The pre-2.1.319 order (echo after `message_stop`, no `permission_denied`) still completes, as in
-  `tool_names_are_restored_and_the_stop_may_be_max_turns`.
+  `tool_names_are_restored_and_the_stop_may_be_max_turns`, whose echo gains `"tool_use_id": "t"`
+  (block "t") so it names the recorded call.
 - `permission_denied` refused when:
   - its `tool_use_id` is unknown;
   - its `tool_name` differs from the call's CLI name;
@@ -348,8 +345,8 @@ Unit tests in `protocol/tests.rs` (all reader logic is reachable with constructe
 - A suppressed `EndConversation` call's denial and echo are accepted.
 - A reused or missing tool block id is refused.
 - `thinking_tokens` accepted in a thinking response; refused in `Ack`.
-- `model_fallback`, `compact_boundary`, `hook_started`, `task_started` each refused with their own
-  message, and `notification` refused with the catch-all.
+- A `model_fallback` refusal names `system/model_fallback`; `notification` is refused with the
+  catch-all.
 - Error text: the catch-all names `(event: system/notification)`, and an unknown stream event
   names `(event: stream_event/<type>)`. A subtype that is too long or has disallowed characters
   renders as `?`. The non-JSON line reads `(event: (not JSON))`. A `Truncated` failure is not
@@ -363,10 +360,10 @@ the double):
   runs the read through Fontaine's gate, and the next request's answer is the result. This tier
   also pins what unit tests cannot: rig's decoder accepting a tool block carrying `caller`, and
   the transport's handling of mid-stream non-frame events.
-- A thinking turn with `thinking_tokens: true` answers.
+- A thinking turn scripted with `"thinking": {...}` and `thinking_tokens: true` answers.
 - With `--debug-file`, an `after_stop` line of `{"type":"system","subtype":"notification", "marker":"UNIQUE-RAW"}`
   fails the run. The error names `system/notification`, the debug file contains `UNIQUE-RAW` and
-  a trail ending in `stream_event/message_stop`, and the session's `ledger.jsonl` holds a
+  a trail ending in `stream_event/message_stop → assistant`, and the session's `ledger.jsonl` holds a
   `request_failed` record naming the root agent. The debug file and the ledger are silent sinks:
   nothing would notice them breaking, so they get automated coverage.
 
