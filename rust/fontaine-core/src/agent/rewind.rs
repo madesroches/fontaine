@@ -82,10 +82,13 @@ impl AgentRuntime {
         overwrite_changed: bool,
     ) -> Result<RewindOutcome, RewindError> {
         let agents = self.state.agents();
-        let _wakes = what
+        let wakes = what
             .includes_conversation()
             .then(|| agents.hold_wakes("the conversation is being rewound"));
         if agents.any_running() || agents.has_agent_notifications() || agents.has_subagent_mail() {
+            // The hold must precede the check, so a wake deferred meanwhile gets its retry here.
+            drop(wakes);
+            fontaine_agents::spawn::slot_freed(agents, &self.ledger_window(), None);
             return Err(RewindError::SubagentsRunning);
         }
         let checkpoints = self.session.checkpoints();

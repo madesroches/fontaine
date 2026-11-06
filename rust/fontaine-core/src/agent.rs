@@ -870,8 +870,11 @@ impl AgentRuntime {
     /// watcher cannot resume an agent into the conversation being emptied.
     pub async fn clear_conversation(&self) -> Result<(), ClearError> {
         let agents = self.state.agents();
-        let _wakes = agents.hold_wakes("the conversation is being cleared");
+        let wakes = agents.hold_wakes("the conversation is being cleared");
         if agents.any_running() || agents.has_agent_notifications() || agents.has_subagent_mail() {
+            // The hold must precede the check, so a wake deferred meanwhile gets its retry here.
+            drop(wakes);
+            spawn::slot_freed(agents, &self.ledger_window(), None);
             return Err(ClearError::SubagentsRunning);
         }
         self.session.clear().await?;

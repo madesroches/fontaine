@@ -255,17 +255,15 @@ impl Notification {
     }
 }
 
-/// Why `id` cannot be woken: the session is ending or wakes are held for a session
-/// operation (transient — the wake retries later), or its end is final. Unlike
-/// `AgentTree::resume_blocker`, which answers in words for one agent, this distinguishes the
-/// transient cases from a final end so a wake does not release an agent's tasks while a
-/// hold is on.
+/// Why `id` cannot be woken: wakes are held for a session operation (transient — the wake
+/// retries later), or its end is final, the session ending included. Unlike
+/// `AgentTree::resume_blocker`, which answers in words for one agent, this distinguishes a
+/// hold from a final end so a wake does not release an agent's tasks while a hold is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WakeBlocker {
-    /// The session is ending, or a session operation holds every wake; the wake retries
-    /// once it ends.
+    /// A session operation holds every wake; the wake retries once it ends.
     Transient(String),
-    /// Its end is final: a kill, a spent budget or a retirement.
+    /// Its end is final: a kill, a spent budget, a retirement or the session ending.
     Final(String),
 }
 

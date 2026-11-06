@@ -686,8 +686,8 @@ pub fn wake_idle(
         Err(WakeError::Refused(why))
     };
     match tree.wake_blocker(id) {
-        // A hold or the session's end stops the wake for now: it retries once it lifts, and
-        // the agent keeps its tasks.
+        // A hold stops the wake for now: it retries once it lifts, and the agent keeps its
+        // tasks. The session's end is final.
         Some(WakeBlocker::Transient(why)) => return Err(WakeError::Transient(why)),
         Some(WakeBlocker::Final(why)) => return refuse(why),
         None => {}
@@ -763,7 +763,8 @@ fn resume_inner(
                     Err(why) => {
                         runner.discard_unread(&id);
                         revive_failed(
-                            &tree, &ledger, &parent, &id, &type_name, &why, waking, reminder,
+                            &tree, &ledger, &parent, &id, &type_name, &why, waking, reminder, text,
+                            from_human,
                         );
                     }
                 }
@@ -812,18 +813,23 @@ fn revive_failed(
     why: &str,
     waking: Vec<Notification>,
     reminder: Option<Reminder>,
+    text: String,
+    from_human: bool,
 ) {
     match tree.revival_end(id) {
         RevivalEnd::Killed | RevivalEnd::Gone => {
-            let mut dropped = waking;
-            dropped.extend(tree.take_notifications(id));
-            bounce(tree, ledger, id, dropped, "it was killed", true);
-            conclude(tree, ledger, id, type_name, &killed_revival_report());
-            // The pending revival held a running slot; free it like any other end so
-            // requeued waiters and owner reminders get their normal retry.
-            after_end(tree, ledger, parent, id);
+            killed_revival(
+                tree, ledger, parent, id, type_name, waking, text, from_human,
+            );
         }
         RevivalEnd::Live => {
+            if from_human {
+                // The run never started, so the words reached no model and the human would
+                // otherwise believe the agent was resumed.
+                tree.warn(&format!(
+                    "{id} could not be revived from its saved conversation ({why}); your message was not delivered: {text}"
+                ));
+            }
             let mut dropped = waking;
             dropped.extend(tree.take_notifications(id));
             bounce(

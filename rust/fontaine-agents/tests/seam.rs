@@ -2415,3 +2415,73 @@ async fn a_revival_that_fails_ends_the_run_failed_and_releases_the_tasks() {
         "{notes:?}"
     );
 }
+
+#[tokio::test]
+async fn the_human_is_told_when_the_revival_their_message_woke_fails() {
+    let team = team_rig();
+    rebuilt(&team.rig, "agent-7", "old", "worker");
+    *team.rig.runner.revive_fail.lock().unwrap() = Some("its saved conversation is missing".into());
+    let ledger: Arc<dyn RootLedger> = team.rig.ledger.clone();
+    fontaine_agents::spawn::resume_child(&team.rig.tree, &ledger, "agent-7", "look here".into())
+        .unwrap();
+    until(|| team.rig.tree.status_of("agent-7") == Some(ChildStatus::Failed)).await;
+    let warnings = team.gate.warnings.lock().unwrap().clone();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("not delivered") && w.contains("look here")),
+        "{warnings:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_held_wake_is_transient_and_keeps_the_agents_tasks() {
+    let team = team_rig();
+    rebuilt(&team.rig, "agent-7", "old", "worker");
+    team.board.create(ROOT_AGENT, "held", "", &[]).unwrap();
+    team.board.claim("agent-7", "t1").unwrap();
+    let ledger: Arc<dyn RootLedger> = team.rig.ledger.clone();
+    let hold = team
+        .rig
+        .tree
+        .hold_wakes("the conversation is being cleared");
+    let woke = wake_idle(
+        &team.rig.tree,
+        &ledger,
+        "agent-7",
+        "hi".into(),
+        Vec::new(),
+        None,
+    );
+    assert!(matches!(woke, Err(WakeError::Transient(_))), "{woke:?}");
+    assert_eq!(team.board.get("t1").unwrap().status, TaskStatus::InProgress);
+    assert!(team.rig.tree.is_idle("agent-7"));
+    drop(hold);
+    wake_idle(
+        &team.rig.tree,
+        &ledger,
+        "agent-7",
+        "hi".into(),
+        Vec::new(),
+        None,
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn a_revival_killed_while_rebuilding_tells_the_human_and_ends_killed() {
+    let team = team_rig();
+    rebuilt(&team.rig, "agent-7", "old", "worker");
+    *team.rig.runner.revive_fail.lock().unwrap() = Some("gone".into());
+    let ledger: Arc<dyn RootLedger> = team.rig.ledger.clone();
+    fontaine_agents::spawn::resume_child(&team.rig.tree, &ledger, "agent-7", "hello".into())
+        .unwrap();
+    kill_agent(&team.rig.tree, &ledger, "agent-7");
+    until(|| !team.gate.warnings.lock().unwrap().is_empty()).await;
+    let warnings = team.gate.warnings.lock().unwrap().clone();
+    assert!(warnings.iter().any(|w| w.contains("hello")), "{warnings:?}");
+    assert_eq!(
+        team.rig.tree.status_of("agent-7"),
+        Some(ChildStatus::Killed)
+    );
+}
