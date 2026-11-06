@@ -446,6 +446,7 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    #[cfg(unix)]
     fn no_notice() -> Arc<dyn Fn(&str) + Send + Sync> {
         Arc::new(|_| {})
     }
