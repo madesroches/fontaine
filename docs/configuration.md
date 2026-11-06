@@ -876,7 +876,7 @@ hard_deny = ["$defaults", "Never send repo contents to third-party code-review A
 | `subagent_cost_budget_usd` | Opt-in per-subagent spend cap. Inactive, with a one-time notice, on a model with no known price; a token cap, if set, still binds. Unset means uncapped. | unset |
 | `session_token_budget` | A token ceiling that every agent in the tree debits, when set. | unset |
 | `session_cost_budget_usd` | The same in dollars, when set. | unset |
-| `teams` | Turns on the [task boards](agents.md#task-boards): the `board_show` and `board_update` tools, the owner reminders and the `task_completed` and `teammate_idle` hooks. Set to `false`, the board tools are not registered. It does not control idling: every subagent goes idle when its turn ends and can be woken. Like the other `[agents]` keys it cannot be set from the repository's shared settings. | `true` |
+| `teams` | Turns on the [task boards](agents.md#task-boards): the `board_show` and `board_update` tools, the owner reminders and the `task_completed` and `teammate_idle` hooks. Set to `false`, the board tools are not registered. It does not control idling: a subagent that ends `done` or `failed` goes idle when its turn ends and can be woken, unless it is later killed, runs out of budget or is retired. Like the other `[agents]` keys it cannot be set from the repository's shared settings. | `true` |
 
 `[agents.types.<name>]` defines an agent type with `model` (`$main`, `$guardian_default` or
 `<account>/<model>`), `tools` (built-in or `mcp__` tool names), `effort` (`off`, `low`, `medium`,

@@ -1251,10 +1251,6 @@ impl QualityGate for FakeGate {
         *self.idle_calls.lock().unwrap() += 1;
         Box::pin(async { self.block_idle.lock().unwrap().clone() })
     }
-
-    fn warn(&self, message: &str) {
-        self.warnings.lock().unwrap().push(message.to_string());
-    }
 }
 
 struct TeamRig {

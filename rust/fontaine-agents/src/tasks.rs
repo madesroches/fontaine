@@ -636,9 +636,9 @@ fn in_progress_of(tasks: &[Task], agent: &str) -> bool {
 }
 
 /// The two quality gates, implemented over the user's hooks by `fontaine-core`. A gate can only
-/// add work: it blocks or it does not. One that errors or times out reports itself through
-/// [`warn`](Self::warn) and answers `None`, because a gate that failed closed forever would wedge
-/// the agents.
+/// add work: it blocks or it does not. One that errors or times out reports the failure as a
+/// warning through the session's `Approver` and answers `None`, because a gate that failed closed
+/// forever would wedge the agents.
 pub trait QualityGate: Send + Sync {
     /// Runs the `task_completed` hooks before `agent` completes `task`; `Some(reason)` blocks.
     fn task_completed<'a>(
@@ -650,9 +650,6 @@ pub trait QualityGate: Send + Sync {
     /// Runs the `teammate_idle` hooks when `name` ended a turn with a task in progress;
     /// `Some(reason)` resumes it with the reason as feedback.
     fn teammate_idle<'a>(&'a self, agent: &'a str, name: &'a str) -> BoxFuture<'a, Option<String>>;
-
-    /// Tells the human something went wrong that is not the model's to handle.
-    fn warn(&self, message: &str);
 }
 
 /// What a session with teams on holds: the boards, the gates and the resume streaks.
@@ -915,7 +912,6 @@ mod tests {
         fn teammate_idle<'a>(&'a self, _: &'a str, _: &'a str) -> BoxFuture<'a, Option<String>> {
             Box::pin(async { None })
         }
-        fn warn(&self, _: &str) {}
     }
 
     #[test]

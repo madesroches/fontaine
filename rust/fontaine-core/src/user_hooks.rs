@@ -594,10 +594,6 @@ impl QualityGate for TeamGate {
             TeamEvent::TeammateIdle(name),
         ))
     }
-
-    fn warn(&self, message: &str) {
-        self.approver.warn(message);
-    }
 }
 
 /// The hook lists a session runs.

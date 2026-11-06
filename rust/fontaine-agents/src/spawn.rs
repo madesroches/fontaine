@@ -17,7 +17,7 @@ use crate::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnReq
 use crate::tasks::Reminder;
 use crate::tree::{
     AgentTree, Attach, DeliverError, Killed, Notification, NotificationKind, Refusal, Retired,
-    RevivalEnd,
+    RevivalEnd, WakeBlocker,
 };
 
 const TARGET: &str = "fontaine::telemetry";
@@ -297,7 +297,8 @@ fn conclude(
     }
     settle_retired(tree, ledger, finish.retired, true);
     let name = tree.name_of(id);
-    let event = match report.status {
+    // The report was read before the kill that the tree's status records, so the tree wins.
+    let event = match finish.status.unwrap_or(report.status) {
         ChildStatus::Killed => "killed",
         ChildStatus::BudgetExhausted => "budget_exhausted",
         _ => "complete",
@@ -659,8 +660,8 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
 pub enum WakeError {
     /// Someone else woke it first; its run reads what was meant for it.
     AlreadyRunning,
-    /// A limit stops it for now (the concurrent-agent limit); it stays idle and
-    /// keeps its tasks.
+    /// A limit or a session operation stops it for now (the concurrent-agent limit, a held
+    /// wake); it stays idle and keeps its tasks.
     Transient(String),
     /// The session's budget is spent and only grows: nothing queued for the agent will be read.
     /// It keeps its tasks.
@@ -684,8 +685,12 @@ pub fn wake_idle(
         release_tasks(tree, ledger, id);
         Err(WakeError::Refused(why))
     };
-    if let Some(why) = tree.wake_blocker(id) {
-        return refuse(why);
+    match tree.wake_blocker(id) {
+        // A hold or the session's end stops the wake for now: it retries once it lifts, and
+        // the agent keeps its tasks.
+        Some(WakeBlocker::Transient(why)) => return Err(WakeError::Transient(why)),
+        Some(WakeBlocker::Final(why)) => return refuse(why),
+        None => {}
     }
     match resume_inner(tree, ledger, id, text, false, waking, reminder) {
         Ok(()) => Ok(()),
@@ -751,7 +756,7 @@ fn resume_inner(
                         Attach::Killed | Attach::Missing => {
                             runner.discard_unread(&id);
                             killed_revival(
-                                &tree, &ledger, &id, &type_name, waking, text, from_human,
+                                &tree, &ledger, &parent, &id, &type_name, waking, text, from_human,
                             );
                         }
                     },
@@ -814,6 +819,9 @@ fn revive_failed(
             dropped.extend(tree.take_notifications(id));
             bounce(tree, ledger, id, dropped, "it was killed", true);
             conclude(tree, ledger, id, type_name, &killed_revival_report());
+            // The pending revival held a running slot; free it like any other end so
+            // requeued waiters and owner reminders get their normal retry.
+            after_end(tree, ledger, parent, id);
         }
         RevivalEnd::Live => {
             let mut dropped = waking;
@@ -849,9 +857,11 @@ fn revive_failed(
 /// attach. The run never started: no report is queued, the human's words are reported
 /// undelivered rather than recorded as read, and exactly one killed conclusion lands in the
 /// ledger with the telemetry event.
+#[allow(clippy::too_many_arguments)]
 fn killed_revival(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
+    parent: &str,
     id: &str,
     type_name: &str,
     waking: Vec<Notification>,
@@ -869,6 +879,9 @@ fn killed_revival(
     dropped.extend(tree.take_notifications(id));
     bounce(tree, ledger, id, dropped, "it was killed", true);
     conclude(tree, ledger, id, type_name, &killed_revival_report());
+    // The pending revival held a running slot; free it like any other end so
+    // requeued waiters and owner reminders get their normal retry.
+    after_end(tree, ledger, parent, id);
 }
 
 /// The report a revival that never started records: no run, no words.

@@ -255,6 +255,29 @@ impl Notification {
     }
 }
 
+/// Why `id` cannot be woken: the session is ending or wakes are held for a session
+/// operation (transient — the wake retries later), or its end is final. Unlike
+/// `AgentTree::resume_blocker`, which answers in words for one agent, this distinguishes the
+/// transient cases from a final end so a wake does not release an agent's tasks while a
+/// hold is on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WakeBlocker {
+    /// The session is ending, or a session operation holds every wake; the wake retries
+    /// once it ends.
+    Transient(String),
+    /// Its end is final: a kill, a spent budget or a retirement.
+    Final(String),
+}
+
+impl WakeBlocker {
+    /// The reason in words, for a caller that only reports it.
+    pub fn into_why(self) -> String {
+        match self {
+            Self::Transient(why) | Self::Final(why) => why,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// `max_parallel` agents are already running.
@@ -1065,22 +1088,28 @@ impl AgentTree {
         inner.nodes.get(id).and_then(blocker_of)
     }
 
-    /// Why `id` cannot be woken to take a message or a report: the session is ending, its ends
-    /// are held for a session operation, or its end is final (see
-    /// [`resume_blocker`](Self::resume_blocker)).
-    pub fn wake_blocker(&self, id: &str) -> Option<String> {
+    /// Why `id` cannot be woken to take a message or a report.
+    pub fn wake_blocker(&self, id: &str) -> Option<WakeBlocker> {
         if self.shutting_down() {
-            return Some("the session is ending".to_string());
+            return Some(WakeBlocker::Final("the session is ending".to_string()));
         }
-        self.resume_blocker(id)
+        let inner = self.lock();
+        if let Some(why) = &inner.wake_hold {
+            return Some(WakeBlocker::Transient(why.clone()));
+        }
+        inner
+            .nodes
+            .get(id)
+            .and_then(blocker_of)
+            .map(WakeBlocker::Final)
     }
 
     /// Why an agent whose run just ended `Done` cannot take another run in the same
     /// conversation: the session is ending or the session's agent budget is spent. The node still
     /// counts as running, so no parallel slot is needed.
     pub fn continue_blocker(&self, id: &str) -> Option<String> {
-        if let Some(why) = self.wake_blocker(id) {
-            return Some(why);
+        if let Some(blocker) = self.wake_blocker(id) {
+            return Some(blocker.into_why());
         }
         let inner = self.lock();
         self.limits
@@ -3082,7 +3111,9 @@ mod tests {
         let id = idle_agent(&tree, ROOT_AGENT);
         assert_eq!(tree.wake_blocker(&id), None);
         tree.kill_all();
-        assert!(tree.wake_blocker(&id).unwrap().contains("ending"));
+        assert!(
+            matches!(tree.wake_blocker(&id), Some(WakeBlocker::Final(why)) if why.contains("ending"))
+        );
         assert!(tree.shutting_down());
     }
 
