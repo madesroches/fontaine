@@ -26,7 +26,8 @@ const RUNTIMES: [&str; 2] = ["docker", "podman"];
 const SETTINGS_DIR: &str = "searxng";
 const SETTINGS_FILE: &str = "settings.yml";
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How often a starting container is re-probed while waiting for it to answer, pacing the
+/// same as the start loop in `fontaine_tools::websearch`.
 const PROBE_INTERVAL: Duration = Duration::from_millis(100);
 /// One runtime subcommand is killed after this long, so an unreachable daemon stalls a search
 /// for seconds, not forever.
@@ -129,17 +130,21 @@ pub const NAME: &str = "fontaine-searxng";
 /// that a hard kill or power loss left behind.
 pub const NAME_PREFIX: &str = "fontaine-searxng-";
 
-/// What `inspect` learned about a container name.
+/// What `inspect` learned about a container name. `created` is included in `Starting` because
+/// a concurrent `docker run --name` takes the name before the container starts, and removing a
+/// container in that window would kill the winner's instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ContainerState {
-    Running,
-    Exited,
+    /// `created`, `running` or `restarting`: it may still come up, so wait on the probe.
+    Starting,
+    /// `exited`, `dead`, or anything else: not serving and not about to, so replace it.
+    Unhealthy,
 }
 
 fn parse_state(output: &str) -> ContainerState {
     match output.trim() {
-        "true" => ContainerState::Running,
-        _ => ContainerState::Exited,
+        "created" | "running" | "restarting" => ContainerState::Starting,
+        _ => ContainerState::Unhealthy,
     }
 }
 
@@ -174,7 +179,7 @@ struct RuntimeCli {
 impl RuntimeCli {
     async fn inspect(&self, name: &str) -> io::Result<Option<ContainerState>> {
         match self
-            .output(&["inspect", "-f", "{{.State.Running}}", name])
+            .output(&["inspect", "-f", "{{.State.Status}}", name])
             .await
         {
             Ok(output) => Ok(Some(parse_state(&output))),
@@ -271,7 +276,7 @@ impl RuntimeCli {
             }
         })
         .await
-        .map_err(|e| io::Error::other(format!("runtime call failed: {e}")))?
+        .map_err(io::Error::other)?
     }
 }
 
@@ -301,19 +306,8 @@ fn argv(runtime: &Path, name: &str, port: u16, settings: &Path) -> Vec<String> {
     ]
 }
 
-/// Any non-5xx answer counts: the instance is up even if it has no page at its root, but a
-/// proxy's 502/503 while SearXNG is still booting is not.
-async fn probe(client: &reqwest::Client, url: &Url) -> bool {
-    client
-        .get(url.clone())
-        .timeout(PROBE_TIMEOUT)
-        .send()
-        .await
-        .is_ok_and(|response| !response.status().is_server_error())
-}
-
 /// Decides what the first search needs: an already-running shared instance to reuse, or a fresh
-/// start under the fixed name. `wait` bounds how long a running container that does not answer
+/// start under the fixed name. `wait` bounds how long a starting container that does not answer
 /// is given before it counts as unhealthy.
 async fn prepare(
     cli: &RuntimeCli,
@@ -333,30 +327,39 @@ async fn prepare(
     let mut unhealthy = false;
     match cli.inspect(NAME).await? {
         None => {}
-        Some(ContainerState::Exited) => unhealthy = true,
-        Some(ContainerState::Running) => match cli.published_port(NAME).await? {
-            Some(port) => {
-                let url = Url::parse(&format!("http://127.0.0.1:{port}"))
-                    .expect("a loopback address with a port is a valid URL");
-                let client = reqwest::Client::builder()
+        Some(ContainerState::Unhealthy) => unhealthy = true,
+        Some(ContainerState::Starting) => {
+            let client = fontaine_tools::tls::build_client(&Default::default(), || {
+                reqwest::Client::builder()
                     .no_proxy()
                     .redirect(reqwest::redirect::Policy::none())
-                    .build()
-                    .map_err(|e| io::Error::other(format!("cannot build the probe client: {e}")))?;
-                let deadline = Instant::now() + wait;
-                loop {
-                    if probe(&client, &url).await {
-                        return Ok(Prepared::Reuse(url));
-                    }
-                    if Instant::now() >= deadline {
-                        unhealthy = true;
-                        break;
-                    }
-                    tokio::time::sleep(PROBE_INTERVAL).await;
+            })
+            .map_err(io::Error::other)?;
+            let deadline = Instant::now() + wait;
+            // A starting container may answer late or publish its port late; keep reading the
+            // port back until the deadline, and only then count it as unhealthy.
+            let mut url = None;
+            loop {
+                if url.is_none() {
+                    url = cli
+                        .published_port(NAME)
+                        .await?
+                        .map(|port| Url::parse(&format!("http://127.0.0.1:{port}")))
+                        .transpose()
+                        .expect("a loopback address with a port is a valid URL");
                 }
+                if let Some(url) = &url
+                    && fontaine_tools::websearch::probe(&client, url).await
+                {
+                    return Ok(Prepared::Reuse(url.clone()));
+                }
+                if Instant::now() >= deadline {
+                    unhealthy = true;
+                    break;
+                }
+                tokio::time::sleep(PROBE_INTERVAL).await;
             }
-            None => unhealthy = true,
-        },
+        }
     }
     if unhealthy && let Err(message) = cli.rm(NAME).await {
         warn(&format!(
@@ -548,10 +551,13 @@ mod tests {
     }
 
     #[test]
-    fn inspect_output_is_a_running_or_exited_container() {
-        assert_eq!(parse_state("true\n"), ContainerState::Running);
-        assert_eq!(parse_state("false\n"), ContainerState::Exited);
-        assert_eq!(parse_state(""), ContainerState::Exited);
+    fn inspect_output_is_a_starting_or_unhealthy_container() {
+        assert_eq!(parse_state("running\n"), ContainerState::Starting);
+        assert_eq!(parse_state("created\n"), ContainerState::Starting);
+        assert_eq!(parse_state("restarting\n"), ContainerState::Starting);
+        assert_eq!(parse_state("exited\n"), ContainerState::Unhealthy);
+        assert_eq!(parse_state("dead\n"), ContainerState::Unhealthy);
+        assert_eq!(parse_state(""), ContainerState::Unhealthy);
     }
 
     #[test]
@@ -594,7 +600,7 @@ mod tests {
         std::fs::create_dir(&state).unwrap();
         let cli = scripted_runtime(
             &state,
-            "inspect) echo true ;;
+            "inspect) echo running ;;
 \
              port) cat '{state}/port-out' ;;
 \
@@ -604,14 +610,13 @@ mod tests {
         );
 
         // The instance answers after a delay: the probe must wait, not remove the container.
-        let late_port = {
-            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
-            listener.local_addr().unwrap().port()
-        };
-        std::fs::write(state.join("port-out"), format!("127.0.0.1:{late_port}\n")).unwrap();
+        // The port is chosen after the delay, so nothing can take it in between.
+        let appear = state.clone();
         let serve = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(400)).await;
-            let listener = std::net::TcpListener::bind(("127.0.0.1", late_port)).unwrap();
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let late_port = listener.local_addr().unwrap().port();
+            std::fs::write(appear.join("port-out"), format!("127.0.0.1:{late_port}\n")).unwrap();
             let server = wiremock::MockServer::builder()
                 .listener(listener)
                 .start()
@@ -637,8 +642,11 @@ mod tests {
             Prepared::Reuse(url) => url,
             Prepared::Start(_) => panic!("the answering container must be reused"),
         };
-        assert_eq!(url.port().unwrap(), late_port);
-        let _server = serve.await.unwrap();
+        let server = serve.await.unwrap();
+        assert_eq!(
+            url.port().unwrap(),
+            Url::parse(&server.uri()).unwrap().port().unwrap()
+        );
         assert!(
             !state.join("rms").exists(),
             "a running container is not removed"
@@ -653,7 +661,7 @@ mod tests {
         std::fs::create_dir(&state).unwrap();
         let cli = scripted_runtime(
             &state,
-            "inspect) echo true ;;
+            "inspect) echo running ;;
 \
              port) echo 127.0.0.1:9 ;;
 \
@@ -686,7 +694,7 @@ mod tests {
         std::fs::create_dir(&state).unwrap();
         let cli = scripted_runtime(
             &state,
-            "inspect) echo false ;;
+            "inspect) echo exited ;;
 \
              rm) echo \"$3\" >> '{state}/rms' ;;
 \
@@ -721,7 +729,7 @@ mod tests {
             &state,
             "ps) printf '%s\\n' fontaine-searxng-a798b73c someone-else ;;
 \
-             inspect) echo false ;;
+             inspect) echo exited ;;
 \
              rm) echo \"$3\" >> '{state}/rms' ;;
 \
@@ -742,5 +750,157 @@ mod tests {
         let rms = std::fs::read_to_string(state.join("rms")).unwrap();
         assert!(rms.contains("fontaine-searxng-a798b73c"), "{rms}");
         assert!(!rms.contains("someone-else"), "{rms}");
+    }
+
+    /// A container a concurrent `docker run --name` created but has not started yet: the name
+    /// is taken, so it must be waited on, never removed.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_created_container_that_answers_later_is_reused_not_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let cli = scripted_runtime(
+            &state,
+            "inspect) echo created ;;
+\
+             port) cat '{state}/port-out' ;;
+\
+             rm) echo \"$3\" >> '{state}/rms' ;;
+\
+             run) echo started >> '{state}/runs' ;;
+\
+             ps) true ;;",
+        );
+        // The published port appears only once the winner's client starts the container and the
+        // instance answers a moment later; it is chosen after the delay so nothing can take it
+        // in between.
+        let appear = state.clone();
+        let serve = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let late_port = listener.local_addr().unwrap().port();
+            std::fs::write(appear.join("port-out"), format!("127.0.0.1:{late_port}\n")).unwrap();
+            let server = wiremock::MockServer::builder()
+                .listener(listener)
+                .start()
+                .await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(wiremock::ResponseTemplate::new(200))
+                .mount(&server)
+                .await;
+            server
+        });
+        let prepared = prepare(
+            &cli,
+            &dir.path().join("data"),
+            Duration::from_secs(5),
+            &no_notice(),
+            &no_notice(),
+            &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        let url = match prepared {
+            Prepared::Reuse(url) => url,
+            Prepared::Start(_) => panic!("the created container must be waited on, not replaced"),
+        };
+        let server = serve.await.unwrap();
+        assert_eq!(
+            url.port().unwrap(),
+            Url::parse(&server.uri()).unwrap().port().unwrap()
+        );
+        assert!(
+            !state.join("rms").exists(),
+            "a created container is not removed"
+        );
+    }
+
+    /// The #241 behavior: a failed removal reaches the user through `warn`. A leftover stray's
+    /// failure does not stop the prepare; an unhealthy container's failure does.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_removal_is_reported_and_only_the_unhealthy_one_aborts() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let cli = scripted_runtime(
+            &state,
+            "ps) printf '%s\\n' fontaine-searxng-a798b73c ;;
+\
+             inspect) echo exited ;;
+\
+             rm) echo \"$3\" >> '{state}/rms'; if [ \"$3\" = fontaine-searxng-a798b73c ]; then exit 1; fi ;;
+\
+             run) echo started >> '{state}/runs' ;;",
+        );
+        let warned = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let warn: Arc<dyn Fn(&str) + Send + Sync> = {
+            let warned = warned.clone();
+            Arc::new(move |message: &str| warned.lock().unwrap().push(message.to_string()))
+        };
+        let no_notice: Arc<dyn Fn(&str) + Send + Sync> = Arc::new(|_| {});
+
+        // The stray's removal fails: warned, and the prepare still starts a fresh instance.
+        let prepared = prepare(
+            &cli,
+            &dir.path().join("data"),
+            Duration::from_millis(300),
+            &no_notice,
+            &warn,
+            &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await;
+        assert!(matches!(prepared, Ok(Prepared::Start(_))), "{prepared:?}");
+        {
+            let warned = warned.lock().unwrap();
+            assert_eq!(warned.len(), 1, "{warned:?}");
+            assert!(
+                warned[0].contains("leftover SearXNG container fontaine-searxng-a798b73c"),
+                "{warned:?}"
+            );
+        }
+
+        // Now no removal succeeds at all: the stray failure is still only reported, and the
+        // shared container's failure aborts the prepare.
+        let script = state.join("docker");
+        let text = std::fs::read_to_string(&script).unwrap();
+        std::fs::write(
+            &script,
+            text.replace(
+                "if [ \"$3\" = fontaine-searxng-a798b73c ]; then exit 1; fi",
+                "exit 1",
+            ),
+        )
+        .unwrap();
+        let warned = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let warn: Arc<dyn Fn(&str) + Send + Sync> = {
+            let warned = warned.clone();
+            Arc::new(move |message: &str| warned.lock().unwrap().push(message.to_string()))
+        };
+        let prepared = prepare(
+            &cli,
+            &dir.path().join("data"),
+            Duration::from_millis(300),
+            &no_notice,
+            &warn,
+            &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await;
+        let message = prepared.unwrap_err().to_string();
+        assert!(
+            message.contains("cannot remove the unhealthy SearXNG container"),
+            "{message}"
+        );
+        let warned = warned.lock().unwrap();
+        assert_eq!(warned.len(), 2, "{warned:?}");
+        assert!(
+            warned[0].contains("leftover SearXNG container fontaine-searxng-a798b73c"),
+            "{warned:?}"
+        );
+        assert!(
+            warned[1].contains("unhealthy SearXNG container fontaine-searxng"),
+            "{warned:?}"
+        );
     }
 }

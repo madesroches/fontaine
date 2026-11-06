@@ -375,7 +375,7 @@ mod default_backend {
                  case \"$arg\" in 127.0.0.1:*:8080) echo \"${{arg%:8080}}\" > '{0}/port' ;;\n\
                  esac\n\
                  done\n\
-                 echo true > '{0}/inspect-out'\n\
+                 echo running > '{0}/inspect-out'\n\
                  echo started >> '{0}/runs'\n\
                  exec sleep 300 ;;\n\
                  esac",

@@ -312,7 +312,7 @@ impl SearxngChild {
 
 /// Any non-5xx answer counts: the instance is up even if it has no page at its root, but a
 /// proxy's 502/503 while SearXNG is still booting is not.
-async fn probe(client: &reqwest::Client, base_url: &Url) -> bool {
+pub async fn probe(client: &reqwest::Client, base_url: &Url) -> bool {
     client
         .get(base_url.clone())
         .timeout(PROBE_TIMEOUT)
