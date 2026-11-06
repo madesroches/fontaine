@@ -81,17 +81,21 @@ guardian gate it as before; the kill runs only after the call is allowed.
 4. `fontaine-agents`: implement `AgentKills` (tree plus ledger), checking ownership.
 5. `fontaine-core` (`tools.rs`, `agent/build.rs`): wire it for every agent's registry.
 6. `fontaine-agents/src/spawn.rs`: update the `agent` and `send_message` descriptions.
-7. Docs and Decisions (below).
+7. `fontaine-agents/src/registry.rs`: extend `AgentType::toolset` to grant `job_cancel` alongside
+   `agent`, mirroring `job_output` (same disallow rule), so a typed subagent with an explicit
+   `tools:` list can stop its children.
+8. Docs and Decisions (below).
 
 ## Files to Modify
 
 - `rust/fontaine-tools/src/jobs.rs`, `src/jobs/tools.rs`, `src/builtins.rs`, `src/descriptor.rs` (comment near :369),
-  `src/jobs/tests.rs` (drop the :861 assertion)
+  `src/jobs/tests.rs` (rewrite the :858-866 test), `tests/jobs.rs` (fake `AgentKills`)
 - `rust/fontaine-tools/tests/common/mod.rs`, `rust/fontaine-core/tests/choke_point.rs`,
   `rust/fontaine-core/tests/extensions.rs` (`agent_kills: None`)
 - `rust/fontaine-agents/src/spawn.rs`, plus the new seam impl (`src/tree.rs` or `src/spawn.rs`)
+- `rust/fontaine-agents/src/registry.rs` (`toolset` grants `job_cancel` with `agent`)
 - `rust/fontaine-core/src/tools.rs`, `src/agent/build.rs`
-- `docs/tools.md`, `docs/permissions.md`, `docs/agents.md`, `docs/extensions.md` (alias table already maps `TaskStop`)
+- `docs/tools.md`, `docs/permissions.md`, `docs/agents.md`, `docs/tui.md`
 - `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
 ## Trade-offs
@@ -106,7 +110,7 @@ guardian gate it as before; the kill runs only after the call is allowed.
 
 ## Decisions
 
-- 2026-11-06: Deviation from the 2026-10-26/30 "the agents panel stays the way to kill one" lines: `job_cancel` also stops a subagent the caller started, matching Claude Code's `TaskStop`; a kill stays final and the human's panel kill is unchanged (#463).
+- 2026-11-06: Deviation from the 2026-10-30 "the agents panel stays the way to kill one" line: `job_cancel` also stops a subagent the caller started, matching Claude Code's `TaskStop`; a kill stays final and the human's panel kill is unchanged (#463).
 
 ## Documentation
 
@@ -116,6 +120,7 @@ guardian gate it as before; the kill runs only after the call is allowed.
   `job_cancel` is no longer refused) and the Permissions bullet (~:372, "can only reach a job this
   session started").
 - `docs/permissions.md:191`: `job_cancel` "can only signal a process this session started".
+- `docs/tui.md:228`: "the agents panel stops one" — the model can also stop its own children.
 - Comment near `fontaine-tools/src/descriptor.rs:369`.
 - `CHANGELOG.md` entry.
 
@@ -123,8 +128,10 @@ guardian gate it as before; the kill runs only after the call is allowed.
 
 - Unit (`fontaine-tools/tests/jobs.rs`, fake `AgentKills`): `job_cancel` on an `agent-N` id and on a
   name calls the seam and renders the line; `NotYours` and `Unknown` render the `job_output`
-  wording; a `job-*` id still behaves as before; `agents == None` with an agent ref returns the "no subagents in this session" refusal; the old `jobs/tests.rs:861` "only the user can stop a subagent" assertion is removed; a non-root caller may cancel an agent ref but a
+  wording; a `job-*` id still behaves as before; `agents == None` with an agent ref returns the "no subagents in this session" refusal; `an_agent_id_is_not_a_job_and_the_error_says_who_can_stop_it` (`jobs/tests.rs` ~:858-866) is renamed and rewritten to keep the `there is no job job-1` UnknownJob assertion and drop the agent-wording check; a non-root caller may cancel an agent ref but a
   job id still returns the root-only refusal; an ended agent reports "already ended".
+- Registry (`fontaine-agents/src/registry.rs`): extend `naming_agent_also_grants_job_output_unless_disallowed`
+  so `agent` also grants `job_cancel`, and a disallowed `job_cancel` is not granted.
 - Seam (`fontaine-agents/tests/seam.rs`, beside the `kill_agent` tests): the real implementation
   kills a running child and its descendants, refuses a sibling or the parent, and a killed child
   cannot be resumed.
