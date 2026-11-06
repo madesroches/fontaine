@@ -2233,6 +2233,47 @@ async fn a_report_for_an_idle_parent_with_a_spent_session_budget_goes_to_main_an
 }
 
 #[tokio::test]
+async fn a_bounced_message_with_a_spent_session_budget_goes_to_main_not_the_idle_sender() {
+    let team = team_rig_with(
+        Limits {
+            session: Budget {
+                tokens: Some(100),
+                cost_usd: None,
+            },
+            ..Limits::default()
+        },
+        false,
+    );
+    let (recipient, _) = idle_agent(&team.rig, ROOT_AGENT, "lead", "recipient").await;
+    let (sender, _) = idle_agent(&team.rig, ROOT_AGENT, "worker", "sender").await;
+    team.rig.tree.take_notifications(ROOT_AGENT);
+    team.rig.tree.requeue(
+        &recipient,
+        vec![fontaine_agents::tree::Notification {
+            from: sender.clone(),
+            from_name: "sender".into(),
+            kind: NotificationKind::Message,
+            text: "hello".into(),
+        }],
+    );
+    team.rig.tree.debit(
+        ROOT_AGENT,
+        &Spend {
+            input_tokens: 500,
+            ..Spend::default()
+        },
+    );
+    let ledger: Arc<dyn RootLedger> = team.rig.ledger.clone();
+    fontaine_agents::spawn::slot_freed(&team.rig.tree, &ledger, None);
+    assert!(!team.rig.tree.has_notifications(&sender));
+    let root = team.rig.tree.take_notifications(ROOT_AGENT);
+    assert!(
+        root.iter().any(|n| n.text.contains("hello")),
+        "main holds the note: {root:?}"
+    );
+}
+
+#[tokio::test]
 async fn a_child_woken_by_the_human_reports_to_its_idle_parent_and_wakes_it() {
     let team = team_rig();
     let (_, parent_child, child_id, child) = idle_pair(&team.rig).await;

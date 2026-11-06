@@ -540,11 +540,16 @@ pub struct AgentRow {
 #[must_use]
 pub struct WakeHold<'a> {
     tree: &'a AgentTree,
+    previous: Option<String>,
 }
 
 impl Drop for WakeHold<'_> {
     fn drop(&mut self) {
-        self.tree.resume_wakes();
+        match self.previous.take() {
+            None => self.tree.resume_wakes(),
+            // An AFK hold set before this guard outlives it.
+            previous => self.tree.lock().wake_hold = previous,
+        }
     }
 }
 
@@ -714,8 +719,11 @@ impl AgentTree {
     /// what a refused wake is told. Used while `/clear` or a conversation rewind retires the
     /// tree, so a racing watcher cannot start an agent the operation is sweeping.
     pub fn hold_wakes(&self, why: &str) -> WakeHold<'_> {
-        self.lock().wake_hold = Some(why.to_string());
-        WakeHold { tree: self }
+        let previous = self.lock().wake_hold.replace(why.to_string());
+        WakeHold {
+            tree: self,
+            previous,
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {

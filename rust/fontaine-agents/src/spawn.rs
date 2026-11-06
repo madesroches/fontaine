@@ -134,8 +134,7 @@ fn release_tasks_of(
 /// been final when it arrived. A sender that went idle before the bounce is woken through the
 /// inbox-wake path, so it learns its mail was not read; only a final or missing sender's
 /// bounce goes to the root. `wake` is `false` where no agent may be started, such as during
-/// an AFK stop, and for a bounce the spent session budget would send right back: no wake can
-/// succeed while it is spent, so the senders' notes are queued instead.
+/// an AFK stop.
 fn bounce(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
@@ -143,6 +142,21 @@ fn bounce(
     notes: Vec<Notification>,
     why: &str,
     wake: bool,
+) {
+    bounce_to(tree, ledger, id, notes, why, wake, false);
+}
+
+/// `to_root` sends every message note to the root: with the session budget spent no sender can
+/// be woken, and a running one reaches its next turn end through the same refusal, so a note
+/// in a sender's inbox would never be read.
+fn bounce_to(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    id: &str,
+    notes: Vec<Notification>,
+    why: &str,
+    wake: bool,
+    to_root: bool,
 ) {
     let name = tree.name_of(id);
     for note in notes {
@@ -152,7 +166,7 @@ fn bounce(
                     "Your message to {name} was not read: {why}.\nThe message was: {}",
                     note.text
                 );
-                if tree.is_running(&note.from) || tree.is_idle(&note.from) {
+                if !to_root && (tree.is_running(&note.from) || tree.is_idle(&note.from)) {
                     tree.push(&note.from, id, NotificationKind::Message, text);
                     if wake {
                         wake_for_inbox(tree, ledger, &note.from);
@@ -626,13 +640,14 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
         // The spent budget never clears, so the mail would stay queued forever; the agent keeps
         // its tasks.
         Err(WakeError::SessionBudget(why)) => {
-            bounce(
+            bounce_to(
                 tree,
                 ledger,
                 id,
                 notes,
                 &format!("the session's budget is spent ({why})"),
                 false,
+                true,
             );
         }
         Err(WakeError::Refused(why)) => {
