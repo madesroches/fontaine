@@ -87,11 +87,17 @@ bounded wait, and parses output:
     closure and the sweep continues with the remaining names; unlike step 3 it does not abort
     the prepare, since a leftover stray does not affect the steps that follow.
 2. **Probe the shared instance.** If `inspect_running(NAME)` and `published_port(NAME)` both
-   succeed and a loopback HTTP probe of `http://127.0.0.1:<port>` answers with a non-5xx
-   status, return `Prepared::Reuse(that url)`. The probe is a plain `reqwest` GET with a short
-   timeout; loopback HTTP needs none of the TLS client plumbing in `fontaine_tools::tls`.
-3. **Replace the unhealthy.** If the container exists (`inspect` succeeds) but is not running
-   or does not answer, `rm` it first; a failed `rm` is reported through the `warn` closure
+   succeed, poll a loopback HTTP probe of `http://127.0.0.1:<port>` until it answers with a
+   non-5xx status, returning `Prepared::Reuse(that url)`. The probe is a plain `reqwest` GET
+   with a short timeout; loopback HTTP needs none of the TLS client plumbing in
+   `fontaine_tools::tls`. A container that is running but slow to answer (e.g. still pulling
+   or booting) is never removed merely for that: the poll is bounded by the start timeout
+   (300 s), and only then does the prepare fall through to step 3. This wait applies on every
+   path into step 2 — normal discovery and the name-conflict retry alike — since both run this
+   same `prepare`.
+3. **Replace the unhealthy.** Only after the step 2 probe wait has elapsed without an answer
+   (or if the container exists but is not running): `rm` it first; a failed `rm` is reported
+   through the `warn` closure
    (#241's "report a failed cleanup") and aborts the prepare with that message.
 4. **Start fresh.** Return `Prepared::Start(ManagedPlan)` with the fixed-name argv
    (`--name fontaine-searxng`), `fail_cleanup` = detached `rm -f fontaine-searxng` (run by
@@ -104,10 +110,11 @@ bounded wait, and parses output:
 Both sessions can pass step 2 (nothing running yet) and both reach `docker run --name
 fontaine-searxng`; the loser exits at once with "The container name ... is already in use" on
 stderr. `ensure_started` treats a start failure whose stderr matches the name-conflict as
-retryable: it re-runs `prepare` once. By then the winner's container is up, so `prepare`
-returns `Reuse` and the loser shares it. A start that fails any other way, or a second
-conflict, is reported as today (with the stderr tail). No locking beyond the name itself is
-introduced.
+retryable: it re-runs `prepare` once. That `prepare` finds the winner's container running and
+waits on the step 2 probe (bounded by the start timeout) until it answers, then returns
+`Reuse` and the loser shares it; the winner's still-booting container is never `rm`'d. A start
+that fails any other way, or a second conflict, is reported as today (with the stderr tail).
+No locking beyond the name itself is introduced.
 
 ### `fontaine-tools` changes (`websearch.rs`)
 
@@ -198,6 +205,9 @@ introduced.
   #451's own sweep definition.
 - AFK: #241's signal handling (`PR_SET_PDEATHSIG`, SIGTERM/SIGHUP cleanup) is not built; the
   leak becomes the intended steady state and strays are swept at the next start.
+- AFK: a running-but-not-yet-answering container is never removed: prepare polls the loopback
+  probe, bounded by the start timeout, before any `rm -f`, on both the discovery and the
+  name-conflict retry paths.
 
 ## Documentation
 
@@ -224,6 +234,10 @@ constructed inputs — no live API, daemon, or container.
   instance (one `run` recorded, `inspect`/`port` exercised, search answers); an unhealthy
   instance (inspect false) is `rm -f`'d and replaced; the sweep removes a recorded
   `fontaine-searxng-<uuid>` entry.
+- `managed_search.rs` unit: a running container whose probe fails at first and answers later
+  is reused, not `rm`'d (bounded probe wait); a running container whose probe never answers
+  within the start timeout is `rm`'d and replaced — and this holds on the name-conflict retry
+  path as well as plain discovery.
 - `websearch.rs` integration: a failed shared start runs `fail_cleanup`; dropping the tool and
   child after a successful shared start does not kill the client (its pid survives; the test
   kills it at the end); a start failure whose stderr contains the name conflict re-runs
