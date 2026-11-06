@@ -1012,6 +1012,12 @@ All notable changes are recorded here. The format follows
 - The four y/n confirmation prompts share one `ConfirmPrompt`, the model and resume pickers share
   their list navigation, and the audit-record and account literals are built through constructors;
   no behavior changes (#422).
+- The subscription quota segment now shows every window the provider reports, shortest first, each
+  with its reset as an absolute local time:
+  `kimi · 5h 60% (15:00) · 7d 30% (Sun) · code 5% · month 51% (Dec 1)` replaces
+  `kimi 51% · 23d left`. The main account's shorter windows no longer wait until 70% to appear;
+  the guardian's segment still shows only from 70%, and then with the same run of every window.
+  Headless `account_usage` is unchanged (#447).
 
 ### Fixed
 

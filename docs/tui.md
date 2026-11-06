@@ -120,15 +120,17 @@ the guardian-off chip.
 ### Subscription quota
 
 An account with [`quota = "kimi"`](configuration.md#accountsname) adds the provider's own quota to
-the bar, such as `kimi 16% · 29d left`: the monthly window's used share, rounded to the nearest
-percent (`100%` from the limit up), and the time until it resets in days, hours or minutes
-(left out when the provider gives no reset time or it has passed). The shorter windows stay out of
-sight until one is at 70% or more, then it is appended, as in `kimi 16% · 29d left · 5h 82%`. From
-90% on any shown window, the segment takes the theme's warning colour.
+the bar, such as `kimi · 5h 60% (15:00) · 7d 30% (Sun) · code 5% · month 51% (Dec 1)`: every window
+the provider reports, always, shortest first, each with its used share rounded to the nearest
+percent (`100%` from the limit up) and, in parentheses, when it resets in local time: the clock
+time (24-hour) when that is today, `tomorrow`, the weekday within the next six days, and the date
+beyond. The reset is left out when the provider gives none or it has passed. From 90% on any
+window, the segment takes the theme's warning colour.
 
 The guardian's account is read the same way, and can be a different subscription. Its segment follows
-the main one with a `guardian` prefix, as in `guardian kimi 16% · 12d left · 5h 82%`, and shows only
-once any of its windows is at 70% or more, so a guardian with room to spare adds nothing to the bar.
+the main one with a `guardian` prefix and the same run of windows, as in
+`guardian kimi · 5h 82% (15:00) · … · month 16% (Nov 18)`, and shows only once any of its windows is
+at 70% or more, so a guardian with room to spare adds nothing to the bar.
 A guardian on the main model's account is not shown twice. The same figures reach the
 [`result` event](headless.md#output) of a headless run as `account_usage`.
 

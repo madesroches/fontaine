@@ -13,7 +13,7 @@ use fontaine_tools::tls::LoadedNetwork;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// The windows the endpoint reports, headline first.
+/// The windows the endpoint reports, longest-period first.
 const WINDOWS: [(&str, &str); 4] = [
     ("limit_month_total", "month"),
     ("limit_month_code", "code"),
@@ -147,7 +147,7 @@ mod tests {
     }
 
     #[test]
-    fn a_full_reply_lists_the_headline_first() {
+    fn a_full_reply_lists_the_longest_window_first() {
         let quota = parse_usages(FULL).unwrap();
         let labels: Vec<&str> = quota.windows.iter().map(|w| w.label.as_str()).collect();
         assert_eq!(labels, ["month", "code", "7d", "5h"]);

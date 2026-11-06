@@ -27,7 +27,7 @@ pub struct QuotaWindow {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Quota {
-    /// The longest-period window first: it is the one the status bar always shows.
+    /// The longest-period window first; the status bar shows them in reverse.
     pub windows: Vec<QuotaWindow>,
 }
 

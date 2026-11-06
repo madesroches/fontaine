@@ -1,9 +1,10 @@
 //! The status bar and the labels the modes show under. This is the one place that names
 //! them: `manual`, `⏵⏵ accept edits on`, `⏸ plan mode on`, `⏵⏵ auto mode on`, `dontAsk`.
 
+use std::fmt::Display;
 use std::path::Path;
-use std::time::SystemTime;
 
+use chrono::{DateTime, Local, TimeZone, Utc};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::goal;
 use fontaine_core::quota::{AccountUsage, UsageRole};
@@ -118,53 +119,64 @@ fn location(app: &App) -> String {
     }
 }
 
-/// A non-headline window shows once it is this used.
+/// The guardian's segment shows once any of its windows is this used.
 const HOT_RATIO: f64 = 0.70;
 
-/// The status colour changes once any shown window is this used.
+/// The status colour changes once any window is this used.
 const WARN_RATIO: f64 = 0.90;
 
 fn percent(ratio: f64) -> u32 {
     (ratio.min(1.0) * 100.0).round() as u32
 }
 
-fn left_text(until: std::time::Duration) -> String {
-    let secs = until.as_secs();
-    match secs {
-        s if s >= 86_400 => format!("{}d left", s / 86_400),
-        s if s >= 3_600 => format!("{}h left", s / 3_600),
-        s => format!("{}m left", (s / 60).max(1)),
+/// When `reset` falls, as read on `now`'s calendar: the clock time today, `tomorrow`, the
+/// weekday within the week, the date beyond. Seven days out is today's weekday again, so it gets
+/// the date rather than a weekday that reads as this week.
+fn reset_label<Tz: TimeZone>(reset: &DateTime<Tz>, now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: Display,
+{
+    let days = (reset.date_naive() - now.date_naive()).num_days();
+    match days {
+        ..=0 => reset.format("%H:%M").to_string(),
+        1 => "tomorrow".to_string(),
+        2..=6 => reset.format("%a").to_string(),
+        _ => reset.format("%b %-d").to_string(),
     }
 }
 
-/// `<name> <pct>% · <Nd|Nh|Nm> left`, then any other window that is running hot as
-/// `<label> <pct>%`; and whether any shown window is past the warning level. The guardian's
-/// segment carries a `guardian ` prefix and shows only once a window is running hot. `None`
-/// when there is nothing to show: no data, or no window.
-fn quota_segment(usage: &AccountUsage, now: SystemTime) -> Option<(String, bool)> {
+/// `<label> · <window> <pct>% (<reset>) · …`, shortest window first, and whether any window is
+/// past the warning level. The reset is left out when the provider gives none or it has passed.
+/// The guardian's segment carries a `guardian ` prefix and shows only once a window is running
+/// hot. `None` when there is nothing to show: no data, or no window.
+fn quota_segment<Tz: TimeZone>(usage: &AccountUsage, now: &DateTime<Tz>) -> Option<(String, bool)>
+where
+    Tz::Offset: Display,
+{
     let quota = usage.quota.as_ref()?;
-    let (headline, rest) = quota.windows.split_first()?;
+    if quota.windows.is_empty() {
+        return None;
+    }
     let guardian = usage.role == UsageRole::Guardian;
     if guardian && !quota.windows.iter().any(|w| w.used_ratio >= HOT_RATIO) {
         return None;
     }
     let prefix = if guardian { "guardian " } else { "" };
-    let mut text = format!("{prefix}{} {}%", usage.label, percent(headline.used_ratio));
-    let left = headline
-        .reset_at
-        .and_then(|reset| reset.duration_since(now).ok())
-        .filter(|until| !until.is_zero());
-    if let Some(until) = left {
-        text.push_str(" · ");
-        text.push_str(&left_text(until));
-    }
-    let mut warn = headline.used_ratio >= WARN_RATIO;
-    for window in rest.iter().filter(|w| w.used_ratio >= HOT_RATIO) {
+    let mut text = format!("{prefix}{}", usage.label);
+    let mut warn = false;
+    for window in quota.windows.iter().rev() {
         text.push_str(&format!(
             " · {} {}%",
             window.label,
             percent(window.used_ratio)
         ));
+        let reset = window
+            .reset_at
+            .map(|at| DateTime::<Utc>::from(at).with_timezone(&now.timezone()))
+            .filter(|reset| reset > now);
+        if let Some(reset) = reset {
+            text.push_str(&format!(" ({})", reset_label(&reset, now)));
+        }
         warn |= window.used_ratio >= WARN_RATIO;
     }
     Some((text, warn))
@@ -268,10 +280,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         format!("{}· {}", location(app), app.model),
         dim,
     ));
+    let usage_as_of = DateTime::<Local>::from(app.usage_as_of);
     for (text, warn) in app
         .usage
         .iter()
-        .filter_map(|usage| quota_segment(usage, app.usage_as_of))
+        .filter_map(|usage| quota_segment(usage, &usage_as_of))
     {
         let style = if warn {
             Style::default().fg(app.theme.warning)
@@ -335,8 +348,9 @@ fn truncate_row(text: &str, width: u16) -> String {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::time::Duration;
+    use std::time::SystemTime;
 
+    use chrono::FixedOffset;
     use fontaine_core::quota::{Quota, QuotaWindow};
 
     use super::*;
@@ -523,11 +537,20 @@ mod tests {
         assert!(!text.contains("no image on the clipboard"), "{text}");
     }
 
-    fn window(label: &str, used_ratio: f64, reset_in: Option<u64>, now: SystemTime) -> QuotaWindow {
+    /// Friday 2026-11-06 10:00 UTC.
+    fn friday() -> DateTime<FixedOffset> {
+        at("2026-11-06T10:00:00+00:00")
+    }
+
+    fn at(rfc3339: &str) -> DateTime<FixedOffset> {
+        DateTime::parse_from_rfc3339(rfc3339).expect("a valid test instant")
+    }
+
+    fn window(label: &str, used_ratio: f64, reset: Option<&str>) -> QuotaWindow {
         QuotaWindow {
             label: label.into(),
             used_ratio,
-            reset_at: reset_in.map(|s| now + Duration::from_secs(s)),
+            reset_at: reset.map(|r| SystemTime::from(at(r))),
         }
     }
 
@@ -544,72 +567,160 @@ mod tests {
         usage(UsageRole::Main, windows)
     }
 
+    /// The four Kimi windows, longest first as the provider lists them.
+    fn kimi(month: f64, code: f64, week: f64, five: f64) -> Vec<QuotaWindow> {
+        vec![
+            window("month", month, Some("2026-12-01T00:00:00+00:00")),
+            window("code", code, None),
+            window("7d", week, Some("2026-11-08T09:00:00+00:00")),
+            window("5h", five, Some("2026-11-06T15:00:00+00:00")),
+        ]
+    }
+
     #[test]
-    fn the_quota_headline_shows_the_rounded_percent_and_the_time_left() {
-        let now = SystemTime::now();
-        let day = 86_400;
-        let segment = |ratio, reset| {
-            quota_segment(&view(vec![window("month", ratio, reset, now)]), now)
+    fn a_reset_today_shows_the_clock_time_and_tomorrow_its_name() {
+        let now = friday();
+        assert_eq!(reset_label(&at("2026-11-06T15:00:00+00:00"), &now), "15:00");
+        assert_eq!(
+            reset_label(&at("2026-11-07T09:00:00+00:00"), &now),
+            "tomorrow"
+        );
+        let late = at("2026-11-06T23:50:00+00:00");
+        assert_eq!(
+            reset_label(&at("2026-11-07T00:30:00+00:00"), &late),
+            "tomorrow"
+        );
+    }
+
+    #[test]
+    fn a_reset_within_the_week_shows_the_weekday_and_beyond_it_the_date() {
+        let now = friday();
+        assert_eq!(reset_label(&at("2026-11-08T09:00:00+00:00"), &now), "Sun");
+        assert_eq!(reset_label(&at("2026-11-12T09:00:00+00:00"), &now), "Thu");
+        assert_eq!(
+            reset_label(&at("2026-11-13T09:00:00+00:00"), &now),
+            "Nov 13"
+        );
+        assert_eq!(reset_label(&at("2026-12-01T00:00:00+00:00"), &now), "Dec 1");
+    }
+
+    #[test]
+    fn the_reset_compares_local_dates_not_utc_ones() {
+        // 00:30 local is still the 6th in UTC, but it is tomorrow here.
+        let now = at("2026-11-06T23:30:00+05:00");
+        assert_eq!(
+            reset_label(&at("2026-11-07T00:30:00+05:00"), &now),
+            "tomorrow"
+        );
+        // 20:00 local is already the 7th in UTC, but it is today here.
+        let now = at("2026-11-06T10:00:00-08:00");
+        assert_eq!(reset_label(&at("2026-11-06T20:00:00-08:00"), &now), "20:00");
+        let segment = quota_segment(
+            &view(vec![window("5h", 0.6, Some("2026-11-07T04:00:00+00:00"))]),
+            &now,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(segment, "kimi · 5h 60% (20:00)");
+    }
+
+    #[test]
+    fn every_window_shows_shortest_first_with_its_reset() {
+        let now = friday();
+        assert_eq!(
+            quota_segment(&view(kimi(0.51, 0.05, 0.30, 0.60)), &now)
+                .unwrap()
+                .0,
+            "kimi · 5h 60% (15:00) · 7d 30% (Sun) · code 5% · month 51% (Dec 1)"
+        );
+        assert_eq!(
+            quota_segment(&view(kimi(0.01, 0.0, 0.02, 0.03)), &now)
+                .unwrap()
+                .0,
+            "kimi · 5h 3% (15:00) · 7d 2% (Sun) · code 0% · month 1% (Dec 1)"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_past_reset_has_no_parentheses() {
+        let now = friday();
+        let segment = quota_segment(
+            &view(vec![
+                window("month", 0.2, None),
+                window("5h", 0.4, Some("2026-11-06T09:00:00+00:00")),
+                window("1h", 0.4, Some("2026-11-06T10:00:00+00:00")),
+            ]),
+            &now,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(segment, "kimi · 1h 40% · 5h 40% · month 20%");
+    }
+
+    #[test]
+    fn the_percent_is_rounded_and_capped_at_one_hundred() {
+        let now = friday();
+        let segment = |ratio| {
+            quota_segment(&view(vec![window("month", ratio, None)]), &now)
                 .unwrap()
                 .0
         };
-        assert_eq!(segment(0.164, Some(29 * day + 5)), "kimi 16% · 29d left");
+        assert_eq!(segment(0.164), "kimi · month 16%");
+        assert_eq!(segment(0.165), "kimi · month 17%");
+        assert_eq!(segment(1.3), "kimi · month 100%");
+    }
+
+    #[test]
+    fn no_window_or_no_data_shows_nothing() {
+        let now = friday();
+        let mut none = view(vec![]);
+        assert_eq!(quota_segment(&none, &now), None);
+        none.quota = None;
+        assert_eq!(quota_segment(&none, &now), None);
+    }
+
+    #[test]
+    fn the_quota_warns_from_ninety_percent_on_any_window() {
+        let now = friday();
+        let warns = |month, code, week, five| {
+            quota_segment(&view(kimi(month, code, week, five)), &now)
+                .unwrap()
+                .1
+        };
+        assert!(!warns(0.89, 0.89, 0.89, 0.89));
+        assert!(warns(0.90, 0.1, 0.1, 0.1));
+        assert!(warns(0.1, 0.1, 0.95, 0.1));
+        assert!(warns(0.1, 0.1, 0.1, 0.90));
+    }
+
+    #[test]
+    fn the_guardian_segment_shows_every_window_from_seventy_percent_on_any() {
+        let now = friday();
+        let shown = |month, five| {
+            quota_segment(
+                &usage(UsageRole::Guardian, kimi(month, 0.05, 0.3, five)),
+                &now,
+            )
+            .map(|segment| segment.0)
+        };
+        assert_eq!(shown(0.16, 0.69), None);
         assert_eq!(
-            segment(0.165, Some(3 * 3_600 + 59 * 60)),
-            "kimi 17% · 3h left"
+            shown(0.16, 0.82).as_deref(),
+            Some("guardian kimi · 5h 82% (15:00) · 7d 30% (Sun) · code 5% · month 16% (Dec 1)")
         );
-        assert_eq!(segment(0.5, Some(5 * 60 + 30)), "kimi 50% · 5m left");
-        assert_eq!(segment(0.5, Some(10)), "kimi 50% · 1m left");
-        assert_eq!(segment(0.5, None), "kimi 50%");
-        assert_eq!(segment(0.5, Some(0)), "kimi 50%");
-        assert_eq!(segment(1.3, Some(day)), "kimi 100% · 1d left");
+        assert_eq!(
+            shown(0.70, 0.1).as_deref(),
+            Some("guardian kimi · 5h 10% (15:00) · 7d 30% (Sun) · code 5% · month 70% (Dec 1)")
+        );
     }
 
     #[test]
-    fn a_reset_in_the_past_shows_no_time_left() {
-        let now = SystemTime::now();
-        let mut v = view(vec![window("month", 0.2, None, now)]);
-        v.quota.as_mut().unwrap().windows[0].reset_at = Some(now - Duration::from_secs(60));
-        assert_eq!(quota_segment(&v, now).unwrap().0, "kimi 20%");
-    }
-
-    #[test]
-    fn another_window_shows_only_from_seventy_percent() {
-        let now = SystemTime::now();
-        let shown = |ratio| {
-            quota_segment(
-                &view(vec![
-                    window("month", 0.16, Some(86_400), now),
-                    window("5h", ratio, None, now),
-                ]),
-                now,
-            )
-            .unwrap()
-            .0
-        };
-        assert_eq!(shown(0.69), "kimi 16% · 1d left");
-        assert_eq!(shown(0.70), "kimi 16% · 1d left · 5h 70%");
-        assert_eq!(shown(0.82), "kimi 16% · 1d left · 5h 82%");
-    }
-
-    #[test]
-    fn the_quota_warns_from_ninety_percent_on_any_shown_window() {
-        let now = SystemTime::now();
-        let warns = |month, hot| {
-            quota_segment(
-                &view(vec![
-                    window("month", month, None, now),
-                    window("5h", hot, None, now),
-                ]),
-                now,
-            )
-            .unwrap()
-            .1
-        };
-        assert!(!warns(0.89, 0.5));
-        assert!(warns(0.90, 0.5));
-        assert!(warns(0.1, 0.95));
-        assert!(!warns(0.1, 0.89));
+    fn a_guardian_without_data_shows_nothing() {
+        let now = friday();
+        let mut none = usage(UsageRole::Guardian, vec![]);
+        assert_eq!(quota_segment(&none, &now), None);
+        none.quota = None;
+        assert_eq!(quota_segment(&none, &now), None);
     }
 
     #[test]
@@ -617,17 +728,13 @@ mod tests {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.effort = Some(fontaine_core::effort::Effort::High);
         assert!(!bar(&app).contains("kimi"), "{}", bar(&app));
-        let now = SystemTime::now();
-        app.usage = vec![view(vec![window(
-            "month",
-            0.16,
-            Some(29 * 86_400 + 5),
-            now,
-        )])];
-        app.usage_as_of = now;
+        app.usage = vec![view(vec![
+            window("month", 0.16, None),
+            window("5h", 0.4, None),
+        ])];
         let text = bar(&app);
         assert!(
-            text.contains("· m · kimi 16% · 29d left · effort high ·"),
+            text.contains("· m · kimi · 5h 40% · month 16% · effort high ·"),
             "{text}"
         );
         app.usage = vec![view(vec![])];
@@ -635,53 +742,16 @@ mod tests {
     }
 
     #[test]
-    fn the_guardian_segment_shows_from_seventy_percent_on_any_window() {
-        let now = SystemTime::now();
-        let shown = |month, hot| {
-            quota_segment(
-                &usage(
-                    UsageRole::Guardian,
-                    vec![
-                        window("month", month, Some(12 * 86_400 + 5), now),
-                        window("5h", hot, None, now),
-                    ],
-                ),
-                now,
-            )
-            .map(|segment| segment.0)
-        };
-        assert_eq!(shown(0.16, 0.69), None);
-        assert_eq!(
-            shown(0.70, 0.1).as_deref(),
-            Some("guardian kimi 70% · 12d left")
-        );
-        assert_eq!(
-            shown(0.16, 0.82).as_deref(),
-            Some("guardian kimi 16% · 12d left · 5h 82%")
-        );
-    }
-
-    #[test]
-    fn a_guardian_without_data_shows_nothing() {
-        let now = SystemTime::now();
-        let mut none = usage(UsageRole::Guardian, vec![]);
-        assert_eq!(quota_segment(&none, now), None);
-        none.quota = None;
-        assert_eq!(quota_segment(&none, now), None);
-    }
-
-    #[test]
     fn the_guardian_segment_follows_the_main_one_before_the_effort() {
         let mut app = App::new(PermissionMode::Manual, "m".into());
         app.effort = Some(fontaine_core::effort::Effort::High);
-        let now = SystemTime::now();
         app.usage = vec![
-            view(vec![window("month", 0.16, None, now)]),
-            usage(UsageRole::Guardian, vec![window("month", 0.8, None, now)]),
+            view(vec![window("month", 0.16, None)]),
+            usage(UsageRole::Guardian, vec![window("month", 0.8, None)]),
         ];
         let text = bar(&app);
         assert!(
-            text.contains("· m · kimi 16% · guardian kimi 80% · effort high ·"),
+            text.contains("· m · kimi · month 16% · guardian kimi · month 80% · effort high ·"),
             "{text}"
         );
     }
