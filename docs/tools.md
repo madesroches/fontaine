@@ -368,9 +368,8 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
   50 finished jobs kept, and no per-job deadline for a background job, since a development server
   is a legitimate use.
 - **Who can use them.** The main conversation. A subagent's `shell` call never becomes a job
-  and keeps its kill-at-timeout; its `run_in_background`, `job_cancel` and `monitor` calls are
-  refused for a job id, and so is its `job_output`; both accept the id or name of a subagent it
-  started.
+  and keeps its kill-at-timeout, and its `run_in_background` and `monitor` calls are refused
+  outright; its `job_cancel` and `job_output` work only on the id or name of a subagent it started.
 - **Permissions.** The command is judged by the [permission pipeline](permissions.md) when
   `shell` is called, as for any command. Moving to the background does not ask again.
   `job_output` is read-only and names no path; `job_cancel` is an arbitrary tool because it
@@ -400,7 +399,7 @@ own: allow it with a `monitor(...)` rule or leave it to the guardian.
   output — it waits (for `wait_secs`, and until a message arrives or you queue a command, skill or `!` line) and reports whether a
   notification was posted, the monitor ended, or it still runs; its lines and its final notice
   always arrive as notifications.
-- Like `job_cancel` it is for the main conversation only, and it counts against the limit
+- It is for the main conversation only, and it counts against the limit
   of 8 running jobs.
 
 ## Web fetch

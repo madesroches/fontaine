@@ -69,11 +69,12 @@ result, and never a second time.
   the waiter or, in the main conversation, when you type one or queue a command, skill or `!` line. A message is delivered
   with that result; a queued command, skill or `!` line is only named in it, and runs when the turn ends.
 - **Interrupted.** Interrupting a wait or a turn (Esc) leaves every subagent running; their
-  reports arrive later as usual. Stop one from the agents panel, or with `job_cancel` (the model can too). `/clear`, `/rewind` and
+  reports arrive later as usual. Stop one from the agents panel; the model can stop the subagents it started with `job_cancel`. `/clear`, `/rewind` and
   `/branch` are refused while any subagent runs or its report waits to be delivered; run them
   again once it ends or you stop it.
 
-The model still gets no tool to list or kill agents: those are controls for you, in the
+The model can stop only the subagents it started, with `job_cancel`. Listing agents and killing any
+agent stay controls for you, in the
 [agent list and the agents panel](tui.md#the-agent-list-and-the-agent-view).
 
 ## Agent types
