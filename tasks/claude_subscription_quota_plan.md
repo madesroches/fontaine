@@ -174,6 +174,7 @@ bare frame and every existing script behaviour are unchanged.
 - `rust/fontaine-core/src/quota.rs`
 - `rust/fontaine-core/src/providers/claude_subscription/{usage.rs (new), protocol.rs, protocol/tests.rs, mod.rs, transport.rs}`
 - `rust/fontaine-core/examples/claude_cli_double.rs`
+- `rust/fontaine/tests/claude_subscription.rs` (a new double-backed case for Step 7)
 - `docs/{configuration.md, tui.md, claude-subscription.md, headless.md}`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -194,7 +195,8 @@ bare frame and every existing script behaviour are unchanged.
   adapter refuses to draw (the billing guard rejects credit-marked models), so the figures that
   matter are the included 5h and 7d windows. Revisit if a user with extra usage wants it shown.
 - **`resetsAt` read as epoch seconds:** the captured real payload shows seconds; a wrong-unit
-  value would just render a reset time in the past, which the bar omits.
+  value parsed as epoch seconds is a far-future date and would render as a plausible-looking
+  reset, so the unit is pinned by the captured payload and the parser tests.
 
 ## Decisions
 
@@ -214,7 +216,9 @@ bare frame and every existing script behaviour are unchanged.
   mentions the status bar figures.
 - `docs/tui.md` ("Subscription quota"): a `claude-subscription` account adds
   `claude · 5h 9% (15:00) · 7d 15% (Mon)` from the first turn on, no `quota` key needed; no data
-  (API-key session, pre-first-turn) means no segment.
+  (API-key session, pre-first-turn) means no segment. Also amend the existing "A segment is
+  also hidden when its model is on an account without `quota`" sentence to "account without a
+  quota source", since `claude-subscription` now shows a segment with no `quota` key.
 - `docs/claude-subscription.md`: the usage figures come from the CLI's own stream events and
   never leave the machine.
 - `docs/headless.md`: the `account_usage` row says any account with a quota source gets an
