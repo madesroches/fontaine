@@ -21,6 +21,7 @@ use serde_json::json;
 use super::cli::{ChildFiles, Cli, CliChild, ReadFail, Scratch, fixed_args, scratch_error};
 use super::inventory::INVENTORY_FLAG;
 use super::protocol::{Event, Expect, Failure, Reader, SessionSeed, exit_failure, translate};
+use super::usage::Usage;
 use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error, read_idle_error};
 
 /// How the inert inventory is started: this executable in its hidden mode, unless a test
@@ -66,14 +67,21 @@ pub struct ClaudeTransport {
     cli: Arc<Cli>,
     selection: Arc<Selection>,
     inventory: InventoryCommand,
+    usage: Arc<Usage>,
 }
 
 impl ClaudeTransport {
-    pub fn new(cli: Arc<Cli>, selection: Selection, inventory: InventoryCommand) -> Self {
+    pub fn new(
+        cli: Arc<Cli>,
+        selection: Selection,
+        inventory: InventoryCommand,
+        usage: Arc<Usage>,
+    ) -> Self {
         ClaudeTransport {
             cli,
             selection: Arc::new(selection),
             inventory,
+            usage,
         }
     }
 }
@@ -136,10 +144,13 @@ impl ClaudeTransport {
         );
         let idle = self.cli.timeouts.read_idle;
         let mut child = self.cli.launch(scratch, args, true).map_err(provider)?;
-        let mut reader = Reader::new(Expect {
-            models: vec![selection.canonical.clone(), selection.alias.clone()],
-            aliases: translated.aliases.clone(),
-        });
+        let mut reader = Reader::new(
+            Expect {
+                models: vec![selection.canonical.clone(), selection.alias.clone()],
+                aliases: translated.aliases.clone(),
+            },
+            Some(self.usage.clone()),
+        );
 
         for frame in &translated.frames {
             // Only a history user frame is acknowledged: the CLI answers it with a zero-turn

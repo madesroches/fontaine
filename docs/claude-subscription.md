@@ -102,6 +102,10 @@ Usage is subscription usage: token counts are shown (`/cost`, headless `result.u
 presented as an invoice. `--max-budget-usd` with a `claude-subscription` main model is a usage error
 (exit code 2); token budgets still apply.
 
+The 5-hour and weekly plan usage shown in the status bar and in headless `result.account_usage`
+comes from the rate-limit events the CLI streams with each reply. Fontaine makes no request for it,
+and the figures never leave the machine. They appear after the first turn.
+
 Fontaine never selects paid usage credits, but it cannot see your account's extra-usage setting: if
 it is on, exhausting the included limit can switch a Max or Ultra session to paid credits.
 Disable it at <https://claude.ai/settings/usage> if you need included-subscription-only use. A

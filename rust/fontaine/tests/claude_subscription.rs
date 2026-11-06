@@ -512,3 +512,45 @@ async fn the_inventory_mode_describes_tools_and_denies_every_call() {
     drop(stdin);
     assert!(child.wait().await.unwrap().success());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn plan_usage_reaches_the_result_when_the_cli_reports_it() {
+    let claude = Claude::new(json!({"responses": [
+        {"text": "hi", "rate_limit": {"five_hour": 0.6, "seven_day": 0.3}},
+    ]}));
+    let out = claude
+        .headless(&["--output-format", "stream-json", "hello"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let usage = &of_type(&lines, "result")[0]["account_usage"];
+    let entry = usage
+        .as_array()
+        .and_then(|a| a.iter().find(|e| e["label"] == "claude"))
+        .unwrap_or_else(|| panic!("no claude entry: {usage}"));
+    assert_eq!(entry["windows"][0]["label"], "7d", "{entry}");
+    assert_eq!(entry["windows"][0]["used_percentage"], 30, "{entry}");
+    assert_eq!(
+        entry["windows"][0]["resets_at"], 1_791_036_000u64,
+        "{entry}"
+    );
+    assert_eq!(entry["windows"][1]["label"], "5h", "{entry}");
+    assert_eq!(entry["windows"][1]["used_percentage"], 60, "{entry}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_rate_limit_frame_the_usage_entry_has_no_windows() {
+    let claude = Claude::new(json!({"responses": [{"text": "hi"}]}));
+    let out = claude
+        .headless(&["--output-format", "stream-json", "hello"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let usage = &of_type(&lines, "result")[0]["account_usage"];
+    let entry = usage
+        .as_array()
+        .and_then(|a| a.iter().find(|e| e["label"] == "claude"))
+        .unwrap_or_else(|| panic!("no claude entry: {usage}"));
+    assert_eq!(entry["windows"], json!([]), "{entry}");
+    assert!(!out.stderr.contains("quota"), "{}", out.stderr);
+}

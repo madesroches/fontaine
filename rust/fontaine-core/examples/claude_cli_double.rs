@@ -442,6 +442,25 @@ impl Double {
                     .to_string(),
             );
         }
+        if let Some(limits) = script.get("rate_limit") {
+            let ratio = |key: &str, default: f64| {
+                limits.get(key).and_then(Value::as_f64).unwrap_or(default)
+            };
+            out.push(
+                json!({"type": "rate_limit_event", "rate_limit_info": {
+                    "status": "allowed", "resetsAt": 1_790_578_200u64,
+                    "rateLimitType": "five_hour", "overageStatus": "rejected",
+                    "overageDisabledReason": "out_of_credits", "isUsingOverage": false,
+                    "unifiedWindows": {
+                        "five_hour": {"utilization": ratio("five_hour", 0.09),
+                            "resetsAt": 1_790_578_200u64},
+                        "seven_day": {"utilization": ratio("seven_day", 0.15),
+                            "resetsAt": 1_791_036_000u64},
+                    }},
+                    "uuid": "double", "session_id": "double"})
+                .to_string(),
+            );
+        }
         if script.get("denial_echo").and_then(Value::as_bool) == Some(true) {
             let id = script
                 .get("tool_use")

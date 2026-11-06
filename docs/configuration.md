@@ -171,7 +171,7 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `prompt_caching` | `anthropic`, `openrouter` and `opencode-go` only: whether requests carry cache breakpoints, so the provider reuses the unchanged prefix at a fraction of the input price. On `anthropic` they sit on the tools, the system prompt and the latest message. On `openrouter` the conversation carries one top-level marker for every model except the self-caching `openai/`, `deepseek/`, `x-ai/` and `groq/` upstreams, which are sent none, and the guardian marks its system prompt. On `opencode-go` it affects only models served on the Messages wire; the other wires cache by prefix on their own. User scope only, because it changes spend and what the provider stores. | `true` for `anthropic` and `openrouter`, `false` for `opencode-go` |
 | `cache_ttl` | `anthropic`, `openrouter` and `opencode-go` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
 | `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. An explicit [`effort`](#model) wins over it, and `effort = "off"` equals `think = false` for the main agent. | unset |
-| `quota` | `openai-compatible` only: `"kimi"` shows the account's subscription quota in the [status bar](tui.md#status-bar) and in headless `result.account_usage`, read from Kimi for Coding's `GET <base_url>/usages`. User scope only, because it sends the account's key in extra requests. | unset |
+| `quota` | `openai-compatible` only (a `claude-subscription` account shows its plan usage with no key): `"kimi"` shows the account's subscription quota in the [status bar](tui.md#status-bar) and in headless `result.account_usage`, read from Kimi for Coding's `GET <base_url>/usages`. User scope only, because it sends the account's key in extra requests. | unset |
 | `cli_path` | `claude-subscription` only: the absolute path of the official `claude` executable. | `claude` on `PATH` |
 | `claude_config_dir` | `claude-subscription` only: the absolute path of the CLI's own config directory, handed to it as `CLAUDE_CONFIG_DIR` for this account only, so two accounts can keep separate logins. | unset |
 | `https_proxy`, `http_proxy`, `no_proxy`, `ca_bundle`, `client_cert`, `client_key` | Override the same key of [`[network]`](#network) for this account only. | the `[network]` value |
@@ -231,7 +231,8 @@ code 2) that names that command.
 
 A `claude-subscription` account has no Fontaine credential at all: the installed Claude CLI owns the
 login, a stored key or an `api_key_env` is refused or ignored, and `/login` only checks the CLI. See
-[Claude subscription](claude-subscription.md).
+[Claude subscription](claude-subscription.md). Its 5-hour and weekly plan usage shows in the
+[status bar](tui.md#subscription-quota) from the first turn on, with no `quota` key.
 
 The guardian is different: a missing or invalid credential on the account of `[guardian] model`
 never stops startup. The guardian is then unavailable, and every decision that needs it fails

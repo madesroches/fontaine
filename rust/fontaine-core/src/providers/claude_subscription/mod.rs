@@ -22,12 +22,15 @@ use rig_core::providers::registry::ProviderId;
 
 use super::{AccountClient, Billing, ConnectContext, CredentialPolicy, Provider};
 use crate::config::Account;
+use crate::quota::QuotaSource;
 use fontaine_tools::lock::{read, write};
+use usage::Usage;
 
 pub mod cli;
 pub mod inventory;
 pub mod protocol;
 pub mod transport;
+pub mod usage;
 
 pub use cli::{CONFLICTING_ENV, Cli, MIN_VERSION, Timeouts, inherited_env_names};
 pub use inventory::INVENTORY_FLAG;
@@ -161,12 +164,6 @@ pub(crate) fn read_idle_error(idle: std::time::Duration) -> ProviderError {
 
 pub struct ClaudeSubscription;
 
-const NOTICE: &str = "Requests go through your installed Claude Code CLI and draw from your \
-    Claude subscription limits; token usage is shown but never priced. If your account has extra \
-    usage enabled, exhausting the included limit can switch it to paid usage credits, which \
-    Fontaine cannot see; disable it at https://claude.ai/settings/usage if you need \
-    included-subscription-only use.";
-
 impl Provider for ClaudeSubscription {
     fn name(&self) -> &'static str {
         "claude-subscription"
@@ -182,10 +179,6 @@ impl Provider for ClaudeSubscription {
 
     fn requires_discovery(&self) -> bool {
         true
-    }
-
-    fn selection_notice(&self) -> Option<&'static str> {
-        Some(NOTICE)
     }
 
     fn validate(&self, account: &Account) -> Result<(), (&'static str, String)> {
@@ -256,6 +249,7 @@ impl Provider for ClaudeSubscription {
             cli: Arc::new(cli),
             session,
             inventory,
+            usage: Arc::new(Usage::new()),
             discovered: RwLock::new(BTreeMap::new()),
         }))
     }
@@ -282,6 +276,7 @@ struct Connected {
     cli: Arc<Cli>,
     session: String,
     inventory: InventoryCommand,
+    usage: Arc<Usage>,
     discovered: RwLock<BTreeMap<String, Entry>>,
 }
 
@@ -317,6 +312,7 @@ impl Connected {
                 refused: refused.map(|reason| ClaudeError::new(ErrorKind::Catalog, reason)),
             },
             self.inventory.clone(),
+            self.usage.clone(),
         );
         Model::new(wire, transport).erase()
     }
@@ -337,6 +333,10 @@ impl AccountClient for Connected {
 
     fn guardian_completion_for_agent(&self, model: &str, namespace: &str) -> DynModel<Completion> {
         self.model(model, namespace)
+    }
+
+    fn quota_source(&self) -> Option<Arc<dyn QuotaSource>> {
+        Some(self.usage.clone())
     }
 
     fn unavailable_reason(&self, model: &str) -> Option<String> {

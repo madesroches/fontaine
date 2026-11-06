@@ -35,7 +35,17 @@ pub trait QuotaSource: Send + Sync + std::fmt::Debug {
     /// The short label the status bar shows, such as `kimi`.
     fn name(&self) -> &str;
 
+    /// An `Ok` quota with no windows means the source has no data right now: nothing to
+    /// show, not an error.
     fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>>;
+
+    /// A receiver that fires when data the source holds locally changed and a re-fetch is due
+    /// before the next scheduled poll. A source that only learns its data through [`fetch`]
+    /// returns `None`, the default; one fed by an outside stream, such as the CLI events behind a
+    /// model turn, returns one so new figures show without waiting for the interval.
+    fn updated(&self) -> Option<watch::Receiver<()>> {
+        None
+    }
 }
 
 /// Whose quota an [`AccountUsage`] is.
@@ -176,9 +186,12 @@ async fn run(
     snapshot: watch::Sender<QuotaSnapshot>,
 ) {
     let mut last_good: Option<(Quota, Instant)> = None;
+    // The update-signal subscription follows the current source.
+    let mut subscribed: Option<(Arc<dyn QuotaSource>, watch::Receiver<()>)> = None;
     loop {
         let source = sources.borrow_and_update().clone();
         let Some(source) = source else {
+            subscribed = None;
             last_good = None;
             snapshot.send_replace(QuotaSnapshot::default());
             if sources.changed().await.is_err() {
@@ -186,6 +199,13 @@ async fn run(
             }
             continue;
         };
+        if subscribed
+            .as_ref()
+            .is_none_or(|(held, _)| !Arc::ptr_eq(held, &source))
+        {
+            subscribed = source.updated().map(|rx| (source.clone(), rx));
+        }
+        let mut updated = subscribed.as_mut().map(|(_, rx)| rx);
         let fetched = tokio::select! {
             fetched = source.fetch() => fetched,
             changed = sources.changed() => {
@@ -202,6 +222,7 @@ async fn run(
             ..QuotaSnapshot::default()
         };
         match fetched {
+            Ok(quota) if quota.windows.is_empty() => last_good = None,
             Ok(quota) => last_good = Some((quota, Instant::now())),
             Err(e) => {
                 if last_good
@@ -220,6 +241,14 @@ async fn run(
             snapshot.send_replace(QuotaSnapshot::default());
             continue;
         }
+        // A frame recorded mid-fetch lands after the read; re-fetch instead of publishing and
+        // sleeping on a stale figure.
+        if updated
+            .as_mut()
+            .is_some_and(|rx| rx.has_changed().unwrap_or(false))
+        {
+            continue;
+        }
         snapshot.send_replace(published);
         tokio::select! {
             () = tokio::time::sleep(POLL_INTERVAL) => {}
@@ -230,7 +259,23 @@ async fn run(
                 last_good = None;
                 snapshot.send_replace(QuotaSnapshot::default());
             }
+            changed = wait_updated(updated) => {
+                if changed.is_err() {
+                    // The source dropped its sender; keep polling on the interval.
+                    subscribed = None;
+                }
+            }
         }
+    }
+}
+
+/// Waits for the source's next local-update signal, or forever when it has none.
+async fn wait_updated(
+    updated: Option<&mut watch::Receiver<()>>,
+) -> Result<(), watch::error::RecvError> {
+    match updated {
+        Some(rx) => rx.changed().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -247,15 +292,34 @@ mod tests {
         name: &'static str,
         calls: AtomicUsize,
         script: Mutex<VecDeque<Result<f64, &'static str>>>,
+        updated: Option<watch::Sender<()>>,
     }
 
     impl Fake {
         fn new(name: &'static str, script: &[Result<f64, &'static str>]) -> Arc<Fake> {
+            Fake::build(name, script, None)
+        }
+
+        /// A fake whose `updated` signal the test can fire.
+        fn signaling(name: &'static str, script: &[Result<f64, &'static str>]) -> Arc<Fake> {
+            Fake::build(name, script, Some(watch::channel(()).0))
+        }
+
+        fn build(
+            name: &'static str,
+            script: &[Result<f64, &'static str>],
+            updated: Option<watch::Sender<()>>,
+        ) -> Arc<Fake> {
             Arc::new(Fake {
                 name,
                 calls: AtomicUsize::new(0),
                 script: Mutex::new(script.iter().cloned().collect()),
+                updated,
             })
+        }
+
+        fn update(&self) {
+            self.updated.as_ref().expect("signal").send_replace(());
         }
 
         fn calls(&self) -> usize {
@@ -266,6 +330,10 @@ mod tests {
     impl QuotaSource for Fake {
         fn name(&self) -> &str {
             self.name
+        }
+
+        fn updated(&self) -> Option<watch::Receiver<()>> {
+            self.updated.as_ref().map(|s| s.subscribe())
         }
 
         fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>> {
@@ -373,6 +441,29 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_local_update_re_fetches_at_once() {
+        let fake = Fake::signaling("k", &[Ok(0.1), Ok(0.6), Ok(0.7)]);
+        let mut poller = QuotaPoller::new();
+        let rx = poller.subscribe();
+        poller.point(Some(&erased(&fake)));
+        settle().await;
+        assert_eq!(fake.calls(), 1);
+        assert_eq!(ratio(&rx), Some(0.1));
+
+        // No time passes: the signal alone wakes the next fetch.
+        fake.update();
+        settle().await;
+        assert_eq!(fake.calls(), 2);
+        assert_eq!(ratio(&rx), Some(0.6));
+
+        // The interval still fetches when nothing signals.
+        tokio::time::advance(POLL_INTERVAL + Duration::from_secs(1)).await;
+        settle().await;
+        assert_eq!(fake.calls(), 3);
+        assert_eq!(ratio(&rx), Some(0.7));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn pointing_at_the_same_source_does_not_refetch() {
         let fake = Fake::new("k", &[Ok(0.1), Ok(0.2)]);
         let source = erased(&fake);
@@ -440,6 +531,67 @@ mod tests {
         settle().await;
         assert!(rx.borrow().error.is_none());
         assert_eq!(ratio(&rx), Some(0.5));
+    }
+
+    #[derive(Debug)]
+    struct Empty;
+
+    impl QuotaSource for Empty {
+        fn name(&self) -> &str {
+            "e"
+        }
+
+        fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>> {
+            Box::pin(async { Ok(Quota { windows: vec![] }) })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_windows_are_no_data_not_an_error() {
+        let mut poller = QuotaPoller::new();
+        let rx = poller.subscribe();
+        let source: Arc<dyn QuotaSource> = Arc::new(Empty);
+        poller.point(Some(&source));
+        settle().await;
+        assert_eq!(rx.borrow().name, "e");
+        assert!(rx.borrow().quota.is_none());
+        assert!(rx.borrow().error.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn data_appearing_after_an_empty_fetch_shows() {
+        #[derive(Debug)]
+        struct Late(AtomicUsize);
+        impl QuotaSource for Late {
+            fn name(&self) -> &str {
+                "l"
+            }
+            fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>> {
+                let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+                Box::pin(async move {
+                    let windows = if first {
+                        vec![]
+                    } else {
+                        vec![QuotaWindow {
+                            label: "5h".into(),
+                            used_ratio: 0.2,
+                            reset_at: None,
+                        }]
+                    };
+                    Ok(Quota { windows })
+                })
+            }
+        }
+        let mut poller = QuotaPoller::new();
+        let rx = poller.subscribe();
+        let source: Arc<dyn QuotaSource> = Arc::new(Late(AtomicUsize::new(0)));
+        poller.point(Some(&source));
+        settle().await;
+        assert!(rx.borrow().quota.is_none());
+        tokio::time::advance(POLL_INTERVAL + Duration::from_secs(1)).await;
+        settle().await;
+        assert_eq!(ratio(&rx), Some(0.2));
+        assert!(rx.borrow().error.is_none());
     }
 
     #[tokio::test(start_paused = true)]
