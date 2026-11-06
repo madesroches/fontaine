@@ -459,6 +459,7 @@ fn waiting_session_with(
             wakeable: false,
         }),
         wake_after,
+        notice,
     )
 }
 
@@ -466,6 +467,7 @@ fn waiting_session_ended(
     answer: Option<AgentWaitError>,
     ended: Option<Ended>,
     wake_after: Duration,
+    notice: Option<&str>,
 ) -> (Dirs, Vec<Registered>, Asked) {
     let d = Dirs::new();
     let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
@@ -570,6 +572,7 @@ async fn a_failed_subagent_points_at_send_message_only_while_it_keeps_its_conver
             wakeable: true,
         }),
         Duration::ZERO,
+        None,
     );
     let out = run_as_child(&tools, "job_output", json!({"id": "agent-1"}))
         .await
@@ -587,6 +590,7 @@ async fn a_failed_subagent_points_at_send_message_only_while_it_keeps_its_conver
             wakeable: false,
         }),
         Duration::ZERO,
+        None,
     );
     let out = run_as_child(&tools, "job_output", json!({"id": "agent-1"}))
         .await
