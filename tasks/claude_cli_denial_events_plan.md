@@ -310,6 +310,7 @@ API error as a system entry, so this is not a deviation.
 
 - 2026-11-06 AFK: the uncommitted working-tree change that appended the subtype to the system-event error was stashed (`ship-auto: WIP set aside`), not committed. Design 7 supersedes it with a sanitized label on every `Protocol` failure.
 - 2026-11-06 AFK: of the subtypes the issue lists, only `thinking_tokens` is accepted (observed on 2.1.319). `informational`, `notification` and `turn_duration` stay refused until a capture shows them in the adapter's configuration (conservative option).
+- 2026-11-06 AFK: the "How Hermes handles the same thing" subsection stays, not folded into Trade-offs. The user asked that the design refer to how Hermes does the same thing, and the subsection is that reference; its overlap with the first Trade-offs bullet costs nothing (conservative option).
 
 ## Documentation
 
