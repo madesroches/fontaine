@@ -18,8 +18,8 @@ is resumed later.
 - **The drop.** `fontaine-tui/src/ui/turn.rs` `turn()` (lines ~762-925) builds the run future
   (`compact_if_needed` then `run_turn`) and selects over it. `Action::Interrupt | Action::Quit`
   break with `TurnEnd::Interrupted` (line 856) and the AFK signal with `TurnEnd::Stopped`
-  (line 841). Then `drop(run)` (line 900) drops rig's drive stream mid-flight. A `Finished`
-  outcome that coincides with an AFK stop is relabelled `Stopped` (lines 908-916); that run did
+  (line 841). Then `drop(run)` (line 907) drops rig's drive stream mid-flight. A `Finished`
+  outcome that coincides with an AFK stop is relabelled `Stopped` (lines 909-917); that run did
   settle.
 - **Where rig saves.** `rig-agent-0.45.0/src/agent/engine.rs` `drive_agent` saves the
   conversation only in the `AgentRunStep::Done` branch (`conversation.extend(run.messages());
@@ -96,12 +96,14 @@ Steps:
      temperature ceiling was reached.]`
    - `SessionEnded`: `[Harness note, not the user's words: the session ended before this turn
      finished.]`
-   The harness-note wording follows `RETRY_NOTE` in `turn.rs`.
+   The harness-note wording follows `RETRY_NOTE` in `turn.rs`, and the master plan's Decision
+   that a scheduled turn is a harness note, never a `UserMessage`: neither cause is the user's
+   doing.
 4. Only after the append succeeds, empty the journal: `replace_log_async` to zero bytes,
    the same cut `InflightHook::cut_back(0)` makes. Factor `cut_back`'s body into a free
    function `cut_journal(store, log, keep)` that both use. If the append fails, the journal
-   stays and the next fold (next interrupt, or the next resume) folds it, so nothing is lost
-   and nothing doubles.
+   stays and the fold before the next root run (see §3) folds it, so nothing is lost and
+   nothing doubles.
 
 **Pairing.** The journal never holds an unpaired tool call, as noted under Current State. The
 last journaled message is always the user side of a round, either the prompt or a tool-result
@@ -112,10 +114,10 @@ today after a retry (`RETRY_NOTE`). A test pins that the next request is accepte
 providers (see Testing Strategy).
 
 **Interaction with the hook at the next run.** `InflightHook::start` records `carried_bytes`
-from the journal at run start. After a fold the journal is empty, so the next run starts at 0
-as usual. If the fold could not empty the journal, the next run carries it and cuts back to it
-at settle. The journal then still holds the unfolded turn for the next fold, which is the
-intended behavior.
+from the journal at run start and cuts back to it at settle, so a journal carried into a run
+would outlive it and be folded after the newer turns rig saved, out of order. The surfaces
+therefore fold any leftover journal before each root run starts (§3), so a run always starts
+from an empty journal.
 
 ### 3. Call the fold where a root run is dropped
 
@@ -141,6 +143,9 @@ impl AgentRuntime {
   turn had not finished, call `keep_unsettled_turn(Unsettled::AfkStop, Some(prompt))` before
   `handle_afk_stop`. The prompt text is cloned before `run_turn` takes it (headless sends no
   attachments).
+- **Before each root run** (TUI `turn()` and headless, before `run_turn`). Call
+  `keep_unsettled_turn(Unsettled::SessionEnded, None)`, with no fallback, so a journal left by
+  a failed fold is folded before a later turn can run and be saved after it.
 - **Session start** (`record_session_start`). For a `Continued` origin, call
   `keep_unsettled_turn(Unsettled::SessionEnded, None)`. A journal left by a killed process
   (headless Ctrl-C, a crash, a closed terminal) is folded before the first turn. A fresh
@@ -161,6 +166,7 @@ next turn always sees the folded history.
 | Esc before the first model call (during auto-compaction) | Turn lost | Prompt + marker |
 | AFK ceiling (TUI or headless) | Turn lost | Same as interrupt, AFK-stop note as marker |
 | Process killed mid-turn, then `--resume` | Turn lost | Folded at session start, session-ended note as marker |
+| Headless `--max-budget-usd` stop (`Flow::Stop` → `TurnOutcome::Stopped`, run dropped unsettled) | Turn lost | Journal kept; folded with the session-ended note before the next run (at `--resume`) |
 
 What is still lost: assistant text streamed since the last model call committed, and the
 results of a tool batch still running at the interrupt. The assistant turn that requested the
@@ -175,18 +181,21 @@ issue accepts this for a first cut.
 2. **`fontaine-core/src/agent/build.rs` `finish_builder`**: register `InflightHook` on the
    root after `RecoveryHook`.
 3. **`fontaine-core/src/agent.rs`**: add `AgentRuntime::keep_unsettled_turn` and call it from
-   `record_session_start` for `Continued` origins. Re-export `Unsettled` where the surfaces
-   can name it (for example `fontaine_core::turn_recovery::Unsettled`, which makes the module
-   `pub` or re-exports the enum).
+   `record_session_start` for `Continued` origins. Surfaces name the enum as
+   `fontaine_core::turn_recovery::Unsettled`.
 4. **`fontaine-core/src/turn.rs`**: make the prompt message buildable by surfaces (`pub` on
    `user_message`, or a thin `pub fn`).
 5. **`fontaine-tui/src/ui/turn.rs` `turn()`**: build and keep the prompt message, track whether
-   the run was dropped unsettled, and call `keep_unsettled_turn` after `drop(run)`.
-6. **`fontaine/src/headless.rs`**: fold on the AFK-stop branch.
+   the run was dropped unsettled, and call `keep_unsettled_turn` after `drop(run)`. Fold any
+   leftover journal before the run starts.
+6. **`fontaine/src/headless.rs`**: fold any leftover journal before `run_turn`; fold on the
+   AFK-stop branch.
 7. **Tests** (see Testing Strategy).
-8. **Docs**: `docs/tui.md` line 228; `docs/architecture.md` session layout (`main.inflight.jsonl`
-   next to `main.jsonl`); `docs/sessions.md` or wherever `--resume` is documented (a resumed
-   session keeps a turn the previous process did not finish); `CHANGELOG.md` `Fixed`.
+8. **Docs**: `docs/tui.md` line 228, and lines ~420-422 (messages already delivered in an
+   interrupted turn are kept with its finished rounds, not discarded); `docs/architecture.md`
+   session layout (`main.inflight.jsonl` next to `main.jsonl`); `docs/headless.md` (~line 120)
+   and the `--resume` passage of `docs/tui.md` (a resumed session keeps a turn the previous
+   process did not finish); `CHANGELOG.md` `Fixed`.
 9. **`tasks/fontaine_harness_plan.md`**: a dated line at the end of the `### Sessions`
    subsection of `## Decisions` recording the one deviation from Claude Code: partial streamed
    text and an in-flight tool batch are not kept.
@@ -197,36 +206,18 @@ issue accepts this for a first cut.
 - `rust/fontaine-core/src/agent/build.rs`
 - `rust/fontaine-core/src/agent.rs`
 - `rust/fontaine-core/src/turn.rs`
-- `rust/fontaine-core/src/lib.rs` (visibility of `turn_recovery` / `Unsettled`, if needed)
 - `rust/fontaine-tui/src/ui/turn.rs`
 - `rust/fontaine/src/headless.rs`
 - `rust/fontaine-core/tests/turn_recovery.rs`, `rust/fontaine-tui/tests/tui.rs`
-- `docs/tui.md`, `docs/architecture.md`, the resume docs page, `CHANGELOG.md`
+- `docs/tui.md`, `docs/architecture.md`, `docs/headless.md`, `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md`
 
-## Trade-offs
-
-- **Journal + fold vs. a cooperative cancel.** The issue's alternative is to stop the root
-  run through rig's `cancel_error` path, as `KillHook` does for subagents, so it settles as
-  `Error` and `RecoveryHook` saves it. rig exposes no cancel handle from outside the stream.
-  The run only checks hook boundaries (before a model call, before each dispatch), so Esc
-  during a long stream or a long tool would wait for the next boundary, or need the
-  choke-point kill-select plus a grace window that subagent kills use. That trades Esc's
-  immediacy for the save. The journal keeps Esc instant and reuses a hook already proven on
-  subagents. It also covers a killed process, which no cooperative cancel can.
-- **Fold at the surface vs. inside `run_turn`.** A drop guard cannot run async I/O, and the
-  dropped future is the one that would own it. So the surface that drops the run calls the
-  fold right after. One runtime method keeps that to one line per surface.
-- **Fallback prompt vs. journaling at run start.** Journaling in `on_run_start` would cover
-  the window before the first model call, but the prompt there can differ from what the first
-  call sends if a completion-call hook patches it, which risks a duplicated or stale prompt.
-  The surface already holds the exact message it sent, so it passes it as the fallback.
-- **No synthetic tool results.** They are needed only when a tool call is stranded, and the
-  journal never strands one. Adding them would mean journaling the in-flight assistant turn
-  too (from `on_model_turn_finished`), which keeps the in-flight batch's finished results but
-  adds a second writer and its ordering edge cases. That is left as a follow-up.
-
 ## Decisions
+
+- 2026-11-06: Journal + fold instead of a cooperative cancel through rig's `cancel_error` path, because that would make Esc wait for the next hook boundary and cannot cover a killed process.
+- 2026-11-06: The surface that drops the run calls the fold, not `run_turn`, because a drop guard cannot run async I/O.
+- 2026-11-06: The surface passes its sent prompt as the fold's fallback instead of journaling in `on_run_start`, because a completion-call hook can patch the prompt and risk a duplicated or stale one.
+- 2026-11-06: No synthetic tool results, because the journal never strands a tool call; keeping an in-flight batch's results is a follow-up.
 
 ## Documentation
 
@@ -235,8 +226,10 @@ issue accepts this for a first cut.
   continues from there. Text the model was still streaming is not kept.
 - `docs/architecture.md`: session layout. `logs/main.inflight.jsonl` journals the main run in
   progress, as `agent-<n>.inflight.jsonl` does for subagents.
-- Resume docs: resuming after a process that died mid-turn keeps that turn, marked as
-  unfinished.
+- `docs/tui.md`, queued messages: messages already delivered in an interrupted turn are kept
+  with its finished rounds instead of being discarded and needing to be sent again.
+- `docs/headless.md` (~line 120) and the `--resume` passage of `docs/tui.md`: resuming after a
+  process that died mid-turn keeps that turn, marked as unfinished.
 - `CHANGELOG.md`: `Fixed`. An interrupted turn stays in the model's conversation.
 
 ## Testing Strategy
@@ -251,9 +244,8 @@ integration test.
   - A non-empty journal ignores the fallback, so the prompt is not doubled.
   - Each `Unsettled` cause produces its marker text.
   - An append failure (the `Broken` store) returns the error and leaves the journal.
-  - A journal carried by a failed fold is folded whole by the next fold.
-  - `InflightHook` with id `main`: a settled run (both outcomes) leaves an empty journal, as
-    the subagent tests already show for `agent-1`, so no second fold doubles a settled turn.
+  - A journal left by a failed fold is folded before the next turn's request, so that
+    request's history holds the old turn before the new prompt.
 - **Core integration, `fontaine-core/tests/turn_recovery.rs`** (scripted models): run a root
   turn with a tool call whose second request is held, drop the `run_turn` future, call
   `keep_unsettled_turn(User, ..)`, and assert the stored conversation holds the prompt, the
@@ -267,13 +259,7 @@ integration test.
   follow-up's request contains the first prompt, the tool call, the interruption marker and the
   follow-up. Plus one test that interrupts before any model call completes and asserts the
   first prompt and marker reach the next request.
-- **Headless.** A test for the AFK-stop fold, using an existing AFK-stop test harness in
-  `fontaine/tests` if one drives the stop. Otherwise the unit and core coverage stands, since
-  the call site is one line.
-
-## Open Questions
-
-- Should the AFK-stop marker and the session-ended marker be Claude Code's plain
-  `[Request interrupted by user]` instead of harness notes? Claude Code has no AFK mode, and a
-  killed process has no Claude Code analog. The plan uses harness notes because neither is
-  the user's doing.
+- **Headless.** In `rust/fontaine/tests/afk.rs`, extend
+  `the_ceiling_stops_the_tree_and_a_stopped_session_refuses_to_run_again` (or add a sibling)
+  to assert that `main` holds the prompt, the tool round and the AFK-stop marker after the
+  stop.
