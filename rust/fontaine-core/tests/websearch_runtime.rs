@@ -177,6 +177,18 @@ mod default_backend {
     }
 
     #[cfg(unix)]
+    async fn search(runtime: &AgentRuntime) -> String {
+        let handle = runtime.tool_server().clone();
+        handle
+            .toolset()
+            .execute("websearch", r#"{"query": "x"}"#, &mut as_root())
+            .await
+            .into_result()
+            .map(|o| o.render())
+            .unwrap_or_else(|e| panic!("{}", e.model_output().render()))
+    }
+
+    #[cfg(unix)]
     #[test]
     fn a_runtime_on_the_path_registers_the_tool_by_default() {
         let w = World::new();
@@ -302,7 +314,7 @@ mod default_backend {
         let argv = std::fs::read_to_string(&argv).unwrap();
         let lines: Vec<&str> = argv.lines().collect();
         assert_eq!(&lines[..3], ["run", "--rm", "--name"], "{argv}");
-        assert!(lines[3].starts_with("fontaine-searxng-"), "{argv}");
+        assert_eq!(lines[3], "fontaine-searxng", "{argv}");
         assert_eq!(lines[4], "-p", "{argv}");
         assert!(lines[5].ends_with(":8080"), "{argv}");
         assert!(lines[7].ends_with("/etc/searxng/settings.yml:ro"), "{argv}");
@@ -312,5 +324,176 @@ mod default_backend {
         let warnings = approver.0.lock().unwrap();
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("pulls the image"), "{warnings:?}");
+    }
+
+    /// Stands in for the container: listens on the port the fake runtime recorded for its last
+    /// `run`, and answers SearXNG searches there.
+    #[cfg(unix)]
+    async fn serve_recorded_port(state: PathBuf) -> wiremock::MockServer {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let text = loop {
+            if let Ok(text) = std::fs::read_to_string(state.join("port"))
+                && !text.is_empty()
+            {
+                break text;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        let port: u16 = text.trim().rsplit(':').next().unwrap().parse().unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+        let server = wiremock::MockServer::builder()
+            .listener(listener)
+            .start()
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "results": [{"title": "T", "url": "https://a.example/", "content": "s"}]
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// A fake runtime that keeps its state in `state`: `run` records the published port and
+    /// marks the container running, `inspect`/`port` read that state back.
+    #[cfg(unix)]
+    fn stateful_runtime(state: &Path) {
+        fake_runtime(
+            &state.parent().unwrap().join("bin"),
+            "docker",
+            &format!(
+                "case \"$1\" in\n\
+                 ps) cat '{0}/ps-out' 2>/dev/null || true ;;\n\
+                 inspect) cat '{0}/inspect-out' 2>/dev/null || echo false ;;\n\
+                 port) cat '{0}/port' 2>/dev/null || exit 1 ;;\n\
+                 rm) echo \"$*\" >> '{0}/rms'; rm -f '{0}/argv' '{0}/port' '{0}/inspect-out' ;;\n\
+                 run)\n\
+                 printf '%s\\n' \"$@\" > '{0}/argv'\n\
+                 for arg in \"$@\"; do\n\
+                 case \"$arg\" in 127.0.0.1:*:8080) echo \"${{arg%:8080}}\" > '{0}/port' ;;\n\
+                 esac\n\
+                 done\n\
+                 echo true > '{0}/inspect-out'\n\
+                 echo started >> '{0}/runs'\n\
+                 exec sleep 300 ;;\n\
+                 esac",
+                state.display()
+            ),
+        );
+    }
+
+    /// Makes `inspect` always report the container as not running, however much state exists.
+    #[cfg(unix)]
+    fn container_never_runs(state: &Path) {
+        let script = state.parent().unwrap().join("bin/docker");
+        let text = std::fs::read_to_string(&script).unwrap();
+        let inspect = format!(
+            "cat '{}/inspect-out' 2>/dev/null || echo false",
+            state.display()
+        );
+        std::fs::write(&script, text.replace(&inspect, "echo false")).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_second_session_reuses_the_running_instance() {
+        let w = World::new();
+        let state = w.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        stateful_runtime(&state);
+        w.user_file("[permissions]\nallow = [\"websearch\"]\n");
+        let bin = state.parent().unwrap().join("bin");
+        let search_path = format!("{}:/usr/bin:/bin", bin.display());
+        let path = Some(PathBuf::from(search_path));
+
+        let first = start(&w, path.clone(), Arc::default());
+        let served = tokio::spawn(serve_recorded_port(state.clone()));
+        assert!(search(&first).await.contains("1. T"));
+        let _server = served.await.unwrap();
+        assert_eq!(
+            std::fs::read_to_string(state.join("runs"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+
+        // A new session: nothing running locally, so prepare asks the runtime and reuses
+        // the healthy shared container instead of starting a second one.
+        let rms_before = std::fs::read_to_string(state.join("rms")).unwrap_or_default();
+        let second = start(&w, path, Arc::default());
+        assert!(search(&second).await.contains("1. T"));
+        assert_eq!(
+            std::fs::read_to_string(state.join("runs"))
+                .unwrap()
+                .lines()
+                .count(),
+            1,
+            "the second session started another container"
+        );
+        assert_eq!(
+            std::fs::read_to_string(state.join("rms")).unwrap_or_default(),
+            rms_before,
+            "the second session touched the shared container"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unhealthy_instance_is_removed_and_replaced() {
+        let w = World::new();
+        let state = w.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        stateful_runtime(&state);
+        // The container exists but does not run: it must be replaced, not reused.
+        container_never_runs(&state);
+        w.user_file("[permissions]\nallow = [\"websearch\"]\n");
+        let bin = state.parent().unwrap().join("bin");
+        let search_path = format!("{}:/usr/bin:/bin", bin.display());
+        let runtime = start(&w, Some(PathBuf::from(search_path)), Arc::default());
+        let served = tokio::spawn(serve_recorded_port(state.clone()));
+        assert!(search(&runtime).await.contains("1. T"));
+        let _server = served.await.unwrap();
+        let rms = std::fs::read_to_string(state.join("rms")).unwrap();
+        assert!(rms.contains("fontaine-searxng"), "{rms}");
+        assert_eq!(
+            std::fs::read_to_string(state.join("runs"))
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_sweep_removes_an_old_per_session_container() {
+        let w = World::new();
+        let state = w.root.join("state");
+        std::fs::create_dir(&state).unwrap();
+        stateful_runtime(&state);
+        // An old stray from a per-session Fontaine, plus an unrelated container the name filter
+        // also matched: only the stray goes.
+        std::fs::write(
+            state.join("ps-out"),
+            "fontaine-searxng-a798b73c\nsomeone-else\n",
+        )
+        .unwrap();
+        container_never_runs(&state);
+        w.user_file("[permissions]\nallow = [\"websearch\"]\n");
+        let bin = state.parent().unwrap().join("bin");
+        let search_path = format!("{}:/usr/bin:/bin", bin.display());
+        let runtime = start(&w, Some(PathBuf::from(search_path)), Arc::default());
+        let served = tokio::spawn(serve_recorded_port(state.clone()));
+        assert!(search(&runtime).await.contains("1. T"));
+        let _server = served.await.unwrap();
+        let rms = std::fs::read_to_string(state.join("rms")).unwrap();
+        assert!(
+            rms.contains("fontaine-searxng-a798b73c"),
+            "the stray was not swept: {rms}"
+        );
+        assert!(!rms.contains("someone-else"), "{rms}");
     }
 }

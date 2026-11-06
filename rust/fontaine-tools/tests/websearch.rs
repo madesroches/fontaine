@@ -666,9 +666,23 @@ mod launch {
 #[cfg(unix)]
 mod managed {
     use super::*;
-    use fontaine_tools::websearch::{Managed, ManagedPlan, SearxngChild};
+    use fontaine_tools::websearch::{Managed, ManagedPlan, PrepareFuture, Prepared, SearxngChild};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn plan(base_url: &url::Url, script: &str) -> ManagedPlan {
+        ManagedPlan {
+            argv: vec!["sh".into(), "-c".into(), script.to_string()],
+            base_url: base_url.clone(),
+            env: fontaine_tools::child_env::base_env(&|name| std::env::var_os(name)),
+            fail_cleanup: None,
+            shared: false,
+        }
+    }
+
+    fn ready(prepared: std::io::Result<Prepared>) -> PrepareFuture {
+        Box::pin(async move { prepared })
+    }
 
     fn config(server: &MockServer, script: &str, prepared: Arc<AtomicUsize>) -> WebsearchConfig {
         let base_url: url::Url = server.uri().parse().unwrap();
@@ -677,12 +691,7 @@ mod managed {
             Duration::from_secs(20),
             move || {
                 prepared.fetch_add(1, Ordering::SeqCst);
-                Ok(ManagedPlan {
-                    argv: vec!["sh".into(), "-c".into(), script.clone()],
-                    base_url: base_url.clone(),
-                    env: fontaine_tools::child_env::base_env(&|name| std::env::var_os(name)),
-                    cleanup: None,
-                })
+                ready(Ok(Prepared::Start(plan(&base_url, &script))))
             },
         )))
     }
@@ -710,7 +719,7 @@ mod managed {
     async fn a_plan_that_cannot_be_made_is_a_search_error_with_its_cause() {
         let config = WebsearchConfig::new(BackendConfig::Managed(Managed::new(
             Duration::from_secs(20),
-            || Err(std::io::Error::other("no room for the settings")),
+            || ready(Err(std::io::Error::other("no room for the settings"))),
         )));
         let tool = Websearch::new(config, &Default::default(), Default::default()).unwrap();
         let err = tool
@@ -731,17 +740,16 @@ mod managed {
         let base_url: url::Url = base_url.parse().unwrap();
         let (script, record) = (script.to_string(), dir.join("cleanup"));
         WebsearchConfig::new(BackendConfig::Managed(Managed::new(startup, move || {
-            Ok(ManagedPlan {
-                argv: vec!["sh".into(), "-c".into(), script.clone()],
-                base_url: base_url.clone(),
-                env: fontaine_tools::child_env::base_env(&|name| std::env::var_os(name)),
-                cleanup: Some(vec![
+            ready(Ok(Prepared::Start(ManagedPlan {
+                fail_cleanup: Some(vec![
                     "sh".into(),
                     "-c".into(),
                     format!("echo \"$0\" >> {}", record.display()),
                     "fontaine-searxng-test".into(),
                 ]),
-            })
+                shared: true,
+                ..plan(&base_url, &script)
+            })))
         })))
     }
 
@@ -757,13 +765,24 @@ mod managed {
         panic!("{} was never written", path.display());
     }
 
+    fn alive(pid: &str) -> bool {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .unwrap();
+        let state = String::from_utf8_lossy(&out.stdout);
+        let state = state.trim();
+        !state.is_empty() && !state.starts_with('Z')
+    }
+
     #[tokio::test]
-    async fn the_cleanup_runs_after_the_runtime_that_dropped_the_instance_is_gone() {
+    async fn a_shared_instance_outlives_the_session_and_runs_no_cleanup() {
         let server = serve_searxng(sample()).await;
         let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
         let config = cleanup_config(
             &server.uri(),
-            "exec sleep 300",
+            &format!("echo $$ > {}\nexec sleep 300", pidfile.display()),
             dir.path(),
             Duration::from_secs(20),
         );
@@ -777,6 +796,10 @@ mod managed {
                 .unwrap();
             runtime.block_on(async {
                 tool.call(&mut ToolContext::new(), args("x")).await.unwrap();
+                assert!(
+                    child.is_running().await,
+                    "a shared instance that answers is up"
+                );
                 drop(child);
                 drop(tool);
             });
@@ -784,6 +807,156 @@ mod managed {
         })
         .join()
         .unwrap();
+        let pid = wait_for_record(pidfile).await.trim().to_string();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let survived = alive(&pid);
+        let cleaned = dir.path().join("cleanup").exists();
+        let _ = std::process::Command::new("kill")
+            .args(["-s", "KILL", &pid])
+            .status();
+        assert!(survived, "the shared client was stopped with the session");
+        assert!(!cleaned, "a successful shared start runs no cleanup");
+    }
+
+    #[tokio::test]
+    async fn a_reused_instance_spawns_nothing() {
+        let server = serve_searxng(sample()).await;
+        // The second search's and `is_running`'s probes see it up; later ones see it down.
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200))
+            .up_to_n_times(2)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(503))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let base_url: url::Url = server.uri().parse().unwrap();
+        let prepared = Arc::new(AtomicUsize::new(0));
+        let config = WebsearchConfig::new(BackendConfig::Managed(Managed::new(
+            Duration::from_secs(20),
+            {
+                let prepared = prepared.clone();
+                move || {
+                    prepared.fetch_add(1, Ordering::SeqCst);
+                    ready(Ok(Prepared::Reuse(base_url.clone())))
+                }
+            },
+        )));
+        let child = Arc::new(SearxngChild::default());
+        let tool = Websearch::new(config, &Default::default(), child.clone()).unwrap();
+        for _ in 0..2 {
+            let out = tool.call(&mut ToolContext::new(), args("x")).await.unwrap();
+            assert!(out.contains("1. "), "{out}");
+        }
+        assert_eq!(
+            prepared.load(Ordering::SeqCst),
+            1,
+            "an answering instance is kept"
+        );
+        assert!(child.is_running().await);
+
+        // Once it stops answering, the next search prepares again.
+        let _ = tool.call(&mut ToolContext::new(), args("x")).await;
+        assert_eq!(prepared.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_name_conflict_prepares_once_more_and_reuses_the_winner() {
+        let server = serve_searxng(sample()).await;
+        let base_url: url::Url = server.uri().parse().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let record = dir.path().join("cleanup");
+        let prepared = Arc::new(AtomicUsize::new(0));
+        let config = WebsearchConfig::new(BackendConfig::Managed(Managed::new(
+            Duration::from_secs(20),
+            {
+                let (prepared, record) = (prepared.clone(), record.clone());
+                move || {
+                    if prepared.fetch_add(1, Ordering::SeqCst) > 0 {
+                        return ready(Ok(Prepared::Reuse(base_url.clone())));
+                    }
+                    ready(Ok(Prepared::Start(ManagedPlan {
+                        fail_cleanup: Some(vec![
+                            "sh".into(),
+                            "-c".into(),
+                            format!("echo x >> {}", record.display()),
+                        ]),
+                        shared: true,
+                        ..plan(
+                            &"http://127.0.0.1:9".parse().unwrap(),
+                            "echo 'docker: Error response from daemon: Conflict. The container \
+                             name \"/fontaine-searxng\" is already in use by container \"abc\".' >&2\n\
+                             exit 125",
+                        )
+                    })))
+                }
+            },
+        )));
+        let tool = Websearch::new(config, &Default::default(), Default::default()).unwrap();
+        let out = tool.call(&mut ToolContext::new(), args("x")).await.unwrap();
+        assert!(out.contains("1. "), "{out}");
+        assert_eq!(prepared.load(Ordering::SeqCst), 2);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(
+            !record.exists(),
+            "the winner's container is not removed after a conflict"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_name_conflict_is_reported() {
+        let prepared = Arc::new(AtomicUsize::new(0));
+        let config = WebsearchConfig::new(BackendConfig::Managed(Managed::new(
+            Duration::from_secs(20),
+            {
+                let prepared = prepared.clone();
+                move || {
+                    prepared.fetch_add(1, Ordering::SeqCst);
+                    ready(Ok(Prepared::Start(plan(
+                        &"http://127.0.0.1:9".parse().unwrap(),
+                        "echo 'Error: the container name \"fontaine-searxng\" is already in use' >&2\n\
+                         exit 125",
+                    ))))
+                }
+            },
+        )));
+        let tool = Websearch::new(config, &Default::default(), Default::default()).unwrap();
+        let error = tool
+            .call(&mut ToolContext::new(), args("x"))
+            .await
+            .unwrap_err();
+        assert!(
+            error.message().contains("already in use"),
+            "{}",
+            error.message()
+        );
+        assert_eq!(prepared.load(Ordering::SeqCst), 2, "retried once only");
+    }
+
+    #[tokio::test]
+    async fn the_cleanup_runs_after_a_shared_start_times_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = cleanup_config(
+            "http://127.0.0.1:9",
+            "exec sleep 300",
+            dir.path(),
+            Duration::from_millis(400),
+        );
+        let tool = Websearch::new(config, &Default::default(), Default::default()).unwrap();
+        let error = tool
+            .call(&mut ToolContext::new(), args("x"))
+            .await
+            .unwrap_err();
+        assert!(
+            error.message().contains("did not answer"),
+            "{}",
+            error.message()
+        );
         let text = wait_for_record(dir.path().join("cleanup")).await;
         assert_eq!(text.trim(), "fontaine-searxng-test");
     }

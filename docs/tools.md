@@ -457,26 +457,31 @@ every backend: a result is kept or dropped when its host is the domain or a subd
 ### Default search
 
 With no `[websearch] backend`, and `docker` (or else `podman`) found on Fontaine's own `PATH`, the
-`websearch` tool is registered and backed by SearXNG in a container, with no configuration. The
+`websearch` tool is registered and backed by SearXNG in a container, with no configuration. At most
+one managed container runs per machine, named `fontaine-searxng`; every session shares it. The
 first search:
 
 - writes `searxng/settings.yml` in Fontaine's data directory (the `json` format enabled, the
   limiter off, a random secret generated once and kept in that file; Fontaine rewrites the file if
   it differs, keeping the secret);
-- picks a free loopback port and runs
-  `<runtime> run --rm --name fontaine-searxng-<random> -p 127.0.0.1:<port>:8080 -v <settings.yml>:/etc/searxng/settings.yml:ro docker.io/searxng/searxng:latest`
-  (no shell), so the instance is reachable from this machine only;
+- if a `fontaine-searxng` container is already running and its published port answers, reuses it
+  and starts nothing;
+- otherwise removes a container of that name that has stopped or stopped answering, sweeps any
+  leftover `fontaine-searxng-<random>` container an older Fontaine left behind, and runs
+  `<runtime> run --rm --name fontaine-searxng -p 127.0.0.1:<port>:8080 -v <settings.yml>:/etc/searxng/settings.yml:ro docker.io/searxng/searxng:latest`
+  (no shell) on a fresh free loopback port, so the instance is reachable from this machine only;
 - warns once that SearXNG is starting and that the first run pulls the image, then waits up to 300
   seconds for it to answer.
 
-Later searches and registry rebuilds reuse the container. When the session ends, when a start
-fails or times out, and before a restart over a dead instance, Fontaine sends the `run` client
-SIGTERM as described below for `command` and also starts a detached `<runtime> rm -f <name>`
-(its own process group, no output, never awaited), because a SIGKILL right behind the SIGTERM
-can reach the client before it has passed the stop to the daemon, which would leave the container
-running. The `rm` finishes after Fontaine has exited. A machine that is powered off, or a Fontaine
-killed with SIGKILL, can still leave a container behind; its name starts with `fontaine-searxng-`,
-so `<runtime> ps --filter name=fontaine-searxng-` lists strays. The settings directory is owner-only; the file inside is
+Two sessions that need the container at the same moment contend on the name: the loser of `docker
+run --name` reuses the winner's container instead of failing. Later searches and registry rebuilds
+reuse it; a container that stops answering is removed and replaced on the next search. The
+instance is a small user-level service: the session that started it does not stop it, so it keeps
+running after Fontaine exits until it is stopped with `<runtime> stop fontaine-searxng` (the `--rm`
+flag then removes it), replaced as unhealthy, swept, or the machine reboots. When a start fails or
+times out, Fontaine starts a detached `<runtime> rm -f fontaine-searxng` (its own process group, no
+output, never awaited) so the half-started container does not block the next one; a failed removal
+is reported. The settings directory is owner-only; the file inside is
 readable by other users because the container's unprivileged user must read it through the bind
 mount, which keeps the host's permissions. On an SELinux host the mount may need a `:Z` label,
 which Fontaine does not add: start SearXNG yourself with `command` instead. The container runtime
