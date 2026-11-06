@@ -97,6 +97,9 @@ impl AgentRuntime {
                 .rewind_conversation(plan.conv_n)
                 .await
                 .map_err(RewindError::Conversation)?;
+            // A reset means a reset: an interrupted turn kept pending in the journal by a
+            // failed fold must not re-enter the rewound conversation at the next turn.
+            self.discard_unsettled_turn().await;
             // A woken agent would be judged against intent the rewind dropped.
             self.retire_idle_agents("the conversation was rewound");
             agents.discard_root_reminders();

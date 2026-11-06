@@ -127,13 +127,14 @@ pub struct Fallback {
     pub log_len_before: usize,
 }
 
-/// What a fold records before its append: with it, a fold whose append landed but whose cut
-/// failed is recognised and not appended twice.
+/// What a fold or a settle records beside the journal: with it, a journal whose messages
+/// already landed in `log` but whose cut failed is recognised and not appended twice.
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
 struct FoldMark {
-    /// The messages `log` held before the append.
+    /// For a fold mark, the messages `log` held before the append. For a settled mark, the
+    /// messages `log` held after the run's save, minus the journal's messages.
     log_len: usize,
-    /// The journal's length in bytes when it was folded.
+    /// The journal's length in bytes when the mark was made.
     journal_bytes: u64,
 }
 
@@ -141,16 +142,41 @@ fn fold_mark_file(log: &str) -> String {
     format!("{}.fold", journal_log(log))
 }
 
+fn settled_mark_file(log: &str) -> String {
+    format!("{}.settled", journal_log(log))
+}
+
 /// The recorded mark; an absent, cleared or unreadable one reads as none, which folds as usual.
-async fn read_fold_mark<S: AsyncStore + ?Sized>(
+async fn read_mark<S: AsyncStore + ?Sized>(
     store: &S,
-    log: &str,
+    file: &str,
 ) -> std::io::Result<Option<FoldMark>> {
-    match store.read_file_async(&fold_mark_file(log)).await {
+    match store.read_file_async(file).await {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e),
     }
+}
+
+async fn write_mark<S: AsyncStore + ?Sized>(
+    store: &S,
+    file: &str,
+    mark: &FoldMark,
+) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(mark).expect("a fold mark serializes");
+    store.write_file_async(file, &bytes).await
+}
+
+/// The store has no removal, so a cleared mark is an empty file.
+async fn clear_mark<S: AsyncStore + ?Sized>(store: &S, file: &str) -> std::io::Result<()> {
+    store.write_file_async(file, &[]).await
+}
+
+async fn read_fold_mark<S: AsyncStore + ?Sized>(
+    store: &S,
+    log: &str,
+) -> std::io::Result<Option<FoldMark>> {
+    read_mark(store, &fold_mark_file(log)).await
 }
 
 async fn write_fold_mark<S: AsyncStore + ?Sized>(
@@ -158,13 +184,41 @@ async fn write_fold_mark<S: AsyncStore + ?Sized>(
     log: &str,
     mark: &FoldMark,
 ) -> std::io::Result<()> {
-    let bytes = serde_json::to_vec(mark).expect("a fold mark serializes");
-    store.write_file_async(&fold_mark_file(log), &bytes).await
+    write_mark(store, &fold_mark_file(log), mark).await
 }
 
-/// The store has no removal, so a cleared mark is an empty file.
 async fn clear_fold_mark<S: AsyncStore + ?Sized>(store: &S, log: &str) -> std::io::Result<()> {
-    store.write_file_async(&fold_mark_file(log), &[]).await
+    clear_mark(store, &fold_mark_file(log)).await
+}
+
+async fn read_settled_mark<S: AsyncStore + ?Sized>(
+    store: &S,
+    log: &str,
+) -> std::io::Result<Option<FoldMark>> {
+    read_mark(store, &settled_mark_file(log)).await
+}
+
+async fn write_settled_mark<S: AsyncStore + ?Sized>(
+    store: &S,
+    log: &str,
+    mark: &FoldMark,
+) -> std::io::Result<()> {
+    write_mark(store, &settled_mark_file(log), mark).await
+}
+
+async fn clear_settled_mark<S: AsyncStore + ?Sized>(store: &S, log: &str) -> std::io::Result<()> {
+    clear_mark(store, &settled_mark_file(log)).await
+}
+
+/// Forgets a log's pending journal and marks. `/clear` and `/rewind` reset the conversation,
+/// and an unsettled turn must not be folded into the reset one.
+pub(crate) async fn discard_unsettled<S: AsyncStore + ?Sized>(
+    store: &S,
+    log: &str,
+) -> std::io::Result<()> {
+    cut_journal(store, log, 0).await?;
+    clear_fold_mark(store, log).await?;
+    clear_settled_mark(store, log).await
 }
 
 /// Appends what an unsettled run committed to `log`, then the marker for `cause`, then empties
@@ -187,6 +241,11 @@ pub(crate) async fn fold_unsettled<S: AsyncStore + ?Sized>(
     let held = load_async(store, log).await?.messages().len();
     let marker = Arc::new(Message::user(cause.marker()));
     if journaled.messages().is_empty() {
+        // A mark outlives its journal only when the cut that should have removed the pair
+        // failed or never ran; a later same-sized journal would satisfy the stale count and
+        // be cut without folding, so the mark goes with the empty journal.
+        clear_fold_mark(store, log).await?;
+        clear_settled_mark(store, log).await?;
         let Some(fallback) = fallback else {
             return Ok(false);
         };
@@ -199,6 +258,20 @@ pub(crate) async fn fold_unsettled<S: AsyncStore + ?Sized>(
         };
         append_messages(store, log, &messages).await?;
         return Ok(true);
+    }
+    // A settled run's messages were saved before its journal was cut; a process that died
+    // between the save and the cut, or a cut that failed, leaves both full. The settled mark
+    // says the journal already landed in `log`, so only the cut is owed: appending again
+    // would double the turn and repeat its tool-call ids.
+    if let Some(mark) = read_settled_mark(store, log).await? {
+        if mark.journal_bytes == journal_bytes && mark.log_len + journaled.messages().len() == held
+        {
+            cut_journal(store, log, 0).await?;
+            clear_settled_mark(store, log).await?;
+            return Ok(true);
+        }
+        // Stale: whatever it recorded, this journal is not the settled one it guarded.
+        clear_settled_mark(store, log).await?;
     }
     let landed = read_fold_mark(store, log).await?.is_some_and(|mark| {
         mark.journal_bytes == journal_bytes && mark.log_len + journaled.messages().len() + 1 == held
@@ -331,8 +404,37 @@ impl<S: AsyncStore + Send + Sync> InflightHook<S> {
         }
     }
 
+    /// Records, ahead of the cut, that the journal's messages are in the agent's log: the
+    /// engine saved before `on_run_settled` ran, or the failed-run check in
+    /// [`InflightHook::settle`] confirmed the recovery append landed. A fold that later finds
+    /// the mark cuts the journal without appending, so a settled turn is never folded twice.
+    /// Nothing is recorded while the journal carries an earlier run's kept prefix: those
+    /// messages are not in the log, so the mark cannot claim the whole journal landed.
+    async fn mark_settled(&self, run: &JournalRun, held: usize) -> std::io::Result<()> {
+        if run.carried_bytes != 0 {
+            return Ok(());
+        }
+        let bytes = self.store.read_log_async(&journal_log(&self.id)).await?;
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let Some(log_len) = held.checked_sub(run.journaled) else {
+            return Ok(());
+        };
+        write_settled_mark(
+            &self.store,
+            &self.id,
+            &FoldMark {
+                log_len,
+                journal_bytes: bytes.len() as u64,
+            },
+        )
+        .await
+    }
+
     /// `failed_with` is the number of messages the failed run committed, `None` on success.
-    async fn settle(&self, pad: &Scratchpad, failed_with: Option<usize>) {
+    /// `total` is the run's committed message count either way.
+    async fn settle(&self, pad: &Scratchpad, failed_with: Option<usize>, total: usize) {
         let Some(run) = pad.get::<JournalRun>() else {
             return;
         };
@@ -360,8 +462,16 @@ impl<S: AsyncStore + Send + Sync> InflightHook<S> {
                 }
             }
         }
+        if let Err(e) = self.mark_settled(&run, run.input_len + total).await {
+            // The mark matters only when the cut below fails too, and that failure is warned.
+            tracing::warn!("the settled mark could not be written: {}", chain(&e));
+        }
         if let Err(e) = self.cut_back(run.carried_bytes).await {
             self.warn(pad, "the in-flight journal could not be cleared", &e);
+            return;
+        }
+        if let Err(e) = clear_settled_mark(&self.store, &self.id).await {
+            self.warn(pad, "the settled mark could not be cleared", &e);
         }
     }
 }
@@ -383,11 +493,12 @@ impl<S: AsyncStore + Send + Sync> AgentHook for InflightHook<S> {
     }
 
     async fn on_run_settled(&self, ctx: &HookContext, event: RunSettled<'_>) {
+        let total = event.messages.map_or(0, <[_]>::len);
         let failed_with = match event.outcome {
-            SettledOutcome::Error(_) => Some(event.messages.map_or(0, <[_]>::len)),
+            SettledOutcome::Error(_) => Some(total),
             SettledOutcome::Response(_) => None,
         };
-        self.settle(ctx.scratchpad(), failed_with).await;
+        self.settle(ctx.scratchpad(), failed_with, total).await;
     }
 }
 
@@ -482,7 +593,11 @@ mod tests {
     }
 
     /// A run that makes two model calls: the prompt, then an assistant turn and a tool result.
-    async fn two_calls(hook: &InflightHook<Arc<MemoryStore>>, pad: &Scratchpad, prompt: &str) {
+    async fn two_calls<S: AsyncStore + Send + Sync>(
+        hook: &InflightHook<S>,
+        pad: &Scratchpad,
+        prompt: &str,
+    ) {
         hook.call(pad, &[], &Message::user(prompt)).await;
         let history = [user(prompt), Arc::new(Message::assistant("calling"))];
         hook.call(pad, &history, &Message::user("tool result"))
@@ -527,7 +642,7 @@ mod tests {
         let pad = Scratchpad::default();
         hook.start(&pad, 0).await;
         two_calls(&hook, &pad, "go").await;
-        hook.settle(&pad, None).await;
+        hook.settle(&pad, None, 4).await;
         assert!(journal(&store).await.is_empty());
     }
 
@@ -539,7 +654,7 @@ mod tests {
         hook.start(&pad, 0).await;
         two_calls(&hook, &pad, "go").await;
         save_main(&store, &[user("go"), user("a"), user("b")]).await;
-        hook.settle(&pad, Some(3)).await;
+        hook.settle(&pad, Some(3), 3).await;
         assert!(journal(&store).await.is_empty());
         assert!(warnings.0.lock().unwrap().is_empty());
     }
@@ -551,7 +666,7 @@ mod tests {
         let pad = Scratchpad::default();
         hook.start(&pad, 0).await;
         two_calls(&hook, &pad, "go").await;
-        hook.settle(&pad, Some(3)).await;
+        hook.settle(&pad, Some(3), 3).await;
         assert_eq!(journal(&store).await.len(), 3);
         assert_eq!(warnings.0.lock().unwrap().len(), 1);
     }
@@ -563,7 +678,7 @@ mod tests {
         let first = Scratchpad::default();
         hook.start(&first, 0).await;
         two_calls(&hook, &first, "first").await;
-        hook.settle(&first, Some(3)).await;
+        hook.settle(&first, Some(3), 3).await;
         let kept = journal(&store).await;
         assert_eq!(kept.len(), 3);
 
@@ -572,7 +687,7 @@ mod tests {
         assert_eq!(journal(&store).await, kept, "run start must not truncate");
         two_calls(&hook, &second, "second").await;
         assert_eq!(journal(&store).await.len(), 6);
-        hook.settle(&second, None).await;
+        hook.settle(&second, None, 4).await;
         assert_eq!(journal(&store).await, kept);
     }
 
@@ -585,8 +700,8 @@ mod tests {
         hook.call(&started, &[], &Message::user("go")).await;
         let fresh = Scratchpad::default();
         hook.call(&fresh, &[], &Message::user("ignored")).await;
-        hook.settle(&fresh, Some(0)).await;
-        hook.settle(&fresh, None).await;
+        hook.settle(&fresh, Some(0), 0).await;
+        hook.settle(&fresh, None, 0).await;
         assert_eq!(journal(&store).await.len(), 1);
         assert!(warnings.0.lock().unwrap().is_empty());
     }
@@ -618,7 +733,7 @@ mod tests {
                 .len(),
             2
         );
-        hook.settle(&next, None).await;
+        hook.settle(&next, None, 3).await;
         assert_eq!(
             load_async(&*store, "agent-1.inflight")
                 .await
@@ -668,7 +783,7 @@ mod tests {
         hook.start(&pad, 0).await;
         hook.call(&pad, &[], &Message::user("go")).await;
         hook.call(&pad, &[user("go")], &Message::user("more")).await;
-        hook.settle(&pad, None).await;
+        hook.settle(&pad, None, 3).await;
         let warned = warnings.0.lock().unwrap();
         assert_eq!(warned.len(), 1, "{warned:?}");
         assert!(warned[0].contains("disk gone"), "{warned:?}");
@@ -948,6 +1063,87 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(texts(&store, "main").await.len(), 10);
+        assert!(texts(&store, "main.inflight").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_settled_turn_is_not_folded_again_after_a_lost_cut() {
+        let inner = MemoryStore::default();
+        let warnings = Arc::new(Warnings::default());
+        let store = Failing {
+            inner: inner.clone(),
+            appends: Vec::new(),
+            replaces: vec!["agent-1.inflight"],
+        };
+        let hook = InflightHook::new(store, "agent-1".into(), warnings);
+        let pad = Scratchpad::default();
+        hook.start(&pad, 0).await;
+        two_calls(&hook, &pad, "go").await;
+        // rig saved the run's messages before the settle hook ran: the journal, plus the
+        // final answer a completion call never journals.
+        save_main(&inner, &[user("go"), user("a"), user("b"), user("c")]).await;
+        hook.settle(&pad, None, 4).await;
+        assert_eq!(
+            journal(&inner).await.len(),
+            3,
+            "the lost cut keeps the journal"
+        );
+        // The fold finds the settled mark, so the journal is only cut: no second append of
+        // messages the log already holds.
+        fold_unsettled(&inner, "agent-1", Unsettled::SessionEnded, None)
+            .await
+            .unwrap();
+        let main = texts(&inner, "agent-1").await;
+        assert_eq!(main.len(), 4, "no second append: {main:?}");
+        assert!(journal(&inner).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_stale_mark_does_not_discard_a_same_sized_later_journal() {
+        let store = MemoryStore::default();
+        append_messages(
+            &store,
+            "main",
+            &[user("one"), user("two"), user("three"), user("four")],
+        )
+        .await
+        .unwrap();
+        append_messages(&store, "main.inflight", &[user("later turn")])
+            .await
+            .unwrap();
+        let journal_bytes = store.read_log_async("main.inflight").await.unwrap().len() as u64;
+        // The journal is cut but its mark's clear is lost. The stale count would fit a
+        // same-sized later journal: log_len 2 + 1 journaled + 1 marker == 4 held.
+        cut_journal(&store, "main", 0).await.unwrap();
+        write_fold_mark(
+            &store,
+            "main",
+            &FoldMark {
+                log_len: 2,
+                journal_bytes,
+            },
+        )
+        .await
+        .unwrap();
+        // The empty journal's fold clears the stale mark.
+        let folded = fold_unsettled(&store, "main", Unsettled::SessionEnded, None)
+            .await
+            .unwrap();
+        assert!(!folded);
+        // The later interrupted turn folds; the stale mark does not cut it as landed.
+        append_messages(&store, "main.inflight", &[user("later turn")])
+            .await
+            .unwrap();
+        let folded = fold_unsettled(&store, "main", Unsettled::User, None)
+            .await
+            .unwrap();
+        assert!(folded);
+        let main = texts(&store, "main").await;
+        assert_eq!(main.len(), 6, "{main:?}");
+        assert!(
+            main[4].contains("later turn") && main[5].contains("interrupted"),
+            "{main:?}"
+        );
         assert!(texts(&store, "main.inflight").await.is_empty());
     }
 }

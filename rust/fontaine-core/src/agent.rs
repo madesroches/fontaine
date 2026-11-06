@@ -801,6 +801,21 @@ impl AgentRuntime {
         }
     }
 
+    /// `/clear` and `/rewind` reset the conversation; the journal of an interrupted turn a
+    /// failed fold left pending must not be folded into the reset one. A failure is warned
+    /// and the journal stays, so the turn is kept rather than lost.
+    pub(crate) async fn discard_unsettled_turn(&self) {
+        let store = self.session.store();
+        if let Err(e) = turn_recovery::discard_unsettled(&store, CONVERSATION_LOG).await {
+            let message = format!(
+                "the interrupted turn's pending journal could not be discarded: {}",
+                chain(&e)
+            );
+            tracing::warn!("{message}");
+            self.approver.warn(&message);
+        }
+    }
+
     /// The stored project facts as this session uses them, and the warning to raise when they
     /// are missing or stale in an `auto` session.
     fn project_environment_at_start(
@@ -910,6 +925,9 @@ impl AgentRuntime {
             return Err(ClearError::SubagentsRunning);
         }
         self.session.clear().await?;
+        // A reset means a reset: an interrupted turn kept pending in the journal by a failed
+        // fold must not re-enter the emptied conversation at the next turn.
+        self.discard_unsettled_turn().await;
         // The conversation is gone, so the agents it spawned leave the list; persisted
         // per-agent logs and the spend tally stay.
         let pruned = agents.clear_ended();

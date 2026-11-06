@@ -9,7 +9,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use common::World;
 use common::runtime::{self, Built, build};
+use fontaine_core::checkpoint::RewindWhat;
 use fontaine_core::config::{AccountKind, PermissionMode::Manual};
+use fontaine_core::ledger::Record;
 use fontaine_core::models::{GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models};
 use fontaine_core::session::{CONVERSATION_LOG, Session};
 use fontaine_core::turn::{Flow, TurnOutcome, TurnParams, run_turn, user_message};
@@ -20,6 +22,7 @@ use rig_core::driver::{Exchange, Model, Opening, Transport};
 use rig_core::test_utils::{
     MockCompletionModel, MockError, MockFrame, MockRuntime, MockScript, MockStreamEvent, mock_final,
 };
+use rig_memory::AsyncStore;
 use serde_json::json;
 use tokio::sync::Notify;
 
@@ -279,6 +282,92 @@ async fn a_journal_left_by_a_failed_fold_goes_before_the_next_turn() {
     let new = history.find("follow up").expect("the new prompt");
     assert!(old < marker && marker < new, "{history}");
     assert!(conversation(&rt, "main.inflight").await.is_empty());
+}
+
+#[tokio::test]
+async fn clear_drops_the_pending_journal_and_its_marks() {
+    let w = World::new();
+    w.user_file("[permissions]\nallow = [\"shell\"]\n");
+    let (models, _mock, seen) = holding(vec![shell_turn("echo kept-output")], 1);
+    let rt = runtime::build_with_models(&w, Manual, models, None, false, Default::default(), None);
+    drop_mid_turn(&rt, &seen, "first task").await;
+    // A failed fold leaves the interrupted turn pending in the journal, and a fold may have
+    // left its mark; a reset must drop them with the conversation.
+    assert_eq!(conversation(&rt, "main.inflight").await.len(), 3);
+    let store = rt.session.store();
+    store
+        .write_file_async("main.inflight.fold", br#"{"log_len":0,"journal_bytes":1}"#)
+        .await
+        .unwrap();
+    store
+        .write_file_async(
+            "main.inflight.settled",
+            br#"{"log_len":0,"journal_bytes":1}"#,
+        )
+        .await
+        .unwrap();
+    rt.clear_conversation().await.unwrap();
+    assert!(conversation(&rt, CONVERSATION_LOG).await.is_empty());
+    assert!(conversation(&rt, "main.inflight").await.is_empty());
+    for file in ["main.inflight.fold", "main.inflight.settled"] {
+        match store.read_file_async(file).await {
+            Ok(bytes) => assert!(bytes.is_empty(), "{file}: {bytes:?}"),
+            Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{file}: {e}"),
+        }
+    }
+}
+
+/// What the TUI does for a typed prompt: note the checkpoint, record the message, run the
+/// turn to its answer.
+async fn say(runtime: &fontaine_core::agent::AgentRuntime, prompt: &str) {
+    runtime.begin_turn(prompt, false);
+    runtime.append(Record::UserMessage {
+        text: prompt.to_string(),
+        attachments: Vec::new(),
+        agent: None,
+    });
+    let outcome = run_turn(params(runtime, prompt), &mut |_| Flow::Continue).await;
+    assert!(matches!(outcome, TurnOutcome::Answer(_)), "{outcome:?}");
+}
+
+#[tokio::test]
+async fn rewind_drops_the_pending_journal_of_the_interrupted_turn() {
+    let w = World::new();
+    w.user_file("[permissions]\nallow = [\"shell\"]\n");
+    let (models, _mock, seen) = holding(
+        vec![
+            answer_turn("made a"),
+            answer_turn("kept"),
+            shell_turn("echo kept-output"),
+        ],
+        3,
+    );
+    let rt = runtime::build_with_models(&w, Manual, models, None, false, Default::default(), None);
+    say(&rt, "make a").await;
+    say(&rt, "keep me").await;
+    // The next turn is interrupted mid-flight: its journal holds the prompt, the tool call
+    // and its result, and a fold mark may sit beside it.
+    rt.begin_turn("second task", false);
+    drop_mid_turn(&rt, &seen, "second task").await;
+    assert_eq!(conversation(&rt, "main.inflight").await.len(), 3);
+    let store = rt.session.store();
+    store
+        .write_file_async("main.inflight.fold", br#"{"log_len":0,"journal_bytes":1}"#)
+        .await
+        .unwrap();
+    // Rewinding before the interrupted prompt must not resurrect it from the journal.
+    let plan = rt.rewind_plan(2).expect("turn two's checkpoint");
+    rt.rewind(&plan, RewindWhat::Conversation, false)
+        .await
+        .unwrap();
+    let main = conversation(&rt, CONVERSATION_LOG).await;
+    assert_eq!(main.len(), 2, "{main:?}");
+    assert!(main[0].contains("make a"), "{main:?}");
+    assert!(conversation(&rt, "main.inflight").await.is_empty());
+    match store.read_file_async("main.inflight.fold").await {
+        Ok(bytes) => assert!(bytes.is_empty(), "{bytes:?}"),
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}"),
+    }
 }
 
 #[tokio::test]

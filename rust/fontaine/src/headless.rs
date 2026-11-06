@@ -756,6 +756,12 @@ async fn stop_before_call(runtime: &AgentRuntime, options: &Options) -> Option<O
     if over_cap(runtime, options) {
         return Some(budget_stop());
     }
+    // A leftover journal's fold checks its mark against `main`'s message count; a compaction
+    // that ran first would change the count and the fold would append the landed turn again.
+    // The fold goes before the compaction, as the TUI's pre-turn fold does.
+    runtime
+        .keep_unsettled_turn(Unsettled::SessionEnded, None)
+        .await;
     runtime.compact_if_needed().await;
     over_cap(runtime, options).then(budget_stop)
 }

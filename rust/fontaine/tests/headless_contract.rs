@@ -1,9 +1,11 @@
 mod common;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use common::{Endpoint, Output, Sandbox, Turn, Usage, Wire};
 use serde_json::{Value, json};
+use tokio::io::AsyncBufReadExt;
 
 fn validator() -> jsonschema::Validator {
     let path =
@@ -709,6 +711,167 @@ async fn a_configured_autocompact_window_summarizes_before_the_turn() {
     assert_ne!(requests[3]["stream"], json!(true), "the summarizer call");
     assert!(requests[3].to_string().contains("<conversation>"));
     assert!(requests[4].to_string().contains("the summary"));
+}
+
+type ChildLines = tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>;
+
+async fn event(lines: &mut ChildLines, stderr: &Arc<std::sync::Mutex<String>>) -> Value {
+    let line = lines.next_line().await.unwrap().unwrap_or_else(|| {
+        panic!(
+            "the run ended before its result; stderr: {}",
+            stderr.lock().unwrap()
+        )
+    });
+    serde_json::from_str(&line).unwrap_or_else(|e| panic!("`{line}`: {e}"))
+}
+
+/// The next stream-json event of `lines`, skipping everything before a message's result.
+async fn result_event(lines: &mut ChildLines, stderr: &Arc<std::sync::Mutex<String>>) -> Value {
+    loop {
+        let event = event(lines, stderr).await;
+        if event["type"] == "result" {
+            return event;
+        }
+    }
+}
+
+async fn send_message(
+    stdin: &mut tokio::process::ChildStdin,
+    lines: &mut ChildLines,
+    stderr: &Arc<std::sync::Mutex<String>>,
+    text: &str,
+) -> Value {
+    use tokio::io::AsyncWriteExt;
+    let line = format!(
+        "{}\n",
+        json!({"type": "user", "message": {"role": "user", "content": text}})
+    );
+    stdin.write_all(line.as_bytes()).await.unwrap();
+    result_event(lines, stderr).await
+}
+
+/// A fold whose append landed but whose cut failed leaves the journal full beside a valid
+/// fold mark. The pre-run fold must resolve that journal before an autocompaction rewrites
+/// `main`: the mark's count check reads `main`'s message count, which the compaction
+/// changes, so a fold that runs after it appends the landed turn a second time.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_pending_fold_lands_before_autocompaction_rewrites_the_conversation() {
+    let endpoint = Endpoint::start(
+        Wire::Responses,
+        vec![
+            Turn::text("answer one"),
+            Turn::text("the summary"),
+            Turn::text("answer two"),
+            Turn::text("the summary"),
+            Turn::text("answer three"),
+        ],
+    )
+    .await;
+    let s = Sandbox::priced(&endpoint.url());
+    let settings = s.work.join("window.toml");
+    std::fs::write(&settings, "[context]\nautocompact_window = 200\n").unwrap();
+    let settings = settings.display().to_string();
+    let mut cmd = s.command(&[
+        "-p",
+        "--permission-mode",
+        "manual",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--settings",
+        &settings,
+    ]);
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut child_stderr = child.stderr.take().unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let stderr = Arc::new(std::sync::Mutex::new(String::new()));
+    let stderr_sink = stderr.clone();
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = String::new();
+        let _ = child_stderr.read_to_string(&mut buf).await;
+        *stderr_sink.lock().unwrap() = buf;
+    });
+
+    let session = event(&mut lines, &stderr).await["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let logs = s.data.join("sessions").join(&session).join("logs");
+    let big = "lorem ipsum dolor sit amet ".repeat(100);
+
+    send_message(&mut stdin, &mut lines, &stderr, "first task").await;
+
+    // An interrupted turn's journal holds its prompt alone, bigger than the compaction's
+    // kept tail. Build it as a log of its own beside `main`: a header, then the first
+    // message of the conversation reworded as the interrupted prompt. The next run's fold
+    // appends it with the marker; the turn after that one reseeds the journal and a valid
+    // fold mark, as a cut lost after the append would.
+    let main = std::fs::read_to_string(logs.join("main.jsonl")).unwrap();
+    let prompt = format!("second task {big}");
+    let first_push: Value = serde_json::from_str(main.lines().nth(1).unwrap()).unwrap();
+    let mut entry = first_push["entries"][0].clone();
+    entry["message"]["content"][0]["text"] = json!(prompt);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let journal = format!(
+        "{}\n{}\n",
+        json!({"seq": 0, "n": 0, "t": now, "type": "header", "format": "rig-session/4", "log": "main.inflight", "lineage": 41u64}),
+        json!({"seq": 1, "n": 1, "t": now, "type": "push", "entries": [entry]}),
+    );
+    std::fs::write(logs.join("main.inflight.jsonl"), &journal).unwrap();
+
+    send_message(&mut stdin, &mut lines, &stderr, &format!("fold it {big}")).await;
+
+    // The fold's append landed; only its cut is owed. `main` holds five messages: the
+    // summary of the first exchange, the folded turn and its marker, and the turn that
+    // triggered the fold.
+    let journal_bytes = journal.len() as u64;
+    std::fs::write(logs.join("main.inflight.jsonl"), &journal).unwrap();
+    let files = s.data.join("sessions").join(&session).join("files");
+    std::fs::create_dir_all(&files).unwrap();
+    std::fs::write(
+        files.join("main.inflight.fold"),
+        json!({ "log_len": 3, "journal_bytes": journal_bytes }).to_string(),
+    )
+    .unwrap();
+
+    send_message(&mut stdin, &mut lines, &stderr, "next").await;
+    drop(stdin);
+    let status = child.wait().await.unwrap();
+    let stderr_text = stderr.lock().unwrap().clone();
+    assert_eq!(status.code(), Some(0), "stderr: {stderr_text}");
+
+    let requests = endpoint.requests().await;
+    assert_eq!(requests.len(), 5, "{requests:?}");
+    assert_ne!(
+        requests[1]["stream"],
+        json!(true),
+        "the first summarizer call"
+    );
+    assert_ne!(
+        requests[3]["stream"],
+        json!(true),
+        "the second summarizer call"
+    );
+    // The last turn reads the compacted conversation: the landed fold was cut, not folded
+    // again, so neither the interrupted prompt nor its marker reaches the model twice.
+    let last = requests[4].to_string();
+    assert!(
+        !last.contains("second task"),
+        "the landed fold is not doubled by the post-compaction retry: {last}"
+    );
+    assert!(
+        !last.contains("the session ended before this turn finished"),
+        "the landed fold's marker is not doubled either: {last}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
