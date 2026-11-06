@@ -73,7 +73,7 @@ A new core function in `turn_recovery.rs`:
 /// Why a run ended without settling; picks the marker the model reads.
 pub enum Unsettled { User, AfkStop, SessionEnded }
 
-/// The run's prompt, and how many messages `log` held before the run started.
+/// The run's prompt, and how many messages `log` held when the run started (after any compaction).
 pub struct Fallback { pub prompt: Message, pub log_len_before: usize }
 
 /// Appends what an unsettled run committed to `log`, then a marker, then empties the journal.
@@ -95,8 +95,9 @@ Steps:
    `InflightHook::settle` does). A failed retry attempt in `drive()` has already appended the
    prompt through `RecoveryHook` and cut the journal back, so an Esc during the backoff or
    before the next attempt's first model call finds an empty journal and a longer log; the
-   fallback would double the prompt there. If nothing remains, do nothing and return `false`
-   (the run left no trace, or its trace is already in `log`).
+   fallback would double the prompt there. In that case (empty journal, `log` past
+   `fallback.log_len_before`) append the marker alone, since the failed attempt is already in
+   `log`. With an empty journal and no fallback, do nothing and return `false`.
 3. `append_messages(store, log, messages + [marker])`. The marker is a
    `Message::user(text)`:
    - `User`: `[Request interrupted by user]`, the exact text Claude Code uses.
@@ -122,8 +123,7 @@ providers (see Testing Strategy).
 from the journal at run start and cuts back to it at settle, so a journal carried into a run
 would outlive it and be folded after the newer turns rig saved, out of order. The surfaces
 therefore fold any leftover journal before each root run starts (§3), so a run normally starts
-from an empty journal. The exception is a retry inside one `run_turn`: if `RecoveryHook`'s
-append fails for a failed attempt, the next attempt starts with that journal carried.
+from an empty journal.
 
 ### 3. Call the fold where a root run is dropped
 
@@ -138,7 +138,11 @@ impl AgentRuntime {
 
 - **TUI** (`turn.rs` `turn()`). Before the run future is built, keep the prompt message the
   run will send: `user_message(&prompt, &attachments, &modalities)`, and `main`'s message
-  count, together as the `Fallback`. Expose `user_message` as
+  count. Inside the run future, right after `compact_if_needed` returns, take `main`'s count
+  again into a slot (an `Arc<AtomicUsize>` or `Cell`) the post-drop fold reads, because a
+  compaction that saves shrinks `main`; an interrupt before the slot is set (during
+  compaction) uses the count taken before. The prompt and that count make the `Fallback`.
+  Expose `user_message` as
   `pub` from `fontaine_core::turn`, or add a small `pub fn prompt_message(...)` wrapper. After
   `drop(run)`, and before `finish_turn`, call `keep_unsettled_turn` when the loop broke with
   `Interrupted` (`Unsettled::User`) or with the signal branch's `Stopped`
@@ -193,17 +197,14 @@ issue accepts this for a first cut.
    `fontaine_core::turn_recovery::Unsettled`.
 4. **`fontaine-core/src/turn.rs`**: make the prompt message buildable by surfaces (`pub` on
    `user_message`, or a thin `pub fn`).
-5. **`fontaine-tui/src/ui/turn.rs` `turn()`**: build and keep the prompt message, track whether
+5. **`fontaine-tui/src/ui/turn.rs` `turn()`**: build and keep the prompt message and the
+   post-compaction message count slot, track whether
    the run was dropped unsettled, and call `keep_unsettled_turn` after `drop(run)`. Fold any
    leftover journal before `begin_turn` in the submission paths (one shared helper).
 6. **`fontaine/src/headless.rs`**: fold any leftover journal before `run_turn`; fold on the
    AFK-stop branch.
 7. **Tests** (see Testing Strategy).
-8. **Docs**: `docs/tui.md` line 228, and lines ~420-422 (messages already delivered in an
-   interrupted turn are kept with its finished rounds, not discarded); `docs/architecture.md`
-   session layout (`main.inflight.jsonl` next to `main.jsonl`); `docs/headless.md` (~line 120)
-   and the `--resume` passage of `docs/tui.md` (a resumed session keeps a turn the previous
-   process did not finish); `CHANGELOG.md` `Fixed`.
+8. **Docs**: see `## Documentation`.
 9. **`tasks/fontaine_harness_plan.md`**: a dated line at the end of the `### Sessions`
    subsection of `## Decisions` recording the one deviation from Claude Code: partial streamed
    text and an in-flight tool batch are not kept.
@@ -235,8 +236,9 @@ issue accepts this for a first cut.
   continues from there. Text the model was still streaming is not kept.
 - `docs/architecture.md`: session layout. `logs/main.inflight.jsonl` journals the main run in
   progress, as `agent-<n>.inflight.jsonl` does for subagents.
-- `docs/tui.md`, queued messages: messages already delivered in an interrupted turn are kept
-  with its finished rounds instead of being discarded and needing to be sent again.
+- `docs/tui.md`, queued messages (~lines 420-422): a message delivered with a tool round that
+  finished before the interrupt is kept; one delivered into the tool batch still running at
+  the interrupt is lost and must be sent again.
 - `docs/headless.md` (~line 120) and the `--resume` passage of `docs/tui.md`: resuming after a
   process that died mid-turn keeps that turn, marked as unfinished.
 - `CHANGELOG.md`: `Fixed`. An interrupted turn stays in the model's conversation.
@@ -252,8 +254,8 @@ integration test.
     fallback is a no-op that returns `false`.
   - A non-empty journal ignores the fallback, so the prompt is not doubled.
   - An empty journal with a fallback whose `log_len_before` is below `main`'s count (a failed
-    retry attempt already appended the prompt) is a no-op that returns `false`, so the prompt
-    is not doubled.
+    retry attempt already appended the prompt, Esc during the backoff) appends the marker
+    alone, so the prompt is not doubled and the interruption is still marked.
   - Each `Unsettled` cause produces its marker text.
   - An append failure (a MemoryStore wrapper that fails appends and replaces to the `main`
     log only) returns the error and leaves the journal unchanged.
