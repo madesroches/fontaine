@@ -105,6 +105,20 @@ impl Default for Limits {
     }
 }
 
+/// How the end of a handle-less revival is recorded, decided under one lock so a kill or a
+/// clear landing while the runner rebuilt the conversation cannot slip between the check and
+/// the conclusion.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevivalEnd {
+    /// The node lives and no kill landed: the failure is reported like any run's.
+    Live,
+    /// A kill landed: the node is concluded as killed, with no report.
+    Killed,
+    /// The node is gone, pruned by a clear after the kill: only the killed record and the
+    /// detached mail remain.
+    Gone,
+}
+
 /// What attaching a run's handle found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Attach {
@@ -253,6 +267,9 @@ pub enum Refusal {
     AlreadyRunning,
     /// A kill ended the agent for good; a wake that checked before the kill must not undo it.
     Killed,
+    /// Resume and wake transitions are held for a session operation (a `/clear`, a
+    /// conversation rewind, an AFK stop); the caller retries once it ends.
+    Held,
     /// The agent was retired; the text says why.
     Retired(String),
     /// A node a resumed session rebuilt has no saved conversation to build a handle from.
@@ -361,6 +378,10 @@ struct Inner {
     names: HashSet<String>,
     session_spend: Spend,
     last_writing_wake: Option<tokio::time::Instant>,
+    /// Set while a session operation (a `/clear`, a conversation rewind, an AFK stop) sweeps
+    /// the tree: every resume, wake and reminder waits for it. The text is what a refused
+    /// wake is told.
+    wake_hold: Option<String>,
 }
 
 impl Inner {
@@ -494,6 +515,18 @@ pub struct AgentRow {
     pub idle: bool,
 }
 
+/// Releases the tree's wake hold when it drops; see [`AgentTree::hold_wakes`].
+#[must_use]
+pub struct WakeHold<'a> {
+    tree: &'a AgentTree,
+}
+
+impl Drop for WakeHold<'_> {
+    fn drop(&mut self) {
+        self.tree.resume_wakes();
+    }
+}
+
 type RootModeSource = Arc<dyn Fn() -> RootMode + Send + Sync>;
 type RootToolsSource = Arc<dyn Fn() -> Vec<String> + Send + Sync>;
 
@@ -553,6 +586,7 @@ impl AgentTree {
                 names: HashSet::new(),
                 session_spend: Spend::default(),
                 last_writing_wake: None,
+                wake_hold: None,
             }),
             root_mode: RwLock::new(Arc::new(|| RootMode::Ladder(Ladder::Manual))),
             root_tools: RwLock::new(None),
@@ -635,6 +669,32 @@ impl AgentTree {
 
     pub fn shutting_down(&self) -> bool {
         self.shutdown.load(Ordering::SeqCst)
+    }
+
+    /// Holds every resume, wake and reminder until [`resume_wakes`](Self::resume_wakes);
+    /// `why` is what a refused wake is told. Used for an AFK stop, which keeps the hold until
+    /// `/afk review`.
+    pub fn suppress_wakes(&self, why: &str) {
+        self.lock().wake_hold = Some(why.to_string());
+    }
+
+    /// Releases a wake hold set by [`suppress_wakes`](Self::suppress_wakes) or by
+    /// `hold_wakes`, such as at `/afk review`.
+    pub fn resume_wakes(&self) {
+        self.lock().wake_hold = None;
+    }
+
+    /// Whether resume and wake transitions are held for a session operation.
+    pub fn wakes_held(&self) -> bool {
+        self.lock().wake_hold.is_some()
+    }
+
+    /// Like [`suppress_wakes`](Self::suppress_wakes), released when the guard drops: `why` is
+    /// what a refused wake is told. Used while `/clear` or a conversation rewind retires the
+    /// tree, so a racing watcher cannot start an agent the operation is sweeping.
+    pub fn hold_wakes(&self, why: &str) -> WakeHold<'_> {
+        self.lock().wake_hold = Some(why.to_string());
+        WakeHold { tree: self }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
@@ -998,11 +1058,16 @@ impl AgentTree {
     /// Why `id`, which has ended, cannot be resumed: a kill, a spent budget and a retirement are
     /// final. `None` when a resume may go ahead, and for an agent still running or unknown.
     pub fn resume_blocker(&self, id: &str) -> Option<String> {
-        self.lock().nodes.get(id).and_then(blocker_of)
+        let inner = self.lock();
+        if let Some(why) = &inner.wake_hold {
+            return Some(why.clone());
+        }
+        inner.nodes.get(id).and_then(blocker_of)
     }
 
-    /// Why `id` cannot be woken to take a message or a report: the session is ending, or its end
-    /// is final (see [`resume_blocker`](Self::resume_blocker)).
+    /// Why `id` cannot be woken to take a message or a report: the session is ending, its ends
+    /// are held for a session operation, or its end is final (see
+    /// [`resume_blocker`](Self::resume_blocker)).
     pub fn wake_blocker(&self, id: &str) -> Option<String> {
         if self.shutting_down() {
             return Some("the session is ending".to_string());
@@ -1141,6 +1206,9 @@ impl AgentTree {
         }
         if let Some(why) = &node.retired {
             return Err(Refusal::Retired(why.clone()));
+        }
+        if inner.wake_hold.is_some() {
+            return Err(Refusal::Held);
         }
         if let Some(why) = self.limits.session.exhausted(&inner.session_spend, true) {
             return Err(Refusal::SessionBudget(why.describe()));
@@ -1565,6 +1633,62 @@ impl AgentTree {
                 .iter()
                 .any(|note| note.kind != NotificationKind::Job)
         })
+    }
+
+    /// Decides how a handle-less revival's end is recorded (see [`RevivalEnd`]), under the
+    /// same lock that knows the node's status, so a kill or a clear landing while the runner
+    /// rebuilt the conversation cannot be read as "still revivable" or "gone without a kill".
+    pub fn revival_end(&self, id: &str) -> RevivalEnd {
+        let inner = self.lock();
+        match inner.nodes.get(id) {
+            None => RevivalEnd::Gone,
+            Some(node) if node.status == ChildStatus::Killed => RevivalEnd::Killed,
+            Some(_) => RevivalEnd::Live,
+        }
+    }
+
+    /// Re-derives the toolsets of the agents a resumed session rebuilt, in spawn order, from
+    /// the tree's current tools: the root's tool source gains MCP tools as servers connect,
+    /// after the rebuild froze each node's list. Handles and conversations stay as they are;
+    /// a not-yet-defined type leaves its node untouched.
+    pub fn refresh_rebuilt_toolsets(&self, types: &AgentTypes) {
+        let ids = self.lock().order.clone();
+        for id in ids {
+            let rebuilt = self
+                .lock()
+                .nodes
+                .get(&id)
+                .is_some_and(|n| n.revival.is_some());
+            if !rebuilt {
+                continue;
+            }
+            let (Some(type_name), Some(parent)) = (self.type_of(&id), self.parent_of(&id)) else {
+                continue;
+            };
+            let Some(agent_type) = types.get(&type_name) else {
+                continue;
+            };
+            // Spawn order puts every parent before its children, so a parent's refreshed
+            // set is what its child's is cut from.
+            let mut tools = agent_type.toolset(&self.tools_of(&parent));
+            let depth = self.depth_of(&parent) + 1;
+            if depth >= self.limits.max_depth {
+                tools.retain(|tool| tool != "agent");
+            }
+            if let Some(node) = self.lock().nodes.get_mut(&id) {
+                node.info.tools = tools;
+            }
+        }
+    }
+
+    /// The kinds of the notifications queued for the root, for the label the turn on them
+    /// gets.
+    pub fn root_notification_kinds(&self) -> Vec<NotificationKind> {
+        self.lock()
+            .nodes
+            .get(ROOT_AGENT)
+            .map(|node| node.inbox.iter().map(|note| note.kind).collect())
+            .unwrap_or_default()
     }
 
     /// Whether the root's inbox holds owner reminders and nothing else.

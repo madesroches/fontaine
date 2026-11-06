@@ -49,14 +49,14 @@ Those last were edited by you or another program after the agent's last change; 
 discards that work, so you choose between overwriting them and keeping them. Esc steps back.
 
 Restoring the conversation retires every idle [subagent](agents.md#agent-lifecycle) (they stay in the
-agents panel as `done` and cannot be woken: a woken agent would be judged against intent the rewind
+agents panel — as `done` when they had ended done, as `failed` when they had failed — and cannot be woken: a woken agent would be judged against intent the rewind
 dropped), puts the rewound prompt back in the input box to edit and send again,
 clears an active [goal](tui.md#goals) (as `/clear` does, whichever prompt you go back to), and keeps the
 task list, scheduled prompts, permission grants and mode. The transcript on screen is emptied the
 way `/clear` empties it. Summarizing from a chosen point is not offered.
 
 A rewind is something you ask for in the terminal, outside the permission pipeline, and the model
-cannot request one. It is refused while a subagent runs or has a report or message to deliver.
+cannot request one. It is refused while a subagent runs or a report, message or board reminder waits to be delivered.
 
 ## What the ledger keeps
 

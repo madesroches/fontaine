@@ -295,6 +295,12 @@ impl AgentRuntime {
                 }
             }
         }
+        // The rebuild at startup derived each rebuilt agent's toolset before any server
+        // connected; now that the tool server holds every MCP tool, the handle-less rebuilt
+        // toolsets are re-derived, parents before children, so a later revival carries them.
+        self.state
+            .agents()
+            .refresh_rebuilt_toolsets(&self.agent_types);
         outcomes
     }
 

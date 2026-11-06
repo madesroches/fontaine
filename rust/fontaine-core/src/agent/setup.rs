@@ -379,8 +379,24 @@ fn rebuild_records(session: &Session) -> Vec<(RebuildRecord, bool)> {
 
 /// Brings back the agents of an earlier process of the session that had not ended for good, as
 /// idle nodes. Call once the root's tools and posture are wired.
-pub(super) fn rebuild_agents(session: &Session, tree: &AgentTree, types: &AgentTypes) {
-    tree.rebuild(&rebuild_records(session), types);
+pub(super) fn rebuild_agents(
+    state: &Arc<SessionState>,
+    session: &Session,
+    tree: &AgentTree,
+    types: &AgentTypes,
+) {
+    let records = rebuild_records(session);
+    tree.rebuild(&records, types);
+    // Restrictions guard a node from its first call, before its handle exists: an ancestor
+    // still handle-less must not let the walk skip it, so they are installed at rebuild and
+    // not left for handle assembly.
+    let keep = revivable_ids(&records, types);
+    for (record, _) in records.iter().filter(|(r, _)| keep.contains(&r.id)) {
+        let Some(agent_type) = types.get(&record.agent_type) else {
+            continue;
+        };
+        state.set_child_restrictions(&record.id, crate::child_runner::restrictions(agent_type));
+    }
 }
 
 /// The permission state of a new session: its scope, rules, guardian and the agent tree.

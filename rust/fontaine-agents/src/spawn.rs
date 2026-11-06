@@ -17,6 +17,7 @@ use crate::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnReq
 use crate::tasks::Reminder;
 use crate::tree::{
     AgentTree, Attach, DeliverError, Killed, Notification, NotificationKind, Refusal, Retired,
+    RevivalEnd,
 };
 
 const TARGET: &str = "fontaine::telemetry";
@@ -50,9 +51,11 @@ pub struct AgentTool {
 }
 
 /// Gives back a reservation if the call is dropped (the turn was interrupted) before the child
-/// has a handle, which would otherwise hold a parallel slot forever.
+/// has a handle, which would otherwise hold a parallel slot forever. The release frees the
+/// slot for everything that waited on one, such as reports and reminders requeued for it.
 struct ReleaseOnDrop {
     tree: Arc<AgentTree>,
+    ledger: Arc<dyn RootLedger>,
     id: String,
     armed: bool,
 }
@@ -61,6 +64,7 @@ impl Drop for ReleaseOnDrop {
     fn drop(&mut self) {
         if self.armed {
             self.tree.release(&self.id);
+            slot_freed(&self.tree, &self.ledger, Some(&self.id));
         }
     }
 }
@@ -368,7 +372,7 @@ pub fn remind_owners(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, except
     let Some(teams) = tree.teams() else {
         return;
     };
-    if tree.shutting_down() {
+    if tree.shutting_down() || tree.wakes_held() {
         return;
     }
     let free = tree.free_slots();
@@ -395,7 +399,19 @@ pub fn remind_owners(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, except
             tree.post_to_root(ROOT_AGENT, NotificationKind::Reminder, reminder.text);
         } else if running {
             tree.push(&owner, &owner, NotificationKind::Reminder, reminder.text);
-        } else if wake_idle(tree, ledger, &owner, reminder.text.clone(), Vec::new()).is_err() {
+            // The owner can end its run in the moment between the push and its own next
+            // check; the wake is a no-op while it runs and closes that transition.
+            wake_for_inbox(tree, ledger, &owner);
+        } else if wake_idle(
+            tree,
+            ledger,
+            &owner,
+            reminder.text.clone(),
+            Vec::new(),
+            Some(reminder.clone()),
+        )
+        .is_err()
+        {
             teams.boards.forget_reminder(&owner, &reminder);
         }
     }
@@ -406,7 +422,7 @@ pub fn remind_main(tree: &AgentTree) {
     let Some(teams) = tree.teams() else {
         return;
     };
-    if teams.headless || tree.shutting_down() {
+    if teams.headless || tree.shutting_down() || tree.wakes_held() {
         return;
     }
     let free = tree.free_slots();
@@ -601,7 +617,7 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
         return;
     }
     let notes = tree.take_notifications(id);
-    match wake_idle(tree, ledger, id, render_notes(&notes), notes.clone()) {
+    match wake_idle(tree, ledger, id, render_notes(&notes), notes.clone(), None) {
         Ok(()) => {}
         // Someone woke it first, or no slot is free yet: the notes wait for its next end or the
         // next slot to free.
@@ -662,6 +678,7 @@ pub fn wake_idle(
     id: &str,
     text: String,
     waking: Vec<Notification>,
+    reminder: Option<Reminder>,
 ) -> Result<(), WakeError> {
     let refuse = |why: String| {
         release_tasks(tree, ledger, id);
@@ -670,10 +687,12 @@ pub fn wake_idle(
     if let Some(why) = tree.wake_blocker(id) {
         return refuse(why);
     }
-    match resume_inner(tree, ledger, id, text, false, waking) {
+    match resume_inner(tree, ledger, id, text, false, waking, reminder) {
         Ok(()) => Ok(()),
         Err(Refusal::AlreadyRunning) => Err(WakeError::AlreadyRunning),
         Err(transient @ Refusal::Parallel(_)) => Err(WakeError::Transient(describe(&transient))),
+        // A held wake (a session operation is sweeping the tree) retries once it ends.
+        Err(held @ Refusal::Held) => Err(WakeError::Transient(describe(&held))),
         Err(spent @ Refusal::SessionBudget(_)) => Err(WakeError::SessionBudget(describe(&spent))),
         Err(other) => refuse(describe(&other)),
     }
@@ -687,7 +706,7 @@ pub fn resume_child(
     id: &str,
     text: String,
 ) -> Result<(), Refusal> {
-    resume_inner(tree, ledger, id, text, true, Vec::new())
+    resume_inner(tree, ledger, id, text, true, Vec::new(), None)
 }
 
 fn resume_inner(
@@ -697,6 +716,7 @@ fn resume_inner(
     text: String,
     from_human: bool,
     waking: Vec<Notification>,
+    reminder: Option<Reminder>,
 ) -> Result<(), Refusal> {
     // A node a resumed session rebuilt has no conversation handle yet: the runner builds one,
     // after the node is claimed.
@@ -720,16 +740,26 @@ fn resume_inner(
             let (tree, ledger, id) = (tree.clone(), ledger.clone(), id.to_string());
             tokio::spawn(async move {
                 match runner.revive(request).await {
-                    Ok(handle) => {
-                        // A clear can prune the node while the runner rebuilds the
-                        // conversation; the handle stops with it and no run may start.
-                        if tree.attach(&id, handle.clone()) != Attach::Missing {
+                    Ok(handle) => match tree.attach(&id, handle.clone()) {
+                        Attach::Attached => {
                             start_run(&tree, &ledger, &id, &handle, text, from_human);
                         }
-                    }
+                        // A kill or a clear landed while the runner rebuilt the conversation.
+                        // No watcher exists for this revival, so its end is concluded here;
+                        // the run never started, so the human's words are reported
+                        // undelivered, never recorded as read.
+                        Attach::Killed | Attach::Missing => {
+                            runner.discard_unread(&id);
+                            killed_revival(
+                                &tree, &ledger, &id, &type_name, waking, text, from_human,
+                            );
+                        }
+                    },
                     Err(why) => {
                         runner.discard_unread(&id);
-                        revive_failed(&tree, &ledger, &parent, &id, &type_name, &why, waking);
+                        revive_failed(
+                            &tree, &ledger, &parent, &id, &type_name, &why, waking, reminder,
+                        );
                     }
                 }
             });
@@ -764,7 +794,10 @@ fn start_run(
 }
 
 /// Ends the run of an agent whose conversation could not be rebuilt as failed, reporting it as
-/// any failed run is reported. Mail queued while it started is returned to its senders.
+/// any failed run is reported. Mail queued while it started is returned to its senders. A kill
+/// or a clear that landed while the runner rebuilt is decided under one lock: it concludes the
+/// revival as killed, with no report reaching the cleared conversation.
+#[allow(clippy::too_many_arguments)]
 fn revive_failed(
     tree: &Arc<AgentTree>,
     ledger: &Arc<dyn RootLedger>,
@@ -773,31 +806,78 @@ fn revive_failed(
     type_name: &str,
     why: &str,
     waking: Vec<Notification>,
+    reminder: Option<Reminder>,
 ) {
-    // A clear can prune the node while the runner rebuilds the conversation; there is then
-    // nothing to settle, and nothing may be reported into the cleared session.
-    if tree.status_of(id).is_none() {
-        return;
+    match tree.revival_end(id) {
+        RevivalEnd::Killed | RevivalEnd::Gone => {
+            let mut dropped = waking;
+            dropped.extend(tree.take_notifications(id));
+            bounce(tree, ledger, id, dropped, "it was killed", true);
+            conclude(tree, ledger, id, type_name, &killed_revival_report());
+        }
+        RevivalEnd::Live => {
+            let mut dropped = waking;
+            dropped.extend(tree.take_notifications(id));
+            bounce(
+                tree,
+                ledger,
+                id,
+                dropped,
+                &format!("it could not be revived from its saved conversation ({why})"),
+                true,
+            );
+            let report = ChildReport {
+                status: ChildStatus::Failed,
+                text: String::new(),
+                reason: Some(format!(
+                    "it could not be revived from its saved conversation: {why}; messages sent while it started were dropped"
+                )),
+            };
+            finish_run(tree, ledger, parent, id, type_name, &report, false);
+            after_end(tree, ledger, parent, id);
+            // The revival the reminder's key was claimed for failed; free the key only after
+            // this end's own reminder pass, so that pass cannot re-claim it in a tight loop.
+            // A later board or slot check retries the reminder.
+            if let (Some(reminder), Some(teams)) = (reminder, tree.teams()) {
+                teams.boards.forget_reminder(id, &reminder);
+            }
+        }
+    }
+}
+
+/// Concludes a handle-less revival whose node was killed or pruned before the handle could
+/// attach. The run never started: no report is queued, the human's words are reported
+/// undelivered rather than recorded as read, and exactly one killed conclusion lands in the
+/// ledger with the telemetry event.
+fn killed_revival(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    id: &str,
+    type_name: &str,
+    waking: Vec<Notification>,
+    text: String,
+    from_human: bool,
+) {
+    if from_human {
+        // The words never reached a model, so they are not recorded as the human's; the human
+        // learns they were not delivered.
+        tree.warn(&format!(
+            "{id} could not read your message (it was killed); it was not delivered: {text}"
+        ));
     }
     let mut dropped = waking;
     dropped.extend(tree.take_notifications(id));
-    bounce(
-        tree,
-        ledger,
-        id,
-        dropped,
-        &format!("it could not be revived from its saved conversation ({why})"),
-        true,
-    );
-    let report = ChildReport {
-        status: ChildStatus::Failed,
+    bounce(tree, ledger, id, dropped, "it was killed", true);
+    conclude(tree, ledger, id, type_name, &killed_revival_report());
+}
+
+/// The report a revival that never started records: no run, no words.
+fn killed_revival_report() -> ChildReport {
+    ChildReport {
+        status: ChildStatus::Killed,
         text: String::new(),
-        reason: Some(format!(
-            "it could not be revived from its saved conversation: {why}; messages sent while it started were dropped"
-        )),
-    };
-    finish_run(tree, ledger, parent, id, type_name, &report, false);
-    after_end(tree, ledger, parent, id);
+        reason: Some("it was killed before its saved conversation could be rebuilt".to_string()),
+    }
 }
 
 /// Resumes a child that ended with the human's messages still unread, as Claude Code does. This
@@ -832,6 +912,7 @@ pub fn describe(refusal: &Refusal) -> String {
         Refusal::SessionBudget(why) => format!("the session's agent budget is spent: {why}"),
         Refusal::AlreadyRunning => "it is already running".to_string(),
         Refusal::Killed => "it was killed".to_string(),
+        Refusal::Held => "wakes are held while the session settles; try again shortly".to_string(),
         Refusal::Retired(why) => format!("it was retired ({why})"),
         Refusal::NoConversation => "it has no conversation to resume".to_string(),
         Refusal::Name(why) => why.clone(),
@@ -975,6 +1056,7 @@ impl Tool for AgentTool {
                 Refusal::Name(why) => ToolExecutionError::invalid_args(why),
                 // Only a resume can find a node already running; a reservation is always new.
                 Refusal::AlreadyRunning
+                | Refusal::Held
                 | Refusal::Killed
                 | Refusal::Retired(_)
                 | Refusal::NoConversation => {
@@ -985,6 +1067,7 @@ impl Tool for AgentTool {
         let name = self.tree.name_of(&id);
         let mut reservation = ReleaseOnDrop {
             tree: self.tree.clone(),
+            ledger: self.ledger.clone(),
             id: id.clone(),
             armed: true,
         };
@@ -1002,8 +1085,9 @@ impl Tool for AgentTool {
         };
         let handle: Arc<dyn ChildHandle> = match self.runner.spawn(request).await {
             Ok(handle) => handle,
+            // The reservation drops with the error: the slot is released and what waited on
+            // one is retried.
             Err(why) => {
-                self.tree.release(&id);
                 return Err(ToolExecutionError::other(format!(
                     "the subagent could not start: {why}"
                 )));
@@ -1060,7 +1144,14 @@ impl SendMessageTool {
             kind: NotificationKind::Message,
             text: message.clone(),
         };
-        match wake_idle(&self.tree, &self.ledger, to, note.render(), vec![note]) {
+        match wake_idle(
+            &self.tree,
+            &self.ledger,
+            to,
+            note.render(),
+            vec![note],
+            None,
+        ) {
             Ok(()) => {}
             // Another wake won; its run reads the message from the inbox.
             Err(WakeError::AlreadyRunning) => {

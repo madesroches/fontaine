@@ -300,7 +300,7 @@ impl AgentRuntime {
             instructions: &instruction_stage,
             kills: &kills,
         })?;
-        setup::rebuild_agents(&setup.session, &tree, &agent_types);
+        setup::rebuild_agents(&state, &setup.session, &tree, &agent_types);
         Ok(AgentRuntime {
             agent,
             prompt_pieces: pieces,
@@ -866,9 +866,11 @@ impl AgentRuntime {
     /// because its guardian requests read the human messages the clear drops, while a
     /// finished subagent's report is undelivered, which would otherwise reach the empty context.
     /// Idle agents are retired: nothing woke them could be judged against the intent the clear
-    /// drops.
+    /// drops. Wakes are held from before the guard through the pruning, so a killed child's
+    /// watcher cannot resume an agent into the conversation being emptied.
     pub async fn clear_conversation(&self) -> Result<(), ClearError> {
         let agents = self.state.agents();
+        let _wakes = agents.hold_wakes("the conversation is being cleared");
         if agents.any_running() || agents.has_agent_notifications() || agents.has_subagent_mail() {
             return Err(ClearError::SubagentsRunning);
         }

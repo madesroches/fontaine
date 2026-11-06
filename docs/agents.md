@@ -210,8 +210,9 @@ final**.
   agent budget leaves it idle with its tasks too, but what was queued for it goes back to its
   senders, since the budget never frees up. What wakes an agent other than you is marked as untrusted data and is never recorded
   as something you said, so it never becomes the guardian's idea of your intent.
-- **Final.** A kill, a spent budget or a retirement cannot be undone. Killed, out of budget and
-  `failed` rows show their own status; a retired agent shows `done`, so `done` always means final.
+- **Final.** A kill, a spent budget or a retirement cannot be undone. Killed and out-of-budget
+  rows show their own status; a retired agent that had ended `done` shows `done`, and one that
+  had failed keeps `failed`. Either way the row is final.
 
 An agent is retired only when waking it no longer makes sense; there is no timeout and no cap on
 idle agents:
@@ -220,8 +221,9 @@ idle agents:
   depth is retired with it and every running one is killed. An agent that merely goes idle leaves
   its idle subagents alone, because a later wake of it may need them.
 - `/clear` and a conversation `/rewind` retire the idle agents: a woken agent would be judged
-  against intent that the clear or rewind dropped. `/clear` also prunes them from the list; a rewind
-  keeps them, shown as `done`. An AFK stop retires them and kills the running ones.
+  against intent that the clear or rewind dropped. `/clear` also prunes them from the list; a
+  rewind keeps them, shown as `done` or `failed` as they had ended. An AFK stop retires them
+  and kills the running ones.
 - A message or report still queued for an agent that is retired, killed while idle or pruned goes
   back: a message to its sender, a report to the main conversation.
 

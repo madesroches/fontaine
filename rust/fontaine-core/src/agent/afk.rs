@@ -89,6 +89,11 @@ impl AgentRuntime {
     /// which would outlive a review), idle agents are retired, the goal is paused, and the
     /// stretch is reviewed. Returns the report for the surface to show.
     pub async fn handle_afk_stop(&self) -> Option<AfkReport> {
+        // Held until `/afk review`: no watcher may wake or remind anything from here on, and
+        // the killed children's conclusions cannot resume an idle sender.
+        self.state.agents().suppress_wakes(
+            "an AFK stop ended the session's activity; /afk review lets it continue",
+        );
         for id in self.state.agents().running_ids() {
             self.kill_agent_no_remind(&id);
         }
@@ -132,6 +137,10 @@ impl AgentRuntime {
     /// The temperature stop the user reviewed may run again, in `manual` if AFK mode was on. The
     /// next turn's refresh brings the prompt's AFK guidance in line.
     pub fn review_afk_stop(&self) -> bool {
-        self.state.afk_review()
+        let reviewed = self.state.afk_review();
+        if reviewed {
+            self.state.agents().resume_wakes();
+        }
+        reviewed
     }
 }

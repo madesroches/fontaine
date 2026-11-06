@@ -1762,7 +1762,7 @@ async fn waking_an_agent_that_is_already_running_asks_the_caller_to_queue() {
     let id = start_worker(&team, "busy").await;
     let ledger: Arc<dyn RootLedger> = team.rig.ledger.clone();
     assert_eq!(
-        wake_idle(&team.rig.tree, &ledger, &id, "hi".into(), Vec::new()),
+        wake_idle(&team.rig.tree, &ledger, &id, "hi".into(), Vec::new(), None),
         Err(WakeError::AlreadyRunning)
     );
 }

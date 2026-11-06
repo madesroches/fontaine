@@ -610,7 +610,7 @@ error: an export never overwrites.
 | `/recap` | Reports what the session has done so far, from the ledger and without calling a model; see [Side questions](#side-questions-and-recaps). Runs immediately, turn or no turn. |
 | `/rename [<name>]` | Names the session. Without a name, draws one from the first line of your first message. See [Sessions](#sessions). |
 | `/resume [<name-or-id>]` | Switches to another session started in this folder: the picker without an argument, that session with one. Sessions where nothing was said and that have no name are not listed. Only between turns. See [Sessions](#sessions). |
-| `/rewind`, `/checkpoint` | Opens a list of this conversation's prompts to restore the code, the conversation or both to the start of one. Esc twice does the same. See [Checkpoints and /rewind](checkpoints.md). Refused while a subagent runs or has a report or message to deliver; a conversation restore retires the idle [subagents](agents.md#agent-lifecycle). |
+| `/rewind`, `/checkpoint` | Opens a list of this conversation's prompts to restore the code, the conversation or both to the start of one. Esc twice does the same. See [Checkpoints and /rewind](checkpoints.md). Refused while a subagent runs or a report, message or board reminder waits to be delivered; a conversation restore retires the idle [subagents](agents.md#agent-lifecycle). |
 | `/skills [trust <name>]` | Without an argument, lists every loaded [skill](extensions.md#skills) with its scope, marking those only the model can use, those only you can run, those a built-in command hides, and those you have trusted (`trusted`) or trusted before the file changed (`changed (re-trust)`). `trust <name>` opens a dialog that lists the skill's `allowed-tools` (or, for a skill you trusted before, what changed in them and in its `!` commands) and records your trust on `y`, in the session ledger and audit log too. The trust applies from the next session start; the running session's grants and this list do not change. The trust form waits for the turn to end; a [project skill](extensions.md#allowed-tools) cannot be trusted. See [Trusted skills](extensions.md#trusted-skills). |
 | `/status` | Shows the version, the session id, the workspace roots (the scratch directory labelled separately), the permission mode, the main model, the guardian (or why it is unavailable) with its profile, the output style, and how many MCP servers are connected. While the guardian is off it reports that instead of the guardian's model. |
 | `/theme [<name>]` | Without an argument, lists the colour themes, marks the current one and names the file the choice is saved to. With a name, switches to that theme at once and saves it as `[tui] theme` in your user settings file. An unknown name is an error that lists the themes. See [Terminal setup](terminal.md#colours). |
@@ -636,7 +636,7 @@ guardian's view of what you have asked, which starts again from the next message
 files, actions and denials it knows about are kept.
 [`/rewind`](checkpoints.md) trims the guardian's view the same way for the prompts it takes back. The old
 conversation cannot be resumed: `--resume` reopens the empty one. `/clear` is refused while a
-subagent is running or it has a report or message to deliver, since the subagent's calls are judged against what you asked; wait for it
+subagent is running or a report, message or board reminder waits to be delivered: a running subagent's calls are judged against what you asked, and a notice or reminder would reach a conversation you just emptied. Wait for it
 or kill it from the [agents panel](#the-agents-panel). Idle subagents are retired and pruned: they
 could not be woken against intent the clear drops, and the subagents the cleared
 conversation spawned leave the [agent list](#the-agent-list-and-the-agent-view) and the
@@ -1108,12 +1108,15 @@ conversation:
 - A running agent reads it with its next tool result, as the main agent does with
   [messages during a turn](#messages-during-a-turn). Until then it shows dimmed under the
   transcript, and then as a `>` line of its own.
-- An agent that ended with `done` or `failed` is resumed with it: another run starts on the same
+- An idle agent that has not been retired is resumed with it: another run starts on the same
   conversation, with the same tools, mode and budget, and the main conversation shows
   `you resumed agent-3`. The new run's report reaches the agent that started it, or the main
   conversation when that agent has ended, like any other report. A message that a run ended
-  without reading resumes the agent the same way once it ends. Resuming holds only until a
-  `/clear` prunes the agent, along with its place in the list and the panel.
+  without reading resumes the agent the same way once it ends.
+- An agent that was retired — by `/clear`, a conversation rewind or a final ancestor, as in the
+  [agent lifecycle](agents.md#agent-lifecycle) — cannot be resumed; the view says so and the
+  text stays in the input. Resuming an unretired agent holds until it leaves the list, which
+  `/clear` does by pruning it, along with its place in the list and the panel.
 - An agent that was killed or whose budget is spent cannot be resumed; the view says so and the text
   stays in the input. A resume that would exceed the parallel-agent limit or the session's agent
   budget is refused the same way.
@@ -1166,6 +1169,8 @@ messages are on screen.
 
 When a subagent finishes while nothing is running, the main conversation gets a turn of
 its own to read the report. A background job that ends, or a monitor that prints lines, does the
-same: the transcript says `an agent reported back` or `a background job reported back`, and the turn reads the notice,
+same: the transcript says `an agent reported back` or `a background job reported back`
+(a job note wins the label when both wait at once), or `tasks on your board are waiting for
+agents` for a reminder about its task board, and the turn reads the notice,
 which names the output as untrusted data. `/clear` and a `/rewind` that restores the conversation stop running jobs and discard their
 notices; `/branch` is refused while a notice is waiting.

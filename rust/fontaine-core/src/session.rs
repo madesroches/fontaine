@@ -148,7 +148,7 @@ impl fmt::Display for ClearError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ClearError::SubagentsRunning => f.write_str(
-                "subagents are still running or have reports or messages to deliver; /clear is refused until they finish or are killed",
+                "subagents are still running or have reports, messages or board reminders to deliver; /clear is refused until they finish or are killed",
             ),
             ClearError::Store { action, .. } => {
                 write!(f, "the conversation could not be {action}")

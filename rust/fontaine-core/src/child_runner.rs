@@ -337,7 +337,9 @@ fn fork_tools(root: &ToolServerHandle, names: &[String]) -> ToolServerHandle {
     handle
 }
 
-fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
+/// What the agent file of `agent_type` forbids a child outright and what it limits to
+/// specifier-matched calls, installed on the node at spawn and at rebuild.
+pub(crate) fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
     let rules = |entries: &[String]| {
         entries
             .iter()

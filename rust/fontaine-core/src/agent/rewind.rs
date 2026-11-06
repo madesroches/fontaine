@@ -23,7 +23,7 @@ impl fmt::Display for RewindError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RewindError::SubagentsRunning => f.write_str(
-                "subagents are still running or have reports or messages to deliver; /rewind is refused until they finish or are killed",
+                "subagents are still running or have reports, messages or board reminders to deliver; /rewind is refused until they finish or are killed",
             ),
             RewindError::Conversation(_) => f.write_str("the conversation could not be rewound"),
         }
@@ -72,7 +72,9 @@ impl AgentRuntime {
 
     /// `/rewind`. The conversation goes first because it can fail without side effects; the
     /// files follow, best effort, with the failures in the report. Files changed since the
-    /// last tool call are overwritten only with `overwrite_changed`.
+    /// last tool call are overwritten only with `overwrite_changed`. Wakes are held from
+    /// before the guard through the retirement, so a racing watcher cannot resume an agent
+    /// into the conversation being rewound.
     pub async fn rewind(
         &self,
         plan: &RewindPlan,
@@ -80,6 +82,9 @@ impl AgentRuntime {
         overwrite_changed: bool,
     ) -> Result<RewindOutcome, RewindError> {
         let agents = self.state.agents();
+        let _wakes = what
+            .includes_conversation()
+            .then(|| agents.hold_wakes("the conversation is being rewound"));
         if agents.any_running() || agents.has_agent_notifications() || agents.has_subagent_mail() {
             return Err(RewindError::SubagentsRunning);
         }

@@ -336,8 +336,9 @@ waking do not depend on it.
 
 An agent is a conversation plus a few facts about it, not a process. Its log (`logs/agent-<n>.jsonl`)
 persists, and its id and name are already stable across `--resume` (2026-11-21 #300). A resumed
-session therefore brings back every agent that had not ended for good, as idle and wakeable, as
-Claude Code resumes an agent from its transcript.
+session therefore brings back every agent whose last end was `done`, as idle and wakeable, as
+Claude Code resumes an agent from its transcript. Agents that failed, were killed, ran out of
+budget or were retired are not brought back.
 
 - **What the ledger must hold.** The `spawned` record gains `model` (the concrete resolved reference that `tree.set_model` stores, not `$main`, so the agent revives on the exact model it used).
   Retiring a `Done` node appends `finished` with status `retired`; a retired `Failed` node keeps its
@@ -535,8 +536,8 @@ Claude Code resumes an agent from its transcript.
      work and spawn agents for it (#435).
    - 2026-11-05: `teammate_idle` fires only for an agent going idle with an in-progress task on its
      parent's board, as a gate on unfinished work (#435).
-   - 2026-11-05 (user): A `--resume`d session rebuilds every agent that had not ended for good as
-     idle, from the ledger and its per-agent log. Its handle is built lazily on the first wake, its
+   - 2026-11-05 (user): A `--resume`d session rebuilds only the agents whose last end was
+     `done` as idle, from the ledger and its per-agent log; failed agents are not rebuilt. Its handle is built lazily on the first wake, its
      tools and mode are re-derived (never looser than its parent's), and its per-agent spend starts
      over. Claude Code parity: an agent resumes from its transcript (#435).
    - 2026-11-05 (amends the 2026-11-02 wake line): the idle hand-off note is no longer a wake, and
