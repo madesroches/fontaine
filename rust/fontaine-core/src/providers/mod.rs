@@ -125,12 +125,6 @@ pub trait Provider: Send + Sync + 'static {
         false
     }
 
-    /// A line shown once when an account of this kind becomes the main model: what the kind
-    /// does that the user should know before relying on it.
-    fn selection_notice(&self) -> Option<&'static str> {
-        None
-    }
-
     /// Whether a listed id satisfies a requested model.
     fn lists(&self, available: &[String], model: &str) -> bool {
         available.iter().any(|id| id == model)

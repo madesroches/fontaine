@@ -611,21 +611,6 @@ pub async fn resolve(params: &ResolveParams<'_>) -> Result<Models, ModelError> {
     resolve_with(params, &validated_models()).await
 }
 
-/// What the user should know before relying on the account `reference` names, when its kind has
-/// something to say.
-pub fn selection_notice(config: &Config, reference: &ModelRef) -> Option<crate::notice::Notice> {
-    let account = config.accounts.get(&reference.account)?;
-    let detail = account.kind.provider().selection_notice()?;
-    Some(crate::notice::Notice::warning(
-        format!(
-            "Account `{}` ({}) is experimental",
-            reference.account,
-            account.kind.as_str()
-        ),
-        Some(detail.to_string()),
-    ))
-}
-
 /// [`resolve`] against a given ranked list of validated guardian models instead of the shipped
 /// one.
 pub async fn resolve_with(
@@ -644,7 +629,6 @@ pub async fn resolve_with(
         resolve_main_model(config, &stored, &params.env, main_text, "model").await?;
 
     let mut notices = Vec::new();
-    notices.extend(selection_notice(config, &main_ref));
     let (guardian, guardian_choice) = match config.guardian.model.as_deref() {
         Some(text) => (
             resolve_guardian(
@@ -898,11 +882,6 @@ impl Switcher {
         let (_, _, listing, handle) =
             resolve_main_model(&self.config, &stored, &self.env, text, "model").await?;
         Ok((handle, listing))
-    }
-
-    /// The notice for the account of a main or child model that was just switched onto.
-    pub fn selection_notice(&self, reference: &ModelRef) -> Option<crate::notice::Notice> {
-        selection_notice(&self.config, reference)
     }
 
     /// The guardian model `text` names. An account without a credential gives an unavailable

@@ -279,32 +279,20 @@ fn the_row_says_the_login_is_external_and_ignores_stored_keys() {
 }
 
 #[tokio::test]
-async fn selecting_the_account_gives_the_experimental_notice() {
+async fn selecting_the_account_emits_no_experimental_notice() {
     let claude = Claude::new();
     claude.scenario(json!({}));
     let models = claude.resolve(None).await.unwrap();
-    let notice = models
-        .notices
-        .iter()
-        .find(|n| n.headline.contains("experimental"))
-        .expect("a notice");
-    let hint = notice.hint.as_deref().unwrap();
-    assert!(hint.contains("subscription"), "{hint}");
-    assert!(hint.contains("claude.ai/settings/usage"), "{hint}");
+    assert!(
+        !models
+            .notices
+            .iter()
+            .any(|n| n.headline.contains("experimental")),
+        "{:?}",
+        models.notices
+    );
     assert!(!models.main.catalog_billed());
     assert!(!models.main.priced());
-}
-
-#[tokio::test]
-async fn switching_onto_the_account_gives_the_experimental_notice() {
-    let claude = Claude::new();
-    claude.scenario(json!({}));
-    let switcher = claude.switcher();
-    let (handle, _) = switcher.main("claude/sonnet").await.unwrap();
-    let notice = switcher
-        .selection_notice(&handle.reference)
-        .expect("a notice");
-    assert!(notice.headline.contains("experimental"), "{notice}");
 }
 
 // ---- preflight ------------------------------------------------------------------------------

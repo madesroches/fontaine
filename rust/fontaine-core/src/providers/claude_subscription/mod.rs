@@ -164,12 +164,6 @@ pub(crate) fn read_idle_error(idle: std::time::Duration) -> ProviderError {
 
 pub struct ClaudeSubscription;
 
-const NOTICE: &str = "Requests go through your installed Claude Code CLI and draw from your \
-    Claude subscription limits; token usage is shown but never priced. If your account has extra \
-    usage enabled, exhausting the included limit can switch it to paid usage credits, which \
-    Fontaine cannot see; disable it at https://claude.ai/settings/usage if you need \
-    included-subscription-only use.";
-
 impl Provider for ClaudeSubscription {
     fn name(&self) -> &'static str {
         "claude-subscription"
@@ -185,10 +179,6 @@ impl Provider for ClaudeSubscription {
 
     fn requires_discovery(&self) -> bool {
         true
-    }
-
-    fn selection_notice(&self) -> Option<&'static str> {
-        Some(NOTICE)
     }
 
     fn validate(&self, account: &Account) -> Result<(), (&'static str, String)> {

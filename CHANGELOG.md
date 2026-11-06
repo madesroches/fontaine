@@ -871,6 +871,10 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Selecting a `claude-subscription` account no longer shows the long "is experimental" warning
+  notice on every selection; the extra-usage caveat stays in the Claude subscription docs and the
+  `Provider::selection_notice` hook is gone with it (#455).
+
 #### Agents
 
 - Subagents are no longer capped at 200,000 tokens or $2.00 by default (#285). A subagent now
