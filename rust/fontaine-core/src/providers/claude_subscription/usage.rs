@@ -7,15 +7,27 @@ use std::time::{Duration, SystemTime};
 
 use futures::future::BoxFuture;
 use serde_json::Value;
+use tokio::sync::watch;
 
 use crate::RuntimeError;
 use crate::quota::{Quota, QuotaSource, QuotaWindow};
 use fontaine_tools::lock::lock_recovering;
 
 /// The latest quota any model of the account saw, and the source that serves it.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Usage {
     latest: Mutex<Option<Quota>>,
+    /// Fires after `record`, so the poller re-fetches without waiting for its interval.
+    updated: watch::Sender<()>,
+}
+
+impl Default for Usage {
+    fn default() -> Self {
+        Self {
+            latest: Mutex::new(None),
+            updated: watch::channel(()).0,
+        }
+    }
 }
 
 impl Usage {
@@ -26,6 +38,7 @@ impl Usage {
     pub fn record(&self, quota: Quota) {
         // Display-only state: a poisoned lock still holds a usable figure.
         *lock_recovering(&self.latest) = Some(quota);
+        self.updated.send_replace(());
     }
 
     pub fn snapshot(&self) -> Option<Quota> {
@@ -41,6 +54,10 @@ impl QuotaSource for Usage {
     fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>> {
         let quota = self.snapshot().unwrap_or(Quota { windows: vec![] });
         Box::pin(async move { Ok(quota) })
+    }
+
+    fn updated(&self) -> Option<watch::Receiver<()>> {
+        Some(self.updated.subscribe())
     }
 }
 

@@ -139,9 +139,10 @@ at 70% or more, so a guardian with room to spare adds nothing to the bar.
 A guardian on the main model's account is not shown twice. The same figures reach the
 [`result` event](headless.md#output) of a headless run as `account_usage`.
 
-The figures are refreshed every minute in the background, and never block a turn or a redraw. If a
-refresh fails the last figures stay for ten minutes and are then hidden; the first failure of a
-session is reported once per account as a warning. A segment is also hidden when its model is on an
+A `claude-subscription` account's figures appear as soon as a turn's stream reports them; every
+other account's are refreshed every minute in the background. Both never block a turn or a
+redraw. If a refresh fails the last figures stay for ten minutes and are then hidden; the first
+failure of a session is reported once per account as a warning. A segment is also hidden when its model is on an
 account without a quota source, and no figure is ever estimated: with no data from the provider nothing is
 shown. On a narrow terminal the segments are kept in preference to the key hint, goal, scheduled
 and agent counts, and the guardian's is dropped before the main one.
