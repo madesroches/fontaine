@@ -8,7 +8,7 @@ mod common;
 use std::path::PathBuf;
 use std::process::Stdio;
 
-use common::{Output, Sandbox, write};
+use common::{Output, Sandbox, ledger, write};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -190,6 +190,82 @@ async fn a_read_runs_through_fontaines_gate_and_its_result_reaches_the_next_requ
         assert_eq!(argv[at + 1], "false");
         assert!(!out.stdout.contains("prompt_suggestion"));
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mid_stream_denial_does_not_fail_the_turn() {
+    let claude = Claude::new(json!({"responses": [
+        {"tool_use": read_call("README.md"), "denial": "mid_stream"},
+        {"text": "It is a readme."},
+    ]}));
+    claude.s.add_file("README.md", "UNIQUE-README-CONTENT\n");
+    let out = claude
+        .headless(&["--output-format", "stream-json", "Read README.md"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    assert_eq!(of_type(&lines, "gate_decision")[0]["decision"], "allow");
+    assert_eq!(of_type(&lines, "result")[0]["result"], "It is a readme.");
+    let runs = claude.frames_by_run();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_thinking_turn_with_an_estimate_answers() {
+    let claude = Claude::new(json!({"responses": [
+        {"thinking": {"thinking": "hmm", "signature": "sig"}, "thinking_tokens": true,
+         "text": "done"},
+    ]}));
+    let out = claude
+        .headless(&["--output-format", "stream-json", "think"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    assert_eq!(of_type(&out.lines(), "result")[0]["result"], "done");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_event_is_named_and_leaves_a_trail_and_a_ledger_record() {
+    let claude = Claude::new(json!({"responses": [
+        {"text": "never shown", "after_stop": [
+            {"type": "system", "subtype": "notification", "marker": "UNIQUE-RAW"}]},
+    ]}));
+    let debug = claude.s.work.join("debug.log");
+    let session = "5b0d3c3e-6a39-4c4e-9d47-0c5b6f0f7a11";
+    let out = claude
+        .headless(&[
+            "--debug-file",
+            debug.to_str().unwrap(),
+            "--session-id",
+            session,
+            "hello",
+        ])
+        .await;
+    assert_ne!(out.code, Some(0), "{}", out.stderr);
+    assert!(out.stderr.contains("system/notification"), "{}", out.stderr);
+    assert!(!out.stderr.contains("UNIQUE-RAW"), "{}", out.stderr);
+
+    let log = std::fs::read_to_string(&debug).unwrap();
+    assert!(log.contains("UNIQUE-RAW"), "{log}");
+    assert!(
+        log.contains("stream_event/message_stop → assistant"),
+        "{log}"
+    );
+
+    let records = ledger(&claude.s, session);
+    let failed: Vec<&Value> = records
+        .iter()
+        .filter(|r| r["kind"] == "request_failed")
+        .collect();
+    assert_eq!(failed.len(), 1, "{records:?}");
+    assert_eq!(failed[0]["agent"], "root", "{}", failed[0]);
+    assert!(
+        failed[0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("system/notification"),
+        "{}",
+        failed[0]
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

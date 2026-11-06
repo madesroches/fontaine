@@ -238,6 +238,13 @@ pub enum Record {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// A model request failed and ended the agent's turn. `class` is the stable error class the
+    /// `api_error` telemetry event carries; `message` is the failure as shown to the user.
+    RequestFailed {
+        agent: String,
+        class: String,
+        message: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -612,7 +619,8 @@ impl LedgerView {
             | Record::AfkStop { .. }
             | Record::AfkReviewed {}
             | Record::AfkAssessment { .. }
-            | Record::Goal { .. } => {}
+            | Record::Goal { .. }
+            | Record::RequestFailed { .. } => {}
         }
     }
 }

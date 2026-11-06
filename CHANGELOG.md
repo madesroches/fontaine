@@ -8,6 +8,12 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `claude-subscription` no longer fails every tool-using turn on Claude CLI 2.1.319: its
+  `permission_denied` event and the denial echo, now sent before the response stops, are accepted
+  when they match a tool call the response made, and so is the `thinking_tokens` estimate. A
+  protocol failure now names the rejected event, `--debug-file` records the rejected line and the
+  events before it (and now records events from the whole run rather than only start-up), and a
+  failed model request is recorded in the session ledger as `request_failed` (#448).
 - A command, skill or `!` line queued while the model waits in `job_output` now ends the wait and
   tells the model the entry is pending, instead of leaving it parked for the full `wait_secs`; the
   entry still runs after the turn (#434).

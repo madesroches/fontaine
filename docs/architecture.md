@@ -196,7 +196,8 @@ Each session keeps two stores, plus a task list, a schedule and a goal file, in 
 - the **session ledger**, `ledger/ledger.jsonl`: an append-only record, written by the harness and
   never by the model. It holds the user's messages verbatim (a message typed while a turn runs is
   recorded when the agent receives it with a tool result, not when it is typed), mode changes, approvals and grants,
-  denials, actions taken, `!` commands you ran in the terminal UI (`user_shell`, the command and its
+  denials, actions taken, model requests that ended an agent's turn (`request_failed`, with the
+  error class and message), `!` commands you ran in the terminal UI (`user_shell`, the command and its
   exit code), the workspace roots, the trust state, the repository's git remotes
   (read from the repository's own config, without credentials), the names of the `[env]` variables (never their values) and an index of the files present
   when the session started. The index respects `.gitignore` and holds at most 50,000 paths, after

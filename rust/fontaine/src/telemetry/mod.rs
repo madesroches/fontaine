@@ -240,7 +240,9 @@ pub fn install(sink: Option<&DebugSink>, config: &Config, params: &InstallParams
         (Telemetry::default(), Vec::new())
     };
     // A global subscriber may already be set (e.g. by an embedding host); keep the first subscriber.
-    let _ = base.with(layers).try_init();
+    // An empty list of layers answers "never" to every callsite and would silence the debug
+    // layer beside it, so it is only added when it holds a backend.
+    let _ = base.with((!layers.is_empty()).then_some(layers)).try_init();
     telemetry
 }
 
