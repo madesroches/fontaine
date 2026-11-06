@@ -73,22 +73,30 @@ A new core function in `turn_recovery.rs`:
 /// Why a run ended without settling; picks the marker the model reads.
 pub enum Unsettled { User, AfkStop, SessionEnded }
 
+/// The run's prompt, and how many messages `log` held before the run started.
+pub struct Fallback { pub prompt: Message, pub log_len_before: usize }
+
 /// Appends what an unsettled run committed to `log`, then a marker, then empties the journal.
-/// `fallback` is the run's prompt, used when the journal holds nothing (the run was dropped
-/// before its first model call, or every journal write failed).
+/// `fallback` is used when the journal holds nothing and the run left nothing in `log` (the run
+/// was dropped before its first model call, or every journal write failed).
 pub(crate) async fn fold_unsettled<S: AsyncStore + ?Sized>(
     store: &S,
     log: &str,
     cause: Unsettled,
-    fallback: Option<Message>,
+    fallback: Option<Fallback>,
 ) -> Result<bool, SessionError>   // whether anything was folded
 ```
 
 Steps:
 
 1. Load `journal_log(log)`. A missing journal reads as empty, as `load_async` already does.
-2. Messages = the journal's messages. If empty, use `fallback`. If both are empty, do nothing
-   and return `false` (the run left no trace, for example a resume with no leftover journal).
+2. Messages = the journal's messages. If empty, use `fallback.prompt`, but only if `log`
+   still holds `fallback.log_len_before` messages (counts, not equality, as
+   `InflightHook::settle` does). A failed retry attempt in `drive()` has already appended the
+   prompt through `RecoveryHook` and cut the journal back, so an Esc during the backoff or
+   before the next attempt's first model call finds an empty journal and a longer log; the
+   fallback would double the prompt there. If nothing remains, do nothing and return `false`
+   (the run left no trace, or its trace is already in `log`).
 3. `append_messages(store, log, messages + [marker])`. The marker is a
    `Message::user(text)`:
    - `User`: `[Request interrupted by user]`, the exact text Claude Code uses.
@@ -105,10 +113,7 @@ Steps:
    stays and the fold before the next root run (see §3) folds it, so nothing is lost and
    nothing doubles.
 
-**Pairing.** The journal never holds an unpaired tool call, as noted under Current State. The
-last journaled message is always the user side of a round, either the prompt or a tool-result
-message, so the folded history is valid for providers that require paired
-tool_use/tool_result. No synthetic results are needed. A consecutive user message (the marker
+**Pairing.** A consecutive user message (the marker
 after a tool-result message, then the next prompt) is already a shape the conversation carries
 today after a retry (`RETRY_NOTE`). A test pins that the next request is accepted by the mock
 providers (see Testing Strategy).
@@ -116,8 +121,9 @@ providers (see Testing Strategy).
 **Interaction with the hook at the next run.** `InflightHook::start` records `carried_bytes`
 from the journal at run start and cuts back to it at settle, so a journal carried into a run
 would outlive it and be folded after the newer turns rig saved, out of order. The surfaces
-therefore fold any leftover journal before each root run starts (§3), so a run always starts
-from an empty journal.
+therefore fold any leftover journal before each root run starts (§3), so a run normally starts
+from an empty journal. The exception is a retry inside one `run_turn`: if `RecoveryHook`'s
+append fails for a failed attempt, the next attempt starts with that journal carried.
 
 ### 3. Call the fold where a root run is dropped
 
@@ -126,12 +132,13 @@ A runtime method wraps the fold, warns through the approver on failure (`chain(&
 
 ```rust
 impl AgentRuntime {
-    pub async fn keep_unsettled_turn(&self, cause: Unsettled, prompt: Option<Message>);
+    pub async fn keep_unsettled_turn(&self, cause: Unsettled, fallback: Option<Fallback>);
 }
 ```
 
 - **TUI** (`turn.rs` `turn()`). Before the run future is built, keep the prompt message the
-  run will send: `user_message(&prompt, &attachments, &modalities)`. Expose `user_message` as
+  run will send: `user_message(&prompt, &attachments, &modalities)`, and `main`'s message
+  count, together as the `Fallback`. Expose `user_message` as
   `pub` from `fontaine_core::turn`, or add a small `pub fn prompt_message(...)` wrapper. After
   `drop(run)`, and before `finish_turn`, call `keep_unsettled_turn` when the loop broke with
   `Interrupted` (`Unsettled::User`) or with the signal branch's `Stopped`
@@ -140,10 +147,13 @@ impl AgentRuntime {
   folded at the next resume). To tell the two `Stopped` cases apart, record whether the loop
   broke out of the signal branch before the relabel.
 - **Headless** (`headless.rs` ~line 593). When the AFK stop branch wins (`None`) and the
-  turn had not finished, call `keep_unsettled_turn(Unsettled::AfkStop, Some(prompt))` before
-  `handle_afk_stop`. The prompt text is cloned before `run_turn` takes it (headless sends no
-  attachments).
-- **Before each root run** (TUI `turn()` and headless, before `run_turn`). Call
+  turn had not finished, call `keep_unsettled_turn(Unsettled::AfkStop, Some(fallback))` before
+  `handle_afk_stop`. The prompt text is cloned and `main`'s message count recorded before
+  `run_turn` takes it (headless sends no attachments).
+- **Before each root run** (in the TUI, before `runtime.begin_turn` in the submission paths,
+  through one helper they all call, so the folded journal sits before the rewind checkpoint;
+  the harness-turn paths that record no checkpoint call the same helper before `turn()`; in
+  headless, before `run_turn`). Call
   `keep_unsettled_turn(Unsettled::SessionEnded, None)`, with no fallback, so a journal left by
   a failed fold is folded before a later turn can run and be saved after it.
 - **Session start** (`record_session_start`). For a `Continued` origin, call
@@ -153,9 +163,7 @@ impl AgentRuntime {
   directory, so a leftover journal is folded into the copy too, which is correct: the copy
   continues the same conversation.
 
-The interrupt path in the TUI awaits one load and one save of the conversation log. That is the
-same cost as a settled run's save, and it runs before the next prompt can be submitted, so the
-next turn always sees the folded history.
+The TUI awaits the fold before `finish_turn`, so the next turn sees the folded history.
 
 ### Behavior
 
@@ -187,7 +195,7 @@ issue accepts this for a first cut.
    `user_message`, or a thin `pub fn`).
 5. **`fontaine-tui/src/ui/turn.rs` `turn()`**: build and keep the prompt message, track whether
    the run was dropped unsettled, and call `keep_unsettled_turn` after `drop(run)`. Fold any
-   leftover journal before the run starts.
+   leftover journal before `begin_turn` in the submission paths (one shared helper).
 6. **`fontaine/src/headless.rs`**: fold any leftover journal before `run_turn`; fold on the
    AFK-stop branch.
 7. **Tests** (see Testing Strategy).
@@ -218,6 +226,7 @@ issue accepts this for a first cut.
 - 2026-11-06: The surface that drops the run calls the fold, not `run_turn`, because a drop guard cannot run async I/O.
 - 2026-11-06: The surface passes its sent prompt as the fold's fallback instead of journaling in `on_run_start`, because a completion-call hook can patch the prompt and risk a duplicated or stale one.
 - 2026-11-06: No synthetic tool results, because the journal never strands a tool call; keeping an in-flight batch's results is a follow-up.
+- 2026-11-06: Accepted: when `RecoveryHook`'s append fails for a failed attempt and a retry in the same `run_turn` succeeds, the carried journal outlives the run and may be folded out of order later; this needs two store failures.
 
 ## Documentation
 
@@ -242,17 +251,21 @@ integration test.
   - An empty journal with a fallback appends prompt + marker. An empty journal with no
     fallback is a no-op that returns `false`.
   - A non-empty journal ignores the fallback, so the prompt is not doubled.
+  - An empty journal with a fallback whose `log_len_before` is below `main`'s count (a failed
+    retry attempt already appended the prompt) is a no-op that returns `false`, so the prompt
+    is not doubled.
   - Each `Unsettled` cause produces its marker text.
-  - An append failure (the `Broken` store) returns the error and leaves the journal.
-  - A journal left by a failed fold is folded before the next turn's request, so that
-    request's history holds the old turn before the new prompt.
+  - An append failure (a MemoryStore wrapper that fails appends and replaces to the `main`
+    log only) returns the error and leaves the journal unchanged.
 - **Core integration, `fontaine-core/tests/turn_recovery.rs`** (scripted models): run a root
   turn with a tool call whose second request is held, drop the `run_turn` future, call
   `keep_unsettled_turn(User, ..)`, and assert the stored conversation holds the prompt, the
   tool call, its result and the marker, and that `main.inflight` is empty. Then run a second
   turn and assert its request's history carries all of it. A second test: a session reopened
   with a leftover journal (written by dropping a run without folding) folds it at
-  `record_session_start`, with the session-ended marker.
+  `record_session_start`, with the session-ended marker. A journal left by a failed fold is
+  folded before the next turn's request, so that request's history holds the old turn before
+  the new prompt.
 - **TUI integration, `fontaine-tui/tests/tui.rs`**. This is the issue's regression test. Start
   a turn that makes a tool call (`sleep` shell, as the queued-message test does), wait for the
   tool card, press Esc, wait for "interrupted", send a follow-up, and assert that the
