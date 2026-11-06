@@ -480,8 +480,10 @@ instance is a small user-level service: the session that started it does not sto
 running after Fontaine exits until it is stopped with `<runtime> stop fontaine-searxng` (the `--rm`
 flag then removes it), replaced as unhealthy, swept, or the machine reboots. When a start fails or
 times out, Fontaine starts a detached `<runtime> rm -f fontaine-searxng` (its own process group, no
-output, never awaited) so the half-started container does not block the next one; a failed removal
-is reported. The settings directory is owner-only; the file inside is
+output, never awaited) so the half-started container does not block the next one; this cleanup is
+best-effort. A removal failure is reported only on the prepare-time paths: a leftover
+`fontaine-searxng-<random>` container that cannot be swept, and an unhealthy stopped or
+unanswering `fontaine-searxng` container that cannot be removed. The settings directory is owner-only; the file inside is
 readable by other users because the container's unprivileged user must read it through the bind
 mount, which keeps the host's permissions. On an SELinux host the mount may need a `:Z` label,
 which Fontaine does not add: start SearXNG yourself with `command` instead. The container runtime
