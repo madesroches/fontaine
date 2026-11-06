@@ -44,23 +44,24 @@ pub trait AgentKills: Send + Sync {
 **Implementation** in `fontaine-agents` (a small struct holding `Arc<AgentTree>` and the
 `Arc<dyn RootLedger>`): resolve the ref with the same lookup `agent_state` uses, check the parent
 is `caller`, call `kill_agent`. Wired in `core/src/agent/build.rs` next to `agent_waits`, carried
-through `ToolEnv` and the core tool params like `agent_waits`.
+through `BuiltinEnv` (`builtins.rs`) and the core tool params like `agent_waits`.
 
 **Tool.** `JobCancelTool` gains `agents: Option<Arc<dyn AgentKills>>`. In `call`: an
 `is_subagent_ref` id goes to the seam and returns a short line ("agent-23 (fixer) stopped. It
 cannot be resumed; start a new agent for the work, or `send_message` an agent to redirect it
 instead."); `job-*` ids keep the current path. `root_only` narrows to the job branch only, so a
 subagent can stop its own children, mirroring `job_output`'s 2026-10-30 rule. An already-ended
-agent reports that and is left alone, as a finished job is.
+agent reports that and is left alone, as a finished job is. With `agents == None`, an agent ref
+returns the same invalid-args "there are no subagents in this session" refusal as `job_output`
+(`tools.rs:210-212`).
 
 **Descriptions.** `job_cancel`: "Stop a background job or monitor, or a subagent you started
 (`agent-N` or its name). Stopping a subagent is final: it cannot be resumed and delivers no
 report." `agent`: add one sentence, "To end one before it finishes, `job_cancel` it; to redirect
 it, `send_message`." `send_message` description: one clause that it cannot stop an agent.
 
-**Errors.** `JobError::UnknownJob` for `agent-*` is now unreachable from `job_cancel`; keep the
-text for the remaining `job_output`-free path only if still reachable, else drop the special case
-and the "only the user can stop" wording. `NotYours` and `Unknown` text matches `job_output`'s.
+**Errors.** `UnknownJob("agent-*")` came only from `Jobs::cancel` and is now unreachable: delete
+the `agent-` arm in `JobError` Display (`jobs.rs:81`) and the "only the user can stop" wording. `NotYours` and `Unknown` text matches `job_output`'s.
 
 **Permission.** `job_cancel` stays class `arbitrary` and keeps its `destructive == Never`
 exemption (`descriptor.rs:369`): the target is an id the caller owns, not a path. The floor and
@@ -71,10 +72,12 @@ guardian gate it as before; the kill runs only after the call is allowed.
 
 ## Implementation Steps
 
-1. `fontaine-tools/src/jobs.rs`: add `AgentKilled` and `AgentKills`; adjust the `UnknownJob` text.
+1. `fontaine-tools/src/jobs.rs`: add `AgentKilled` and `AgentKills`; delete the `agent-` arm of `JobError` Display.
 2. `fontaine-tools/src/jobs/tools.rs`: route agent refs in `JobCancelTool`, narrow `root_only` to
    job ids, update the description.
-3. `fontaine-tools/src/builtins.rs`: carry `agent_kills` in the env and hand it to the tool.
+3. `fontaine-tools/src/builtins.rs`: carry `agent_kills` in `BuiltinEnv` and hand it to the tool;
+   add `agent_kills: None` to the `BuiltinEnv` literals in `fontaine-tools/tests/common/mod.rs:126`,
+   `fontaine-core/tests/choke_point.rs:181` and `fontaine-core/tests/extensions.rs:365`.
 4. `fontaine-agents`: implement `AgentKills` (tree plus ledger), checking ownership.
 5. `fontaine-core` (`tools.rs`, `agent/build.rs`): wire it for every agent's registry.
 6. `fontaine-agents/src/spawn.rs`: update the `agent` and `send_message` descriptions.
@@ -82,10 +85,13 @@ guardian gate it as before; the kill runs only after the call is allowed.
 
 ## Files to Modify
 
-- `rust/fontaine-tools/src/jobs.rs`, `src/jobs/tools.rs`, `src/builtins.rs`
+- `rust/fontaine-tools/src/jobs.rs`, `src/jobs/tools.rs`, `src/builtins.rs`, `src/descriptor.rs` (comment near :369),
+  `src/jobs/tests.rs` (drop the :861 assertion)
+- `rust/fontaine-tools/tests/common/mod.rs`, `rust/fontaine-core/tests/choke_point.rs`,
+  `rust/fontaine-core/tests/extensions.rs` (`agent_kills: None`)
 - `rust/fontaine-agents/src/spawn.rs`, plus the new seam impl (`src/tree.rs` or `src/spawn.rs`)
 - `rust/fontaine-core/src/tools.rs`, `src/agent/build.rs`
-- `docs/tools.md`, `docs/agents.md`, `docs/extensions.md` (alias table already maps `TaskStop`)
+- `docs/tools.md`, `docs/permissions.md`, `docs/agents.md`, `docs/extensions.md` (alias table already maps `TaskStop`)
 - `tasks/fontaine_harness_plan.md` (Decisions), `CHANGELOG.md`
 
 ## Trade-offs
@@ -106,13 +112,18 @@ guardian gate it as before; the kill runs only after the call is allowed.
 
 - `docs/tools.md`: `job_cancel` row and section — jobs, monitors and own subagents; final kill.
 - `docs/agents.md`: "Watching and stopping subagents" — the model can also stop its own children.
+- `docs/tools.md`: fix "Main conversation only" (:22), the "Who can use them" bullet (a subagent's
+  `job_cancel` is no longer refused) and the Permissions bullet (~:372, "can only reach a job this
+  session started").
+- `docs/permissions.md:191`: `job_cancel` "can only signal a process this session started".
+- Comment near `fontaine-tools/src/descriptor.rs:369`.
 - `CHANGELOG.md` entry.
 
 ## Testing Strategy
 
 - Unit (`fontaine-tools/tests/jobs.rs`, fake `AgentKills`): `job_cancel` on an `agent-N` id and on a
   name calls the seam and renders the line; `NotYours` and `Unknown` render the `job_output`
-  wording; a `job-*` id still behaves as before; a non-root caller may cancel an agent ref but a
+  wording; a `job-*` id still behaves as before; `agents == None` with an agent ref returns the "no subagents in this session" refusal; the old `jobs/tests.rs:861` "only the user can stop a subagent" assertion is removed; a non-root caller may cancel an agent ref but a
   job id still returns the root-only refusal; an ended agent reports "already ended".
 - Seam (`fontaine-agents/tests/seam.rs`, beside the `kill_agent` tests): the real implementation
   kills a running child and its descendants, refuses a sibling or the parent, and a killed child
