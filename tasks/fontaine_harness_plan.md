@@ -869,6 +869,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-21: `/export` of a session with subagents writes a folder (`fontaine-<id8>/` with `main.md` and one `<agent-id>.md` per subagent, merged from the ledger as spine plus the live tree); a session without subagents keeps the single-file export byte for byte. Zip and single-file layouts were offered and rejected (#300).
 - 2026-11-21: A running subagent is exported rather than refused; its file holds completed runs only, because rig saves a log when a run ends, and the index row says so (#300).
 - 2026-11-21: Root rewind and `/clear` do not touch agent logs, and the ledger is never rewound; `/export` lists every agent recorded in the ledger, including agents whose spawn turn was rewound away, with the transcript as per-agent evidence (#300).
+- 2026-11-06: A root turn that ends without settling — a TUI interrupt, an AFK stop, a killed process — stays in the model's conversation, journaled as the run progresses and folded into `main` with a marker when the run is dropped or the session resumes, as Claude Code's `[Request interrupted by user]` does. Deviation: text the model was still streaming and the results of a tool batch still running at the interrupt are not kept (the completion-call journal never strands a tool call); keeping them is a follow-up (#457).
 
 ### Tools
 

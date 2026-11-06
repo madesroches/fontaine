@@ -55,6 +55,7 @@ use crate::skills::SkillRuntime;
 use crate::steering::Steering;
 use crate::tools;
 use crate::trust;
+use crate::turn_recovery::{self, Fallback, Unsettled};
 use crate::workspace::{self, RootSource};
 
 mod afk;
@@ -766,6 +767,37 @@ impl AgentRuntime {
                 paths: index.paths,
                 truncated: index.truncated,
             });
+        } else {
+            // A process that died mid-turn left its journal; the turn belongs before the next.
+            self.keep_unsettled_turn(Unsettled::SessionEnded, None)
+                .await;
+        }
+    }
+
+    /// How many messages the main conversation holds now, for the fallback of a turn that may
+    /// be dropped; `None` when it cannot be read.
+    pub async fn conversation_len(&self) -> Option<usize> {
+        load_async(&self.session.store(), CONVERSATION_LOG)
+            .await
+            .ok()
+            .map(|conversation| conversation.messages().len())
+    }
+
+    /// Keeps a main run that ended without settling in the conversation: what it committed,
+    /// then a marker for `cause`. Also called with no fallback before each run, so a journal a
+    /// failed fold left is folded ahead of the turn about to run. A failure is warned and the
+    /// journal stays for the next fold.
+    pub async fn keep_unsettled_turn(&self, cause: Unsettled, fallback: Option<Fallback>) {
+        let store = self.session.store();
+        if let Err(e) =
+            turn_recovery::fold_unsettled(&store, CONVERSATION_LOG, cause, fallback).await
+        {
+            let message = format!(
+                "the unfinished turn could not be kept in the conversation: {}",
+                chain(&e)
+            );
+            tracing::warn!("{message}");
+            self.approver.warn(&message);
         }
     }
 

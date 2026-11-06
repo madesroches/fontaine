@@ -225,7 +225,7 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Ctrl-V (`attach_clipboard`) | Attach the clipboard's image to the message; see [Attaching files](#attaching-files). Terminals that turn Ctrl+V into a bracketed paste never deliver the key event; their paste arrives as text, and a dropped PDF path becomes a PDF attachment. |
 | Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the `/` menu and the `@` list it first extends what you typed to what all the listed commands, files or directories share, and accepts the selected row only when nothing more can be extended. |
 | Shift+Tab (`cycle_mode`) | Cycle the mode by increasing autonomy: manual, plan, accept edits, auto, [AFK](afk.md), and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` or AFK lists the broad allow rules it sets aside and says so when the guardian cannot be asked. Entering AFK answers every open or queued approval, question and guardian dialog as a denial or no-answer; leaving it reviews the stretch, when the turn ends if one is running. A rebound key runs the same cycle — no binding can jump to a mode outside it. |
-| Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is discarded, earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one (the model can also stop the subagents it started). While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
+| Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is kept in the model's conversation up to its last finished tool round, followed by an interruption marker, and the next prompt continues from there; text the model was still streaming is not kept. Earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one (the model can also stop the subagents it started). While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
 | Esc twice in quick succession when idle with an empty input | Opens the `/rewind` picker; see [Checkpoints and /rewind](checkpoints.md). Any other meaning of Esc above wins first. Off while a subagent's transcript is on screen. |
 | Ctrl-C (`interrupt`), or Ctrl-D on an empty input (`quit`), when idle | Quit. Both keys are reserved: they cannot be rebound or unbound. With text in the input, Ctrl-D deletes the character under the cursor in Emacs mode and in vim's Insert state. |
@@ -418,8 +418,10 @@ as yours for the [guardian](guardian.md).
 - Up on the first line takes the queued messages back into the input, for editing.
 - If the agent answers without another tool result, the queued messages are sent as the next turn.
 - If the turn is interrupted, fails or hits its turn limit, undelivered messages return to the
-  input, in front of whatever is there, and nothing is sent. Messages already delivered in that turn
-  are discarded with it, like its prompt, and must be sent again.
+  input, in front of whatever is there, and nothing is sent. A turn the interrupt cut short stays
+  in the model's conversation, so a message the agent received with a tool round that finished
+  before the interrupt is kept; a message delivered into the tool batch still running at the
+  interrupt is lost and must be sent again.
 - A built-in command other than `/loop`, or a known skill invocation, queues like a message and
   runs when the turn ends, in the order typed: a skill runs as its expanded prompt, a built-in
   command does exactly what it would have done had it been submitted at that moment. Neither is
@@ -526,7 +528,9 @@ unknown account), nothing is substituted silently. A prompt offers:
 `--resume <id-or-name>` a session by id or by name, and `--fork-session` with either starts a copy
 under a new id. `--name <name>` names the session you start (the copy, with `--fork-session`) so
 `--resume` can find it later. The transcript starts empty with a note saying which session
-continues; the model has the earlier conversation. The session starts in the mode your settings
+continues; the model has the earlier conversation, including a turn that was still running when
+the session's process died, kept and marked as unfinished, so the model continues the interrupted
+task. The session starts in the mode your settings
 give, with no grants from before. See [Headless runs](headless.md#continuing-a-session) for the
 details.
 

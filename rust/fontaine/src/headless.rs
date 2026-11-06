@@ -17,7 +17,8 @@ use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
 use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
 use fontaine_core::trust;
-use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn};
+use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn, user_message};
+use fontaine_core::turn_recovery::{Fallback, Unsettled};
 use fontaine_core::usage_ledger::{Bucket, UsageSource};
 use fontaine_tools::kills::KILL_SETTLE;
 use rig_core::schemars::Schema;
@@ -568,18 +569,29 @@ async fn run_one(
     let ids = runtime.models.main.wire_ids();
     let (model, provider) = (ids.model, ids.provider);
     let mut stops = runtime.state.afk_stop_signal();
+    // A turn an earlier fold failed to keep goes before this one.
+    runtime
+        .keep_unsettled_turn(Unsettled::SessionEnded, None)
+        .await;
+    let modalities = runtime
+        .models
+        .main
+        .completion
+        .spec()
+        .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input);
+    // What a stopped run is kept as when it committed nothing. An unreadable count keeps the
+    // prompt rather than risk losing it.
+    let fallback = Fallback {
+        prompt: user_message(&text, &[], &modalities),
+        log_len_before: runtime.conversation_len().await.unwrap_or(usize::MAX),
+    };
     let turn = run_turn(
         TurnParams {
             agent: &runtime.agent,
             state: &runtime.state,
             prompt: text,
             attachments: Vec::new(),
-            modalities: runtime
-                .models
-                .main
-                .completion
-                .spec()
-                .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input),
+            modalities,
             max_turns: options.max_turns,
             priced: runtime.models.main.catalog_billed(),
             model,
@@ -595,8 +607,17 @@ async fn run_one(
         Ok(()) = stops.changed() => None,
         outcome = turn => Some(outcome),
     };
+    // A stop cuts the turn short: the run is dropped when the signal wins the poll, and when
+    // the run wins it the stop has denied its next dispatch as a Cancelled error the recovery
+    // hook kept. An answer that landed in the same poll settled and is kept as it is.
+    let stopped = runtime.state.afk().stopped.is_some();
+    if turn.is_none() || (stopped && matches!(turn, Some(TurnOutcome::Failed(_)))) {
+        runtime
+            .keep_unsettled_turn(Unsettled::AfkStop, Some(fallback))
+            .await;
+    }
     // A stop that lands inside the poll that also finishes the turn is still a stop.
-    let turn = turn.filter(|_| runtime.state.afk().stopped.is_none());
+    let turn = turn.filter(|_| !stopped);
     let Some(turn) = turn else {
         runtime.handle_afk_stop().await;
         return afk::stopped_outcome(started, denials);

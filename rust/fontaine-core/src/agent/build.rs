@@ -44,7 +44,7 @@ use crate::skills::{self, SkillRuntime};
 use crate::steering::{Steering, SteeringHook};
 use crate::todos::ReportedTodos;
 use crate::tools::{self, ExtensionTool, ExtensionTools, RegistryParams};
-use crate::turn_recovery::RecoveryHook;
+use crate::turn_recovery::{InflightHook, RecoveryHook};
 
 /// Tells the permission state which model tool call a tool is serving.
 pub(crate) struct CurrentCall {
@@ -317,6 +317,11 @@ fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
             p.runner.context.parent_context.clone(),
         ))
         .add_hook(RecoveryHook::new(
+            p.session.store(),
+            CONVERSATION_LOG.to_owned(),
+            p.approver.clone(),
+        ))
+        .add_hook(InflightHook::new(
             p.session.store(),
             CONVERSATION_LOG.to_owned(),
             p.approver.clone(),

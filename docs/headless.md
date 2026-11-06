@@ -123,7 +123,10 @@ resolve to, as a new session does, not in the mode the session ended in, and non
 session's "allow session" grants carry over. `--fork-session` copies both stores under a new id
 (`--session-id` chooses it) and leaves the original untouched; the audit log of the copy starts
 empty. `--continue` and a `--resume` by name look only at sessions whose primary workspace root is
-the project directory; `--resume` by id takes a session of any directory.
+the project directory; `--resume` by id takes a session of any directory. A process killed
+mid-turn (Ctrl-C, a crash) no longer loses that turn: it is kept in the conversation, marked as
+unfinished, so the resumed run continues from where the stop happened. The same fold marks a
+turn the AFK temperature ceiling stopped.
 
 ## Subagents
 

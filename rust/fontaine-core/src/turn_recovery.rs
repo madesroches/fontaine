@@ -1,7 +1,7 @@
-//! Saves a failed run's committed messages into its conversation store. rig-agent writes the
-//! conversation only when a run finishes, so without this the next run starts without the
-//! interrupted turn: a `retry` would read as a new task and an auto-retry would start over
-//! instead of continuing.
+//! Saves a failed or abandoned run's committed messages into its conversation store. rig-agent
+//! writes the conversation only when a run finishes, so without this the next run starts
+//! without the interrupted turn: a `retry` would read as a new task, an auto-retry would start
+//! over instead of continuing, and a prompt after Esc would find the task gone.
 
 use std::sync::Arc;
 
@@ -62,9 +62,164 @@ impl<S: AsyncStore + Send + Sync> AgentHook for RecoveryHook<S> {
     }
 }
 
-/// The log holding the messages a subagent's run in progress has committed.
+/// The log holding the messages an agent's run in progress has committed, beside the agent's
+/// own log `id`.
 pub(crate) fn journal_log(id: &str) -> String {
     format!("{id}.inflight")
+}
+
+/// Cuts the journal of the log `log` back to its first `keep` bytes, which end on a line
+/// boundary. A missing journal is already cut.
+async fn cut_journal<S: AsyncStore + ?Sized>(
+    store: &S,
+    log: &str,
+    keep: u64,
+) -> std::io::Result<()> {
+    let journal = journal_log(log);
+    let bytes = match store.read_log_async(&journal).await {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    let keep_len = usize::try_from(keep).expect("a journal prefix fits in memory");
+    if bytes.len() <= keep_len {
+        return Ok(());
+    }
+    store
+        .replace_log_async(&journal, bytes.len() as u64, &bytes[..keep_len])
+        .await
+        .map_err(std::io::Error::from)
+}
+
+/// Why a run ended without settling; picks the marker the model reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Unsettled {
+    /// Esc or Ctrl-C.
+    User,
+    /// The AFK temperature ceiling stopped the session.
+    AfkStop,
+    /// The process ended, or an earlier fold failed, before the turn finished.
+    SessionEnded,
+}
+
+impl Unsettled {
+    /// What follows the kept turn in the conversation. The user's interrupt reads as Claude
+    /// Code's; the other causes are not the user's doing, so they are harness notes.
+    pub fn marker(self) -> &'static str {
+        match self {
+            Unsettled::User => "[Request interrupted by user]",
+            Unsettled::AfkStop => {
+                "[Harness note, not the user's words: the turn was stopped because the AFK \
+                 temperature ceiling was reached.]"
+            }
+            Unsettled::SessionEnded => {
+                "[Harness note, not the user's words: the session ended before this turn \
+                 finished.]"
+            }
+        }
+    }
+}
+
+/// The prompt an unsettled run sent, and how many messages its log held when the run started
+/// (after any compaction).
+pub struct Fallback {
+    pub prompt: Message,
+    pub log_len_before: usize,
+}
+
+/// What a fold records before its append: with it, a fold whose append landed but whose cut
+/// failed is recognised and not appended twice.
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
+struct FoldMark {
+    /// The messages `log` held before the append.
+    log_len: usize,
+    /// The journal's length in bytes when it was folded.
+    journal_bytes: u64,
+}
+
+fn fold_mark_file(log: &str) -> String {
+    format!("{}.fold", journal_log(log))
+}
+
+/// The recorded mark; an absent, cleared or unreadable one reads as none, which folds as usual.
+async fn read_fold_mark<S: AsyncStore + ?Sized>(
+    store: &S,
+    log: &str,
+) -> std::io::Result<Option<FoldMark>> {
+    match store.read_file_async(&fold_mark_file(log)).await {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+async fn write_fold_mark<S: AsyncStore + ?Sized>(
+    store: &S,
+    log: &str,
+    mark: &FoldMark,
+) -> std::io::Result<()> {
+    let bytes = serde_json::to_vec(mark).expect("a fold mark serializes");
+    store.write_file_async(&fold_mark_file(log), &bytes).await
+}
+
+/// The store has no removal, so a cleared mark is an empty file.
+async fn clear_fold_mark<S: AsyncStore + ?Sized>(store: &S, log: &str) -> std::io::Result<()> {
+    store.write_file_async(&fold_mark_file(log), &[]).await
+}
+
+/// Appends what an unsettled run committed to `log`, then the marker for `cause`, then empties
+/// the journal. `fallback` is used when the journal holds nothing: the run was dropped before
+/// its first model call, or every journal write failed. Returns whether anything was folded.
+pub(crate) async fn fold_unsettled<S: AsyncStore + ?Sized>(
+    store: &S,
+    log: &str,
+    cause: Unsettled,
+    fallback: Option<Fallback>,
+) -> Result<bool, SessionError> {
+    let journal = journal_log(log);
+    let journal_bytes = match store.read_log_async(&journal).await {
+        Ok(bytes) => bytes.len() as u64,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(e) => return Err(e.into()),
+    };
+    let journaled = load_async(store, &journal).await?;
+    // Counting, not comparing: rig-memory changes some messages on load.
+    let held = load_async(store, log).await?.messages().len();
+    let marker = Arc::new(Message::user(cause.marker()));
+    if journaled.messages().is_empty() {
+        let Some(fallback) = fallback else {
+            return Ok(false);
+        };
+        // A log past the run's start holds a failed attempt the recovery hook saved, prompt
+        // included, so only the interruption is left to mark.
+        let messages = if held > fallback.log_len_before {
+            vec![marker]
+        } else {
+            vec![Arc::new(fallback.prompt), marker]
+        };
+        append_messages(store, log, &messages).await?;
+        return Ok(true);
+    }
+    let landed = read_fold_mark(store, log).await?.is_some_and(|mark| {
+        mark.journal_bytes == journal_bytes && mark.log_len + journaled.messages().len() + 1 == held
+    });
+    if !landed {
+        write_fold_mark(
+            store,
+            log,
+            &FoldMark {
+                log_len: held,
+                journal_bytes,
+            },
+        )
+        .await?;
+        let mut messages = journaled.messages().to_vec();
+        messages.push(marker);
+        append_messages(store, log, &messages).await?;
+    }
+    cut_journal(store, log, 0).await?;
+    clear_fold_mark(store, log).await?;
+    Ok(true)
 }
 
 /// Per-run journal bookkeeping, kept in the run's scratchpad so a reused agent starts each
@@ -79,10 +234,10 @@ struct JournalRun {
     warned: bool,
 }
 
-/// Journals a subagent run's committed messages as it progresses, because rig-agent saves the
-/// conversation only when the run settles and a killed process never gets there. The journal
-/// is a log of its own: appending to the agent's log would make the engine's final save
-/// refuse a log that moved under it.
+/// Journals an agent run's committed messages as it progresses, because rig-agent saves the
+/// conversation only when the run settles, and neither a dropped run nor a killed process gets
+/// there. The journal is a log of its own: appending to the agent's log would make the engine's
+/// final save refuse a log that moved under it.
 pub struct InflightHook<S> {
     store: S,
     id: String,
@@ -117,20 +272,7 @@ impl<S: AsyncStore> InflightHook<S> {
 
     /// Cuts the journal back to its first `keep` bytes, which end on a line boundary.
     async fn cut_back(&self, keep: u64) -> std::io::Result<()> {
-        let log = journal_log(&self.id);
-        let bytes = match self.store.read_log_async(&log).await {
-            Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(e),
-        };
-        let keep_len = usize::try_from(keep).expect("a journal prefix fits in memory");
-        if bytes.len() <= keep_len {
-            return Ok(());
-        }
-        self.store
-            .replace_log_async(&log, bytes.len() as u64, &bytes[..keep_len])
-            .await
-            .map_err(std::io::Error::from)
+        cut_journal(&self.store, &self.id, keep).await
     }
 }
 
@@ -530,5 +672,282 @@ mod tests {
         let warned = warnings.0.lock().unwrap();
         assert_eq!(warned.len(), 1, "{warned:?}");
         assert!(warned[0].contains("disk gone"), "{warned:?}");
+    }
+
+    async fn texts(store: &(impl AsyncStore + ?Sized), log: &str) -> Vec<String> {
+        let c = load_async(store, log).await.unwrap();
+        c.messages().iter().map(|m| format!("{m:?}")).collect()
+    }
+
+    /// A main log holding one earlier exchange, and a journal holding a run's prompt, its
+    /// tool-call turn and the tool result.
+    async fn interrupted(store: &MemoryStore) {
+        append_messages(
+            store,
+            "main",
+            &[user("earlier"), Arc::new(Message::assistant("answered"))],
+        )
+        .await
+        .unwrap();
+        append_messages(
+            store,
+            "main.inflight",
+            &[
+                user("go"),
+                Arc::new(Message::assistant("calling")),
+                user("tool result"),
+            ],
+        )
+        .await
+        .unwrap();
+    }
+
+    fn fallback(prompt: &str, log_len_before: usize) -> Option<Fallback> {
+        Some(Fallback {
+            prompt: Message::user(prompt),
+            log_len_before,
+        })
+    }
+
+    #[tokio::test]
+    async fn a_fold_appends_the_journal_then_the_marker_and_empties_the_journal() {
+        let store = MemoryStore::default();
+        interrupted(&store).await;
+        let folded = fold_unsettled(&store, "main", Unsettled::User, None)
+            .await
+            .unwrap();
+        assert!(folded);
+        let main = texts(&store, "main").await;
+        assert_eq!(main.len(), 6, "{main:?}");
+        assert!(
+            main[0].contains("earlier") && main[2].contains("go"),
+            "{main:?}"
+        );
+        assert!(main[3].contains("calling") && main[4].contains("tool result"));
+        assert!(
+            main[5].contains("[Request interrupted by user]"),
+            "{main:?}"
+        );
+        assert!(texts(&store, "main.inflight").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_empty_journal_folds_the_fallback_prompt_and_the_marker() {
+        let store = MemoryStore::default();
+        let folded = fold_unsettled(&store, "main", Unsettled::User, fallback("go", 0))
+            .await
+            .unwrap();
+        assert!(folded);
+        let main = texts(&store, "main").await;
+        assert_eq!(main.len(), 2, "{main:?}");
+        assert!(main[0].contains("go") && main[1].contains("interrupted"));
+    }
+
+    #[tokio::test]
+    async fn an_empty_journal_without_a_fallback_folds_nothing() {
+        let store = MemoryStore::default();
+        let folded = fold_unsettled(&store, "main", Unsettled::SessionEnded, None)
+            .await
+            .unwrap();
+        assert!(!folded);
+        assert!(texts(&store, "main").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_journal_wins_over_the_fallback_so_the_prompt_is_not_doubled() {
+        let store = MemoryStore::default();
+        interrupted(&store).await;
+        fold_unsettled(&store, "main", Unsettled::User, fallback("go", 2))
+            .await
+            .unwrap();
+        let main = texts(&store, "main").await;
+        assert_eq!(main.len(), 6, "{main:?}");
+        assert_eq!(main.iter().filter(|m| m.contains("\"go\"")).count(), 1);
+    }
+
+    #[tokio::test]
+    async fn after_a_saved_failed_attempt_only_the_marker_is_appended() {
+        let store = MemoryStore::default();
+        // The recovery hook saved the failed attempt's prompt and cut the journal back.
+        append_messages(&store, "main", &[user("go")])
+            .await
+            .unwrap();
+        fold_unsettled(&store, "main", Unsettled::User, fallback("go", 0))
+            .await
+            .unwrap();
+        let main = texts(&store, "main").await;
+        assert_eq!(main.len(), 2, "{main:?}");
+        assert!(main[0].contains("go") && main[1].contains("interrupted"));
+    }
+
+    #[tokio::test]
+    async fn each_cause_has_its_marker() {
+        for (cause, words) in [
+            (Unsettled::User, "[Request interrupted by user]"),
+            (Unsettled::AfkStop, "AFK temperature ceiling was reached"),
+            (
+                Unsettled::SessionEnded,
+                "the session ended before this turn",
+            ),
+        ] {
+            let store = MemoryStore::default();
+            fold_unsettled(&store, "main", cause, fallback("go", 0))
+                .await
+                .unwrap();
+            let main = texts(&store, "main").await;
+            assert!(main[1].contains(words), "{cause:?}: {main:?}");
+        }
+        assert!(Unsettled::AfkStop.marker().starts_with("[Harness note"));
+        assert!(
+            Unsettled::SessionEnded
+                .marker()
+                .starts_with("[Harness note")
+        );
+    }
+
+    /// A memory store whose log writes to the logs named in `appends` and `replaces` fail.
+    struct Failing {
+        inner: MemoryStore,
+        appends: Vec<&'static str>,
+        replaces: Vec<&'static str>,
+    }
+
+    impl AsyncStore for Failing {
+        async fn read_log_async(&self, name: &str) -> std::io::Result<Vec<u8>> {
+            self.inner.read_log_async(name).await
+        }
+        async fn append_log_async(
+            &self,
+            name: &str,
+            len: u64,
+            bytes: &[u8],
+        ) -> Result<(), rig_memory::LogWriteError> {
+            if self.appends.contains(&name) {
+                return Err(std::io::Error::other("disk full").into());
+            }
+            self.inner.append_log_async(name, len, bytes).await
+        }
+        async fn replace_log_async(
+            &self,
+            name: &str,
+            len: u64,
+            bytes: &[u8],
+        ) -> Result<(), rig_memory::LogWriteError> {
+            if self.replaces.contains(&name) {
+                return Err(std::io::Error::other("disk full").into());
+            }
+            self.inner.replace_log_async(name, len, bytes).await
+        }
+        async fn read_file_async(&self, name: &str) -> std::io::Result<Vec<u8>> {
+            self.inner.read_file_async(name).await
+        }
+        async fn write_file_async(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+            self.inner.write_file_async(name, bytes).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_append_leaves_the_journal_for_the_next_fold() {
+        let inner = MemoryStore::default();
+        interrupted(&inner).await;
+        let store = Failing {
+            inner: inner.clone(),
+            appends: vec!["main"],
+            replaces: vec!["main"],
+        };
+        let result = fold_unsettled(&store, "main", Unsettled::User, None).await;
+        assert!(result.is_err());
+        assert_eq!(texts(&inner, "main").await.len(), 2);
+        assert_eq!(texts(&inner, "main.inflight").await.len(), 3);
+        // The next fold, on a healthy store, keeps the turn once.
+        fold_unsettled(&inner, "main", Unsettled::SessionEnded, None)
+            .await
+            .unwrap();
+        assert_eq!(texts(&inner, "main").await.len(), 6);
+        assert!(texts(&inner, "main.inflight").await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_fold_whose_cut_failed_is_only_cut_the_next_time() {
+        let inner = MemoryStore::default();
+        interrupted(&inner).await;
+        let store = Failing {
+            inner: inner.clone(),
+            appends: Vec::new(),
+            replaces: vec!["main.inflight"],
+        };
+        assert!(
+            fold_unsettled(&store, "main", Unsettled::User, None)
+                .await
+                .is_err()
+        );
+        assert_eq!(texts(&inner, "main").await.len(), 6);
+        assert_eq!(texts(&inner, "main.inflight").await.len(), 3);
+        fold_unsettled(&inner, "main", Unsettled::SessionEnded, None)
+            .await
+            .unwrap();
+        let main = texts(&inner, "main").await;
+        assert_eq!(main.len(), 6, "no second append: {main:?}");
+        assert!(main[5].contains("interrupted by user"), "{main:?}");
+        assert!(texts(&inner, "main.inflight").await.is_empty());
+        // The mark is cleared, so a later journal folds as usual.
+        append_messages(&inner, "main.inflight", &[user("next")])
+            .await
+            .unwrap();
+        fold_unsettled(&inner, "main", Unsettled::User, None)
+            .await
+            .unwrap();
+        assert_eq!(texts(&inner, "main").await.len(), 8);
+    }
+
+    #[tokio::test]
+    async fn a_mark_whose_count_does_not_fit_folds_as_usual() {
+        let store = MemoryStore::default();
+        interrupted(&store).await;
+        let journal_bytes = store.read_log_async("main.inflight").await.unwrap().len() as u64;
+        // The mark says the log held what it holds now: the append did not land.
+        write_fold_mark(
+            &store,
+            "main",
+            &FoldMark {
+                log_len: 2,
+                journal_bytes,
+            },
+        )
+        .await
+        .unwrap();
+        fold_unsettled(&store, "main", Unsettled::User, None)
+            .await
+            .unwrap();
+        assert_eq!(texts(&store, "main").await.len(), 6);
+    }
+
+    #[tokio::test]
+    async fn a_mark_for_another_journal_folds_as_usual() {
+        let store = MemoryStore::default();
+        interrupted(&store).await;
+        // A count that would fit, but the journal is not the one the mark was made for.
+        append_messages(
+            &store,
+            "main",
+            &[user("a"), user("b"), user("c"), user("d")],
+        )
+        .await
+        .unwrap();
+        write_fold_mark(
+            &store,
+            "main",
+            &FoldMark {
+                log_len: 2,
+                journal_bytes: 1,
+            },
+        )
+        .await
+        .unwrap();
+        fold_unsettled(&store, "main", Unsettled::User, None)
+            .await
+            .unwrap();
+        assert_eq!(texts(&store, "main").await.len(), 10);
+        assert!(texts(&store, "main.inflight").await.is_empty());
     }
 }

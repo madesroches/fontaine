@@ -951,6 +951,82 @@ async fn interrupting_a_turn_puts_the_queued_message_back_in_the_input() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_interrupted_turn_stays_in_the_conversation_the_next_prompt_reads() {
+    let w = World::new(vec![
+        tool_turn("call-finished", "shell", json!({"command": "sleep 0"})),
+        tool_turn("call-cut-short", "shell", json!({"command": "sleep 5"})),
+        text_turn("picked it up"),
+    ])
+    .with_config(ALLOW_SLEEP);
+    w.run(|ui| async move {
+        ui.send("first task");
+        ui.wait_for("• shell sleep 5").await;
+        ui.press(KeyCode::Esc);
+        ui.wait_for("interrupted").await;
+        idle(&ui).await;
+        ui.send("follow up");
+        ui.wait_for("picked it up").await;
+    })
+    .await;
+    let requests = w.requests();
+    assert_eq!(requests.len(), 3);
+    let next = &requests[2];
+    // The finished tool round is kept; the batch still running at the interrupt is not.
+    let order = [
+        "first task",
+        "call-finished",
+        "[Request interrupted by user]",
+        "follow up",
+    ]
+    .map(|needle| {
+        next.find(needle)
+            .unwrap_or_else(|| panic!("{needle}: {next}"))
+    });
+    assert!(order.is_sorted(), "{order:?}: {next}");
+    assert!(!next.contains("call-cut-short"), "{next}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_interrupted_before_its_first_answer_keeps_its_prompt() {
+    let server = start(vec![
+        Route::new(
+            "first task",
+            vec![Turn::text("never arrives"), Turn::text("picked it up")],
+        )
+        .delay(0, 10_000),
+    ])
+    .await;
+    let w = World::routed(&server.uri(), "");
+    let held = &server;
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("first task");
+        while held
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        ui.press(KeyCode::Esc);
+        ui.wait_for("interrupted").await;
+        idle(&ui).await;
+        ui.send("follow up");
+        ui.wait_for("picked it up").await;
+    })
+    .await;
+    let sent = bodies(&server).await;
+    let next = sent.last().unwrap();
+    assert_eq!(next.matches("first task").count(), 1, "{next}");
+    let order = ["first task", "[Request interrupted by user]", "follow up"].map(|needle| {
+        next.find(needle)
+            .unwrap_or_else(|| panic!("{needle}: {next}"))
+    });
+    assert!(order.is_sorted(), "{order:?}: {next}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn up_takes_a_queued_message_back_to_edit() {
     let w = World::new(vec![
         tool_turn("c1", "shell", json!({"command": "sleep 1"})),

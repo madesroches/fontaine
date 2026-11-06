@@ -458,8 +458,33 @@ async fn the_ceiling_stops_the_tree_and_a_stopped_session_refuses_to_run_again()
         .any(|r| r["event"] == "finished" && r["detail"] == "killed");
     assert!(killed, "the child is killed");
 
-    // Resumed headless, the stopped session refuses to run and makes no model request.
+    // The stopped turn stays in the conversation, marked as unfinished, and the journal is cut.
     let session = lines[0]["session_id"].as_str().unwrap().to_string();
+    let main_log = std::fs::read_to_string(
+        s.data
+            .join("sessions")
+            .join(&session)
+            .join("logs")
+            .join("main.jsonl"),
+    )
+    .unwrap();
+    let prompt_at = main_log.find("root task").expect("the prompt");
+    let round_at = main_log.find("a.example").expect("the tool round");
+    let marker_at = main_log
+        .find("AFK temperature ceiling was reached")
+        .unwrap_or_else(|| panic!("the AFK-stop marker: {main_log}"));
+    assert!(prompt_at < round_at && round_at < marker_at, "{main_log}");
+    let journal = std::fs::read_to_string(
+        s.data
+            .join("sessions")
+            .join(&session)
+            .join("logs")
+            .join("main.inflight.jsonl"),
+    )
+    .unwrap_or_default();
+    assert!(journal.trim().is_empty(), "{journal}");
+
+    // Resumed headless, the stopped session refuses to run and makes no model request.
     let before = endpoint.requests().await.len();
     let again = s
         .run(&[

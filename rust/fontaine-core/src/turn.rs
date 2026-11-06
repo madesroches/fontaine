@@ -131,11 +131,7 @@ pub struct Attachment {
 /// The user message for one run: the prompt's text part, then one content part per
 /// attachment the model accepts. An attachment the model does not accept becomes a text
 /// note naming it, so nothing the user sent reaches the model unseen.
-pub(crate) fn user_message(
-    prompt: &str,
-    attachments: &[Attachment],
-    modalities: &Modalities,
-) -> Message {
+pub fn user_message(prompt: &str, attachments: &[Attachment], modalities: &Modalities) -> Message {
     let mut content = vec![UserContent::text(prompt)];
     for attachment in attachments {
         let data = base64::engine::general_purpose::STANDARD.encode(&attachment.bytes);
