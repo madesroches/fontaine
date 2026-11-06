@@ -14,7 +14,7 @@ made was already gated.
 ## Current State
 
 - `job_cancel` (`fontaine-tools/src/jobs/tools.rs:365`) is `root_only` and calls `Jobs::cancel`;
-  an `agent-*` id reaches `JobError::UnknownJob`, whose text (`fontaine-tools/src/jobs.rs:81`) is
+  an `agent-*` id reaches `JobError::UnknownJob`, whose text (`fontaine-tools/src/jobs.rs:82-85`) is
   "is a subagent, not a job; only the user can stop a subagent", with no next step.
 - Killing is `fontaine_agents::spawn::kill_agent(tree, ledger, id)` (`spawn.rs:326`); it needs the
   session ledger, so it is reachable from `AgentRuntime::kill_agent` (`fontaine-core/src/agent/messaging.rs:102`),
@@ -38,12 +38,12 @@ pub trait AgentKills: Send + Sync {
 }
 ```
 
-`AgentKilled` carries the resolved id and whether it was running, idle, or already ended. Reusing
+`AgentKilled` carries the resolved id and whether it was stopped or already ended (from `kill_agent`'s bool; `false` means already ended). Reusing
 `AgentWaitError` (`Unknown`, `NotYours`) keeps one ownership rule shared with `job_output`.
 
 **Implementation** in `fontaine-agents` (a small struct holding `Arc<AgentTree>` and the
-`Arc<dyn RootLedger>`): resolve the ref with the same lookup `agent_state` uses, check the parent
-is `caller`, call `kill_agent`. Wired in `core/src/agent/build.rs` next to `agent_waits`, carried
+`Arc<dyn RootLedger>`): resolve the ref with the same lookup `agent_state` uses, check the agent exists and its parent
+is `caller`, then call `kill_agent` and map its bool to `AgentKilled`. Wired in `core/src/agent/build.rs` next to `agent_waits`, carried
 through `BuiltinEnv` (`builtins.rs`) and the core tool params like `agent_waits`.
 
 **Tool.** `JobCancelTool` gains `agents: Option<Arc<dyn AgentKills>>`. In `call`: an
@@ -61,19 +61,18 @@ report." `agent`: add one sentence, "To end one before it finishes, `job_cancel`
 it, `send_message`." `send_message` description: one clause that it cannot stop an agent.
 
 **Errors.** `UnknownJob("agent-*")` came only from `Jobs::cancel` and is now unreachable: delete
-the `agent-` arm in `JobError` Display (`jobs.rs:81`) and the "only the user can stop" wording. `NotYours` and `Unknown` text matches `job_output`'s.
+the `agent-` arm in `JobError` Display (`jobs.rs:82-85`) and the "only the user can stop" wording. `NotYours` and `Unknown` text matches `job_output`'s.
 
 **Permission.** `job_cancel` stays class `arbitrary` and keeps its `destructive == Never`
 exemption (`descriptor.rs:369`): the target is an id the caller owns, not a path. The floor and
 guardian gate it as before; the kill runs only after the call is allowed.
 
-**Telemetry/ledger.** `kill_agent` already records the ledger `finished` event and
-`subagent_event("killed", ...)`; nothing new. The agents panel `x` is unchanged.
+**Telemetry/ledger.** the kill path (`kill_agent` for an idle agent, the run's watcher for a running one) already records the ledger event and telemetry; nothing new. The agents panel `x` is unchanged.
 
 ## Implementation Steps
 
 1. `fontaine-tools/src/jobs.rs`: add `AgentKilled` and `AgentKills`; delete the `agent-` arm of `JobError` Display.
-2. `fontaine-tools/src/jobs/tools.rs`: route agent refs in `JobCancelTool`, narrow `root_only` to
+2. `fontaine-tools/src/jobs/tools.rs`: route agent refs in `JobCancelTool` (replace its `Debug` derive with a manual impl like `JobOutputTool`'s, since the new `Arc<dyn AgentKills>` field is not `Debug`), narrow `root_only` to
    job ids, update the description.
 3. `fontaine-tools/src/builtins.rs`: carry `agent_kills` in `BuiltinEnv` and hand it to the tool;
    add `agent_kills: None` to the `BuiltinEnv` literals in `fontaine-tools/tests/common/mod.rs:126`,
@@ -115,7 +114,7 @@ guardian gate it as before; the kill runs only after the call is allowed.
 ## Documentation
 
 - `docs/tools.md`: `job_cancel` row and section — jobs, monitors and own subagents; final kill.
-- `docs/agents.md`: "Watching and stopping subagents" — the model can also stop its own children.
+- `docs/agents.md`: "Watching and stopping subagents" — the model can also stop its own children; and :110, a type that names `agent` also gets `job_cancel` (with `job_output`).
 - `docs/tools.md`: fix "Main conversation only" (:22), the "Who can use them" bullet (a subagent's
   `job_cancel` is no longer refused) and the Permissions bullet (~:372, "can only reach a job this
   session started").
@@ -127,16 +126,13 @@ guardian gate it as before; the kill runs only after the call is allowed.
 ## Testing Strategy
 
 - Unit (`fontaine-tools/tests/jobs.rs`, fake `AgentKills`): `job_cancel` on an `agent-N` id and on a
-  name calls the seam and renders the line; `NotYours` and `Unknown` render the `job_output`
+  name calls the seam and renders the line; the `job_cancel` description mentions subagents; `NotYours` and `Unknown` render the `job_output`
   wording; a `job-*` id still behaves as before; `agents == None` with an agent ref returns the "no subagents in this session" refusal; `an_agent_id_is_not_a_job_and_the_error_says_who_can_stop_it` (`jobs/tests.rs` ~:858-866) is renamed and rewritten to keep the `there is no job job-1` UnknownJob assertion and drop the agent-wording check; a non-root caller may cancel an agent ref but a
   job id still returns the root-only refusal; an ended agent reports "already ended".
 - Registry (`fontaine-agents/src/registry.rs`): extend `naming_agent_also_grants_job_output_unless_disallowed`
   so `agent` also grants `job_cancel`, and a disallowed `job_cancel` is not granted.
 - Seam (`fontaine-agents/tests/seam.rs`, beside the `kill_agent` tests): the real implementation
-  kills a running child and its descendants, refuses a sibling or the parent, and a killed child
-  cannot be resumed.
-- Description test: the `agent` and `job_cancel` descriptions mention the stop path, pinning the
-  reported bug (the model guessed because nothing said how).
+  kills a running child and its descendants, refuses a sibling or the parent.
 - Keep the choke-point and `headless_smoke` tool-list tests green.
 
 ## Open Questions
