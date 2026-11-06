@@ -1,0 +1,34 @@
+{
+ "metadata": 1,
+ "environment.set_binding": 1,
+ "profile.bind": 1,
+ "changeNotifier.snapshot": 1,
+ "permission.set_mode": 2,
+ "turn.prompt": 1,
+ "context.append_message": 3,
+ "agent.message.appended": 12,
+ "agent.turn.started": 1,
+ "plugin.session_start": 1,
+ "context.append_loop_event": 30,
+ "tool_select.initialized": 1,
+ "llm.tools_snapshot": 1,
+ "llm.request": 6,
+ "usage.record": 6,
+ "token_counting.measured": 6,
+ "file_history.tracked": 1,
+ "agent.turn.ended": 1,
+ "turn.ended": 1,
+ "token_counting.turn_recorded": 1,
+ "prompt.completed": 1,
+ "file_history.checkpoint": 1
+}
+
+first record of selected types:
+{"type": "metadata", "protocol_version": "1.5", "created_at": 1793920906153}
+{"type": "environment.set_binding", "environmentId": "local", "agentId": "main", "time": 1793920906158}
+{"type": "permission.set_mode", "agentId": "main", "mode": "manual", "time": 1793920906170}
+{"type": "turn.prompt", "agentId": "main", "input": "[trimmed]", "origin": {"kind": "user"}, "promptId": "msg_01M6Q09CY4P4NWD54SDZBG6J48", "turnId": 0, "time": 1793920906187}
+{"type": "llm.request", "agentId": "main", "kind": "loop", "provider": "openai", "model": "kimi-for-coding", "modelAlias": "kc", "thinkingEffort": "max", "thinkingKeep": "all", "toolSelect": false, "systemPromptHash": "ce9fb474ecdfa9d8bdb47e8076675e883b9a48493bbc6b32bc3640187da770f1", "toolsHash": "ff9446e7149d60760b0e4f1911f046efdb14cda75fd89878d333b8a071d6487e", "messageCount": 3, "turnStep": "0.1", "time": 1793920906202}
+{"type": "usage.record", "agentId": "main", "model": "kc", "usage": {"inputOther": 431, "output": 92, "inputCacheRead": 12544, "inputCacheCreation": 0}, "usageScope": "turn", "time": 1793920909106}
+{"type": "file_history.tracked", "agentId": "main", "turnId": 0, "path": "calc.py", "entry": {"key": "file-history/d45a6a1794145b2d597734fa8efe3e2e27c23c1298e2db195b027053253067a1@v1", "version": 1, "contentHash": "9052f24ba5e4ffef65c72f49ba4eb13de74dbaca730e37e3a719f72a4f8b8076", "size": 104}, "time": 1793920917546}
+{"type": "turn.ended", "agentId": "main", "turnId": 0, "reason": "completed", "durationMs": 16991, "requestId": "60878eccf3a55b43d4c936b6cfc1d5d4", "time": 1793920923178}

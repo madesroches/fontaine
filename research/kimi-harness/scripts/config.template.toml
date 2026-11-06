@@ -1,0 +1,38 @@
+# Harness config for the study: dummy keys only; the host proxy injects the real credential per request.
+default_model = "kc"
+default_permission_mode = "manual"
+
+[providers.kimiapi]
+type = "kimi"
+base_url = "http://fwd:18080"
+api_key = "kimi-dummy-key"
+
+[providers.goapi]
+type = "openai"
+base_url = "http://fwd:18082/openai/v1"
+api_key = "kimi-dummy-key"
+
+[providers.goapi.custom_headers]
+"x-opencode-session" = "kimi-study"
+
+[models."kc"]
+provider = "kimiapi"
+model = "kimi-for-coding"
+max_context_size = 1048576
+capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
+support_efforts = [ "low", "high", "max" ]
+default_effort = "max"
+
+[models."k3"]
+provider = "kimiapi"
+model = "k3"
+max_context_size = 1048576
+capabilities = [ "thinking", "always_thinking", "image_in", "video_in", "tool_use" ]
+support_efforts = [ "low", "high", "max" ]
+default_effort = "high"
+
+[models."go-k3"]
+provider = "goapi"
+model = "kimi-k3"
+max_context_size = 1048576
+capabilities = [ "thinking", "tool_use" ]

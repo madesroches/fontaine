@@ -1,0 +1,6 @@
+#0 POST /chat/completions -> 200 2.805s
+  keys: {'model': 'kimi-for-coding', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools: 21
+   system     20636c extra=[]
+   user          14c extra=[]
+  resp: finish=stop reasoning_chars=45 text_chars=3 calls=[] usage={'prompt_tokens': 10423, 'completion_tokens': 30, 'total_tokens': 10453, 'cached_tokens': 5632, 'completion_tokens_details': {'reasoning_tokens': 13}, 'prompt_tokens_details': {'cached_tokens': 5632}}

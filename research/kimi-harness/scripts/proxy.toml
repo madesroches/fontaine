@@ -1,0 +1,16 @@
+# Fontaine settings layer: kimi account via the recording proxy (Fontaine port of the kimi instance).
+# The settings layer replaces a named account whole, so kind, base_url and models are repeated.
+[accounts.kimi]
+kind = "openai-compatible"
+base_url = "http://172.17.0.1:18081"
+models = ["k3.1-pro", "k3.1-pro-highspeed", "k3", "k3-256k", "kimi-for-coding", "kimi-for-coding-highspeed"]
+
+[accounts.madesroches]
+kind = "opencode-go"
+base_url = "http://172.17.0.1:18083"
+
+[guardian]
+model = "kimi/kimi-for-coding"
+
+[guardian.composition]
+shadow = true

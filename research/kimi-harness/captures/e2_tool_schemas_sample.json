@@ -1,0 +1,205 @@
+[
+ {
+  "type": "function",
+  "function": {
+   "name": "Bash",
+   "description": "Execute a `bash` command. Use this for shell semantics \u2014 pipes, env, processes, git, package managers, build/test runners, anything genuinely interactive or multi-step.\n\n**Translate these to a dedicated tool instead:**\n- `cat` / `head` / `tail` (known path) \u2192 `Read`\n- `echo > file` / `cat <<EOF` \u2192 `Write`\n- `find` / recursive `ls` to locate files by name pattern \u2192 `Glob` (plain `ls <known-directory>` is fine for listing a directory)\n- `grep` / `rg` (search file contents) \u2192 `Grep`\n- `echo` / `printf` (talk to the user) \u2192 just output text directly\n\nEach call runs in a fresh shell: variables and `cd` do not persist, so pass `cwd` or use absolute paths. stdout and stderr are combined and may be truncated; a non-zero exit ends the output with `Command failed with exit code: N`. Do not run interactive commands or commands that never exit. Set `timeout` for possibly long-running commands. A foreground command that hits its timeout is moved to the background instead of being killed, and you are notified when it completes. The user can also move a running foreground command to the background at any time.\n\nFor long-running builds, tests, watchers, or servers that the conversation should not wait on, set `run_in_background=true` with a short `description`; the call returns a task ID. Set `disable_timeout=true` only when the task should run without a timeout. You are notified automatically when the task completes, so return control to the user instead of waiting on it. Use `TaskOutput` only for a non-blocking snapshot, and `TaskStop` only to cancel.\n\n- Use `&&` for commands that depend on each other. Issue independent read-only commands (separate `git show`, `ls`, or status checks) as parallel Bash calls in one response instead of chaining them or stitching their output with `echo` separators.\n- Avoid `..` paths outside the working directory, and do not modify files outside it unless explicitly instructed.\n- Do not use superuser privileges unless explicitly instructed. Run git-mutating commands such as `git commit`, `git push`, `git reset`, and `git rebase` only when the user asks for them.\n- Command availability depends on the host; run `which <command>` before relying on an uncommon one. For GitHub work (PRs, issues, CI runs, API queries), prefer the `gh` CLI when installed.\n",
+   "parameters": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+     "command": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The command to execute."
+     },
+     "cwd": {
+      "description": "The working directory in which to run the command. When omitted, the command runs in the session's working directory.",
+      "type": "string"
+     },
+     "timeout": {
+      "default": 60,
+      "description": "Optional timeout in seconds for the command to execute. Foreground default 60s, max 300s. Background default 600s, max 86400s. Ignored for background commands when disable_timeout=true.",
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+     },
+     "description": {
+      "description": "A short description for the background task. Required when run_in_background is true.",
+      "type": "string"
+     },
+     "run_in_background": {
+      "description": "Whether to run the command as a background task.",
+      "type": "boolean"
+     },
+     "disable_timeout": {
+      "description": "If true, do not apply a timeout to the command. Only applies when run_in_background is true.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "command"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "Edit",
+   "description": "Perform exact replacements in existing files.\n\n- Drop the line-number prefix and tab; match only file content.\n- `old_string` must be unique unless `replace_all` is set.\n- If `old_string` is ambiguous, add surrounding context.\n- Multiple Edit calls may run in one response only when they do not target the same file.\n- DO NOT issue consecutive Edit calls on the same file. A previous Edit can invalidate a later Edit's `old_string`, causing `old_string not found`. Read the file again before the next Edit.\n",
+   "parameters": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string",
+      "description": "Path to the text file to edit. Relative paths resolve against the working directory; a path outside the working directory must be absolute."
+     },
+     "old_string": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Exact content to replace from the Read output view, without the line-number prefix. Use LF for pure CRLF files; use actual \\r escapes where Read shows \\r."
+     },
+     "new_string": {
+      "type": "string",
+      "description": "Replacement text in the same Read output view. LF is written back as CRLF only for pure CRLF files."
+     },
+     "replace_all": {
+      "description": "Set true only when every occurrence of old_string should be replaced.",
+      "type": "boolean"
+     }
+    },
+    "required": [
+     "path",
+     "old_string",
+     "new_string"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "Read",
+   "description": "Read a UTF-8 or UTF-16 text file from the active environment's filesystem, or a `kimi-file://` attachment of this session.\n\nThe path may be a `kimi-file://` attachment reference. Its bytes come from the current session's storage, independently of the workspace environment. Next Read keeps the reference so pagination also works after a fork. For a binary attachment, the error includes a server-local path when available; a converter must be able to access that filesystem. ReadMediaFile accepts the same reference for images and videos.\n\nIf the user provides a concrete file path to a text file, call Read directly. Do not `Glob`, `ls`, or otherwise pre-check known text file paths; missing or invalid file paths return errors you can handle.\n\nWhen you need several files, prefer to read them in parallel: emit multiple `Read` calls in a single response instead of reading one file per turn.\n\n- Output is `<line-number>\\t<content>` per line. A `<system>` status block may follow; it is not part of the file.\n- Results are bounded by `max_chars`: 100000 by default, up to 100000.\n- If the status block reports an incomplete range, continue with its `Next Read` arguments exactly. Do not answer from a partial page when the task requires the remaining content.\n- After a successful `Edit`/`Write`, do not re-read solely to prove the write landed.\n",
+   "parameters": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+     "path": {
+      "type": "string",
+      "description": "Path to a text file or a kimi-file:// attachment reference in the current session. Relative filesystem paths resolve against the working directory; a path outside the working directory must be absolute. Directories are not supported; use `ls` via Bash for a known directory, or Glob for pattern search."
+     },
+     "line_offset": {
+      "description": "The line number to start reading from. Omit to start at line 1. Negative values read from the end of the file (for example, -100 reads the last 100 lines).",
+      "anyOf": [
+       {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 9007199254740991
+       },
+       {
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "exclusiveMaximum": 0
+       }
+      ]
+     },
+     "column_offset": {
+      "description": "Zero-based character offset within the first line of a forward read, excluding its line-number prefix. Uses JavaScript string length in the displayed text. Copy continuation arguments from the previous result to resume a long line.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+     },
+     "n_lines": {
+      "description": "The number of lines to read. Omit to read toward the end of the file. Results are bounded by max_chars, with continuation arguments when the requested range is incomplete.",
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+     },
+     "max_chars": {
+      "description": "Maximum characters in the returned text, including line numbers and status. Omit for the configured default; requests above the configured maximum are capped.",
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+     }
+    },
+    "required": [
+     "path"
+    ],
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "TodoList",
+   "description": "Use this tool to maintain a structured TODO list as you work through a multi-step task. Use it proactively and often when progress tracking helps the current work. The list is shown to the user as a live progress panel, so keep it in step with what you have actually done. This is especially useful in long-running investigations and implementation tasks with several tool calls; in plan mode, write the plan to the plan file rather than tracking it here.\n\n**When to use:**\n- Multi-step tasks that span several tool calls\n- Tracking investigation progress across a large codebase search\n- Planning a sequence of edits before making them\n- After receiving new multi-step instructions, capture the requirements as todos\n\n**When NOT to use:**\n- Single-shot answers that complete in one or two tool calls\n- Trivial requests where tracking adds no clarity\n- Purely conversational or informational replies\n\n**Keeping it current:**\n- Before you start a tracked task, mark it `in_progress`; while work is underway, keep exactly one task `in_progress`.\n- As soon as a task is finished, mark it `done`, before you start the next one. Do not batch completions at the end.\n- Before you write your final message, make sure the list matches what you actually did.\n- An update can go in the same response as your next tool call; it does not need a step of its own.\n- Do not re-send an unchanged list. If you are stuck and no available tool can move any task forward, tell the user instead of re-ordering the same todos.\n\n**How to use:**\n- Call with `todos: [...]` to replace the full list. Statuses: pending / in_progress / done.\n- Call with no `todos` argument to retrieve the current list without changing it.\n- Call with `todos: []` to clear the list.\n- Keep titles short and actionable (e.g. \"Read session-control.ts\", \"Add planMode flag to TurnManager\").\n- Never mark a task `done` if tests are failing, implementation is partial, unresolved errors remain, or required files/dependencies could not be found.\n- If you encounter a blocker, keep the blocked task `in_progress` or add a new pending task describing what must be resolved.\n",
+   "parameters": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+     "todos": {
+      "description": "The updated todo list. Omit to read the current todo list without making changes. Pass an empty array to clear the list.",
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "title": {
+         "type": "string",
+         "minLength": 1,
+         "description": "Short, actionable title for the todo."
+        },
+        "status": {
+         "type": "string",
+         "enum": [
+          "pending",
+          "in_progress",
+          "done"
+         ],
+         "description": "Current status of the todo."
+        }
+       },
+       "required": [
+        "title",
+        "status"
+       ],
+       "additionalProperties": false
+      }
+     }
+    },
+    "additionalProperties": false
+   }
+  }
+ },
+ {
+  "type": "function",
+  "function": {
+   "name": "UpdateGoal",
+   "description": "Set the status of the current goal. `active` resumes a paused or blocked goal when the user explicitly asks you to work on it again. `complete` and `blocked` end autonomous work: while a goal is active, its full reminder states exactly when each one is warranted; later reminders keep the current goal state and point back to those rules. Follow them, and do not call this tool merely because you finished a slice of work. After `complete` or `blocked`, write the completion summary or the blocker explanation in your next message.\n",
+   "parameters": {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "properties": {
+     "status": {
+      "type": "string",
+      "enum": [
+       "active",
+       "complete",
+       "blocked"
+      ],
+      "description": "The lifecycle status to set for the current goal. Use `blocked` for impossible, unsafe, or contradictory objectives, or after the same non-terminal blocking condition repeats for at least 3 consecutive goal turns."
+     }
+    },
+    "required": [
+     "status"
+    ],
+    "additionalProperties": false
+   }
+  }
+ }
+]

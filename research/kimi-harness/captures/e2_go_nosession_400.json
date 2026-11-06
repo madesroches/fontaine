@@ -1,0 +1,20 @@
+{
+ "path": "/openai/v1/chat/completions",
+ "status": 400,
+ "body": {
+  "type": "error",
+  "error": {
+   "type": "MissingSessionID",
+   "message": "Request is missing x-opencode-session and cannot be routed efficiently. Please see https://opencode.ai/v2/docs/console/go/#where-can-i-use-it"
+  }
+ },
+ "req_keys": {
+  "model": "kimi-k3",
+  "prompt_cache_key": "session_304ad839-bc73-4224-981a-91ee2d299b9b",
+  "stream": true,
+  "stream_options": {
+   "include_usage": true
+  }
+ },
+ "n_tools": 24
+}

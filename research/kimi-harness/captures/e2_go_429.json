@@ -1,0 +1,17 @@
+{
+ "path": "/openai/v1/chat/completions",
+ "status": 429,
+ "body": {
+  "type": "error",
+  "error": {
+   "type": "GoUsageLimitError",
+   "message": "Go usage limit exceeded"
+  },
+  "metadata": {
+   "workspace": "[REDACTED]",
+   "limitName": "monthly"
+  }
+ },
+ "retry_after_s": "1301339",
+ "attempts_recorded": 1
+}

@@ -1,0 +1,173 @@
+[
+ {
+  "id": "kimi-for-coding",
+  "display_name": "K2.8 Preview",
+  "context_length": 1048576,
+  "supports_reasoning": true,
+  "supports_thinking_type": "only",
+  "think_efforts": {
+   "support": true,
+   "valid_efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "default_effort": "max"
+  },
+  "supports_dynamic_tools": true,
+  "modalities": {
+   "input": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output": [
+    "text"
+   ]
+  },
+  "limit": {
+   "context": 1048576
+  }
+ },
+ {
+  "id": "kimi-for-coding-highspeed",
+  "display_name": "K2.7 Code Highspeed",
+  "context_length": 262144,
+  "supports_reasoning": true,
+  "supports_thinking_type": "only",
+  "think_efforts": null,
+  "supports_dynamic_tools": false,
+  "modalities": {
+   "input": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output": [
+    "text"
+   ]
+  },
+  "limit": {
+   "context": 262144
+  }
+ },
+ {
+  "id": "k3",
+  "display_name": "K3",
+  "context_length": 1048576,
+  "supports_reasoning": true,
+  "supports_thinking_type": "only",
+  "think_efforts": {
+   "support": true,
+   "valid_efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "default_effort": "high"
+  },
+  "supports_dynamic_tools": true,
+  "modalities": {
+   "input": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output": [
+    "text"
+   ]
+  },
+  "limit": {
+   "context": 1048576
+  }
+ },
+ {
+  "id": "k3-256k",
+  "display_name": "K3-256k",
+  "context_length": 262144,
+  "supports_reasoning": true,
+  "supports_thinking_type": "only",
+  "think_efforts": {
+   "support": true,
+   "valid_efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "default_effort": "high"
+  },
+  "supports_dynamic_tools": true,
+  "modalities": {
+   "input": [
+    "text",
+    "image"
+   ],
+   "output": [
+    "text"
+   ]
+  },
+  "limit": {
+   "context": 262144
+  }
+ },
+ {
+  "id": "k3.1-pro",
+  "display_name": "K3.1 Pro",
+  "context_length": 1048576,
+  "supports_reasoning": true,
+  "supports_thinking_type": "only",
+  "think_efforts": {
+   "support": true,
+   "valid_efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "default_effort": "high"
+  },
+  "supports_dynamic_tools": true,
+  "modalities": {
+   "input": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output": [
+    "text"
+   ]
+  },
+  "limit": {
+   "context": 1048576
+  }
+ },
+ {
+  "id": "k3.1-pro-highspeed",
+  "display_name": "K3.1 Pro Highspeed 2x Usage Cost",
+  "context_length": 1048576,
+  "supports_reasoning": true,
+  "supports_thinking_type": "only",
+  "think_efforts": {
+   "support": true,
+   "valid_efforts": [
+    "low",
+    "high",
+    "max"
+   ],
+   "default_effort": "high"
+  },
+  "supports_dynamic_tools": true,
+  "modalities": {
+   "input": [
+    "text",
+    "image",
+    "video"
+   ],
+   "output": [
+    "text"
+   ]
+  },
+  "limit": {
+   "context": 1048576
+  }
+ }
+]

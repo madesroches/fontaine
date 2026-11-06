@@ -1,0 +1,74 @@
+[
+ {
+  "path": "/anthropic/v1/messages",
+  "status": 429,
+  "error": {
+   "type": "GoUsageLimitError",
+   "message": "Go usage limit exceeded"
+  },
+  "headers_sent": [
+   "anthropic-version",
+   "x-api-key",
+   "x-opencode-session"
+  ],
+  "body_keys": {
+   "model": "kimi-k3",
+   "messages": "<1 items>",
+   "max_tokens": 4096,
+   "system": "<1 items>",
+   "tools": "<21 items>",
+   "stream": true,
+   "tool_choice": {
+    "type": "auto"
+   }
+  }
+ },
+ {
+  "path": "/anthropic/v1/messages",
+  "status": 429,
+  "error": {
+   "type": "GoUsageLimitError",
+   "message": "Go usage limit exceeded"
+  },
+  "headers_sent": [
+   "anthropic-version",
+   "x-api-key",
+   "x-opencode-session"
+  ],
+  "body_keys": {
+   "model": "kimi-k3",
+   "messages": "<1 items>",
+   "max_tokens": 4096,
+   "system": "<1 items>",
+   "tools": "<21 items>",
+   "stream": true,
+   "tool_choice": {
+    "type": "auto"
+   }
+  }
+ },
+ {
+  "path": "/anthropic/v1/messages",
+  "status": 429,
+  "error": {
+   "type": "GoUsageLimitError",
+   "message": "Go usage limit exceeded"
+  },
+  "headers_sent": [
+   "anthropic-version",
+   "x-api-key",
+   "x-opencode-session"
+  ],
+  "body_keys": {
+   "model": "kimi-k3",
+   "messages": "<1 items>",
+   "max_tokens": 4096,
+   "system": "<1 items>",
+   "tools": "<21 items>",
+   "stream": true,
+   "tool_choice": {
+    "type": "auto"
+   }
+  }
+ }
+]

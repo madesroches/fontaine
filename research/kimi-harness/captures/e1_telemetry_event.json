@@ -1,0 +1,39 @@
+{
+ "event_id": "ac31e38e73c24398886e2caa0ffe7fbf",
+ "device_id": "[REDACTED]",
+ "session_id": "session_be78eeaf-2f83-4188-971a-3b5cf92f7c75",
+ "event": "system_metrics",
+ "timestamp": 1793920622.533,
+ "properties": {
+  "process_started_at": 1793920620,
+  "process_uptime_ms": 2100,
+  "rss_bytes": 382431232,
+  "heap_used_bytes": 142661976,
+  "heap_total_bytes": 258367488,
+  "external_bytes": 51557979,
+  "array_buffers_bytes": 624517,
+  "cpu_user_us": 191237,
+  "cpu_system_us": 54194,
+  "cpu_elapsed_us": 1501061,
+  "load_avg_1m": 6.26,
+  "free_mem_bytes": 31175094272,
+  "total_mem_bytes": 33654956032,
+  "cpu_count": 20
+ },
+ "context": {
+  "app_name": "kimi-code-cli",
+  "version": "2.5.1",
+  "runtime": "node",
+  "platform": "linux",
+  "arch": "x64",
+  "node_version": "24.22.2",
+  "os_version": "6.18.54.1-microsoft-standard-WSL2",
+  "ci": false,
+  "locale": "",
+  "terminal": "",
+  "ui_mode": "print",
+  "model": "kc",
+  "region": "mainland-cn",
+  "region_source": "fallback"
+ }
+}

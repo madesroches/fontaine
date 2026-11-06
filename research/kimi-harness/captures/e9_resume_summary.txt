@@ -1,0 +1,21 @@
+#0 POST /chat/completions -> 200 6.778s
+  keys: {'model': 'k3.1-pro', 'stream_options': {'include_usage': True}, 'stream': True}
+  tools: 21
+   system     20632c extra=[]
+   user         100c extra=[]
+   assistant     29c extra=['tool_calls']
+   tool          21c extra=['tool_call_id'] id=tool_Y5xEaDyMrjlHJDzj3wxlD8yV
+   assistant      4c extra=['tool_calls']
+   tool         104c extra=['tool_call_id'] id=tool_Kb3bn2vOJ22EQM7U86edZuhC
+   tool         265c extra=['tool_call_id'] id=tool_FLgWjgySRLFLO3iD58em3gTK
+   assistant      4c extra=['tool_calls']
+   tool          46c extra=['tool_call_id'] id=tool_FaXSMRVKGM7OSd9TRgBFUE9h
+   assistant      4c extra=['tool_calls']
+   tool         597c extra=['tool_call_id'] id=tool_JB94OdZyohViMeThW1Fo9u6u
+   assistant    144c extra=['tool_calls']
+   tool         157c extra=['tool_call_id'] id=tool_TfMqfhzUZC5gY6GlfhT31Wb8
+   assistant      4c extra=['tool_calls']
+   tool         195c extra=['tool_call_id'] id=tool_I84Tym6gNwyoyDIDx6YajxIh
+   assistant    370c extra=[]
+   user          59c extra=[]
+  resp: finish=stop reasoning_chars=474 text_chars=144 calls=[] usage={'prompt_tokens': 11770, 'completion_tokens': 159, 'total_tokens': 11929, 'cached_tokens': 5632, 'completion_tokens_details': {'reasoning_tokens': 107}, 'prompt_tokens_details': {'cached_tokens': 5632}}

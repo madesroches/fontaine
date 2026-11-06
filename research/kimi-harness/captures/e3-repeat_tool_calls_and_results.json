@@ -1,0 +1,10 @@
+{
+ "assistant_tool_calls": 1,
+ "first_call": {
+  "name": "Bash",
+  "arguments": "{\"command\":\"attempts=0\\nwhile [ $attempts -lt 14 ]; do\\n  attempts=$((attempts+1))\\n  echo \\\"--- attempt $attempts ---\\\"\\n  python3 -c 'import sys; print(1); sys.exit(1)'\\n  rc=$?\\n  echo \\\"exit code: $rc\\\"\\n  if [ $rc -eq 0 ]; then\\n    echo \\\"SUCCESS: exited 0 on attempt $attempts\\\"\\n    break\\n  fi\\ndone\\necho \\\"total attempts run: $attempts\\\"\"}"
+ },
+ "tool_results": [
+  "Wall time: 0.089 seconds\n--- attempt 1 ---\n1\nexit code: 1\n--- attempt 2 ---\n1\nexit code: 1\n--- attempt 3 ---\n1\nexit code: 1\n--- attempt 4 ---\n1\nexit code: 1\n--- attempt 5 ---\n1\nexit code: 1\n--- attempt 6 ---\n1\nexit code: 1\n--- attempt 7 ---\n1\nexit code: 1\n--- attempt 8 ---\n1\nexit code: 1\n--- attempt 9 ---\n1\nexit code: 1\n--- attempt 10 ---\n1\nexit code: 1\n--- attempt 11 ---\n1\nexit code: 1\n--- attempt 12 ---\n1\nexit code: 1\n--- attempt 13 ---\n1\nexit code: 1\n--- attempt 14 ---\n1\nexit code: 1\ntotal attempts run: 14\n"
+ ]
+}

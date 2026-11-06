@@ -1,0 +1,156 @@
+[
+ {
+  "label": "default",
+  "extra": {},
+  "status": 200,
+  "content": "6",
+  "reasoning_chars": 922,
+  "usage": {
+   "prompt_tokens": 105,
+   "completion_tokens": 485,
+   "total_tokens": 590,
+   "completion_tokens_details": {
+    "reasoning_tokens": 469
+   }
+  },
+  "finish": "stop"
+ },
+ {
+  "label": "effort_low",
+  "extra": {
+   "thinking": {
+    "type": "enabled",
+    "effort": "low"
+   }
+  },
+  "status": 200,
+  "content": "6",
+  "reasoning_chars": 305,
+  "usage": {
+   "prompt_tokens": 105,
+   "completion_tokens": 99,
+   "total_tokens": 204,
+   "completion_tokens_details": {
+    "reasoning_tokens": 83
+   }
+  },
+  "finish": "stop"
+ },
+ {
+  "label": "effort_max",
+  "extra": {
+   "thinking": {
+    "type": "enabled",
+    "effort": "max"
+   }
+  },
+  "status": 200,
+  "content": "6",
+  "reasoning_chars": 478,
+  "usage": {
+   "prompt_tokens": 104,
+   "completion_tokens": 166,
+   "total_tokens": 270,
+   "completion_tokens_details": {
+    "reasoning_tokens": 150
+   }
+  },
+  "finish": "stop"
+ },
+ {
+  "label": "thinking_disabled",
+  "extra": {
+   "thinking": {
+    "type": "disabled"
+   }
+  },
+  "status": 200,
+  "content": "6",
+  "reasoning_chars": 0,
+  "usage": {
+   "prompt_tokens": 37,
+   "completion_tokens": 11,
+   "total_tokens": 48
+  },
+  "finish": "stop"
+ },
+ {
+  "label": "temperature_0.2",
+  "extra": {
+   "temperature": 0.2
+  },
+  "status": 400,
+  "error": {
+   "error": {
+    "message": "invalid temperature: only 1 is allowed for this model",
+    "type": "invalid_request_error"
+   }
+  }
+ },
+ {
+  "label": "max_tokens_legacy",
+  "extra": {
+   "max_tokens": 64
+  },
+  "status": 200,
+  "content": "",
+  "reasoning_chars": 174,
+  "usage": {
+   "prompt_tokens": 105,
+   "completion_tokens": 64,
+   "total_tokens": 169,
+   "cached_tokens": 105,
+   "completion_tokens_details": {
+    "reasoning_tokens": 61
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 105
+   }
+  },
+  "finish": "length"
+ },
+ {
+  "label": "max_completion_tokens",
+  "extra": {
+   "max_completion_tokens": 64
+  },
+  "status": 200,
+  "content": "",
+  "reasoning_chars": 209,
+  "usage": {
+   "prompt_tokens": 105,
+   "completion_tokens": 64,
+   "total_tokens": 169,
+   "cached_tokens": 105,
+   "completion_tokens_details": {
+    "reasoning_tokens": 61
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 105
+   }
+  },
+  "finish": "length"
+ },
+ {
+  "label": "prompt_cache_key",
+  "extra": {
+   "prompt_cache_key": "study-probe"
+  },
+  "status": 200,
+  "content": "6",
+  "reasoning_chars": 394,
+  "usage": {
+   "prompt_tokens": 105,
+   "completion_tokens": 140,
+   "total_tokens": 245,
+   "cached_tokens": 105,
+   "completion_tokens_details": {
+    "reasoning_tokens": 124
+   },
+   "prompt_tokens_details": {
+    "cached_tokens": 105
+   }
+  },
+  "finish": "stop"
+ }
+]

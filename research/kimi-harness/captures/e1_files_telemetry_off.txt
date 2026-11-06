@@ -1,0 +1,6 @@
+./.projects-write-lock
+./config.toml
+./device_id
+./logs/kimi-code.log
+./projects.json
+./session_index.jsonl

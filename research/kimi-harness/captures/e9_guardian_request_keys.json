@@ -1,0 +1,6 @@
+{
+ "model": "kimi-for-coding",
+ "tool_choice": "required",
+ "max_tokens": 1024,
+ "n_tools": 1
+}

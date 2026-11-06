@@ -1,0 +1,9 @@
+./.projects-write-lock
+./config.toml
+./device_id
+./logs/kimi-code.log
+./projects.json
+./session_index.jsonl
+./telemetry/failed_066603903054.jsonl
+./telemetry/failed_42cb0b347554.jsonl
+./updates/rollout.log

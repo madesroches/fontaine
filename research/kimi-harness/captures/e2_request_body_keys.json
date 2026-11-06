@@ -1,0 +1,14 @@
+{
+ "model": "kimi-for-coding",
+ "prompt_cache_key": "session_50874b6a-5452-43f8-ba4a-a1f8274fd949",
+ "thinking": {
+  "type": "enabled",
+  "effort": "max",
+  "keep": "all"
+ },
+ "max_completion_tokens": 1048357,
+ "stream": true,
+ "stream_options": {
+  "include_usage": true
+ }
+}

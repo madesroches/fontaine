@@ -1,0 +1,23 @@
+{
+ "assistant_tool_calls": 14,
+ "first_call": {
+  "name": "Bash",
+  "arguments": "{\"command\":\"python3 -c 'import sys; print(1); sys.exit(1)'\"}"
+ },
+ "tool_results": [
+  "Wall time: 0.015 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1.",
+  "Wall time: 0.001 seconds\n<system>ERROR: Tool execution failed.</system>\n1\nCommand failed with exit code: 1."
+ ]
+}
