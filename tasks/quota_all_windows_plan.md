@@ -102,24 +102,27 @@ and in the lock file; no new crate).
      with its doc comment changed to say so.
    - In `render`, build `DateTime::<Local>::from(app.usage_as_of)` once and pass it.
 3. `rust/fontaine-core/src/quota.rs`: reword the `Quota.windows` doc comment.
+   `rust/fontaine-core/src/providers/kimi_quota.rs`: reword the `WINDOWS` doc comment from
+   "headline first" to "longest-period first" and rename the test
+   `a_full_reply_lists_the_headline_first` to `a_full_reply_lists_the_longest_window_first`.
 4. Tests in `statusbar.rs` (replace the old quota-shape tests).
 5. `docs/tui.md`: rewrite the "Subscription quota" section's first two paragraphs.
+6. `CHANGELOG.md`: add an `[Unreleased]` → `Changed` entry citing #447 (every window shown
+   shortest first with absolute resets; the 70% rule dropped for the main account; the guardian
+   segment uses the same run of windows). The released entries describing the old display
+   (lines ~584–588) stay untouched.
 
 ## Files to Modify
 
 - `rust/fontaine-tui/Cargo.toml`
 - `rust/fontaine-tui/src/statusbar.rs`
 - `rust/fontaine-core/src/quota.rs` (doc comment only)
+- `rust/fontaine-core/src/providers/kimi_quota.rs` (doc comment and test name only)
 - `docs/tui.md`
+- `CHANGELOG.md`
 
 ## Trade-offs
 
-- **Reverse in the TUI vs reorder the provider.** Reordering `kimi_quota::WINDOWS` would change the
-  order of headless `account_usage.windows` and the custom status line input, both machine-read.
-  Reversing at the one display site keeps those stable.
-- **Generic time zone vs `Local` only.** Taking `DateTime<Tz>` lets every label rule be unit tested
-  with `FixedOffset` regardless of the machine's zone; `render` is the only place that picks
-  `Local`.
 - **24-hour clock.** The issue's example is `15:00`; locale-aware 12/24-hour detection needs a
   locale crate the workspace does not have.
 
@@ -156,9 +159,6 @@ Unit tests in `statusbar.rs`, all with fixed `DateTime<FixedOffset>` instants:
 - Render-level: the segment still sits after the model and before `effort`, and the guardian
   segment follows the main one (use windows without resets so the assertion does not depend on
   the machine's zone).
-
-The `Local` conversion in `render` is one line of plumbing; the label rules it feeds are all
-covered above.
 
 ## Open Questions
 
