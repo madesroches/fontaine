@@ -3509,15 +3509,22 @@ impl Config {
         env: EnvLookup<'_>,
         data_dir: &Path,
     ) -> Result<Option<fontaine_tools::websearch::WebsearchConfig>, ConfigError> {
-        self.websearch_config_with_notice(env, data_dir, std::sync::Arc::new(|_| {}))
+        self.websearch_config_with_notice(
+            env,
+            data_dir,
+            std::sync::Arc::new(|_| {}),
+            std::sync::Arc::new(|_| {}),
+        )
     }
 
-    /// [`Config::websearch_config`], with `notice` told when the default container is started.
+    /// [`Config::websearch_config`], with `notice` told when the default container is started
+    /// and `warn` told when a leftover or unhealthy container cannot be removed.
     pub fn websearch_config_with_notice(
         &self,
         env: EnvLookup<'_>,
         data_dir: &Path,
         notice: std::sync::Arc<dyn Fn(&str) + Send + Sync>,
+        warn: std::sync::Arc<dyn Fn(&str) + Send + Sync>,
     ) -> Result<Option<fontaine_tools::websearch::WebsearchConfig>, ConfigError> {
         use fontaine_tools::websearch::{BackendConfig, Launch, WebsearchConfig};
         let w = &self.websearch;
@@ -3532,6 +3539,7 @@ impl Config {
                     data_dir.to_path_buf(),
                     fontaine_tools::child_env::container_runtime_env(env),
                     notice,
+                    warn,
                 ))
             }
             Some(WebsearchBackend::Tavily) => {

@@ -173,10 +173,18 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         Arc::new(LedgerWindow(p.state.clone()));
     let websearch = p
         .config
-        .websearch_config_with_notice(&*p.setup.env, &p.setup.data_dir, {
-            let approver = p.approver.clone();
-            Arc::new(move |message: &str| approver.warn(message))
-        })
+        .websearch_config_with_notice(
+            &*p.setup.env,
+            &p.setup.data_dir,
+            {
+                let approver = p.approver.clone();
+                Arc::new(move |message: &str| approver.warn(message))
+            },
+            {
+                let approver = p.approver.clone();
+                Arc::new(move |message: &str| approver.warn(message))
+            },
+        )
         .map_err(|e| RuntimeError::caused("cannot set up the websearch tool", e))?;
     p.session.checkpoints().configure(
         p.config.checkpoints.clone(),

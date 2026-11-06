@@ -3,6 +3,8 @@
 //! Provider-native search does not pass through here.
 
 use std::ffi::OsString;
+use std::future::Future;
+use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -66,17 +68,30 @@ pub struct ManagedPlan {
     pub argv: Vec<String>,
     pub base_url: Url,
     pub env: Vec<(OsString, OsString)>,
-    /// Run detached whenever the instance is stopped. A container outlives a SIGTERM and SIGKILL
-    /// sent back to back to its `docker run` client, which is what exiting Fontaine produces.
-    pub cleanup: Option<Vec<String>>,
+    /// Run detached when this start fails or times out, so a container created under a fixed
+    /// name does not block the next start. Never run after a name conflict: the name then
+    /// belongs to another session's instance.
+    pub fail_cleanup: Option<Vec<String>>,
+    /// The instance outlives the session: once it answers, its `docker run` client is let go
+    /// rather than stopped with the session, and later sessions reuse it.
+    pub shared: bool,
 }
 
-type Env = Vec<(OsString, OsString)>;
+/// What a managed backend decided: reuse an instance that already answers, or start one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Prepared {
+    Reuse(Url),
+    Start(ManagedPlan),
+}
 
-type Prepare = dyn Fn() -> std::io::Result<ManagedPlan> + Send + Sync;
+/// The future a managed backend's preparation runs; boxed so [`Managed`] stays object-safe.
+pub type PrepareFuture = Pin<Box<dyn Future<Output = std::io::Result<Prepared>> + Send>>;
 
-/// A SearXNG instance Fontaine decides how to run itself, not the user. The plan is made on the
-/// first search, not at configuration time, because it writes a file and picks a free port.
+type Prepare = dyn Fn() -> PrepareFuture + Send + Sync;
+
+/// A SearXNG instance Fontaine decides how to run itself, not the user. The decision is made on
+/// the first search, not at configuration time, because it asks the container runtime what
+/// already runs, writes a file and picks a free port.
 #[derive(Clone)]
 pub struct Managed {
     prepare: Arc<Prepare>,
@@ -86,7 +101,7 @@ pub struct Managed {
 impl Managed {
     pub fn new(
         startup_timeout: Duration,
-        prepare: impl Fn() -> std::io::Result<ManagedPlan> + Send + Sync + 'static,
+        prepare: impl Fn() -> PrepareFuture + Send + Sync + 'static,
     ) -> Self {
         Managed {
             prepare: Arc::new(prepare),
@@ -180,7 +195,6 @@ struct Running {
     // wrapper that backgrounded the server leaves the group alive.
     pid: Option<u32>,
     grace: Duration,
-    cleanup: Option<(Vec<String>, Env)>,
 }
 
 impl Running {
@@ -189,7 +203,6 @@ impl Running {
             pid: child.id(),
             child: Some(child),
             grace,
-            cleanup: None,
         }
     }
 
@@ -209,9 +222,6 @@ impl Drop for Running {
         };
         let (pid, grace) = (self.pid, self.grace);
         terminate(pid);
-        if let Some((argv, env)) = self.cleanup.take() {
-            spawn_detached(&argv, &env);
-        }
         detached_settle(child, pid, grace);
     }
 }
@@ -263,20 +273,73 @@ fn spawn_detached(argv: &[String], env: &[(OsString, OsString)]) {
     }
 }
 
-/// The SearXNG instance Fontaine started, shared by every `Websearch` a session builds so a
-/// rebuilt registry reuses it. Dropping the last handle kills the process.
+#[derive(Debug)]
+enum Slot {
+    /// Started by this session and stopped with it.
+    Owned(Box<Running>),
+    /// An instance that outlives the session, alive for as long as it answers.
+    Shared,
+}
+
+/// The SearXNG instance this session uses, shared by every `Websearch` a session builds so a
+/// rebuilt registry reuses it. Dropping the last handle stops an instance the session owns.
 #[derive(Debug, Default)]
 pub struct SearxngChild {
-    // The address is kept with the process: a managed start picks its port per start.
-    slot: tokio::sync::Mutex<Option<(Running, Url)>>,
+    // The address is kept with the instance: a managed start picks its port per start.
+    slot: tokio::sync::Mutex<Option<(Slot, Url)>>,
 }
 
 impl SearxngChild {
-    /// Whether a launched process is alive now.
+    /// Whether the instance is up now: an owned process is alive, a shared one answers.
     pub async fn is_running(&self) -> bool {
         let mut slot = self.slot.lock().await;
-        slot.as_mut()
-            .is_some_and(|(running, _)| matches!(running.child().try_wait(), Ok(None)))
+        match slot.as_mut() {
+            None => false,
+            Some((Slot::Owned(running), _)) => matches!(running.child().try_wait(), Ok(None)),
+            Some((Slot::Shared, url)) => {
+                let Ok(client) = crate::tls::build_client(&Default::default(), || {
+                    reqwest::Client::builder()
+                        .no_proxy()
+                        .redirect(reqwest::redirect::Policy::none())
+                }) else {
+                    return false;
+                };
+                probe(&client, url).await
+            }
+        }
+    }
+}
+
+/// Any non-5xx answer counts: the instance is up even if it has no page at its root, but a
+/// proxy's 502/503 while SearXNG is still booting is not.
+pub async fn probe(client: &reqwest::Client, base_url: &Url) -> bool {
+    client
+        .get(base_url.clone())
+        .timeout(PROBE_TIMEOUT)
+        .send()
+        .await
+        .is_ok_and(|response| !response.status().is_server_error())
+}
+
+/// Docker says `The container name "/x" is already in use`, podman `the container name "x" is
+/// already in use`: another start took the fixed name first.
+fn is_name_conflict(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("container name") && stderr.contains("already in use")
+}
+
+/// A start that did not come up; `name_conflict` makes it worth preparing once more.
+struct StartFailure {
+    error: ToolExecutionError,
+    name_conflict: bool,
+}
+
+impl From<ToolExecutionError> for StartFailure {
+    fn from(error: ToolExecutionError) -> Self {
+        StartFailure {
+            error,
+            name_conflict: false,
+        }
     }
 }
 
@@ -486,13 +549,16 @@ impl Websearch {
                 let base_url = match launch {
                     None => base_url.clone(),
                     Some(launch) => {
+                        let plan = ManagedPlan {
+                            argv: launch.argv.clone(),
+                            base_url: base_url.clone(),
+                            env: launch.env.clone(),
+                            fail_cleanup: None,
+                            shared: false,
+                        };
                         self.ensure_started(launch.startup_timeout, || {
-                            Ok(ManagedPlan {
-                                argv: launch.argv.clone(),
-                                base_url: base_url.clone(),
-                                env: launch.env.clone(),
-                                cleanup: None,
-                            })
+                            let plan = plan.clone();
+                            Box::pin(async move { Ok(Prepared::Start(plan)) })
                         })
                         .await?
                     }
@@ -562,34 +628,72 @@ impl Websearch {
         ))
     }
 
-    /// Starts the instance on the first search and waits until `base_url` answers. A process
-    /// that is still alive is reused. The lock is held throughout, so searches that arrive
-    /// meanwhile wait for the same start.
+    /// Finds or starts the instance on the first search and waits until it answers. An owned
+    /// process that is still alive, or a shared instance that still answers, is reused. The lock
+    /// is held throughout, so searches that arrive meanwhile wait for the same start.
     async fn ensure_started(
         &self,
         startup_timeout: Duration,
-        plan: impl FnOnce() -> std::io::Result<ManagedPlan>,
+        prepare: impl Fn() -> PrepareFuture,
     ) -> Result<Url, ToolExecutionError> {
         let mut slot = self.child.slot.lock().await;
-        if let Some((running, url)) = slot.as_mut() {
-            if matches!(running.child().try_wait(), Ok(None)) {
+        if let Some((kept, url)) = slot.as_mut() {
+            let alive = match kept {
+                Slot::Owned(running) => matches!(running.child().try_wait(), Ok(None)),
+                Slot::Shared => self.probe(url).await,
+            };
+            if alive {
                 return Ok(url.clone());
             }
             *slot = None;
         }
+        // A start that lost the fixed name to a concurrent one prepares once more, which then
+        // finds the winner's instance.
+        let mut retried = false;
+        loop {
+            let plan = match prepare().await.map_err(|e| {
+                ToolExecutionError::other(format!("cannot prepare SearXNG: {}", chain(&e)))
+            })? {
+                Prepared::Reuse(url) => {
+                    *slot = Some((Slot::Shared, url.clone()));
+                    return Ok(url);
+                }
+                Prepared::Start(plan) => plan,
+            };
+            let base_url = plan.base_url.clone();
+            match self.start(startup_timeout, plan).await {
+                Ok(kept) => {
+                    *slot = Some((kept, base_url.clone()));
+                    return Ok(base_url);
+                }
+                Err(failure) if failure.name_conflict && !retried => retried = true,
+                Err(failure) => return Err(failure.error),
+            }
+        }
+    }
+
+    /// Runs the plan's command and waits until its `base_url` answers.
+    async fn start(
+        &self,
+        startup_timeout: Duration,
+        plan: ManagedPlan,
+    ) -> Result<Slot, StartFailure> {
         let ManagedPlan {
             argv,
             base_url,
             env,
-            cleanup,
-        } = plan().map_err(|e| {
-            ToolExecutionError::other(format!("cannot prepare SearXNG: {}", chain(&e)))
-        })?;
+            fail_cleanup,
+            shared,
+        } = plan;
         let base_url = &base_url;
         let (program, args) = argv
             .split_first()
             .expect("a launch command is validated as non-empty");
-        let child = command(program, args, &env).spawn().map_err(|e| {
+        let mut command = command(program, args, &env);
+        // A shared instance's client is let go once it answers, and must not die with the
+        // runtime; until then `Running` stops it.
+        command.kill_on_drop(!shared);
+        let child = command.spawn().map_err(|e| {
             ToolExecutionError::other(format!(
                 "cannot start the SearXNG command `{program}`: {}",
                 chain(&e)
@@ -598,7 +702,6 @@ impl Websearch {
         // Guarded from the spawn on, so a dropped future or an early return still stops the
         // process group; `kill_on_drop` alone would only kill a `docker run` CLI, not its container.
         let mut running = Running::new(child, STOP_GRACE);
-        running.cleanup = cleanup.map(|argv| (argv, env.clone()));
         let stderr = Arc::new(Mutex::new(String::new()));
         let drain = running.child().stderr.take().map(|pipe| {
             let tail_buffer = stderr.clone();
@@ -616,6 +719,11 @@ impl Websearch {
                 }
             })
         });
+        let fail_cleanup = || {
+            if let Some(argv) = &fail_cleanup {
+                spawn_detached(argv, &env);
+            }
+        };
         let started = Instant::now();
         loop {
             let exited = running.child().try_wait().map_err(|e| {
@@ -628,12 +736,20 @@ impl Websearch {
                 if let Some(drain) = drain {
                     let _ = tokio::time::timeout(Duration::from_millis(500), drain).await;
                 }
-                return Err(start_failure(
-                    format!(
-                        "the SearXNG command `{program}` exited ({status}) before {base_url} answered"
+                // Shown only inside a start-failure message, so a poisoned lock is harmless.
+                let name_conflict = is_name_conflict(&lock_recovering(&stderr));
+                if !name_conflict {
+                    fail_cleanup();
+                }
+                return Err(StartFailure {
+                    error: start_failure(
+                        format!(
+                            "the SearXNG command `{program}` exited ({status}) before {base_url} answered"
+                        ),
+                        &stderr,
                     ),
-                    &stderr,
-                ));
+                    name_conflict,
+                });
             }
             if self.probe(base_url).await {
                 break;
@@ -641,6 +757,7 @@ impl Websearch {
             if started.elapsed() >= startup_timeout {
                 let pid = running.pid;
                 stop(running.child(), pid, STOP_GRACE).await;
+                fail_cleanup();
                 if let Some(drain) = drain {
                     let _ = tokio::time::timeout(Duration::from_millis(500), drain).await;
                 }
@@ -650,23 +767,28 @@ impl Websearch {
                         startup_timeout.as_secs_f64()
                     ),
                     &stderr,
-                ));
+                )
+                .into());
             }
             tokio::time::sleep(PROBE_INTERVAL).await;
         }
-        *slot = Some((running, base_url.clone()));
-        Ok(base_url.clone())
+        if !shared {
+            return Ok(Slot::Owned(Box::new(running)));
+        }
+        // Taking the child disarms `Running`'s stop. The drain keeps reading the client's
+        // stderr, and the task only reaps the client once it exits.
+        let mut client = running
+            .child
+            .take()
+            .expect("the child is only taken by drop");
+        tokio::spawn(async move {
+            let _ = client.wait().await;
+        });
+        Ok(Slot::Shared)
     }
 
-    /// Any non-5xx answer counts: the instance is up even if it has no page at its root, but a
-    /// proxy's 502/503 while SearXNG is still booting is not.
     async fn probe(&self, base_url: &Url) -> bool {
-        self.client
-            .get(base_url.clone())
-            .timeout(PROBE_TIMEOUT)
-            .send()
-            .await
-            .is_ok_and(|response| !response.status().is_server_error())
+        probe(&self.client, base_url).await
     }
 }
 

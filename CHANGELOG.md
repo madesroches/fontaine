@@ -15,6 +15,10 @@ All notable changes are recorded here. The format follows
   now names the MCP servers and statuses the CLI reported, and a call to or an offer of a tool
   the request did not define names that tool and the tools the request did define, so the
   `request_failed` ledger record identifies it without a debug file (#458).
+- The default web search no longer starts a new SearXNG container per session: one container
+  named `fontaine-searxng` is shared by every session, reused when healthy, and replaced when it
+  stops answering; the per-session `fontaine-searxng-<random>` containers a hard kill used to
+  leave behind are swept at the next managed start (#451, #241).
 - `claude-subscription` no longer fails every tool-using turn on Claude CLI 2.1.319: its
   `permission_denied` event and the denial echo, now sent before the response stops, are accepted
   when they match a tool call the response made, and so is the `thinking_tokens` estimate. A
