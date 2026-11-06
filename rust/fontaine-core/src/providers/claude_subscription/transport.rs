@@ -20,9 +20,7 @@ use serde_json::json;
 
 use super::cli::{ChildFiles, Cli, CliChild, ReadFail, Scratch, fixed_args, scratch_error};
 use super::inventory::INVENTORY_FLAG;
-use super::protocol::{
-    Event, Expect, Failure, Reader, SessionSeed, exit_failure, label, translate,
-};
+use super::protocol::{Event, Expect, Failure, Reader, SessionSeed, exit_failure, translate};
 use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error, read_idle_error};
 
 /// How the inert inventory is started: this executable in its hidden mode, unless a test
@@ -174,15 +172,10 @@ impl ClaudeTransport {
                         Event::Ack => break,
                         Event::Nothing => {}
                         Event::Frame(_) | Event::Complete => {
-                            let error = provider(
-                                ClaudeError::new(
-                                    ErrorKind::Protocol,
-                                    "the Claude CLI answered a history frame",
-                                )
-                                .with_detail(&format!(" (event: {})", label(&line))),
-                            );
-                            rejected(&line, &reader, &error);
-                            return Err(error);
+                            return Err(provider(ClaudeError::new(
+                                ErrorKind::Protocol,
+                                "the Claude CLI answered a history frame",
+                            )));
                         }
                     }
                 }

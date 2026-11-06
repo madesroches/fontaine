@@ -588,13 +588,6 @@ fn safe_name(name: Option<&str>) -> String {
 
 /// The event a stdout line carries, as a name safe to show: `type`, plus `/subtype` for a
 /// system event or a result and `/<event type>` for a stream event.
-pub(crate) fn label(line: &[u8]) -> String {
-    let Ok(value) = serde_json::from_slice::<Value>(line) else {
-        return "(not JSON)".to_string();
-    };
-    label_of(&value)
-}
-
 fn label_of(value: &Value) -> String {
     let text = |v: Option<&Value>| v.and_then(Value::as_str).map(str::to_string);
     let kind = text(value.get("type"));
@@ -701,8 +694,16 @@ impl Reader {
     }
 
     pub fn accept(&mut self, line: &[u8]) -> Result<Event, Failure> {
-        let label = label(line);
-        match self.dispatch(line) {
+        let Ok(value) = serde_json::from_slice::<Value>(line) else {
+            return Err(ClaudeError::new(
+                ErrorKind::Protocol,
+                "the Claude CLI sent a line that is not JSON",
+            )
+            .with_detail(" (event: (not JSON))")
+            .boxed());
+        };
+        let label = label_of(&value);
+        match self.dispatch(&value) {
             Ok(event) => {
                 self.remember(label);
                 Ok(event)
@@ -717,16 +718,14 @@ impl Reader {
         }
     }
 
-    fn dispatch(&mut self, line: &[u8]) -> Result<Event, Failure> {
-        let value: Value = serde_json::from_slice(line)
-            .map_err(|_| protocol("the Claude CLI sent a line that is not JSON"))?;
+    fn dispatch(&mut self, value: &Value) -> Result<Event, Failure> {
         let kind = value
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default();
         match kind {
-            "system" => self.system(&value),
-            "stream_event" => self.stream_event(&value),
+            "system" => self.system(value),
+            "stream_event" => self.stream_event(value),
             "assistant" => {
                 if let Some(category) = value.get("error").and_then(Value::as_str) {
                     self.native = Some(match category {
@@ -752,8 +751,8 @@ impl Reader {
                 }
                 Ok(Event::Nothing)
             }
-            "result" => self.result(&value),
-            "user" => self.denial_echo(&value),
+            "result" => self.result(value),
+            "user" => self.denial_echo(value),
             // Ignored: a mid-response extra-usage switch is invisible to Fontaine and failing here would not prevent a charge.
             "rate_limit_event" | "keep_alive" => Ok(Event::Nothing),
             "prompt_suggestion" => Err(protocol(

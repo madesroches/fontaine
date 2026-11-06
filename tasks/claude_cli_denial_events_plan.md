@@ -160,7 +160,7 @@ each:
 | `task_*` | refuse (catch-all, named by the event label) | background tasks are disabled |
 | `informational`, `notification`, `turn_duration`, anything else | refuse, naming the subtype | not observed in the adapter's configuration; their payloads are unqualified |
 
-### 7. Name the rejected event in every `Protocol` failure of `accept` and of the Ack-phase refusal
+### 7. Name the rejected event in every `Protocol` failure of `accept`
 
 `Reader::accept` computes the line's **label** once, before dispatch:
 
@@ -177,9 +177,8 @@ returns the same error with ` (event: <label>)` appended to its message. Other e
 `accept` rebuilds the boxed provider error from it. The non-JSON line failure gets the label
 `(not JSON)`.
 
-The transport's refusal of a `Frame` or `Complete` answering a history frame (`transport.rs:171`)
-gets the same treatment: the label comes from the same function, run on the line in hand, and
-the error carries ` (event: <label>)`. `next()`'s read failure has no line and stays unlabelled.
+The transport's refusal of a `Frame` or `Complete` answering a history frame stays unlabelled:
+the Ack phase cannot produce one, and `next()`'s read failure has no line.
 
 The catch-all messages keep their wording, and the label supplies the missing name:
 `the Claude CLI sent a system event this adapter does not accept (event: system/notification)`.
@@ -190,14 +189,13 @@ The catch-all messages keep their wording, and the label supplies the missing na
 entries, consecutive repeats collapsed as `label ×N` (deltas would otherwise fill it), oldest
 dropped first with a leading `…`. `Reader::trail(&self) -> String` joins it with ` → `.
 
-The transport has one helper used at both `accept` call sites (`transport.rs:168`, `:314`) and
-at the history-frame refusal (`:171`):
+The transport has one helper used at both `accept` call sites (`transport.rs:168`, `:314`):
 
 ```rust
 fn rejected(line: &[u8], reader: &Reader, error: &ProviderError)
 ```
 
-On any `accept` error whose kind is `Protocol`, and on the `:171` refusal, it emits one `tracing::debug!` (module target, so
+On any `accept` error whose kind is `Protocol`, it emits one `tracing::debug!` (module target, so
 it reaches only the owner-only debug file and never an export backend) with fields:
 
 - `error` (the full chain),
@@ -251,7 +249,7 @@ API error as a system entry, so this is not a deviation.
 3. **Trail**: add the bounded, repeat-collapsing trail to `Reader`, appended on every accepted
    line, with `trail()`.
 4. **Transport logging**: add `rejected(...)` in `transport.rs` and call it at both `accept`
-   sites and the history-frame refusal before the error is returned.
+   sites before the error is returned.
 5. **Ledger record**: add `Record::RequestFailed` in `ledger.rs` (and its replay arm). Append it in
    `turn::drive` on the final `Failed` return when `error_class` is `Some`, using `error_class`
    and `failure_text`.
