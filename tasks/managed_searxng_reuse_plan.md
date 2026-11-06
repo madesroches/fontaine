@@ -67,14 +67,19 @@ A small `RuntimeCli { program: PathBuf, env: Env }` runs subcommands with the cl
 environment plus `container_runtime_env` (already threaded into `managed()`), each with a
 bounded wait, and parses output:
 
-- `inspect_running(name) -> bool`: `<runtime> inspect -f {{.State.Running}} <name>` parses
-  `true`; any error or other output is `false` (docker and podman both accept this template).
+- `inspect(name) -> io::Result<Option<ContainerState>>`: `<runtime> inspect -f
+  {{.State.Status}} <name>` parses the status; `created`, `running` or `restarting` is
+  `Starting` (it may still come up, so the probe waits on it), anything else is `Unhealthy`.
+  A "no such container" failure is `io::ErrorKind::NotFound` → `None`. (docker and podman both
+  accept this template.)
 - `published_port(name) -> Option<u16>`: `<runtime> port <name> 8080/tcp`, parse the first
   `host:port` line's port.
 - `list_by_prefix() -> Vec<String>`: `<runtime> ps -a --filter name=fontaine-searxng
   --format {{.Names}}`, take the first comma-separated name per line.
-- `rm(name) -> Result<(), String>`: `<runtime> rm -f <name>`; a non-zero exit returns the
-  stderr for reporting.
+- `rm(name) -> io::Result<()>`: `<runtime> rm -f <name>`; a "no such container" stderr is
+  `io::ErrorKind::NotFound` (a concurrent session may have removed the container already, so
+  the caller treats it as success), any other failure keeps the `io::Error` for reporting
+  via `fontaine_tools::error_chain::chain`.
 
 ### Prepare: sweep, discover, decide
 
@@ -86,9 +91,9 @@ bounded wait, and parses output:
    backend — accepted; see Decisions). A failed sweep `rm` is reported through the same `warn`
     closure and the sweep continues with the remaining names; unlike step 3 it does not abort
     the prepare, since a leftover stray does not affect the steps that follow.
-2. **Probe the shared instance.** If `inspect_running(NAME)` and `published_port(NAME)` both
-   succeed, poll a loopback HTTP probe of `http://127.0.0.1:<port>` until it answers with a
-   non-5xx status, returning `Prepared::Reuse(that url)`. The probe is a plain `reqwest` GET
+2. **Probe the shared instance.** If `inspect(NAME)` reports `Starting`, read
+   `published_port(NAME)` and poll a loopback HTTP probe of `http://127.0.0.1:<port>` until
+   it answers with a non-5xx status, returning `Prepared::Reuse(that url)`. The probe is a plain `reqwest` GET
    with a short timeout; loopback HTTP needs none of the TLS client plumbing in
    `fontaine_tools::tls`. A container that is running but slow to answer (e.g. still pulling
    or booting) is never removed merely for that: the poll is bounded by the start timeout
@@ -96,9 +101,11 @@ bounded wait, and parses output:
    path into step 2 — normal discovery and the name-conflict retry alike — since both run this
    same `prepare`.
 3. **Replace the unhealthy.** Only after the step 2 probe wait has elapsed without an answer
-   (or if the container exists but is not running): `rm` it first; a failed `rm` is reported
-   through the `warn` closure
-   (#241's "report a failed cleanup") and aborts the prepare with that message.
+   (or if `inspect` reports `Unhealthy`): `rm` it first; a failed `rm` is reported through the
+   `warn` closure
+   (#241's "report a failed cleanup") and aborts the prepare with that message — except a
+   "no such container" failure, which means a concurrent session already removed it, so the
+   prepare proceeds to step 4.
 4. **Start fresh.** Return `Prepared::Start(ManagedPlan)` with the fixed-name argv
    (`--name fontaine-searxng`), `fail_cleanup` = detached `rm -f fontaine-searxng` (run by
    `ensure_started` if this start fails or times out, replacing today's `cleanup`), no drop
@@ -130,9 +137,9 @@ No locking beyond the name itself is introduced.
   alive; `Shared` reuses while `probe(url)` answers. Either failing clears the slot and falls
   through to `prepare`, which re-discovers (and can restart a dead shared container).
 - After a successful `Start` with `shared: true`, the client is disowned: stderr has already
-  been taken by the drain task, so convert the `tokio::process::Child` with `into_std()`
-  (consuming it disables `kill_on_drop`) and hand it to a `std::thread` that waits and reaps
-  it. The slot stores `(Shared, url)`. A `shared: false` plan (only the managed backend passes
+  been taken by the drain task, so the `tokio::process::Child` is taken out of the `Running`
+  (which disarms its stop) and handed to a `tokio::spawn`ed task that waits on it and reaps
+  it once the client exits. The slot stores `(Shared, url)`. A `shared: false` plan (only the managed backend passes
   `true`; the explicit `command` backend passes `false`) keeps today's owned behavior, so a
   user-supplied `command` instance is still stopped with the session.
 - `SearxngChild::is_running` (test-only callers) treats `Shared` as `probe(url)`.

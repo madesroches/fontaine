@@ -217,12 +217,10 @@ impl RuntimeCli {
             .collect())
     }
 
-    /// Removes a container by name; on failure returns its stderr for reporting.
-    async fn rm(&self, name: &str) -> Result<(), String> {
-        self.output(&["rm", "-f", name])
-            .await
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+    /// Removes a container by name; a "no such container" failure is
+    /// [`io::ErrorKind::NotFound`], which a concurrent session's earlier removal produces.
+    async fn rm(&self, name: &str) -> io::Result<()> {
+        self.output(&["rm", "-f", name]).await.map(|_| ())
     }
 
     /// Runs a subcommand with the runtime's minimal environment, killing it after
@@ -318,10 +316,14 @@ async fn prepare(
     told: &Arc<std::sync::atomic::AtomicBool>,
 ) -> io::Result<Prepared> {
     for name in stray_names(&cli.list_by_prefix().await?) {
-        if let Err(message) = cli.rm(name).await {
-            warn(&format!(
-                "could not remove the leftover SearXNG container {name}: {message}"
-            ));
+        match cli.rm(name).await {
+            Ok(()) => {}
+            // A concurrent session may already have removed it; keep sweeping.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => warn(&format!(
+                "could not remove the leftover SearXNG container {name}: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )),
         }
     }
     let mut unhealthy = false;
@@ -361,13 +363,23 @@ async fn prepare(
             }
         }
     }
-    if unhealthy && let Err(message) = cli.rm(NAME).await {
-        warn(&format!(
-            "could not remove the unhealthy SearXNG container {NAME}: {message}"
-        ));
-        return Err(io::Error::other(format!(
-            "cannot remove the unhealthy SearXNG container {NAME}: {message}"
-        )));
+    if unhealthy {
+        // A concurrent session may already have removed the unhealthy container; only a real
+        // removal failure aborts the prepare.
+        let removal_failed = match cli.rm(NAME).await {
+            Ok(()) => None,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+            Err(e) => Some(e),
+        };
+        if let Some(e) = removal_failed {
+            let message = fontaine_tools::error_chain::chain(&e);
+            warn(&format!(
+                "could not remove the unhealthy SearXNG container {NAME}: {message}"
+            ));
+            return Err(io::Error::other(format!(
+                "cannot remove the unhealthy SearXNG container {NAME}: {message}"
+            )));
+        }
     }
     if !told.swap(true, std::sync::atomic::Ordering::Relaxed) {
         notice(&format!(
@@ -717,6 +729,44 @@ mod tests {
             std::fs::read_to_string(state.join("rms")).unwrap().trim(),
             NAME
         );
+    }
+
+    /// A concurrent session may have removed the unhealthy container already: a "No such
+    /// container" `rm` failure is not an error, and the prepare starts a fresh instance
+    /// without a warning.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_already_removed_unhealthy_container_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let cli = scripted_runtime(
+            &state,
+            "inspect) echo exited ;;
+\
+             rm) echo 'Error response from daemon: No such container: fontaine-searxng' >&2; exit 1 ;;
+\
+             run) echo started >> '{state}/runs' ;;
+\
+             ps) true ;;",
+        );
+        let warned = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let warn: Arc<dyn Fn(&str) + Send + Sync> = {
+            let warned = warned.clone();
+            Arc::new(move |message: &str| warned.lock().unwrap().push(message.to_string()))
+        };
+        let prepared = prepare(
+            &cli,
+            &dir.path().join("data"),
+            Duration::from_millis(300),
+            &no_notice(),
+            &warn,
+            &Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(prepared, Prepared::Start(_)), "{prepared:?}");
+        assert!(warned.lock().unwrap().is_empty());
     }
 
     #[cfg(unix)]
