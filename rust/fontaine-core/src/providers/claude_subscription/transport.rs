@@ -413,5 +413,12 @@ mod tests {
             std::fs::canonicalize(std::env::current_exe().expect("own path")).expect("own path")
         );
         assert_eq!(command.leading, vec![OsString::from(INVENTORY_FLAG)]);
+
+        let status = std::process::Command::new(&command.program)
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .status()
+            .expect("the image starts from its /proc path");
+        assert!(status.success());
     }
 }

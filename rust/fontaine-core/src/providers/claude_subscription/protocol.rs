@@ -99,7 +99,7 @@ fn customization_error(kind: &str, entries: &[&Value]) -> Failure {
 }
 
 /// Names each MCP server the CLI reported with its status. A `failed` inventory is one the CLI
-/// could not start or talk to, so the text says which executable that was.
+/// could not start or talk to, so the text names the executable by its role.
 fn inventory_error(servers: &[Value]) -> Failure {
     let field = |server: &Value, key: &str| -> String {
         server
@@ -123,7 +123,7 @@ fn inventory_error(servers: &[Value]) -> Failure {
             && server.get("status").and_then(Value::as_str) == Some("failed")
     });
     let hint = if failed {
-        "; the CLI could not start or talk to the inventory, which is this `fontaine` \
+        "; the CLI could not start or talk to the inventory, which is this \
          executable run with `--internal-claude-inventory`"
     } else {
         ""
