@@ -876,7 +876,7 @@ impl AgentRuntime {
         // The conversation is gone, so the agents it spawned leave the list; persisted
         // per-agent logs and the spend tally stay.
         let pruned = agents.clear_ended();
-        spawn::settle_retired(agents, &self.ledger_window(), pruned);
+        spawn::settle_retired(agents, &self.ledger_window(), pruned, true);
         agents.discard_root_reminders();
         self.end_jobs().await;
         self.reset_shell_cwd();

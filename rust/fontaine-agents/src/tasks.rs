@@ -573,8 +573,9 @@ impl Boards {
     /// The reminder `owner` is due, if any: its board holds claimable tasks, `free_slots` agents
     /// could start for them, and nothing has changed since it was last reminded. `key_slots` is
     /// the free-slot count that change is measured by, which differs from `free_slots` for an
-    /// owner whose own running slot counts as free. Recorded only by
-    /// [`reminded`](Self::reminded).
+    /// owner whose own running slot counts as free. Atomically checks and claims the reminder so
+    /// two concurrent callers cannot both obtain it; the caller rolls back with
+    /// [`forget_reminder`](Self::forget_reminder) if delivery fails.
     pub fn pending_reminder(
         &self,
         owner: &str,
@@ -587,7 +588,8 @@ impl Boards {
             return None;
         }
         let key = (board.mutations(), key_slots);
-        if lock(&self.reminded, "owner reminders").get(owner) == Some(&key) {
+        let mut reminded = lock(&self.reminded, "owner reminders");
+        if reminded.get(owner) == Some(&key) {
             return None;
         }
         let tasks = if claimable == 1 {
@@ -600,23 +602,30 @@ impl Boards {
         } else {
             format!("{free_slots} agent slots are")
         };
-        Some(Reminder {
+        let reminder = Reminder {
             text: format!(
                 "[Harness note, not the user's words: {tasks} claimable and {slots} free; start agents for them with agent, or do them yourself.]"
             ),
             key,
-        })
+        };
+        reminded.insert(owner.to_string(), key);
+        Some(reminder)
     }
 
-    /// Forgets that `owner` was reminded, for a reminder that could not be delivered.
-    pub fn forget_reminder(&self, owner: &str) {
+    /// Rolls back the claim of `reminder` for `owner`, for a reminder that could not be
+    /// delivered. Only the caller that still holds the claimed key rolls back: a newer claim
+    /// already replaced it and is left alone.
+    pub fn forget_reminder(&self, owner: &str, reminder: &Reminder) {
+        let mut reminded = lock(&self.reminded, "owner reminders");
+        if reminded.get(owner) == Some(&reminder.key) {
+            reminded.remove(owner);
+        }
+    }
+
+    /// Forgets whatever reminder `owner` was last sent, such as when its queued reminders are
+    /// discarded outright.
+    pub fn clear_reminder(&self, owner: &str) {
         lock(&self.reminded, "owner reminders").remove(owner);
-    }
-
-    /// Records that `owner` got `reminder`, so it is not sent again until the board or the free
-    /// slots change.
-    pub fn reminded(&self, owner: &str, reminder: &Reminder) {
-        lock(&self.reminded, "owner reminders").insert(owner.to_string(), reminder.key);
     }
 }
 
@@ -1048,10 +1057,9 @@ mod tests {
                 .text
                 .starts_with("[Harness note, not the user's words:")
         );
-        boards.reminded(ROOT_AGENT, &reminder);
         assert!(
             boards.pending_reminder(ROOT_AGENT, 2, 2).is_none(),
-            "nothing changed"
+            "the claim is recorded as soon as the reminder is due"
         );
         assert!(
             boards.pending_reminder(ROOT_AGENT, 1, 1).is_some(),
@@ -1061,6 +1069,25 @@ mod tests {
         assert!(
             boards.pending_reminder(ROOT_AGENT, 2, 2).is_some(),
             "the board moved"
+        );
+    }
+
+    #[test]
+    fn a_rollback_only_forgets_the_key_it_claimed() {
+        let boards = Boards::new(None);
+        add(boards.root(), "one", &[]);
+        let stale = boards.pending_reminder(ROOT_AGENT, 2, 2).unwrap();
+        boards.forget_reminder(ROOT_AGENT, &stale);
+        let claimed = boards
+            .pending_reminder(ROOT_AGENT, 2, 2)
+            .expect("a full rollback frees the reminder again");
+        add(boards.root(), "two", &[]);
+        let newer = boards.pending_reminder(ROOT_AGENT, 2, 2).unwrap();
+        assert_ne!(claimed.key, newer.key);
+        boards.forget_reminder(ROOT_AGENT, &claimed);
+        assert!(
+            boards.pending_reminder(ROOT_AGENT, 2, 2).is_none(),
+            "the newer claim stands and still dedupes"
         );
     }
 }

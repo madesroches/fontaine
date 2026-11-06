@@ -90,9 +90,10 @@ impl AgentRuntime {
     /// stretch is reviewed. Returns the report for the surface to show.
     pub async fn handle_afk_stop(&self) -> Option<AfkReport> {
         for id in self.state.agents().running_ids() {
-            self.kill_agent(&id);
+            self.kill_agent_no_remind(&id);
         }
-        self.retire_idle_agents("the AFK stop ended the session's activity");
+        self.retire_idle_agents_no_remind("the AFK stop ended the session's activity");
+        self.state.agents().discard_root_reminders();
         for job in self.setup.jobs.snapshot().into_iter().filter(|j| j.running) {
             self.setup.jobs.kill_by_user(&job.id);
         }

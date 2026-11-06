@@ -129,16 +129,24 @@ fn render_agent_wait(id: &str, state: &AgentState) -> String {
             format_age(*age)
         ),
         AgentState::Running { age, .. } => state_line(id, *age, None),
-        AgentState::Ended { status, delivery } => {
+        AgentState::Ended {
+            status,
+            delivery,
+            wakeable,
+        } => {
             let tail = match delivery {
                 AgentDelivery::Queued => "Its report follows as a notification.",
                 AgentDelivery::Killed => "It was killed and delivers no report.",
                 AgentDelivery::AlreadyDelivered => "Its report was already delivered to you.",
             };
-            let wake = match status.as_str() {
-                "idle" => "\nIt is idle, not finished: send_message wakes it.",
-                "failed" => "\nIt failed but keeps its conversation: send_message wakes it.",
-                _ => "",
+            let wake = if *wakeable {
+                match status.as_str() {
+                    "idle" => "\nIt is idle, not finished: send_message wakes it.",
+                    "failed" => "\nIt failed but keeps its conversation: send_message wakes it.",
+                    _ => "",
+                }
+            } else {
+                ""
             };
             format!("[{id} ended: {status}]\n{tail}{wake}")
         }

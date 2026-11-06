@@ -196,11 +196,12 @@ Every subagent has the same lifecycle: **running, idle, woken, running again, an
 final**.
 
 - **Running.** The agent works on a prompt. It holds one of the `max_parallel` places.
-- **Idle.** Its turn ended, `done` or `failed`. It keeps its name, its conversation (its own log in
-  the session store) and the board tasks it claimed, and it makes no model calls and holds no
-  `max_parallel` place while it waits. `/agents` shows it as `idle`; `job_output` on it returns at
-  once with `idle`, and the report tells its parent that it finished its turn and can be woken.
-  A failed agent keeps showing `failed` and can be woken too.
+- **Idle.** Its turn ended, `done` or `failed`. It makes no model calls and holds no
+  `max_parallel` place while it waits. A `done` agent keeps its name, its conversation (its own
+  log in the session store) and the board tasks it claimed; a `failed` agent keeps its name and
+  conversation but releases its claimed tasks. `/agents` shows it as `idle`; `job_output` on it
+  returns at once with `idle`, and the report tells its parent that it finished its turn and can
+  be woken. A failed agent keeps showing `failed` and can be woken too.
 - **Woken.** A `send_message` from an agent that may reach it, a report from one of its own
   subagents, the [reminder](#task-boards) of an owner of claimable work, a `teammate_idle` hook's
   reason or you typing into its view starts another run on the same conversation, with the same
@@ -229,7 +230,7 @@ An idle agent never keeps a headless run open, and holds nothing when the sessio
 ### Agents across `--resume`
 
 An agent is a conversation plus a few facts about it, not a process. A resumed session
-(`--resume`, `--continue`) brings back every agent that had not ended for good, as `idle`, from the
+(`--resume`, `--continue`) brings back only agents whose last end was `done`, as `idle`, from the
 ledger and its log, so `send_message`, `job_output` and typing into its view reach it by name or id.
 Agents that were `failed`, killed, out of budget, retired or still running when the session stopped
 are not brought back, and neither is one whose type is no longer defined or whose parent was not

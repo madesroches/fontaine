@@ -395,6 +395,7 @@ impl AgentWaits for FakeAgents {
                 return Ok(AgentState::Ended {
                     status: "done".into(),
                     delivery,
+                    wakeable: false,
                 });
             }
             if wait == Some(Duration::ZERO) {
@@ -407,6 +408,7 @@ impl AgentWaits for FakeAgents {
             Ok(AgentState::Ended {
                 status: "done".into(),
                 delivery: AgentDelivery::Queued,
+                wakeable: false,
             })
         })
     }

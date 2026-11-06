@@ -153,8 +153,14 @@ fn bounce(tree: &AgentTree, id: &str, notes: Vec<Notification>, why: &str) {
 
 /// Does what an agent that stopped being resumable without a kill of its own needs: its mail goes
 /// back, its tasks are released, its board is dropped and the ledger marks it retired, unless it
-/// ended some other way, which the ledger keeps.
-pub fn settle_retired(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, retired: Vec<Retired>) {
+/// ended some other way, which the ledger keeps. Set `remind` to `false` when the caller will
+/// discard any queued reminders itself, to avoid waking unrelated agents mid-sequence.
+pub fn settle_retired(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    retired: Vec<Retired>,
+    remind: bool,
+) {
     for gone in retired {
         bounce(tree, &gone.id, gone.inbox, "it was retired");
         release_tasks_of(
@@ -163,7 +169,7 @@ pub fn settle_retired(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, retir
             &gone.id,
             &gone.name,
             gone.parent.as_deref(),
-            true,
+            remind,
         );
         if let Some(teams) = tree.teams() {
             teams.boards.drop_owner(&gone.id);
@@ -191,7 +197,7 @@ pub fn retire(
 ) -> Vec<String> {
     let retired = tree.retire(id, why);
     let ids = retired.iter().map(|r| r.id.clone()).collect();
-    settle_retired(tree, ledger, retired);
+    settle_retired(tree, ledger, retired, true);
     ids
 }
 
@@ -204,7 +210,20 @@ pub fn retire_all_idle(
 ) -> Vec<String> {
     let retired = tree.retire_all_idle(why);
     let ids = retired.iter().map(|r| r.id.clone()).collect();
-    settle_retired(tree, ledger, retired);
+    settle_retired(tree, ledger, retired, true);
+    ids
+}
+
+/// Like [`retire_all_idle`] but suppresses owner reminders; use during an AFK stop, where the
+/// caller discards queued reminders after.
+pub fn retire_all_idle_no_remind(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    why: &str,
+) -> Vec<String> {
+    let retired = tree.retire_all_idle(why);
+    let ids = retired.iter().map(|r| r.id.clone()).collect();
+    settle_retired(tree, ledger, retired, false);
     ids
 }
 
@@ -258,7 +277,7 @@ fn conclude(
         };
         bounce(tree, id, tree.take_notifications(id), why);
     }
-    settle_retired(tree, ledger, finish.retired);
+    settle_retired(tree, ledger, finish.retired, true);
     let name = tree.name_of(id);
     let event = match report.status {
         ChildStatus::Killed => "killed",
@@ -272,6 +291,21 @@ fn conclude(
 /// end, its released tasks and the telemetry are recorded here, and so is the retirement of the
 /// idle agents below any target.
 pub fn kill_agent(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str) -> bool {
+    kill_agent_inner(tree, ledger, id, true)
+}
+
+/// Like [`kill_agent`] but suppresses owner reminders; use during an AFK stop, where the
+/// caller discards queued reminders after.
+pub fn kill_agent_no_remind(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str) -> bool {
+    kill_agent_inner(tree, ledger, id, false)
+}
+
+fn kill_agent_inner(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    id: &str,
+    remind: bool,
+) -> bool {
     let parent = tree.parent_of(id);
     let Some(outcome) = tree.kill_outcome(id) else {
         return false;
@@ -282,14 +316,21 @@ pub fn kill_agent(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
             status: ChildStatus::Killed.as_str().to_string(),
         });
         bounce(tree, id, outcome.inbox, "it was killed");
-        release_tasks_of(tree, ledger, id, &tree.name_of(id), parent.as_deref(), true);
+        release_tasks_of(
+            tree,
+            ledger,
+            id,
+            &tree.name_of(id),
+            parent.as_deref(),
+            remind,
+        );
         if let Some(teams) = tree.teams() {
             teams.boards.drop_owner(id);
         }
         let type_name = tree.type_of(id).unwrap_or_default();
         subagent_event("killed", id, &tree.name_of(id), &type_name);
     }
-    settle_retired(tree, ledger, outcome.retired);
+    settle_retired(tree, ledger, outcome.retired, remind);
     true
 }
 
@@ -335,14 +376,13 @@ pub fn remind_owners(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, except
         let Some(reminder) = teams.boards.pending_reminder(&owner, free, key_slots) else {
             continue;
         };
-        teams.boards.reminded(&owner, &reminder);
         slots_left -= 1;
         if owner == ROOT_AGENT {
             tree.post_to_root(ROOT_AGENT, NotificationKind::Reminder, reminder.text);
         } else if running {
             tree.push(&owner, &owner, NotificationKind::Reminder, reminder.text);
-        } else if wake_idle(tree, ledger, &owner, reminder.text, Vec::new()).is_err() {
-            teams.boards.forget_reminder(&owner);
+        } else if wake_idle(tree, ledger, &owner, reminder.text.clone(), Vec::new()).is_err() {
+            teams.boards.forget_reminder(&owner, &reminder);
         }
     }
 }
@@ -357,7 +397,6 @@ pub fn remind_main(tree: &AgentTree) {
     }
     let free = tree.free_slots();
     if let Some(reminder) = teams.boards.pending_reminder(ROOT_AGENT, free, free) {
-        teams.boards.reminded(ROOT_AGENT, &reminder);
         tree.post_to_root(ROOT_AGENT, NotificationKind::Reminder, reminder.text);
     }
 }
@@ -485,6 +524,9 @@ async fn continue_agent(
         return false;
     };
     if let Some(why) = tree.continue_blocker(id) {
+        if let (Some(teams), Reason::Reminder(reminder)) = (&teams, &reason) {
+            teams.boards.forget_reminder(id, reminder);
+        }
         if !tree.shutting_down() {
             tree.warn(&format!("agent {name} stays idle: {why}"));
         }
@@ -512,13 +554,7 @@ async fn continue_agent(
                 "[Harness note, not the user's words: a teammate_idle hook asks you to keep working.]\n{reason}"
             )
         }
-        Reason::Reminder(reminder) => {
-            teams
-                .expect("a reminder comes from teams")
-                .boards
-                .reminded(id, &reminder);
-            reminder.text
-        }
+        Reason::Reminder(reminder) => reminder.text,
     };
     subagent_event("resume", id, &name, type_name);
     handle.resume_with_data(text);

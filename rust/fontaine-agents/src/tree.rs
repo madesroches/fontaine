@@ -1584,7 +1584,7 @@ impl AgentTree {
         }
         // The dedup key would otherwise keep the next turn end silent about released tasks.
         if let Some(teams) = self.teams() {
-            teams.boards.forget_reminder(ROOT_AGENT);
+            teams.boards.clear_reminder(ROOT_AGENT);
         }
     }
 
@@ -1636,12 +1636,17 @@ impl AgentTree {
         } else {
             AgentDelivery::AlreadyDelivered
         };
-        let status = if is_idle(node) && node.status == ChildStatus::Done {
+        let idle = is_idle(node);
+        let status = if idle && node.status == ChildStatus::Done {
             "idle".to_owned()
         } else {
             node.status.as_str().to_owned()
         };
-        Ok(AgentState::Ended { status, delivery })
+        Ok(AgentState::Ended {
+            status,
+            delivery,
+            wakeable: idle,
+        })
     }
 
     /// Empties `agent`'s inbox.
@@ -2311,9 +2316,11 @@ mod tests {
     }
 
     fn ended(status: &str, delivery: AgentDelivery) -> AgentState {
+        let wakeable = matches!(status, "idle" | "failed");
         AgentState::Ended {
             status: status.into(),
             delivery,
+            wakeable,
         }
     }
 

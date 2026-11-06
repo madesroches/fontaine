@@ -135,6 +135,8 @@ pub enum AgentState {
     Ended {
         status: String,
         delivery: AgentDelivery,
+        /// Whether the agent can be woken: its turn ended and nothing since made that final.
+        wakeable: bool,
     },
 }
 
