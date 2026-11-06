@@ -16,7 +16,7 @@ use crate::root_ledger::{AgentEvent, RootLedger};
 use crate::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnRequest};
 use crate::tasks::Reminder;
 use crate::tree::{
-    AgentTree, DeliverError, Killed, Notification, NotificationKind, Refusal, Retired,
+    AgentTree, Attach, DeliverError, Killed, Notification, NotificationKind, Refusal, Retired,
 };
 
 const TARGET: &str = "fontaine::telemetry";
@@ -127,8 +127,19 @@ fn release_tasks_of(
 
 /// Gives mail an agent will never read back: a message to its sender, who was told it was
 /// queued, and a report to the root, which `watch_report` would have sent there had the agent
-/// been final when it arrived.
-fn bounce(tree: &AgentTree, id: &str, notes: Vec<Notification>, why: &str) {
+/// been final when it arrived. A sender that went idle before the bounce is woken through the
+/// inbox-wake path, so it learns its mail was not read; only a final or missing sender's
+/// bounce goes to the root. `wake` is `false` where no agent may be started, such as during
+/// an AFK stop, and for a bounce the spent session budget would send right back: no wake can
+/// succeed while it is spent, so the senders' notes are queued instead.
+fn bounce(
+    tree: &Arc<AgentTree>,
+    ledger: &Arc<dyn RootLedger>,
+    id: &str,
+    notes: Vec<Notification>,
+    why: &str,
+    wake: bool,
+) {
     let name = tree.name_of(id);
     for note in notes {
         match note.kind {
@@ -137,8 +148,11 @@ fn bounce(tree: &AgentTree, id: &str, notes: Vec<Notification>, why: &str) {
                     "Your message to {name} was not read: {why}.\nThe message was: {}",
                     note.text
                 );
-                if tree.is_running(&note.from) {
+                if tree.is_running(&note.from) || tree.is_idle(&note.from) {
                     tree.push(&note.from, id, NotificationKind::Message, text);
+                    if wake {
+                        wake_for_inbox(tree, ledger, &note.from);
+                    }
                 } else {
                     tree.post_to_root(id, NotificationKind::Message, text);
                 }
@@ -162,7 +176,7 @@ pub fn settle_retired(
     remind: bool,
 ) {
     for gone in retired {
-        bounce(tree, &gone.id, gone.inbox, "it was retired");
+        bounce(tree, ledger, &gone.id, gone.inbox, "it was retired", remind);
         release_tasks_of(
             tree,
             ledger,
@@ -275,7 +289,7 @@ fn conclude(
             Some(ChildStatus::Killed) => "it was killed",
             _ => "its budget ran out",
         };
-        bounce(tree, id, tree.take_notifications(id), why);
+        bounce(tree, ledger, id, tree.take_notifications(id), why, true);
     }
     settle_retired(tree, ledger, finish.retired, true);
     let name = tree.name_of(id);
@@ -315,7 +329,7 @@ fn kill_agent_inner(
             agent: id.to_string(),
             status: ChildStatus::Killed.as_str().to_string(),
         });
-        bounce(tree, id, outcome.inbox, "it was killed");
+        bounce(tree, ledger, id, outcome.inbox, "it was killed", remind);
         release_tasks_of(
             tree,
             ledger,
@@ -442,8 +456,11 @@ fn after_end(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, parent: &str, 
     wake_for_inbox(tree, ledger, id);
     wake_for_inbox(tree, ledger, parent);
     // After the child's own mail is resumed, so a freed slot is not taken first by another
-    // idle agent and leaves the human's unread messages undelivered.
-    slot_freed(tree, ledger, Some(id));
+    // idle agent and leaves the human's unread messages undelivered. The just-idled owner is
+    // not excluded from the reminder pass: with every slot taken its turn-end check saw none
+    // free, and the reminder key, unchanged between its turn end and its idle end, keeps a
+    // reminder it did get from repeating.
+    slot_freed(tree, ledger, None);
 }
 
 /// Queues a run's report for its parent and concludes the run.
@@ -594,18 +611,22 @@ fn wake_for_inbox(tree: &Arc<AgentTree>, ledger: &Arc<dyn RootLedger>, id: &str)
         Err(WakeError::SessionBudget(why)) => {
             bounce(
                 tree,
+                ledger,
                 id,
                 notes,
                 &format!("the session's budget is spent ({why})"),
+                false,
             );
         }
         Err(WakeError::Refused(why)) => {
             // The senders were told "queued"; they learn here that nobody read it.
             bounce(
                 tree,
+                ledger,
                 id,
                 notes,
                 &format!("it ended before it could ({why})"),
+                true,
             );
             if !tree.shutting_down() {
                 tree.warn(&format!(
@@ -700,8 +721,11 @@ fn resume_inner(
             tokio::spawn(async move {
                 match runner.revive(request).await {
                     Ok(handle) => {
-                        tree.attach(&id, handle.clone());
-                        start_run(&tree, &ledger, &id, &handle, text, from_human);
+                        // A clear can prune the node while the runner rebuilds the
+                        // conversation; the handle stops with it and no run may start.
+                        if tree.attach(&id, handle.clone()) != Attach::Missing {
+                            start_run(&tree, &ledger, &id, &handle, text, from_human);
+                        }
                     }
                     Err(why) => {
                         runner.discard_unread(&id);
@@ -750,13 +774,20 @@ fn revive_failed(
     why: &str,
     waking: Vec<Notification>,
 ) {
+    // A clear can prune the node while the runner rebuilds the conversation; there is then
+    // nothing to settle, and nothing may be reported into the cleared session.
+    if tree.status_of(id).is_none() {
+        return;
+    }
     let mut dropped = waking;
     dropped.extend(tree.take_notifications(id));
     bounce(
         tree,
+        ledger,
         id,
         dropped,
         &format!("it could not be revived from its saved conversation ({why})"),
+        true,
     );
     let report = ChildReport {
         status: ChildStatus::Failed,

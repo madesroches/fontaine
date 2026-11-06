@@ -105,6 +105,18 @@ impl Default for Limits {
     }
 }
 
+/// What attaching a run's handle found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attach {
+    /// The node took the handle; the run can start.
+    Attached,
+    /// The node was already killed, waiting for the handle; the handle was stopped, and the
+    /// caller's watcher concludes the node.
+    Killed,
+    /// The node is gone, pruned by a clear; the handle was stopped and no run may start.
+    Missing,
+}
+
 /// What a kill found.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Killed {
@@ -855,24 +867,30 @@ impl AgentTree {
         self.changed.notify_waiters();
     }
 
-    pub fn attach(&self, id: &str, handle: Arc<dyn ChildHandle>) {
+    pub fn attach(&self, id: &str, handle: Arc<dyn ChildHandle>) -> Attach {
         // A kill can land while the runner is still starting the child, when there was no
-        // handle to stop; honour it now.
-        let already_killed = {
+        // handle to stop; honour it now. A clear can prune the node instead, in which case
+        // nothing is left to run the handle.
+        let outcome = {
             let mut inner = self.lock();
             match inner.nodes.get_mut(id) {
                 Some(node) => {
                     node.handle = Some(handle.clone());
                     node.revival = None;
-                    node.status == ChildStatus::Killed
+                    if node.status == ChildStatus::Killed {
+                        Attach::Killed
+                    } else {
+                        Attach::Attached
+                    }
                 }
-                None => false,
+                None => Attach::Missing,
             }
         };
-        if already_killed {
+        if outcome != Attach::Attached {
             handle.kill();
         }
         self.changed.notify_waiters();
+        outcome
     }
 
     /// Whether `id` is the root or every node up its parent chain to the root still exists. An
