@@ -419,7 +419,75 @@ fn a_tool_the_request_did_not_define_is_refused() {
         stream(json!({"type": "content_block_start", "index": 0,
                       "content_block": {"type": "tool_use", "id": "t", "name": "Bash", "input": {}}})),
     ));
-    assert!(error.contains("did not define"), "{error}");
+    assert!(
+        error.contains("did not define: `Bash`; this request defines read_file"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_undefined_call_lists_a_capped_set_of_the_defined_tools() {
+    let names: Vec<String> = (0..45).map(|i| format!("tool_{i:02}")).collect();
+    let mut r = reader(&names.iter().map(String::as_str).collect::<Vec<_>>());
+    feed(&mut r, init()).unwrap();
+    feed(&mut r, message_start()).unwrap();
+    let long = "x".repeat(500);
+    let error = failure(feed(
+        &mut r,
+        stream(json!({"type": "content_block_start", "index": 0,
+                      "content_block": {"type": "tool_use", "id": "t", "name": long, "input": {}}})),
+    ));
+    assert!(error.contains(&format!("`{}`;", "x".repeat(80))), "{error}");
+    assert!(!error.contains(&"x".repeat(81)), "{error}");
+    assert!(error.contains("tool_39, and 5 more"), "{error}");
+
+    let mut none = reader(&[]);
+    feed(&mut none, init()).unwrap();
+    feed(&mut none, message_start()).unwrap();
+    let error = failure(feed(
+        &mut none,
+        stream(json!({"type": "content_block_start", "index": 0,
+                      "content_block": {"type": "tool_use", "id": "t", "name": "Task", "input": {}}})),
+    ));
+    assert!(
+        error.contains("`Task`; this request defines no tools"),
+        "{error}"
+    );
+}
+
+#[test]
+fn an_init_offering_an_undefined_tool_names_it() {
+    let error = init_error(init_with("tools", json!(["Bash"])));
+    assert!(error.contains("did not define: `Bash`"), "{error}");
+}
+
+#[test]
+fn an_init_without_exactly_the_inventory_names_what_the_cli_reported() {
+    let failed = init_error(init_with(
+        "mcp_servers",
+        json!([{"name": "fontaine", "status": "failed"}]),
+    ));
+    assert!(
+        failed.contains("reported MCP servers: fontaine (failed)"),
+        "{failed}"
+    );
+    assert!(
+        failed.contains("could not start or talk to the inventory"),
+        "{failed}"
+    );
+
+    let extra = init_error(init_with(
+        "mcp_servers",
+        json!([{"name": "fontaine", "status": "connected"}, {"name": "other"}]),
+    ));
+    assert!(
+        extra.contains("reported MCP servers: fontaine (connected), other (?)"),
+        "{extra}"
+    );
+    assert!(!extra.contains("could not start"), "{extra}");
+
+    let none = init_error(init_with("mcp_servers", json!([])));
+    assert!(none.contains("reported MCP servers: none"), "{none}");
 }
 
 #[test]
