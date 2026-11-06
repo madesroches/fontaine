@@ -6,6 +6,7 @@
 //! test.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 use rig_core::error::ProviderError;
 use rig_core::wire::WireFrame;
@@ -13,6 +14,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::cli::limit_error;
+use super::usage::{Usage, parse_rate_limit};
 use super::{ClaudeError, ErrorKind, claude_error};
 
 /// What the CLI calls a tool of the `fontaine` MCP server.
@@ -623,12 +625,14 @@ pub struct Reader {
     suppressed: BTreeSet<usize>,
     native: Option<Native>,
     streamed_output_tokens: Option<u64>,
+    usage: Option<Arc<Usage>>,
 }
 
 impl Reader {
-    pub fn new(expect: Expect) -> Self {
+    pub fn new(expect: Expect, usage: Option<Arc<Usage>>) -> Self {
         Reader {
             expect,
+            usage,
             calls: BTreeMap::new(),
             trail: VecDeque::new(),
             trail_cut: false,
@@ -753,8 +757,18 @@ impl Reader {
             }
             "result" => self.result(value),
             "user" => self.denial_echo(value),
-            // Ignored: a mid-response extra-usage switch is invisible to Fontaine and failing here would not prevent a charge.
-            "rate_limit_event" | "keep_alive" => Ok(Event::Nothing),
+            // The status is ignored: a mid-response extra-usage switch is invisible to Fontaine and failing here would not prevent a charge.
+            "rate_limit_event" => {
+                if let Some(usage) = &self.usage {
+                    let quota = parse_rate_limit(value);
+                    // A sparse frame must not erase fuller data.
+                    if !quota.windows.is_empty() {
+                        usage.record(quota);
+                    }
+                }
+                Ok(Event::Nothing)
+            }
+            "keep_alive" => Ok(Event::Nothing),
             "prompt_suggestion" => Err(protocol(
                 "the Claude CLI sent an unsolicited prompt suggestion",
             )),

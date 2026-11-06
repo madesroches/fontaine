@@ -35,6 +35,8 @@ pub trait QuotaSource: Send + Sync + std::fmt::Debug {
     /// The short label the status bar shows, such as `kimi`.
     fn name(&self) -> &str;
 
+    /// An `Ok` quota with no windows means the source has no data right now: nothing to
+    /// show, not an error.
     fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>>;
 }
 
@@ -202,6 +204,7 @@ async fn run(
             ..QuotaSnapshot::default()
         };
         match fetched {
+            Ok(quota) if quota.windows.is_empty() => last_good = None,
             Ok(quota) => last_good = Some((quota, Instant::now())),
             Err(e) => {
                 if last_good
@@ -440,6 +443,67 @@ mod tests {
         settle().await;
         assert!(rx.borrow().error.is_none());
         assert_eq!(ratio(&rx), Some(0.5));
+    }
+
+    #[derive(Debug)]
+    struct Empty;
+
+    impl QuotaSource for Empty {
+        fn name(&self) -> &str {
+            "e"
+        }
+
+        fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>> {
+            Box::pin(async { Ok(Quota { windows: vec![] }) })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_windows_are_no_data_not_an_error() {
+        let mut poller = QuotaPoller::new();
+        let rx = poller.subscribe();
+        let source: Arc<dyn QuotaSource> = Arc::new(Empty);
+        poller.point(Some(&source));
+        settle().await;
+        assert_eq!(rx.borrow().name, "e");
+        assert!(rx.borrow().quota.is_none());
+        assert!(rx.borrow().error.is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn data_appearing_after_an_empty_fetch_shows() {
+        #[derive(Debug)]
+        struct Late(AtomicUsize);
+        impl QuotaSource for Late {
+            fn name(&self) -> &str {
+                "l"
+            }
+            fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>> {
+                let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+                Box::pin(async move {
+                    let windows = if first {
+                        vec![]
+                    } else {
+                        vec![QuotaWindow {
+                            label: "5h".into(),
+                            used_ratio: 0.2,
+                            reset_at: None,
+                        }]
+                    };
+                    Ok(Quota { windows })
+                })
+            }
+        }
+        let mut poller = QuotaPoller::new();
+        let rx = poller.subscribe();
+        let source: Arc<dyn QuotaSource> = Arc::new(Late(AtomicUsize::new(0)));
+        poller.point(Some(&source));
+        settle().await;
+        assert!(rx.borrow().quota.is_none());
+        tokio::time::advance(POLL_INTERVAL + Duration::from_secs(1)).await;
+        settle().await;
+        assert_eq!(ratio(&rx), Some(0.2));
+        assert!(rx.borrow().error.is_none());
     }
 
     #[tokio::test(start_paused = true)]

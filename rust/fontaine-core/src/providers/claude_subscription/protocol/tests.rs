@@ -251,10 +251,13 @@ fn session_ids_are_stable_and_separate_callers() {
 }
 
 fn reader(tools: &[&str]) -> Reader {
-    let mut reader = Reader::new(Expect {
-        models: vec!["claude-sonnet-5-5".into(), "sonnet".into()],
-        aliases: Aliases::new(tools.iter().copied()),
-    });
+    let mut reader = Reader::new(
+        Expect {
+            models: vec!["claude-sonnet-5-5".into(), "sonnet".into()],
+            aliases: Aliases::new(tools.iter().copied()),
+        },
+        None,
+    );
     reader.expect_response();
     reader
 }
@@ -643,10 +646,13 @@ fn usage_that_disagrees_with_the_stream_is_refused() {
 
 #[test]
 fn history_acknowledgments_are_zero_turn_results() {
-    let mut r = Reader::new(Expect {
-        models: vec!["claude-sonnet-5-5".into()],
-        aliases: Aliases::default(),
-    });
+    let mut r = Reader::new(
+        Expect {
+            models: vec!["claude-sonnet-5-5".into()],
+            aliases: Aliases::default(),
+        },
+        None,
+    );
     r.expect_ack();
     assert!(is_nothing(feed(&mut r, init())));
     assert!(matches!(
@@ -657,10 +663,13 @@ fn history_acknowledgments_are_zero_turn_results() {
         Ok(Event::Ack)
     ));
     assert!(feed(&mut r, message_start()).is_err());
-    let mut r = Reader::new(Expect {
-        models: vec!["claude-sonnet-5-5".into()],
-        aliases: Aliases::default(),
-    });
+    let mut r = Reader::new(
+        Expect {
+            models: vec!["claude-sonnet-5-5".into()],
+            aliases: Aliases::default(),
+        },
+        None,
+    );
     r.expect_ack();
     assert!(
         feed(
@@ -883,10 +892,13 @@ fn thinking_estimates_are_accepted_in_a_response_only() {
                           "estimated_tokens": 5, "estimated_tokens_delta": 5});
     let mut r = started(&[]);
     assert!(is_nothing(feed(&mut r, estimate.clone())));
-    let mut r = Reader::new(Expect {
-        models: vec!["claude-sonnet-5-5".into()],
-        aliases: Aliases::default(),
-    });
+    let mut r = Reader::new(
+        Expect {
+            models: vec!["claude-sonnet-5-5".into()],
+            aliases: Aliases::default(),
+        },
+        None,
+    );
     r.expect_ack();
     feed(&mut r, init()).unwrap();
     assert!(feed(&mut r, estimate).is_err());
@@ -945,4 +957,31 @@ fn the_trail_collapses_repeats_and_drops_the_oldest() {
     let trail = r.trail();
     assert!(trail.starts_with("… → "), "{trail}");
     assert_eq!(trail.split(" → ").count(), 65);
+}
+
+#[test]
+fn a_rate_limit_frame_is_recorded_and_still_nothing() {
+    let usage = Arc::new(Usage::new());
+    let mut r = Reader::new(
+        Expect {
+            models: vec!["claude-sonnet-5-5".into()],
+            aliases: Aliases::default(),
+        },
+        Some(usage.clone()),
+    );
+    r.expect_response();
+    feed(&mut r, init()).unwrap();
+    feed(&mut r, message_start()).unwrap();
+    let frame = json!({"type": "rate_limit_event", "rate_limit_info": {"unifiedWindows": {
+        "five_hour": {"utilization": 0.09, "resetsAt": 1790578200u64},
+        "seven_day": {"utilization": 0.15, "resetsAt": 1791036000u64}}}});
+    assert!(is_nothing(feed(&mut r, frame)));
+    let recorded = usage.snapshot().expect("recorded");
+    assert_eq!(recorded.windows.len(), 2);
+
+    assert!(is_nothing(feed(
+        &mut r,
+        json!({"type": "rate_limit_event"})
+    )));
+    assert_eq!(usage.snapshot(), Some(recorded));
 }

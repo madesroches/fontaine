@@ -127,6 +127,11 @@ time (24-hour) when that is today, `tomorrow`, the weekday within the next six d
 beyond. The reset is left out when the provider gives none or it has passed. From 90% on any
 window, the segment takes the theme's warning colour.
 
+A `claude-subscription` account needs no `quota` key: from the first turn on it adds
+`claude · 5h 9% (15:00) · 7d 15% (Mon)`, read from the usage events the Claude CLI already sends
+with its replies. With no data (an API-key CLI session, or before the first turn) there is no
+segment.
+
 The guardian's account is read the same way, and can be a different subscription. Its segment follows
 the main one with a `guardian` prefix and the same run of windows, as in
 `guardian kimi · 5h 82% (15:00) · … · month 16% (Nov 18)`, and shows only once any of its windows is
@@ -137,7 +142,7 @@ A guardian on the main model's account is not shown twice. The same figures reac
 The figures are refreshed every minute in the background, and never block a turn or a redraw. If a
 refresh fails the last figures stay for ten minutes and are then hidden; the first failure of a
 session is reported once per account as a warning. A segment is also hidden when its model is on an
-account without `quota`, and no figure is ever estimated: with no data from the provider nothing is
+account without a quota source, and no figure is ever estimated: with no data from the provider nothing is
 shown. On a narrow terminal the segments are kept in preference to the key hint, goal, scheduled
 and agent counts, and the guardian's is dropped before the main one.
 

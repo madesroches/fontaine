@@ -22,12 +22,15 @@ use rig_core::providers::registry::ProviderId;
 
 use super::{AccountClient, Billing, ConnectContext, CredentialPolicy, Provider};
 use crate::config::Account;
+use crate::quota::QuotaSource;
 use fontaine_tools::lock::{read, write};
+use usage::Usage;
 
 pub mod cli;
 pub mod inventory;
 pub mod protocol;
 pub mod transport;
+pub mod usage;
 
 pub use cli::{CONFLICTING_ENV, Cli, MIN_VERSION, Timeouts, inherited_env_names};
 pub use inventory::INVENTORY_FLAG;
@@ -256,6 +259,7 @@ impl Provider for ClaudeSubscription {
             cli: Arc::new(cli),
             session,
             inventory,
+            usage: Arc::new(Usage::new()),
             discovered: RwLock::new(BTreeMap::new()),
         }))
     }
@@ -282,6 +286,7 @@ struct Connected {
     cli: Arc<Cli>,
     session: String,
     inventory: InventoryCommand,
+    usage: Arc<Usage>,
     discovered: RwLock<BTreeMap<String, Entry>>,
 }
 
@@ -317,6 +322,7 @@ impl Connected {
                 refused: refused.map(|reason| ClaudeError::new(ErrorKind::Catalog, reason)),
             },
             self.inventory.clone(),
+            self.usage.clone(),
         );
         Model::new(wire, transport).erase()
     }
@@ -337,6 +343,10 @@ impl AccountClient for Connected {
 
     fn guardian_completion_for_agent(&self, model: &str, namespace: &str) -> DynModel<Completion> {
         self.model(model, namespace)
+    }
+
+    fn quota_source(&self) -> Option<Arc<dyn QuotaSource>> {
+        Some(self.usage.clone())
     }
 
     fn unavailable_reason(&self, model: &str) -> Option<String> {

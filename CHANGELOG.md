@@ -38,6 +38,9 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- A `claude-subscription` account shows its 5-hour and weekly plan usage in the status bar, in
+  headless `result.account_usage` and in the custom status line input, read from the CLI's own
+  `rate_limit_event` frames with no config key and no extra request (#454).
 - Any finished subagent can be woken by `send_message`. The `teammate` argument is removed, any
   agent can own a task board, and claimable tasks go to fresh agents (#435).
 - `--resume` brings back the agents whose last run ended `done` as idle agents that a message wakes
