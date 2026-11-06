@@ -17,7 +17,6 @@ if [ ! -f "$RUN/kimi-home/config.toml" ]; then
   cp "$HERE/scripts/config.template.toml" "$RUN/kimi-home/config.toml"
   [ -n "${EXTRA_CONFIG:-}" ] && cat "$EXTRA_CONFIG" >> "$RUN/kimi-home/config.toml"
 fi
-cp "$HERE/scripts/"*.mjs "$RUN/" 2>/dev/null || true
 chmod -R a+rwX "$RUN"
 
 echo "$NAME" > "$HERE/runs/CURRENT"
