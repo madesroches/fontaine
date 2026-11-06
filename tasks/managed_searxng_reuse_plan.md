@@ -83,7 +83,9 @@ bounded wait, and parses output:
 1. **Sweep strays.** For each name from `list_by_prefix()` that starts with `NAME_PREFIX`,
    `rm` it. These are per-session containers from older Fontaine versions; no pid or lease
    check is possible or needed (a concurrent session still running pre-fix Fontaine loses its
-   backend — accepted; see Decisions).
+   backend — accepted; see Decisions). A failed sweep `rm` is reported through the same `warn`
+    closure and the sweep continues with the remaining names; unlike step 3 it does not abort
+    the prepare, since a leftover stray does not affect the steps that follow.
 2. **Probe the shared instance.** If `inspect_running(NAME)` and `published_port(NAME)` both
    succeed and a loopback HTTP probe of `http://127.0.0.1:<port>` answers with a non-5xx
    status, return `Prepared::Reuse(that url)`. The probe is a plain `reqwest` GET with a short
