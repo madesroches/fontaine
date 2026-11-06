@@ -110,6 +110,7 @@ guardian gate it as before; the kill runs only after the call is allowed.
 ## Decisions
 
 - 2026-11-06: Deviation from the 2026-10-30 "the agents panel stays the way to kill one" line: `job_cancel` also stops a subagent the caller started, matching Claude Code's `TaskStop`; a kill stays final and the human's panel kill is unchanged (#463).
+- AFK: 2026-11-06: `AgentKills` tells stopped from already ended by an ownership-and-existence pre-check plus `kill_agent`'s existing bool (`false` = already ended); `kill_agent`'s signature and callers stay untouched, the most conservative option that satisfies #463 (a rare race maps to "already ended", which is harmless).
 
 ## Documentation
 
