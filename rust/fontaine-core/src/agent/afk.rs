@@ -84,21 +84,21 @@ impl AgentRuntime {
         self.afk_reports(false).ok()?.pop()
     }
 
-    /// The part of a temperature stop that cannot run inside the turn it ends: every running or
-    /// idle agent and every running job is killed one by one (not with the tree's latching
-    /// shutdown, which would outlive a review), the goal is paused, and the stretch is reviewed.
-    /// Returns the report for the surface to show.
+    /// The part of a temperature stop that cannot run inside the turn it ends: every running
+    /// agent and every running job is killed one by one (not with the tree's latching shutdown,
+    /// which would outlive a review), idle agents are retired, the goal is paused, and the
+    /// stretch is reviewed. Returns the report for the surface to show.
     pub async fn handle_afk_stop(&self) -> Option<AfkReport> {
-        let tree = self.state.agents();
-        let mut ids = tree.running_ids();
-        for id in tree.idle_ids() {
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
+        // Held until `/afk review`: no watcher may wake or remind anything from here on, and
+        // the killed children's conclusions cannot resume an idle sender.
+        self.state.agents().suppress_wakes(
+            "an AFK stop ended the session's activity; /afk review lets it continue",
+        );
+        for id in self.state.agents().running_ids() {
+            self.kill_agent_no_remind(&id);
         }
-        for id in ids {
-            self.kill_agent(&id);
-        }
+        self.retire_idle_agents_no_remind("the AFK stop ended the session's activity");
+        self.state.agents().discard_root_reminders();
         for job in self.setup.jobs.snapshot().into_iter().filter(|j| j.running) {
             self.setup.jobs.kill_by_user(&job.id);
         }
@@ -137,6 +137,10 @@ impl AgentRuntime {
     /// The temperature stop the user reviewed may run again, in `manual` if AFK mode was on. The
     /// next turn's refresh brings the prompt's AFK guidance in line.
     pub fn review_afk_stop(&self) -> bool {
-        self.state.afk_review()
+        let reviewed = self.state.afk_review();
+        if reviewed {
+            self.state.agents().resume_wakes();
+        }
+        reviewed
     }
 }

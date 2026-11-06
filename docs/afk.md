@@ -182,7 +182,8 @@ When the temperature reaches the ceiling, the whole agent tree stops:
    with the rule `afk_stopped`. This check can only deny.
 2. The turn in flight ends, as Esc ends it, so the model gets no further tool-capable turn, and no
    model request or tool call leaves any agent afterwards.
-3. Every running or idle subagent is killed, and every running background job, one by one.
+3. Every running subagent is killed and every idle one retired, so none can be woken, and every
+   running background job is killed, one by one.
 4. The goal pauses; no scheduled prompt or notification turn starts.
 5. The stretch is assessed and the report summary is shown.
 

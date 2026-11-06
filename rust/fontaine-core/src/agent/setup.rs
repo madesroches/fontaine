@@ -1,12 +1,13 @@
 //! The steps that assemble a session's shared parts, in the order a new runtime runs them.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use fontaine_agents::mode::ModeSetting;
 use fontaine_agents::registry::{AgentType, AgentTypes, ModelSpec, TypeOrigin};
-use fontaine_agents::tasks::{TaskBoard, Teams};
-use fontaine_agents::tree::{AgentTree, Limits, NotificationKind};
+use fontaine_agents::tasks::{Boards, Teams};
+use fontaine_agents::tree::{AgentTree, Limits, NotificationKind, RebuildRecord, revivable_ids};
 use fontaine_guardian::composition::Composition;
 use fontaine_guardian::{
     BackendKind, Guardian, ModeNotice, Profile, Reader, ReaderSettings,
@@ -31,12 +32,13 @@ use crate::gate::{
 };
 use crate::instructions::{self, InstructionStage, Sources};
 use crate::models::{GuardianModel, ModelHandle, Models};
-use crate::permissions::{Approver, PermissionPipeline, PipelineParams};
+use crate::permissions::{AfkApprover, Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
 use crate::providers::PromptCaching;
 use crate::providers::cache_minimum::min_cacheable_tokens;
 use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::{Backend, ScannerStage};
+use crate::session::Session;
 use crate::skills::SkillRuntime;
 use crate::steering::Steering;
 use crate::tasks::SessionTasks;
@@ -345,7 +347,56 @@ pub(super) fn agent_tree(setup: &AgentSetup) -> Arc<AgentTree> {
     let view = setup.session.ledger.view();
     let tree = AgentTree::new(agent_limits(&setup.config), view.next_agent);
     tree.seed_names(view.agents.iter().map(|agent| agent.name.clone()));
+    // The tree reports through the approver the surface gave, not the session's wrapper of it,
+    // which holds the tree.
+    let approver = setup.approver.clone();
+    tree.set_warn(move |message| approver.warn(message));
     Arc::new(tree)
+}
+
+/// What the ledger says about the agents an earlier process of the session spawned, in spawn
+/// order, each with whether it last ended `done`.
+fn rebuild_records(session: &Session) -> Vec<(RebuildRecord, bool)> {
+    session
+        .ledger
+        .view()
+        .agents
+        .iter()
+        .map(|agent| {
+            (
+                RebuildRecord {
+                    id: agent.id.clone(),
+                    name: agent.name.clone(),
+                    parent: agent.parent.clone(),
+                    agent_type: agent.agent_type.clone(),
+                    model: agent.model.clone(),
+                },
+                agent.ended.as_deref() == Some("done"),
+            )
+        })
+        .collect()
+}
+
+/// Brings back the agents of an earlier process of the session that had not ended for good, as
+/// idle nodes. Call once the root's tools and posture are wired.
+pub(super) fn rebuild_agents(
+    state: &Arc<SessionState>,
+    session: &Session,
+    tree: &AgentTree,
+    types: &AgentTypes,
+) {
+    let records = rebuild_records(session);
+    tree.rebuild(&records, types);
+    // Restrictions guard a node from its first call, before its handle exists: an ancestor
+    // still handle-less must not let the walk skip it, so they are installed at rebuild and
+    // not left for handle assembly.
+    let keep = revivable_ids(&records, types);
+    for (record, _) in records.iter().filter(|(r, _)| keep.contains(&r.id)) {
+        let Some(agent_type) = types.get(&record.agent_type) else {
+            continue;
+        };
+        state.set_child_restrictions(&record.id, crate::child_runner::restrictions(agent_type));
+    }
 }
 
 /// The permission state of a new session: its scope, rules, guardian and the agent tree.
@@ -410,8 +461,11 @@ pub(super) fn session_state(
     }))
 }
 
-/// What the session state needs before the agent is built: the AFK stretch and the composition.
-pub(super) fn configure_state(setup: &AgentSetup, state: &SessionState) {
+/// What the session state needs before the agent is built: the AFK backstop on the approver, which
+/// every approver call site after this one (the pipeline's, children's and questions') passes, the
+/// AFK stretch and the composition.
+pub(super) fn configure_state(setup: &mut AgentSetup, state: &Arc<SessionState>) {
+    setup.approver = Arc::new(AfkApprover::new(setup.approver.clone(), state.clone()));
     start_afk(setup, state);
     attach_composition(state, setup);
 }
@@ -536,6 +590,7 @@ pub(super) fn instruction_stage(
 fn start_teams(
     setup: &AgentSetup,
     state: &Arc<SessionState>,
+    revivable: &HashSet<String>,
     task_completed: Vec<CommandHook>,
     teammate_idle: Vec<CommandHook>,
 ) {
@@ -543,14 +598,16 @@ fn start_teams(
         &setup.session.dir,
         setup.approver.clone(),
     ));
-    let board = Arc::new(TaskBoard::restore(Some(store.clone()), store.load()));
+    let boards = Boards::restore(Some(store.clone()), store.load(), revivable);
     let gate = Arc::new(TeamGate::new(
         task_completed,
         teammate_idle,
         state.clone(),
         setup.approver.clone(),
     ));
-    state.agents().set_teams(Arc::new(Teams::new(board, gate)));
+    state
+        .agents()
+        .set_teams(Arc::new(Teams::new(boards, gate).headless(setup.headless)));
 }
 
 /// The pre-tool pipeline, and the post-tool hooks the result pipeline runs.
@@ -572,9 +629,13 @@ pub(super) fn permission_pipeline(
                 hooks.ignored_project_idle
             ));
         }
+        let revivable = revivable_ids(&rebuild_records(&setup.session), state.agent_types())
+            .into_iter()
+            .collect();
         start_teams(
             setup,
             state,
+            &revivable,
             std::mem::take(&mut hooks.task_completed),
             std::mem::take(&mut hooks.teammate_idle),
         );
@@ -727,6 +788,8 @@ pub(super) fn subagent_support(
         &kills,
     );
     wire_root_tree(tree, models, &tool_server);
+    let revival: Arc<dyn fontaine_agents::runner::ChildRunner> = runner.clone();
+    tree.set_runner(&revival);
     (main, tool_server, runner, kills)
 }
 

@@ -1,5 +1,6 @@
-//! The team's task board on disk, beside `todos.json` in the session directory. Agent ids do not
-//! survive a resume, so what is loaded back has nobody working on it (the board settles that).
+//! `main`'s task board on disk, beside `todos.json` in the session directory. A task someone was
+//! working on stays theirs only when that agent is brought back by the resume (the board settles
+//! that); the boards of subagents are not saved.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -61,6 +62,7 @@ impl TaskStore for SessionTasks {
 mod tests {
     use super::*;
     use fontaine_agents::tasks::{TaskBoard, TaskStatus};
+    use std::collections::HashSet;
     use std::sync::Mutex;
 
     #[derive(Default)]
@@ -80,17 +82,25 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_board_loads_back_without_owners() {
+    fn a_saved_board_loads_back_keeping_only_the_owners_that_come_back() {
         let dir = tempfile::tempdir().unwrap();
         let approver = Arc::new(Warnings::default());
         let store = Arc::new(SessionTasks::new(dir.path(), approver.clone()));
         let board = TaskBoard::new(Some(store.clone()));
         let first = board.create("root", "first", "do it", &[]).unwrap();
+        let second = board.create("root", "second", "do it", &[]).unwrap();
         board.claim("agent-1", &first.id).unwrap();
-        let restored = TaskBoard::restore(None, store.load());
+        board.claim("agent-2", &second.id).unwrap();
+        let revivable = HashSet::from(["agent-2".to_string()]);
+        let restored = TaskBoard::restore(None, store.load(), &revivable);
         let task = restored.get(&first.id).unwrap();
         assert_eq!((task.status, task.owner), (TaskStatus::Pending, None));
-        assert_eq!(restored.create("root", "next", "", &[]).unwrap().id, "t2");
+        let task = restored.get(&second.id).unwrap();
+        assert_eq!(
+            (task.status, task.owner.as_deref()),
+            (TaskStatus::InProgress, Some("agent-2"))
+        );
+        assert_eq!(restored.create("root", "next", "", &[]).unwrap().id, "t3");
         assert!(approver.0.lock().unwrap().is_empty());
     }
 

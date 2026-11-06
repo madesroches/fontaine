@@ -255,7 +255,12 @@ subagents only, never for the main conversation or a sibling; records without th
 main conversation's, so existing sessions load unchanged. Session naming, the first prompt a
 listing shows and the `/rewind` count use main-conversation messages alone, and a rewind also
 drops the agent-directed messages recorded after the first message it drops. A `resumed` agent
-record marks the start of a later run of an ended subagent.
+record marks the start of a later run of an ended subagent. A `spawned` record carries the
+concrete model the agent runs on, and a `finished` record with status `retired` marks an agent that
+cannot be woken any more (an ancestor ended for good, `/clear`, a rewind or an AFK stop); a retired
+agent that had failed keeps its `failed` end. A resumed session rebuilds, as idle nodes with no
+conversation handle yet, the agents whose last end was `done`; the handle is built from the
+per-agent log on the first wake.
 
 The ledger does not only record the lifecycle, it anchors id continuity: the largest `agent-<n>`
 ordinal in its `spawned` records seeds the counter a resumed session mints ids from, so a restarted

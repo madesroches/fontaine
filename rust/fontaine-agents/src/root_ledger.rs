@@ -10,6 +10,8 @@ pub enum AgentEvent {
         name: String,
         parent: String,
         agent_type: String,
+        /// The concrete model the agent runs on, so a resumed session revives it on that one.
+        model: Option<String>,
     },
     Finished {
         agent: String,

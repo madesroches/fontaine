@@ -372,8 +372,16 @@ type Asked = Arc<Mutex<Vec<(String, String, Option<Duration>)>>>;
 struct FakeAgents {
     asked: Asked,
     answer: Option<AgentWaitError>,
-    /// When set, the subagent has already ended with this delivery.
-    ended: Option<AgentDelivery>,
+    /// When set, the subagent has already ended like this.
+    ended: Option<Ended>,
+}
+
+/// How the fake's subagent has ended.
+#[derive(Clone, Copy)]
+struct Ended {
+    delivery: AgentDelivery,
+    status: &'static str,
+    wakeable: bool,
 }
 
 impl AgentWaits for FakeAgents {
@@ -391,10 +399,11 @@ impl AgentWaits for FakeAgents {
             if let Some(error) = self.answer {
                 return Err(error);
             }
-            if let Some(delivery) = self.ended {
+            if let Some(ended) = self.ended {
                 return Ok(AgentState::Ended {
-                    status: "done".into(),
-                    delivery,
+                    status: ended.status.into(),
+                    delivery: ended.delivery,
+                    wakeable: ended.wakeable,
                 });
             }
             if wait == Some(Duration::ZERO) {
@@ -407,6 +416,7 @@ impl AgentWaits for FakeAgents {
             Ok(AgentState::Ended {
                 status: "done".into(),
                 delivery: AgentDelivery::Queued,
+                wakeable: false,
             })
         })
     }
@@ -438,6 +448,24 @@ fn waiting_session(
 fn waiting_session_with(
     answer: Option<AgentWaitError>,
     ended: Option<AgentDelivery>,
+    wake_after: Duration,
+    notice: Option<&str>,
+) -> (Dirs, Vec<Registered>, Asked) {
+    waiting_session_ended(
+        answer,
+        ended.map(|delivery| Ended {
+            delivery,
+            status: "done",
+            wakeable: false,
+        }),
+        wake_after,
+        notice,
+    )
+}
+
+fn waiting_session_ended(
+    answer: Option<AgentWaitError>,
+    ended: Option<Ended>,
     wake_after: Duration,
     notice: Option<&str>,
 ) -> (Dirs, Vec<Registered>, Asked) {
@@ -531,6 +559,47 @@ async fn an_ended_subagent_is_described_by_how_its_report_was_delivered() {
             .unwrap();
         assert_eq!(out, format!("[agent-1 ended: done]\n{tail}"));
     }
+}
+
+#[tokio::test]
+async fn a_failed_subagent_points_at_send_message_only_while_it_keeps_its_conversation() {
+    // Failed and wakeable: the hint names send_message.
+    let (_d, tools, _asked) = waiting_session_ended(
+        None,
+        Some(Ended {
+            delivery: AgentDelivery::Queued,
+            status: "failed",
+            wakeable: true,
+        }),
+        Duration::ZERO,
+        None,
+    );
+    let out = run_as_child(&tools, "job_output", json!({"id": "agent-1"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        "[agent-1 ended: failed]\nIts report follows as a notification.\nIt failed but keeps its conversation: send_message wakes it."
+    );
+    // Failed and not wakeable: the hint is omitted.
+    let (_d, tools, _asked) = waiting_session_ended(
+        None,
+        Some(Ended {
+            delivery: AgentDelivery::Killed,
+            status: "failed",
+            wakeable: false,
+        }),
+        Duration::ZERO,
+        None,
+    );
+    let out = run_as_child(&tools, "job_output", json!({"id": "agent-1"}))
+        .await
+        .unwrap();
+    assert_eq!(
+        out,
+        "[agent-1 ended: failed]\nIt was killed and delivers no report."
+    );
+    assert!(!out.contains("send_message wakes it"), "{out}");
 }
 
 #[tokio::test]

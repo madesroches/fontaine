@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use fontaine_agents::root_ledger::RootLedger;
 use fontaine_agents::runner::ChildStatus;
-use fontaine_agents::spawn::{describe, resume_child};
+use fontaine_agents::spawn::{
+    describe, kill_agent_no_remind, resume_child, retire_all_idle_no_remind,
+};
 use fontaine_agents::tree::Refusal;
 
 use super::AgentRuntime;
@@ -91,13 +93,32 @@ fn after_queue(
 }
 
 impl AgentRuntime {
-    /// Kills a child, recording an idle teammate's end in the ledger.
+    /// The session's ledger as the agent tree writes to it.
+    pub(crate) fn ledger_window(&self) -> Arc<dyn RootLedger> {
+        Arc::new(LedgerWindow(self.state.clone()))
+    }
+
+    /// Kills a child, recording an idle agent's end in the ledger.
     pub fn kill_agent(&self, id: &str) -> bool {
-        fontaine_agents::spawn::kill_agent(
-            self.state.agents(),
-            &LedgerWindow(self.state.clone()),
-            id,
-        )
+        fontaine_agents::spawn::kill_agent(self.state.agents(), &self.ledger_window(), id)
+    }
+
+    /// Like [`kill_agent`](Self::kill_agent) but suppresses owner reminders. Use during an AFK
+    /// stop where the caller discards queued reminders after.
+    pub fn kill_agent_no_remind(&self, id: &str) -> bool {
+        kill_agent_no_remind(self.state.agents(), &self.ledger_window(), id)
+    }
+
+    /// Retires every idle agent, such as when the conversation they were judged against is
+    /// dropped. Returns the ids retired.
+    pub fn retire_idle_agents(&self, why: &str) -> Vec<String> {
+        fontaine_agents::spawn::retire_all_idle(self.state.agents(), &self.ledger_window(), why)
+    }
+
+    /// Like [`retire_idle_agents`](Self::retire_idle_agents) but suppresses owner reminders. Use
+    /// during an AFK stop where the caller discards queued reminders after.
+    pub fn retire_idle_agents_no_remind(&self, why: &str) -> Vec<String> {
+        retire_all_idle_no_remind(self.state.agents(), &self.ledger_window(), why)
     }
 
     /// Delivers what the human typed in `id`'s view. Nothing is written to the ledger here: the
@@ -136,9 +157,8 @@ impl AgentRuntime {
             }
             None => return Err(MessageRefusal::Unknown),
         }
-        let handle = tree.handle_of(id).ok_or(MessageRefusal::Unknown)?;
-        let ledger: Arc<dyn RootLedger> = Arc::new(LedgerWindow(self.state.clone()));
-        match resume_child(tree, &ledger, id, &handle, text.clone()) {
+        let ledger = self.ledger_window();
+        match resume_child(tree, &ledger, id, text.clone()) {
             Ok(()) => Ok(Delivered::Resumed),
             Err(Refusal::AlreadyRunning) => {
                 // Another resume won the race; its run reads the message.

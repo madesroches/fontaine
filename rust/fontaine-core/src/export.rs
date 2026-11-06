@@ -9,6 +9,8 @@ use std::fmt;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 
+use fontaine_agents::runner::ChildStatus;
+use fontaine_agents::spawn;
 use fontaine_agents::tree::{AgentRow, AgentTree};
 use rig_core::conversation::{AuthorKind, Conversation};
 use rig_core::message::{AssistantContent, Message, ToolResultContent, UserContent};
@@ -89,7 +91,7 @@ pub fn subagents(session: &Session, tree: &AgentTree) -> Vec<AgentSummary> {
         name: row.name.clone(),
         parent: row.parent.clone(),
         agent_type: row.agent_type.clone(),
-        status: if row.idle {
+        status: if row.idle && row.status == ChildStatus::Done {
             "idle".to_string()
         } else {
             row.status.as_str().to_string()
@@ -106,7 +108,12 @@ pub fn subagents(session: &Session, tree: &AgentTree) -> Vec<AgentSummary> {
                 name: record.name.clone(),
                 parent: record.parent.clone(),
                 agent_type: record.agent_type.clone(),
-                status: record.ended.clone().unwrap_or_else(|| "ended".to_string()),
+                status: match record.ended.as_deref() {
+                    // A retired agent was done: retirement only ends its being wakeable.
+                    Some(spawn::RETIRED) => "done".to_string(),
+                    Some(ended) => ended.to_string(),
+                    None => "ended".to_string(),
+                },
                 running: false,
                 linked: true,
             },
@@ -532,6 +539,7 @@ mod tests {
             parent: parent.map(str::to_string),
             detail: detail.map(str::to_string),
             name: None,
+            model: None,
         }
     }
 

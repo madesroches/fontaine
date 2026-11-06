@@ -13,14 +13,14 @@ and asynchronous tasks, with stricter permission rules.
 | `prompt` | The task. A subagent cannot see the conversation, so it needs everything in `prompt`; a [`fork`](#forking-the-conversation) already has the conversation and needs only a short task. Required. |
 | `model` | Optional: `$main`, `$guardian_default` or `<account>/<model>`. |
 | `name` | Optional [name](#naming-a-subagent) for the subagent. |
-| `teammate` | Optional, only with [teams](#agent-teams) on: start a teammate that goes idle between pieces of work. |
 
 The call returns `{"agent_id": "agent-1", "name": "explore-1"}` at once and the subagent runs alongside its parent and
 its siblings; spawn several in a row and they all run concurrently, up to `max_parallel`. When one
 ends, its report is delivered to the conversation that started it as a notification, in the next
 tool result that conversation reads or, if it is idle, as the prompt of a turn of its own. The
-report passes through the same result pipeline as any tool result. A killed subagent delivers
-nothing. A conversation that wants a result before going on waits for it with
+report passes through the same result pipeline as any tool result. When its turn ends it goes
+[idle](#agent-lifecycle) and keeps its conversation: `send_message` wakes it for follow-up on the
+same work, and a new agent is the way to start new work. A killed subagent delivers nothing. A conversation that wants a result before going on waits for it with
 [`job_output`](#waiting-for-a-subagent).
 
 A subagent that gives its final answer while its own subagents still run does not end yet: it
@@ -180,117 +180,172 @@ the guardian only inside its delimited, untrusted blocks, never as the task inte
 `send_message` takes `to` (an agent name or id, or `main` for the main conversation) and `message`. An agent
 can message its parent, its subagents, its siblings and `main`. The message is queued and the
 recipient reads it at its next turn marked with the sender's name and id and as untrusted data, never as an
-instruction from you. The sender gets `{"status": "queued"}`, or the error `agent not running` for a
-target that has finished or was killed. A teammate that is [idle](#agent-teams) is the one exception:
-the message wakes it. `send_message` reaches only agents of the same tree, so it is never guardian-judged and never prompts: it runs in every mode at the `coordination` tier, after your deny and ask rules and hooks.
+instruction from you. The sender gets `{"status": "queued"}`. A target whose turn has ended is
+[idle](#agent-lifecycle), and the message wakes it with its conversation intact; one that was
+killed, ran out of budget or was retired cannot be woken, and the sender gets an error that says
+why and to start a new agent with the context it needs. `send_message` reaches only agents of the same tree, so it is never guardian-judged and never prompts: it runs in every mode at the `coordination` tier, after your deny and ask rules and hooks.
 
 Only the main conversation can use `ask_user_question`. The built-in types do not have it, and a
 type that names it (or that names no tools, and so inherits every tool of its parent) is accepted
 but refused when called, with the "unavailable" result, so a subagent can never put a
 dialog in front of you.
 
-## Agent teams
+## Agent lifecycle
 
-Agent teams let several subagents work as named teammates that share a task board, message each
-other and are held to quality gates by hooks. They are built on the subagents above, with no new
-agent loop and no new permission path: a teammate is an ordinary subagent with an idle state, and
-every board change and every message is an ordinary gated request.
+Every subagent has the same lifecycle: **running, idle, woken, running again, and finally
+final**.
 
-Teams are on by default. Turn them off in your user config or with `--settings`; a repository's
-shared settings cannot change the key either way:
+- **Running.** The agent works on a prompt. It holds one of the `max_parallel` places.
+- **Idle.** Its turn ended, `done` or `failed`. It makes no model calls and holds no
+  `max_parallel` place while it waits. A `done` agent keeps its name, its conversation (its own
+  log in the session store) and the board tasks it claimed; a `failed` agent keeps its name and
+  conversation but releases its claimed tasks. `/agents` shows it as `idle`; `job_output` on it
+  returns at once with `idle`, and the report tells its parent that it finished its turn and can
+  be woken. A failed agent keeps showing `failed` and can be woken too.
+- **Woken.** A `send_message` from an agent that may reach it, a report from one of its own
+  subagents, the [reminder](#task-boards) of an owner of claimable work, a `teammate_idle` hook's
+  reason or you typing into its view starts another run on the same conversation, with the same
+  tools, mode and budget (spend is cumulative). A wake can be refused like any resume: a full
+  `max_parallel` leaves the agent idle, with its tasks, for a later wake. The session's spent
+  agent budget leaves it idle with its tasks too, but what was queued for it goes back to its
+  senders, since the budget never frees up. What wakes an agent other than you is marked as untrusted data and is never recorded
+  as something you said, so it never becomes the guardian's idea of your intent.
+- **Final.** A kill, a spent budget or a retirement cannot be undone. Killed and out-of-budget
+  rows show their own status; a retired agent that had ended `done` shows `done`, and one that
+  had failed keeps `failed`. Either way the row is final.
+
+An agent is retired only when waking it no longer makes sense; there is no timeout and no cap on
+idle agents:
+
+- When an agent ends for good (killed, out of budget or retired), every idle agent below it at any
+  depth is retired with it and every running one is killed. An agent that merely goes idle leaves
+  its idle subagents alone, because a later wake of it may need them.
+- `/clear` and a conversation `/rewind` retire the idle agents: a woken agent would be judged
+  against intent that the clear or rewind dropped. `/clear` also prunes them from the list; a
+  rewind keeps them, shown as `done` or `failed` as they had ended. An AFK stop retires them
+  and kills the running ones.
+- A message or report still queued for an agent that is retired, killed while idle or pruned goes
+  back: a message to its sender, a report to the main conversation.
+
+An idle agent never keeps a headless run open, and holds nothing when the session ends.
+
+### Agents across `--resume`
+
+An agent is a conversation plus a few facts about it, not a process. A resumed session
+(`--resume`, `--continue`) brings back only agents whose last end was `done`, as `idle`, from the
+ledger and its log, so `send_message`, `job_output` and typing into its view reach it by name or id.
+Agents that were `failed`, killed, out of budget, retired or still running when the session stopped
+are not brought back, and neither is one whose type is no longer defined or whose parent was not
+brought back.
+
+- The conversation model is built on the first wake, not at startup, so a resume opens nothing for
+  agents nobody talks to. A missing log or an unavailable model ends that wake as `failed`, with the
+  reason, and releases the agent's tasks.
+- It runs on the model recorded when it was spawned (a project agent type always runs on the
+  session model, as at spawn). Its tools are the type's, cut to its parent's, and its mode is never
+  looser than its parent's, both worked out again on resume.
+- Spend starts over in the new process, as the session's does; per-agent budgets are opt-in.
+- Its view in the terminal UI shows only turns from after the resume.
+
+## Task boards
+
+Task boards let an agent that splits its work give the pieces to the agents it starts. They add
+two tools, `board_show` and `board_update`, with no new agent loop and no new permission path: every
+board change and every message is an ordinary gated request.
+
+Boards are on by default. Turn them and the `task_completed` and `teammate_idle` hooks off in your
+user config or with `--settings`; a repository's shared settings cannot change the key either way:
 
 ```toml
 [agents]
 teams = false
 ```
 
-With teams off, the `teammate` argument is not offered and a call that passes it is refused,
-and the board tools are not registered.
+With it off the board tools are not registered. Idling and waking do not depend on it.
 
-- **The lead and the team.** The team is the session's agent tree and its lead is always `main`.
-  There is one team per session and nothing to create or name. Only `main` can start a teammate
-  (`teammate: true` on the `agent` call); a teammate cannot start teammates of its own, though it
-  may start plain subagents under the usual rules.
-- **Same rules as any subagent.** A teammate has the same toolset cut-down, a mode never looser than
-  its parent's, its own and the session's budgets, the nesting limit and `max_parallel`. Every call
-  it makes passes the permission pipeline. Nothing about teams reaches past the deterministic floor.
-- **Idle instead of done.** When a teammate's turn ends, it goes `idle` instead of `done`. It keeps its
-  name, its conversation and the tasks it owns, and it makes no model calls and takes no
-  `max_parallel` slot while it waits. The lead is told with a report that says the teammate finished
-  its turn and is idle. A teammate that fails, is killed or runs out of budget is final, as any
-  agent is.
-- **Retired when the work is done.** Once the board holds tasks, every one is completed and no
-  teammate is running, the idle teammates end as `done` and leave the agent list. A later task needs
-  a new teammate. `job_output` shows an idle teammate as `idle`, never `done`.
-- **Waking a teammate.** A `send_message` to an idle teammate wakes it: the message becomes its next
-  prompt, marked with the sender's name and id and as untrusted data. The sender still gets
-  `{"status": "queued"}`. You can also type into its view, as for any ended agent. A wake can be
-  refused like any resume: a spent budget, a full `max_parallel`, or a session that is ending.
-  The sender then gets the reason as the tool's error, and the teammate's tasks go back to the board. A message queued as the teammate went idle, then lost to a kill or a session ending, is returned to its sender as a message.
-  What wakes a teammate is never recorded as something you said, so a peer's message, a hand-off
-  note or a hook's reason never becomes the guardian's idea of your intent; only words you type
-  into its view are recorded, as for any subagent.
-- **Idle teammates and the session.** An idle teammate never keeps a headless run open and holds
-  nothing when the session ends. `/clear` and `/rewind` are refused while a teammate is idle, since
-  its conversation holds history a later wake needs; kill it from the agents panel or end the session.
+- **Any agent can own a board.** An agent that holds the `agent` tool owns a board of its own once
+  it runs `board_update create`, and the agents it starts work that board. `main` owns one, and so
+  does a subagent of a type that names `agent`. The built-in `worker` and `explore` cannot start
+  agents, so they own none: a `worker` creates tasks on its parent's board.
+- **Visibility.** An agent sees its own board and its parent's: it owns the first and works the
+  second by claiming and completing tasks. A sibling's or a grandparent's board is out of reach, and
+  an id that is on neither is an invalid argument. `board_show` lists both boards, each labelled
+  with its owner's name. `main` has no parent, so it sees only its own.
+- **Same rules as any subagent.** Every call an agent makes passes the permission pipeline. Nothing
+  about boards reaches past the deterministic floor.
+
+### Working a board down
+
+New work goes to a fresh agent with a clean context; an idle agent is never handed an unrelated
+task. When an owner's board holds a claimable task (pending, unowned, unblocked) and a
+`max_parallel` place is free, the owner gets one harness note, marked as not your words:
+
+> `[Harness note, not the user's words: 3 tasks on your board are claimable and 2 agent slots are free; start agents for them with agent, or do them yourself.]`
+
+It is sent at the owner's turn end, and when a place frees or a task becomes claimable while the
+owner is idle or between turns: to `main` as a notification, to a running subagent with its next
+tool result, and to an idle one by waking it. At most one owner is reminded per free place,
+earliest started first, and an owner is not told again until its board or the free places change,
+so an owner that ignores the note is not nagged. A headless run never reminds `main`, because the
+reminder would replace the run's answer. The owner then starts agents with an ordinary `agent`
+call, which passes the same checks as any spawn; the agents it starts claim their tasks with
+`board_update`. When a task builds on what an idle agent already knows, the owner says so with
+`send_message`. Board text is written by agents and is never used as a spawn prompt by itself.
 
 ### The task board
 
-The board is the shared list the team claims work from. It is separate from the private
-`todo_write` list of each agent, and from the `/tasks` alias of `/agents`. A task has an id (`t1`,
-`t2`, never reused), a title (200 characters), a description (5 000), an owner, a status
-(`pending`, `in_progress`, `completed`) and up to 20 tasks that block it; the board holds 100.
+A task has an id (`t1`, `t2`, unique across every board in the session and never reused), a title
+(200 characters), a description (5 000), a claimer, a status (`pending`, `in_progress`,
+`completed`) and up to 20 tasks that block it; a board holds 100. It is separate from the private
+`todo_write` list of each agent, and from the `/tasks` alias of `/agents`.
 
 | Tool | Class | Does |
 |---|---|---|
-| `board_show` | read-only | Lists every task, or shows one by `id`, with status, owner and blockers. |
-| `board_update` | `arbitrary`, runs at the `coordination` tier like `send_message` | `create` (`title`, optional `description` and `blocked_by`), `claim`, `complete` and `release` (`id`). |
+| `board_show` | read-only | Lists the tasks on the caller's board and its parent's, or shows one by `id`, with status, owner and blockers. |
+| `board_update` | `arbitrary`, runs at the `coordination` tier like `send_message` | `create` (`title`, optional `description` and `blocked_by`) on the caller's own board, or its parent's when the caller cannot start agents; `claim`, `complete` and `release` (`id`) on whichever of the two boards holds the task. |
 
 - **Claiming is atomic.** A task can be claimed only while it is pending, has no owner and every task
   that blocks it is completed. Of two simultaneous claims exactly one wins. `blocked_by` must name
-  tasks that already exist and is fixed at creation, so dependencies cannot form a cycle.
-- **Who may change what.** Only a task's owner, or the lead, can complete or release it while it is in
-  progress.
-- **Dead owners give tasks back.** A task owned by an agent that ends as failed, killed or out of
-  budget, or whose wake was refused, returns to pending with no owner. An idle teammate's tasks stay
-  its own.
+  tasks that already exist on the same board and is fixed at creation, so dependencies cannot form
+  a cycle.
+- **Who may change what.** Only the agent that claimed a task, or the owner of the board it is on,
+  can complete or release it while it is in progress.
+- **Dead claimers give tasks back.** A task claimed by an agent that ends as failed, killed or out
+  of budget, is retired, or whose wake was refused for good returns to pending with no owner. An
+  idle agent's tasks stay its own.
+- **A board ends with its owner.** A subagent's board lives in memory and is dropped when its owner
+  ends for good or `/clear` prunes it; an idle owner keeps it.
 - **Task text is data.** Titles and descriptions are written by agents. When `board_show` shows
   them to an agent they are fenced and labelled with their author, and they are never the guardian's
   idea of what you asked for.
 - **Permissions.** `board_show` is read-only, so it takes the read-only fast path; a subagent type
   that holds only read-only tools, `board_show` and the coordination tools still takes the
-  read-only spawn fast path. `board_update` writes only the session's own `tasks.json` and runs your
-  `task_completed` hooks, so every mode runs it at the `coordination` tier with no guardian verdict
-  and no prompt; a `deny` or `ask` rule on `board_update` applies first. It has no fast path.
-  The built-in `worker` type gets both tools and `explore` gets `board_show` when teams are on; a
-  type of yours has them only if its `tools` names them (or names none), and `fork` inherits what
-  its parent has. An `explore` teammate therefore cannot claim or complete tasks; the `agent` result
-  says so when a type without `board_update` starts as a teammate, and a team that should claim its own work uses
-  `worker`.
+  read-only spawn fast path. `board_update` writes only the session's own `tasks.json` (for `main`'s
+  board) and runs your `task_completed` hooks, so every mode runs it at the `coordination` tier with
+  no guardian verdict and no prompt; a `deny` or `ask` rule on `board_update` applies first. It has
+  no fast path. The built-in `worker` type gets both tools and `explore` gets `board_show` when
+  boards are on; a type of yours has them only if its `tools` names them (or names none). A type
+  that names `agent` can own a board.
 
-### The idle hand-off
-
-When a teammate's turn ends and a task is claimable (pending, unowned, unblocked), the runtime
-wakes the teammate with a note that the task is available, to claim it with `board_show` and
-`board_update`. The note is marked as harness text, not as you. A teammate whose type has no
-`board_update` is not handed off to.
-
-The hand-off and a [`teammate_idle` hook](hooks.md#teams-task_completed-and-teammate_idle) that
-blocks can keep a teammate going, and neither is bounded by finite news, so each teammate is woken
-this way at most three times in a row without the board changing in between (a create, claim,
-complete or release resets the count). Past that it goes idle and you get one warning.
+A [`teammate_idle` hook](hooks.md#task-boards-task_completed-and-teammate_idle) that blocks can keep
+an agent going when it ends a turn holding a task in progress on its parent's board. It is resumed
+with the hook's reason at most three times in a row without that board changing (a create, claim,
+complete or release resets the count); past that it goes idle and you get one warning.
 
 ### Persistence and resume
 
-The board is saved as `tasks.json` in the session directory, owner-only, after every change. Agent ids
-do not survive a resume, so a resumed session loads the board with every in-progress task back to
-pending and no owner, and teammates are not recreated; the lead starts the ones it needs.
+`main`'s board is saved as `tasks.json` in the session directory, owner-only, after every change,
+with the counter that mints ids, so the ids a subagent's board used are not minted again. A
+subagent's board is not saved. A resumed session loads the board with every in-progress task whose
+agent was [brought back](#agents-across---resume) still its own and the others back to pending with
+no owner.
 
 ### Not built
 
-Claude Code's tmux split-pane display and a per-teammate model beyond what `agent` already offers
-are not part of teams here. Teammates are Fontaine subagents in the same process and session tree,
-not independent sessions, which keeps one permission pipeline and one budget tree.
+Claude Code's tmux split-pane display, teammates that claim their own next task, and a per-agent
+model beyond what `agent` already offers are not part of this. Agents are Fontaine subagents in the
+same process and session tree, not independent sessions, which keeps one permission pipeline and
+one budget tree.
 
 ## Limits and budgets
 
@@ -348,7 +403,7 @@ In the terminal UI, a list below the status bar shows `main` and every running s
 what you type there goes to that agent: see [the agent list and the agent
 view](tui.md#the-agent-list-and-the-agent-view). `/agents` (or `/tasks`) opens the
 [agents panel](tui.md#the-agents-panel), the full overview with one row per subagent, ended ones
-included until a `/clear` prunes them, its status (a teammate waiting for work shows `idle`, not `done`), spend against budget, a key to kill it, and the team's task board. A subagent's approval
+included until a `/clear` prunes them, its status (an agent waiting to be woken shows `idle`, not `done`; `done` is final), spend against budget, a key to kill it, and each non-empty task board under its owner's name. A subagent's approval
 prompts appear like any other, labelled with its id, whichever transcript is on screen, so none
 hides behind another. While a subagent's model is mid-step, its row shows how many characters it
 has written so far (`· writing 4.2k chars`), since its usage only updates when the call ends.
@@ -372,21 +427,21 @@ agent handles what you type mid-turn:
   the ledger then, as a message typed to that agent (`user_message` with an `agent` field), and
   is intent for that agent and its own subagents only: the guardian never judges the main
   conversation's calls, or a sibling's, by words those models have not read.
-- **An ended subagent** (`done` or `failed`) is resumed: another run starts on the same
+- **An ended subagent** (idle: `done` or `failed`) is resumed: another run starts on the same
   conversation — its own per-agent log, persisted in the session store — with the same tools,
   mode, budget (spend carries over, so the cap is cumulative) and a `resumed` event in the
   ledger, followed by your words.
   The resumed run is held to the same posture as before, never looser than its parent's on any
   call. Its report goes to the agent that started it, or to the main conversation when that agent
   has ended, and an idle main conversation gets a turn to read it.
-- **A killed subagent, one that ran out of budget, or any whose budget is spent** is never
-  resumed. A resume that would exceed `max_parallel` or the session's agent budget is refused.
+- **A killed subagent, one that ran out of budget, a retired one, or any whose budget is spent**
+  is never resumed. A resume that would exceed `max_parallel` or the session's agent budget is refused.
 - A message a run ended without reading (the agent answered without another tool call) resumes the
   agent with it once the run ends; if that resume is refused, you are told what was not
   delivered.
 
-`send_message` from another agent keeps its rule: it reaches only a running agent (or wakes an
-idle teammate), and the recipient reads it as untrusted data, not as you.
+`send_message` from another agent keeps its rule: it reaches a running agent or wakes an idle one,
+and the recipient reads it as untrusted data, not as you.
 
 A headless run has no panel. If subagents are still running when the main conversation
 gives its final answer, the run waits for them and gives the main conversation a further turn for

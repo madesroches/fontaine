@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex, RwLock};
 use fontaine_agents::budget::Spend;
 use fontaine_agents::registry::{AgentType, ModelSpec, entry_has_specifier};
 use fontaine_agents::root_ledger::{AgentEvent, RootLedger};
-use fontaine_agents::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, SpawnRequest};
+use fontaine_agents::runner::{
+    ChildHandle, ChildReport, ChildRunner, ChildStatus, RevivalRequest, SpawnRequest,
+};
 use fontaine_agents::tree::{AgentTree, Notification, NotificationKind};
 use fontaine_guardian::WireIds;
 use fontaine_tools::error_chain::chain;
@@ -28,7 +30,7 @@ use rig_agent::agent::{
 use rig_agent::prelude::*;
 use rig_agent::tool::server::{ToolServer, ToolServerHandle};
 use rig_core::tool::ToolOutput;
-use rig_memory::DirStore;
+use rig_memory::{DirStore, Store as _};
 use serde_json::json;
 use tokio::sync::watch;
 use tracing::Instrument;
@@ -154,10 +156,15 @@ pub async fn notification_prompt(
         screened
             .push(screened_notes(results, agent, "job_output", RiskClass::ReadOnly, &jobs).await);
     }
-    let news = if jobs.is_empty() {
-        "agents you started or that wrote to you have news"
-    } else {
+    let news = if !jobs.is_empty() {
         "agents or background jobs you started have news"
+    } else if agents
+        .iter()
+        .all(|note| note.kind == NotificationKind::Reminder)
+    {
+        "tasks on your board are waiting for agents"
+    } else {
+        "agents you started or that wrote to you have news"
     };
     Some(format!(
         "[Harness note, not the user's words: {news}.]\n\n{}",
@@ -230,12 +237,14 @@ impl RootLedger for LedgerWindow {
                 name,
                 parent,
                 agent_type,
+                model,
             } => Record::Agent {
                 event: "spawned".into(),
                 agent,
                 parent: Some(parent),
                 detail: Some(agent_type),
                 name: Some(name),
+                model,
             },
             AgentEvent::Finished { agent, status } => Record::Agent {
                 event: "finished".into(),
@@ -243,6 +252,7 @@ impl RootLedger for LedgerWindow {
                 parent: None,
                 detail: Some(status),
                 name: None,
+                model: None,
             },
             AgentEvent::Message { from, to } => Record::Agent {
                 event: "message".into(),
@@ -250,6 +260,7 @@ impl RootLedger for LedgerWindow {
                 parent: None,
                 detail: Some(to),
                 name: None,
+                model: None,
             },
             AgentEvent::Resumed { agent } => Record::Agent {
                 event: "resumed".into(),
@@ -257,6 +268,7 @@ impl RootLedger for LedgerWindow {
                 parent: None,
                 detail: None,
                 name: None,
+                model: None,
             },
             AgentEvent::TaskCreated { task, agent } => task_record("task_created", agent, task),
             AgentEvent::TaskClaimed { task, agent } => task_record("task_claimed", agent, task),
@@ -275,6 +287,7 @@ fn task_record(event: &str, agent: String, task: String) -> Record {
         parent: None,
         detail: Some(task),
         name: None,
+        model: None,
     }
 }
 
@@ -324,7 +337,9 @@ fn fork_tools(root: &ToolServerHandle, names: &[String]) -> ToolServerHandle {
     handle
 }
 
-fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
+/// What the agent file of `agent_type` forbids a child outright and what it limits to
+/// specifier-matched calls, installed on the node at spawn and at rebuild.
+pub(crate) fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
     let rules = |entries: &[String]| {
         entries
             .iter()
@@ -530,107 +545,140 @@ impl ChildHandle for ChildRun {
     }
 }
 
+/// A child built and not yet running.
+struct Assembled {
+    shared: Arc<RunShared>,
+    span: tracing::Span,
+}
+
+impl CoreChildRunner {
+    /// Builds the agent of child `id` over its own log: its model, its tool set and its hooks.
+    /// `seed_fork` copies the parent's conversation in first, for a type that inherits context.
+    async fn assemble(
+        &self,
+        id: &str,
+        agent_type: &AgentType,
+        model_spec: &ModelSpec,
+        tools: &[String],
+        budget: fontaine_agents::budget::Budget,
+        seed_fork: bool,
+    ) -> Result<Assembled, String> {
+        let context = &self.context;
+        let model = context.model_for(model_spec, id).await?;
+        let store = context.store.clone();
+        if seed_fork {
+            context
+                .parent_context
+                .seed(&store, id)
+                .await
+                .map_err(|e| format!("could not fork the conversation: {}", chain(&e)))?;
+        }
+        context
+            .state
+            .agents()
+            .set_model(id, model.reference.to_string());
+        if budget.cost_usd.is_some()
+            && !model.priced()
+            && context.state.agents().first_unpriced_cap()
+        {
+            let token_note = if budget.tokens.is_some() {
+                "; the token budget still applies"
+            } else {
+                ""
+            };
+            context.approver.notice(&format!(
+                "the cost budget for subagents is inactive on {}, which has no known price{token_note}",
+                model.reference
+            ));
+        }
+        let priced = model.catalog_billed();
+        // A type's own level, else the session's. Effort is not a permission, so a child
+        // may run above or below its parent.
+        let effort = agent_type.effort.or(context.state.effort());
+        let generation_options = model.generation_options_warned(&context.state, effort);
+        let WireIds {
+            provider,
+            model: model_id,
+        } = model.wire_ids();
+        let state = context.state.clone();
+        let tools = fork_tools(&context.tool_server, tools);
+        // The channel lives above the agent build so the hook can subscribe; the choke
+        // point's registry takes the same receiver.
+        let (kill, kill_rx) = watch::channel(false);
+        context.kills.register(id, kill_rx.clone());
+        let builder = AgentBuilder::new(model.completion.clone())
+            .preamble((context.preamble)(agent_type))
+            .memory(store.clone())
+            .conversation(id.to_string());
+        let agent = apply_common(builder, &state, context.record_content)
+            .add_hook(SteeringHook::new(context.steering.clone(), state.clone()))
+            .add_hook(KillHook { kill: kill_rx })
+            .add_hook(RecoveryHook::new(
+                store.clone(),
+                id.to_string(),
+                context.approver.clone(),
+            ))
+            .add_hook(InflightHook::new(
+                store,
+                id.to_string(),
+                context.approver.clone(),
+            ))
+            .tool_server_handle(tools)
+            .build();
+        state.set_child_restrictions(id, restrictions(agent_type));
+
+        let span = tracing::info_span!(
+            target: TARGET,
+            "fontaine.subagent",
+            agent.id = id,
+            agent.type = agent_type.name.as_str(),
+            model.priced = priced,
+        );
+        let (reports, _) = watch::channel((0, None));
+        let shared = Arc::new(RunShared {
+            id: id.to_string(),
+            state: state.clone(),
+            steering: context.steering.clone(),
+            results: context.results.clone(),
+            approver: context.approver.clone(),
+            agent,
+            model: ChildModel {
+                priced,
+                model: model_id,
+                provider,
+                generation_options,
+                modalities: model
+                    .completion
+                    .spec()
+                    .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input),
+            },
+            agent_type: agent_type.name.clone(),
+            kill,
+            status: Mutex::new(ChildStatus::Running),
+            reports,
+        });
+        Ok(Assembled { shared, span })
+    }
+}
+
 impl ChildRunner for CoreChildRunner {
     fn spawn<'a>(
         &'a self,
         request: SpawnRequest,
     ) -> BoxFuture<'a, Result<Arc<dyn ChildHandle>, String>> {
         Box::pin(async move {
-            let context = &self.context;
-            let model = context.model_for(&request.model, &request.id).await?;
             let forked = request.agent_type.inherits_context;
-            let store = context.store.clone();
-            if forked {
-                context
-                    .parent_context
-                    .seed(&store, &request.id)
-                    .await
-                    .map_err(|e| format!("could not fork the conversation: {}", chain(&e)))?;
-            }
-            context
-                .state
-                .agents()
-                .set_model(&request.id, model.reference.to_string());
-            if request.budget.cost_usd.is_some()
-                && !model.priced()
-                && context.state.agents().first_unpriced_cap()
-            {
-                let token_note = if request.budget.tokens.is_some() {
-                    "; the token budget still applies"
-                } else {
-                    ""
-                };
-                context.approver.notice(&format!(
-                    "the cost budget for subagents is inactive on {}, which has no known price{token_note}",
-                    model.reference
-                ));
-            }
-            let priced = model.catalog_billed();
-            // A type's own level, else the session's. Effort is not a permission, so a child
-            // may run above or below its parent.
-            let effort = request.agent_type.effort.or(context.state.effort());
-            let generation_options = model.generation_options_warned(&context.state, effort);
-            let WireIds {
-                provider,
-                model: model_id,
-            } = model.wire_ids();
-            let state = context.state.clone();
-            let tools = fork_tools(&context.tool_server, &request.tools);
-            // The channel lives above the agent build so the hook can subscribe; the choke
-            // point's registry takes the same receiver.
-            let (kill, kill_rx) = watch::channel(false);
-            context.kills.register(&request.id, kill_rx.clone());
-            let builder = AgentBuilder::new(model.completion.clone())
-                .preamble((context.preamble)(&request.agent_type))
-                .memory(store.clone())
-                .conversation(request.id.clone());
-            let agent = apply_common(builder, &state, context.record_content)
-                .add_hook(SteeringHook::new(context.steering.clone(), state.clone()))
-                .add_hook(KillHook { kill: kill_rx })
-                .add_hook(RecoveryHook::new(
-                    store.clone(),
-                    request.id.clone(),
-                    context.approver.clone(),
-                ))
-                .add_hook(InflightHook::new(
-                    store,
-                    request.id.clone(),
-                    context.approver.clone(),
-                ))
-                .tool_server_handle(tools)
-                .build();
-            state.set_child_restrictions(&request.id, restrictions(&request.agent_type));
-
-            let span = tracing::info_span!(
-                target: TARGET,
-                "fontaine.subagent",
-                agent.id = request.id.as_str(),
-                agent.type = request.agent_type.name.as_str(),
-                model.priced = priced,
-            );
-            let (reports, _) = watch::channel((0, None));
-            let shared = Arc::new(RunShared {
-                id: request.id.clone(),
-                state: state.clone(),
-                steering: context.steering.clone(),
-                results: context.results.clone(),
-                approver: context.approver.clone(),
-                agent,
-                model: ChildModel {
-                    priced,
-                    model: model_id,
-                    provider,
-                    generation_options,
-                    modalities: model
-                        .completion
-                        .spec()
-                        .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input),
-                },
-                agent_type: request.agent_type.name.clone(),
-                kill,
-                status: Mutex::new(ChildStatus::Running),
-                reports,
-            });
+            let Assembled { shared, span } = self
+                .assemble(
+                    &request.id,
+                    &request.agent_type,
+                    &request.model,
+                    &request.tools,
+                    request.budget,
+                    forked,
+                )
+                .await?;
+            let state = &self.context.state;
             let handle = Arc::new(ChildRun {
                 shared: shared.clone(),
             });
@@ -644,6 +692,55 @@ impl ChildRunner for CoreChildRunner {
             };
             launch(shared, prompt, span);
             Ok(handle as Arc<dyn ChildHandle>)
+        })
+    }
+
+    fn discard_unread(&self, id: &str) {
+        self.context.steering.take_pending_for(id);
+    }
+
+    fn revive<'a>(
+        &'a self,
+        request: RevivalRequest,
+    ) -> BoxFuture<'a, Result<Arc<dyn ChildHandle>, String>> {
+        Box::pin(async move {
+            // `rig_memory::load` reads a missing log as an empty conversation, which would
+            // revive an agent that remembers nothing.
+            let logs = self.context.store.logs().map_err(|e| {
+                format!("the saved conversations could not be listed: {}", chain(&e))
+            })?;
+            if !logs.contains(&request.id) {
+                return Err(format!(
+                    "its saved conversation {}.jsonl is missing",
+                    request.id
+                ));
+            }
+            // The recorded reference is concrete; the session's own model needs no lookup.
+            let model = match &request.model {
+                ModelSpec::Model(text)
+                    if *text
+                        == read(&self.context.main, "main model")
+                            .handle
+                            .reference
+                            .to_string() =>
+                {
+                    ModelSpec::Main
+                }
+                other => other.clone(),
+            };
+            let Assembled { shared, .. } = self
+                .assemble(
+                    &request.id,
+                    &request.agent_type,
+                    &model,
+                    &request.tools,
+                    request.budget,
+                    false,
+                )
+                .await?;
+            // Nothing runs yet: the first wake starts it, which sets the status again.
+            *lock(&shared.status, "child status") = ChildStatus::Done;
+            Ok(Arc::new(ChildRun { shared }) as Arc<dyn ChildHandle>)
         })
     }
 }

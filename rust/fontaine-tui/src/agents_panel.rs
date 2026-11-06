@@ -35,7 +35,7 @@ pub struct PanelRow {
     pub writing: u64,
     /// Why it stopped early, when its budget ran out.
     pub stopped_because: Option<String>,
-    /// A teammate waiting for work, which is not the same as done.
+    /// Its turn ended and it can be woken, which is not the same as done.
     pub idle: bool,
 }
 
@@ -60,9 +60,11 @@ pub enum PanelKey {
     View(String),
 }
 
-/// One task of the team's board, as the driver reads it.
+/// One task of an agent's board, as the driver reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoardRow {
+    /// The name of the agent that owns the board the task is on.
+    pub board: String,
     pub id: String,
     /// Written by an agent: shown with its control characters taken out.
     pub title: String,
@@ -75,7 +77,8 @@ pub struct BoardRow {
 #[derive(Default)]
 pub struct AgentsPanel {
     rows: Vec<PanelRow>,
-    /// The team's task board, shown below the agents and the jobs; it is not selectable.
+    /// The task boards, each under its owner's name, shown below the agents and the jobs; they
+    /// are not selectable.
     board: Vec<BoardRow>,
     /// The background jobs, listed below the agents; the selection runs through both.
     jobs: Vec<JobRow>,
@@ -93,7 +96,8 @@ pub fn status_label(status: ChildStatus) -> &'static str {
     }
 }
 
-/// What a row says about its agent: a teammate that finished its turn is `idle`, not `done`.
+/// What a row says about its agent: one that finished its turn and can be woken is `idle`, not
+/// `done`.
 pub fn row_label(status: ChildStatus, idle: bool) -> &'static str {
     if idle && status == ChildStatus::Done {
         "idle"
@@ -341,10 +345,15 @@ impl AgentsPanel {
                 out.push(Line::styled(piece, dim));
             }
         }
-        if !self.board.is_empty() {
-            out.push(Line::styled("Board", bold.fg(theme.heading)));
-        }
+        let mut shown: Option<&str> = None;
         for task in &self.board {
+            if shown != Some(task.board.as_str()) {
+                out.push(Line::styled(
+                    format!("Board of {}", task.board),
+                    bold.fg(theme.heading),
+                ));
+                shown = Some(task.board.as_str());
+            }
             let title: String = task
                 .title
                 .chars()

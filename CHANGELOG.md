@@ -38,6 +38,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Any finished subagent can be woken by `send_message`. The `teammate` argument is removed, any
+  agent can own a task board, and claimable tasks go to fresh agents (#435).
+- `--resume` brings back the agents whose last run ended `done` as idle agents that a message wakes
+  from their saved conversation. `/clear` and a conversation rewind retire idle agents instead of
+  refusing (#435).
 - AFK is now a permission mode, `afk`, at the end of the Shift+Tab cycle, which is reordered by
   increasing autonomy: manual → plan → accept edits → auto → AFK. AFK decides what runs as `auto`
   does and denies every call that would have asked; leaving it reviews the stretch as before. Bare
@@ -156,12 +161,10 @@ All notable changes are recorded here. The format follows
 
 #### Agents
 
-- Agent teams, on by default and switched off with `[agents] teams = false` (user, project-local or CLI scope; shared project settings are refused): the `agent`
-  tool takes `teammate`, which starts a named teammate that goes idle between pieces of work and
-  wakes on a `send_message`, and the new `board_show` and `board_update` tools give the team a shared
-  task board with claiming, dependencies and release of a dead owner's tasks. The new
-  `task_completed` and `teammate_idle` hooks can block to hold the team to a quality gate; the agents
-  panel shows idle teammates and the Board (#40).
+- Task boards, on by default and switched off with `[agents] teams = false` (user, project-local or CLI scope; shared project settings are refused): the new
+  `board_show` and `board_update` tools give agents a task board with claiming, dependencies and
+  release of a dead claimer's tasks. The new `task_completed` and `teammate_idle` hooks can block to
+  hold the agents to a quality gate; the agents panel shows idle agents and the boards (#40).
 - Subagents have a stable, human-readable name besides their `agent-N` id (#290). The `agent` tool
   takes an optional `name` (1 to 32 characters of `a-z`, `0-9` and `-`, starting with a letter) and
   returns it with the id; without one the subagent is called `<type>-<k>`, such as `explore-1`.

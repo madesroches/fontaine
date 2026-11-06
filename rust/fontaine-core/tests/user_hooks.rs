@@ -737,7 +737,7 @@ async fn malformed_hook_output_keeps_the_json_error_as_its_source() {
     );
 }
 
-// ---- the team's quality gates ----
+// ---- the task boards' quality gates ----
 
 fn task() -> Task {
     Task {

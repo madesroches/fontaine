@@ -758,8 +758,9 @@ from the primary root only. A `.fontaine/settings.toml` in an added root is not 
 ### `[[hooks.pre_tool_use]]`, `[[hooks.post_tool_use]]`, `[[hooks.permission_denied]]`, `[[hooks.task_completed]]`, `[[hooks.teammate_idle]]`
 
 [User hooks](hooks.md): programs that look at a tool call before it runs, after it ran and when it
-was denied, and, with [agent teams](agents.md#agent-teams) on, before a task is completed
-(`task_completed`) and when a teammate's turn ends (`teammate_idle`). The two team events take no
+was denied, and, with [task boards](agents.md#task-boards) on, before a task is completed
+(`task_completed`) and when an agent's turn ends with a task in progress on its parent's board
+(`teammate_idle`). The two board events take no
 `matcher`: one that sets it is a config error.
 
 | Key | Meaning | Default |
@@ -875,7 +876,7 @@ hard_deny = ["$defaults", "Never send repo contents to third-party code-review A
 | `subagent_cost_budget_usd` | Opt-in per-subagent spend cap. Inactive, with a one-time notice, on a model with no known price; a token cap, if set, still binds. Unset means uncapped. | unset |
 | `session_token_budget` | A token ceiling that every agent in the tree debits, when set. | unset |
 | `session_cost_budget_usd` | The same in dollars, when set. | unset |
-| `teams` | Turns on [agent teams](agents.md#agent-teams): named teammates that go idle between pieces of work, the shared task board and its `board_show` and `board_update` tools. Set to `false`, `teammate` is refused and the board tools are not registered. Like the other `[agents]` keys it cannot be set from the repository's shared settings. | `true` |
+| `teams` | Turns on the [task boards](agents.md#task-boards): the `board_show` and `board_update` tools, the owner reminders and the `task_completed` and `teammate_idle` hooks. Set to `false`, the board tools are not registered. It does not control idling: a subagent that ends `done` or `failed` goes idle when its turn ends and can be woken, unless it is later killed, runs out of budget or is retired. Like the other `[agents]` keys it cannot be set from the repository's shared settings. | `true` |
 
 `[agents.types.<name>]` defines an agent type with `model` (`$main`, `$guardian_default` or
 `<account>/<model>`), `tools` (built-in or `mcp__` tool names), `effort` (`off`, `low`, `medium`,

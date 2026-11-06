@@ -131,10 +131,12 @@ pub enum AgentState {
         age: Duration,
         on_permission: bool,
     },
-    /// `status` is the subagent's final status word, or `idle` for a teammate that can be woken.
+    /// `status` is the subagent's final status word, or `idle` for an agent whose turn ended and that can be woken.
     Ended {
         status: String,
         delivery: AgentDelivery,
+        /// Whether the agent can be woken: its turn ended and nothing since made that final.
+        wakeable: bool,
     },
 }
 

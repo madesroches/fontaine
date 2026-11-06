@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use fontaine_agents::registry::AgentTypes;
+use fontaine_agents::spawn;
 use fontaine_guardian::Profile;
 use fontaine_mcp::Connected;
 use fontaine_tools::builtins::Seen;
@@ -43,7 +44,7 @@ use crate::memory;
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
 use crate::native_search;
 use crate::notice::Notice;
-use crate::permissions::{AfkApprover, Approver, PermissionPipeline};
+use crate::permissions::{Approver, PermissionPipeline};
 use crate::project_env::{self, ProjectEnvironment};
 use crate::prompt;
 use crate::runtime_error::RuntimeError;
@@ -261,9 +262,7 @@ impl AgentRuntime {
         let tree = setup::agent_tree(&setup);
         let agent_types = Arc::new(build_agent_types(&setup.config, &setup.extensions));
         let state = setup::session_state(&setup, &tree, &agent_types);
-        // Every approver call site below, the pipeline's, children's and questions', passes the AFK backstop.
-        setup.approver = Arc::new(AfkApprover::new(setup.approver.clone(), state.clone()));
-        setup::configure_state(&setup, &state);
+        setup::configure_state(&mut setup, &state);
         let setup::Gates {
             pipeline,
             retained,
@@ -301,6 +300,7 @@ impl AgentRuntime {
             instructions: &instruction_stage,
             kills: &kills,
         })?;
+        setup::rebuild_agents(&state, &setup.session, &tree, &agent_types);
         Ok(AgentRuntime {
             agent,
             prompt_pieces: pieces,
@@ -864,20 +864,25 @@ impl AgentRuntime {
 
     /// `/clear`: empties the model's context in this session. Refused while a subagent runs,
     /// because its guardian requests read the human messages the clear drops, while a
-    /// finished subagent's report is undelivered, which would otherwise reach the empty context,
-    /// and while a teammate is idle, whose history a later wake needs.
+    /// finished subagent's report is undelivered, which would otherwise reach the empty context.
+    /// Idle agents are retired: nothing woke them could be judged against the intent the clear
+    /// drops. Wakes are held from before the guard through the pruning, so a killed child's
+    /// watcher cannot resume an agent into the conversation being emptied.
     pub async fn clear_conversation(&self) -> Result<(), ClearError> {
         let agents = self.state.agents();
-        if agents.any_running() || agents.has_agent_notifications() {
+        let wakes = agents.hold_wakes("the conversation is being cleared");
+        if agents.any_running() || agents.has_agent_notifications() || agents.has_subagent_mail() {
+            // The hold must precede the check, so a wake deferred meanwhile gets its retry here.
+            drop(wakes);
+            spawn::slot_freed(agents, &self.ledger_window(), None);
             return Err(ClearError::SubagentsRunning);
-        }
-        if agents.any_idle() {
-            return Err(ClearError::IdleTeammates);
         }
         self.session.clear().await?;
         // The conversation is gone, so the agents it spawned leave the list; persisted
         // per-agent logs and the spend tally stay.
-        self.state.agents().clear_ended();
+        let pruned = agents.clear_ended();
+        spawn::settle_retired(agents, &self.ledger_window(), pruned, true);
+        agents.discard_root_reminders();
         self.end_jobs().await;
         self.reset_shell_cwd();
         self.state.append(Record::ContextCleared {});

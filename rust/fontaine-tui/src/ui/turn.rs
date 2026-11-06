@@ -274,19 +274,27 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &mut AgentRuntime,
         launch_dir: &Path,
     ) -> std::ops::ControlFlow<()> {
-        let jobs = runtime.state.agents().has_job_notifications()
-            && !runtime.state.agents().has_agent_notifications();
+        let kinds = runtime.state.agents().root_notification_kinds();
+        let reminders = !kinds.is_empty()
+            && kinds
+                .iter()
+                .all(|kind| *kind == fontaine_agents::tree::NotificationKind::Reminder);
         let Some(prompt) = runtime.notification_prompt().await else {
             return std::ops::ControlFlow::Continue(());
         };
         if let Some(end) = self.refresh_before_turn(runtime) {
             return self.harness_turn_tail(runtime, launch_dir, end).await;
         }
-        self.app.transcript.notice(if jobs {
-            "a background job reported back"
-        } else {
-            "an agent reported back"
-        });
+        // The job label wins a mixed inbox, as the prompt's own note says jobs first.
+        self.app.transcript.notice(
+            if kinds.contains(&fontaine_agents::tree::NotificationKind::Job) {
+                "a background job reported back"
+            } else if reminders {
+                "tasks on your board are waiting for agents"
+            } else {
+                "an agent reported back"
+            },
+        );
         let end = self.turn(runtime, prompt, None, Vec::new()).await;
         self.harness_turn_tail(runtime, launch_dir, end).await
     }

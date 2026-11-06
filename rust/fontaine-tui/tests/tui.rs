@@ -1727,10 +1727,8 @@ async fn clear_is_refused_while_a_subagent_runs_and_works_after() {
         ui.wait_for("launched").await;
         idle(&ui).await;
         ui.send("/clear");
-        ui.wait_for(
-            "subagents are still running or have reports to deliver; /clear is refused until they finish or are killed",
-        )
-        .await;
+        ui.wait_for("reports, messages or board reminders to deliver; /clear is refused")
+            .await;
         assert!(!wr.ledger_text().contains("context_cleared"));
         assert!(ui.screen().contains("launched"), "{}", ui.screen());
         ui.wait_for("noted the report").await;

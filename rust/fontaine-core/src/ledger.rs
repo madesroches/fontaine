@@ -194,6 +194,10 @@ pub enum Record {
         /// The agent's name, set on `spawned`; records from before names existed lack it.
         #[serde(default)]
         name: Option<String>,
+        /// The concrete model reference the agent runs on, set on `spawned`, so a resumed
+        /// session revives it on that one; records from before it lack it.
+        #[serde(default)]
+        model: Option<String>,
     },
     /// A `!` command the human ran in their own shell, outside the permission pipeline. `None`
     /// when it did not exit with a code, such as when it was interrupted.
@@ -304,6 +308,8 @@ pub struct AgentRecord {
     pub name: String,
     pub parent: Option<String>,
     pub agent_type: String,
+    /// The model it was spawned on, when the record says.
+    pub model: Option<String>,
     pub ended: Option<String>,
 }
 
@@ -578,6 +584,7 @@ impl LedgerView {
                 parent,
                 detail,
                 name,
+                model,
             } => match event.as_str() {
                 "spawned" => {
                     if let Some(ordinal) = agent_ordinal(agent) {
@@ -588,6 +595,7 @@ impl LedgerView {
                         name: name.clone().unwrap_or_else(|| agent.clone()),
                         parent: parent.clone(),
                         agent_type: detail.clone().unwrap_or_default(),
+                        model: model.clone(),
                         ended: None,
                     });
                 }
@@ -1160,6 +1168,7 @@ mod tests {
                 parent: None,
                 detail: Some("general".into()),
                 name: None,
+                model: None,
             })
             .unwrap();
         ledger
@@ -1317,6 +1326,7 @@ mod tests {
             parent: parent.map(str::to_string),
             detail: detail.map(str::to_string),
             name: None,
+            model: None,
         }
     }
 
@@ -1353,6 +1363,7 @@ mod tests {
                         name: "agent-1".into(),
                         parent: Some("main".into()),
                         agent_type: "worker".into(),
+                        model: None,
                         ended: Some("done".into()),
                     },
                     AgentRecord {
@@ -1360,6 +1371,7 @@ mod tests {
                         name: "agent-2".into(),
                         parent: Some("agent-1".into()),
                         agent_type: "explore".into(),
+                        model: None,
                         ended: None,
                     },
                 ]
@@ -1369,6 +1381,31 @@ mod tests {
         check(&ledger);
         drop(ledger);
         check(&Ledger::open(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn a_spawn_record_carries_the_model_and_a_retired_end_marks_the_agent_final() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = Ledger::create(dir.path()).unwrap();
+        ledger
+            .append(Record::Agent {
+                event: "spawned".into(),
+                agent: "agent-1".into(),
+                parent: Some("root".into()),
+                detail: Some("worker".into()),
+                name: Some("w".into()),
+                model: Some("acct/model".into()),
+            })
+            .unwrap();
+        ledger
+            .append(agent_event("finished", "agent-1", None, Some("done")))
+            .unwrap();
+        assert_eq!(ledger.view().agents[0].model.as_deref(), Some("acct/model"));
+        assert_eq!(ledger.view().agents[0].ended.as_deref(), Some("done"));
+        ledger
+            .append(agent_event("finished", "agent-1", None, Some("retired")))
+            .unwrap();
+        assert_eq!(ledger.view().agents[0].ended.as_deref(), Some("retired"));
     }
 
     #[test]
@@ -1382,6 +1419,7 @@ mod tests {
                 parent: Some("root".into()),
                 detail: Some("worker".into()),
                 name: Some("survey-tech-debt".into()),
+                model: None,
             })
             .unwrap();
         let legacy: Record = serde_json::from_str(
