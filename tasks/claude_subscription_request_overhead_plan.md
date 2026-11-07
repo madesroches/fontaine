@@ -147,18 +147,19 @@ the prompt. Using it for every launch (probes, listing, requests) keeps one code
 
 - **Location:** `<data_dir>/claude-cli-cwd`, from `ConnectContext::data_dir`. That path is stable
   across requests, namespaces, sessions and resumes, so a resumed session and the guardian share
-  the same prompt prefix. It sits outside any workspace and git repository, so the environment
-  block's "Is a git repository" stays `false` and the CLI never reads a project.
+  the same prompt prefix. It is normally outside any repository (not checked; a data dir inside a git work tree brings
+  the CLI's gitStatus back into the prompt and breaks caching), so the environment block's "Is a
+  git repository" stays `false` and the CLI never reads a project.
 - **Creation:** `ClaudeSubscription::connect` runs `create_dir_all` on the data dir, then creates
   the directory with `create_if_missing` (`memory.rs`, made `pub(crate)`), which wraps
   `owner_only::create_dir` and accepts `AlreadyExists` only when `symlink_metadata` shows a
-  directory, not a symlink. A failure is a connect error carrying the I/O source.
+  directory, not a symlink. A failure is a connect error naming the directory, with the I/O chain rendered once via
+  `error_chain::chain`, as for the inventory command.
 - **Emptiness, checked at every launch:** `Cli::launch` refuses to start (`ErrorKind::Cli`, with a
   message naming the directory and telling the user to empty it) when `read_dir(workdir)` yields
   any entry. This keeps the property the docs state today ("each CLI process runs in an empty
   private directory") and fails closed if something, a future CLI included, starts leaving files
   there. Fontaine never writes into it. In the harness runs, the CLI left nothing in its cwd.
-- `Cli::new` takes the workdir.
 
 ### 2. One cache marker on the last history user message
 
@@ -175,11 +176,6 @@ newest position whose bytes the next request replays unchanged. A marker there i
 the next request, through the API's 20-block lookback from that request's own marker. Reuse holds
 while a step adds no more than about 20 blocks (a step with N parallel tool calls adds 1+N
 assistant blocks plus N tool results); a wider parallel step re-writes the history once.
-
-Why `1h`: the CLI writes its own entries with the 1-hour TTL (`ephemeral_1h_input_tokens` in every
-measured response), and an earlier breakpoint must not have a shorter TTL than a later one. `1h`
-is valid whatever TTL the CLI picks for its own breakpoint, and it survives a long tool run
-between steps.
 
 Breakpoint budget: the API allows four. With the CLI's own breakpoints, the marker was accepted on
 every measured request. If a future CLI used all four, the request fails with an API 400 that the
@@ -200,10 +196,10 @@ refused? ─► translate ─► check_environment ─► check_version (cached 
              │                                 read rows (bounded by `timeouts.discovery`)
              │                                 check_row(rows, selection)
              │                                 replay history frames, one ack each
-             └──────────────────────── join ───────────────────────────────────┘
+             └──────────────────────── race ───────────────────────────────────┘
                                          │
-                     login failed ─► that error (the child is dropped: tree killed)
-                     replay failed ─► that error
+                     login failed ─► that error at once (the child is dropped: tree killed)
+                     replay failed ─► that error, after the login result
                                          │
                                          ▼
                           write the query frame (the only one that asks for a response)
@@ -217,20 +213,23 @@ refused? ─► translate ─► check_environment ─► check_version (cached 
   CLI could treat a history frame differently. That is why it stays ahead of the fork, not
   concurrent with it.
 - **Error precedence** is deterministic and matches today's order: the environment, then the
-  version, then the login error, then the row error, then replay errors. The two branches are
-  `join`ed, not `try_join`ed, so a login failure is reported even when the request process also
-  failed because of it.
+  version, then the login error, then the row error, then replay errors. The two branches race: a login
+  error returns immediately and drops the request child (killing its tree); a request-branch result
+  first awaits the login result, which wins if it is an error.
 - **DRY:** `Cli::initialize`'s request/response exchange moves into
-  `CliChild::list_models(&mut self, idle) -> Result<Vec<ModelRow>, ClaudeError>`. Both the listing
-  process (`Cli::initialize`, still used by `list()` and `/login`) and the request process use it.
-  `close_stdin()` stays in `Cli::initialize` (the listing process only). On the request process,
-  `list_models` consumes only the matching `control_response` (`Reader::accept` refuses it as
-  unknown), and every other line goes through `Reader::accept` or is refused, never skipped.
+  `CliChild::list_models(&mut self, idle, reader: Option<&mut Reader>) -> Result<Vec<ModelRow>, ClaudeError>`.
+  Both the listing process (`Cli::initialize`, still used by `list()` and `/login`) and the request
+  process use it. `close_stdin()` stays in `Cli::initialize` (the listing process only). With
+  `None` (listing process) non-matching lines are skipped, as today. With `Some` (request process;
+  its `Reader` exists right after `launch`) the matching `control_response` is consumed here
+  (`Reader::accept` has no arm for it) and every other line goes through `Reader::accept`, never
+  skipped.
   The selected-row checks move out of `handshake` into a pure
   `check_row(rows: &[ModelRow], selection: &Selection) -> Result<(), ClaudeError>` with the same
   three refusals and texts. `handshake` is removed.
-- **Timeout:** the `initialize` answer on the request process keeps the listing's bound
-  (`timeouts.discovery`, `ErrorKind::SetupTimeout`, not retried). The ack reads keep `read_idle`.
+- **Timeout:** the `initialize` answer on the request process keeps the listing's bound: the call is
+  wrapped in `tokio::time::timeout(timeouts.discovery, …)` as in `discover()`, mapping to
+  `ErrorKind::SetupTimeout`, not retried. The ack reads keep `read_idle`.
 - `list()` / `discover()` are unchanged: model discovery still runs the full preflight and its own
   listing process.
 
@@ -238,10 +237,7 @@ refused? ─► translate ─► check_environment ─► check_version (cached 
 
 `FIXED_ENV` gains `("ENABLE_CLAUDEAI_MCP_SERVERS", "false")`. Verified on 2.1.319: with the
 adapter's launch, the debug log shows one `[claudeai-mcp] Fetching` line without the variable and
-none with it. This drops one network request per CLI
-process, and the user's connector list no longer reaches a process that throws it away. It changes
-nothing the adapter validates: `--strict-mcp-config` already kept those servers out of
-`system/init`.
+none with it.
 
 ## Implementation Steps
 
@@ -255,15 +251,11 @@ nothing the adapter validates: `--strict-mcp-config` already kept those servers 
      `TTL`/marker value in one `const`.
 3. **Handshake on the request process** (`cli.rs`, `transport.rs`)
    - Extract `CliChild::list_models` from `Cli::initialize`, and make `Cli::initialize` call it.
-   - Replace `handshake` with `check_row`, and restructure `open` into the two joined branches
+   - Replace `handshake` with `check_row`, and restructure `open` into the two racing branches
      above. Keep the existing ack loop and the early-exit classification (`exit_failure`) inside
      the replay branch.
 4. **Connector fetch** (`cli.rs`): add the `FIXED_ENV` entry.
-5. **Double** (`claude_cli_double.rs`): add a scenario key `init_on_request` (rows answered on the
-   conversation process) only if the existing `models` key is not enough. It already answers there,
-   so most likely no change. Make `init_hang` apply to the conversation process too (it does
-   today, since the same code path answers both).
-6. **Tests** (below), then **docs** and **CHANGELOG**.
+5. **Tests** (below), then **docs** and **CHANGELOG**.
 
 ## Files to Modify
 
@@ -276,15 +268,10 @@ nothing the adapter validates: `--strict-mcp-config` already kept those servers 
 - `rust/fontaine-core/src/providers/claude_subscription/mod.rs`: workdir creation in `connect`.
 - `rust/fontaine-core/src/memory.rs`: `create_if_missing` made `pub(crate)`.
 - `rust/fontaine-core/tests/claude_subscription.rs`: request-flow tests.
-- `rust/fontaine-core/examples/claude_cli_double.rs`: only if step 5 needs it.
 - `docs/claude-subscription.md`, `CHANGELOG.md`.
 
 ## Trade-offs
 
-- **Login probe alongside vs. dropped.** `initialize`'s `account` and `system/init`'s `apiKeySource`
-  probably make `auth status` redundant, but the signed-out and Console-login shapes were not
-  observable without changing the machine's login. Running the probe concurrently removes its
-  latency now without weakening anything; #481 qualifies dropping it.
 - **Stable directory under the data dir vs. a fixed path in the temp dir, or per connection.** A
   fixed name in a shared temp dir invites symlink and squatting races. A per-connection directory
   loses the cache across resumes and between concurrent sessions' guardians. The data dir is
@@ -293,12 +280,11 @@ nothing the adapter validates: `--strict-mcp-config` already kept those servers 
   the injected environment block truthful. But the CLI would then see a git repository: its
   `gitStatus` context changes with every commit and would break the cache in its own way. It would
   also put project files within the reach of a builtin plugin (`cc-plugin-agents-md`) that today
-  only stays off because the directory is empty. Rejected. The block's wrong path is tracked in
+  only stays off because of two guards: the empty directory and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`
+  (`cli.rs:135`). Rejected. The block's wrong path is tracked in
   #480.
 - **Marker on the last history user message vs. on the final frame or on the last assistant
-  message.** The final frame was measured to give no reuse. The last assistant message is never
-  replayed with the bytes of a position the previous request marked, so it gives none either.
-  The last history user message measured a flat write per step.
+  message.** The last assistant message: not measured.
 
 ## Decisions
 
@@ -312,7 +298,8 @@ nothing the adapter validates: `--strict-mcp-config` already kept those servers 
 - 2026-11-07 The `max_tokens` recovery bug (#479) and the thinking-off 400 (#168 comment) were
   found during this measurement but are fixed separately, to keep this change about per-request
   overhead.
-- 2026-11-07 The marker TTL is `1h`, to match the CLI's own breakpoint.
+- 2026-11-07 The marker TTL is `1h`, to match the CLI's own breakpoint (an earlier breakpoint may
+  not have a shorter TTL than a later one).
 - 2026-11-07 One shared `claude-cli-cwd`, not one per account, so accounts on the same login share
   the cache.
 
@@ -366,7 +353,7 @@ Unit tests (`protocol/tests.rs`, `transport.rs`, `cli.rs`):
   content becomes one marked text block. A `cache_control` arriving on a top-level block of the request
   is stripped and does not survive next to the adapter's marker. The value is
   `{"type": "ephemeral", "ttl": "1h"}`.
-- `check_row`: missing alias, credit-billed row and changed canonical id each give today's kind
+- `check_row` (in a separate ungated `#[cfg(test)]` module in `transport.rs`, since the existing test module there is Linux-only): missing alias, credit-billed row and changed canonical id each give today's kind
   and text. A matching row passes.
 - `FIXED_ENV` contains `ENABLE_CLAUDEAI_MCP_SERVERS=false` (extend the rebuilt-environment
   assertions in `the_cli_gets_a_rebuilt_environment`).
@@ -416,9 +403,6 @@ live bench.
 3. Latency. Time step 1's run before and after (`time cargo run -p fontaine -- -p …`, built
    beforehand). Expect about 0.6 s less per model request (seven requests for six reads plus the
    answer), allowing for API variance.
-
-The connector-fetch switch was qualified while writing this plan (section 4), so it needs no step
-here.
 
 ## Open Questions
 
