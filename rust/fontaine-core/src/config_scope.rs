@@ -210,7 +210,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_trust("context", TIGHTEN),
     Rule::user_trust("shell_preclassifier", TIGHTEN),
     Rule::user_only("statusline", STATUSLINE),
-    Rule::user_only("feedback", FEEDBACK),
+    Rule::user_or_cli("feedback", FEEDBACK),
     Rule::if_project_local("telemetry.enabled", is_false, TELEMETRY),
     Rule::user_or_cli("telemetry.backend", TELEMETRY),
     Rule::user_or_cli("telemetry.endpoint", TELEMETRY),

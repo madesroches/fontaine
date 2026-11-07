@@ -33,7 +33,7 @@ pub enum Command {
     /// `/effort [level]`: shows or sets the reasoning effort for this session.
     Effort(String),
     GuardianModel(String),
-    /// `/bug [description]`: file a Fontaine bug report after a preview.
+    /// `/bug [<description> | <draft id> | discard <draft id>]`: file a Fontaine bug report after a preview.
     Bug(String),
     /// `/guardian-disable`: turn the guardian and the permission floor off for this session.
     GuardianDisable,
@@ -204,7 +204,7 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "bug",
         aliases: &[],
-        hint: Some("[description]"),
+        hint: Some("[<description> | <draft id> | discard <draft id>]"),
         description: "file a Fontaine bug report after previewing what is sent",
         command: Command::Bug,
     },
@@ -393,7 +393,7 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "plan",
         aliases: &[],
-        hint: Some("[description]"),
+        hint: Some("[<description> | <draft id> | discard <draft id>]"),
         description: "enter plan mode, optionally with a task",
         command: Command::Plan,
     },

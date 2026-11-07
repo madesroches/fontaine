@@ -20,7 +20,9 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .error("/bug discard needs a draft id: /bug discard <id>");
             return ControlFlow::Continue(());
         }
-        if let Some(id) = argument.strip_prefix("discard ").map(str::trim) {
+        if let Some(id) = argument.strip_prefix("discard ").map(str::trim)
+            && drafts.iter().any(|d| d.id == id)
+        {
             self.discard_draft(&drafts, id);
             return ControlFlow::Continue(());
         }

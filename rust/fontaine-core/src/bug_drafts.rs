@@ -104,7 +104,7 @@ impl DraftSink for FileDrafts {
     fn save(&self, draft: &DraftArgs) -> Result<String, String> {
         if self.count() >= MAX_DRAFTS {
             return Err(format!(
-                "this session already queued {MAX_DRAFTS} drafts; the user can file them with /bug"
+                "{MAX_DRAFTS} drafts are already pending; the user can file them with /bug"
             ));
         }
         let directory = dir(&self.data_dir);

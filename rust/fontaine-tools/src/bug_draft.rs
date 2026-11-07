@@ -61,7 +61,7 @@ impl Tool for DraftBugReportTool {
             "Queue a bug report about Fontaine itself (not about the user's project) for the user \
              to review. Use it only when Fontaine misbehaves in a way the user would want \
              reported. It writes a redacted draft locally and sends nothing; the user decides \
-             whether to file it with `/bug`. At most {MAX_DRAFTS} drafts per session."
+             whether to file it with `/bug`. At most {MAX_DRAFTS} pending drafts at a time."
         )
     }
 
