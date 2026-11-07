@@ -1093,3 +1093,102 @@ fn a_rate_limit_frame_is_recorded_and_still_nothing() {
     )));
     assert_eq!(usage.snapshot(), Some(recorded));
 }
+
+fn marked(t: &Translated) -> Vec<(usize, usize)> {
+    let mut at = Vec::new();
+    for (frame, f) in t.frames.iter().enumerate() {
+        let content = &f.value["message"]["content"];
+        for (block, b) in content.as_array().into_iter().flatten().enumerate() {
+            if b.get("cache_control").is_some() {
+                at.push((frame, block));
+            }
+        }
+    }
+    at
+}
+
+fn tool_loop(extra_user: Value) -> Value {
+    request(json!({
+        "tools": [tool("read_file")],
+        "messages": [
+            {"role": "user", "content": "start"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "one"},
+                {"type": "text", "text": ""}]},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t2", "name": "read_file", "input": {}}]},
+            extra_user,
+        ],
+    }))
+}
+
+#[test]
+fn the_last_history_user_message_carries_the_one_marker() {
+    let t = translated(tool_loop(json!({"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "t2", "content": "two"}]})));
+    // The trailing empty text block is skipped for the tool result before it.
+    assert_eq!(marked(&t), [(2, 0)]);
+    assert_eq!(
+        t.frames[2].value["message"]["content"][0]["cache_control"],
+        json!({"type": "ephemeral", "ttl": "1h"})
+    );
+    assert!(t.frames.last().unwrap().query);
+}
+
+#[test]
+fn string_content_becomes_one_marked_text_block() {
+    let t = translated(request(json!({"messages": [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        {"role": "user", "content": "second"},
+    ]})));
+    assert_eq!(marked(&t), [(0, 0)]);
+    assert_eq!(t.frames[0].value["message"]["content"][0]["text"], "first");
+    assert_eq!(t.frames[2].value["message"]["content"], "second");
+}
+
+#[test]
+fn a_single_user_message_gets_no_marker() {
+    assert!(marked(&translated(request(json!({})))).is_empty());
+}
+
+#[test]
+fn a_request_cache_control_is_stripped_and_never_replaces_the_marker() {
+    let t = translated(request(json!({"messages": [
+        {"role": "user", "content": [
+            {"type": "text", "text": "a", "cache_control": {"type": "ephemeral", "ttl": "5m"}},
+            {"type": "text", "text": "b"}]},
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "ok", "cache_control": {"type": "ephemeral"}}]},
+        {"role": "user", "content": [
+            {"type": "text", "text": "c", "cache_control": {"type": "ephemeral"}}]},
+    ]})));
+    assert_eq!(marked(&t), [(0, 1)]);
+    assert!(
+        t.frames[2].value["message"]["content"][0]
+            .get("cache_control")
+            .is_none()
+    );
+}
+
+#[test]
+fn the_marker_does_not_change_the_session_id() {
+    let first = json!({"role": "user", "content": "start"});
+    let ids: Vec<String> = [1, 2, 3]
+        .into_iter()
+        .map(|users| {
+            let mut messages = vec![first.clone()];
+            for n in 1..users {
+                messages.push(
+                    json!({"role": "assistant", "content": [{"type": "text", "text": "ok"}]}),
+                );
+                messages.push(json!({"role": "user", "content": format!("more {n}")}));
+            }
+            translated(request(json!({"messages": messages}))).session_id
+        })
+        .collect();
+    assert_eq!(ids[0], ids[1]);
+    assert_eq!(ids[1], ids[2]);
+}
