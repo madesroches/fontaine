@@ -231,7 +231,8 @@ refused? ─► translate ─► check_environment ─► check_version (cached 
   (`Reader::accept` has no arm for it) and every other line goes through `Reader::accept`, never
   skipped. With `Some`, an EOF before the `control_response` is handled as `next()` handles it:
   `exit_status`, `settle_stderr`, then `exit_failure(&stderr, reader.native())`, so it yields Auth,
-  Limit or the retryable `Truncated`, not a Protocol error.
+  Limit or the retryable `Truncated`, not a Protocol error; `list_models` calls `next()` (made
+  `pub(super)` in `transport.rs`) for the `Some` path, so EOF, idle and too-long classification is shared.
   The selected-row checks move out of `handshake` into a pure
   `check_row(rows: &[ModelRow], selection: &Selection) -> Result<(), ClaudeError>` with the same
   three refusals and texts. `handshake` is removed.
@@ -261,7 +262,8 @@ none with it.
    - Extract the read half of `Cli::initialize` into `CliChild::list_models` (taking the written
      `request_id`), and make `Cli::initialize` write, close stdin and call it.
    - `list_models` returns `Result<Vec<ModelRow>, Failure>`; with `Some(reader)` it classifies EOF via
-     `exit_failure` as `next()` does; `Cli::initialize`/`discover` map the `None` path to `ClaudeError`.
+     `exit_failure` by calling `next()` (made `pub(super)`); `Cli::initialize`/`discover` map the `None` path to `ClaudeError`.
+   - Update the `Timeouts::discovery` doc comment (`cli.rs`) to also cover the request-time model listing.
    - Replace `handshake` with `check_row`, and restructure `open` into the two racing branches
      above. Keep the existing ack loop and the early-exit classification (`exit_failure`) inside
      the replay branch.
@@ -366,6 +368,7 @@ Unit tests (`protocol/tests.rs`, `transport.rs`, `cli.rs`):
   `{"type": "ephemeral", "ttl": "1h"}`.
 - Session id: conversations of 1, 2 and 3 user messages sharing a first message derive the same
   session id.
+- `CliChild::list_models` with `None` (`cli.rs`): a refused subtype and an EOF before the `control_response` give today's `ClaudeError`s.
 - `check_row` (in a separate ungated `#[cfg(test)]` module in `transport.rs`, since the existing test module there is Linux-only): missing alias, credit-billed row and changed canonical id each give today's kind
   and text. A matching row passes.
 
