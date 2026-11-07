@@ -7,14 +7,14 @@
 `kimi/kimi-for-coding` is an alias that moves: on 2026-11-05 `GET /models` lists it as "K2.8
 Preview" (1,048,576-token window). A scorecard records only the alias, so a later re-run cannot be
 compared with the row, nor can a screen replay of its verdicts be tied to a model. The live eval
-will record the provider's `/models` entry (id, display name, context length) for the guardian and
-the cascade's screen model in the scorecard `summary`, and the docs table will print it. The
+will record the provider's `/models` entry (id, display name, context length) for the guardian
+model in the scorecard `summary`, and the docs table will print it. The
 control row is then re-measured once.
 
 ## Current State
 
 - `fontaine-evals/src/runner.rs` `Summary` (line ~265) is the scorecard header; `guardian` is only
-  the `live:<account>/<model>` label. `Cascade.screen` (line ~308) names the screen model likewise.
+  the `live:<account>/<model>` label. 
 - `fontaine-evals/src/live.rs` `connect()` resolves the account through `Switcher`. The model list
   is only used for validation: `AccountClient::list()` (`fontaine-core/src/providers/mod.rs:233`)
   returns `Vec<String>` of ids; `openai_compatible.rs:86` drops everything but `m.id` from rig's
@@ -46,23 +46,22 @@ from `ctx.network`, the trimmed base URL and the optional bearer api key, reusin
 `kimi_quota.rs` (`reqwest_client`, the 10s `REQUEST_TIMEOUT`, bearer auth, `without_url()` error
 mapping).
 
-**Eval**: `Live` gains `served: Option<ServedModel>`, filled in `connect()` after the guardian
-resolves, with the fetcher's 10s `REQUEST_TIMEOUT`. `Summary` gains
-`served_model: Option<ServedModel>` (`skip_serializing_if = "Option::is_none"`), and `Cascade`
-gains `screen_served_model` likewise, populated from the screen's `Live`. The served data passes through `SummaryParams` and
-`CascadeParams` into `summarize()` and `cascade_summary()`, and `print_summary` reads it from
+**Handle accessor**: `ModelHandle.client` is private to `fontaine-core/src/models.rs`, and `connect()` only sees the resolved `ModelHandle`. Add `ModelHandle::served_model(&self) -> BoxFuture<'_, Option<ServedModel>>`, which calls the client's `served_model(&self.reference.model)` and yields `None` when the handle holds no client.
+
+**Eval**: `Live` gains `served: Option<ServedModel>`, filled in `connect()` from the guardian handle's `served_model()` after it resolves, with the fetcher's 10s `REQUEST_TIMEOUT`. `Summary` gains
+`served_model: Option<ServedModel>` (`skip_serializing_if = "Option::is_none"`),. The served data passes through `SummaryParams` into `summarize()`, and `print_summary` reads it from
 `Summary`, printing one line `served: <display_name> (<id>), <context> tokens` when present. The sidecar `Header`
 is unchanged: the served model drifts independently of the resume identity, and a resumed run
 records what answered at its end.
 
 ## Implementation Steps
 
-1. `fontaine-core/src/providers/mod.rs`: add `ServedModel` and the defaulted trait method.
+1. `fontaine-core/src/providers/mod.rs`: add `ServedModel` and the defaulted trait method; `fontaine-core/src/models.rs`: add `ModelHandle::served_model`.
 2. `fontaine-core/src/providers/openai_compatible.rs`: build the models fetcher in `connect`, store it on `Connected`, and implement the method with a parsed `/models` fetch.
 3. `fontaine-evals/src/live.rs`: capture it in `connect()`; expose it on `Live`.
-4. `fontaine-evals/src/runner.rs`: add the fields to `Summary` and `Cascade`, pass the served data through `SummaryParams`/`CascadeParams`
-   into `summarize()`/`cascade_summary()`, print the line from `Summary`.
-5. `docs/evals.md`: describe the field near the cascade/scorecard prose (~lines 249 and 336; no
+4. `fontaine-evals/src/runner.rs`: add the field to `Summary`, pass the served data through `SummaryParams`
+   into `summarize()`, print the line from `Summary`.
+5. `docs/evals.md`: describe the field near the scorecard prose (~lines 249 and 336; no
    scorecard-field schema section exists) and add a footnote under the guardian tables that name `kimi`;
    `CHANGELOG.md` entry under a new `### Added` heading in `[Unreleased]`.
 6. Re-run the control row (`--guardian live:kimi/kimi-for-coding`, full profile, default timeout)
@@ -73,7 +72,7 @@ records what answered at its end.
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/providers/mod.rs`, `providers/openai_compatible.rs`
+- `rust/fontaine-core/src/providers/mod.rs`, `providers/openai_compatible.rs`, `models.rs`
 - `rust/fontaine-evals/src/live.rs`, `runner.rs`
 - `docs/evals.md`, `CHANGELOG.md`, `evals/scorecards/` (new file)
 
@@ -84,6 +83,8 @@ records what answered at its end.
 
 ## Decisions
 
+- AFK: The cascade's screen model is out of scope (no separate `Live` exists for it, it can be a comma-joined list, and its accounts get no override); only the guardian model's served entry is recorded, and the issue's screen-model mention is deferred.
+- AFK: `connect()` reaches the account client through a new `ModelHandle::served_model` accessor in `fontaine-core/src/models.rs` (the handle's `client` stays private).
 - Failure to fetch metadata never fails a run; the field is simply absent.
 - `opencode-go` and `openrouter` do not override `served_model` in this change; the default `None` applies.
 
