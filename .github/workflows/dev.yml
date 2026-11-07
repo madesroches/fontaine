@@ -1,9 +1,9 @@
 # The dev channel: the latest CI-passing build of `main` is signed with the dev key and published
 # as the prerelease `dev-<run_number>`; a newer build replaces a pending one, so some are skipped. Hand-written, with the same draft, verify, publish chain as
 # release.yml: only `sign` (environment `dev-signing`) sees the signing key, and `contents: write`
-# is granted per job to `host`, `verify-draft` and `publish` only. Every job builds and records
-# the head commit of the CI run (`workflow_run.head_sha`), never `github.sha`, because `main` may
-# have moved on by the time this workflow starts. `dev-<n>` holds the archives and has no installer;
+# is granted per job to `host`, `verify-draft`, `publish` and `stable-installer` only. Every job
+# builds and records the head commit of the CI run (`workflow_run.head_sha`), never `github.sha`,
+# because `main` may have moved on by the time this workflow starts. `dev-<n>` holds the archives and has no installer;
 # the separate long-lived prerelease `dev` holds only dist's installer rewritten to fetch from the
 # `dev-<n>` of its run, signed in `sign`, and replaced by `stable-installer` after `publish`, so
 # one URL always installs the latest dev build. See docs/verifying-releases.md.
