@@ -121,15 +121,14 @@ deviates from Claude Code's behavior.
   it and nothing else changed.
 - If candidate 3: unit tests on history translation (the replayed text equals the injected text;
   an unknown CLI version falls back to no insertion).
-- `claude_cli_double` integration test through `fontaine -p` keeps the replay protocol green.
+- The existing `claude_cli_double` tests in `rust/fontaine-core/tests/claude_subscription.rs` keep the replay protocol green:
+  `aliases_resolve_to_canonical_ids_and_the_request_is_translated`,
+  `session_ids_are_stable_per_conversation_and_separate_per_caller` and
+  `a_signed_thinking_block_and_a_tool_call_decode_with_their_names_restored`.
+- If candidate 2: a double-based test of the new frame form.
 
 ## Manual Verification
 
 1. Run two consecutive requests against the real CLI (as in the #449 measurement) and compare
    `cache_creation_input_tokens` per step to a native session's: expect one message's worth,
    not two. Not automatable: it needs a live subscription and the real CLI.
-
-## Open Questions
-
-- Whether any CLI-side switch exists is answered by step 1; the candidates above are ordered so
-  the plan holds whichever way it falls.
