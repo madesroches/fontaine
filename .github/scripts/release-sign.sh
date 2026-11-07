@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Usage: release-sign.sh <channel> <dir> <pubkey> <version> <commit>
-# Signs every fontaine-*.tar.xz and fontaine-*.zip in <dir>, plus fontaine-installer.sh when present
-# on the release channel, with the secret key in
+# Signs every fontaine-*.tar.xz and fontaine-*.zip in <dir>, plus fontaine-installer.sh and
+# fontaine-installer.ps1 when present on the release channel, with the secret key in
 # MINISIGN_SECRET_KEY (password in MINISIGN_PASSWORD), then runs release-verify.sh over the result.
-# The kind `dev-installer` instead signs the single fontaine-installer.sh in <dir> under channel dev.
+# The kind `dev-installer` instead signs both installers, which must be in <dir>, under channel dev.
 set -euo pipefail
 
 if [ "$#" -ne 5 ]; then
@@ -31,19 +31,25 @@ esac
 [ -n "${MINISIGN_PASSWORD:-}" ] || fail "MINISIGN_PASSWORD is empty"
 [ -d "$dir" ] || fail "'$dir' is not a directory"
 
+installers=(fontaine-installer.sh fontaine-installer.ps1)
 archives=()
 if [ "$channel" = dev-installer ]; then
-  [ -f "$dir/fontaine-installer.sh" ] || fail "no fontaine-installer.sh in '$dir'"
-  archives+=("$dir/fontaine-installer.sh")
+  for name in "${installers[@]}"; do
+    [ -f "$dir/$name" ] || fail "no $name in '$dir'"
+    archives+=("$dir/$name")
+  done
   signed_channel=dev
 else
   for path in "$dir"/fontaine-*.tar.xz "$dir"/fontaine-*.zip; do
     [ -f "$path" ] && archives+=("$path")
   done
   [ "${#archives[@]}" -gt 0 ] || fail "no archives in '$dir'"
-  # dist bakes the final v<version> URL into the release installer, so it is signed as shipped.
-  if [ "$channel" = release ] && [ -f "$dir/fontaine-installer.sh" ]; then
-    archives+=("$dir/fontaine-installer.sh")
+  # dist bakes the final v<version> URL into the release installers, so they are signed as shipped
+  # (the PowerShell one after its checksum patch).
+  if [ "$channel" = release ]; then
+    for name in "${installers[@]}"; do
+      [ -f "$dir/$name" ] && archives+=("$dir/$name")
+    done
   fi
   signed_channel="$channel"
 fi

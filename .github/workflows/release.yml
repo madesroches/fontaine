@@ -20,8 +20,9 @@
 # fails a tag with no changelog section. `plan` retries the whole dist install (the installer
 # script and the archive it fetches), since one transient error from GitHub Releases would
 # otherwise turn a PR red. The signing chain is also hand-written: after the build jobs, `sign`
-# (environment `release-signing`, the only job that sees the signing key) signs every archive and the
-# shell installer, `host` creates a draft release, `verify-draft` re-downloads and verifies it, and only then does
+# (environment `release-signing`, the only job that sees the signing key) patches a sha256 check into
+# the PowerShell installer, which dist's stock script lacks, then signs every archive and both
+# installers, `host` creates a draft release, `verify-draft` re-downloads and verifies it, and only then does
 # `publish` make it public. `contents: write` is granted per job, to `host`, `verify-draft` and
 # `publish` only. See docs/verifying-releases.md.
 name: Release
@@ -256,7 +257,7 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             rust/${{ env.BUILD_MANIFEST_NAME }}
-  # Signs every archive and the shell installer. The only job in the workflow that names an environment, so the signing
+  # Signs every archive and both installers. The only job in the workflow that names an environment, so the signing
   # secrets are in scope here and nowhere else; it runs no build tools and no code from the
   # artifacts it downloads.
   sign:
@@ -284,6 +285,9 @@ jobs:
           merge-multiple: true
       - name: Remove the dist manifests
         run: rm -f artifacts/*-dist-manifest.json
+      # Before signing, so the signature covers the bytes users download.
+      - name: Add the archive sha256 check to the PowerShell installer
+        run: .github/scripts/windows-installer.sh artifacts/fontaine-installer.ps1 artifacts/fontaine-x86_64-pc-windows-msvc.zip.sha256
       - name: Install minisign
         run: .github/scripts/install-minisign.sh
       - name: Sign and verify
@@ -298,6 +302,13 @@ jobs:
         with:
           name: artifacts-signatures
           path: artifacts/*.minisig
+      # Not named `artifacts-*`: it would collide with dist's unpatched copy in that merge, so `host`
+      # fetches it on its own and overwrites the stock one.
+      - name: Upload the patched PowerShell installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installer
+          path: artifacts/fontaine-installer.ps1
 
   # Creates the draft release; nothing is public until `publish`
   host:
@@ -358,6 +369,12 @@ jobs:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
+      # The copy in the `artifacts-*` merge is dist's unpatched, unsigned-as-shipped one.
+      - name: Use the patched PowerShell installer
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-installer
+          path: artifacts
       - name: Cleanup
         working-directory: ${{ github.workspace }}
         run: |

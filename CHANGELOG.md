@@ -14,6 +14,12 @@ All notable changes are recorded here. The format follows
   does not check its own signature; see `docs/installing.md` (#477). Its minisign signature,
   `fontaine-installer.sh.minisig`, is attached beside it and checked before the release is
   published (#487).
+- A one-line PowerShell installer for Windows x86_64, `fontaine-installer.ps1`, is attached to each
+  release and, rewritten for the build, to the stable `dev` release. It installs to
+  `%CARGO_HOME%\bin`, adds that to the user `Path`, writes the install receipt for the updater, and
+  checks the archive's sha256 before unpacking; dist's stock script has no such check, so CI patches
+  it in before signing. Its minisign signature is published beside it on both channels. It ignores
+  the `[network]` settings and does not check its own signature; see `docs/installing.md` (#478).
 - A stable dev install URL, `https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.sh`,
   installs the latest CI-passing build of `main`. Each dev publish replaces the installer and its
   minisign signature on the long-lived `dev` prerelease; the installer downloads the immutable
