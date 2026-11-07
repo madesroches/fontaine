@@ -44,7 +44,9 @@ A new `model_call` stream-json event, emitted from the `SessionEvent::Usage` arm
  "cache_creation_input_tokens":..,"calls_tool":bool, ...envelope}
 ```
 
-Additive, so `schema_version` stays 1. It covers main and subagent calls in event order; guardian
+Additive, so `schema_version` stays 1. `docs/schemas/headless-v1.schema.json` is a top-level `oneOf`
+over explicit event types, so it gains a `model_call` `$def` (envelope plus integer token fields and
+boolean `calls_tool`) referenced from that `oneOf`. It covers main and subagent calls in event order; guardian
 calls are not `SessionEvent`s and stay out. The bench runs with no subagents, so every `model_call`
 is a main step. No cost field (headless usage lines carry token counts only).
 
@@ -75,9 +77,9 @@ Flow:
    `message.id` (keep the last usage seen for an id, since a message can span several events).
    Record the CLI version (`claude --version`) and each side's served model (`init.model`).
 5. Summarize: per-step table, totals, base context (step 1 read + creation), and the ratio
-   `mean(fontaine.creation[2..n-1]) / mean(claude.creation[2..n-1])`. The first step differs by base
-   context and the last by the answer-only turn, so both are excluded from the ratio and shown in the
-   table. Fewer than 3 steps on either side is a bench failure, not a pass.
+   the mean creation of all steps except the first and last, Fontaine over Claude Code. The first step
+   differs by base context and the last by the answer-only turn, so both are excluded from the ratio
+   and shown in the table. Fewer than 3 steps on either side is a bench failure, not a pass.
 6. Write the scorecard (steps, totals, ratio, threshold, flagged, versions, served models, date) and
    print the table. Exit 0 under the threshold, `EXIT_FAIL` (1) when flagged or a side failed,
    `EXIT_USAGE` (2) for bad flags.
@@ -89,7 +91,8 @@ the ratio does not credit that saving.
 ## Implementation Steps
 
 1. `rust/fontaine/src/headless.rs`: emit `model_call` from the `SessionEvent::Usage` arm. Keep the
-   budget-cap logic unchanged.
+   budget-cap logic unchanged. Add the `model_call` `$def` to `docs/schemas/headless-v1.schema.json`
+   and reference it from the top-level `oneOf`.
 2. `rust/fontaine-evals/src/cache_bench.rs`: `Step`, `parse_fontaine_stream`, `parse_claude_stream`,
    `summarize`, `Scorecard`, the fixture writer and the two process runners.
 3. `rust/fontaine-evals/src/runner.rs` and `lib.rs`: `Command::CacheBench` and its dispatch; export
@@ -100,7 +103,7 @@ the ratio does not credit that saving.
 
 - `rust/fontaine/src/headless.rs`
 - `rust/fontaine-evals/src/cache_bench.rs` (new), `lib.rs`, `runner.rs`
-- `rust/fontaine/tests/headless_contract.rs`
+- `rust/fontaine/tests/headless_contract.rs`, `docs/schemas/headless-v1.schema.json`
 - `docs/headless.md`, `docs/claude-subscription.md`, `evals/README.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -145,10 +148,5 @@ All automated tests use canned streams and never touch live APIs or the real CLI
    ../evals/scorecards/claude-subscription-cache-sonnet.json` on a signed-in machine. Expect a
    per-step table and a ratio near 2.0 on CLI 2.1.319; commit the scorecard. Not automatable: it
    needs a live subscription and the real CLI, and it measures their behavior, which is the point.
-2. Check the first run that `claude -p` stream-json repeats `message.id` across the events of one
-   message; if it does not, the dedupe is a no-op and harmless.
-
-## Open Questions
-
-- Whether `claude -p` reports a message's final usage on its first event or its last. The parser
-  keeps the last per id; manual step 2 confirms.
+2. Sanity check on the first run that `claude -p` stream-json repeats `message.id` across the events
+   of one message.
