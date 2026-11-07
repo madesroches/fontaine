@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `claude-subscription`: a tool call the CLI names without the `mcp__fontaine__` prefix, for a
+  tool the request defines, is restored as that tool instead of failing the request and killing
+  the agent with its context (#471).
 - An interrupted turn stays in the model's conversation: pressing Esc or Ctrl-C mid-turn, an AFK
   temperature stop, or a process killed before the turn ended now keeps the prompt and every
   finished tool round, followed by a marker (`[Request interrupted by user]`, or a harness note

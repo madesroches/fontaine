@@ -178,6 +178,12 @@ impl Aliases {
     pub fn restore(&self, full: &str) -> Option<&str> {
         self.original.get(full).map(String::as_str)
     }
+
+    /// `restore` for a call the model made: the CLI sometimes drops the prefix from the name.
+    pub fn restore_call(&self, cli_name: &str) -> Option<&str> {
+        self.restore(cli_name)
+            .or_else(|| self.restore(&format!("{TOOL_PREFIX}{cli_name}")))
+    }
 }
 
 fn alias_part(name: &str) -> String {
@@ -1004,7 +1010,11 @@ impl Reader {
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string();
-                        let restored = self.expect.aliases.restore(&cli_name).map(str::to_string);
+                        let restored = self
+                            .expect
+                            .aliases
+                            .restore_call(&cli_name)
+                            .map(str::to_string);
                         if restored.is_none() && cli_name != TOLERATED_BUILTIN {
                             return Err(self.undefined_call(&cli_name));
                         }

@@ -456,6 +456,46 @@ fn an_undefined_call_lists_a_capped_set_of_the_defined_tools() {
 }
 
 #[test]
+fn a_bare_name_of_a_defined_tool_is_restored() {
+    let mut r = started(&["shell", "read_file"]);
+    let Ok(Event::Frame(frame)) = tool_start(&mut r, 0, "toolu_A", "shell") else {
+        panic!("a bare name of a defined tool was not forwarded");
+    };
+    assert!(frame.as_str().contains(r#""name":"shell""#));
+    assert!(tool_start(&mut r, 1, "toolu_B", "Bash").is_err());
+}
+
+#[test]
+fn a_bare_name_of_an_aliased_tool_is_restored() {
+    let odd = "mcp.server/tool name";
+    let aliases = Aliases::new([odd]);
+    let alias = aliases.short(odd).unwrap().to_string();
+    let mut r = started(&[odd]);
+    let Ok(Event::Frame(frame)) = tool_start(&mut r, 0, "toolu_A", &alias) else {
+        panic!("a bare alias was not forwarded");
+    };
+    let name = serde_json::to_string(odd).unwrap();
+    assert!(frame.as_str().contains(&format!(r#""name":{name}"#)));
+}
+
+#[test]
+fn an_init_offering_a_bare_name_is_refused() {
+    let mut r = reader(&["shell"]);
+    let error = feed(&mut r, init_with("tools", json!(["shell"]))).unwrap_err();
+    assert!(error.to_string().contains("did not define: `shell`"));
+}
+
+#[test]
+fn a_denial_of_a_bare_named_call_is_accepted() {
+    let mut r = started(&["shell"]);
+    tool_start(&mut r, 0, "toolu_A", "shell").unwrap();
+    assert!(is_nothing(feed(&mut r, denied("toolu_A", "shell"))));
+    stop_block(&mut r, 0);
+    assert!(is_nothing(feed(&mut r, echo(&["toolu_A"]))));
+    assert!(matches!(finish_tool_use(&mut r), Ok(Event::Complete)));
+}
+
+#[test]
 fn an_init_offering_an_undefined_tool_names_it() {
     let error = init_error(init_with("tools", json!(["Bash"])));
     assert!(error.contains("did not define: `Bash`"), "{error}");
