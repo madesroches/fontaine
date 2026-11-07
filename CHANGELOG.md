@@ -21,6 +21,13 @@ All notable changes are recorded here. The format follows
   display name, context length) as `served_model` in the scorecard summary and prints it, so a
   moving alias such as `kimi/kimi-for-coding` can be tied to the version that answered (#440).
 
+### Changed
+
+#### Build and release
+
+- CI builds the rustdoc for the workspace, and for the `pg2` feature on Linux, with warnings
+  denied, so a broken doc link fails the build (#197).
+
 ### Fixed
 
 - `claude-subscription`: a tool call the CLI names without the `mcp__fontaine__` prefix, for a

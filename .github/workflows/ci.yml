@@ -101,6 +101,19 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: cargo test --doc
 
+      - name: Rustdoc
+        if: needs.changes.outputs.code == 'true'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --workspace
+
+      # Before "Test (pg2)", which cleans the target dir.
+      - name: Rustdoc (pg2)
+        if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --workspace --features fontaine/pg2
+
       - name: Release signing
         if: needs.changes.outputs.code == 'true' && runner.os == 'Linux'
         # Names no environment, so no production secret is in scope; the keys are disposable.

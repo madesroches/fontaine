@@ -136,7 +136,7 @@ fn io_error(
 }
 
 /// Every configured account with what it authenticates with, sorted by name. It asks
-/// [`credential`] so the list says exactly what resolving the account would do.
+/// `credential` so the list says exactly what resolving the account would do.
 pub fn rows(
     config: &Config,
     data_dir: &Path,

@@ -40,7 +40,7 @@ pub trait QuotaSource: Send + Sync + std::fmt::Debug {
     fn fetch(&self) -> BoxFuture<'_, Result<Quota, RuntimeError>>;
 
     /// A receiver that fires when data the source holds locally changed and a re-fetch is due
-    /// before the next scheduled poll. A source that only learns its data through [`fetch`]
+    /// before the next scheduled poll. A source that only learns its data through [`Self::fetch`]
     /// returns `None`, the default; one fed by an outside stream, such as the CLI events behind a
     /// model turn, returns one so new figures show without waiting for the interval.
     fn updated(&self) -> Option<watch::Receiver<()>> {
