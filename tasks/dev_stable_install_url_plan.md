@@ -88,11 +88,16 @@ The directory is uploaded as artifact `dev-installer`, a name that does not matc
 download the `dev-installer` artifact with `path: artifacts` (as `sign` and `host` do); run
 `release-verify.sh dev-installer artifacts rust/fontaine/keys/dev.signing.pub` with the `plan`
 version and commit before any upload; run `sh -n artifacts/fontaine-installer.sh`;
-then `gh release view dev` or create it (`--prerelease --latest=false`, no `--draft`, with
+then the regression guard: list published (non-draft) releases with
+`gh release list --json tagName,isDraft --limit 1000 --repo "$GITHUB_REPOSITORY"`, take the highest `<n>` among
+`dev-<n>` tags, and if it exceeds this run's `${{ needs.plan.outputs.tag }}` number skip the remaining steps
+with a notice (a fetch failure fails the job); then `gh release view dev` or create it (`--prerelease --latest=false`, no `--draft`, with
 `--target "$HEAD_SHA" --repo "$GITHUB_REPOSITORY"`); `gh release upload dev artifacts/fontaine-installer.sh
 artifacts/fontaine-installer.sh.minisig --clobber --repo "$GITHUB_REPOSITORY"`; then re-download both
 from the stable URL and byte-compare them with the local files. A failed check before the upload
-leaves the previous stable installer in place; a failed upload after gh's delete can leave none.
+leaves the previous stable installer in place. A skipped older run leaves the newer installer. Accepted risk: `--clobber` deletes the old asset before
+uploading, so the stable URL can 404 briefly, and a failed upload after the delete can leave no installer
+(the byte-compare fails the job and the next run restores it).
 
 The `plan` job's `FONTAINE_DEV_CHANNEL` gate is unchanged.
 
@@ -114,7 +119,7 @@ stays open until it is done and the acceptance check passes.
 2. Add `.github/scripts/dev-installer.sh` with the named substitutions.
 3. Add the `dev-installer` kind to `release-sign.sh` and `release-verify.sh`.
 4. In `dev.yml`, change `sign` (rewrite, sign, upload `dev-installer`), add the `stable-installer`
-   job and update the header comment.
+   job (with the highest-published-`dev-<n>` guard) and update the header comment.
 5. Add self-tests for the scripts to the "Release signing" step in `.github/workflows/ci.yml`
    (see Testing).
 6. Update `docs/installing.md`, `README.md`, `docs/verifying-releases.md`, `CONTRIBUTING.md`,
@@ -147,6 +152,8 @@ stays open until it is done and the acceptance check passes.
 - 2026-11-07: documentation shows only the dev command until the first tagged release, per #487 Ask 3.
 - 2026-11-07: the dev installer points at the immutable `dev-<n>` archives.
 - 2026-11-07: supersedes the 2026-11-07 (#477) "No installer on the dev channel" decision in `tasks/fontaine_harness_plan.md`.
+- 2026-11-07: AFK: `gh release upload --clobber` kept; the brief 404 and a failed-upload-after-delete window are accepted and recorded, detected by the post-upload byte-compare and healed by the next run.
+- 2026-11-07: AFK: `stable-installer` skips its upload unless its `dev-<n>` is the highest published (non-draft) `dev-*` release, so out-of-order runs and re-runs of older runs cannot regress the stable installer.
 - 2026-11-07: the dev installer writes `<base>-dev.<n>+<sha7>` as the receipt version; channel detection is left to #175.
 
 ## Documentation
@@ -195,6 +202,9 @@ stays open until it is done and the acceptance check passes.
   `dev.yml` run fails in `sign`, before any upload.
 - Self-tests for the `dev-installer` kind: an installer signs and verifies; a tampered installer or a
   wrong file name fails; the existing "installer rejected on dev" test in `ci.yml` stays unchanged.
+- Guard: the release-number comparison is kept in a small shell step, checked by inspection and in the
+  first real runs (an older tag skips, the newest uploads); re-running an older run's `stable-installer`
+  must skip while a newer `dev-<n>` is published.
 - `dev.yml` is only exercisable on `main`; the pre-upload signature verification and syntax check and
   the post-upload byte-compare are its automated guard.
 
