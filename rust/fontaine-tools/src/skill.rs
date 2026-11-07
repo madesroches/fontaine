@@ -49,7 +49,7 @@ fn lenient_args<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D:
             .iter()
             .map(|item| match item {
                 Value::String(text) => quote_word(text),
-                other => other.to_string(),
+                other => quote_word(&other.to_string()),
             })
             .collect::<Vec<_>>()
             .join(" "),
@@ -84,7 +84,8 @@ impl Tool for SkillTool {
 
     fn description(&self) -> String {
         "Load a skill: instructions for a kind of task, named in the skill list of the system \
-         prompt. Takes the skill's `name` and returns its text, which you then follow. Pass optional `args` to give the skill arguments."
+         prompt. Takes the skill's `name` and returns its text, which you then follow. \
+         Pass optional `args` to give the skill arguments."
             .to_string()
     }
 
@@ -163,6 +164,46 @@ mod tests {
         assert_eq!(
             args_of(json!({"name": "x", "args": ["a", "b c", "", "it's", "say \"hi\""]})),
             "a \"b c\" \"\" \"it's\" 'say \"hi\"'"
+        );
+    }
+
+    #[test]
+    fn a_non_string_array_element_is_quoted_as_one_word() {
+        assert_eq!(
+            args_of(json!({"name": "x", "args": ["a", {"k": "a b"}]})),
+            "a '{\"k\":\"a b\"}'"
+        );
+    }
+
+    struct Recorder(std::sync::Mutex<Vec<(String, String, String)>>);
+
+    impl SkillSource for Recorder {
+        fn load<'a>(
+            &'a self,
+            name: &'a str,
+            arguments: &'a str,
+            agent: &'a str,
+        ) -> BoxFuture<'a, Result<String, String>> {
+            self.0
+                .lock()
+                .unwrap()
+                .push((name.into(), arguments.into(), agent.into()));
+            Box::pin(async { Ok("body".to_string()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_tool_passes_arguments_and_agent_to_the_source() {
+        let source = Arc::new(Recorder(Default::default()));
+        let tool = SkillTool {
+            source: source.clone(),
+        };
+        let args = parse(json!({"name": "x", "arguments": "a \"b c\""})).unwrap();
+        let out = tool.call(&mut ToolContext::new(), args).await.unwrap();
+        assert_eq!(out, "body");
+        assert_eq!(
+            *source.0.lock().unwrap(),
+            vec![("x".into(), "a \"b c\"".into(), ROOT_AGENT.to_string())]
         );
     }
 
