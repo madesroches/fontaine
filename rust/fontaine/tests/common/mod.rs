@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::{Value, json};
@@ -348,6 +349,27 @@ impl Respond for Scripted {
     }
 }
 
+/// A synchronous callback fired when a request arrives at its route, with the route's
+/// zero-based turn index. Test-only handoff hook: it must return promptly and must not block.
+#[derive(Clone)]
+pub struct ServeHook(Arc<dyn Fn(usize) + Send + Sync>);
+
+impl ServeHook {
+    pub fn new(f: impl Fn(usize) + Send + Sync + 'static) -> ServeHook {
+        ServeHook(Arc::new(f))
+    }
+
+    fn fire(&self, at: usize) {
+        (self.0)(at);
+    }
+}
+
+impl std::fmt::Debug for ServeHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ServeHook(..)")
+    }
+}
+
 /// One conversation of a routed endpoint: the requests whose first user message contains
 /// `marker` are answered from `turns` in order, the last repeating, each after `delay`.
 #[derive(Clone, Debug)]
@@ -357,6 +379,8 @@ pub struct Route {
     pub delay: std::time::Duration,
     /// Match the marker against the last user message instead of the first.
     pub on_last_user: bool,
+    /// Optional hook fired with the turn index before the response delay starts.
+    pub on_serve: Option<ServeHook>,
 }
 
 impl Route {
@@ -366,7 +390,15 @@ impl Route {
             turns,
             delay: std::time::Duration::ZERO,
             on_last_user: false,
+            on_serve: None,
         }
+    }
+
+    /// Fires `hook` with the route's zero-based turn index each time a request arrives at it,
+    /// before the response delay starts.
+    pub fn on_serve(mut self, hook: impl Fn(usize) + Send + Sync + 'static) -> Route {
+        self.on_serve = Some(ServeHook::new(hook));
+        self
     }
 
     /// A route for a conversation told apart by its last user message, such as a fork, whose
@@ -439,6 +471,9 @@ impl Respond for Routed {
             return ResponseTemplate::new(500).set_body_string(format!("no route for: {first}"));
         };
         let at = next.fetch_add(1, Ordering::SeqCst);
+        if let Some(hook) = &route.on_serve {
+            hook.fire(at);
+        }
         let turn = route.turns.get(at).or(route.turns.last()).cloned();
         let streamed = body["stream"] == json!(true);
         let reply = match (self.wire, turn) {

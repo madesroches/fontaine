@@ -41,7 +41,16 @@ fn gone(pid: u32) -> bool {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_job_that_ended_before_the_answer_gets_a_notification_turn() {
-    // The slow route holds each answer back long enough for the job to end between them.
+    // The job polls for a marker the endpoint releases from request 2. Two ordering edges
+    // shape the test: `NotificationStage` drains an already queued job note into the next
+    // tool result, so an instant job would deliver its note in request 2 instead of a turn of
+    // its own; and `wait_for_news` returns `Done` after an answer when no note is queued, so
+    // the run never waits for a background job. Releasing the job at request 2 — which cannot
+    // arrive before the shell result passed through `NotificationStage` — excludes the first
+    // edge, while the held-back answer covers reaping and posting the note before `wait_for_news`.
+    let s = Sandbox::new();
+    let release = s.runtime.join("job-release");
+    let marker = release.clone();
     let endpoint = Endpoint::start_routed(
         Wire::Chat,
         vec![
@@ -51,17 +60,22 @@ async fn a_job_that_ended_before_the_answer_gets_a_notification_turn() {
                     Turn::tool(
                         "c1",
                         "shell",
-                        json!({"command": "sleep 0.3; echo job-says-hi", "run_in_background": true}),
+                        json!({"command": format!("while ! test -e {}; do sleep 0.05; done; echo job-says-hi", release.display()), "run_in_background": true}),
                     ),
                     Turn::text("started it"),
                     Turn::text("the job said hi"),
                 ],
             )
+            .on_serve(move |at| {
+                if at == 1 {
+                    std::fs::write(&marker, "go").expect("release the job");
+                }
+            })
             .slow(Duration::from_millis(1000)),
         ],
     )
     .await;
-    let s = sandbox(&endpoint);
+    s.point_at(&endpoint.url());
     let out = run(&s, "root task").await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     let lines = out.lines();

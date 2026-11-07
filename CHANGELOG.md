@@ -14,6 +14,10 @@ All notable changes are recorded here. The format follows
   naming the cause for an AFK stop or a dead process), so the next prompt continues the same
   task. Text the model was still streaming and the results of a tool batch still running at the
   interrupt are not kept (#457).
+- The background-job notification integration test no longer depends on a fixed 300 ms job
+  lifetime that parallel test load could schedule away: the scripted job now waits for a marker
+  the fake endpoint releases at the second model request, so the note reliably lands in the
+  third request (#460).
 - `claude-subscription` subagents no longer fail with "did not start exactly the inert tool
   inventory" after the running `fontaine` binary is rebuilt in place (for example by
   `cargo build` while running from `target/`): on Linux the inventory is now started from the
