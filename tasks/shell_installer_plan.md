@@ -21,9 +21,6 @@ with this command and states its prerequisites and caveats.
 - `.github/scripts/release-verify.sh` fails on any unrecognised asset (its `case` list), and
   `release-sign.sh` signs only `fontaine-*.tar.xz` / `fontaine-*.zip`. An installer asset in the
   draft would make `verify-draft` fail and nothing would publish.
-- `.github/workflows/dev.yml` shares the same dist global build, but a dev build's tag is
-  `dev-<n>` while dist bakes the download URL `.../releases/download/v<version>/` into the
-  installer, which does not exist for a dev build.
 - `fontaine update` (#175) is not implemented; there is no receipt reader in the tree.
 - README `## Install` (README.md:14-31) describes manual archive download and `cargo install`.
   `docs/verifying-releases.md` documents signatures; no `docs/` page covers installing.
@@ -33,39 +30,45 @@ with this command and states its prerequisites and caveats.
 ### dist configuration
 
 `installers = ["shell"]`. dist's shell installer downloads the archive for the detected target from
-the release it was built for, checks the archive's sha256 (embedded in the script from the build),
-extracts it with `tar`, installs `fontaine` to `$CARGO_HOME/bin` (or the XDG-style location dist
-chooses), and writes the receipt. Implementation must confirm the exact install directory,
-receipt path and receipt fields from a local `dist build --artifacts=global` output, and
-record them in the docs; the plan does not assume them.
+the release it was built for, checks the archive's sha256 (embedded in the script from the build, and only when `sha256sum` is
+present), extracts it with `tar`, installs `fontaine` to `$CARGO_HOME/bin` (default `~/.cargo/bin`),
+and writes the receipt. From dist v0.32.0's source, the default install-path (`CARGO_HOME`) writes
+the receipt at `${XDG_CONFIG_HOME:-$HOME/.config}/fontaine/fontaine-receipt.json` (even with
+`install-updater = false`) with `install_prefix` = `$CARGO_HOME` (or `~/.cargo`),
+`install_layout = "cargo-home"` and `binaries = ["fontaine"]`, so the receipt describes
+`<install_prefix>/bin/fontaine`. Implementation confirms this against a local
+`dist build --artifacts=global` output and records it in the docs.
 
 `install-updater` stays at its default of `false`: Fontaine updates itself, so dist's separate
 updater binary is not installed.
 
-`install-path` is left at dist's default unless the generated script's behaviour conflicts with the
-receipt requirement of #175 (check during implementation; record any override as a Decision).
+`install-path` is left at dist's default; no override is needed. `FONTAINE_INSTALL_DIR` and
+`CARGO_DIST_FORCE_INSTALL_DIR` make the installer record a different layout, which is #175's concern.
 
 ### Workflow wiring (hand-ported; `dist generate` would overwrite `release.yml`)
 
 1. Run `dist generate --mode=ci` into a scratch checkout/branch and diff the generated
    `release.yml` against the checked-in one. Port only installer-related differences (expected to be
    few or none, since the global job already exists). Do not commit the generated file.
-2. `release-verify.sh`: accept `fontaine-installer.sh` (and its `.sha256` if dist emits one) only
+2. `release-verify.sh`: accept `fontaine-installer.sh` only
    when `channel` is `release`; the dev channel still fails on it. Keep "unrecognised asset" as the
-   default failure. Extend the script's self-tests (see Testing) accordingly.
-3. `release-sign.sh`: unchanged. The installer is not signed (see Trade-offs); it is trusted over
-   HTTPS like the first install is.
-4. `dev.yml`: delete `fontaine-installer.sh` (and any installer checksum) from `artifacts/` before
-   signing, next to the existing "Remove the dist manifests" step, with a comment that the baked
-   download URL points at a release tag a dev build does not have.
+   default failure. Extend the script's inline self-tests in `.github/workflows/ci.yml`'s "Release signing" step
+   (`make_fixture`, `expect_fail`; see Testing) accordingly.
+3. `release-sign.sh`: unchanged. The installer is not signed (see Trade-offs).
+4. `dev.yml`: dist bakes the download URL `.../releases/download/v<version>/` into the installer, and
+   a dev build's tag is `dev-<n>`, so that URL does not exist. Delete `fontaine-installer.sh` in both
+   the `sign` job and the `host` job's "Remove the dist manifests" step (`host` re-downloads all
+   `artifacts-*`, installer included, before `gh release create artifacts/*`, and `verify-draft`
+   on the dev channel rejects the installer), with a comment giving that reason.
 5. `host` in `release.yml` uploads `artifacts/*`, so the installer reaches the release without
    change; confirm `sha256.sum` and `verify-draft` still pass.
 
 ### Verification parity
 
 The installer verifies the archive's sha256, the same checksum the updater compares; both fetch from
-the same GitHub release. It does not verify the minisign signature (no minisign on the user's
-machine, and the installer itself arrives over HTTPS only). Docs say so and point to
+the same GitHub release. The check depends on `sha256sum` being present (no `shasum` fallback, which
+matters on macOS); otherwise dist's installer skips it with a warning rather than failing. It does
+not verify the minisign signature (no minisign on the user's machine). Docs say so and point to
 `docs/verifying-releases.md` for manual verification. If #175's updater later adds attestation,
 the installer follows in that issue.
 
@@ -78,32 +81,43 @@ Windows keeps the manual archive until its own installer issue.
 
 ### Install receipt
 
-Written by dist's installer; Fontaine adds no code in this issue. #175 owns reading it and refusing
+Written by dist's installer at the path and with the fields given under dist configuration; Fontaine
+adds no code in this issue. #175 owns reading it and refusing
 self-update when the receipt does not match the running executable.
 
 ## Implementation Steps
 
-1. `rust/Cargo.toml`: set `installers = ["shell"]`; update the comment above the block if it
-   claims no installers.
+1. `rust/Cargo.toml`: set `installers = ["shell"]`.
 2. Run `dist plan` and a local `dist build --artifacts=global` (with the pinned 0.32.0 dist) to
-   inspect the generated `fontaine-installer.sh`: install dir, receipt path/format, checksum
-   handling, prerequisites it checks (`curl`/`wget`, `tar`/`unzip`), proxy behaviour. Record findings
+   inspect the generated `fontaine-installer.sh`: install dir, receipt path/format, whether the
+   sha256 is embedded and how the script behaves without `sha256sum`, that `sha256.sum` leaves the
+   installer out, prerequisites it checks (`curl`/`wget`, `tar`/`unzip`), proxy behaviour. Record findings
    for docs.
 3. Diff `dist generate` output against `.github/workflows/release.yml`; port installer-related
    changes by hand and update the file's header comment if the hand-adaptation list changes.
 4. `.github/scripts/release-verify.sh`: allow the installer asset on the `release` channel only.
-5. `.github/workflows/dev.yml`: remove the installer asset before signing.
+5. `.github/workflows/dev.yml`: remove the installer asset in both the `sign` job and `host`'s
+   "Remove the dist manifests" step.
 6. README `## Install`: lead with the one-line installer (Linux, macOS), then the manual archive
    (all platforms, including Windows), then `cargo install --git`. State supported platforms, the
-   `curl`/`wget` and `tar` prerequisites, the receipt, and the `[network]` caveat (the installer
+   `curl`/`wget` and `tar` prerequisites, that the sha256 check needs `sha256sum` and is otherwise
+   skipped with a warning, that the installer and `cargo install --git` both install to
+   `$CARGO_HOME/bin` and replace each other, the receipt, and the `[network]` caveat (the installer
    ignores Fontaine's proxy, CA and mTLS config; behind a proxy, set `https_proxy` /
    `SSL_CERT_FILE` for `curl`, or download the archive manually).
 7. New `docs/installing.md` (one topic per page): installer command, what it writes, prerequisites,
-   `[network]` caveat, verification parity, uninstall (remove the binary and receipt), manual and
+   `[network]` caveat, verification parity (including the `sha256sum` dependency), that the installer
+   and `cargo install --git` both install to `$CARGO_HOME/bin` and replace each other, uninstall
+   (remove the binary, the receipt `~/.config/fontaine/fontaine-receipt.json`, the lines the installer
+   added to `.profile` and the bash/zsh rc files, and the `$CARGO_HOME/env` and fish env scripts
+   (`~/.config/fish/conf.d/fontaine.env.fish`); do not delete the whole `~/.config/fontaine`, which is
+   also Fontaine's config dir; `NO_MODIFY_PATH` set at install time skips the rc edits), manual and
    source installs, and a link from `docs/index.md`. Update `docs/verifying-releases.md` to say the
-   installer is not signed and verifies sha256 only, and to correct "Fontaine does not update itself
-   yet" only if #175 has shipped by then (it has not).
-8. `tasks/design/platforms.md` §Releases: one sentence on the installer. Master plan `## Decisions`
+   installer is not signed and verifies sha256 only, and reword the line near 61 ("Once Fontaine's
+   installers enable GitHub artifact attestations…") so it does not imply the shell installer checks
+   attestations.
+8. `tasks/design/platforms.md` §Releases: one sentence on the installer, and update "The README install
+   section lists both install paths" to name the installer, the manual archive and `cargo install --git`. Master plan `## Decisions`
    (Build and release): dated lines for the unsigned installer, no dev-channel installer, and no
    arm64 Linux target.
 9. `CHANGELOG.md`: `Added` entry under `[Unreleased]` (#477).
@@ -113,7 +127,8 @@ self-update when the receipt does not match the running executable.
 - `rust/Cargo.toml`
 - `.github/workflows/release.yml` (only if the generated diff requires it)
 - `.github/workflows/dev.yml`
-- `.github/scripts/release-verify.sh` (and its tests)
+- `.github/scripts/release-verify.sh`
+- `.github/workflows/ci.yml` ("Release signing" step: the inline `release-verify.sh` self-tests)
 - `README.md`
 - `docs/installing.md` (new), `docs/index.md`, `docs/verifying-releases.md`
 - `tasks/design/platforms.md`, `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`
@@ -132,7 +147,7 @@ self-update when the receipt does not match the running executable.
 
 ## Decisions
 
-- AFK: The installer verifies sha256 only and is itself unsigned (trusted via HTTPS), the most
+- AFK: The installer is itself unsigned and does not verify the minisign signature, the most
   conservative option that satisfies the issue without new key handling.
 - AFK: Linux arm64 is not claimed as supported, so `aarch64-unknown-linux-gnu` is not added.
 
@@ -144,9 +159,8 @@ self-update when the receipt does not match the running executable.
 ## Testing Strategy
 
 - `release-verify.sh` is a silent-failure surface (a bad asset list either blocks every release or
-  lets an unexpected asset through). Add automated cases next to the existing script tests
-  (locate them under `.github/scripts/` or `rust/fontaine/tests/`; the Release signing CI step
-  runs them): installer present on `release` passes; installer on `dev` fails; an unrelated
+  lets an unexpected asset through). Add cases to the inline self-tests in the `.github/workflows/ci.yml`
+  "Release signing" step (`make_fixture`, `expect_fail`): installer present on `release` passes; installer on `dev` fails; an unrelated
   extra asset still fails.
 - CI's `dist plan` job (already run per PR) validates the `Cargo.toml` change.
 - Everything about running the installer against a real release needs a real GitHub Release; see
@@ -154,17 +168,10 @@ self-update when the receipt does not match the running executable.
 
 ## Manual Verification
 
-Not automatable in PR CI because it needs a published release and the #175 updater:
+Not automatable in PR CI because it needs a published release:
 
 1. On a Linux x86_64 and a macOS arm64 machine, after the first release carrying the installer:
    `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/latest/download/fontaine-installer.sh | sh`;
    expect `fontaine --version` to print the release version and the receipt file to exist.
 2. Tamper check: edit the downloaded script's embedded sha256 and run it; expect a checksum failure
-   and no installed binary.
-3. After #175 ships, install release N and run `fontaine update` to N+1; expect success (the issue's
-   "done when", blocked on #175 and the second release).
-
-## Open Questions
-
-- Whether dist 0.32.0's shell installer honours an install path that keeps the receipt matching the
-  running executable for #175 (settled by Implementation Step 2).
+   and no installed binary. Run on a machine with `sha256sum`, since the check is skipped without it.
