@@ -8,6 +8,12 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- An interrupted turn stays in the model's conversation: pressing Esc or Ctrl-C mid-turn, an AFK
+  temperature stop, or a process killed before the turn ended now keeps the prompt and every
+  finished tool round, followed by a marker (`[Request interrupted by user]`, or a harness note
+  naming the cause for an AFK stop or a dead process), so the next prompt continues the same
+  task. Text the model was still streaming and the results of a tool batch still running at the
+  interrupt are not kept (#457).
 - `claude-subscription` subagents no longer fail with "did not start exactly the inert tool
   inventory" after the running `fontaine` binary is rebuilt in place (for example by
   `cargo build` while running from `target/`): on Linux the inventory is now started from the

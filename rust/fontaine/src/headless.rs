@@ -17,7 +17,8 @@ use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
 use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
 use fontaine_core::trust;
-use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn};
+use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn, user_message};
+use fontaine_core::turn_recovery::{Fallback, Unsettled};
 use fontaine_core::usage_ledger::{Bucket, UsageSource};
 use fontaine_tools::kills::KILL_SETTLE;
 use rig_core::schemars::Schema;
@@ -568,18 +569,37 @@ async fn run_one(
     let ids = runtime.models.main.wire_ids();
     let (model, provider) = (ids.model, ids.provider);
     let mut stops = runtime.state.afk_stop_signal();
+    let modalities = main_modalities(runtime);
+    // The run's durable record: a stop that drops the run, or a kill before the first
+    // model call, leaves the prompt for the fold that keeps the turn.
+    let sent = user_message(&text, &[], &modalities);
+    let len = match runtime.conversation_len().await {
+        Ok(len) => len,
+        Err(e) => {
+            // The preflight wrote the record before the compaction; the refusal must not
+            // leave it for a fold to read as this turn's fallback.
+            runtime.clear_run_start().await;
+            return count_stop(&e);
+        }
+    };
+    if let Err(e) = runtime.rewrite_run_start(sent.clone(), len).await {
+        // The turn must not run unrecorded: the run that follows leaves a window in
+        // which a kill would lose the prompt. The rewrite already cleared the record
+        // the preflight wrote, so the refusal cannot resurrect the turn as a fold.
+        return record_stop(&e);
+    }
+    // What a stopped run is kept as when it committed nothing.
+    let fallback = Fallback {
+        prompt: sent,
+        log_len_before: len,
+    };
     let turn = run_turn(
         TurnParams {
             agent: &runtime.agent,
             state: &runtime.state,
             prompt: text,
             attachments: Vec::new(),
-            modalities: runtime
-                .models
-                .main
-                .completion
-                .spec()
-                .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input),
+            modalities,
             max_turns: options.max_turns,
             priced: runtime.models.main.catalog_billed(),
             model,
@@ -595,8 +615,17 @@ async fn run_one(
         Ok(()) = stops.changed() => None,
         outcome = turn => Some(outcome),
     };
+    // A stop cuts the turn short: the run is dropped when the signal wins the poll, and when
+    // the run wins it the stop has denied its next dispatch as a Cancelled error the recovery
+    // hook kept. An answer that landed in the same poll settled and is kept as it is.
+    let stopped = runtime.state.afk().stopped.is_some();
+    if turn.is_none() || (stopped && matches!(turn, Some(TurnOutcome::Failed(_)))) {
+        runtime
+            .keep_unsettled_turn(Unsettled::AfkStop, Some(fallback))
+            .await;
+    }
     // A stop that lands inside the poll that also finishes the turn is still a stop.
-    let turn = turn.filter(|_| runtime.state.afk().stopped.is_none());
+    let turn = turn.filter(|_| !stopped);
     let Some(turn) = turn else {
         runtime.handle_afk_stop().await;
         return afk::stopped_outcome(started, denials);
@@ -728,15 +757,92 @@ fn budget_stop() -> Outcome {
     }
 }
 
+/// The outcome of a turn refused before it runs: its durable record could not be
+/// written, and an unrecorded turn must not start.
+fn record_stop(e: &(dyn std::error::Error + 'static)) -> Outcome {
+    preflight_stop("the run's pending record could not be written", e)
+}
+
+/// The outcome of a turn refused before it runs: the conversation's length could not
+/// be read, and a fallback counted on a made-up length would misplace the fold that
+/// keeps a stopped run.
+fn count_stop(e: &(dyn std::error::Error + 'static)) -> Outcome {
+    preflight_stop(
+        "the conversation's length could not be read, so the turn did not run",
+        e,
+    )
+}
+
+fn preflight_stop(detail: &str, e: &(dyn std::error::Error + 'static)) -> Outcome {
+    Outcome {
+        subtype: Subtype::Execution,
+        text: String::new(),
+        structured: None,
+        error: Some(format!(
+            "{detail}: {}",
+            fontaine_tools::error_chain::chain(e)
+        )),
+        started: std::time::Instant::now(),
+        denials: Vec::new(),
+    }
+}
+
 /// What must hold before a paid call starts: a text-only answer that crossed the cap ends its
 /// own turn as a success, so the cap is enforced here, and again after the summarizing call
-/// that may precede a turn, which is paid too. `Some` is the stop that replaces the call.
-async fn stop_before_call(runtime: &AgentRuntime, options: &Options) -> Option<Outcome> {
+/// that may precede a turn, which is paid too. `turn` is the prompt about to run, when a turn
+/// follows: its run is recorded before the compaction that precedes it, so a process that
+/// dies during compaction still leaves the prompt for the fold that resumes the session.
+/// `Some` is the stop that replaces the call.
+async fn stop_before_call(
+    runtime: &AgentRuntime,
+    options: &Options,
+    turn: Option<&str>,
+) -> Option<Outcome> {
     if over_cap(runtime, options) {
         return Some(budget_stop());
     }
+    // A leftover journal's fold checks its mark against `main`'s message count; a compaction
+    // that ran first would change the count and the fold would append the landed turn again.
+    // The fold goes before the compaction, as the TUI's pre-turn fold does.
+    runtime
+        .keep_unsettled_turn(Unsettled::SessionEnded, None)
+        .await;
+    if let Some(text) = turn {
+        let len = match runtime.conversation_len().await {
+            Ok(len) => len,
+            // A fallback counted on a made-up length misplaces the fold a stop owes the
+            // run, so the turn is refused rather than risk duplicating its prompt.
+            Err(e) => return Some(count_stop(&e)),
+        };
+        if let Err(e) = runtime
+            .record_run_start(user_message(text, &[], &main_modalities(runtime)), len)
+            .await
+        {
+            // The turn must not run unrecorded: the summarizing call and the turn that
+            // follow leave a long window in which a kill would lose the prompt.
+            return Some(record_stop(&e));
+        }
+    }
     runtime.compact_if_needed().await;
-    over_cap(runtime, options).then(budget_stop)
+    if over_cap(runtime, options) {
+        // The summarizing call crossed the cap: the turn never runs, and its record must
+        // not resurrect it as a folded turn.
+        if turn.is_some() {
+            runtime.clear_run_start().await;
+        }
+        return Some(budget_stop());
+    }
+    None
+}
+
+/// The main model's input modalities, for the user message a turn sends.
+fn main_modalities(runtime: &AgentRuntime) -> rig_core::catalog::Modalities {
+    runtime
+        .models
+        .main
+        .completion
+        .spec()
+        .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input)
 }
 
 /// Appends a further turn's outcome to the message's: its denials join the earlier ones and the
@@ -754,7 +860,7 @@ async fn guarded_turn(
     stream_events: bool,
     prompt: String,
 ) -> Outcome {
-    if let Some(stop) = stop_before_call(runtime, options).await {
+    if let Some(stop) = stop_before_call(runtime, options, Some(&prompt)).await {
         runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
         return stop;
     }
@@ -775,6 +881,11 @@ async fn settle(
     while outcome.subtype == Subtype::Success {
         match wait_for_news(runtime, &|| over_cap(runtime, options)).await {
             News::Prompt(prompt) => {
+                // A turn an earlier fold failed to keep goes before this one; the record
+                // run_one writes must not be read as this turn's fallback first.
+                runtime
+                    .keep_unsettled_turn(Unsettled::SessionEnded, None)
+                    .await;
                 let next = run_one(runtime, options, prompt, stream_events).await;
                 runtime.goal_turn_ended(Some(&goal::turn_end(&next)));
                 outcome = merge(outcome, next);
@@ -827,6 +938,12 @@ async fn handle_message(
     let mut involved = runtime.session.goal().is_active();
     let prompt = match goal::command(&text) {
         None => {
+            // A turn a resume-time fold failed to keep belongs before this one: the
+            // checkpoint `begin_turn` records must hold the recovered history, or a
+            // rewind to it drops the recovered turn.
+            runtime
+                .keep_unsettled_turn(Unsettled::SessionEnded, None)
+                .await;
             runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage {
                 text: text.clone(),
@@ -871,6 +988,11 @@ async fn handle_message(
                 };
             }
             involved = true;
+            // As the plain-message branch: the fold goes before the checkpoint this
+            // turn's rewind would restore to.
+            runtime
+                .keep_unsettled_turn(Unsettled::SessionEnded, None)
+                .await;
             runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage {
                 text,
@@ -892,7 +1014,7 @@ async fn handle_message(
         let Some(pending) = runtime.next_goal_step() else {
             break;
         };
-        if let Some(stop) = stop_before_call(runtime, options).await {
+        if let Some(stop) = stop_before_call(runtime, options, None).await {
             runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
             outcome = merge(outcome, stop);
             break;

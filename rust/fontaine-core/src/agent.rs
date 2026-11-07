@@ -28,6 +28,7 @@ use fontaine_tools::websearch::SearxngChild;
 use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
 use rig_core::completion::ToolDefinition;
+use rig_core::message::Message;
 use rig_core::schemars::Schema;
 use rig_core::tool::ToolOutput;
 use rig_memory::{DirStore, estimate_tokens, load_async};
@@ -55,6 +56,7 @@ use crate::skills::SkillRuntime;
 use crate::steering::Steering;
 use crate::tools;
 use crate::trust;
+use crate::turn_recovery::{self, Fallback, Unsettled};
 use crate::workspace::{self, RootSource};
 
 mod afk;
@@ -766,6 +768,114 @@ impl AgentRuntime {
                 paths: index.paths,
                 truncated: index.truncated,
             });
+        } else {
+            // A process that died mid-turn left its journal; the turn belongs before the next.
+            self.keep_unsettled_turn(Unsettled::SessionEnded, None)
+                .await;
+        }
+    }
+
+    /// How many messages the main conversation holds now, for the fallback of a turn that may
+    /// be dropped. The surfaces refuse the turn when it cannot be read: a fallback counted on
+    /// a made-up length misplaces the fold that keeps a stopped run.
+    pub async fn conversation_len(&self) -> Result<usize, rig_memory::SessionError> {
+        load_async(&self.session.store(), CONVERSATION_LOG)
+            .await
+            .map(|conversation| conversation.messages().len())
+    }
+
+    /// Durably records the start of a root run: the prompt it will send and how many
+    /// messages `main` holds now, before auto-compaction. A fold after a kill before the
+    /// run's first model call reads this as its fallback, and ties the journal to its
+    /// positions when the run's save landed before the process died. The run's settle
+    /// clears it. The turn must not start when this write fails: nothing is journaled
+    /// yet, and a kill in the unrecorded window — the compaction that precedes the run
+    /// is long — would lose the prompt.
+    pub async fn record_run_start(
+        &self,
+        prompt: Message,
+        log_len_before: usize,
+    ) -> Result<(), rig_memory::SessionError> {
+        let store = self.session.store();
+        let record = turn_recovery::RunRecord {
+            prompt,
+            log_len_before,
+        };
+        turn_recovery::write_run_record(&store, CONVERSATION_LOG, &record).await?;
+        Ok(())
+    }
+
+    /// Rewrites the run record the preflight wrote with the count the conversation holds
+    /// after its compaction, as `record_run_start` does; a failed rewrite refuses the turn.
+    /// The stale record is cleared first, so a later fold cannot read it as the refused
+    /// turn's fallback and resurrect a turn that never ran.
+    pub async fn rewrite_run_start(
+        &self,
+        prompt: Message,
+        log_len_before: usize,
+    ) -> Result<(), rig_memory::SessionError> {
+        let written = self.record_run_start(prompt, log_len_before).await;
+        if written.is_err() {
+            self.clear_run_start().await;
+        }
+        written
+    }
+
+    /// Forgets a run start whose turn will not run: a stop between the record and the run
+    /// (a spent budget, say) must not resurrect the prompt as a folded turn on resume.
+    /// A failure is warned; the record stays, and the fold it feeds errs on appending
+    /// rather than dropping a turn.
+    pub async fn clear_run_start(&self) {
+        let store = self.session.store();
+        if let Err(e) = turn_recovery::clear_run_record(&store, CONVERSATION_LOG).await {
+            let message = format!(
+                "the run's pending record could not be cleared: {}",
+                chain(&e)
+            );
+            tracing::warn!("{message}");
+            self.approver.warn(&message);
+        }
+    }
+
+    /// Keeps a main run that ended without settling in the conversation: what it committed,
+    /// then a marker for `cause`. Also called with no fallback before each run, so a journal a
+    /// failed fold left is folded ahead of the turn about to run. A failure is warned and the
+    /// journal stays for the next fold.
+    pub async fn keep_unsettled_turn(&self, cause: Unsettled, fallback: Option<Fallback>) {
+        if let Err(e) = self.resolve_unsettled_turn(cause, fallback).await {
+            let message = format!(
+                "the unfinished turn could not be kept in the conversation: {}",
+                chain(&e)
+            );
+            tracing::warn!("{message}");
+            self.approver.warn(&message);
+        }
+    }
+
+    /// [`keep_unsettled_turn`](Self::keep_unsettled_turn) with the error returned instead of
+    /// warned, for a caller that must not go on after a failed fold: manual compaction
+    /// rewrites `main`, which a still-pending journal's fold mark would misplace.
+    pub async fn resolve_unsettled_turn(
+        &self,
+        cause: Unsettled,
+        fallback: Option<Fallback>,
+    ) -> Result<bool, rig_memory::SessionError> {
+        turn_recovery::fold_unsettled(&self.session.store(), CONVERSATION_LOG, cause, fallback)
+            .await
+    }
+
+    /// `/clear` and `/rewind` reset the conversation; the journal of an interrupted turn a
+    /// failed fold left pending must not be folded into the reset one. A failure is warned
+    /// and the journal stays, so the turn is kept rather than lost.
+    pub(crate) async fn discard_unsettled_turn(&self) {
+        let store = self.session.store();
+        if let Err(e) = turn_recovery::discard_unsettled(&store, CONVERSATION_LOG).await {
+            let message = format!(
+                "the interrupted turn's pending journal could not be discarded: {}",
+                chain(&e)
+            );
+            tracing::warn!("{message}");
+            self.approver.warn(&message);
         }
     }
 
@@ -878,6 +988,9 @@ impl AgentRuntime {
             return Err(ClearError::SubagentsRunning);
         }
         self.session.clear().await?;
+        // A reset means a reset: an interrupted turn kept pending in the journal by a failed
+        // fold must not re-enter the emptied conversation at the next turn.
+        self.discard_unsettled_turn().await;
         // The conversation is gone, so the agents it spawned leave the list; persisted
         // per-agent logs and the spend tally stay.
         let pruned = agents.clear_ended();

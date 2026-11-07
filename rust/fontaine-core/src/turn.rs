@@ -131,11 +131,7 @@ pub struct Attachment {
 /// The user message for one run: the prompt's text part, then one content part per
 /// attachment the model accepts. An attachment the model does not accept becomes a text
 /// note naming it, so nothing the user sent reaches the model unseen.
-pub(crate) fn user_message(
-    prompt: &str,
-    attachments: &[Attachment],
-    modalities: &Modalities,
-) -> Message {
+pub fn user_message(prompt: &str, attachments: &[Attachment], modalities: &Modalities) -> Message {
     let mut content = vec![UserContent::text(prompt)];
     for attachment in attachments {
         let data = base64::engine::general_purpose::STANDARD.encode(&attachment.bytes);
@@ -344,6 +340,12 @@ fn error_class(error: &PromptError) -> Option<&'static str> {
 /// rejected the provider's built-in search tool; nothing retries without it, so the text says
 /// how to turn it off.
 fn failure_text(error: &PromptError, offered_search: bool) -> String {
+    // rig renders every hook stop as "the run was cancelled", the user's Esc
+    // wording; a stop is the harness's own doing (the journal guard, the AFK
+    // stop), and its reason already says why.
+    if let PromptError::Cancelled { reason, .. } = error {
+        return reason.clone();
+    }
     let mut text = error.to_string();
     let rejected_search = offered_search
         && error

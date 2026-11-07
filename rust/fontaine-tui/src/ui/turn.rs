@@ -16,7 +16,9 @@ use fontaine_core::steering::Queued;
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
     Attachment, AttachmentMedia, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
+    user_message,
 };
+use fontaine_core::turn_recovery::{Fallback, Unsettled};
 use tokio::sync::mpsc::unbounded_channel;
 
 /// How a turn ended from the interface's side.
@@ -267,6 +269,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
         Some(TurnEnd::Finished(TurnOutcome::Failed(message)))
     }
 
+    /// Folds a turn an earlier fold failed to keep into the conversation, so it sits before
+    /// the turn about to run and its rewind checkpoint rather than after them.
+    async fn keep_leftover_turn(runtime: &AgentRuntime) {
+        runtime
+            .keep_unsettled_turn(Unsettled::SessionEnded, None)
+            .await;
+    }
+
     /// A turn on what the subagents reported. It is not the user speaking, so it is not
     /// recorded as a user message.
     pub(crate) async fn notification_turn(
@@ -285,6 +295,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         if let Some(end) = self.refresh_before_turn(runtime) {
             return self.harness_turn_tail(runtime, launch_dir, end).await;
         }
+        Self::keep_leftover_turn(runtime).await;
         // The job label wins a mixed inbox, as the prompt's own note says jobs first.
         self.app.transcript.notice(
             if kinds.contains(&fontaine_agents::tree::NotificationKind::Job) {
@@ -343,7 +354,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .notice(format!("scheduled: {}", fired.job.id));
         let end = match self.refresh_before_turn(runtime) {
             Some(end) => end,
-            None => self.turn(runtime, prompt, None, Vec::new()).await,
+            None => {
+                Self::keep_leftover_turn(runtime).await;
+                self.turn(runtime, prompt, None, Vec::new()).await
+            }
         };
         if matches!(end, TurnEnd::InputClosed) {
             return std::ops::ControlFlow::Break(());
@@ -365,7 +379,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let prompt = runtime.goal_prompt(&next).await;
         let end = match self.refresh_before_turn(runtime) {
             Some(end) => end,
-            None => self.turn(runtime, prompt, None, Vec::new()).await,
+            None => {
+                Self::keep_leftover_turn(runtime).await;
+                self.turn(runtime, prompt, None, Vec::new()).await
+            }
         };
         self.harness_turn_tail(runtime, launch_dir, end).await
     }
@@ -550,6 +567,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     match self.refresh_before_turn(runtime) {
                         Some(end) => end,
                         None => {
+                            Self::keep_leftover_turn(runtime).await;
                             runtime.begin_turn(&text, false);
                             self.turn(runtime, text.clone(), Some(&text), Vec::new())
                                 .await
@@ -579,6 +597,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     match self.refresh_before_turn(runtime) {
                         Some(end) => end,
                         None => {
+                            Self::keep_leftover_turn(runtime).await;
                             runtime.begin_turn(&text, false);
                             self.turn(runtime, text.clone(), Some(&text), files).await
                         }
@@ -591,6 +610,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     match self.refresh_before_turn(runtime) {
                         Some(end) => end,
                         None => {
+                            Self::keep_leftover_turn(runtime).await;
                             // Recorded as the human's message before this point.
                             runtime.begin_turn(&text, true);
                             self.turn(runtime, prompt, None, Vec::new()).await
@@ -791,8 +811,80 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let _ = events.send(event);
             Flow::Continue
         };
+        let modalities = runtime
+            .models
+            .main
+            .completion
+            .spec()
+            .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input);
+        // What a dropped run is kept as when it committed nothing: the message it sent, after
+        // the conversation as it stood once compaction was done with it. An unreadable count
+        // refuses the turn instead: the fallback a stop would fold from a made-up length
+        // would misplace the settled run's save.
+        let sent = user_message(&prompt, &attachments, &modalities);
+        let started_at = std::sync::atomic::AtomicUsize::new(usize::MAX);
+        let mut record_error: Option<String> = match runtime.conversation_len().await {
+            Ok(len) => {
+                started_at.store(len, std::sync::atomic::Ordering::Relaxed);
+                None
+            }
+            Err(e) => Some(format!(
+                "the conversation's length could not be read, so the turn did not run: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )),
+        };
+        // The run's durable record goes before the run future's compaction: a process that
+        // dies during compaction still leaves the prompt for the fold that resumes the
+        // session. A failed write refuses the turn: nothing is journaled yet, and a kill in
+        // the unrecorded window would lose the prompt.
+        if record_error.is_none() {
+            record_error = runtime
+                .record_run_start(
+                    sent.clone(),
+                    started_at.load(std::sync::atomic::Ordering::Relaxed),
+                )
+                .await
+                .err()
+                .map(|e| {
+                    format!(
+                        "the turn could not be journaled: {}",
+                        fontaine_tools::error_chain::chain(&e)
+                    )
+                });
+        }
+        let record_prompt = sent.clone();
         let mut run = Box::pin(async {
             runtime.compact_if_needed().await;
+            // A compaction that saved shrank the conversation; the run record's positions
+            // are post-compaction, like the fallback's. An unreadable count refuses the
+            // turn, like the pre-compaction path: the stale pre-compaction count would
+            // misplace the fallback a stop folds from, and could duplicate an
+            // already-saved prompt.
+            let len = match runtime.conversation_len().await {
+                Ok(len) => len,
+                Err(e) => {
+                    let message = format!(
+                        "the conversation's length could not be read after compaction, so the turn did not run: {}",
+                        fontaine_tools::error_chain::chain(&e)
+                    );
+                    runtime.approver().warn(&message);
+                    // The turn never runs, and the record its start wrote must not be
+                    // read later as this turn's fallback.
+                    runtime.clear_run_start().await;
+                    return TurnOutcome::Failed(message);
+                }
+            };
+            if started_at.swap(len, std::sync::atomic::Ordering::Relaxed) != len
+                && let Err(e) = runtime.record_run_start(record_prompt, len).await
+            {
+                // The run is journaled by now; the record is best-effort evidence, and a
+                // stale one errs on folding the turn again, never on dropping it.
+                let message = format!(
+                    "the run's pending record could not be rewritten after compaction: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                );
+                runtime.approver().warn(&message);
+            }
             let ids = runtime.models.main.wire_ids();
             let (model, provider) = (ids.model, ids.provider);
             run_turn(
@@ -801,12 +893,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     state: &runtime.state,
                     prompt,
                     attachments,
-                    modalities: runtime
-                        .models
-                        .main
-                        .completion
-                        .spec()
-                        .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input),
+                    modalities,
                     max_turns: None,
                     priced: runtime.models.main.catalog_billed(),
                     model,
@@ -820,6 +907,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         });
         let tree = runtime.state.agents().clone();
         let end = loop {
+            if let Some(e) = record_error.take() {
+                // The turn never ran: no fold is owed, and `finish_turn` below reports the
+                // failure to the transcript.
+                break TurnEnd::Finished(TurnOutcome::Failed(e));
+            }
             let changed = tree.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
@@ -905,6 +997,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
         };
         drop(run);
+        // Only a run cut short is unsettled: one that answered was saved, even when a stop
+        // landed in the same poll and is relabelled below. A failure with the stop standing
+        // was ended by the stop's dispatch denial and is kept with its marker.
+        let unsettled = match &end {
+            TurnEnd::Interrupted => Some(Unsettled::User),
+            TurnEnd::Stopped => Some(Unsettled::AfkStop),
+            TurnEnd::Finished(TurnOutcome::Failed(_)) if runtime.state.afk().stopped.is_some() => {
+                Some(Unsettled::AfkStop)
+            }
+            TurnEnd::Finished(_) | TurnEnd::InputClosed => None,
+        };
+        if let Some(cause) = unsettled {
+            let fallback = Fallback {
+                prompt: sent,
+                log_len_before: started_at.into_inner(),
+            };
+            runtime.keep_unsettled_turn(cause, Some(fallback)).await;
+        }
         // A stop that lands inside the poll that also finishes the turn is still a stop.
         let end = match end {
             TurnEnd::Finished(_) if runtime.state.afk().stopped.is_some() => {

@@ -72,6 +72,20 @@ impl<R: FnMut(&mut App)> Ui<R> {
         focus: String,
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
+        // Compaction rewrites `main`, which a still-pending journal's fold mark relies on
+        // for its counts; resolve the journal first, and skip the compaction rather than
+        // fold the turn twice.
+        if let Err(e) = runtime
+            .resolve_unsettled_turn(fontaine_core::turn_recovery::Unsettled::SessionEnded, None)
+            .await
+        {
+            self.app.transcript.error(format!(
+                "the unfinished turn could not be kept, so the conversation was not compacted: \
+                 {}",
+                fontaine_tools::error_chain::chain(&e)
+            ));
+            return Continue(());
+        }
         let (result, closed) = self
             .serve_queued(
                 runtime,
