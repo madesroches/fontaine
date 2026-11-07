@@ -489,7 +489,7 @@ async fn a_subagent_is_viewed_messaged_resumed_and_the_main_chat_comes_back_whol
         ui.send("root task");
         // The list sits below the status line, `main` first.
         ui.wait_until("the agent list", |s| {
-            s.contains("◯ worker-1 (agent-1) worker running")
+            s.contains("◯ worker-1 (agent-1) worker mock/scripted running")
         })
         .await;
         assert!(ui.screen().contains("● main"), "{}", ui.screen());
