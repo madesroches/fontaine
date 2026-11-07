@@ -2,6 +2,7 @@
 # Usage: release-sign.sh <channel> <dir> <pubkey> <version> <commit>
 # Signs every fontaine-*.tar.xz and fontaine-*.zip in <dir> with the secret key in
 # MINISIGN_SECRET_KEY (password in MINISIGN_PASSWORD), then runs release-verify.sh over the result.
+# The kind `dev-installer` instead signs the single fontaine-installer.sh in <dir> under channel dev.
 set -euo pipefail
 
 if [ "$#" -ne 5 ]; then
@@ -20,7 +21,7 @@ fail() {
 }
 
 case "$channel" in
-  release | dev) ;;
+  release | dev | dev-installer) ;;
   *) fail "unknown channel '$channel'" ;;
 esac
 [ -n "$version" ] || fail "empty version"
@@ -30,10 +31,17 @@ esac
 [ -d "$dir" ] || fail "'$dir' is not a directory"
 
 archives=()
-for path in "$dir"/fontaine-*.tar.xz "$dir"/fontaine-*.zip; do
-  [ -f "$path" ] && archives+=("$path")
-done
-[ "${#archives[@]}" -gt 0 ] || fail "no archives in '$dir'"
+if [ "$channel" = dev-installer ]; then
+  [ -f "$dir/fontaine-installer.sh" ] || fail "no fontaine-installer.sh in '$dir'"
+  archives+=("$dir/fontaine-installer.sh")
+  signed_channel=dev
+else
+  for path in "$dir"/fontaine-*.tar.xz "$dir"/fontaine-*.zip; do
+    [ -f "$path" ] && archives+=("$path")
+  done
+  [ "${#archives[@]}" -gt 0 ] || fail "no archives in '$dir'"
+  signed_channel="$channel"
+fi
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 keyfile="$(umask 077 && mktemp)"
@@ -42,7 +50,7 @@ printf '%s\n' "$MINISIGN_SECRET_KEY" > "$keyfile"
 
 for archive in "${archives[@]}"; do
   name="$(basename "$archive")"
-  comment="fontaine-signature v1 channel=$channel file=$name version=$version commit=$commit"
+  comment="fontaine-signature v1 channel=$signed_channel file=$name version=$version commit=$commit"
   printf '%s\n' "$MINISIGN_PASSWORD" \
     | minisign -S -s "$keyfile" -m "$archive" -x "$archive.minisig" -t "$comment" >/dev/null \
     || fail "signing $name failed"

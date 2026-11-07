@@ -3,7 +3,10 @@
 # release.yml: only `sign` (environment `dev-signing`) sees the signing key, and `contents: write`
 # is granted per job to `host`, `verify-draft` and `publish` only. Every job builds and records
 # the head commit of the CI run (`workflow_run.head_sha`), never `github.sha`, because `main` may
-# have moved on by the time this workflow starts. See docs/verifying-releases.md.
+# have moved on by the time this workflow starts. `dev-<n>` holds the archives and has no installer;
+# the separate long-lived prerelease `dev` holds only dist's installer rewritten to fetch from the
+# `dev-<n>` of its run, signed in `sign`, and replaced by `stable-installer` after `publish`, so
+# one URL always installs the latest dev build. See docs/verifying-releases.md.
 name: Dev channel
 permissions:
   contents: read
@@ -221,9 +224,18 @@ jobs:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
-      # The installer bakes a `v<version>` download URL and dev tags are `dev-<n>`, so it would 404.
-      - name: Remove the dist manifests and installer
-        run: rm -f artifacts/*-dist-manifest.json artifacts/fontaine-installer.sh
+      # The installer bakes a `v<version>` download URL and dev tags are `dev-<n>`, so it is rewritten
+      # apart from the archives, which must not gain an installer.
+      - name: Set the installer aside and remove the dist manifests
+        run: |
+          mkdir dev-installer
+          mv artifacts/fontaine-installer.sh dev-installer/
+          rm -f artifacts/*-dist-manifest.json
+      - name: Rewrite the installer for this dev tag
+        env:
+          SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
+          DEV_TAG: ${{ needs.plan.outputs.tag }}
+        run: .github/scripts/dev-installer.sh dev-installer/fontaine-installer.sh "$DEV_TAG" "$SIGN_VERSION"
       - name: Install minisign
         run: .github/scripts/install-minisign.sh
       - name: Sign and verify
@@ -232,12 +244,20 @@ jobs:
           MINISIGN_PASSWORD: ${{ secrets.MINISIGN_PASSWORD }}
           SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
           SIGN_COMMIT: ${{ needs.plan.outputs.sign-commit }}
-        run: .github/scripts/release-sign.sh dev artifacts rust/fontaine/keys/dev.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
+        run: |
+          .github/scripts/release-sign.sh dev artifacts rust/fontaine/keys/dev.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
+          .github/scripts/release-sign.sh dev-installer dev-installer rust/fontaine/keys/dev.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
       - name: Upload signatures
         uses: actions/upload-artifact@v7
         with:
           name: artifacts-signatures
           path: artifacts/*.minisig
+      # Not named `artifacts-*`, so `host` and `verify-draft` never pick it up.
+      - name: Upload the signed installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: dev-installer
+          path: dev-installer/*
 
   # Creates the draft prerelease; nothing is public until `publish`.
   host:
@@ -320,3 +340,76 @@ jobs:
     steps:
       - name: Publish the draft
         run: gh release edit "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+
+  # Replaces the installer at the fixed `dev` release URL once `dev-<n>` is public. The tag `dev`
+  # is created once and never moved; it only anchors the release.
+  stable-installer:
+    needs:
+      - plan
+      - publish
+    runs-on: "ubuntu-22.04"
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ env.HEAD_SHA }}
+          persist-credentials: false
+      - name: Install minisign
+        run: .github/scripts/install-minisign.sh
+      - name: Download the signed installer
+        uses: actions/download-artifact@v8
+        with:
+          name: dev-installer
+          path: artifacts
+      - name: Verify the installer before any upload
+        env:
+          SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
+          SIGN_COMMIT: ${{ needs.plan.outputs.sign-commit }}
+        run: |
+          .github/scripts/release-verify.sh dev-installer artifacts rust/fontaine/keys/dev.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
+          sh -n artifacts/fontaine-installer.sh
+      # Runs can finish out of order and an older run can be re-run; the stable installer must
+      # never go back to an older build.
+      - id: guard
+        name: Skip unless this is the newest published dev build
+        env:
+          DEV_TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          releases="$(gh release list --json tagName,isDraft --limit 1000 --repo "$GITHUB_REPOSITORY")"
+          newest="$(jq -r '[.[] | select(.isDraft | not) | .tagName | select(test("^dev-[0-9]+$")) | ltrimstr("dev-") | tonumber] | max // 0' <<<"$releases")"
+          mine="${DEV_TAG#dev-}"
+          if [ "$newest" -gt "$mine" ]; then
+            echo "::notice::dev-$newest is published and newer than $DEV_TAG; leaving the stable installer alone"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create the dev release if it does not exist
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          if gh release view dev --repo "$GITHUB_REPOSITORY" >/dev/null 2>"$RUNNER_TEMP/view.err"; then
+            exit 0
+          fi
+          if ! grep -qi 'not found' "$RUNNER_TEMP/view.err"; then
+            cat "$RUNNER_TEMP/view.err" >&2
+            exit 1
+          fi
+          printf 'Stable address of the latest dev installer. The tag only anchors this release and is never moved; the archives are on the immutable `dev-<n>` releases.\n\nSee docs/verifying-releases.md.\n' > "$RUNNER_TEMP/notes.txt"
+          gh release create dev --repo "$GITHUB_REPOSITORY" --prerelease --latest=false --target "$HEAD_SHA" --title "Dev installer" --notes-file "$RUNNER_TEMP/notes.txt"
+      # `--clobber` deletes the old asset before uploading, so the URL can 404 briefly, and a failed
+      # upload leaves none; the byte-compare below fails the job and the next run restores it.
+      - name: Replace the installer
+        if: steps.guard.outputs.skip != 'true'
+        run: gh release upload dev artifacts/fontaine-installer.sh artifacts/fontaine-installer.sh.minisig --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Check what users download
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          mkdir fetched
+          for f in fontaine-installer.sh fontaine-installer.sh.minisig; do
+            curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -fsSL -o "fetched/$f" "https://github.com/$GITHUB_REPOSITORY/releases/download/dev/$f"
+            cmp "artifacts/$f" "fetched/$f"
+          done
