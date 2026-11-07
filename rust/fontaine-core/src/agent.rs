@@ -776,11 +776,11 @@ impl AgentRuntime {
     }
 
     /// How many messages the main conversation holds now, for the fallback of a turn that may
-    /// be dropped; `None` when it cannot be read.
-    pub async fn conversation_len(&self) -> Option<usize> {
+    /// be dropped. The surfaces refuse the turn when it cannot be read: a fallback counted on
+    /// a made-up length misplaces the fold that keeps a stopped run.
+    pub async fn conversation_len(&self) -> Result<usize, rig_memory::SessionError> {
         load_async(&self.session.store(), CONVERSATION_LOG)
             .await
-            .ok()
             .map(|conversation| conversation.messages().len())
     }
 
@@ -803,6 +803,22 @@ impl AgentRuntime {
         };
         turn_recovery::write_run_record(&store, CONVERSATION_LOG, &record).await?;
         Ok(())
+    }
+
+    /// Rewrites the run record the preflight wrote with the count the conversation holds
+    /// after its compaction, as `record_run_start` does; a failed rewrite refuses the turn.
+    /// The stale record is cleared first, so a later fold cannot read it as the refused
+    /// turn's fallback and resurrect a turn that never ran.
+    pub async fn rewrite_run_start(
+        &self,
+        prompt: Message,
+        log_len_before: usize,
+    ) -> Result<(), rig_memory::SessionError> {
+        let written = self.record_run_start(prompt, log_len_before).await;
+        if written.is_err() {
+            self.clear_run_start().await;
+        }
+        written
     }
 
     /// Forgets a run start whose turn will not run: a stop between the record and the run

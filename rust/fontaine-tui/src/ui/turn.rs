@@ -819,28 +819,45 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input);
         // What a dropped run is kept as when it committed nothing: the message it sent, after
         // the conversation as it stood once compaction was done with it. An unreadable count
-        // keeps the prompt rather than risk losing it.
+        // refuses the turn instead: the fallback a stop would fold from a made-up length
+        // would misplace the settled run's save.
         let sent = user_message(&prompt, &attachments, &modalities);
-        let started_at = std::sync::atomic::AtomicUsize::new(
-            runtime.conversation_len().await.unwrap_or(usize::MAX),
-        );
+        let started_at = std::sync::atomic::AtomicUsize::new(usize::MAX);
+        let mut record_error: Option<String> = match runtime.conversation_len().await {
+            Ok(len) => {
+                started_at.store(len, std::sync::atomic::Ordering::Relaxed);
+                None
+            }
+            Err(e) => Some(format!(
+                "the conversation's length could not be read, so the turn did not run: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )),
+        };
         // The run's durable record goes before the run future's compaction: a process that
         // dies during compaction still leaves the prompt for the fold that resumes the
         // session. A failed write refuses the turn: nothing is journaled yet, and a kill in
         // the unrecorded window would lose the prompt.
-        let mut record_error = runtime
-            .record_run_start(
-                sent.clone(),
-                started_at.load(std::sync::atomic::Ordering::Relaxed),
-            )
-            .await
-            .err();
+        if record_error.is_none() {
+            record_error = runtime
+                .record_run_start(
+                    sent.clone(),
+                    started_at.load(std::sync::atomic::Ordering::Relaxed),
+                )
+                .await
+                .err()
+                .map(|e| {
+                    format!(
+                        "the turn could not be journaled: {}",
+                        fontaine_tools::error_chain::chain(&e)
+                    )
+                });
+        }
         let record_prompt = sent.clone();
         let mut run = Box::pin(async {
             runtime.compact_if_needed().await;
             // A compaction that saved shrank the conversation; the run record's positions
             // are post-compaction, like the fallback's.
-            if let Some(len) = runtime.conversation_len().await
+            if let Ok(len) = runtime.conversation_len().await
                 && started_at.swap(len, std::sync::atomic::Ordering::Relaxed) != len
                 && let Err(e) = runtime.record_run_start(record_prompt, len).await
             {
@@ -877,10 +894,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             if let Some(e) = record_error.take() {
                 // The turn never ran: no fold is owed, and `finish_turn` below reports the
                 // failure to the transcript.
-                break TurnEnd::Finished(TurnOutcome::Failed(format!(
-                    "the turn could not be journaled: {}",
-                    fontaine_tools::error_chain::chain(&e)
-                )));
+                break TurnEnd::Finished(TurnOutcome::Failed(e));
             }
             let changed = tree.changed().notified();
             tokio::pin!(changed);

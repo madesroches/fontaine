@@ -573,14 +573,22 @@ async fn run_one(
     // The run's durable record: a stop that drops the run, or a kill before the first
     // model call, leaves the prompt for the fold that keeps the turn.
     let sent = user_message(&text, &[], &modalities);
-    let len = runtime.conversation_len().await.unwrap_or(usize::MAX);
-    if let Err(e) = runtime.record_run_start(sent.clone(), len).await {
-        // The turn must not run unrecorded: the compaction and the run that follow leave
-        // a long window in which a kill would lose the prompt.
+    let len = match runtime.conversation_len().await {
+        Ok(len) => len,
+        Err(e) => {
+            // The preflight wrote the record before the compaction; the refusal must not
+            // leave it for a fold to read as this turn's fallback.
+            runtime.clear_run_start().await;
+            return count_stop(&e);
+        }
+    };
+    if let Err(e) = runtime.rewrite_run_start(sent.clone(), len).await {
+        // The turn must not run unrecorded: the run that follows leaves a window in
+        // which a kill would lose the prompt. The rewrite already cleared the record
+        // the preflight wrote, so the refusal cannot resurrect the turn as a fold.
         return record_stop(&e);
     }
-    // What a stopped run is kept as when it committed nothing. An unreadable count keeps the
-    // prompt rather than risk losing it.
+    // What a stopped run is kept as when it committed nothing.
     let fallback = Fallback {
         prompt: sent,
         log_len_before: len,
@@ -752,12 +760,26 @@ fn budget_stop() -> Outcome {
 /// The outcome of a turn refused before it runs: its durable record could not be
 /// written, and an unrecorded turn must not start.
 fn record_stop(e: &(dyn std::error::Error + 'static)) -> Outcome {
+    preflight_stop("the run's pending record could not be written", e)
+}
+
+/// The outcome of a turn refused before it runs: the conversation's length could not
+/// be read, and a fallback counted on a made-up length would misplace the fold that
+/// keeps a stopped run.
+fn count_stop(e: &(dyn std::error::Error + 'static)) -> Outcome {
+    preflight_stop(
+        "the conversation's length could not be read, so the turn did not run",
+        e,
+    )
+}
+
+fn preflight_stop(detail: &str, e: &(dyn std::error::Error + 'static)) -> Outcome {
     Outcome {
         subtype: Subtype::Execution,
         text: String::new(),
         structured: None,
         error: Some(format!(
-            "the run's pending record could not be written: {}",
+            "{detail}: {}",
             fontaine_tools::error_chain::chain(e)
         )),
         started: std::time::Instant::now(),
@@ -786,7 +808,12 @@ async fn stop_before_call(
         .keep_unsettled_turn(Unsettled::SessionEnded, None)
         .await;
     if let Some(text) = turn {
-        let len = runtime.conversation_len().await.unwrap_or(usize::MAX);
+        let len = match runtime.conversation_len().await {
+            Ok(len) => len,
+            // A fallback counted on a made-up length misplaces the fold a stop owes the
+            // run, so the turn is refused rather than risk duplicating its prompt.
+            Err(e) => return Some(count_stop(&e)),
+        };
         if let Err(e) = runtime
             .record_run_start(user_message(text, &[], &main_modalities(runtime)), len)
             .await

@@ -470,3 +470,100 @@ async fn a_run_start_the_store_refuses_is_an_error_the_turn_must_not_run() {
     );
     assert_eq!(built.main.request_count(), 0, "the turn never ran");
 }
+
+#[derive(Default)]
+struct Warnings(std::sync::Mutex<Vec<String>>);
+
+impl fontaine_core::permissions::Approver for Warnings {
+    fn approve<'a>(
+        &'a self,
+        _request: fontaine_core::permissions::ApprovalRequest,
+    ) -> futures::future::BoxFuture<'a, fontaine_core::permissions::Answer> {
+        Box::pin(async { fontaine_core::permissions::Answer::Deny { feedback: None } })
+    }
+
+    fn warn(&self, message: &str) {
+        self.0.lock().unwrap().push(message.to_string());
+    }
+}
+
+/// The preflight's record write succeeds and the post-compaction rewrite fails: the turn
+/// is refused, and the stale record must not survive the refusal — with it, the next fold
+/// reads the refused prompt as a fallback and appends a turn that never ran.
+#[tokio::test]
+async fn a_failed_record_rewrite_refuses_the_turn_and_clears_the_stale_record() {
+    let w = World::new();
+    let (models, mock, _) = holding(vec![answer_turn("done")], usize::MAX);
+    let warnings = Arc::new(Warnings::default());
+    let rt = runtime::build_with_approver(
+        &w,
+        Manual,
+        models,
+        None,
+        false,
+        Default::default(),
+        None,
+        warnings.clone(),
+    );
+    rt.record_run_start(user_message("hi", &[], &Default::default()), 0)
+        .await
+        .expect("the preflight's record writes");
+    // The rewrite's write now fails: the record's file path is a directory.
+    let record_path = rt.session.dir.join("files").join("main.inflight.run");
+    std::fs::remove_file(&record_path).unwrap();
+    std::fs::create_dir(&record_path).unwrap();
+    let e = rt
+        .rewrite_run_start(user_message("hi", &[], &Default::default()), 0)
+        .await
+        .expect_err("the refused rewrite propagates to the caller");
+    assert!(
+        matches!(&e, rig_memory::SessionError::Io(_)),
+        "the store's refusal is returned, not warned away: {e}"
+    );
+    // The stale record is cleared before the refusal is returned; on this store the
+    // clear fails too, and that failure is surfaced.
+    let warned = warnings.0.lock().unwrap();
+    let clears = warned
+        .iter()
+        .filter(|m| m.contains("the run's pending record could not be cleared"))
+        .count();
+    assert_eq!(clears, 1, "{warned:?}");
+    drop(warned);
+    assert_eq!(mock.request_count(), 0, "the turn never ran");
+}
+
+/// The count a turn's fallback is built from must be real: an unreadable one refuses the
+/// turn, since a fallback counted on a made-up length would append an already-saved
+/// prompt again after a stop. The refused turn leaves no record behind for a fold.
+#[tokio::test]
+async fn an_unreadable_conversation_count_refuses_the_turn() {
+    let w = World::new();
+    let built = build(&w, Manual, vec![answer_turn("done")], true);
+    // The count's read fails the way the preflight reads it.
+    let log_path = built.runtime.session.dir.join("logs").join("main.jsonl");
+    std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
+    if log_path.exists() {
+        std::fs::remove_file(&log_path).unwrap();
+    }
+    std::fs::create_dir(&log_path).unwrap();
+    let e = built
+        .runtime
+        .conversation_len()
+        .await
+        .expect_err("the count's read failure surfaces");
+    assert!(
+        matches!(&e, rig_memory::SessionError::Io(_)),
+        "the store's refusal is returned: {e}"
+    );
+    assert_eq!(built.main.request_count(), 0, "the turn never ran");
+    match built
+        .runtime
+        .session
+        .store()
+        .read_file_async("main.inflight.run")
+        .await
+    {
+        Ok(bytes) => assert!(bytes.is_empty(), "{bytes:?}"),
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}"),
+    }
+}
