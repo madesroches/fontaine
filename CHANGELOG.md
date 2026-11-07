@@ -32,6 +32,16 @@ All notable changes are recorded here. The format follows
 - CI builds the rustdoc for the workspace, and for the `pg2` feature on Linux, with warnings
   denied, so a broken doc link fails the build (#197).
 
+#### Providers
+
+- `claude-subscription` reads replayed history from the prompt cache and starts each request about
+  0.6 s sooner. Every CLI process now runs in one stable, empty directory in the data directory
+  (the CLI writes its working directory into the prompt, and a fresh path per request defeated the
+  cache), the last replayed user message carries a cache marker, the model-listing check moves onto
+  the request's own CLI process, the login probe runs alongside its start, and the CLI's claude.ai
+  connector fetch is off. Billing and model checks still complete before any response is requested
+  (#449).
+
 ### Fixed
 
 - `claude-subscription`: a tool call the CLI names without the `mcp__fontaine__` prefix, for a

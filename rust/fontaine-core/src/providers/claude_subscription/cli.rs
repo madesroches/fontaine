@@ -16,7 +16,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::OnceCell;
 
-use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL};
+use super::protocol::{Event, Failure, Reader};
+use super::transport::{next, rejected};
+use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error};
 use crate::models::SharedEnv;
 use crate::owner_only;
 use fontaine_tools::lock::lock_recovering;
@@ -149,6 +151,7 @@ const FIXED_ENV: &[(&str, &str)] = &[
     ("CLAUDE_CODE_MAX_RETRIES", "0"),
     ("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false"),
     ("ENABLE_TOOL_SEARCH", "false"),
+    ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
 ];
 
 /// Every inherited variable this adapter looks at: the ones it forwards and the ones it refuses.
@@ -170,7 +173,8 @@ pub struct Timeouts {
     pub version: Duration,
     /// The outer bound of the login probe.
     pub auth: Duration,
-    /// The outer bound of model discovery.
+    /// The outer bound of model discovery, and of the request-time model listing on a request's
+    /// own process.
     pub discovery: Duration,
 }
 
@@ -221,9 +225,17 @@ pub struct ModelRow {
     pub credits: bool,
 }
 
+/// The directory, inside Fontaine's data directory, every CLI process runs in.
+pub const WORKDIR_NAME: &str = "claude-cli-cwd";
+
+/// Entries that would put instructions into the CLI's prompt.
+const INSTRUCTION_ENTRIES: [&str; 3] = ["CLAUDE.md", "AGENTS.md", ".claude"];
+
 pub struct Cli {
     program: PathBuf,
     config_dir: Option<PathBuf>,
+    data_dir: PathBuf,
+    workdir: PathBuf,
     env: SharedEnv,
     pub timeouts: Timeouts,
     version_ok: OnceCell<()>,
@@ -233,16 +245,54 @@ impl Cli {
     pub fn new(
         cli_path: Option<PathBuf>,
         config_dir: Option<PathBuf>,
+        data_dir: &Path,
         env: SharedEnv,
         timeouts: Timeouts,
     ) -> Self {
         Cli {
             program: cli_path.unwrap_or_else(|| PathBuf::from("claude")),
             config_dir,
+            data_dir: data_dir.to_path_buf(),
+            workdir: data_dir.join(WORKDIR_NAME),
             env,
             timeouts,
             version_ok: OnceCell::new(),
         }
+    }
+
+    /// The one directory every CLI process runs in. The CLI writes its working directory into
+    /// the prompt, so a stable, empty one keeps the prompt prefix the same from request to
+    /// request.
+    pub fn workdir(&self) -> &Path {
+        &self.workdir
+    }
+
+    fn refuse_instruction_files(&self) -> Result<(), ClaudeError> {
+        let unreadable = |e: std::io::Error| {
+            ClaudeError::new(
+                ErrorKind::Cli,
+                format!(
+                    "could not read the Claude CLI's working directory {}",
+                    self.workdir.display()
+                ),
+            )
+            .with_source(e)
+        };
+        for entry in std::fs::read_dir(&self.workdir).map_err(unreadable)? {
+            let entry = entry.map_err(unreadable)?;
+            let name = entry.file_name();
+            if INSTRUCTION_ENTRIES.iter().any(|held| name == *held) {
+                return Err(ClaudeError::new(
+                    ErrorKind::Cli,
+                    format!(
+                        "the Claude CLI's working directory {} holds {}, which would put instructions into the model's prompt; empty the directory",
+                        self.workdir.display(),
+                        name.to_string_lossy()
+                    ),
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Refuses when an inherited variable would change the account or backend that bills. Only
@@ -382,48 +432,19 @@ impl Cli {
         let files = ChildFiles::empty(&scratch).map_err(scratch_error)?;
         let args = fixed_args(&files, None, None, None);
         let mut child = self.launch(scratch, args, true)?;
-        let request_id = format!("fontaine-{}", uuid::Uuid::new_v4());
+        let request_id = initialize_id();
         child
-            .write_line(
-                &json!({
-                    "type": "control_request",
-                    "request_id": request_id,
-                    "request": { "subtype": "initialize" },
-                }),
-                self.timeouts.read_idle,
-            )
+            .write_line(&initialize_request(&request_id), self.timeouts.read_idle)
             .await?;
         child.close_stdin();
-        let rows = loop {
-            let line = match child.next_line(self.timeouts.read_idle).await {
-                Ok(Some(line)) => line,
-                Ok(None) => {
-                    return Err(protocol("the Claude CLI ended before it listed its models"));
-                }
-                Err(ReadFail::Idle) => {
-                    return Err(ClaudeError::new(
-                        ErrorKind::SetupTimeout,
-                        "the Claude CLI did not list its models in time",
-                    ));
-                }
-                Err(ReadFail::TooLong | ReadFail::Io) => {
-                    return Err(protocol("the Claude CLI's model listing was unreadable"));
-                }
-            };
-            let value: Value = serde_json::from_slice(&line)
-                .map_err(|_| protocol("the Claude CLI's model listing was not JSON"))?;
-            if value.get("type").and_then(Value::as_str) != Some("control_response") {
-                continue;
-            }
-            let response = value.get("response").unwrap_or(&Value::Null);
-            if response.get("request_id").and_then(Value::as_str) != Some(request_id.as_str()) {
-                continue;
-            }
-            if response.get("subtype").and_then(Value::as_str) != Some("success") {
-                return Err(protocol("the Claude CLI refused to list its models"));
-            }
-            break model_rows(response.get("response").unwrap_or(&Value::Null))?;
-        };
+        let rows = child
+            .list_models(&request_id, self.timeouts.read_idle, None)
+            .await
+            .map_err(|failure| {
+                claude_error(&failure)
+                    .cloned()
+                    .expect("a listing without a reader fails only with Claude errors")
+            })?;
         child.stop().await;
         Ok(rows)
     }
@@ -448,6 +469,13 @@ impl Cli {
             vars.retain(|(existing, _)| existing != name);
             vars.push((OsString::from(name), OsString::from(value)));
         }
+        // Git discovery from the working directory stops here, so an enclosing work tree (a
+        // dotfiles repository over $HOME) never reaches the prompt.
+        vars.retain(|(name, _)| name != "GIT_CEILING_DIRECTORIES");
+        vars.push((
+            OsString::from("GIT_CEILING_DIRECTORIES"),
+            self.data_dir.clone().into_os_string(),
+        ));
         vars
     }
 
@@ -477,14 +505,16 @@ impl Cli {
         .with_source(error)
     }
 
-    /// Starts the CLI in `scratch`, which the child guard owns from here on.
+    /// Starts the CLI in the stable working directory. `scratch` holds the per-launch files named
+    /// in `args`, and the child guard owns it from here on.
     pub(crate) fn launch(
         &self,
         scratch: Scratch,
         args: Vec<OsString>,
         stdin: bool,
     ) -> Result<CliChild, ClaudeError> {
-        let mut command = self.command(args, &scratch.path);
+        self.refuse_instruction_files()?;
+        let mut command = self.command(args, &self.workdir);
         command
             .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
@@ -575,6 +605,18 @@ struct Status {
 
 fn protocol(message: &str) -> ClaudeError {
     ClaudeError::new(ErrorKind::Protocol, message)
+}
+
+pub(crate) fn initialize_id() -> String {
+    format!("fontaine-{}", uuid::Uuid::new_v4())
+}
+
+pub(crate) fn initialize_request(request_id: &str) -> Value {
+    json!({
+        "type": "control_request",
+        "request_id": request_id,
+        "request": { "subtype": "initialize" },
+    })
 }
 
 pub(crate) fn scratch_error(error: std::io::Error) -> ClaudeError {
@@ -896,6 +938,71 @@ impl CliChild {
         self.stdin = None;
     }
 
+    /// Reads until the `initialize` answer to the already-written `request_id` and returns its
+    /// model rows. Without a `reader` (a process that only lists) other lines are skipped; with
+    /// one (a request's own process) every other line goes through the reader and any event
+    /// but nothing is a protocol error, since no frame has asked for one yet.
+    pub async fn list_models(
+        &mut self,
+        request_id: &str,
+        idle: Duration,
+        mut reader: Option<&mut Reader>,
+    ) -> Result<Vec<ModelRow>, Failure> {
+        let fail = |message: &str| -> Failure { protocol(message).boxed() };
+        loop {
+            let line = match reader.as_deref() {
+                Some(reader) => next(self, reader, idle).await?,
+                None => match self.next_line(idle).await {
+                    Ok(Some(line)) => line,
+                    Ok(None) => {
+                        return Err(fail("the Claude CLI ended before it listed its models"));
+                    }
+                    Err(ReadFail::Idle) => {
+                        return Err(ClaudeError::new(
+                            ErrorKind::SetupTimeout,
+                            "the Claude CLI did not list its models in time",
+                        )
+                        .boxed());
+                    }
+                    Err(ReadFail::TooLong | ReadFail::Io) => {
+                        return Err(fail("the Claude CLI's model listing was unreadable"));
+                    }
+                },
+            };
+            let value: Option<Value> = serde_json::from_slice(&line).ok();
+            let answer = value.as_ref().and_then(|value| {
+                let response = value.get("response")?;
+                (value.get("type").and_then(Value::as_str) == Some("control_response")
+                    && response.get("request_id").and_then(Value::as_str) == Some(request_id))
+                .then_some(response)
+            });
+            let Some(response) = answer else {
+                match reader.as_deref_mut() {
+                    Some(reader) => {
+                        let event = reader
+                            .accept(&line)
+                            .inspect_err(|e| rejected(&line, reader, e))?;
+                        if !matches!(event, Event::Nothing) {
+                            return Err(fail(
+                                "the Claude CLI answered before it listed its models",
+                            ));
+                        }
+                    }
+                    None if value.is_none() => {
+                        return Err(fail("the Claude CLI's model listing was not JSON"));
+                    }
+                    None => {}
+                }
+                continue;
+            };
+            if response.get("subtype").and_then(Value::as_str) != Some("success") {
+                return Err(fail("the Claude CLI refused to list its models"));
+            }
+            return model_rows(response.get("response").unwrap_or(&Value::Null))
+                .map_err(ClaudeError::boxed);
+        }
+    }
+
     /// The next stdout line; `None` at the end of the stream. `idle` bounds the wait.
     pub async fn next_line(&mut self, idle: Duration) -> Result<Option<Vec<u8>>, ReadFail> {
         let reader = &mut self.stdout;
@@ -1074,5 +1181,68 @@ mod tests {
     fn a_listing_without_models_is_a_protocol_error() {
         assert!(model_rows(&json!({})).is_err());
         assert!(model_rows(&json!({"models": [{"nothing": 1}]})).is_err());
+    }
+
+    #[cfg(unix)]
+    async fn listing_with(script: &str) -> Result<Vec<ModelRow>, ClaudeError> {
+        let data = tempfile::tempdir().unwrap();
+        let cli = Cli::new(
+            Some(PathBuf::from("/bin/sh")),
+            None,
+            data.path(),
+            Arc::new(|_| None),
+            Timeouts::default(),
+        );
+        std::fs::create_dir(cli.workdir()).unwrap();
+        let scratch = Scratch::new().unwrap();
+        let mut child = cli
+            .launch(scratch, vec!["-c".into(), script.into()], true)
+            .unwrap();
+        child
+            .list_models("req", Duration::from_secs(5), None)
+            .await
+            .map_err(|failure| claude_error(&failure).cloned().unwrap())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_refused_listing_is_a_protocol_error() {
+        let error = listing_with(
+            r#"echo '{"type":"control_response","response":{"request_id":"req","subtype":"error"}}'"#,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Protocol);
+        assert_eq!(
+            error.to_string(),
+            "the Claude CLI refused to list its models"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_end_before_the_answer_is_a_protocol_error() {
+        let error = listing_with(
+            r#"echo '{"type":"system"}'; echo '{"type":"control_response","response":{"request_id":"other","subtype":"success"}}'"#,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Protocol);
+        assert_eq!(
+            error.to_string(),
+            "the Claude CLI ended before it listed its models"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_answer_to_the_request_is_read_past_other_lines() {
+        let rows = listing_with(
+            r#"echo '{"type":"system"}'; echo '{"type":"control_response","response":{"request_id":"req","subtype":"success","response":{"models":[{"value":"sonnet","resolvedModel":"claude-sonnet-5-5"}]}}}'"#,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "sonnet");
     }
 }

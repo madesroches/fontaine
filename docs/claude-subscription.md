@@ -58,10 +58,14 @@ Before the models are listed and before every model request Fontaine:
    effort or fallback overrides. The refusal names the variables, never their values; unset them
    and start again. The environment is looked up live, so a variable set later is seen too;
 3. runs `claude auth status` for the account's profile and requires a signed-in `claude.ai`
-   subscription on a Max or Ultra plan;
+   subscription on a Max or Ultra plan. For a model request this runs alongside the start of the
+   request's own CLI process;
 4. asks the CLI for its model list (an `initialize` request, no turn, no inference) and refuses the
    selected model if its current row says it draws from paid usage credits or resolves to another
-   model than when it was listed.
+   model than when it was listed. For a model request the question goes to that request's own
+   process, before the frame that asks for a response.
+
+No response is requested until every check has passed, so a refused request still runs no turn.
 
 A model whose canonical id this build of Fontaine has no model facts for (output limit, features)
 is refused rather than guessed at.
@@ -72,7 +76,7 @@ variable, including other providers' keys, reaches it.
 
 ## What a request is
 
-Each model call starts a fresh CLI process in a private temporary directory and replays the
+Each model call starts a fresh CLI process and replays the
 conversation Fontaine holds: history as stream-json frames (signed reasoning included), then the
 final user or tool-result frame, which is the only one that asks for a response. Nothing is
 resumed or persisted by the CLI; Fontaine's ledger and session store are the only record. The
@@ -83,13 +87,22 @@ account. The CLI reports each call it refused (a `permission_denied` event and a
 result); those reports are accepted only for a call the same response made, under the name it was
 announced with, and once each.
 
+Every CLI process runs in one stable, empty, owner-only directory in Fontaine's data directory
+(`claude-cli-cwd`), because the CLI writes its working directory into the prompt and a path that
+changes per request would change the prompt after its first lines. Fontaine checks the directory
+is empty when it connects, and before every launch refuses one that holds `CLAUDE.md`, `AGENTS.md`
+or `.claude`. Git discovery from it is capped at the data directory. The files of one request
+(settings, tool inventory, system prompt) stay in a temporary directory removed with the process.
+Fontaine marks the last replayed user message for the prompt cache, and the CLI's claude.ai
+connectors are not fetched.
+
 The CLI is started with its own memory, instruction files, compaction, hooks, subagents, retries,
 fallbacks, prompt suggestions, tool search and updates switched off, and refuses to start a
 response that shows any of that is active. The CLI's own builtin plugins are accepted, since it
 lists them even with every setting source off; any other plugin or skill is refused with an error
 naming it. Instruction files stay off even though one accepted builtin is `cc-plugin-agents-md`:
-each CLI process runs in an empty private scratch directory and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1`
-is set. Each response is read until exactly one complete message
+each CLI process runs in an empty private directory and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` is
+set. Each response is read until exactly one complete message
 and one result have been validated, then the process (and its descendants) is stopped. A second
 response, an unsolicited suggestion, a native tool or permission step, an unexpected model or a cut
 stream is a failure, never a response. History the CLI cannot replay without loss (an assistant
@@ -139,6 +152,11 @@ directory.
 The minimum is **2.1.318**. The gate is a minimum only: newer versions are accepted unqualified (no
 version is live-qualified yet), and a protocol shape the adapter does not know still fails closed. The order 2.1.319 uses to report a
 denied call, inside the response before its stop, is supported alongside the earlier order after
-the stop. Windows runs the official executable with `taskkill /T /F` as the tree cleanup. Each request
-costs a process start and a replay of the history, so latency and cache behavior differ from a
-native session.
+the stop. Windows runs the official executable with `taskkill /T /F` as the tree cleanup.
+
+Measured on 2.1.319: each request costs a CLI start (about 0.4 s) plus about 5 ms per replayed
+user message. Replayed history is read from the prompt cache up to the previous request's last
+replayed user message. Each request writes the last two messages to the cache, about twice a native
+Claude Code session's write per step, because the CLI adds its own context to the final message.
+Reuse holds while a step adds no more than about 20 blocks; a wider parallel step (about ten or
+more tool calls) re-writes the history once.

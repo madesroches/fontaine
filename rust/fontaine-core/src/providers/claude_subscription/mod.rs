@@ -233,9 +233,11 @@ impl Provider for ClaudeSubscription {
         let cli = Cli::new(
             ctx.account.cli_path.clone(),
             ctx.account.claude_config_dir.clone(),
+            ctx.data_dir,
             ctx.env.clone(),
             timeouts,
         );
+        prepare_workdir(ctx.data_dir, cli.workdir())?;
         let session = ctx
             .session_id
             .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
@@ -253,6 +255,28 @@ impl Provider for ClaudeSubscription {
             discovered: RwLock::new(BTreeMap::new()),
         }))
     }
+}
+
+/// Creates the CLI's working directory, or accepts the one already there, and refuses one that
+/// holds anything: the CLI would read its contents into the prompt.
+fn prepare_workdir(data_dir: &std::path::Path, workdir: &std::path::Path) -> Result<(), String> {
+    let failed = |e: &std::io::Error| {
+        format!(
+            "cannot prepare the Claude CLI's working directory {}: {}",
+            workdir.display(),
+            fontaine_tools::error_chain::chain(e)
+        )
+    };
+    std::fs::create_dir_all(data_dir).map_err(|e| failed(&e))?;
+    crate::memory::create_if_missing(workdir).map_err(|e| failed(&e))?;
+    let mut entries = std::fs::read_dir(workdir).map_err(|e| failed(&e))?;
+    if entries.next().is_some() {
+        return Err(format!(
+            "the Claude CLI's working directory {} is not empty; empty it, because the CLI would read its contents into the prompt",
+            workdir.display()
+        ));
+    }
+    Ok(())
 }
 
 /// What discovery learned about one listed model.

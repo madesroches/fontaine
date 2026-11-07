@@ -152,6 +152,14 @@ impl Claude {
             .collect()
     }
 
+    /// The user frames that ask for a response: those not marked `shouldQuery: false`.
+    fn query_frames(&self) -> Vec<Value> {
+        self.frames()
+            .into_iter()
+            .filter(|f| f["type"] == "user" && f["shouldQuery"] != json!(false))
+            .collect()
+    }
+
     /// The model processes' invocations: those with a `--model` argument.
     fn model_runs(&self) -> Vec<Value> {
         self.invocations()
@@ -561,6 +569,11 @@ async fn the_cli_gets_a_rebuilt_environment() {
             claude.dir.to_str().unwrap()
         );
         assert!(env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1");
+        assert_eq!(env["ENABLE_CLAUDEAI_MCP_SERVERS"], "false");
+        assert_eq!(
+            env["GIT_CEILING_DIRECTORIES"].as_str().unwrap(),
+            claude.w.data.to_str().unwrap()
+        );
     }
 }
 
@@ -1156,42 +1169,162 @@ async fn protocol_violations_are_refused_and_never_retried() {
     }
 }
 
+async fn refused_before_any_query(claude: &Claude, handle: &models::ModelHandle) -> ErrorKind {
+    let error = handle
+        .completion
+        .call(CompletionRequest::new("hi").max_tokens(8))
+        .await
+        .unwrap_err();
+    assert!(!error.is_retryable(), "{error}");
+    assert!(
+        claude.query_frames().is_empty(),
+        "a query frame was written: {:?}",
+        claude.frames()
+    );
+    claude_error(&error).expect("a Claude CLI error").kind
+}
+
 #[tokio::test]
-async fn a_changed_model_row_is_refused_at_request_time() {
+async fn a_failed_check_is_refused_before_any_query_frame() {
     let claude = Claude::new();
     claude.scenario(json!({}));
+    claude.set_env("FONTAINE_CLAUDE_PROBE_MS", "1500");
     let handle = main_handle(&claude).await;
+
     claude.scenario(json!({"models": [
         {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5", "usesUsageCredits": true},
     ]}));
-    let error = handle
-        .completion
-        .call(CompletionRequest::new("hi").max_tokens(8))
-        .await
-        .unwrap_err();
     assert_eq!(
-        claude_error(&error).map(|e| e.kind),
-        Some(ErrorKind::UsageCredits)
+        refused_before_any_query(&claude, &handle).await,
+        ErrorKind::UsageCredits
     );
-    assert!(!error.is_retryable());
-    assert!(claude.model_runs().is_empty());
+
     claude.scenario(json!({"models": [{"value": "sonnet", "resolvedModel": "claude-opus-5"}]}));
-    let error = handle
-        .completion
-        .call(CompletionRequest::new("hi").max_tokens(8))
-        .await
-        .unwrap_err();
-    assert!(
-        error.to_string().contains("resolves to a different model"),
-        "{error}"
+    assert_eq!(
+        refused_before_any_query(&claude, &handle).await,
+        ErrorKind::Catalog
     );
+
+    claude.scenario(json!({"models": [{"value": "haiku", "resolvedModel": "claude-haiku-4-5"}]}));
+    assert_eq!(
+        refused_before_any_query(&claude, &handle).await,
+        ErrorKind::Catalog
+    );
+
     claude.scenario(json!({"auth": {"loggedIn": false}}));
-    let error = handle
-        .completion
-        .call(CompletionRequest::new("hi").max_tokens(8))
-        .await
-        .unwrap_err();
-    assert_eq!(claude_error(&error).map(|e| e.kind), Some(ErrorKind::Auth));
+    assert_eq!(
+        refused_before_any_query(&claude, &handle).await,
+        ErrorKind::Auth
+    );
+
+    claude.scenario(json!({"init_hang": true}));
+    assert_eq!(
+        refused_before_any_query(&claude, &handle).await,
+        ErrorKind::SetupTimeout
+    );
+}
+
+#[tokio::test]
+async fn a_signed_out_login_outranks_a_credit_billed_row() {
+    let claude = Claude::new();
+    claude.scenario(json!({}));
+    let handle = main_handle(&claude).await;
+    claude.scenario(json!({
+        "auth": {"loggedIn": false},
+        "models": [{"value": "sonnet", "resolvedModel": "claude-sonnet-5-5", "usesUsageCredits": true}],
+    }));
+    assert_eq!(
+        refused_before_any_query(&claude, &handle).await,
+        ErrorKind::Auth
+    );
+}
+
+#[tokio::test]
+async fn a_request_lists_models_on_its_own_process() {
+    let claude = Claude::new();
+    claude.scenario(json!({"responses": [{"text": "a"}, {"text": "b"}]}));
+    let handle = main_handle(&claude).await;
+    for prompt in ["one", "two"] {
+        handle
+            .completion
+            .call(CompletionRequest::new(prompt).max_tokens(8))
+            .await
+            .unwrap();
+    }
+    // Discovery's listing process, then exactly one process per request.
+    assert_eq!(claude.invocations().len(), 3);
+    assert_eq!(claude.model_runs().len(), 2);
+    let mut expecting_initialize = false;
+    for entry in claude.log() {
+        if entry["kind"] == "invocation" {
+            expecting_initialize = argv(&entry).contains(&"--model".to_string());
+        } else if expecting_initialize {
+            assert_eq!(entry["value"]["type"], "control_request", "{entry}");
+            assert_eq!(entry["value"]["request"]["subtype"], "initialize");
+            expecting_initialize = false;
+        }
+    }
+}
+
+#[tokio::test]
+async fn every_process_runs_in_one_stable_empty_directory() {
+    let claude = Claude::new();
+    claude.scenario(json!({}));
+    let handle = main_handle(&claude).await;
+    let request = || CompletionRequest::new("hi").max_tokens(8);
+    for _ in 0..2 {
+        handle.completion.call(request()).await.unwrap();
+        handle
+            .guardian_scoped()
+            .completion
+            .call(request())
+            .await
+            .unwrap();
+        handle
+            .for_agent("agent-1")
+            .completion
+            .call(request())
+            .await
+            .unwrap();
+    }
+    let workdir = claude.w.data.join("claude-cli-cwd");
+    let canonical = std::fs::canonicalize(&workdir).unwrap();
+    let invocations = claude.invocations();
+    assert_eq!(invocations.len(), 7);
+    for invocation in &invocations {
+        let cwd = std::fs::canonicalize(invocation["cwd"].as_str().unwrap()).unwrap();
+        assert_eq!(cwd, canonical);
+        let args = argv(invocation);
+        let settings = PathBuf::from(flag_value(&args, "--settings").unwrap());
+        let files = settings.parent().unwrap();
+        assert!(
+            files != workdir && files != canonical,
+            "the per-launch files live elsewhere"
+        );
+    }
+    assert_eq!(std::fs::read_dir(&workdir).unwrap().count(), 0);
+
+    // An instruction file refuses the launch before any process starts.
+    std::fs::write(workdir.join("notes.txt"), "x").unwrap();
+    handle.completion.call(request()).await.unwrap();
+    std::fs::write(workdir.join("CLAUDE.md"), "x").unwrap();
+    let started = claude.invocations().len();
+    let error = handle.completion.call(request()).await.unwrap_err();
+    assert_eq!(claude_error(&error).map(|e| e.kind), Some(ErrorKind::Cli));
+    assert!(error.to_string().contains("claude-cli-cwd"), "{error}");
+    assert_eq!(claude.invocations().len(), started);
+}
+
+#[tokio::test]
+async fn a_non_empty_directory_fails_connect() {
+    let claude = Claude::new();
+    claude.scenario(json!({}));
+    let workdir = claude.w.data.join("claude-cli-cwd");
+    std::fs::create_dir_all(&workdir).unwrap();
+    std::fs::write(workdir.join("stray"), "x").unwrap();
+    let error = claude.resolve(None).await.unwrap_err();
+    assert!(message(&error).contains("claude-cli-cwd"), "{error}");
+    assert!(message(&error).contains("not empty"), "{error}");
 }
 
 #[tokio::test]
@@ -1223,7 +1356,8 @@ async fn dropping_a_stream_kills_the_process_tree_and_removes_the_directory() {
         .unwrap();
     assert!(pid_alive(pid));
     let run = &claude.model_runs()[0];
-    let cwd = PathBuf::from(run["cwd"].as_str().unwrap());
+    let settings = PathBuf::from(flag_value(&argv(run), "--settings").unwrap());
+    let cwd = settings.parent().unwrap().to_path_buf();
     assert!(cwd.exists());
     drop(stream);
     for _ in 0..100 {

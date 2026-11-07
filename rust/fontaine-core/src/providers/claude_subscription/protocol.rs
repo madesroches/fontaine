@@ -233,6 +233,11 @@ pub struct SessionSeed<'a> {
 /// A stable UUID from the Fontaine session, the caller, the model, the system prompt and the
 /// first frame, so an unchanged prefix keeps its id and nothing else shares one.
 pub fn derive_session_id(seed: &SessionSeed<'_>, system: &str, first: &Value) -> String {
+    // Whether the first message is the one being answered must not split a conversation's id.
+    let mut first = first.clone();
+    if let Some(object) = first.as_object_mut() {
+        object.remove("shouldQuery");
+    }
     let mut hash = Sha256::new();
     for part in [
         seed.session,
@@ -250,6 +255,48 @@ pub fn derive_session_id(seed: &SessionSeed<'_>, system: &str, first: &Value) ->
     uuid::Builder::from_random_bytes(bytes)
         .into_uuid()
         .to_string()
+}
+
+/// The prompt-cache breakpoint the adapter places itself. The hour matches the CLI's own
+/// breakpoint, which an earlier one may not undercut.
+const CACHE_MARKER: &str = r#"{"type": "ephemeral", "ttl": "1h"}"#;
+
+/// Puts one cache breakpoint on the last cacheable block of the last user frame before the
+/// final one. The CLI adds per-request context to the final message, so a breakpoint there is
+/// never read back; this one sits before that addition, and the next request reads it. Run after
+/// the session id is derived so the marker never changes it.
+fn mark_history(frames: &mut [Frame]) {
+    let Some((_, history)) = frames.split_last_mut() else {
+        return;
+    };
+    let Some(frame) = history
+        .iter_mut()
+        .rev()
+        .find(|frame| frame.value.get("type").and_then(Value::as_str) == Some("user"))
+    else {
+        return;
+    };
+    let marker: Value = serde_json::from_str(CACHE_MARKER).expect("the marker is valid JSON");
+    let content = &mut frame.value["message"]["content"];
+    if let Value::String(text) = content {
+        *content = json!([{"type": "text", "text": text.as_str(), "cache_control": marker}]);
+        return;
+    }
+    let cacheable = |block: &&mut Value| match block.get("type").and_then(Value::as_str) {
+        Some("text") => block
+            .get("text")
+            .and_then(Value::as_str)
+            .is_some_and(|text| !text.is_empty()),
+        Some("image" | "document" | "tool_result") => true,
+        _ => false,
+    };
+    if let Some(block) = content
+        .as_array_mut()
+        .and_then(|blocks| blocks.iter_mut().rev().find(cacheable))
+        .and_then(Value::as_object_mut)
+    {
+        block.insert("cache_control".to_string(), marker);
+    }
 }
 
 const KNOWN_FIELDS: [&str; 13] = [
@@ -299,8 +346,9 @@ pub fn translate(
             .map(|(name, _)| name.as_str())
             .chain(history_tool_names(object.get("messages"))),
     );
-    let frames = frames_of(object.get("messages"), &history)?;
+    let mut frames = frames_of(object.get("messages"), &history)?;
     let session_id = derive_session_id(seed, &system, &frames[0].value);
+    mark_history(&mut frames);
 
     let mut extra = Map::new();
     for key in [

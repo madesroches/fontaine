@@ -18,9 +18,14 @@ use rig_core::providers::anthropic::Messages;
 use rig_core::wire::{Body, Encoded, WireFrame};
 use serde_json::json;
 
-use super::cli::{ChildFiles, Cli, CliChild, ReadFail, Scratch, fixed_args, scratch_error};
+use super::cli::{
+    ChildFiles, Cli, CliChild, ModelRow, ReadFail, Scratch, fixed_args, initialize_id,
+    initialize_request, scratch_error,
+};
 use super::inventory::INVENTORY_FLAG;
-use super::protocol::{Event, Expect, Failure, Reader, SessionSeed, exit_failure, translate};
+use super::protocol::{
+    Event, Expect, Failure, Reader, SessionSeed, Translated, exit_failure, translate,
+};
 use super::usage::Usage;
 use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error, read_idle_error};
 
@@ -149,11 +154,53 @@ impl ClaudeTransport {
         )
         .map_err(provider)?;
 
-        self.handshake().await.map_err(provider)?;
+        self.cli.check_environment().map_err(provider)?;
+        self.cli.check_version().await.map_err(provider)?;
 
+        // The login probe and the request process start together. Nothing that can start an
+        // inference is written until both have passed, and a failed login drops the process.
+        let login = self.cli.check_login();
+        let prepare = self.prepare(&translated);
+        tokio::pin!(login, prepare);
+        let prepared = tokio::select! {
+            checked = &mut login => {
+                checked.map_err(provider)?;
+                prepare.await
+            }
+            prepared = &mut prepare => {
+                login.await.map_err(provider)?;
+                prepared
+            }
+        };
+        let (mut child, mut reader) = prepared?;
+
+        let idle = self.cli.timeouts.read_idle;
+        let query = translated
+            .frames
+            .last()
+            .expect("a translated request has a final frame");
+        reader.expect_response();
+        write_frame(&mut child, &reader, &query.value, idle).await?;
+        child.close_stdin();
+        Ok(Opened::new(
+            stream(Running {
+                child: Some(child),
+                reader,
+                idle,
+                pending: VecDeque::new(),
+            })
+            .boxed(),
+        ))
+    }
+
+    /// Starts the request's process, has it list its models, checks the selected row and replays
+    /// every history frame. The final frame, the only one that asks for a response, is left
+    /// unwritten.
+    async fn prepare(&self, translated: &Translated) -> Result<(CliChild, Reader), Failure> {
+        let selection = &*self.selection;
         let scratch = Scratch::new().map_err(scratch_failed)?;
         let files = self
-            .write_files(&scratch, &translated)
+            .write_files(&scratch, translated)
             .map_err(scratch_failed)?;
         let args = fixed_args(
             &files,
@@ -171,27 +218,31 @@ impl ClaudeTransport {
             Some(self.usage.clone()),
         );
 
-        for frame in &translated.frames {
+        // The model's current row: one that now draws from usage credits, or resolves
+        // differently, is refused before a turn.
+        let request_id = initialize_id();
+        write_frame(&mut child, &reader, &initialize_request(&request_id), idle).await?;
+        let listing = child.list_models(&request_id, idle, Some(&mut reader));
+        let rows = match tokio::time::timeout(self.cli.timeouts.discovery, listing).await {
+            Ok(rows) => rows?,
+            Err(_) => {
+                return Err(provider(ClaudeError::new(
+                    ErrorKind::SetupTimeout,
+                    "the Claude CLI did not list its models in time",
+                )));
+            }
+        };
+        check_row(&rows, selection).map_err(provider)?;
+
+        let history = translated.frames.len() - 1;
+        for frame in &translated.frames[..history] {
             // Only a history user frame is acknowledged: the CLI answers it with a zero-turn
             // result before the replay continues. History the assistant said needs no answer.
-            let acked =
-                !frame.query && frame.value.get("type").and_then(|t| t.as_str()) == Some("user");
-            if frame.query {
-                reader.expect_response();
-            } else if acked {
+            let acked = frame.value.get("type").and_then(|t| t.as_str()) == Some("user");
+            if acked {
                 reader.expect_ack();
             }
-            if let Err(error) = child.write_line(&frame.value, idle).await {
-                // A CLI that exited early closes its stdin; classify the exit, not the write.
-                if error.kind == ErrorKind::Protocol && child.exit_status().await.is_some() {
-                    child.settle_stderr().await;
-                    return Err(exit_failure(&child.stderr_text(), reader.native()));
-                }
-                return Err(provider(error));
-            }
-            if frame.query {
-                break;
-            }
+            write_frame(&mut child, &reader, &frame.value, idle).await?;
             if acked {
                 loop {
                     let line = next(&mut child, &reader, idle).await?;
@@ -211,60 +262,13 @@ impl ClaudeTransport {
                 }
             }
         }
-        child.close_stdin();
-        Ok(Opened::new(
-            stream(Running {
-                child: Some(child),
-                reader,
-                idle,
-                pending: VecDeque::new(),
-            })
-            .boxed(),
-        ))
-    }
-
-    /// The preflight every request starts with, and the selected model's current row: a model
-    /// that now draws from usage credits, or resolves differently, is refused before a turn.
-    async fn handshake(&self) -> Result<(), ClaudeError> {
-        let selection = &*self.selection;
-        let rows = self.cli.discover().await?;
-        let row = rows
-            .iter()
-            .find(|row| row.id == selection.alias)
-            .ok_or_else(|| {
-                ClaudeError::new(
-                    ErrorKind::Catalog,
-                    format!(
-                        "the Claude CLI no longer offers model `{}`",
-                        selection.alias
-                    ),
-                )
-            })?;
-        if row.credits {
-            return Err(ClaudeError::new(
-                ErrorKind::UsageCredits,
-                format!(
-                    "the Claude CLI now marks model `{}` as drawing from paid usage credits, which this adapter never selects; see {USAGE_SETTINGS_URL}",
-                    row.id
-                ),
-            ));
-        }
-        if row.canonical != selection.canonical {
-            return Err(ClaudeError::new(
-                ErrorKind::Catalog,
-                format!(
-                    "model `{}` now resolves to a different model than when it was listed; select it again",
-                    row.id
-                ),
-            ));
-        }
-        Ok(())
+        Ok((child, reader))
     }
 
     fn write_files(
         &self,
         scratch: &Scratch,
-        translated: &super::protocol::Translated,
+        translated: &Translated,
     ) -> std::io::Result<ChildFiles> {
         let manifest = scratch.write("tools.json", &serde_json::to_vec(&translated.manifest)?)?;
         // JSON carries text, so a path that is not Unicode is carried lossily; the inventory then
@@ -293,12 +297,70 @@ impl ClaudeTransport {
     }
 }
 
+/// The selected model's row must be listed, not credit-billed, and resolve as it did when it
+/// was listed.
+fn check_row(rows: &[ModelRow], selection: &Selection) -> Result<(), ClaudeError> {
+    let row = rows
+        .iter()
+        .find(|row| row.id == selection.alias)
+        .ok_or_else(|| {
+            ClaudeError::new(
+                ErrorKind::Catalog,
+                format!(
+                    "the Claude CLI no longer offers model `{}`",
+                    selection.alias
+                ),
+            )
+        })?;
+    if row.credits {
+        return Err(ClaudeError::new(
+            ErrorKind::UsageCredits,
+            format!(
+                "the Claude CLI now marks model `{}` as drawing from paid usage credits, which this adapter never selects; see {USAGE_SETTINGS_URL}",
+                row.id
+            ),
+        ));
+    }
+    if row.canonical != selection.canonical {
+        return Err(ClaudeError::new(
+            ErrorKind::Catalog,
+            format!(
+                "model `{}` now resolves to a different model than when it was listed; select it again",
+                row.id
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Writes one frame. A CLI that exited early closes its stdin, so a failed write is classified
+/// by the exit rather than by the write.
+async fn write_frame(
+    child: &mut CliChild,
+    reader: &Reader,
+    value: &serde_json::Value,
+    idle: Duration,
+) -> Result<(), Failure> {
+    if let Err(error) = child.write_line(value, idle).await {
+        if error.kind == ErrorKind::Protocol && child.exit_status().await.is_some() {
+            child.settle_stderr().await;
+            return Err(exit_failure(&child.stderr_text(), reader.native()));
+        }
+        return Err(provider(error));
+    }
+    Ok(())
+}
+
 fn scratch_failed(error: std::io::Error) -> Failure {
     provider(scratch_error(error))
 }
 
 /// The next stdout line, or the failure that ended the read.
-async fn next(child: &mut CliChild, reader: &Reader, idle: Duration) -> Result<Vec<u8>, Failure> {
+pub(super) async fn next(
+    child: &mut CliChild,
+    reader: &Reader,
+    idle: Duration,
+) -> Result<Vec<u8>, Failure> {
     match child.next_line(idle).await {
         Ok(Some(line)) => Ok(line),
         Ok(None) => {
@@ -327,7 +389,7 @@ const LOGGED_LINE_BYTES: usize = 4096;
 
 /// Records a protocol rejection for the owner-only debug file: the failure, the events accepted
 /// before it and the line itself. A module-target event never reaches an export backend.
-fn rejected(line: &[u8], reader: &Reader, error: &ProviderError) {
+pub(super) fn rejected(line: &[u8], reader: &Reader, error: &ProviderError) {
     if !claude_error(error).is_some_and(|e| e.kind == ErrorKind::Protocol) {
         return;
     }
@@ -395,6 +457,62 @@ fn stream(
             }
         }
     })
+}
+
+#[cfg(test)]
+mod row_tests {
+    use super::*;
+
+    fn selection() -> Selection {
+        Selection {
+            alias: "sonnet".to_string(),
+            canonical: "claude-sonnet-5-5".to_string(),
+            session: "s".to_string(),
+            namespace: "root".to_string(),
+            refused: None,
+        }
+    }
+
+    fn row(id: &str, canonical: &str, credits: bool) -> ModelRow {
+        ModelRow {
+            id: id.to_string(),
+            canonical: canonical.to_string(),
+            credits,
+        }
+    }
+
+    #[test]
+    fn a_matching_row_passes() {
+        let rows = [
+            row("haiku", "claude-haiku-4-5", false),
+            row("sonnet", "claude-sonnet-5-5", false),
+        ];
+        assert!(check_row(&rows, &selection()).is_ok());
+    }
+
+    #[test]
+    fn a_missing_credit_billed_or_changed_row_is_refused() {
+        let missing = check_row(&[row("opus", "claude-opus-5", false)], &selection()).unwrap_err();
+        assert_eq!(missing.kind, ErrorKind::Catalog);
+        assert_eq!(
+            missing.to_string(),
+            "the Claude CLI no longer offers model `sonnet`"
+        );
+
+        let credits =
+            check_row(&[row("sonnet", "claude-sonnet-5-5", true)], &selection()).unwrap_err();
+        assert_eq!(credits.kind, ErrorKind::UsageCredits);
+        assert!(credits.to_string().contains("paid usage credits"));
+        assert!(credits.to_string().contains(USAGE_SETTINGS_URL));
+
+        let changed =
+            check_row(&[row("sonnet", "claude-sonnet-6", false)], &selection()).unwrap_err();
+        assert_eq!(changed.kind, ErrorKind::Catalog);
+        assert_eq!(
+            changed.to_string(),
+            "model `sonnet` now resolves to a different model than when it was listed; select it again"
+        );
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]

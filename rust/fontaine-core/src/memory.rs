@@ -76,7 +76,7 @@ pub fn ensure_dir(dir: &Path) -> io::Result<PathBuf> {
     std::fs::canonicalize(dir)
 }
 
-fn create_if_missing(dir: &Path) -> io::Result<()> {
+pub(crate) fn create_if_missing(dir: &Path) -> io::Result<()> {
     match owner_only::create_dir(dir) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
