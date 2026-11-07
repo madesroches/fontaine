@@ -824,11 +824,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let started_at = std::sync::atomic::AtomicUsize::new(
             runtime.conversation_len().await.unwrap_or(usize::MAX),
         );
+        // The run's durable record goes before the run future's compaction: a process that
+        // dies during compaction still leaves the prompt for the fold that resumes the
+        // session.
+        runtime
+            .record_run_start(
+                sent.clone(),
+                started_at.load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .await;
+        let record_prompt = sent.clone();
         let mut run = Box::pin(async {
             runtime.compact_if_needed().await;
-            // A compaction that saved shrank the conversation.
-            if let Some(len) = runtime.conversation_len().await {
-                started_at.store(len, std::sync::atomic::Ordering::Relaxed);
+            // A compaction that saved shrank the conversation; the run record's positions
+            // are post-compaction, like the fallback's.
+            if let Some(len) = runtime.conversation_len().await
+                && started_at.swap(len, std::sync::atomic::Ordering::Relaxed) != len
+            {
+                runtime.record_run_start(record_prompt, len).await;
             }
             let ids = runtime.models.main.wire_ids();
             let (model, provider) = (ids.model, ids.provider);

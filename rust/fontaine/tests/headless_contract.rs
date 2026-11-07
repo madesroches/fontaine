@@ -839,7 +839,7 @@ async fn the_pending_fold_lands_before_autocompaction_rewrites_the_conversation(
     std::fs::create_dir_all(&files).unwrap();
     std::fs::write(
         files.join("main.inflight.fold"),
-        json!({ "log_len": 3, "journal_bytes": journal_bytes }).to_string(),
+        json!({ "log_len": 3, "journal_bytes": journal_bytes, "appended": 2 }).to_string(),
     )
     .unwrap();
 

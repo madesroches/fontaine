@@ -28,6 +28,7 @@ use fontaine_tools::websearch::SearxngChild;
 use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
 use rig_core::completion::ToolDefinition;
+use rig_core::message::Message;
 use rig_core::schemars::Schema;
 use rig_core::tool::ToolOutput;
 use rig_memory::{DirStore, estimate_tokens, load_async};
@@ -781,6 +782,43 @@ impl AgentRuntime {
             .await
             .ok()
             .map(|conversation| conversation.messages().len())
+    }
+
+    /// Durably records the start of a root run: the prompt it will send and how many
+    /// messages `main` holds now, before auto-compaction. A fold after a kill before the
+    /// run's first model call reads this as its fallback, and ties the journal to its
+    /// positions when the run's save landed before the process died. The run's settle
+    /// clears it. A failure is warned; the run goes unrecorded rather than unrun.
+    pub async fn record_run_start(&self, prompt: Message, log_len_before: usize) {
+        let store = self.session.store();
+        let record = turn_recovery::RunRecord {
+            prompt,
+            log_len_before,
+        };
+        if let Err(e) = turn_recovery::write_run_record(&store, CONVERSATION_LOG, &record).await {
+            let message = format!(
+                "the run's pending record could not be written: {}",
+                chain(&e)
+            );
+            tracing::warn!("{message}");
+            self.approver.warn(&message);
+        }
+    }
+
+    /// Forgets a run start whose turn will not run: a stop between the record and the run
+    /// (a spent budget, say) must not resurrect the prompt as a folded turn on resume.
+    /// A failure is warned; the record stays, and the fold it feeds errs on appending
+    /// rather than dropping a turn.
+    pub async fn clear_run_start(&self) {
+        let store = self.session.store();
+        if let Err(e) = turn_recovery::clear_run_record(&store, CONVERSATION_LOG).await {
+            let message = format!(
+                "the run's pending record could not be cleared: {}",
+                chain(&e)
+            );
+            tracing::warn!("{message}");
+            self.approver.warn(&message);
+        }
     }
 
     /// Keeps a main run that ended without settling in the conversation: what it committed,
