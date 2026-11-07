@@ -1,4 +1,5 @@
 pub mod ask_user;
+pub mod bug_draft;
 pub mod builtins;
 pub mod checkpoint;
 pub mod child_env;

@@ -106,6 +106,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[model] model` | no | yes | yes |
 | `[guardian] model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | yes |
 | `[guardian] scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no |
+| `[feedback]` | no | no | yes |
 | `[guardian.composition]` | `shadow = true` only | `shadow = true` only | `shadow = true` only |
 | `[permissions] default_mode` | `manual` or `dontAsk` only | `manual` or `dontAsk` only | yes |
 | `[permissions] deny`, `ask` | add only | add only | add only |
@@ -953,6 +954,20 @@ no-progress cap (8 verdicts in a row after turns that called no tool) is fixed.
 [goal]
 max_turns = 50
 max_cost_usd = 5.0
+```
+
+### `[feedback]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `drafts` | Whether the model may queue bug-report drafts with `draft_bug_report`: `on` offers the tool and counts the drafts in the footer, `quiet` offers it without the footer count, `off` leaves the tool out. | `on` |
+
+Only the user file and `--settings` can set this. Drafts are never sent: you file a report with
+`/bug`, which shows the exact text first.
+
+```toml
+[feedback]
+drafts = "quiet"
 ```
 
 ### `[afk]`

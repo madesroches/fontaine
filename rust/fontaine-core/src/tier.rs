@@ -35,10 +35,15 @@ pub enum Tier {
     /// AFK mode: the temperature ceiling stopped the session, so every call is denied until the
     /// user has reviewed it; also the tier of the audit events that toggle AFK.
     Afk,
+    /// `draft_bug_report` after the floor, in every mode: it only writes a redacted draft to the
+    /// data directory, with no network I/O, so the guardian does not judge it.
+    BugDraft,
+    /// The audit event for a bug report the human submitted with `/bug`.
+    BugReport,
 }
 
 impl Tier {
-    pub const ALL: [Tier; 20] = [
+    pub const ALL: [Tier; 22] = [
         Tier::DenyRule,
         Tier::AskRule,
         Tier::CriticalPath,
@@ -59,6 +64,8 @@ impl Tier {
         Tier::Human,
         Tier::GuardianOff,
         Tier::Afk,
+        Tier::BugDraft,
+        Tier::BugReport,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -83,6 +90,8 @@ impl Tier {
             Tier::Human => "human",
             Tier::GuardianOff => "guardian_off",
             Tier::Afk => "afk",
+            Tier::BugDraft => "bug_draft",
+            Tier::BugReport => "bug_report",
         }
     }
 }

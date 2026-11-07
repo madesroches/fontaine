@@ -228,6 +228,8 @@ pub(crate) struct Setup {
     project_executables: bool,
     confirm_project_servers: bool,
     scheduling: bool,
+    /// Nothing can be asked, so nothing is queued for the user either.
+    headless: bool,
     env: EnvLookup,
     /// The SearXNG process `[websearch] command` starts, created once so a registry rebuild
     /// reuses it. Dropping the runtime stops it.

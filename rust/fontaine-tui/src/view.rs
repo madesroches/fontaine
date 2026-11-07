@@ -341,6 +341,7 @@ impl Overlay {
                 | "MCP server"
                 | "guardian unavailable"
                 | "guardian"
+                | "bug report"
                 | "auto-mode setup"
                 | "skills"
         )
@@ -355,6 +356,7 @@ pub(crate) fn transcript_has_keys(app: &App) -> bool {
         && app.unavailable.is_none()
         && app.server.is_none()
         && app.guardian_off_prompt.is_none()
+        && app.bug_prompt.is_none()
         && app.afk_review_prompt.is_none()
         && app.skill_trust_prompt.is_none()
         && app.setup_review.is_none()
@@ -399,6 +401,12 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
         return Overlay {
             instance: Some(prompt.id),
             ..Overlay::new("guardian", prompt.body(width, theme), prompt.footer())
+        };
+    }
+    if let Some(prompt) = &app.bug_prompt {
+        return Overlay {
+            instance: Some(prompt.id),
+            ..Overlay::new("bug report", prompt.body(width, theme), prompt.footer())
         };
     }
     if let Some(prompt) = &app.afk_review_prompt {

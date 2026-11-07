@@ -441,6 +441,11 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             data_dir: &dirs.data,
         },
     );
+    fontaine_tui::set_build_info(fontaine_tui::BuildInfo {
+        version: env!("CARGO_PKG_VERSION"),
+        git_sha: env!("FONTAINE_GIT_SHA"),
+        target: env!("FONTAINE_BUILD_TARGET"),
+    });
     let mut cli = cli;
     let mut headless = headless;
     let mut ax_warnings = ax_warnings;

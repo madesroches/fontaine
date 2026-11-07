@@ -143,7 +143,9 @@ ancestor has been released) is denied in every mode before step 1: no hook or gu
    may only switch them off.
 7. **The mode**, as in the table above. `send_message` and `board_update` come first: they reach
    only agents of the same tree, whose own calls are gated, so they run in every mode, `dontAsk`
-   included, with no guardian verdict and no prompt (`tier = coordination`). An `agent` spawn that did not take step 4 is never judged
+   included, with no guardian verdict and no prompt (`tier = coordination`). `draft_bug_report`
+   runs the same way (`tier = bug_draft`): it only writes a redacted draft under the data
+   directory and sends nothing. An `agent` spawn that did not take step 4 is never judged
    by the guardian: `auto` and `plan` allow it (`tier = spawn`), `manual` and `acceptEdits` ask you
    and `dontAsk` denies it. Every call the child makes is gated on its own, and the child's mode is
    never looser than its parent's, so judging the spawn's prompt would repeat that coverage. In
@@ -160,8 +162,9 @@ to a prompt adds a second record with `tier = human`. The same record is project
 `tool_decision` telemetry event and to the headless `gate_decision` event, so the three agree. The
 `tier` is one of `deny_rule`, `ask_rule`, `critical_path`, `protected_path`, `hook`,
 `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`, `screen`,
-`guardian`, `dont_ask`, `plan_block`, `human`, `guardian_off` (the [escape hatch](guardian.md) was on)
-and `afk` (a temperature stop denied the call, or the record is an AFK toggle). A record also has an
+`guardian`, `dont_ask`, `plan_block`, `human`, `guardian_off` (the [escape hatch](guardian.md) was on),
+`afk` (a temperature stop denied the call, or the record is an AFK toggle), `bug_draft` (a
+`draft_bug_report` call) and `bug_report` (you filed a report with [`/bug`](tui.md)). A record also has an
 `afk` flag, and `converted` when a prompt nobody could answer became a denial; see
 [AFK mode](afk.md#what-a-denial-says). A guardian decision also records the guardian model and profile, its
 verdict, confidence, whether the verdict came from the cache, how long the guardian took, the

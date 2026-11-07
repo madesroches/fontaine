@@ -791,6 +791,35 @@ pub struct ShellSection {
     pub max_timeout_secs: Option<u64>,
 }
 
+/// How the `draft_bug_report` tool behaves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DraftsMode {
+    /// The tool is offered and the footer counts the drafts.
+    #[default]
+    On,
+    /// The tool is offered; the footer stays silent.
+    Quiet,
+    /// The tool is not offered.
+    Off,
+}
+
+impl DraftsMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DraftsMode::On => "on",
+            DraftsMode::Quiet => "quiet",
+            DraftsMode::Off => "off",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FeedbackSection {
+    pub drafts: Option<DraftsMode>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct StatuslineSection {
@@ -1048,6 +1077,7 @@ pub struct Settings {
     pub shell: Option<ShellSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub statusline: Option<StatuslineSection>,
+    pub feedback: Option<FeedbackSection>,
     pub telemetry: Option<TelemetrySection>,
     pub websearch: Option<WebsearchSection>,
     pub env: Option<BTreeMap<String, EnvValue>>,
@@ -2070,6 +2100,12 @@ pub struct Shell {
     pub max_timeout_secs: u64,
 }
 
+/// The merged `[feedback]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Feedback {
+    pub drafts: DraftsMode,
+}
+
 /// The merged `[statusline]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Statusline {
@@ -2132,6 +2168,7 @@ pub struct Config {
     pub shell: Shell,
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub statusline: Statusline,
+    pub feedback: Feedback,
     pub telemetry: Telemetry,
     pub websearch: Websearch,
     pub tui: Tui,
@@ -2264,6 +2301,9 @@ impl Config {
             statusline: Statusline {
                 command: None,
                 refresh_interval_secs: None,
+            },
+            feedback: Feedback {
+                drafts: DraftsMode::default(),
             },
             tui: Tui {
                 theme: ThemeName::default(),
@@ -2557,6 +2597,9 @@ impl Config {
                 &mut self.shell_preclassifier_allow_extra,
                 sp.allow_extra.as_deref(),
             );
+        }
+        if let Some(v) = s.feedback.as_ref().and_then(|f| f.drafts) {
+            self.feedback.drafts = v;
         }
         if let Some(sl) = &s.statusline {
             if let Some(v) = &sl.command {

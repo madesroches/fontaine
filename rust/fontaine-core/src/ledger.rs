@@ -78,6 +78,13 @@ pub enum Record {
         name: String,
         digest: String,
     },
+    /// The human submitted a bug report with `/bug`. `url` is the issue URL or the prefilled-issue
+    /// URL.
+    BugReport {
+        method: String,
+        level: String,
+        url: String,
+    },
     Approval {
         tool: String,
         agent: String,
@@ -615,6 +622,7 @@ impl LedgerView {
             Record::ModeChange { .. }
             | Record::GuardianOff { .. }
             | Record::SkillTrust { .. }
+            | Record::BugReport { .. }
             | Record::Approval { .. }
             | Record::Grant { .. }
             | Record::Resumed { .. }

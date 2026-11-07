@@ -1,6 +1,7 @@
 mod afk;
 mod appearance;
 mod auto_mode_setup;
+mod bug;
 mod config;
 mod context;
 mod guardian;

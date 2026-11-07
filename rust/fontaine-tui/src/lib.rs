@@ -7,6 +7,7 @@ pub mod agent_list;
 pub mod agents_panel;
 pub mod app;
 pub mod approval;
+pub mod bug_prompt;
 pub mod clipboard;
 pub mod commands;
 pub mod complete;
@@ -96,6 +97,21 @@ pub enum DriveOutcome {
     Switch(SessionTarget),
 }
 
+/// What the `fontaine` binary knows about its own build; `env!` values exist only there.
+#[derive(Clone, Debug)]
+pub struct BuildInfo {
+    pub version: &'static str,
+    pub git_sha: &'static str,
+    pub target: &'static str,
+}
+
+pub(crate) static BUILD_INFO: std::sync::OnceLock<BuildInfo> = std::sync::OnceLock::new();
+
+/// Records the build for `/bug`; the first call wins.
+pub fn set_build_info(info: BuildInfo) {
+    let _ = BUILD_INFO.set(info);
+}
+
 /// What the permission pipeline sends to the interface.
 enum Prompt {
     Ask(Box<ApprovalRequest>, oneshot::Sender<Answer>),
@@ -170,6 +186,7 @@ impl Approver for ChannelApprover {
     }
 
     fn warn(&self, message: &str) {
+        // The channel carries it to the UI, which keeps the ring buffer the bug report reads.
         let _ = self
             .tx
             .send(Prompt::Notice(Severity::Warning, message.to_string()));
@@ -258,6 +275,7 @@ struct Ui<R> {
     /// Requests the provider dialog made while a turn ran, carried out once it is over.
     pending_provider: VecDeque<DialogKey>,
     data_dir: PathBuf,
+    pending_drafts: fontaine_core::bug_drafts::Pending,
     user_config: Option<PathBuf>,
     env: EnvLookup,
     /// What starting each MCP server came to, for `/mcp`.
@@ -387,6 +405,7 @@ pub async fn drive(
         pending_config: VecDeque::new(),
         pending_provider: VecDeque::new(),
         data_dir,
+        pending_drafts: Default::default(),
         user_config,
         env,
         mcp_status: Vec::new(),

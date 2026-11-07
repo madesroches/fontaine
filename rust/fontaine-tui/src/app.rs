@@ -114,6 +114,8 @@ pub enum Action {
     OpenPicker(ModelSlot),
     /// The human answered the `/guardian-disable` confirmation.
     GuardianOff(bool),
+    /// The human answered the `/bug` preview.
+    Bug(crate::bug_prompt::BugAnswer),
     /// The human answered the `/afk review` confirmation.
     AfkReview(bool),
     /// The human answered the `/skills trust` confirmation.
@@ -146,6 +148,9 @@ pub struct CompletionList {
 pub struct AgentView {
     pub transcript: Transcript,
 }
+
+/// Warnings kept for the bug report.
+pub const WARNING_RING: usize = 50;
 
 /// What a view that cannot run a command tells the human.
 pub const MAIN_ONLY: &str = "switch back to main to run this (↓ then Enter on main)";
@@ -212,6 +217,12 @@ pub struct App {
     pub server: Option<ConfirmPrompt>,
     /// The `/guardian-disable` confirmation while it is open.
     pub guardian_off_prompt: Option<ConfirmPrompt>,
+    /// The `/bug` preview while it is open.
+    pub bug_prompt: Option<crate::bug_prompt::BugPrompt>,
+    /// Warnings shown this session, newest last, for the bug report. Display-only state.
+    pub recent_warnings: std::collections::VecDeque<String>,
+    /// Bug-report drafts the model queued, for the footer; `None` keeps the footer silent.
+    pub bug_drafts: Option<usize>,
     /// The `/afk review` confirmation while it is open.
     pub afk_review_prompt: Option<ConfirmPrompt>,
     pub skill_trust_prompt: Option<ConfirmPrompt>,
@@ -296,6 +307,7 @@ pub struct App {
     approvals_opened: u64,
     servers_opened: u64,
     guardian_off_opened: u64,
+    bug_opened: u64,
     afk_review_opened: u64,
     skill_trust_opened: u64,
     setup_review_opened: u64,
@@ -385,6 +397,9 @@ impl App {
             transcript_print: false,
             server: None,
             guardian_off_prompt: None,
+            bug_prompt: None,
+            recent_warnings: Default::default(),
+            bug_drafts: None,
             afk_review_prompt: None,
             skill_trust_prompt: None,
             setup_review: None,
@@ -429,6 +444,7 @@ impl App {
             approvals_opened: 0,
             servers_opened: 0,
             guardian_off_opened: 0,
+            bug_opened: 0,
             afk_review_opened: 0,
             skill_trust_opened: 0,
             setup_review_opened: 0,
@@ -746,6 +762,20 @@ impl App {
         self.guardian_off_prompt = Some(prompt);
     }
 
+    pub fn begin_bug(&mut self, mut prompt: crate::bug_prompt::BugPrompt) {
+        self.bug_opened += 1;
+        prompt.id = self.bug_opened;
+        self.bug_prompt = Some(prompt);
+    }
+
+    /// Remembers a warning for the bug report; the last [`WARNING_RING`] are kept.
+    pub fn remember_warning(&mut self, message: &str) {
+        if self.recent_warnings.len() == WARNING_RING {
+            self.recent_warnings.pop_front();
+        }
+        self.recent_warnings.push_back(message.to_string());
+    }
+
     pub fn begin_afk_review(&mut self, mut prompt: ConfirmPrompt) {
         self.afk_review_opened += 1;
         prompt.id = self.afk_review_opened;
@@ -788,6 +818,9 @@ impl App {
         }
         if let Some(p) = &self.guardian_off_prompt {
             return Some((PromptKind::GuardianOff, p.id));
+        }
+        if let Some(p) = &self.bug_prompt {
+            return Some((PromptKind::Bug, p.id));
         }
         if let Some(p) = &self.afk_review_prompt {
             return Some((PromptKind::AfkReview, p.id));
@@ -899,6 +932,7 @@ impl App {
                     || self.unavailable.is_some()
                     || self.server.is_some()
                     || self.guardian_off_prompt.is_some()
+                    || self.bug_prompt.is_some()
                     || self.afk_review_prompt.is_some()
                     || self.skill_trust_prompt.is_some()
                     || self.setup_review.is_some()
@@ -989,6 +1023,7 @@ impl App {
             || self.unavailable.is_some()
             || self.server.is_some()
             || self.guardian_off_prompt.is_some()
+            || self.bug_prompt.is_some()
             || self.afk_review_prompt.is_some()
             || self.skill_trust_prompt.is_some()
             || self.setup_review.is_some()
@@ -1061,6 +1096,17 @@ impl App {
                 Some(answer) => {
                     self.guardian_off_prompt = None;
                     Action::GuardianOff(answer)
+                }
+                None => Action::None,
+            };
+        }
+        if let Some(prompt) = &mut self.bug_prompt {
+            return match prompt.handle_key(key) {
+                Some(answer) => {
+                    if !matches!(answer, crate::bug_prompt::BugAnswer::Level(_)) {
+                        self.bug_prompt = None;
+                    }
+                    Action::Bug(answer)
                 }
                 None => Action::None,
             };

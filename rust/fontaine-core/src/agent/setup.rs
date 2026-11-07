@@ -724,6 +724,7 @@ pub(super) fn retained(
         project_executables: setup.project_executables,
         confirm_project_servers: setup.confirm_project_servers,
         scheduling: setup.scheduling,
+        headless: setup.headless,
         env: setup.env.clone(),
         searxng: Arc::default(),
         jobs: Arc::default(),

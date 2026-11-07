@@ -211,7 +211,7 @@ these is one line, in this order:
 
 `tier` is the stage of the permission pipeline that decided: `deny_rule`, `ask_rule`,
 `critical_path`, `protected_path`, `hook`, `read_only_fast_path`, `tracked_edit`, `scratch_write`, `tier05`, `spawn`, `coordination`, `allow_rule`, `mode`,
-`screen`, `guardian`, `dont_ask`, `plan_block`, `human`, `guardian_off` or `afk`. The audit log records the same values.
+`screen`, `guardian`, `dont_ask`, `plan_block`, `human`, `guardian_off`, `afk`, `bug_draft` or `bug_report`. The audit log records the same values.
 
 Every `gate_decision` also carries `afk` (whether [AFK mode](afk.md) was on) and `converted`, which
 names the prompt that was turned into a denial because nobody could answer it (`ask_rule`, `floor`,

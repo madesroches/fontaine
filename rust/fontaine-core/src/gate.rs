@@ -800,6 +800,22 @@ impl SessionState {
         );
     }
 
+    /// The human submitted a bug report with `/bug`: recorded in the ledger and the audit log.
+    pub fn record_bug_report(&self, method: &str, level: &str, url: &str) {
+        self.append(Record::BugReport {
+            method: method.to_string(),
+            level: level.to_string(),
+            url: url.to_string(),
+        });
+        self.record_session_event(
+            "bug",
+            serde_json::json!({ "method": method, "level": level, "url": url }),
+            Tier::BugReport,
+            "bug_report",
+            &format!("bug report filed by {method} at {level} level"),
+        );
+    }
+
     /// An audit entry for something the human did to the session rather than a tool call.
     fn record_session_event(
         &self,
@@ -1343,25 +1359,22 @@ mod tests {
         assert_eq!(priced.cost_usd, Some(0.5));
     }
 
-    #[test]
-    #[should_panic(expected = "the loop breaker lock is not poisoned")]
-    fn a_poisoned_breaker_panics_instead_of_deciding() {
-        let dir = tempfile::tempdir().unwrap();
+    fn state_in(dir: &std::path::Path, id: &str) -> Arc<SessionState> {
         let agents = Arc::new(AgentTree::new(Limits::default(), 1));
         agents.set_root_tools(|| {
             fontaine_tools::descriptor::names()
                 .map(String::from)
                 .collect()
         });
-        let state = Arc::new(SessionState::new(StateParams {
-            session_id: "poison-test".into(),
+        Arc::new(SessionState::new(StateParams {
+            session_id: id.into(),
             mode: PermissionMode::Auto,
-            scope: Arc::new(Scope::new(dir.path().to_path_buf(), [])),
+            scope: Arc::new(Scope::new(dir.to_path_buf(), [])),
             deny: Vec::new(),
             ask: Vec::new(),
             allow: Vec::new(),
-            ledger: Arc::new(Ledger::create(dir.path()).unwrap()),
-            audit: Arc::new(AuditLog::create(dir.path(), "poison-test").unwrap()),
+            ledger: Arc::new(Ledger::create(dir).unwrap()),
+            audit: Arc::new(AuditLog::create(dir, id).unwrap()),
             approver: Arc::new(DenyAll),
             home: None,
             protected_dirs: Vec::new(),
@@ -1374,7 +1387,14 @@ mod tests {
             reveal_mcp_names: false,
             auto_edits: AutoEdits::default(),
             effort: None,
-        }));
+        }))
+    }
+
+    #[test]
+    #[should_panic(expected = "the loop breaker lock is not poisoned")]
+    fn a_poisoned_breaker_panics_instead_of_deciding() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path(), "poison-test");
         let holder = state.clone();
         let _ = std::thread::spawn(move || {
             let _held = holder.breaker.lock().unwrap();
@@ -1382,5 +1402,23 @@ mod tests {
         })
         .join();
         state.auto_paused();
+    }
+
+    #[test]
+    fn a_filed_bug_report_reaches_the_ledger_and_the_audit_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path(), "bug-test");
+        state.record_bug_report("gh", "minimal", "https://github.com/o/r/issues/1");
+        let entries = state.ledger.read().unwrap();
+        assert!(entries.iter().any(|e| matches!(
+            &e.record,
+            Record::BugReport { method, level, url }
+                if method == "gh" && level == "minimal" && url.ends_with("/issues/1")
+        )));
+        let audit = state.audit.read().unwrap();
+        let record = audit.iter().find(|r| r.tool == "bug").unwrap();
+        assert_eq!(record.tier, Tier::BugReport);
+        assert_eq!(record.decision, Decision::Allow);
+        assert_eq!(record.rule.as_deref(), Some("bug_report"));
     }
 }

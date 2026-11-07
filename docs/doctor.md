@@ -55,7 +55,9 @@ an inconsistent `[network]` section. The sections that need the settings are the
 
 **Effective settings.** The keys the [`/config`](tui.md#settings-panel) panel shows, with the value
 a session would use and the layers that supplied it. Values come from the same renderers as
-`/config`: account credentials and `[env]` values are never printed, only names.
+`/config`: account credentials and `[env]` values are never printed, only names, and command settings
+(`statusline.command`, `guardian.scanner_command`) print as `<program> (+N args)`, the composition
+script as `set` and its params as `<hidden>` (keys only).
 
 **Trust.** Whether the workspace root is trusted (an untrusted one is a warning), whether
 `trust.toml` can be read, and what the repository defines that would load: hooks, MCP servers and

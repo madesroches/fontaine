@@ -53,7 +53,7 @@ all tests pass:
   and every toggle is recorded in the ledger and the audit log. The record of this deviation
   lives in the master plan's Decisions.
 - **The fast path is earned by Fontaine-enforced workspace containment, not by a label.**
-  Read-only ≠ safe; MCP-declared `readOnlyHint` never skips the guardian. There are five
+  Read-only ≠ safe; MCP-declared `readOnlyHint` never skips the guardian. There are six
   exceptions. The composed guardian's allow: `allow_below` in a user-scope
   `[guardian.composition]` script, such as the `screen` preset's `allow_threshold` (a
   hosted Jev screen with a margin for its nondeterminism, or on a local model a steering-hardened
@@ -65,7 +65,9 @@ all tests pass:
   takes the read-only fast path; MCP tools never count as read-only for this. And every other
   `agent` spawn, after the floor, is never guardian-judged (`spawn`): `auto`/`plan` allow it,
   `manual`/`acceptEdits` ask; each call the child makes is still gated. And in every mode, `send_message` and `board_update`,
-  after the floor, hooks and rules, are never guardian-judged (`coordination`). See the master plan's Decisions.
+  after the floor, hooks and rules, are never guardian-judged (`coordination`). And in every mode,
+  `draft_bug_report`, after the floor, is never guardian-judged (`bug_draft`): it only writes a
+  redacted draft to the data dir and does no network I/O; filing the report is user-only. See the master plan's Decisions.
 - **A child subagent's effective mode is never looser than its parent's.**
 - **Project-scope config can only tighten** (deny/ask additions); loosening keys are
   user-scope only. Project-defined executables (MCP servers, hooks, skill commands) load as in

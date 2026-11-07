@@ -139,6 +139,16 @@ fn opt<T: Display>(value: Option<T>) -> String {
     unset_or(value, "unset")
 }
 
+/// A shell command line as its program and argument count: arguments can carry inline secrets.
+fn command_summary(command: Option<&str>) -> String {
+    let Some(command) = command else {
+        return "unset".to_string();
+    };
+    let mut words = command.split_whitespace();
+    let program = words.next().unwrap_or("");
+    format!("{program} (+{} args)", words.count())
+}
+
 fn lowercase_debug(value: impl std::fmt::Debug) -> String {
     format!("{value:?}").to_lowercase()
 }
@@ -378,10 +388,9 @@ pub const KEYS: &[KeyRow] = &[
     row!("guardian.scanner", Scalar, |c, _| lowercase_debug(
         c.guardian.scanner
     )),
-    row!("guardian.scanner_command", Scalar, |c, _| opt(c
-        .guardian
-        .scanner_command
-        .as_deref())),
+    row!("guardian.scanner_command", Scalar, |c, _| {
+        command_summary(c.guardian.scanner_command.as_deref())
+    }),
     row!("guardian.scanner_model_path", Scalar, |c, _| opt(c
         .guardian
         .scanner_model_path
@@ -394,7 +403,11 @@ pub const KEYS: &[KeyRow] = &[
         composition_field(c, |s| s.preset.clone().unwrap_or_else(|| "unset".into()))
     }),
     row!("guardian.composition.script", Scalar, |c, _| {
-        composition_field(c, |s| s.script.clone().unwrap_or_else(|| "unset".into()))
+        composition_field(c, |s| {
+            s.script
+                .as_deref()
+                .map_or_else(|| "unset".into(), |_| "set".into())
+        })
     }),
     row!("guardian.composition.model", Scalar, |c, _| {
         composition_field(c, |s| s.model.clone().unwrap_or_else(|| "unset".into()))
@@ -407,7 +420,7 @@ pub const KEYS: &[KeyRow] = &[
     }),
     row!("guardian.composition.params", Map, |c, _| {
         composition_map(c, |s| {
-            s.params.iter().map(|(k, v)| format!("{k} = {v}")).collect()
+            s.params.keys().map(|k| format!("{k} = <hidden>")).collect()
         })
     }),
     row!("guardian.composition.reads", Map, |c, _| {
@@ -530,13 +543,17 @@ pub const KEYS: &[KeyRow] = &[
     row!("shell_preclassifier.allow_extra", List, |c, _| entries(
         c.shell_preclassifier_allow_extra.len()
     )),
-    row!("statusline.command", Scalar, |c, _| opt(c
-        .statusline
-        .command
-        .as_deref())),
+    row!("statusline.command", Scalar, |c, _| {
+        command_summary(c.statusline.command.as_deref())
+    }),
     row!("statusline.refresh_interval_secs", Scalar, |c, _| opt(c
         .statusline
         .refresh_interval_secs)),
+    row!("feedback.drafts", Scalar, |c, _| c
+        .feedback
+        .drafts
+        .as_str()
+        .to_string()),
     row!("telemetry.enabled", Scalar, |c, _| c
         .telemetry
         .enabled
@@ -747,6 +764,34 @@ mod tests {
         let shown = effective("websearch.command", &c);
         assert_eq!(shown, "docker (+3 args)");
         assert!(!shown.contains("hunter2"));
+    }
+
+    #[test]
+    fn command_like_rows_never_show_inline_secrets() {
+        let mut c = defaults();
+        c.statusline.command = Some("status --token=tok-statusline".into());
+        c.guardian.scanner_command = Some("scan --key tok-scanner".into());
+        assert_eq!(effective("statusline.command", &c), "status (+1 args)");
+        assert_eq!(effective("guardian.scanner_command", &c), "scan (+2 args)");
+        c.guardian.composition = Some(crate::config::GuardianComposition {
+            preset: None,
+            script: Some("/s/tok-script.rn".into()),
+            script_source: None,
+            model: None,
+            shadow: false,
+            timeout_ms: 1000,
+            params: [("token".to_string(), serde_json::json!("tok-param"))].into(),
+            reads: Default::default(),
+        });
+        let shown = [
+            effective("statusline.command", &c),
+            effective("guardian.scanner_command", &c),
+            effective("guardian.composition.script", &c),
+            effective("guardian.composition.params", &c),
+        ]
+        .join("\n");
+        assert!(!shown.contains("tok-"), "{shown}");
+        assert!(shown.contains("token"), "{shown}");
     }
 
     #[test]

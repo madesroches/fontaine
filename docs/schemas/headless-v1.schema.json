@@ -43,7 +43,9 @@
         "plan_block",
         "human",
         "guardian_off",
-        "afk"
+        "afk",
+        "bug_draft",
+        "bug_report"
       ]
     },
     "usage_bucket": {
