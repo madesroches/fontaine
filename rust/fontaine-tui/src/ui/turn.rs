@@ -856,9 +856,25 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mut run = Box::pin(async {
             runtime.compact_if_needed().await;
             // A compaction that saved shrank the conversation; the run record's positions
-            // are post-compaction, like the fallback's.
-            if let Ok(len) = runtime.conversation_len().await
-                && started_at.swap(len, std::sync::atomic::Ordering::Relaxed) != len
+            // are post-compaction, like the fallback's. An unreadable count refuses the
+            // turn, like the pre-compaction path: the stale pre-compaction count would
+            // misplace the fallback a stop folds from, and could duplicate an
+            // already-saved prompt.
+            let len = match runtime.conversation_len().await {
+                Ok(len) => len,
+                Err(e) => {
+                    let message = format!(
+                        "the conversation's length could not be read after compaction, so the turn did not run: {}",
+                        fontaine_tools::error_chain::chain(&e)
+                    );
+                    runtime.approver().warn(&message);
+                    // The turn never runs, and the record its start wrote must not be
+                    // read later as this turn's fallback.
+                    runtime.clear_run_start().await;
+                    return TurnOutcome::Failed(message);
+                }
+            };
+            if started_at.swap(len, std::sync::atomic::Ordering::Relaxed) != len
                 && let Err(e) = runtime.record_run_start(record_prompt, len).await
             {
                 // The run is journaled by now; the record is best-effort evidence, and a

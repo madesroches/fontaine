@@ -938,6 +938,12 @@ async fn handle_message(
     let mut involved = runtime.session.goal().is_active();
     let prompt = match goal::command(&text) {
         None => {
+            // A turn a resume-time fold failed to keep belongs before this one: the
+            // checkpoint `begin_turn` records must hold the recovered history, or a
+            // rewind to it drops the recovered turn.
+            runtime
+                .keep_unsettled_turn(Unsettled::SessionEnded, None)
+                .await;
             runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage {
                 text: text.clone(),
@@ -982,6 +988,11 @@ async fn handle_message(
                 };
             }
             involved = true;
+            // As the plain-message branch: the fold goes before the checkpoint this
+            // turn's rewind would restore to.
+            runtime
+                .keep_unsettled_turn(Unsettled::SessionEnded, None)
+                .await;
             runtime.begin_turn(&text, false);
             runtime.append(Record::UserMessage {
                 text,
