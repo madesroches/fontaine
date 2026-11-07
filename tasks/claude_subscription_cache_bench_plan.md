@@ -37,7 +37,7 @@ today a headless run only reports totals.
 ### Per-call usage in headless output
 
 A new `model_call` stream-json event, emitted from the `SessionEvent::Usage` arm of
-`run_one` in `headless.rs`, in order after the call's content events:
+`run_one` in `headless.rs`, after the call's assistant text:
 
 ```
 {"type":"model_call","input_tokens":..,"output_tokens":..,"cache_read_input_tokens":..,
@@ -57,7 +57,7 @@ New module `rust/fontaine-evals/src/cache_bench.rs`, new `Command::CacheBench`:
 | Flag | Meaning |
 |---|---|
 | `--model <account>/<model>` | Fontaine model reference on a claude-subscription account (required) |
-| `--claude-model <alias>` | `claude -p --model` value, default derived from the model name |
+| `--claude-model <alias>` | `claude -p --model` value; default is the part after `/` in `--model`, passed verbatim (the CLI also accepts a full model id) |
 | `--files <n>` | Fixture files read one at a time, default 6 |
 | `--threshold <x>` | Flag ratio, default 2.0 |
 | `--fontaine <path>`, `--claude <path>` | Executables, defaults `fontaine` / `claude` |
@@ -90,11 +90,15 @@ the ratio does not credit that saving.
 
 ## Implementation Steps
 
-1. `rust/fontaine/src/headless.rs`: emit `model_call` from the `SessionEvent::Usage` arm. Keep the
+1. `rust/fontaine/src/headless.rs`: emit `model_call` from the `SessionEvent::Usage` arm, mapping rig's
+   `cached_input_tokens` to `cache_read_input_tokens` as `usage_ledger.rs` does and using `unwrap_or(0)`
+   for every Option field. Keep the
    budget-cap logic unchanged. Add the `model_call` `$def` to `docs/schemas/headless-v1.schema.json`
    and reference it from the top-level `oneOf`.
 2. `rust/fontaine-evals/src/cache_bench.rs`: `Step`, `parse_fontaine_stream`, `parse_claude_stream`,
-   `summarize`, `Scorecard`, the fixture writer and the two process runners.
+   `summarize`, `Scorecard`, the fixture writer. It reuses `claude_version` and `events` from
+   `rust/fontaine-evals/src/baseline.rs` (made `pub(crate)`) and one shared timeout-wrapped spawn
+   helper instead of two new runners.
 3. `rust/fontaine-evals/src/runner.rs` and `lib.rs`: `Command::CacheBench` and its dispatch; export
    the module.
 4. Docs and changelog (below).
@@ -122,7 +126,7 @@ the ratio does not credit that saving.
 
 ## Documentation
 
-- `docs/headless.md`: the `model_call` row in the event table.
+- `docs/headless.md`: the `model_call` row in the event table, and the "in this order" event-sequence sentence.
 - `docs/claude-subscription.md`: a "Checking cache usage" subsection with the command and how to read
   the scorecard; it links the measured numbers in "What the CLI still adds".
 - `evals/README.md`: the `cache-bench` command and the new scorecard family.
