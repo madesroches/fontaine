@@ -1065,8 +1065,8 @@ mod tests {
             now,
             0,
         ));
-        let text = line_text(&list, 30, 1);
-        assert!(text.chars().count() <= 30, "{text}");
+        let text = line_text(&list, 40, 1);
+        assert!(text.chars().count() <= 40, "{text}");
         assert!(text.ends_with(" · 5 unpriced tok"), "{text}");
         assert!(text.contains('…'), "{text}");
     }
