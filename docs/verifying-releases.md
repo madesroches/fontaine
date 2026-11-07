@@ -2,7 +2,7 @@
 
 Every release archive, and each installer (shell and PowerShell) on both channels, has a detached [minisign](https://jedisct1.github.io/minisign/) signature
 next to it, `<file>.minisig`, made in CI with a key Fontaine owns. A release is published only
-after CI has downloaded the finished draft and verified every archive, and the installer, against the public key in
+after CI has downloaded the finished draft and verified every archive, and each installer, against the public key in
 this repository, so an unsigned or mis-signed archive or installer is never public.
 
 The archives of a dev build live in the immutable `dev-<n>` prerelease. The long-lived `dev`

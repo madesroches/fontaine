@@ -84,7 +84,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/madesroches/fontai
 `-ExecutionPolicy Bypass` is needed because the default client policy, Restricted, rejects the
 downloaded script. The command runs the same in PowerShell and in a Command Prompt. This installs the
 latest CI-passing build of `main` on Windows x86_64, the one Windows target; there is no Windows
-arm64 build. The script is the second file on the long-lived `dev` prerelease, and like the shell
+arm64 build. The script is also a file on the long-lived `dev` prerelease, and like the shell
 installer it downloads the archive from the immutable `dev-<n>` prerelease of the build it was made
 for, with a receipt `version` of `<version>-dev.<n>+<commit>`.
 
