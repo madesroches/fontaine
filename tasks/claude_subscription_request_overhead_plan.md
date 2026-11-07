@@ -1,5 +1,7 @@
 # claude-subscription: Request Overhead and Prompt-Cache Plan
 
+**GitHub Issue**: https://github.com/madesroches/fontaine/issues/449
+
 Issue: #449 (follow-up to #448). Follow-ups filed from this research: #479, #480, #481, #482,
 #483, and a comment on #168.
 
