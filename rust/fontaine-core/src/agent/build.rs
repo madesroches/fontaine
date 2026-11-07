@@ -321,7 +321,7 @@ fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
             CONVERSATION_LOG.to_owned(),
             p.approver.clone(),
         ))
-        .add_hook(InflightHook::new(
+        .add_hook(InflightHook::root(
             p.session.store(),
             CONVERSATION_LOG.to_owned(),
             p.approver.clone(),

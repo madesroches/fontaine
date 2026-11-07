@@ -826,10 +826,7 @@ impl AgentRuntime {
     /// failed fold left is folded ahead of the turn about to run. A failure is warned and the
     /// journal stays for the next fold.
     pub async fn keep_unsettled_turn(&self, cause: Unsettled, fallback: Option<Fallback>) {
-        let store = self.session.store();
-        if let Err(e) =
-            turn_recovery::fold_unsettled(&store, CONVERSATION_LOG, cause, fallback).await
-        {
+        if let Err(e) = self.resolve_unsettled_turn(cause, fallback).await {
             let message = format!(
                 "the unfinished turn could not be kept in the conversation: {}",
                 chain(&e)
@@ -837,6 +834,18 @@ impl AgentRuntime {
             tracing::warn!("{message}");
             self.approver.warn(&message);
         }
+    }
+
+    /// [`keep_unsettled_turn`](Self::keep_unsettled_turn) with the error returned instead of
+    /// warned, for a caller that must not go on after a failed fold: manual compaction
+    /// rewrites `main`, which a still-pending journal's fold mark would misplace.
+    pub async fn resolve_unsettled_turn(
+        &self,
+        cause: Unsettled,
+        fallback: Option<Fallback>,
+    ) -> Result<bool, rig_memory::SessionError> {
+        turn_recovery::fold_unsettled(&self.session.store(), CONVERSATION_LOG, cause, fallback)
+            .await
     }
 
     /// `/clear` and `/rewind` reset the conversation; the journal of an interrupted turn a

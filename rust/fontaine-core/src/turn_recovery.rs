@@ -501,6 +501,9 @@ pub struct InflightHook<S> {
     store: S,
     id: String,
     approver: Arc<dyn Approver>,
+    /// The root agent's hook alone writes the run record: a child agent's runs settle into
+    /// their own store and log, which no fold reads.
+    run_records: bool,
 }
 
 impl<S> InflightHook<S> {
@@ -509,6 +512,19 @@ impl<S> InflightHook<S> {
             store,
             id,
             approver,
+            run_records: false,
+        }
+    }
+
+    /// The hook of the agent whose log the run record guards: also writes a fresh record at
+    /// every run start, so each retry attempt carries one after the attempt before it
+    /// settled and cleared its own.
+    pub fn root(store: S, id: String, approver: Arc<dyn Approver>) -> InflightHook<S> {
+        InflightHook {
+            store,
+            id,
+            approver,
+            run_records: true,
         }
     }
 }
@@ -532,6 +548,23 @@ impl<S: AsyncStore> InflightHook<S> {
     /// Cuts the journal back to its first `keep` bytes, which end on a line boundary.
     async fn cut_back(&self, keep: u64) -> std::io::Result<()> {
         cut_journal(&self.store, &self.id, keep).await
+    }
+
+    /// Writes the run record a root hook keeps per attempt. A failure is warned; the attempt
+    /// goes unrecorded rather than unrun.
+    async fn record_run(&self, prompt: &Message, log_len_before: usize) {
+        let record = RunRecord {
+            prompt: prompt.clone(),
+            log_len_before,
+        };
+        if let Err(e) = write_run_record(&self.store, &self.id, &record).await {
+            let message = format!(
+                "the run's pending record could not be written: {}",
+                chain(&e)
+            );
+            tracing::warn!("{message}");
+            self.approver.warn(&message);
+        }
     }
 
     /// Resolves a journal prefix an earlier failed run kept only because its cut failed: the
@@ -664,25 +697,31 @@ impl<S: AsyncStore + Send + Sync> InflightHook<S> {
         .await
     }
 
-    /// `failed_with` is the number of messages the failed run committed, `None` on success.
-    /// `total` is the run's committed message count either way.
-    async fn settle(&self, pad: &Scratchpad, failed_with: Option<usize>, total: usize) {
-        // The run settled, so its record is done: kept, a later kill would fold the prompt
-        // again. A failed retry's settle clears the attempt's record, and the retry that
-        // continues the run writes its own at its start.
+    async fn clear_record(&self, pad: &Scratchpad) {
         if let Err(e) = clear_run_record(&self.store, &self.id).await {
             self.warn(pad, "the run record could not be cleared", &e);
         }
+    }
+
+    /// `failed_with` is the number of messages the failed run committed, `None` on success.
+    /// `total` is the run's committed message count either way.
+    async fn settle(&self, pad: &Scratchpad, failed_with: Option<usize>, total: usize) {
         let Some(run) = pad.get::<JournalRun>() else {
+            // Nothing was journaled, so no settled mark will replace the run record; the
+            // saved conversation (or the empty log) is the durable evidence now.
+            self.clear_record(pad).await;
             return;
         };
         if run.journaled == usize::MAX {
+            self.clear_record(pad).await;
             return;
         }
         if let Some(committed) = failed_with {
             // The engine did not save, so the messages are in the agent's log only if the
-            // recovery hook's append landed. Counting, because rig-memory changes some
-            // messages on load and equality is unreliable.
+            // recovery hook's append landed. The settled mark is only valid once that is
+            // confirmed; until then the run record stays, the run-tied evidence a later
+            // fold needs. Counting, because rig-memory changes some messages on load and
+            // equality is unreliable.
             match load_async(&self.store, &self.id).await {
                 Ok(c) if c.messages().len() == run.input_len + committed => {}
                 Ok(_) => {
@@ -704,6 +743,11 @@ impl<S: AsyncStore + Send + Sync> InflightHook<S> {
             // The mark matters only when the cut below fails too, and that failure is warned.
             tracing::warn!("the settled mark could not be written: {}", chain(&e));
         }
+        // The settled mark on disk now ties the journal to the saved log, so the run
+        // record is done: kept, a later kill would fold the prompt again. The clear comes
+        // only after the mark: a kill between rig's save and the mark must find the record
+        // still there, and a kill after the mark finds the mark.
+        self.clear_record(pad).await;
         if let Err(e) = self.cut_back(run.carried_bytes).await {
             self.warn(pad, "the in-flight journal could not be cleared", &e);
             return;
@@ -717,6 +761,12 @@ impl<S: AsyncStore + Send + Sync> InflightHook<S> {
 impl<S: AsyncStore + Send + Sync> AgentHook for InflightHook<S> {
     async fn on_run_start(&self, ctx: &HookContext, event: RunStart<'_>) -> RunStartAction {
         self.start(ctx.scratchpad(), event.history.len()).await;
+        if self.run_records {
+            // Every attempt gets its own record, the retry's prompt included: the attempt
+            // before it settled and cleared its record, and a kill before this attempt's
+            // settled mark must still find run-tied evidence on disk.
+            self.record_run(event.prompt, event.history.len()).await;
+        }
         RunStartAction::Continue
     }
 
@@ -1767,6 +1817,50 @@ mod tests {
             "{main:?}"
         );
         assert!(journal(&inner).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_root_hook_writes_a_run_record_and_its_settle_clears_it() {
+        let store = Arc::new(MemoryStore::default());
+        let warnings = Arc::new(Warnings::default());
+        let hook = InflightHook::root(store.clone(), "main".into(), warnings);
+        let pad = Scratchpad::default();
+        hook.start(&pad, 1).await;
+        // What on_run_start does for every attempt, the retry's prompt included.
+        hook.record_run(&Message::user("go on"), 1).await;
+        let record = read_run_record(&store, "main")
+            .await
+            .unwrap()
+            .expect("the attempt's record");
+        assert_eq!(record.log_len_before, 1);
+        assert!(format!("{:?}", record.prompt).contains("go on"));
+        two_calls(&hook, &pad, "go").await;
+        hook.settle(&pad, None, 4).await;
+        assert!(journal(&store).await.is_empty());
+        assert!(
+            read_run_record(&store, "main").await.unwrap().is_none(),
+            "the settled mark replaced the record, so it is cleared"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_error_settle_whose_recovery_append_is_unconfirmed_keeps_the_run_record() {
+        let store = Arc::new(MemoryStore::default());
+        let (hook, warnings) = hook(store.clone());
+        let pad = Scratchpad::default();
+        hook.start(&pad, 0).await;
+        // The record a root hook wrote at the attempt's start.
+        hook.record_run(&Message::user("go"), 0).await;
+        two_calls(&hook, &pad, "go").await;
+        // The log never gained the failed attempt's messages: no settled mark may claim
+        // the journal landed, and the record stays the run-tied evidence a later fold needs.
+        hook.settle(&pad, Some(3), 3).await;
+        assert!(
+            read_run_record(&store, "agent-1").await.unwrap().is_some(),
+            "without a settled mark the record must survive the settle"
+        );
+        assert_eq!(journal(&store).await.len(), 3);
+        assert_eq!(warnings.0.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -400,6 +400,12 @@ async fn a_retryable_failure_is_retried_and_the_task_continues() {
     let stored = stored(&built).await;
     assert!(stored.contains("hi"), "{stored}");
     assert!(stored.contains("continue the task"), "{stored}");
+    // Every attempt's record went with its settle: nothing outlives the retried run.
+    let store = built.runtime.session.store();
+    match store.read_file_async("main.inflight.run").await {
+        Ok(bytes) => assert!(bytes.is_empty(), "{bytes:?}"),
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}"),
+    }
 }
 
 #[tokio::test]
