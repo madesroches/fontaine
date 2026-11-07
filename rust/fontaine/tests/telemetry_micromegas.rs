@@ -496,6 +496,7 @@ fn the_upstream_span_capture_builds_the_same_tree_as_the_bridge() {
         micromegas_telemetry_sink::tracing_interop::TracingCaptureLayer {
             max_level: micromegas_tracing::levels::LevelFilter::Info,
             capture_spans: true,
+            span_field_hook: None,
         },
         is_exported_span,
     ));

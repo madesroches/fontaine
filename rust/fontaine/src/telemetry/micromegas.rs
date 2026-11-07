@@ -1,6 +1,6 @@
-//! The micromegas backend. The stock capture layer's span capture is off: it exports every field
-//! verbatim and the absolute source path of each callsite, so the span bridge turns each
-//! allowlisted span into async span events (span id, parent span id, depth) that the analytics
+//! The micromegas backend. The stock capture layer's span capture is off: it exports span fields
+//! unless a field hook is set, which Fontaine does not adopt, and it has no switch to omit
+//! callsite locations, so the span bridge turns each allowlisted span into async span events (span id, parent span id, depth) that the analytics
 //! side reassembles into a tree. `tracing` events reach it through the stock capture layer. Async
 //! span events ride per-thread streams, which the sink builder's CPU-tracing switch creates.
 
@@ -49,6 +49,7 @@ pub fn capture_layer() -> micromegas_telemetry_sink::tracing_interop::TracingCap
     micromegas_telemetry_sink::tracing_interop::TracingCaptureLayer {
         max_level: LevelFilter::Info,
         capture_spans: false,
+        span_field_hook: None,
     }
 }
 
