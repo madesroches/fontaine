@@ -17,6 +17,9 @@ All notable changes are recorded here. The format follows
 - `/config` and `fontaine doctor` summarise `statusline.command` and `guardian.scanner_command` as
   `<program> (+N args)`, show `guardian.composition.script` as `set` and
   `guardian.composition.params` as `<hidden>` (keys only), so an inline secret never prints.
+- A live guardian eval records the provider's `/models` entry for the guardian model (id,
+  display name, context length) as `served_model` in the scorecard summary and prints it, so a
+  moving alias such as `kimi/kimi-for-coding` can be tied to the version that answered (#440).
 
 ### Fixed
 

@@ -11,7 +11,7 @@ use crate::quota::{Quota, QuotaSource, QuotaWindow};
 use crate::transport::reqwest_client;
 use fontaine_tools::tls::LoadedNetwork;
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+pub(super) const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The windows the endpoint reports, longest-period first.
 const WINDOWS: [(&str, &str); 4] = [

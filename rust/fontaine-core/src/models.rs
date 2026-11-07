@@ -15,7 +15,7 @@ use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::{Credentials, StoredCredential};
 use crate::effort::Effort;
 use crate::gate::SessionState;
-use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy};
+use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy, ServedModel};
 use crate::quota::QuotaSource;
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
 use fontaine_guardian::{OutputProbe, WireIds};
@@ -225,6 +225,17 @@ impl ModelHandle {
                 guardian,
             }),
             client: Some(ClientRef(client.clone())),
+        }
+    }
+
+    /// The provider's `/models` entry for this handle's model; `None` when the handle holds no
+    /// client or the endpoint does not say; `Err` is why the lookup failed.
+    pub fn served_model(
+        &self,
+    ) -> futures::future::BoxFuture<'_, Result<Option<ServedModel>, String>> {
+        match &self.client {
+            Some(client) => client.0.served_model(&self.reference.model),
+            None => Box::pin(std::future::ready(Ok(None))),
         }
     }
 

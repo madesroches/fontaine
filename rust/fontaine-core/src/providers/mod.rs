@@ -231,6 +231,22 @@ pub trait AccountClient: Send + Sync {
         None
     }
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>>;
+    /// What the endpoint says about `model` beyond its id, when it offers it. `Err` carries why
+    /// the lookup failed: this is provenance for a record and never gates a run.
+    fn served_model(&self, _model: &str) -> BoxFuture<'_, Result<Option<ServedModel>, String>> {
+        Box::pin(std::future::ready(Ok(None)))
+    }
+}
+
+/// The provider's own `/models` entry for a model: an alias can move, so a record that names
+/// only the alias cannot be tied to what answered.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ServedModel {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_length: Option<u64>,
 }
 
 /// The cache settings of one account, resolved against its kind's default.
@@ -340,5 +356,22 @@ mod tests {
             assert_eq!(find(name).map(|p| p.name()), Some(name));
         }
         assert!(find("nope").is_none());
+    }
+
+    struct NoOverride;
+
+    impl AccountClient for NoOverride {
+        fn completion(&self, _model: &str) -> DynModel<Completion> {
+            unreachable!("the test never completes")
+        }
+
+        fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {
+            Box::pin(std::future::ready(Ok(Vec::new())))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_kind_without_an_override_serves_no_entry() {
+        assert_eq!(NoOverride.served_model("m").await, Ok(None));
     }
 }

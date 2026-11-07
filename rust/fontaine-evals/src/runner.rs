@@ -16,6 +16,7 @@ use crate::report::{self, Scorecard};
 use crate::screen::{self, Screen, ScreenScore};
 use crate::screen_report::{self, RefCase, ScreenAnalysis};
 use crate::{EXIT_FAIL, EXIT_USAGE};
+use fontaine_core::providers::ServedModel;
 
 /// Where the inclusion-bar writer puts qualifying entries when `--models-file` is not given,
 /// relative to the invocation directory `rust/`.
@@ -264,6 +265,10 @@ impl CaseResult {
 #[derive(Debug, Serialize)]
 pub struct Summary {
     pub guardian: String,
+    /// What the provider's `/models` listing says answered to the guardian alias, in a live run
+    /// whose endpoint offers it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub served_model: Option<ServedModel>,
     pub profile: &'static str,
     pub filter: Option<String>,
     pub dataset_cases: usize,
@@ -860,6 +865,7 @@ fn run_score(args: &RunArgs) -> u8 {
         results: &results,
         skipped,
         live: live_run.is_some(),
+        served_model: live_run.as_ref().and_then(|(live, _)| live.served.clone()),
     });
 
     if let Some((live, version)) = &live_run {
@@ -1517,6 +1523,7 @@ struct SummaryParams<'a> {
     results: &'a [CaseResult],
     skipped: Vec<Skipped>,
     live: bool,
+    served_model: Option<ServedModel>,
 }
 
 fn summarize(params: SummaryParams<'_>) -> Summary {
@@ -1530,6 +1537,7 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
         results,
         skipped,
         live,
+        served_model,
     } = params;
     let mut by_category = BTreeMap::new();
     for case in selected {
@@ -1559,6 +1567,7 @@ fn summarize(params: SummaryParams<'_>) -> Summary {
         cascade,
         infrastructure_failures,
         guardian: guardian.to_string(),
+        served_model,
         profile: profile_name(profile),
         filter,
         dataset_cases,
@@ -1687,6 +1696,17 @@ fn print_case(r: &CaseResult) {
     }
 }
 
+fn served_line(served: &ServedModel) -> String {
+    let mut line = match &served.display_name {
+        Some(name) => format!("served: {name} ({})", served.id),
+        None => format!("served: {}", served.id),
+    };
+    if let Some(context) = served.context_length {
+        line.push_str(&format!(", {context} tokens"));
+    }
+    line
+}
+
 /// A live run has already printed each case's line as it was scored.
 fn print_summary(summary: &Summary, results: &[CaseResult], streamed: bool) {
     if !streamed {
@@ -1715,6 +1735,9 @@ fn print_summary(summary: &Summary, results: &[CaseResult], streamed: bool) {
         summary.passed,
         summary.failed
     );
+    if let Some(served) = &summary.served_model {
+        println!("{}", served_line(served));
+    }
     let pct =
         |v: Option<f64>| v.map_or_else(|| "n/a".to_string(), |v| format!("{:.1}%", v * 100.0));
     println!(
@@ -1765,4 +1788,57 @@ fn parse_composition_param(text: &str) -> Result<(String, toml::Value), String> 
         .and_then(|mut table| table.remove("v"))
         .unwrap_or_else(|| toml::Value::String(value.to_string()));
     Ok((key.to_string(), parsed))
+}
+
+#[cfg(test)]
+mod served_model_tests {
+    use super::*;
+
+    fn summary(served_model: Option<ServedModel>) -> serde_json::Value {
+        let summary = summarize(SummaryParams {
+            guardian: "live:kimi/kimi-for-coding",
+            cascade: None,
+            filter: None,
+            profile: Profile::Full,
+            dataset_cases: 0,
+            selected: &[],
+            results: &[],
+            skipped: Vec::new(),
+            live: true,
+            served_model,
+        });
+        serde_json::to_value(summary).unwrap()
+    }
+
+    #[test]
+    fn a_served_model_is_serialized_and_its_absence_omits_the_key() {
+        let with = summary(Some(ServedModel {
+            id: "kimi-for-coding".into(),
+            display_name: Some("K2.8 Preview".into()),
+            context_length: Some(1_048_576),
+        }));
+        assert_eq!(with["served_model"]["id"], "kimi-for-coding");
+        assert_eq!(with["served_model"]["display_name"], "K2.8 Preview");
+        assert_eq!(with["served_model"]["context_length"], 1_048_576);
+        assert!(summary(None).get("served_model").is_none());
+    }
+
+    #[test]
+    fn the_served_line_names_the_display_name_id_and_window() {
+        let served = ServedModel {
+            id: "kimi-for-coding".into(),
+            display_name: Some("K2.8 Preview".into()),
+            context_length: Some(1_048_576),
+        };
+        assert_eq!(
+            served_line(&served),
+            "served: K2.8 Preview (kimi-for-coding), 1048576 tokens"
+        );
+        let bare = ServedModel {
+            id: "kimi-for-coding".into(),
+            display_name: None,
+            context_length: None,
+        };
+        assert_eq!(served_line(&bare), "served: kimi-for-coding");
+    }
 }

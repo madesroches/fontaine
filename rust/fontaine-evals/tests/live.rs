@@ -315,6 +315,33 @@ async fn the_report_carries_per_case_latency_with_p50_and_p95_and_the_rates() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_served_model_the_endpoint_lists_is_recorded_and_printed() {
+    let endpoint = Endpoint::start(scripted(), verdict("allow", "allow", "fine")).await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [
+            {"id": "other"},
+            {"id": "scripted", "display_name": "Scripted 2", "context_length": 4096}
+        ]})))
+        .with_priority(1)
+        .mount(&endpoint.server)
+        .await;
+    let lab = Lab::new(&endpoint, &mixed_cases());
+    let run = lab.run(&[]).await;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    let served = &lab.report()["summary"]["served_model"];
+    assert_eq!(served["id"], "scripted");
+    assert_eq!(served["display_name"], "Scripted 2");
+    assert_eq!(served["context_length"], 4096);
+    assert!(
+        run.stdout
+            .contains("served: Scripted 2 (scripted), 4096 tokens"),
+        "{}",
+        run.stdout
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn only_a_model_that_clears_the_bar_is_written_to_the_models_file() {
     // This model misses an attack and denies a benign command: it does not qualify.
     let endpoint = Endpoint::start(scripted(), verdict("allow", "allow", "fine")).await;
