@@ -44,8 +44,9 @@ pub struct SkillArgs {
   groups words. Omit when the skill takes none." Tool description gains the sentence: "Pass
   optional `args` to give the skill arguments."
 - `lenient_args` coerces: string → as is; null → empty; array → each element stringified (strings
-  as is, others as JSON), joined by a space with elements containing whitespace double-quoted so
-  `split_arguments` round-trips them; object/number/bool → compact JSON text. Never fails on the
+  as is, others as JSON), joined by a space. `split_arguments` has no escape character, so an element that is empty or
+  contains whitespace or a quote character is wrapped in the quote character it does not contain
+  (an element containing both kinds of quote is best-effort and may split differently); object/number/bool → compact JSON text. Never fails on the
   value's type.
 - Unknown fields stay rejected and duplicate spellings of `args` are rejected; see Decisions.
 
@@ -82,14 +83,14 @@ pub struct SkillArgs {
   `arguments`, `argument`, `input`, `params` as aliases, non-string values coerced to text;
   deviation from Claude Code's strict schema, reason: models guess the field name and a failed
   call drops the input (#469).
-- AFK: unknown fields stay rejected (`deny_unknown_fields`), as in every tools args struct; a
+- 2026-11-07 AFK: unknown fields stay rejected (`deny_unknown_fields`), as in every tools args struct; a
   silently dropped misnamed field would recreate the bug.
-- AFK: `skill` is NOT accepted as an alias for `name` because permission rules match on the raw
+- 2026-11-07 AFK: `skill` is NOT accepted as an alias for `name` because permission rules match on the raw
   `name` key (`name_arg_key`); the `args` aliases are unaffected since rules never read them.
-- AFK: a payload with two spellings of one field is rejected with serde's "duplicate field" error.
-- AFK: model args may form `!` commands (`substitute` then `parts`, as for `/name args`); kept
+- 2026-11-07 AFK: a payload with two spellings of one field is rejected with serde's "duplicate field" error.
+- 2026-11-07 AFK: model args may form `!` commands (`substitute` then `parts`, as for `/name args`); kept
   unchanged and documented, still gated as `shell`.
-- AFK: skill index lines are not changed to carry `argument-hint`; the model learns of arguments
+- 2026-11-07 AFK: skill index lines are not changed to carry `argument-hint`; the model learns of arguments
   from the tool description and the user/caller supplying them.
 
 ## Documentation
@@ -102,14 +103,14 @@ pub struct SkillArgs {
   only a name.
 - `docs/permissions.md` (~82, ~262, ~370): "A skill's `!` lines run through `shell` only" gains a
   note that this includes commands formed from model-supplied arguments.
-- Add the Decisions line above to the master plan (Extensibility subsection, end).
+- Copy these Decisions lines to the master plan's Extensibility subsection (end of subsection).
 - CHANGELOG entry.
 
 ## Testing Strategy
 
 Unit tests in `skill.rs` (deserialization, no live anything):
 - `args` string; each alias (`arguments`, `argument`, `input`, `params`); omitted and
-  empty → empty string; array of strings (with a whitespace element) → shell-quoted join; object
+  empty → empty string; array of strings (with a whitespace element and an empty-string element) → shell-quoted join; object
   and number → JSON text; null → empty; unknown field rejected (including `{"skill": ...}`); both `args` and `arguments` rejected as duplicate field; missing `name` still an error.
 - Pins the reported bug: `{"name":"x","arguments":"tasks/p.md"}` parses with args `tasks/p.md`.
 
