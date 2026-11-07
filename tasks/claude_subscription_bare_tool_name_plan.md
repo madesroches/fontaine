@@ -41,7 +41,7 @@ unchanged (the request's own tools).
   the original, so the emitted block is normalized.
 - A case-sensitive exact match only: `Bash`, `Task` and other built-ins are not in the set and still
   fail. `TOLERATED_BUILTIN` keeps its existing handling and is checked after the restore, so a
-  defined tool never shadows nothing new.
+  restored tool is never treated as the tolerated built-in.
 - Error text (option 3, for the remaining failures): `undefined_call` is unchanged for names not in
   the set. No new text is needed because a bare name of a defined tool no longer fails.
 - No retry (option 2): recovery makes it unnecessary, and retrying a nondeterministic model would not
@@ -63,15 +63,11 @@ unchanged (the request's own tools).
 - `docs/claude-subscription.md`
 - `CHANGELOG.md`
 
-## Trade-offs
-
-- Retry once (option 2) was rejected: it costs a request, still fails on a repeat, and leaves the
-  gate-equivalent path unchanged.
-- Text-only fix (option 3) was rejected as sole fix: the agent would still die.
-- Restoring in `Aliases::restore` itself was rejected: `validate_init` must keep refusing an init
-  tool list that offers an unprefixed name.
-
 ## Decisions
+
+- Rejected: retry once; it costs a request, still fails on a repeat, and leaves the cause unaddressed.
+- Rejected: text-only fix; the agent would still die.
+- Rejected: restoring in `Aliases::restore` itself; `validate_init` must keep refusing a bare name.
 
 ## Documentation
 
@@ -83,10 +79,9 @@ defines is accepted as that tool, and any other undefined name still fails the r
 Unit tests in `protocol/tests.rs`, using the existing `reader`, `feed`, `stream` helpers:
 
 - A bare name of a defined tool (`shell`) in `content_block_start` is accepted and the forwarded
-  block's name is the original; this pins the bug in #471.
+  block's name is the original; this pins the bug in #471. The request holds a second tool that the
+  call does not name.
 - A bare name of an aliased tool (long or non-plain name) is restored the same way.
-- A bare name not in the set (`Bash`, a Fontaine tool outside this request's set) still fails with
-  the "did not define" text (existing tests stay).
 - `validate_init` still refuses a bare name in the init tool list.
 - A bare-named call followed by the CLI's permission-denied report with the same bare `tool_name` is
   accepted (denial path stays consistent).
