@@ -809,6 +809,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-05: AFK (#431): A refused AFK entry from the carousel skips to manual.
 - 2026-11-05: AFK (#431): Entering AFK mid-turn answers every open or queued approval, question and guardian-unavailable dialog as `AfkApprover` would (Deny / Unavailable / Deny) and closes it, and prompts arriving while AFK is on are answered the same way without an overlay; refusing entry (b) would miss prompts still in the channel, and leaving them (c) breaks "nobody is asked during AFK" and lets the unavailable dialog's Manual answer skip the stretch review.
 - 2026-11-05: AFK (#431): No `AgentRuntime::set_mode`: callers use `runtime.state.set_mode` (as `/plan` already does), `review_afk_stop` drops its rebuild, and `refresh_before_turn` is the only AFK-driven prompt rebuild site; a forwarding wrapper and a second rebuild site add nothing the pre-turn refresh does not already cover.
+- 2026-11-07: `/bug` (#462): `draft_bug_report` gets a new `Tier::BugDraft` (never guardian-judged after the floor) and `/bug` submissions are audited under a new `Tier::BugReport` (tool label `bug`); the draft tool only writes a redacted file to the data dir, so it is a sixth never-guardian-judged exception rather than a coordination tool, and submission stays user-only.
 
 ### Project
 

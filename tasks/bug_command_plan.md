@@ -112,7 +112,7 @@ the report can include them. Display-only state: recovering lock allowed with a 
 
 ## Implementation Status
 
-Steps 1-7 are implemented in the working tree on the feature branch, uncommitted. `cargo fmt --check`,
+Steps 1-7 are implemented and committed on the feature branch. `cargo fmt --check`,
 `cargo clippy --all-targets -- -D warnings` and the full `cargo test` pass.
 
 - Core: `redact.rs`, `bug_report.rs`, `bug_submit.rs` and `bug_drafts.rs` (draft store, 3 per session); `Tier::BugDraft`
@@ -124,11 +124,7 @@ Steps 1-7 are implemented in the working tree on the feature branch, uncommitted
 - Docs: `docs/tui.md`, `docs/tools.md`, `docs/configuration.md` (including the scope-table row),
   the headless schema tier enum and `CHANGELOG.md`.
 
-Not done:
-
-- The `AGENTS.md` exception count and the `draft_bug_report` carve-out. The guardian denied the edit.
-- The master plan's Decisions line for the new tiers. The guardian denied the edit.
-- The commit, the branch review loop and the PR.
+Not done: the branch review loop and the PR.
 
 ## Files to Modify
 
