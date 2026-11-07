@@ -26,7 +26,8 @@ today a headless run only reports totals.
   `assistant` events whose `message.usage` carries `input_tokens`, `cache_read_input_tokens` and
   `cache_creation_input_tokens`; `fontaine-evals baseline capture` already drives it
   (`rust/fontaine-evals/src/baseline.rs`, `capture_one`).
-- Measured gap today (CLI 2.1.319): about 12.3k tokens written per step against a native 6k, because
+- Measured gap today (CLI 2.1.319): about 12.3k tokens written per step against a native 6k (measured on four 6000-token user messages, not this bench's ~2k-token tool
+  results), because
   the CLI adds context to the final message (`docs/claude-subscription.md`, "What the CLI still
   adds"; #480).
 - `fontaine-evals` is a clap CLI with a `baseline` subcommand (`rust/fontaine-evals/src/runner.rs`,
@@ -46,7 +47,8 @@ A new `model_call` stream-json event, emitted from the `SessionEvent::Usage` arm
 
 Additive, so `schema_version` stays 1. `docs/schemas/headless-v1.schema.json` is a top-level `oneOf`
 over explicit event types, so it gains a `model_call` `$def` (envelope plus integer token fields and
-boolean `calls_tool`) referenced from that `oneOf`. It covers main and subagent calls in event order; guardian
+boolean `calls_tool`) referenced from that `oneOf`. `cache_creation_input_tokens` is taken from
+`usage.cache_creation_input_tokens.unwrap_or(0)`. It covers main and subagent calls in event order; guardian
 calls are not `SessionEvent`s and stay out. The bench runs with no subagents, so every `model_call`
 is a main step. No cost field (headless usage lines carry token counts only).
 
@@ -82,7 +84,7 @@ Flow:
    and shown in the table. Fewer than 3 steps on either side is a bench failure, not a pass.
 6. Write the scorecard (steps, totals, ratio, threshold, flagged, versions, served models, date) and
    print the table. Exit 0 under the threshold, `EXIT_FAIL` (1) when flagged or a side failed,
-   `EXIT_USAGE` (2) for bad flags.
+   `EXIT_USAGE` (2) for bad flags (both constants from `rust/fontaine-evals/src/lib.rs`).
 
 The 2.0 default matches the documented 2× from #480; lowering it after a fix is a one-line change.
 Token counts only: the 5-minute versus 1-hour TTL write rates (#493) are not in rig's `Usage`, so
@@ -92,7 +94,7 @@ the ratio does not credit that saving.
 
 1. `rust/fontaine/src/headless.rs`: emit `model_call` from the `SessionEvent::Usage` arm, mapping rig's
    `cached_input_tokens` to `cache_read_input_tokens` as `usage_ledger.rs` does and using `unwrap_or(0)`
-   for every Option field. Keep the
+   for every Option field (`cache_creation_input_tokens` from `usage.cache_creation_input_tokens.unwrap_or(0)`). Keep the
    budget-cap logic unchanged. Add the `model_call` `$def` to `docs/schemas/headless-v1.schema.json`
    and reference it from the top-level `oneOf`.
 2. `rust/fontaine-evals/src/cache_bench.rs`: `Step`, `parse_fontaine_stream`, `parse_claude_stream`,
@@ -100,7 +102,7 @@ the ratio does not credit that saving.
    `rust/fontaine-evals/src/baseline.rs` (made `pub(crate)`) and one shared timeout-wrapped spawn
    helper instead of two new runners.
 3. `rust/fontaine-evals/src/runner.rs` and `lib.rs`: `Command::CacheBench` and its dispatch; export
-   the module.
+   the module; return `EXIT_FAIL` / `EXIT_USAGE` from `lib.rs`.
 4. Docs and changelog (below).
 
 ## Files to Modify
@@ -150,7 +152,7 @@ All automated tests use canned streams and never touch live APIs or the real CLI
 
 1. From `rust/`, run `cargo run -p fontaine-evals -- cache-bench --model claudemax/sonnet --out
    ../evals/scorecards/claude-subscription-cache-sonnet.json` on a signed-in machine. Expect a
-   per-step table and a ratio near 2.0 on CLI 2.1.319; commit the scorecard. Not automatable: it
+   per-step table and a ratio of roughly 2.0 on CLI 2.1.319, to be recorded; commit the scorecard. Not automatable: it
    needs a live subscription and the real CLI, and it measures their behavior, which is the point.
 2. Sanity check on the first run that `claude -p` stream-json repeats `message.id` across the events
    of one message.
