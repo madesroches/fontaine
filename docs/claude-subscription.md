@@ -126,9 +126,9 @@ A protocol failure names what the CLI did wrong: the MCP servers and statuses it
 inert tool inventory did not start (a `failed` inventory is one the CLI could not start or talk to),
 or the tool it called or offered that the request did not define, alongside the tools the request
 did define. An unprefixed name of a tool the request defines is accepted as that tool; any other
-undefined name still fails the request. With `--debug-file`, a protocol failure also writes the rejected line (cut to 4 KiB)
-and the events accepted before it to the debug file. A failed request is recorded in the session
-ledger as `request_failed`, with the same text.
+undefined name still fails the request. With `--debug-file`, a protocol failure also writes the
+rejected line (cut to 4 KiB) and the events accepted before it to the debug file. A failed request
+is recorded in the session ledger as `request_failed`, with the same text.
 
 A guardian on this account fails closed like any other: a verdict that cannot be read is a denial.
 Pressing Esc or ending a headless run stops the CLI and its descendants and removes the temporary
