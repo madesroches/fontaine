@@ -42,10 +42,7 @@ unchanged (the request's own tools).
 - A case-sensitive exact match only: `Bash`, `Task` and other built-ins are not in the set and still
   fail. `TOLERATED_BUILTIN` keeps its existing handling and is checked after the restore, so a
   restored tool is never treated as the tolerated built-in.
-- Error text (option 3, for the remaining failures): `undefined_call` is unchanged for names not in
-  the set. No new text is needed because a bare name of a defined tool no longer fails.
-- No retry (option 2): recovery makes it unnecessary, and retrying a nondeterministic model would not
-  address the cause.
+- `undefined_call` is unchanged for names not in the set.
 
 ## Implementation Steps
 
