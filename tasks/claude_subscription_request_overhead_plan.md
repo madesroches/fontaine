@@ -147,19 +147,24 @@ the prompt. Using it for every launch (probes, listing, requests) keeps one code
 
 - **Location:** `<data_dir>/claude-cli-cwd`, from `ConnectContext::data_dir`. That path is stable
   across requests, namespaces, sessions and resumes, so each caller's prompt prefix (a resumed
-  session's, or the guardians' of concurrent sessions) is the same from request to request. It is normally outside any repository (not checked; a data dir inside a git work tree brings
-  the CLI's gitStatus back into the prompt and breaks caching), so the environment block's "Is a
-  git repository" stays `false` and the CLI never reads a project.
+  session's, or the guardians' of concurrent sessions) is the same from request to request. Every launch sets `GIT_CEILING_DIRECTORIES=<data_dir>` in the CLI's rebuilt environment,
+  so git discovery never ascends out of the data dir into an enclosing work tree (a dotfiles repo
+  over `$HOME`, or a verbatim `FONTAINE_DATA_DIR`); a repository inside the data dir itself is
+  not checked. The environment block's "Is a git repository" stays `false`, the CLI's gitStatus
+  stays out of the prompt, and it never reads a project.
 - **Creation:** `ClaudeSubscription::connect` runs `create_dir_all` on the data dir, then creates
   the directory with `create_if_missing` (`memory.rs`, made `pub(crate)`), which wraps
   `owner_only::create_dir` and accepts `AlreadyExists` only when `symlink_metadata` shows a
   directory, not a symlink. A failure is a connect error naming the directory, with the I/O chain rendered once via
   `error_chain::chain`, as for the inventory command.
-- **Emptiness, checked at every launch:** `Cli::launch` refuses to start (`ErrorKind::Cli`, with a
-  message naming the directory and telling the user to empty it) when `read_dir(workdir)` yields
-  any entry. This keeps the property the docs state today ("each CLI process runs in an empty
-  private directory") and fails closed if something, a future CLI included, starts leaving files
-  there. Fontaine never writes into it. In the harness runs, the CLI left nothing in its cwd.
+- **Emptiness, checked at connect; instruction files refused at every launch:** `connect` fails
+  (naming the directory and telling the user to empty it) when the accepted directory has any
+  entry. `Cli::launch` refuses to start (`ErrorKind::Cli`, same message) only when `read_dir(workdir)`
+  yields `CLAUDE.md`, `AGENTS.md` or `.claude`, the entries that would put instructions in the
+  prompt. Other entries are tolerated at launch, because concurrent launches (login probe, sessions,
+  guardians, subagents) share the directory and a sibling CLI's transient file must not fail a
+  launch, which is never retried. Fontaine never writes into it. In the harness runs, the CLI left
+  nothing in its cwd.
 
 ### 2. One cache marker on the last history user message
 
@@ -251,9 +256,9 @@ none with it.
 ## Implementation Steps
 
 1. **Stable workdir** (`cli.rs`, `mod.rs`)
-   - Add `workdir` to `Cli` and `Cli::new`. In `launch`, run in `workdir` and refuse a non-empty
-     one. `Scratch` stays the owner of the files and their removal.
-   - In `ClaudeSubscription::connect`, create or accept `<data_dir>/claude-cli-cwd` as described,
+   - Add `workdir` to `Cli` and `Cli::new`. In `launch`, run in `workdir`, set `GIT_CEILING_DIRECTORIES` to the data dir, and refuse
+     a workdir holding `CLAUDE.md`, `AGENTS.md` or `.claude`. `Scratch` stays the owner of the files and their removal.
+   - In `ClaudeSubscription::connect`, create or accept `<data_dir>/claude-cli-cwd` as described (refusing a non-empty one),
      making `create_if_missing` `pub(crate)`.
 2. **Marker** (`protocol.rs`)
    - Add `mark_history(frames: &mut [Frame])`, called in `translate` after `derive_session_id`. Put the
@@ -315,6 +320,8 @@ none with it.
   not have a shorter TTL than a later one).
 - 2026-11-07 One shared `claude-cli-cwd`, not one per account, so accounts on the same login share
   the cache.
+- AFK: 2026-11-07 `GIT_CEILING_DIRECTORIES=<data_dir>` is set on every launch instead of leaving "outside any repository" as an unchecked assumption, the smallest enforcement that does not refuse users whose data dir sits under a dotfiles repo.
+- AFK: 2026-11-07 Emptiness of `claude-cli-cwd` is checked at connect only; launch refuses just instruction-file entries (`CLAUDE.md`, `AGENTS.md`, `.claude`), so a sibling CLI's transient file cannot fail a concurrent launch with a never-retried `ErrorKind::Cli`.
 
 ## Security
 
@@ -322,8 +329,9 @@ none with it.
   are all checked before every request's query frame. The only change in timing is that the
   request process may start before the login and row checks finish, and it writes nothing that
   can start an inference until they pass. A failed check drops the child, which kills its tree.
-- The CLI still runs in an empty, owner-only directory, now a stable one that every launch checks
-  for emptiness. Per-request files stay in a fresh owner-only directory removed with the process.
+- The CLI still runs in an empty, owner-only directory, now a stable one that connect checks
+  for emptiness and every launch checks for instruction files; the git ceiling keeps an enclosing
+  repository out of the prompt. Per-request files stay in a fresh owner-only directory removed with the process.
 - The marker is a `cache_control` field Fontaine adds itself, at a position Fontaine chooses.
   Request content can't place or move it, because every incoming top-level-block `cache_control` is still
   stripped first.
@@ -337,7 +345,7 @@ none with it.
   process, and step 4 is asked of that same process before the frame that asks for a response.
   No response is requested until every check passes, and a refused request still runs no turn.
 - **What a request is:** the CLI runs in one stable, empty, owner-only directory in Fontaine's
-  data directory (`claude-cli-cwd`), checked empty before every launch. Per-request files stay in a
+  data directory (`claude-cli-cwd`), checked empty at connect and for instruction files before every launch. Per-request files stay in a
   temporary directory. The adapter marks the last replayed user message for the prompt cache. The
   CLI's claude.ai connectors are not fetched. Update the instruction-files paragraph that says
   "an empty private scratch directory", and line 75, "starts a fresh CLI process in a private
@@ -388,8 +396,10 @@ behavior, a silent-failure class, so they are automated:
   frame is the `initialize` control request.
 - **Stable workdir.** Every listing and request process's cwd (main, guardian and a subagent
   namespace, across two requests; the double logs cwd only for conversations) is the same `<data_dir>/claude-cli-cwd`. It is not the directory holding the files named
-  in argv, and it is empty after the requests. A file placed in it makes the next request fail with
-  `ErrorKind::Cli` naming the directory, before any process starts. Update
+  in argv, and it is empty after the requests. A `CLAUDE.md` placed in it makes the next request fail with
+  `ErrorKind::Cli` naming the directory, before any process starts; an unrelated file does not,
+  but a non-empty directory fails connect. Every process's environment has
+  `GIT_CEILING_DIRECTORIES` set to the data dir. Update
   `dropping_a_stream_kills_the_process_tree_and_removes_the_directory` to check the per-request
   file directory (the parent of `--settings`) instead of the cwd.
 - **Version first.** `versions_are_checked_before_anything_else` keeps passing: the version check
