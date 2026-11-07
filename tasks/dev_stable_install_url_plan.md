@@ -29,9 +29,6 @@ The dev command is documented next to the release one.
 
 ### Stable asset, immutable archives
 
-A moving release that carried the archives would make a user's download race an upload (new
-installer with old archives, so a sha mismatch). Instead:
-
 - `dev-<n>` stays exactly as today: immutable, signed, draft → verify → publish. It holds the
   archives and signatures and still has no installer.
 - A single long-lived prerelease with tag `dev` holds one asset, `fontaine-installer.sh`, replaced on
@@ -45,27 +42,39 @@ installer with old archives, so a sha mismatch). Instead:
 
 ### Rewriting the installer
 
-A new script `.github/scripts/dev-installer.sh <installer> <tag> <version>` rewrites two baked values
-in dist's output and fails if either substitution does not match exactly once:
+A new script `.github/scripts/dev-installer.sh <installer> <tag> <version>` applies a fixed set of
+named substitutions to dist's output, each matched by its surrounding context, and fails on any
+mismatch:
 
-1. the download URL `.../releases/download/v<cargo version>` → `.../releases/download/<tag>`;
-2. the app version (`APP_VERSION` and therefore the receipt's `version`) → the dev version
-   `<base>-dev.<n>+<sha7>` that `plan` already computes. A receipt version with a `-dev.` prerelease
-   is how #175 recognises the dev lane (see Decisions).
+1. download URL: every occurrence of `.../releases/download/v<cargo version>` → `.../releases/download/<tag>`.
+   dist writes it several times (the GHE branch, the `INSTALLER_BASE_URL` override branch, the default
+   URL and the usage text; 4 in v0.32.0). The script requires the occurrence count confirmed in
+   Step 1 and fails on any other count;
+2. `APP_VERSION=` → the dev version `<base>-dev.<n>+<sha7>` that `plan` already computes;
+3. the receipt JSON's top-level `"version"` (mandatory; not `provider.version`, which is the dist
+   version and stays) → the same dev version. In dist v0.32.0 the receipt version is a separate
+   literal from `APP_VERSION`;
+4. the usage text "The installer for <app> <ver>" → the same dev version.
 
-The exact text of both values is read from a real `dist build --artifacts=global` output during
+Substitutions 2-4 must each match exactly once. A receipt version with a `-dev.` prerelease is the dev
+lane marker (see Decisions).
+
+The exact text of every value is read from a real `dist build --artifacts=global` output during
 implementation (dist is not installed here; install v0.32.0 per `release.yml`), not guessed.
 
 ### Workflow: new job `stable-installer` in `dev.yml`
 
 `needs: [plan, publish]`, `permissions: contents: write`, same `concurrency` group already serializing
-runs. Steps: download the `artifacts-build-global` artifact; run `dev-installer.sh`; `gh release view
-dev` or create it (`--prerelease --latest=false`, no `--draft`); `gh release upload dev
-fontaine-installer.sh --clobber`; then re-download from the stable URL and check it with `sh -n`, that
-it names `dev-<n>`, and that it differs from nothing but those two values (`diff` against the pre-rewrite
-file shows only the changed lines). A failure is a red job, which leaves the previous stable installer
-in place. The `sign`/`host` deletion of the installer stays, so `dev-<n>` and `release-verify.sh` are
-unchanged.
+runs. Like `verify-draft`, it checks out with `actions/checkout@v6` at `${{ env.HEAD_SHA }}` with
+`persist-credentials: false`, sets `defaults.run.working-directory: ${{ github.workspace }}` and
+`env.GH_TOKEN`. Steps: download the `artifacts-build-global` artifact; run `dev-installer.sh`; on the
+local rewritten file, run `sh -n`, check that it names `dev-<n>`, and `diff` it against the pre-rewrite
+file, which must show only the substitutions `dev-installer.sh` makes (a fixed line count from Step 1);
+then `gh release view dev` or create it (`--prerelease --latest=false`, no `--draft`); `gh release
+upload dev fontaine-installer.sh --clobber`; then re-download from the stable URL and byte-compare it
+with the local file. A failed check before the upload leaves the previous stable installer in place; a
+failed upload after gh's delete can leave none. The `sign`/`host` deletion of the installer stays, so
+`dev-<n>` and `release-verify.sh` are unchanged.
 
 The `plan` job's `FONTAINE_DEV_CHANNEL` gate is unchanged.
 
@@ -79,8 +88,8 @@ stays open until it is done and the acceptance check passes.
 ## Implementation Steps
 
 1. Install dist v0.32.0 locally; run `dist build --artifacts=global` in `rust/` and record the
-   exact baked-URL and version lines in the installer.
-2. Add `.github/scripts/dev-installer.sh` with the two exact-once rewrites.
+   exact text of every substitution in the installer, the URL occurrence count and the diff line count.
+2. Add `.github/scripts/dev-installer.sh` with the named substitutions.
 3. Add the `stable-installer` job to `.github/workflows/dev.yml`; update the header comment.
 4. Add self-tests for the script to the "Release signing" step in `.github/workflows/ci.yml`
    (see Testing).
@@ -107,6 +116,12 @@ stays open until it is done and the acceptance check passes.
 
 ## Decisions
 
+- 2026-11-07: the `dev` tag is created once and never moved; only the release's assets change.
+- 2026-11-07: the dev installer is unsigned and sha256-verified, like the release installer.
+- 2026-11-07: the dev installer points at the immutable `dev-<n>` archives.
+- 2026-11-07: supersedes the 2026-11-07 (#477) "No installer on the dev channel" decision in `tasks/fontaine_harness_plan.md`.
+- 2026-11-07: the dev installer writes `<base>-dev.<n>+<sha7>` as the receipt version; channel detection is left to #175.
+
 ## Documentation
 
 - `docs/installing.md`: lead with the dev command (the only one that works before the first release),
@@ -123,22 +138,22 @@ stays open until it is done and the acceptance check passes.
 
 ## Testing Strategy
 
-- Unit-style self-tests in the CI "Release signing" step for `dev-installer.sh`, matching its existing
-  `make_fixture`/`expect_fail` style: a fixture installer containing both baked values is rewritten
-  correctly; a fixture missing either value, or containing one twice, fails. These catch the silent
-  failure of a dist format change shipping an installer that points at a 404.
-- `dev.yml` is only exercisable on `main`; the in-workflow post-upload check (syntax, tag, diff) is
-  its automated guard.
+- Unit-style self-tests in the CI "Release signing" step for `dev-installer.sh`, in the same style,
+  with its own installer-text fixture and a fail helper that calls `dev-installer.sh`: a fixture
+  containing all the substitutions (the URL at the Step 1 count, `APP_VERSION=`, the receipt
+  `"version"`, the usage text) is rewritten correctly; a fixture missing any of them, containing a
+  version value twice, or with a different URL count fails (the receipt one included). These catch the
+  silent failure of a dist format change shipping an installer that points at a 404.
+- `dev.yml` is only exercisable on `main`; the pre-upload checks (syntax, tag, diff) and the
+  post-upload byte-compare are its automated guard.
 
 ## Manual Verification
 
 After an admin enables the channel and a run succeeds: on Linux x86_64 and macOS, run
 `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.sh | sh`,
-then `fontaine --version` and check the receipt's `version` contains `-dev.`. Not automated because it
+then `fontaine --version`, which only confirms the binary runs (it prints the base `CARGO_PKG_VERSION`); the dev-lane assertion is that the receipt's `version` contains `-dev.`. Not automated because it
 needs the real signed release and a real machine.
 
 ## Open Questions
 
-- Should the receipt carry an explicit lane field instead of the `-dev.` version convention? dist's
-  receipt has no such field and `fontaine update` (#175) does not exist yet, so it is left to #175.
-- Dev-signing key material and the repo variable are a maintainer action (item 1 of the issue).
+None.
