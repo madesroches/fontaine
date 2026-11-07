@@ -209,6 +209,24 @@ jobs:
           expect_fail wrong-commit true release "$version" "ffffffff"
           expect_fail unrecognised-asset m_unrecognised
 
+          # The unsigned installer belongs to the release channel only.
+          m_installer() { echo '#!/bin/sh' > "$1/fontaine-installer.sh"; }
+          release_installer="$work/release-installer"
+          cp -r "$pristine" "$release_installer"
+          m_installer "$release_installer"
+          verify "$release_installer" >/dev/null
+          echo "ok: installer accepted on release"
+          dev_fixture="$work/dev-fixture"
+          make_fixture "$dev_fixture"
+          sign "$dev_fixture" main dev
+          verify "$dev_fixture" dev >/dev/null
+          m_installer "$dev_fixture"
+          if verify "$dev_fixture" dev >/dev/null 2>&1; then
+            echo "::error::verify passed on an installer in the dev channel"
+            exit 1
+          fi
+          echo "ok: installer rejected on dev"
+
           # The signer with zero archives must fail too.
           mkdir "$work/none"
           if MINISIGN_SECRET_KEY="$(cat "$work/main.key")" \

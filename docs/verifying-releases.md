@@ -57,6 +57,9 @@ The checksums catch a corrupted download; only the signature proves who made the
 ## What the signature does not cover
 
 The first install is trusted through HTTPS: the public key you verify against comes from this
-repository over the same channel as the archive. Fontaine does not update itself yet; once
-it does, the signature chain will be what keeps an update honest. Once Fontaine's installers enable GitHub artifact attestations, `gh attestation
+repository over the same channel as the archive. The shell installer (`fontaine-installer.sh`) is
+not signed and does not check the minisign signature; it verifies the archive's sha256 only, and
+only when `sha256sum` is present (see [Installing Fontaine](installing.md)). To get a signature
+check, download the archive and verify it as above. Fontaine does not update itself yet; once
+it does, the signature chain will be what keeps an update honest. Once Fontaine's archives enable GitHub artifact attestations, `gh attestation
 verify` will apply as a further check; the minisign key stays the root of trust.

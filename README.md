@@ -13,7 +13,21 @@ This repository is under construction. The documentation describes what the curr
 
 ## Install
 
-Binaries for Linux, macOS and Windows are attached to each
+On Linux (x86_64) and macOS (Apple silicon and Intel), one command installs the latest release:
+
+```
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/latest/download/fontaine-installer.sh | sh
+```
+
+It needs `curl` or `wget` and `tar`. It installs `fontaine` to `$CARGO_HOME/bin` (`~/.cargo/bin` by
+default), adds that directory to your shell profile if needed, and writes an install receipt at
+`${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`. It checks the archive's sha256 when `sha256sum` is
+present and otherwise skips the check with a notice that `--quiet` suppresses; it does not verify
+the minisign signature. The installer ignores Fontaine's `[network]` proxy, CA and mTLS settings:
+behind a proxy, set `https_proxy` / `SSL_CERT_FILE` for `curl`, or download the archive manually.
+See [Installing Fontaine](docs/installing.md).
+
+Windows, and any platform without an installer, use the archive attached to each
 [GitHub Release](https://github.com/madesroches/fontaine/releases). Unpack the archive for your
 platform and put `fontaine` on your `PATH`; the archive also holds the license, readme and
 changelog. Each archive has a detached signature; see
@@ -23,6 +37,9 @@ source:
 ```
 cargo install --git https://github.com/madesroches/fontaine fontaine
 ```
+
+The installer and `cargo install --git` both install to `$CARGO_HOME/bin`. The installer overwrites a
+cargo-installed binary; to overwrite an installer-installed one, add `--force` to `cargo install`.
 
 Fontaine is not published to crates.io. Release binaries include the PromptGuard 2 tool-result
 scanner; a source build has it only with `--features pg2` (`cargo install --features pg2 ...`).

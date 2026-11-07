@@ -221,8 +221,9 @@ jobs:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
-      - name: Remove the dist manifests
-        run: rm -f artifacts/*-dist-manifest.json
+      # The installer bakes a `v<version>` download URL and dev tags are `dev-<n>`, so it would 404.
+      - name: Remove the dist manifests and installer
+        run: rm -f artifacts/*-dist-manifest.json artifacts/fontaine-installer.sh
       - name: Install minisign
         run: .github/scripts/install-minisign.sh
       - name: Sign and verify
@@ -262,8 +263,9 @@ jobs:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
-      - name: Remove the dist manifests
-        run: rm -f artifacts/*-dist-manifest.json artifacts/dist-manifest.json
+      # Same reason as in `sign`: the installer's baked `v<version>` URL does not exist for a dev tag.
+      - name: Remove the dist manifests and installer
+        run: rm -f artifacts/*-dist-manifest.json artifacts/dist-manifest.json artifacts/fontaine-installer.sh
       - name: Create the draft prerelease
         env:
           TAG: ${{ needs.plan.outputs.tag }}

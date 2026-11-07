@@ -441,6 +441,9 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 
 - 2026-11-05: Release signing — separate Fontaine-owned minisign keys for `release` and `dev`, public keys checked in at `rust/fontaine/keys/` and compiled in, private keys only in the `release-signing` (tags, required reviewer) and `dev-signing` (main) GitHub Environments. Every archive is signed, published as a draft, re-downloaded and verified, then published. Reason: update trust anchored to Fontaine's keys (#175/#176), with a dev-key compromise unable to reach `release`.
 - 2026-11-05: The dev channel publishes each verified `main` build as prerelease `dev-<run_number>`, gated on the repository variable `FONTAINE_DEV_CHANNEL`. Reason: the same draft-verify-publish gate as `release`, and no red `main` before the dev key exists.
+- 2026-11-07 (#477): The cargo-dist `shell` installer ships on the `release` channel unsigned and verifies the archive's sha256 only (when `sha256sum` is present), not the minisign signature; reason: it carries no trust beyond the HTTPS fetch that delivered it, and there is no minisign on the user's machine. `release-verify.sh` accepts it on `release` only.
+- 2026-11-07 (#477): No installer on the dev channel; reason: dist bakes a `v<version>` download URL and dev tags are `dev-<n>`, so the script would 404. `dev.yml` removes it before signing and hosting.
+- 2026-11-07 (#477): Linux arm64 is not claimed as supported, so `aarch64-unknown-linux-gnu` is not added as a target; reason: it needs a CI runner, test coverage and a pg2 decision, which the installer issue does not cover.
 ### Config
 
 - 2026-10-21: Unknown config keys and sections are a config error (exit 2) (Claude Code ignores them): a misspelled `[permisions]` must not silently drop deny rules.
