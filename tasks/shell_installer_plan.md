@@ -12,7 +12,7 @@ with this command and states its prerequisites and caveats.
 
 ## Current State
 
-- `rust/Cargo.toml:113-130` `[workspace.metadata.dist]` has `installers = []`, four targets
+- `rust/Cargo.toml:113-127` `[workspace.metadata.dist]` has `installers = []`, four targets
   (`x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, `x86_64-apple-darwin`,
   `x86_64-pc-windows-msvc`) and `allow-dirty = ["ci"]`.
 - `.github/workflows/release.yml` is a hand-adapted dist workflow. `build-global-artifacts` already
@@ -43,7 +43,8 @@ the receipt at `${XDG_CONFIG_HOME:-$HOME/.config}/fontaine/fontaine-receipt.json
 updater binary is not installed.
 
 `install-path` is left at dist's default; no override is needed. `FONTAINE_INSTALL_DIR` and
-`CARGO_DIST_FORCE_INSTALL_DIR` make the installer record a different layout, which is #175's concern.
+`CARGO_DIST_FORCE_INSTALL_DIR` record a different `install_prefix` with the same cargo-home layout;
+`FONTAINE_UNMANAGED_INSTALL` and `FONTAINE_DISABLE_UPDATE=1` skip the receipt. Both are #175's concern.
 
 ### Workflow wiring (hand-ported; `dist generate` would overwrite `release.yml`)
 
@@ -67,15 +68,14 @@ updater binary is not installed.
 
 The installer verifies the archive's sha256, the same checksum the updater compares; both fetch from
 the same GitHub release. The check depends on `sha256sum` being present (no `shasum` fallback, which
-matters on macOS); otherwise dist's installer skips it with a warning rather than failing. It does
+matters on macOS); otherwise dist's installer skips it with a notice (printed via `say`, so `--quiet` suppresses it) rather than failing. It does
 not verify the minisign signature (no minisign on the user's machine). Docs say so and point to
 `docs/verifying-releases.md` for manual verification. If #175's updater later adds attestation,
 the installer follows in that issue.
 
 ### Platforms
 
-No target is added. `aarch64-unknown-linux-gnu` is not built or tested today and the README does not
-claim Linux arm64, so it stays out until it is supported; README lists supported install platforms
+No target is added. README lists supported install platforms
 explicitly (Linux x86_64, macOS arm64 and x86_64). The shell installer is for Linux and macOS;
 Windows keeps the manual archive until its own installer issue.
 
@@ -101,7 +101,7 @@ self-update when the receipt does not match the running executable.
 6. README `## Install`: lead with the one-line installer (Linux, macOS), then the manual archive
    (all platforms, including Windows), then `cargo install --git`. State supported platforms, the
    `curl`/`wget` and `tar` prerequisites, that the sha256 check needs `sha256sum` and is otherwise
-   skipped with a warning, that the installer and `cargo install --git` both install to
+   skipped with a notice that `--quiet` suppresses, that the installer and `cargo install --git` both install to
    `$CARGO_HOME/bin` and replace each other, the receipt, and the `[network]` caveat (the installer
    ignores Fontaine's proxy, CA and mTLS config; behind a proxy, set `https_proxy` /
    `SSL_CERT_FILE` for `curl`, or download the archive manually).
@@ -149,6 +149,7 @@ self-update when the receipt does not match the running executable.
 
 - AFK: The installer is itself unsigned and does not verify the minisign signature, the most
   conservative option that satisfies the issue without new key handling.
+- AFK: No installer on the dev channel (dist bakes a `v<version>` download URL; dev tags are `dev-<n>`).
 - AFK: Linux arm64 is not claimed as supported, so `aarch64-unknown-linux-gnu` is not added.
 
 ## Documentation
