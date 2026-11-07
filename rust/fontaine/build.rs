@@ -13,7 +13,9 @@ fn git(args: &[&str]) -> Option<String> {
 }
 
 fn watch_git_path(name: &str) {
-    if let Some(path) = git(&["rev-parse", "--git-path", name]) {
+    if let Some(path) = git(&["rev-parse", "--git-path", name])
+        && std::path::Path::new(&path).exists()
+    {
         println!("cargo:rerun-if-changed={path}");
     }
 }

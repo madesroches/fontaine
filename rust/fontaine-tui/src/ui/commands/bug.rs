@@ -14,6 +14,12 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
     /// confirmation files it. Cancelling writes and sends nothing.
     pub(crate) async fn bug(&mut self, runtime: &AgentRuntime, argument: &str) -> ControlFlow<()> {
         let drafts = fontaine_core::bug_drafts::list(&self.data_dir);
+        if argument == "discard" {
+            self.app
+                .transcript
+                .error("/bug discard needs a draft id: /bug discard <id>");
+            return ControlFlow::Continue(());
+        }
         if let Some(id) = argument.strip_prefix("discard ").map(str::trim) {
             self.discard_draft(&drafts, id);
             return ControlFlow::Continue(());
@@ -53,7 +59,10 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         }
         let redactor = Redactor::new(secrets);
         let mut level = Level::Minimal;
-        let gh = std::env::var_os("PATH").is_some() && bug_submit::gh_ready("gh");
+        let gh = std::env::var_os("PATH").is_some()
+            && tokio::task::spawn_blocking(|| bug_submit::gh_ready("gh"))
+                .await
+                .unwrap_or(false);
         let rendered = render(&facts, level, &redactor);
         self.app.begin_bug(BugPrompt::new(
             rendered.title.clone(),

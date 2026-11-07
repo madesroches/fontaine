@@ -275,13 +275,18 @@ fn result_chars(content: &[ToolResultContent]) -> usize {
 }
 
 fn render_messages(doc: &mut Doc, conversation: &Conversation) {
+    render_messages_from(doc, conversation, 0);
+}
+
+/// Renders the entries from index `from` on.
+fn render_messages_from(doc: &mut Doc, conversation: &Conversation, from: usize) {
     let compacted: Vec<_> = conversation
         .asides()
         .filter(|(_, aside)| aside.kind == COMPACTED)
         .filter_map(|(_, aside)| aside.after)
         .collect();
     let summarizer = summary_author();
-    for entry in conversation.entries() {
+    for entry in conversation.entries().skip(from) {
         match entry.message {
             Message::System { .. } => {}
             Message::User { content } => {
@@ -459,15 +464,32 @@ pub async fn transcript_tail(session: &Session, turns: usize) -> Result<String, 
 /// The last `turns` turns of the conversation as Markdown, a turn being a user message and
 /// what followed it. Empty when the conversation has none.
 pub fn render_tail(conversation: &Conversation, turns: usize) -> String {
+    let summarizer = summary_author();
+    let starts: Vec<usize> = conversation
+        .entries()
+        .enumerate()
+        .filter(|(_, entry)| {
+            let Message::User { content } = entry.message else {
+                return false;
+            };
+            let typed_by_user = match entry.author {
+                None => true,
+                Some(author) => {
+                    entry.author != Some(&summarizer)
+                        && author.kind == AuthorKind::User
+                        && author.title.is_none()
+                }
+            };
+            typed_by_user && content.iter().any(|c| matches!(c, UserContent::Text(_)))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    let Some(start) = starts.get(starts.len().saturating_sub(turns)) else {
+        return String::new();
+    };
     let mut doc = Doc::new();
-    render_messages(&mut doc, conversation);
-    let text = doc.out;
-    let starts: Vec<usize> = text.match_indices("## User\n").map(|(i, _)| i).collect();
-    let from = starts.len().saturating_sub(turns);
-    match starts.get(from) {
-        Some(start) => text[*start..].trim_end().to_string(),
-        None => String::new(),
-    }
+    render_messages_from(&mut doc, conversation, *start);
+    doc.out.trim_end().to_string()
 }
 
 /// The main file of a folder export: the root render with the Subagents index after the
@@ -592,6 +614,16 @@ mod tests {
         let both = render_tail(&conversation, 5);
         assert!(both.contains("list the files") && both.contains("second answer"));
         assert_eq!(render_tail(&Conversation::default(), 3), "");
+    }
+
+    #[test]
+    fn message_text_that_looks_like_a_user_heading_is_not_a_turn() {
+        let mut conversation = sample();
+        conversation.push(Message::user("second question"));
+        conversation.push(Message::assistant("## User\nnot a turn"));
+        let tail = render_tail(&conversation, 1);
+        assert!(tail.starts_with("## User\n\nsecond question"), "{tail}");
+        assert!(tail.contains("not a turn"));
     }
 
     #[test]

@@ -36,6 +36,8 @@ pub struct BugPrompt {
     method: Submit,
     gh_available: bool,
     scroll: usize,
+    /// Wrapped row count at the last draw: the scroll bound.
+    row_count: std::cell::Cell<usize>,
 }
 
 impl BugPrompt {
@@ -53,6 +55,7 @@ impl BugPrompt {
             },
             gh_available,
             scroll: 0,
+            row_count: std::cell::Cell::new(0),
         }
     }
 
@@ -94,11 +97,13 @@ impl BugPrompt {
                 None
             }
             KeyCode::Down | KeyCode::PageDown | KeyCode::Char('j') => {
-                self.scroll += if key.code == KeyCode::PageDown {
+                let step = if key.code == KeyCode::PageDown {
                     VISIBLE_ROWS
                 } else {
                     1
                 };
+                let last = self.row_count.get().saturating_sub(VISIBLE_ROWS);
+                self.scroll = (self.scroll + step).min(last);
                 None
             }
             KeyCode::Up | KeyCode::PageUp | KeyCode::Char('k') => {
@@ -135,6 +140,7 @@ impl BugPrompt {
             Line::styled("This is everything that will be sent:", dim),
         ];
         let rows = self.rows(width);
+        self.row_count.set(rows.len());
         let start = self.scroll.min(rows.len().saturating_sub(VISIBLE_ROWS));
         out.extend(
             rows.iter()
@@ -247,5 +253,11 @@ mod tests {
         }
         let last = p.body(80, &theme);
         assert!(last.iter().any(|l| l.to_string() == "line 39"));
+        for _ in 0..30 {
+            p.handle_key_at(key(KeyCode::Down), p.opened);
+        }
+        p.handle_key_at(key(KeyCode::Up), p.opened);
+        let up = p.body(80, &theme);
+        assert!(up.iter().any(|l| l.to_string() == "line 38"));
     }
 }
