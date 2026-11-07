@@ -21,7 +21,7 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/re
 
 It needs `curl` or `wget` and `tar`. It installs `fontaine` to `$CARGO_HOME/bin` (`~/.cargo/bin` by
 default), adds that directory to your shell profile if needed, and writes an install receipt at
-`~/.config/fontaine/fontaine-receipt.json`. It checks the archive's sha256 when `sha256sum` is
+`${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`. It checks the archive's sha256 when `sha256sum` is
 present and otherwise skips the check with a notice that `--quiet` suppresses; it does not verify
 the minisign signature. The installer ignores Fontaine's `[network]` proxy, CA and mTLS settings:
 behind a proxy, set `https_proxy` / `SSL_CERT_FILE` for `curl`, or download the archive manually.

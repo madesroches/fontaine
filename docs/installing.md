@@ -20,7 +20,7 @@ the release it belongs to, and writes:
 - the `fontaine` binary in `$CARGO_HOME/bin` (`~/.cargo/bin` when `CARGO_HOME` is unset);
 - an install receipt at `${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`, recording
   the install prefix (`$CARGO_HOME`, or `~/.cargo`), the cargo-home layout and the installed
-  binary, so `fontaine update` can tell an installer-managed binary from any other;
+  binary, so a future self-updater can tell how Fontaine was installed;
 - shell setup that puts `$CARGO_HOME/bin` on your `PATH`: `$CARGO_HOME/env` and `env.fish`, a line
   in your shell's rc files that sources it, and, for fish,
   `~/.config/fish/conf.d/fontaine.env.fish`. Set `FONTAINE_NO_MODIFY_PATH=1` to skip these edits.
@@ -58,7 +58,7 @@ cargo install --git https://github.com/madesroches/fontaine fontaine --force
 Remove:
 
 - `$CARGO_HOME/bin/fontaine` (`~/.cargo/bin/fontaine` by default);
-- the receipt, `~/.config/fontaine/fontaine-receipt.json`;
+- the receipt, `${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`;
 - `~/.config/fish/conf.d/fontaine.env.fish`, the one shell file specific to Fontaine.
 
 Do not delete `~/.config/fontaine` as a whole; it is also Fontaine's configuration directory.
