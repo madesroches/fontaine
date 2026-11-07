@@ -615,6 +615,19 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-03 AFK (#379): CLI `trust`/`untrust` enumerate skills with the real config dir, a
   nonexistent sentinel `project_root` and `plugins::load_installed`; reason: user-directory skills
   must be found while project files are never read.
+- 2026-11-07: The `skill` tool takes optional `args` (Claude Code's field) and accepts
+  `arguments`, `argument`, `input`, `params` as aliases, non-string values coerced to text;
+  deviation from Claude Code's strict schema, reason: models guess the field name and a failed
+  call drops the input (#469).
+- 2026-11-07 AFK: unknown fields stay rejected (`deny_unknown_fields`), as in every tools args struct; a
+  silently dropped misnamed field would recreate the bug.
+- 2026-11-07 AFK: `skill` is NOT accepted as an alias for `name` because permission rules match on the raw
+  `name` key (`name_arg_key`); the `args` aliases are unaffected since rules never read them.
+- 2026-11-07 AFK: a payload with two spellings of one field is rejected with serde's "duplicate field" error.
+- 2026-11-07 AFK: model args may form `!` commands (`substitute` then `parts`, as for `/name args`); kept
+  unchanged and documented, still gated as `shell`.
+- 2026-11-07 AFK: skill index lines are not changed to carry `argument-hint`; the model learns of arguments
+  from the tool description and the user/caller supplying them.
 
 ### Guardian
 

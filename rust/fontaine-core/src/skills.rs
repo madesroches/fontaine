@@ -334,8 +334,13 @@ impl SkillRuntime {
 }
 
 impl SkillSource for SkillRuntime {
-    fn load<'a>(&'a self, name: &'a str, agent: &'a str) -> BoxFuture<'a, Result<String, String>> {
-        Box::pin(async move { self.expand(name, "", agent, true).await })
+    fn load<'a>(
+        &'a self,
+        name: &'a str,
+        arguments: &'a str,
+        agent: &'a str,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move { self.expand(name, arguments, agent, true).await })
     }
 }
 

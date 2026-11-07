@@ -367,9 +367,10 @@ PowerShell command. Without an allow rule or hook, every call prompts in `manual
   guardian as an `active_skill` line (see [the guardian's request](guardian.md#what-the-guardian-sees)),
   while your own `shell(git *)` allow rule stays an allow. Skills in your own skills directory keep
   lending all their rules. Neither goes to a subagent.
-- **Skills and restrictions.** A skill's `!` lines run through `shell` only, so a subagent whose
-  tools are only `powershell` has nothing to run them with. A restriction that names `shell`, such
-  as `shell(git *)`, does not constrain `powershell`; name `powershell` to allow or forbid it.
+- **Skills and restrictions.** A skill's `!` lines run through `shell` only, including commands
+  formed from arguments the model passed to the `skill` tool, so a subagent whose tools are only
+  `powershell` has nothing to run them with. A restriction that names `shell`, such as `shell(git
+  *)`, does not constrain `powershell`; name `powershell` to allow or forbid it.
 
 ## The shell pre-classifier
 

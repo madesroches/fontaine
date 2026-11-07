@@ -55,6 +55,10 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- The model-invoked `skill` tool takes an optional `args` string, substituted as for `/name args`,
+  and accepts `arguments`, `argument`, `input` and `params` for it; a call such as
+  `skill {"name": "...", "arguments": "tasks/plan.md"}` no longer fails with `unknown field` and
+  loads the skill without its input (#469).
 - The agent list below the prompt box shows the model and reasoning effort each subagent runs
   at, after its type (`worker acct/sonnet effort high`); both are left out when unset, and on a
   narrow terminal they give way after the id and before the status (#464).

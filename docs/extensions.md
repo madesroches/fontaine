@@ -96,11 +96,14 @@ skill. Files load without workspace trust, so they carry no executables of their
 ## Skills
 
 The names and descriptions of the skills go into the system prompt, between the instructions files
-and the output style. The body loads through the `skill` tool, whose only argument is the skill's
-name. Because it can load nothing but skill text, `skill` is a read-only tool and needs no approval;
-what the skill then asks the model to do goes through the permission pipeline like anything else.
-A personal skill outranks a repository skill of the same name. In the terminal UI, `/skills` lists
-every loaded skill with its scope.
+and the output style. The body loads through the `skill` tool, which takes the skill's name and
+optional `args`, substituted as for `/name args`. Because it can load nothing but skill text,
+`skill` is a read-only tool and needs no approval; what the skill then asks the model to do goes
+through the permission pipeline like anything else. Arguments the model supplies can form `!`
+commands just as typed ones do; those are still gated as `shell` (see [Commands in a
+skill](#commands-in-a-skill)), and `allowed-tools` rules lent by a user-scope skill can apply to
+them. A personal skill outranks a repository skill of the same name. In the terminal UI, `/skills`
+lists every loaded skill with its scope.
 
 ### Slash commands and arguments
 

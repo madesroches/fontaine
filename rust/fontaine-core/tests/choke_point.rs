@@ -63,7 +63,12 @@ impl RootLedger for NoLedger {
 struct NoSkills;
 
 impl SkillSource for NoSkills {
-    fn load<'a>(&'a self, _: &'a str, _: &'a str) -> BoxFuture<'a, Result<String, String>> {
+    fn load<'a>(
+        &'a self,
+        _: &'a str,
+        _: &'a str,
+        _: &'a str,
+    ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async { Err("no skills".to_string()) })
     }
 }
