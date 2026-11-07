@@ -141,7 +141,25 @@ pub(super) fn build_agent(
 /// Whether the model may queue bug-report drafts: never headless, and not when the user turned
 /// them off.
 fn drafts_offered(p: &Parts<'_>) -> bool {
-    !p.setup.headless && p.config.feedback.drafts != DraftsMode::Off
+    offers_drafts(p.setup.headless, p.config.feedback.drafts)
+}
+
+fn offers_drafts(headless: bool, mode: DraftsMode) -> bool {
+    !headless && mode != DraftsMode::Off
+}
+
+fn draft_tool(p: &Parts<'_>) -> ExtensionTool {
+    let secrets =
+        crate::redact::session_secrets(p.config, &p.setup.data_dir, &*p.setup.env, &|m| {
+            p.approver.warn(m)
+        });
+    ExtensionTool::new(DraftBugReportTool {
+        sink: Arc::new(FileDrafts::new(
+            p.setup.data_dir.clone(),
+            &p.session.id,
+            Redactor::new(secrets),
+        )),
+    })
 }
 
 /// Whether the scheduling tools exist in this session.
@@ -279,14 +297,7 @@ fn extension_tools(
         }),
     ];
     if drafts_offered(p) {
-        let secrets = crate::redact::session_secrets(p.config, &p.setup.data_dir, &*p.setup.env);
-        tools.push(ExtensionTool::new(DraftBugReportTool {
-            sink: Arc::new(FileDrafts::new(
-                p.setup.data_dir.clone(),
-                &p.session.id,
-                Redactor::new(secrets),
-            )),
-        }));
+        tools.push(draft_tool(p));
     }
     if p.config.agents.teams {
         tools.push(ExtensionTool::new(BoardShowTool {
@@ -354,4 +365,18 @@ fn finish_builder(p: &Parts<'_>, preamble: String) -> (Agent, bool) {
         builder = builder.additional_params(serde_json::json!({ "tools": [entry] }));
     }
     (builder.build(), native.is_some())
+}
+
+#[cfg(test)]
+mod draft_tests {
+    use super::*;
+
+    #[test]
+    fn drafts_are_offered_only_interactively_and_not_when_off() {
+        assert!(offers_drafts(false, DraftsMode::On));
+        assert!(offers_drafts(false, DraftsMode::Quiet));
+        assert!(!offers_drafts(false, DraftsMode::Off));
+        assert!(!offers_drafts(true, DraftsMode::On));
+        assert!(!offers_drafts(true, DraftsMode::Quiet));
+    }
 }

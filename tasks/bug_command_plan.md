@@ -69,13 +69,13 @@ Constants: `REPO = "madesroches/fontaine"`, `LABELS = ["bug"]`; not configurable
 - `Submit::Gh`: if `gh auth status` succeeds, `gh issue create --repo REPO --label bug --title …
   --body-file <bundle body>` run through the argv API (no shell). Returns the issue URL.
 - `Submit::Url` (fallback, or user's choice): prints `https://github.com/REPO/issues/new?title=…
-  &labels=bug&body=…` with the body truncated to a safe length (~6000 chars) with a pointer to the
-  bundle file for the rest. Nothing is opened automatically; the URL is shown for copying.
+  &labels=bug&body=…` with the transcript-free body cut until the encoded URL fits 8000 bytes, with a pointer to the
+  bundle file name for the rest. Nothing is opened automatically; the URL is shown for copying.
 - Transcript is never put in the URL.
 
 ### 4. TUI flow (handler `fontaine-tui/src/ui/commands/bug.rs`, prompt `fontaine-tui/src/bug_prompt.rs`)
 
-`/bug [description]`: description from the argument or a prompt. A preview screen (pattern of
+`/bug [description | draft-id | discard draft-id]`: the description comes from the argument or a loaded draft; a bare `/bug` lists the queued drafts, or prints usage when there are none. A preview screen (pattern of
 `confirm_prompt.rs`) shows the full rendered payload (scrollable), the level toggle
 (`m`inimal / `f`ull, default minimal), the submission method (gh or URL), and the destination repo.
 Enter confirms; Esc cancels with nothing written or sent. The bundle file is written only after
@@ -157,6 +157,7 @@ Not done: the branch review loop and the PR.
 - 2026-11-07: `draft_bug_report` is stripped once inside `AgentType::toolset` (`registry.rs`) for every type, since `tools: None` types such as `fork` inherit all parent tools.
 - 2026-11-07: The bundle file reuses `owner_only::create_new`, looping on `AlreadyExists` with a numeric suffix.
 - 2026-11-07: `/bug` is a slash command only (none headless) and is `main_only()`.
+- 2026-11-07: A bare `/bug` does not prompt for a description: it lists queued drafts or prints usage; `/bug discard <id>` deletes a draft, and a filed draft is deleted, so the footer counts only pending drafts.
 
 ## Documentation
 

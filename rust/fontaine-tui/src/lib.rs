@@ -275,6 +275,7 @@ struct Ui<R> {
     /// Requests the provider dialog made while a turn ran, carried out once it is over.
     pending_provider: VecDeque<DialogKey>,
     data_dir: PathBuf,
+    pending_drafts: fontaine_core::bug_drafts::Pending,
     user_config: Option<PathBuf>,
     env: EnvLookup,
     /// What starting each MCP server came to, for `/mcp`.
@@ -404,6 +405,7 @@ pub async fn drive(
         pending_config: VecDeque::new(),
         pending_provider: VecDeque::new(),
         data_dir,
+        pending_drafts: Default::default(),
         user_config,
         env,
         mcp_status: Vec::new(),

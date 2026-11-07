@@ -45,6 +45,36 @@ pub fn list(data_dir: &Path) -> Vec<Draft> {
     drafts
 }
 
+/// Deletes the draft with `id`; a draft already gone is fine. The id must be one [`list`] returned.
+pub fn remove(data_dir: &Path, id: &str) -> io::Result<()> {
+    match std::fs::remove_file(dir(data_dir).join(format!("{id}.json"))) {
+        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// The number of readable drafts, re-read only when the directory's contents change.
+#[derive(Default)]
+pub struct Pending {
+    stamp: Option<(Option<std::time::SystemTime>, usize)>,
+    count: usize,
+}
+
+impl Pending {
+    pub fn count(&mut self, data_dir: &Path) -> usize {
+        let directory = dir(data_dir);
+        let entries = std::fs::read_dir(&directory).map_or(0, Iterator::count);
+        let modified = std::fs::metadata(&directory)
+            .and_then(|m| m.modified())
+            .ok();
+        if self.stamp != Some((modified, entries)) {
+            self.count = list(data_dir).len();
+            self.stamp = Some((modified, entries));
+        }
+        self.count
+    }
+}
+
 /// Saves drafts for one session, at most [`MAX_DRAFTS`].
 pub struct FileDrafts {
     data_dir: PathBuf,
@@ -152,6 +182,21 @@ mod tests {
             }
         }
         assert_eq!(list(data.path()).len(), 2 * MAX_DRAFTS);
+    }
+
+    #[test]
+    fn removed_drafts_leave_the_pending_count() {
+        let data = tempfile::tempdir().unwrap();
+        let mut pending = Pending::default();
+        assert_eq!(pending.count(data.path()), 0);
+        let sink = FileDrafts::new(data.path().into(), "aaaaaaaa", Redactor::default());
+        let first = sink.save(&args("one")).unwrap();
+        sink.save(&args("two")).unwrap();
+        assert_eq!(pending.count(data.path()), 2);
+        remove(data.path(), &first).unwrap();
+        remove(data.path(), &first).unwrap();
+        assert_eq!(pending.count(data.path()), 1);
+        assert_eq!(list(data.path()).len(), 1);
     }
 
     #[test]

@@ -77,6 +77,8 @@ pub struct Rendered {
     pub title: String,
     /// What goes in the issue.
     pub body: String,
+    /// The body without the transcript, for a prefilled URL that is visible in browser history.
+    pub url_body: String,
     /// Everything, written to the local bundle file.
     pub bundle: String,
 }
@@ -95,7 +97,7 @@ impl BugReport {
 
     pub fn render(&self, redactor: &Redactor) -> Rendered {
         let f = &self.facts;
-        let title = title_of(&f.description);
+        let title = title_of(&f.description, redactor);
         let core = self.core_sections();
         let transcript = (self.level == Level::Full && !f.transcript.trim().is_empty())
             .then(|| transcript_block(&f.transcript));
@@ -103,16 +105,19 @@ impl BugReport {
             Some(block) => format!("{core}\n{block}"),
             None => core.clone(),
         };
+        let url_body = match &transcript {
+            Some(_) => format!("{core}\n{TRANSCRIPT_IN_BUNDLE}"),
+            None => core.clone(),
+        };
         let body = match &transcript {
             Some(block) if core.len() + block.len() < BODY_LIMIT => format!("{core}\n{block}"),
-            Some(_) => format!(
-                "{core}\n_The transcript tail is in the local bundle file, not in this issue._\n"
-            ),
+            Some(_) => format!("{core}\n{TRANSCRIPT_IN_BUNDLE}"),
             None => core,
         };
         Rendered {
-            title: redactor.redact(&title),
+            title,
             body: redactor.redact(&body),
+            url_body: redactor.redact(&url_body),
             bundle: redactor.redact(&bundle),
         }
     }
@@ -152,8 +157,12 @@ impl BugReport {
     }
 }
 
-fn title_of(description: &str) -> String {
-    let line = description.lines().next().unwrap_or_default().trim();
+const TRANSCRIPT_IN_BUNDLE: &str =
+    "_The transcript tail is in the local bundle file, not in this issue._\n";
+
+/// Redacts before cutting: a cut through a secret would leave a prefix the redactor misses.
+fn title_of(description: &str, redactor: &Redactor) -> String {
+    let line = redactor.redact(description.lines().next().unwrap_or_default().trim());
     let mut title: String = line.chars().take(80).collect();
     if title.is_empty() {
         title = "Bug report".to_string();
@@ -245,6 +254,8 @@ mod tests {
     fn full_adds_the_transcript_in_a_details_block() {
         let r = render(Level::Full, &facts());
         assert!(r.body.contains("<details>"));
+        assert!(!r.url_body.contains("## User"));
+        assert!(r.url_body.contains("local bundle file"));
         assert!(r.bundle.contains("## User"));
     }
 
@@ -288,6 +299,16 @@ mod tests {
         let mut f = facts();
         f.description = String::new();
         assert_eq!(render(Level::Minimal, &f).title, "Bug report");
+    }
+
+    #[test]
+    fn a_secret_crossing_the_title_cut_is_still_redacted() {
+        let secret = "crossing-secret-value-xyz";
+        let mut f = facts();
+        f.description = format!("{} {secret}", "a".repeat(70));
+        let r = BugReport::build(&f, Level::Minimal).render(&Redactor::new([Secret::new(secret)]));
+        assert!(!r.title.contains("crossing"), "{}", r.title);
+        assert!(!r.title.contains("xyz"), "{}", r.title);
     }
 
     #[test]

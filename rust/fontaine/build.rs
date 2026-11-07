@@ -2,18 +2,33 @@
 
 use std::process::Command;
 
-fn main() {
-    let sha = Command::new("git")
-        .args(["rev-parse", "--short=12", "HEAD"])
+fn git(args: &[&str]) -> Option<String> {
+    Command::new("git")
+        .args(args)
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "unknown".to_string());
+}
+
+fn watch_git_path(name: &str) {
+    if let Some(path) = git(&["rev-parse", "--git-path", name]) {
+        println!("cargo:rerun-if-changed={path}");
+    }
+}
+
+fn main() {
+    let sha = git(&["rev-parse", "--short=12", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=FONTAINE_GIT_SHA={sha}");
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
     println!("cargo:rustc-env=FONTAINE_BUILD_TARGET={target}");
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    // `--git-path` resolves inside a worktree, where `.git` is a file.
+    for name in ["HEAD", "packed-refs"] {
+        watch_git_path(name);
+    }
+    if let Some(reference) = git(&["symbolic-ref", "-q", "HEAD"]) {
+        watch_git_path(&reference);
+    }
 }

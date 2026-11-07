@@ -94,6 +94,7 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         pending_config: VecDeque::new(),
         pending_provider: VecDeque::new(),
         data_dir: PathBuf::new(),
+        pending_drafts: Default::default(),
         user_config: None,
         env: Arc::new(|_| None),
         mcp_status: Vec::new(),

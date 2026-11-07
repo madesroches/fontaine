@@ -10,10 +10,18 @@ use fontaine_core::redact::{Redactor, session_secrets};
 use fontaine_tools::error_chain::chain;
 
 impl<R: FnMut(&mut crate::App)> Ui<R> {
-    /// `/bug [description | draft-id]`: previews the redacted report, and on confirmation files
-    /// it. Cancelling writes and sends nothing.
+    /// `/bug [description | draft-id | discard draft-id]`: previews the redacted report, and on
+    /// confirmation files it. Cancelling writes and sends nothing.
     pub(crate) async fn bug(&mut self, runtime: &AgentRuntime, argument: &str) -> ControlFlow<()> {
         let drafts = fontaine_core::bug_drafts::list(&self.data_dir);
+        if let Some(id) = argument.strip_prefix("discard ").map(str::trim) {
+            self.discard_draft(&drafts, id);
+            return ControlFlow::Continue(());
+        }
+        let draft_id = drafts
+            .iter()
+            .find(|d| d.id == argument)
+            .map(|d| d.id.clone());
         let description = match drafts.iter().find(|d| d.id == argument) {
             Some(draft) => draft.description(),
             None if argument.is_empty() => {
@@ -27,7 +35,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                         .map(|d| format!("  {} — {}", d.id, d.title))
                         .collect();
                     self.app.transcript.notice(format!(
-                        "queued drafts (load one with /bug <id>, or describe the bug yourself):\n{}",
+                        "queued drafts (load one with /bug <id>, drop one with /bug discard <id>, or describe the bug yourself):\n{}",
                         list.join("\n")
                     ));
                 }
@@ -36,7 +44,13 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             None => argument.to_string(),
         };
         let mut facts = self.bug_facts(runtime, description);
-        let secrets = session_secrets(&runtime.config, &self.data_dir, &*self.env);
+        let warnings = std::cell::RefCell::new(Vec::new());
+        let secrets = session_secrets(&runtime.config, &self.data_dir, &*self.env, &|m| {
+            warnings.borrow_mut().push(m.to_string())
+        });
+        for warning in warnings.into_inner() {
+            self.app.transcript.error(format!("/bug: {warning}"));
+        }
         let redactor = Redactor::new(secrets);
         let mut level = Level::Minimal;
         let gh = std::env::var_os("PATH").is_some() && bug_submit::gh_ready("gh");
@@ -83,12 +97,36 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 }
                 Action::Bug(BugAnswer::Submit { method, level }) => {
                     let rendered = render(&facts, level, &redactor);
-                    self.submit_bug(runtime, method, level, rendered).await;
+                    let done = self.submit_bug(runtime, method, level, rendered).await;
+                    if done
+                        && let Some(id) = &draft_id
+                        && let Err(e) = fontaine_core::bug_drafts::remove(&self.data_dir, id)
+                    {
+                        self.app
+                            .transcript
+                            .error(format!("/bug: cannot delete draft {id}: {}", chain(&e)));
+                    }
                     return ControlFlow::Continue(());
                 }
                 Action::Quit => return ControlFlow::Break(()),
                 _ => {}
             }
+        }
+    }
+
+    fn discard_draft(&mut self, drafts: &[fontaine_core::bug_drafts::Draft], id: &str) {
+        if !drafts.iter().any(|d| d.id == id) {
+            self.app
+                .transcript
+                .error(format!("/bug: no queued draft {id}"));
+            return;
+        }
+        match fontaine_core::bug_drafts::remove(&self.data_dir, id) {
+            Ok(()) => self.app.transcript.notice(format!("discarded draft {id}")),
+            Err(e) => self
+                .app
+                .transcript
+                .error(format!("/bug: cannot delete draft {id}: {}", chain(&e))),
         }
     }
 
@@ -98,13 +136,13 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         method: Submit,
         level: Level,
         rendered: Rendered,
-    ) {
+    ) -> bool {
         let bundle =
             match bug_submit::write_bundle(&self.data_dir, &runtime.session.id, &rendered.bundle) {
                 Ok(path) => path,
                 Err(e) => {
                     self.app.transcript.error(format!("/bug: {}", chain(&e)));
-                    return;
+                    return false;
                 }
             };
         let (used, url) = match method {
@@ -122,20 +160,20 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                             .error(format!("/bug: {}; falling back to a URL", chain(&e)));
                         (
                             Submit::Url,
-                            bug_submit::prefilled_url(&rendered.title, &rendered.body, &bundle),
+                            bug_submit::prefilled_url(&rendered.title, &rendered.url_body, &bundle),
                         )
                     }
                     Err(e) => {
                         self.app
                             .transcript
                             .error(format!("/bug: the gh task failed: {}", chain(&e)));
-                        return;
+                        return false;
                     }
                 }
             }
             Submit::Url => (
                 Submit::Url,
-                bug_submit::prefilled_url(&rendered.title, &rendered.body, &bundle),
+                bug_submit::prefilled_url(&rendered.title, &rendered.url_body, &bundle),
             ),
         };
         runtime
@@ -149,9 +187,10 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             "{what}: {url}\nthe full report is saved at {}",
             bundle.display()
         ));
+        true
     }
 
-    fn bug_facts(&self, runtime: &AgentRuntime, description: String) -> Facts {
+    fn bug_facts(&mut self, runtime: &AgentRuntime, description: String) -> Facts {
         let build = crate::BUILD_INFO.get();
         let guardian = runtime.state.guardian();
         let main = runtime.models.main.reference.to_string();
@@ -180,24 +219,28 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             .filter(|s| s.loaded)
             .map(|s| s.slot.label().to_string())
             .collect();
-        let verdicts = runtime
-            .session
-            .audit
-            .read()
-            .unwrap_or_default()
-            .iter()
-            .filter(|r| r.guardian_verdict.is_some())
-            .rev()
-            .take(20)
-            .map(|r| {
-                format!(
-                    "{}: {} ({})",
-                    r.tool,
-                    r.guardian_verdict.as_deref().unwrap_or_default(),
-                    r.tier.as_str()
-                )
-            })
-            .collect();
+        let verdicts = match runtime.session.audit.read() {
+            Ok(records) => records
+                .iter()
+                .filter(|r| r.guardian_verdict.is_some())
+                .rev()
+                .take(20)
+                .map(|r| {
+                    format!(
+                        "{}: {} ({})",
+                        r.tool,
+                        r.guardian_verdict.as_deref().unwrap_or_default(),
+                        r.tier.as_str()
+                    )
+                })
+                .collect(),
+            Err(e) => {
+                self.app
+                    .transcript
+                    .error(format!("/bug: cannot read the audit log: {}", chain(&e)));
+                vec!["verdicts unavailable".to_string()]
+            }
+        };
         let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((0, 0));
         Facts {
             version: build

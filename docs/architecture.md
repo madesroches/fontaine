@@ -151,6 +151,8 @@ decision before anything else sees it:
  6b. any other `agent` spawn (never guardian-judged): auto / plan allow (`spawn`), manual / acceptEdits
     ask, dontAsk denies
  6c. `send_message` / `board_update` (never guardian-judged): allow in every mode (`coordination`)
+ 6d. `draft_bug_report` (never guardian-judged; writes a redacted draft only): allow in every mode
+    (`bug_draft`)
  7. the mode: manual / acceptEdits / plan ask, dontAsk denies, auto asks the guardian
     |
     v

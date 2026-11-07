@@ -9,8 +9,8 @@ use crate::owner_only;
 
 pub const REPO: &str = "madesroches/fontaine";
 pub const LABELS: [&str; 1] = ["bug"];
-/// Body characters kept in a prefilled URL; the rest is in the bundle file.
-pub const URL_BODY_LIMIT: usize = 6000;
+/// Bytes of a prefilled URL, after form-encoding; GitHub rejects URLs near 8 KB.
+pub const URL_BUDGET: usize = 8000;
 const BUNDLE_DIR: &str = "bug-reports";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,23 +156,42 @@ pub fn file_with_gh(program: &str, title: &str, body: &str) -> Result<String, Su
         .to_string())
 }
 
-/// The prefilled new-issue URL. The body is cut to [`URL_BODY_LIMIT`] characters with a pointer to
-/// the bundle; the transcript is never in it.
+/// The prefilled new-issue URL, at most [`URL_BUDGET`] bytes once encoded. The body is cut to fit
+/// with a pointer to the bundle file by name; pass a body without the transcript.
 pub fn prefilled_url(title: &str, body: &str, bundle: &Path) -> String {
-    let mut shown: String = body.chars().take(URL_BODY_LIMIT).collect();
-    if shown.len() < body.len() {
-        shown.push_str(&format!(
-            "\n\n_Cut short; the whole report is in {}._\n",
-            bundle.display()
-        ));
+    let url_with = |body: &str| {
+        let mut url = url::Url::parse(&format!("https://github.com/{REPO}/issues/new"))
+            .expect("the repository URL is valid");
+        url.query_pairs_mut()
+            .append_pair("title", title)
+            .append_pair("labels", &LABELS.join(","))
+            .append_pair("body", body);
+        String::from(url)
+    };
+    let whole = url_with(body);
+    if whole.len() <= URL_BUDGET {
+        return whole;
     }
-    let mut url = url::Url::parse(&format!("https://github.com/{REPO}/issues/new"))
-        .expect("the repository URL is valid");
-    url.query_pairs_mut()
-        .append_pair("title", title)
-        .append_pair("labels", &LABELS.join(","))
-        .append_pair("body", &shown);
-    url.into()
+    let name = bundle
+        .file_name()
+        .map_or_else(|| "the bundle file".into(), |n| n.to_string_lossy());
+    let note = format!("\n\n_Cut short; the whole report is in the local bundle file {name}._\n");
+    let ends: Vec<usize> = body
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(body.len()))
+        .collect();
+    // The longest prefix whose encoded URL fits; encoding only grows with the prefix.
+    let (mut low, mut high) = (0, ends.len() - 1);
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        if url_with(&format!("{}{note}", &body[..ends[mid]])).len() <= URL_BUDGET {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    url_with(&format!("{}{note}", &body[..ends[low]]))
 }
 
 #[cfg(test)]
@@ -222,15 +241,33 @@ mod tests {
 
     #[test]
     fn the_url_is_encoded_and_cut() {
-        let body = format!("a&b=c {}", "x".repeat(URL_BODY_LIMIT));
+        let body = format!("a&b=c {}", "x".repeat(URL_BUDGET));
         let url = prefilled_url("t & u", &body, Path::new("/d/bundle.md"));
         assert!(url.starts_with("https://github.com/madesroches/fontaine/issues/new?"));
         assert!(url.contains("title=t+%26+u"));
         assert!(url.contains("labels=bug"));
         assert!(url.contains("a%26b%3Dc"));
         assert!(url.contains("bundle.md"));
+        assert!(!url.contains("/d/"));
+        assert!(url.len() <= URL_BUDGET);
         let short = prefilled_url("t", "small", Path::new("/b.md"));
         assert!(!short.contains("Cut+short"));
+    }
+
+    #[test]
+    fn a_heavily_encoded_body_still_fits_the_budget() {
+        let body = "line one\n\"quoted\" & <tag>; 日本語 é 🙂\n".repeat(400);
+        let url = prefilled_url("t", &body, Path::new("/d/bundle.md"));
+        assert!(url.len() <= URL_BUDGET, "{}", url.len());
+        assert!(url.len() > URL_BUDGET - 200, "{}", url.len());
+        let (_, query) = url.split_once('?').unwrap();
+        let decoded = url::form_urlencoded::parse(query.as_bytes())
+            .find(|(k, _)| k == "body")
+            .unwrap()
+            .1
+            .into_owned();
+        assert!(decoded.ends_with("bundle.md._\n"));
+        assert!(decoded.starts_with("line one"));
     }
 
     #[cfg(unix)]

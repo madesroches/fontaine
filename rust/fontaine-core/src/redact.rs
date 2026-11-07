@@ -25,16 +25,23 @@ impl std::fmt::Debug for Secret {
 }
 
 /// The secrets this session knows: stored credentials, the values of the variables the accounts
-/// name with `api_key_env`, MCP server `env` values and the scanner token variable.
+/// name with `api_key_env`, MCP server `env` values and the variables they pass through by name,
+/// and the scanner token variable. `warn` hears about a credentials store that cannot be read.
 pub fn session_secrets(
     config: &crate::config::Config,
     data_dir: &std::path::Path,
     env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    warn: &dyn Fn(&str),
 ) -> Vec<Secret> {
     use crate::credentials::{Credentials, StoredCredential};
     let mut out = Vec::new();
-    // An unreadable store has nothing to scrub; the token-shape pass still runs.
-    let stored = Credentials::load(data_dir).unwrap_or_default();
+    let stored = Credentials::load(data_dir).unwrap_or_else(|e| {
+        warn(&format!(
+            "stored credentials could not be read, so they are not scrubbed from reports: {}",
+            fontaine_tools::error_chain::chain(&e)
+        ));
+        Credentials::default()
+    });
     for (name, account) in &config.accounts {
         match stored.account(name) {
             Some(StoredCredential::ApiKey(key)) => out.push(Secret::new(key)),
@@ -62,11 +69,17 @@ pub fn session_secrets(
                 .flatten()
                 .map(|(_, v)| Secret::new(v.clone())),
         );
+        for name in server.env_vars.iter().flatten() {
+            if let Some(value) = env(name) {
+                out.push(Secret::new(value.to_string_lossy().into_owned()));
+            }
+        }
     }
     let names = config
         .telemetry
         .api_key_env
         .iter()
+        .chain(config.websearch.api_key_env.iter())
         .chain(std::iter::once(&config.guardian.scanner_hf_token_env));
     for name in names {
         if let Some(value) = env(name) {
@@ -245,6 +258,50 @@ mod tests {
     fn multibyte_text_passes_through() {
         let r = Redactor::default();
         assert_eq!(r.redact("héllo — ✓"), "héllo — ✓");
+    }
+
+    #[test]
+    fn variables_named_by_websearch_and_mcp_are_secrets() {
+        use crate::config::{Config, McpServer};
+        let mut config = Config::defaults(std::path::PathBuf::from("."));
+        config.websearch.api_key_env = Some("SEARCH_KEY".into());
+        config.mcp_servers.insert(
+            "s".into(),
+            McpServer {
+                command: Some("x".into()),
+                args: None,
+                env_vars: Some(vec!["MCP_TOKEN".into()]),
+                env: None,
+                url: None,
+            },
+        );
+        let env = |name: &str| -> Option<std::ffi::OsString> {
+            match name {
+                "SEARCH_KEY" => Some("search-key-value".into()),
+                "MCP_TOKEN" => Some("mcp-token-value".into()),
+                _ => None,
+            }
+        };
+        let data = tempfile::tempdir().unwrap();
+        let secrets = session_secrets(&config, data.path(), &env, &|_| {});
+        let r = Redactor::new(secrets);
+        assert_eq!(
+            r.redact("a search-key-value b mcp-token-value c"),
+            "a [redacted] b [redacted] c"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_credentials_store_warns() {
+        use std::cell::RefCell;
+        let config = crate::config::Config::defaults(std::path::PathBuf::from("."));
+        let data = tempfile::tempdir().unwrap();
+        std::fs::write(data.path().join("credentials.toml"), "not [valid").unwrap();
+        let warned = RefCell::new(Vec::new());
+        session_secrets(&config, data.path(), &|_| None, &|m| {
+            warned.borrow_mut().push(m.to_string())
+        });
+        assert_eq!(warned.borrow().len(), 1);
     }
 
     #[test]

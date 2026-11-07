@@ -103,7 +103,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let scheduling = runtime.config.schedule.enabled;
         self.app.bug_drafts = (runtime.config.feedback.drafts
             == fontaine_core::config::DraftsMode::On)
-            .then(|| fontaine_core::bug_drafts::list(&self.data_dir).len())
+            .then(|| self.pending_drafts.count(&self.data_dir))
             .filter(|n| *n > 0);
         self.app.scheduled = if scheduling { scheduler.count() } else { 0 };
         self.app.wakeup_pending = scheduling && scheduler.wakeup_pending();
