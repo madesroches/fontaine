@@ -1,4 +1,4 @@
-//! The micromegas backend: the span bridge's async span events in an in-memory sink, and the
+//! The micromegas backend: the capture layer's async span events in an in-memory sink, and the
 //! shipped binary against a mock ingestion endpoint. The tests share process-global micromegas
 //! state, so they run one at a time.
 
@@ -9,11 +9,16 @@ use std::sync::{Arc, Mutex};
 
 use common::{Endpoint, Sandbox, Turn, Wire};
 use fontaine::telemetry::content::ContentPolicy;
-use fontaine::telemetry::micromegas::MicromegasExport;
-use fontaine::telemetry::span_bridge::{SpanBridge, is_exported_span};
+use fontaine::telemetry::micromegas::capture_layer;
+use fontaine::telemetry::span_bridge::is_bridged;
 use micromegas_tracing::dispatch::flush_thread_buffer;
+use micromegas_tracing::dyn_deps::DynDeps;
+use micromegas_tracing::event::ExtractDeps;
 use micromegas_tracing::runtime::TracingRuntimeExt;
-use micromegas_tracing::spans::{ThreadBlock, ThreadEventQueueAny};
+use micromegas_tracing::source_path::trim_source_path;
+use micromegas_tracing::spans::{
+    SpanLocation, ThreadBlock, ThreadDepsQueue, ThreadDepsQueueAny, ThreadEventQueueAny,
+};
 use micromegas_tracing::test_utils::init_in_memory_tracing;
 use micromegas_transit::HeterogeneousQueue;
 use tracing::{Dispatch, info_span};
@@ -84,19 +89,24 @@ fn spans(blocks: &[Arc<ThreadBlock>]) -> std::collections::BTreeMap<u64, Seen> {
     out
 }
 
-fn bridge_dispatch() -> Dispatch {
-    bridge_dispatch_with(default_telemetry())
+fn capture_dispatch() -> Dispatch {
+    capture_dispatch_with(default_telemetry())
 }
 
-fn bridge_dispatch_with(telemetry: fontaine_core::config::Telemetry) -> Dispatch {
-    let layer = fontaine::telemetry::filtered(
-        SpanBridge::new(
-            MicromegasExport::new(true),
-            ContentPolicy::from_config(&telemetry),
-        ),
-        is_exported_span,
-    );
-    Dispatch::new(tracing_subscriber::registry().with(layer))
+/// The layer as the backend composes it: spans on, the content policy as the field hook, and
+/// the export filter in front.
+fn capture_dispatch_with(telemetry: fontaine_core::config::Telemetry) -> Dispatch {
+    Dispatch::new(tracing_subscriber::registry().with(stock_layer(&telemetry, true)))
+}
+
+fn stock_layer(
+    telemetry: &fontaine_core::config::Telemetry,
+    spans: bool,
+) -> fontaine::telemetry::BoxLayer<tracing_subscriber::Registry> {
+    fontaine::telemetry::filtered(
+        capture_layer(spans, ContentPolicy::from_config(telemetry)),
+        is_bridged,
+    )
 }
 
 fn default_telemetry() -> fontaine_core::config::Telemetry {
@@ -128,7 +138,7 @@ fn with_stream<T>(f: impl FnOnce() -> T) -> T {
 fn a_span_tree_round_trips_into_async_span_events() {
     let _serial = serial();
     let guard = init_in_memory_tracing();
-    let dispatch = bridge_dispatch();
+    let dispatch = capture_dispatch();
 
     // The tree opens on this thread, a task on a tokio worker adds a sibling, and every span
     // closes on yet another thread.
@@ -227,7 +237,7 @@ fn a_span_tree_round_trips_into_async_span_events() {
 fn spans_outside_the_allowlist_are_not_exported() {
     let _serial = serial();
     let guard = init_in_memory_tracing();
-    let dispatch = bridge_dispatch();
+    let dispatch = capture_dispatch();
     with_stream(|| {
         tracing::dispatcher::with_default(&dispatch, || {
             let kept = info_span!(target: TARGET, "kept");
@@ -256,7 +266,7 @@ fn spans_outside_the_allowlist_are_not_exported() {
 
 fn content_span_properties(telemetry: fontaine_core::config::Telemetry) -> Vec<(String, String)> {
     let guard = init_in_memory_tracing();
-    let dispatch = bridge_dispatch_with(telemetry);
+    let dispatch = capture_dispatch_with(telemetry);
     with_stream(|| {
         tracing::dispatcher::with_default(&dispatch, || {
             let span = info_span!(
@@ -264,8 +274,10 @@ fn content_span_properties(telemetry: fontaine_core::config::Telemetry) -> Vec<(
                 "chat",
                 gen_ai.request.model = "m",
                 gen_ai.prompt = "CANARY-PROMPT key sk-ant-api03-abcdefghijklmnopqrstuvwxyz",
-                gen_ai.completion = "CANARY-REPLY",
+                gen_ai.completion = tracing::field::Empty,
+                gen_ai.future.field = "CANARY-UNKNOWN",
             );
+            span.record("gen_ai.completion", "CANARY-REPLY");
             drop(span);
         });
     });
@@ -308,8 +320,42 @@ fn opted_in_span_content_is_redacted_in_end_events() {
     assert!(!prompt.contains("sk-ant"));
     assert!(
         !properties.iter().any(|(k, _)| k == "gen_ai.completion"),
-        "the response leg has its own key"
+        "the response leg has its own key, even when recorded after the span opened"
     );
+    assert!(
+        !properties.iter().any(|(k, _)| k == "gen_ai.future.field"),
+        "an unknown model-layer field is content: {properties:?}"
+    );
+}
+
+#[test]
+fn opted_in_span_content_is_truncated_after_redaction() {
+    let _serial = serial();
+    let mut telemetry = default_telemetry();
+    telemetry.log_assistant_responses = true;
+    telemetry.content_max_bytes = 6;
+    let properties = content_span_properties(telemetry);
+    assert!(
+        properties.contains(&("gen_ai.completion".to_string(), "CANARY".to_string())),
+        "{properties:?}"
+    );
+    assert!(!properties.iter().any(|(k, _)| k == "gen_ai.prompt"));
+}
+
+#[test]
+fn with_traces_off_no_span_is_exported() {
+    let _serial = serial();
+    let guard = init_in_memory_tracing();
+    let dispatch = Dispatch::new(
+        tracing_subscriber::registry().with(stock_layer(&default_telemetry(), false)),
+    );
+    with_stream(|| {
+        tracing::dispatcher::with_default(&dispatch, || {
+            drop(info_span!(target: TARGET, "fontaine.session"));
+        });
+    });
+    let blocks = guard.sink.state.lock().unwrap().thread_blocks.clone();
+    assert!(spans(&blocks).is_empty());
 }
 
 async fn ingestion_server() -> MockServer {
@@ -408,31 +454,74 @@ async fn an_exporter_that_cannot_start_prints_one_notice_and_the_run_continues()
     assert!(ingestion.received_requests().await.unwrap().is_empty());
 }
 
+/// The file each exported span location record names, read back from the static dependencies
+/// a block is serialised with (the dynamic ones cannot be read back in-process).
+fn exported_location_files(blocks: &[Arc<ThreadBlock>]) -> Vec<&'static str> {
+    let mut files = Vec::new();
+    for block in blocks {
+        let locations: Vec<&'static SpanLocation> = block
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                ThreadEventQueueAny::BeginAsyncDynNamedSpanEvent(e) => Some(e.span_location),
+                ThreadEventQueueAny::TaggedEndAsyncNamedSpanEvent(e) => Some(e.span_location),
+                _ => None,
+            })
+            .collect();
+        for dep in block
+            .events
+            .extract(&DynDeps::<ThreadDepsQueue>::new())
+            .iter()
+        {
+            let ThreadDepsQueueAny::SpanLocationRecord(record) = dep else {
+                continue;
+            };
+            let location = locations
+                .iter()
+                .find(|l| std::ptr::from_ref(**l) as u64 == record.id)
+                .expect("every location record names a location the events use");
+            // The record points into the callsite's `file!()` string; the exported path is the
+            // suffix from there.
+            let offset = (record.file as usize)
+                .checked_sub(location.file.as_ptr() as usize)
+                .filter(|offset| *offset <= location.file.len())
+                .expect("the record's file points into the location's path");
+            files.push(&location.file[offset..]);
+        }
+    }
+    files
+}
+
 #[test]
-fn exported_span_locations_carry_no_file_path() {
+fn exported_span_locations_carry_relative_source_paths() {
     let _serial = serial();
     let guard = init_in_memory_tracing();
-    let dispatch = bridge_dispatch();
+    let dispatch = capture_dispatch();
     with_stream(|| {
         tracing::dispatcher::with_default(&dispatch, || {
             drop(info_span!(target: TARGET, "located"));
         });
     });
     let blocks = guard.sink.state.lock().unwrap().thread_blocks.clone();
-    let mut checked = 0;
-    for block in &blocks {
-        for event in block.events.iter() {
-            let location = match event {
-                ThreadEventQueueAny::BeginAsyncDynNamedSpanEvent(e) => e.span_location,
-                ThreadEventQueueAny::EndAsyncDynNamedSpanEvent(e) => e.span_location,
-                ThreadEventQueueAny::TaggedEndAsyncNamedSpanEvent(e) => e.span_location,
-                _ => continue,
-            };
-            assert_eq!((location.file, location.line), ("", 0));
-            checked += 1;
-        }
+    let files = exported_location_files(&blocks);
+    assert!(!files.is_empty());
+    let home = std::env::var("HOME").unwrap_or_default();
+    for file in files {
+        assert!(file.ends_with("telemetry_micromegas.rs"), "{file}");
+        assert!(
+            !file.starts_with('/') && !file.starts_with('\\') && file.get(1..2) != Some(":"),
+            "{file} is relative"
+        );
+        assert!(home.is_empty() || !file.contains(&home), "{file}");
     }
-    assert!(checked > 0);
+    // A dependency's callsite is absolute at build time; what leaves the process is relative
+    // to its crate.
+    assert_eq!(
+        trim_source_path(
+            "/home/u/.cargo/registry/src/index.crates.io-x/rig-core-0.45.0/src/telemetry/mod.rs"
+        ),
+        "rig-core-0.45.0/src/telemetry/mod.rs"
+    );
 }
 
 /// `(name, parent name, depth)` of every span, sorted so the comparison ignores event order.
@@ -482,29 +571,21 @@ fn tree_through(
 }
 
 #[test]
-fn the_upstream_span_capture_builds_the_same_tree_as_the_bridge() {
+fn the_capture_layer_builds_the_span_tree_from_the_allowlisted_spans() {
     let _serial = serial();
-    let telemetry = default_telemetry();
-    let bridge = tree_through(fontaine::telemetry::filtered(
-        SpanBridge::new(
-            MicromegasExport::new(true),
-            ContentPolicy::from_config(&telemetry),
-        ),
-        is_exported_span,
-    ));
-    let upstream = tree_through(fontaine::telemetry::filtered(
-        micromegas_telemetry_sink::tracing_interop::TracingCaptureLayer {
-            max_level: micromegas_tracing::levels::LevelFilter::Info,
-            capture_spans: true,
-            span_field_hook: None,
-        },
-        is_exported_span,
-    ));
-    assert!(
-        bridge
-            .iter()
-            .any(|(name, parent, depth)| name == "invoke_agent" && parent == "chat" && *depth == 6),
-        "a rig span under a non-allowlisted span lands under its nearest exported ancestor: {bridge:#?}"
-    );
-    assert_eq!(bridge, upstream);
+    let tree = tree_through(stock_layer(&default_telemetry(), true));
+    let expected = [
+        ("chat", "fontaine.guardian", 5),
+        ("chat", "fontaine.interaction", 2),
+        ("fontaine.guardian", "fontaine.permission", 4),
+        ("fontaine.interaction", "fontaine.session", 1),
+        ("fontaine.permission", "fontaine.tool", 3),
+        ("fontaine.session", "", 0),
+        ("fontaine.tool", "fontaine.interaction", 2),
+        // A rig span under a non-allowlisted span lands under its nearest exported ancestor.
+        ("invoke_agent", "chat", 6),
+    ]
+    .map(|(name, parent, depth)| (name.to_string(), parent.to_string(), depth))
+    .to_vec();
+    assert_eq!(tree, expected);
 }

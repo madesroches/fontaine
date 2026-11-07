@@ -92,13 +92,6 @@ impl ContentPolicy {
         let redacted = redact::text(&redact::json_text(value)).into_owned();
         truncate(redacted, self.max_bytes)
     }
-
-    pub fn export_fields(&self, fields: &[(String, String)]) -> Vec<(String, String)> {
-        fields
-            .iter()
-            .filter_map(|(key, value)| Some((key.clone(), self.keep(key, value)?)))
-            .collect()
-    }
 }
 
 fn truncate(mut text: String, max_bytes: usize) -> String {

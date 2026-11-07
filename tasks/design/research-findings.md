@@ -258,8 +258,9 @@ From the official docs (code.claude.com/docs/en/permission-modes and /auto-mode-
   - Caveats: the micromegas pin is the crates.io 0.33.0 release. It has the builder knob for
     span/thread streams (`with_cpu_tracing_enabled`, which replaced the
     `MICROMEGAS_ENABLE_CPU_TRACING` environment variable), reqwest 0.13 and `tracing` span capture
-    with parentage in `TracingCaptureLayer`, which also has a field hook (`span_field_hook`) that
-    Fontaine does not adopt. Source paths are trimmed rather than absolute. The bridge's span half
-    stays until the layer has a switch to omit locations (madesroches/micromegas#1725).
+    with parentage in `TracingCaptureLayer`, whose field hook (`span_field_hook`) Fontaine sets to
+    the content policy. Source paths are trimmed to relative ones rather than absolute, which is
+    accepted, so the stock layer exports the spans and the bridge's span half is retired
+    (madesroches/micromegas#1725).
 
 Claude on third-party hosts (Microsoft Foundry, Databricks): `research/research-anthropic-models.md` (#157).

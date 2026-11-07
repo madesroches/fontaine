@@ -553,6 +553,9 @@ All notable changes are recorded here. The format follows
 - The micromegas backend turns CPU tracing on through the sink builder and no longer sets
   `MICROMEGAS_ENABLE_CPU_TRACING` in Fontaine's environment. micromegas is pinned to the
   crates.io release `=0.33.0` (#139, #141).
+- The micromegas backend exports spans through micromegas's own capture layer, with every span
+  field passed through the content policy; span locations now carry the callsite's file and line,
+  the file trimmed to a relative path (#139, #141).
 
 #### Permissions
 

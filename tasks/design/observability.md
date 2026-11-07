@@ -13,30 +13,29 @@ with (a) the local debug-file layer (`--debug-file <path>`, `FONTAINE_LOG` env f
 Code's `--debug-file` analog), and (b) when `[telemetry] enabled`, one export backend:
 
 - `micromegas` (default backend): `micromegas-telemetry-sink` guard built with local sink off,
-  global tracing capture off (its `TracingCaptureLayer` is composed into Fontaine's registry for
-  events), system monitor off, explicit URL + `ApiKeyRequestDecorator` (never the implicit env
-  fallback). The stock layer's span capture is off (see below), so a Fontaine **`SpanBridge`** layer maps
-  each allowlisted span onto micromegas **async span events**, which carry `span_id`,
-  `parent_span_id` and `depth` and are reassembled into trees by the analytics side (`async_events`
-  view, `process_spans(…, 'async')`): `on_new_span` →
-  `dispatch::on_begin_async_named_scope_dyn(location, name, parent_mm_id, depth)` with the parent
-  taken from the `tracing` parent span's stored micromegas id (0 at a root); the returned id and depth
-  live in the span's extensions; `on_close` → `dispatch::on_end_async_named_scope_tagged(…)`
-  carrying the span's recorded fields as properties. One `SpanLocation` per `tracing` callsite is
-  leaked once and cached (bounded by the callsite count). Async span events ride micromegas thread
+  global tracing capture off (its `TracingCaptureLayer` is composed into Fontaine's registry),
+  system monitor off, explicit URL + `ApiKeyRequestDecorator` (never the implicit env
+  fallback). The stock `TracingCaptureLayer` exports both the allowlisted events and the
+  allowlisted spans (`capture_spans = [telemetry] traces`, filter `is_exported_span ||
+  is_exported_event`). It maps each span onto micromegas **async span events**, which carry
+  `span_id`, `parent_span_id` and `depth` and are reassembled into trees by the analytics side
+  (`async_events` view, `process_spans(…, 'async')`); a span's parent is its nearest captured
+  ancestor (0 at a root), and its recorded fields ride the end event as properties. Every field
+  value goes through the layer's `span_field_hook`, which calls the content policy's `keep`
+  (drop, redact, truncate), so the stock layer applies exactly the policy the OTLP backend's span
+  processor does. Span locations carry the callsite's `file` / `line`, with the file trimmed by
+  micromegas to a relative path (workspace files unchanged, a registry crate from
+  `<crate>-<version>/`, any other absolute path to its file name); that is accepted, since it
+  carries no home directory or build path. Async span events ride micromegas thread
   streams, which exist only while CPU tracing is enabled: the sink builder switches it on
   (`with_cpu_tracing_enabled(true)`; the bin no longer touches its environment), the tokio runtime is built with
-  `TracingRuntimeExt::with_tracing_callbacks()`, which gives every worker a thread stream and unregisters it as the worker stops; the bridge never creates a stream itself (micromegas keeps a raw pointer to each one, so a thread that exited without unregistering would leave it dangling). The same layer derives the metrics (`imetric!`/`fmetric!`) on close.
-  The stock `TracingCaptureLayer` can capture spans too (`capture_spans`), and the stock layer runs with
-  it off. Its `span_field_hook` can drop, redact or truncate a field and its span location carries the
-  callsite's file path trimmed to a relative one, but nothing omits `file` / `line`; the bridge
-  exists to keep them out of the export. A parity test pins that the two build the same tree. The bridge's span half is deleted
-  when upstream has a switch that leaves `file` / `line` out of the location
-  (madesroches/micromegas#1725). Then the field hook calls the content policy's `keep`, `MicromegasExport::span_begin` / `span_end` and the location cache go,
-  `capture_spans` becomes `t.traces`, and the capture layer's filter widens to `is_exported_span ||
-  is_exported_event`. Field collection stays in the bridge for metric derivation on both backends. The swap
-  also fixes orphaned parents: on a thread with no stream the bridge allocates an id whose begin event is
-  dropped, where upstream re-parents to the nearest captured ancestor.
+  `TracingRuntimeExt::with_tracing_callbacks()`, which gives every worker a thread stream and unregisters it as the worker stops; the layer only records on threads that already own a stream and never creates one (micromegas keeps a raw pointer to each one, so a thread that exited without unregistering would leave it dangling). A Fontaine **`SpanBridge`** layer
+  observes the same spans and events to derive the metrics (`imetric!`/`fmetric!`) and the
+  `api_request` / `user_prompt` events on close; it no longer exports spans. Before the
+  micromegas 0.33.0 pin it also mapped spans itself, because the stock layer could neither filter field content nor keep the
+  absolute callsite paths out; micromegas 0.33.0 added the field hook and relative source paths
+  (madesroches/micromegas#1725), and the bridge's span half was retired in favor of the stock
+  layer.
 - `otlp` (fallback; any OTel collector, including micromegas's `/ingestion/otlp`): OTLP/HTTP
   protobuf via `opentelemetry-otlp` (no gRPC); spans via `tracing-opentelemetry`, events via
   `opentelemetry-appender-tracing`, metrics from the same `SpanBridge` metric derivation through an

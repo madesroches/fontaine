@@ -111,7 +111,11 @@ and `output_tokens`; never the condition or the reason) around the evaluator's m
 Those three also carry `model.priced`. `model.priced` says whether the model it bills by is priced;
 the cost of a model call is dropped under the nearest ancestor span that records
 `model.priced = false`. Model-call spans carry the provider, the model, the response id and
-the token counts. Source file paths and thread names are not exported.
+the token counts. With the micromegas backend each span carries the file and line of the code
+that opened it, with the path trimmed to a relative one: Fontaine's own files relative to its source
+tree, a dependency's from its crate directory (`<crate>-<version>/src/...`), so no home directory or
+build path leaves the machine. The OTLP backend exports no source location. Thread names are not
+exported.
 
 ### Metrics
 
