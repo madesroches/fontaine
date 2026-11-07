@@ -22,7 +22,7 @@ The dev command is documented next to the release one.
 - The dist installer writes the receipt (`fontaine-receipt.json`) with the version it was built for.
   `fontaine update` (#175) does not exist yet, so no code reads a receipt or knows about lanes.
 - `docs/installing.md` and `README.md` document only the `releases/latest` command.
-- Keys exist in `rust/fontaine/keys/` (#425 closed). The `dev-signing` environment, its secrets and the
+- All four key files in `rust/fontaine/keys/` are placeholders ("key not yet bootstrapped"). The `dev-signing` environment, its secrets and the
   repository variable are GitHub settings, not repo files.
 
 ## Design
@@ -36,8 +36,7 @@ The dev command is documented next to the release one.
   `https://github.com/madesroches/fontaine/releases/download/dev-<n>` and its embedded sha256s are
   those of `dev-<n>`'s archives (the same build, unchanged). It is unsigned and sha256-verified, like
   the release installer.
-- The `dev` tag is created once by `gh release create` and never moved or force-pushed: only the
-  release's assets change, so no tag-moving rule applies. Its `--target` commit is whatever the first
+- The `dev` tag is created once by `gh release create` and never moved. Its `--target` commit is whatever the first
   run was; the notes say the tag only anchors the release.
 
 ### Rewriting the installer
@@ -47,8 +46,8 @@ named substitutions to dist's output, each matched by its surrounding context, a
 mismatch:
 
 1. download URL: every occurrence of `.../releases/download/v<cargo version>` → `.../releases/download/<tag>`.
-   dist writes it several times (the GHE branch, the `INSTALLER_BASE_URL` override branch, the default
-   URL and the usage text; 4 in v0.32.0). The script requires the occurrence count confirmed in
+   dist writes it several times (the GHE branch, the GitHub base-URL override branch, the default
+   URL and the usage text; 4 in v0.32.0; the override occurrences carry no `https://github.com` prefix). The script requires the occurrence count confirmed in
    Step 1 and fails on any other count;
 2. `APP_VERSION=` → the dev version `<base>-dev.<n>+<sha7>` that `plan` already computes;
 3. the receipt JSON's top-level `"version"` (mandatory; not `provider.version`, which is the dist
@@ -64,12 +63,11 @@ implementation (dist is not installed here; install v0.32.0 per `release.yml`), 
 
 ### Workflow: new job `stable-installer` in `dev.yml`
 
-`needs: [plan, publish]`, `permissions: contents: write`, same `concurrency` group already serializing
-runs. Like `verify-draft`, it checks out with `actions/checkout@v6` at `${{ env.HEAD_SHA }}` with
+`needs: [plan, publish]`, `permissions: contents: write`, no job-level `concurrency` (the workflow-level
+`dev-channel` group already serializes runs). Like `verify-draft`, it checks out with `actions/checkout@v6` at `${{ env.HEAD_SHA }}` with
 `persist-credentials: false`, sets `defaults.run.working-directory: ${{ github.workspace }}` and
-`env.GH_TOKEN`. Steps: download the `artifacts-build-global` artifact; run `dev-installer.sh`; on the
-local rewritten file, run `sh -n`, check that it names `dev-<n>`, and `diff` it against the pre-rewrite
-file, which must show only the substitutions `dev-installer.sh` makes (a fixed line count from Step 1);
+`env.GH_TOKEN`. Steps: download the `artifacts-build-global` artifact; run `dev-installer.sh`; run `sh -n` on the
+local rewritten file;
 then `gh release view dev` or create it (`--prerelease --latest=false`, no `--draft`); `gh release
 upload dev fontaine-installer.sh --clobber`; then re-download from the stable URL and byte-compare it
 with the local file. A failed check before the upload leaves the previous stable installer in place; a
@@ -80,15 +78,17 @@ The `plan` job's `FONTAINE_DEV_CHANNEL` gate is unchanged.
 
 ### Enabling the channel (manual, not in this PR)
 
-An admin creates the `dev-signing` environment with `MINISIGN_SECRET_KEY` and `MINISIGN_PASSWORD`
+An admin first bootstraps the dev key and commits `dev.pub` and `dev.signing.pub` (per
+`CONTRIBUTING.md`'s Bootstrap procedure), then creates the `dev-signing` environment with `MINISIGN_SECRET_KEY` and `MINISIGN_PASSWORD`
 (key material for `dev.signing.pub`), then sets the repository variable `FONTAINE_DEV_CHANNEL=enabled`.
-`CONTRIBUTING.md` §Releasing is updated to include the stable installer and this checklist; the issue
+The existing "Enabling the dev channel" paragraph of `CONTRIBUTING.md` is extended with the fact that each
+run also replaces `fontaine-installer.sh` on the long-lived `dev` release; the issue
 stays open until it is done and the acceptance check passes.
 
 ## Implementation Steps
 
 1. Install dist v0.32.0 locally; run `dist build --artifacts=global` in `rust/` and record the
-   exact text of every substitution in the installer, the URL occurrence count and the diff line count.
+   exact text of every substitution in the installer, and the URL occurrence count.
 2. Add `.github/scripts/dev-installer.sh` with the named substitutions.
 3. Add the `stable-installer` job to `.github/workflows/dev.yml`; update the header comment.
 4. Add self-tests for the script to the "Release signing" step in `.github/workflows/ci.yml`
@@ -125,14 +125,23 @@ stays open until it is done and the acceptance check passes.
 ## Documentation
 
 - `docs/installing.md`: lead with the dev command (the only one that works before the first release),
-  show the release command labeled as available once the first tagged release is published; state that
+  show the release command labeled as available once the first tagged release is published; also fix
+  the passage that the installer "downloads the matching archive from the release it belongs to" (the dev
+  installer is hosted on `dev` but downloads from `dev-<n>`) and "Each GitHub Release has one archive per
+  platform" (the `dev` release holds only the installer); state that
   the dev installer is unsigned, installs the latest CI-passing `main` build, and that its receipt
   version carries `-dev.`. Replace "attached to tagged releases, not to dev builds".
 - `README.md` install section: the same pair of commands.
 - `docs/verifying-releases.md`: say the stable `dev` release holds only the installer; archives and
   signatures live in `dev-<n>`.
-- `CONTRIBUTING.md`: enabling checklist.
-- `tasks/design/platforms.md`, master plan: replace "no dev-channel installer" with the stable-asset
+- `CONTRIBUTING.md`: extend the existing "Enabling the dev channel" paragraph (under Signing keys and
+  environments) with the fact that each run also replaces `fontaine-installer.sh` on the long-lived `dev`
+  release.
+- `tasks/design/platforms.md`: also update line ~34 (README lists "the installer": now two installer
+  commands) and lines ~40-42 (dev channel described only as `dev-<run_number>`: mention the stable `dev`
+  release), along with line ~31. Master plan: also update the workspace-layout line describing
+  `.github/scripts/` ("minisign install, sign and verify scripts") to include the dev installer rewrite
+  script. Both: replace "no dev-channel installer" with the stable-asset
   design; add dated Decisions (supersedes the 2026-11-07 "No installer on the dev channel" line).
 - `CHANGELOG.md`: Added entry.
 
@@ -144,7 +153,7 @@ stays open until it is done and the acceptance check passes.
   `"version"`, the usage text) is rewritten correctly; a fixture missing any of them, containing a
   version value twice, or with a different URL count fails (the receipt one included). These catch the
   silent failure of a dist format change shipping an installer that points at a 404.
-- `dev.yml` is only exercisable on `main`; the pre-upload checks (syntax, tag, diff) and the
+- `dev.yml` is only exercisable on `main`; the pre-upload syntax check and the
   post-upload byte-compare are its automated guard.
 
 ## Manual Verification
