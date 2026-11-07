@@ -1076,8 +1076,8 @@ their reports. Headless runs accept `-p "/goal <condition>"`; see
 ## The agent list and the agent view
 
 While a [subagent](agents.md) runs, a list of agents shows below the status bar: `main` first, then
-one row per subagent with its [name](agents.md#naming-a-subagent) and its id dimmed after it, type, status, how long this run has gone on (followed by ` · `) and what it has used,
-for example `◯ survey-tech-debt (agent-3) worker running 1m02s · 1.5k tok`. On a narrow terminal the id is cut before the status and the age. A nested agent is indented under its
+one row per subagent with its [name](agents.md#naming-a-subagent) and its id dimmed after it, type, the model and reasoning effort it runs at, status, how long this run has gone on (followed by ` · `) and what it has used,
+for example `◯ survey-tech-debt (agent-3) worker acct/sonnet effort high running 1m02s · 1.5k tok`. The model and `effort <level>` are left out when unset. On a narrow terminal the id is cut first, then the model and effort together, before the status and the age. A nested agent is indented under its
 parent. The row on screen is marked `●` and the others `◯`. The list shows every running agent, the
 agent on screen, and an agent that failed, was killed or ran out of budget for 30 seconds after it
 ended or until you hide it with `x`. An agent that finished normally leaves at once, except an

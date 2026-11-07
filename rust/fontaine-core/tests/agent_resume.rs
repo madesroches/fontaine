@@ -354,6 +354,31 @@ fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
     }
 }
 
+async fn recorded_effort(extra: &str) -> Option<fontaine_core::effort::Effort> {
+    let w = world(extra);
+    let OneChild { built, .. } = with_one_child(&w, vec![]).await;
+    let rows = built.runtime.state.agents().rows();
+    rows.iter().find(|r| r.id == "agent-1").unwrap().effort
+}
+
+#[tokio::test]
+async fn a_child_records_the_effort_it_was_assembled_with() {
+    use fontaine_core::effort::Effort;
+
+    assert_eq!(
+        recorded_effort("[model]\neffort = \"low\"\n[agents.types.worker]\neffort = \"max\"\n")
+            .await,
+        Some(Effort::Max),
+        "the type's own level wins"
+    );
+    assert_eq!(
+        recorded_effort("[model]\neffort = \"low\"\n").await,
+        Some(Effort::Low),
+        "a type without one takes the session's"
+    );
+    assert_eq!(recorded_effort("").await, None);
+}
+
 #[tokio::test]
 async fn a_resumed_session_brings_back_a_done_agent_idle_and_wakes_it_from_its_log() {
     use common::runtime::build_keyed_with;
