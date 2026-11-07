@@ -171,9 +171,7 @@ session id), the adapter puts
 carry it. A request with only one user message gets no marker. The final frame never gets one,
 and assistant frames never do.
 
-Why that position: the CLI's own last-message breakpoint covers the final frame plus the CLI's
-injected tail, which the next request cannot reproduce. The last history user message is the
-newest position whose bytes the next request replays unchanged. A marker there is read back by
+Why that position: a marker there is read back by
 the next request, through the API's 20-block lookback from that request's own marker. Reuse holds
 while a step adds no more than about 20 blocks (a step with N parallel tool calls adds 1+N
 assistant blocks plus N tool results); a wider parallel step re-writes the history once.
@@ -218,7 +216,10 @@ refused? ─► translate ─► check_environment ─► check_version (cached 
   error returns immediately and drops the request child (killing its tree); a request-branch result
   first awaits the login result, which wins if it is an error.
 - **DRY:** `Cli::initialize`'s request/response exchange moves into
-  `CliChild::list_models(&mut self, request_id, idle, reader: Option<&mut Reader>) -> Result<Vec<ModelRow>, ClaudeError>`.
+  `CliChild::list_models(&mut self, request_id, idle, reader: Option<&mut Reader>) -> Result<Vec<ModelRow>, Failure>`
+  (`Failure` is `Box<ProviderError>`, since `Reader::accept` can return non-`ClaudeError` errors such as
+  `Truncated` and native errors). `Cli::initialize` and `discover` map the `None`-reader path back to
+  their existing `ClaudeError` errors.
   It takes the already-written `request_id` and only reads. `Cli::initialize` (still used by
   `list()` and `/login`) keeps write, then `close_stdin()`, then `list_models`; the request process
   writes the control request itself and leaves stdin open. Before the matching `control_response`,
@@ -228,7 +229,9 @@ refused? ─► translate ─► check_environment ─► check_version (cached 
   `None` (listing process) non-matching lines are skipped, as today. With `Some` (request process;
   its `Reader` exists right after `launch`) the matching `control_response` is consumed here
   (`Reader::accept` has no arm for it) and every other line goes through `Reader::accept`, never
-  skipped.
+  skipped. With `Some`, an EOF before the `control_response` is handled as `next()` handles it:
+  `exit_status`, `settle_stderr`, then `exit_failure(&stderr, reader.native())`, so it yields Auth,
+  Limit or the retryable `Truncated`, not a Protocol error.
   The selected-row checks move out of `handshake` into a pure
   `check_row(rows: &[ModelRow], selection: &Selection) -> Result<(), ClaudeError>` with the same
   three refusals and texts. `handshake` is removed.
@@ -257,6 +260,8 @@ none with it.
 3. **Handshake on the request process** (`cli.rs`, `transport.rs`)
    - Extract the read half of `Cli::initialize` into `CliChild::list_models` (taking the written
      `request_id`), and make `Cli::initialize` write, close stdin and call it.
+   - `list_models` returns `Result<Vec<ModelRow>, Failure>`; with `Some(reader)` it classifies EOF via
+     `exit_failure` as `next()` does; `Cli::initialize`/`discover` map the `None` path to `ClaudeError`.
    - Replace `handshake` with `check_row`, and restructure `open` into the two racing branches
      above. Keep the existing ack loop and the early-exit classification (`exit_failure`) inside
      the replay branch.
@@ -363,8 +368,6 @@ Unit tests (`protocol/tests.rs`, `transport.rs`, `cli.rs`):
   session id.
 - `check_row` (in a separate ungated `#[cfg(test)]` module in `transport.rs`, since the existing test module there is Linux-only): missing alias, credit-billed row and changed canonical id each give today's kind
   and text. A matching row passes.
-- `FIXED_ENV` contains `ENABLE_CLAUDEAI_MCP_SERVERS=false` (extend the rebuilt-environment
-  assertions in `the_cli_gets_a_rebuilt_environment`).
 
 Integration tests against the double (`tests/claude_subscription.rs`). These pin billing
 behavior, a silent-failure class, so they are automated:
@@ -386,8 +389,10 @@ behavior, a silent-failure class, so they are automated:
   `ErrorKind::Cli` naming the directory, before any process starts. Update
   `dropping_a_stream_kills_the_process_tree_and_removes_the_directory` to check the per-request
   file directory (the parent of `--settings`) instead of the cwd.
-- **Version first.** `versions_are_checked_before_anything_else` keeps passing: an old CLI starts
-  no request process.
+- **Version first.** `versions_are_checked_before_anything_else` keeps passing: the version check
+  stays at connect.
+- `FIXED_ENV` contains `ENABLE_CLAUDEAI_MCP_SERVERS=false` (extend the rebuilt-environment
+  assertions in `the_cli_gets_a_rebuilt_environment`).
 - **Conflict seen live.**
   `a_conflict_introduced_after_connecting_is_seen_before_the_next_request` keeps passing unchanged.
 - The rest of the existing suite (protocol violations, retries, kill on drop, denial orders)
@@ -406,9 +411,7 @@ live bench.
    `claude -p --model sonnet --output-format json --no-session-persistence` and record both totals
    in the PR. Expect Fontaine's cache write at about twice the native per-step write plus its
    smaller base.
-2. Marker accepted. Step 1 completes with no API 400. The marker adds one breakpoint to the CLI's
-   own.
-3. Latency. Time step 1's run before and after (`time cargo run -p fontaine -- -p …`, built
+2. Latency. Time step 1's run before and after (`time cargo run -p fontaine -- -p …`, built
    beforehand). Expect about 0.6 s less per model request (seven requests for six reads plus the
    answer), allowing for API variance.
 
