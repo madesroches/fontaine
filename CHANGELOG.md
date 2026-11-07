@@ -49,6 +49,9 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- The agent list below the prompt box shows the model and reasoning effort each subagent runs
+  at, after its type (`worker acct/sonnet effort high`); both are left out when unset, and on a
+  narrow terminal they give way after the id and before the status (#464).
 - `job_cancel` now stops a subagent the caller started, by `agent-N` id or name, together with
   its running descendants; the model no longer has to guess and fail with "only the user can stop
   a subagent". The kill is final, as the agents panel's `x`. A subagent whose type names `agent`

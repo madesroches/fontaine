@@ -14,6 +14,7 @@ use futures::future::BoxFuture;
 use tokio::sync::Notify;
 
 use crate::budget::{Budget, Exhausted, Spend};
+use crate::effort::Effort;
 use crate::mode::{Ladder, Posture, RootMode, own_mode};
 use crate::registry::{AgentType, AgentTypes, ModelSpec};
 use crate::root_ledger::RootLedger;
@@ -320,6 +321,8 @@ pub struct NodeInfo {
     pub agent_type: String,
     pub depth: usize,
     pub model: String,
+    /// The reasoning level the latest run was assembled with; `None` sends no parameter.
+    pub effort: Option<Effort>,
     pub tools: Vec<String>,
 }
 
@@ -531,6 +534,7 @@ pub struct AgentRow {
     pub parent: Option<String>,
     pub agent_type: String,
     pub model: String,
+    pub effort: Option<Effort>,
     pub status: ChildStatus,
     pub depth: usize,
     pub spend: Spend,
@@ -598,6 +602,7 @@ impl AgentTree {
                 agent_type: "main".to_string(),
                 depth: 0,
                 model: String::new(),
+                effort: None,
                 tools: Vec::new(),
             },
             own_mode: Ladder::Manual,
@@ -774,6 +779,13 @@ impl AgentTree {
         }
     }
 
+    /// Records the reasoning level a child's run was assembled with.
+    pub fn set_effort(&self, agent: &str, effort: Option<Effort>) {
+        if let Some(node) = self.lock().nodes.get_mut(agent) {
+            node.info.effort = effort;
+        }
+    }
+
     pub fn tools_of(&self, agent: &str) -> Vec<String> {
         self.known_tools_of(agent).unwrap_or_default()
     }
@@ -932,6 +944,7 @@ impl AgentTree {
                     agent_type: agent_type.to_string(),
                     depth: depth + 1,
                     model: model.to_string(),
+                    effort: None,
                     tools,
                 },
                 own_mode,
@@ -1213,6 +1226,7 @@ impl AgentTree {
                         agent_type: agent_type.name.clone(),
                         depth,
                         model,
+                        effort: None,
                         tools,
                     },
                     own_mode: own,
@@ -1926,6 +1940,7 @@ impl AgentTree {
                 parent: n.info.parent.clone(),
                 agent_type: n.info.agent_type.clone(),
                 model: n.info.model.clone(),
+                effort: n.info.effort,
                 status: n.live_status(),
                 depth: n.info.depth,
                 spend: n.spend,
@@ -3209,6 +3224,31 @@ mod tests {
         assert!(tree.tools_of("agent-1").contains(&"read".to_string()));
         assert!(tree.deliver(ROOT_AGENT, "agent-1", "hi".into()).is_err());
         assert!(tree.resume("agent-1").is_ok(), "a rebuilt node resumes");
+    }
+
+    #[test]
+    fn set_effort_is_exposed_in_the_rows_and_an_unknown_agent_is_a_no_op() {
+        let tree = tree(8);
+        let id = reserve(&tree, ROOT_AGENT).unwrap();
+        assert_eq!(tree.rows()[0].effort, None);
+        tree.set_effort(&id, Some(Effort::High));
+        assert_eq!(tree.rows()[0].effort, Some(Effort::High));
+        tree.set_effort(&id, None);
+        assert_eq!(tree.rows()[0].effort, None);
+        tree.set_effort("agent-99", Some(Effort::Max));
+        assert_eq!(tree.rows().len(), 1);
+        assert_eq!(tree.rows()[0].effort, None);
+    }
+
+    #[test]
+    fn a_rebuilt_node_starts_with_no_effort() {
+        let tree = tree(8);
+        tree.set_root_tools(|| ["read", "agent"].map(String::from).to_vec());
+        tree.rebuild(
+            &[(record("agent-1", ROOT_AGENT, "worker"), true)],
+            &AgentTypes::builtin(),
+        );
+        assert_eq!(tree.rows()[0].effort, None);
     }
 
     #[tokio::test]

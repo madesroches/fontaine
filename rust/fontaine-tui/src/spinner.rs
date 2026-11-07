@@ -420,6 +420,8 @@ mod tests {
             name: "worker-1".into(),
             depth: 1,
             agent_type: "worker".into(),
+            model: String::new(),
+            effort: None,
             status,
             elapsed: Duration::from_secs(elapsed),
             spend: String::new(),

@@ -897,6 +897,8 @@ mod tests {
             name: id.map_or("main", |_| "scout").into(),
             depth: usize::from(id.is_some()),
             agent_type: if id.is_some() { "worker" } else { "" }.into(),
+            model: String::new(),
+            effort: None,
             status: id.map(|_| fontaine_agents::runner::ChildStatus::Running),
             elapsed: std::time::Duration::from_secs(5),
             spend: "12 tok".into(),

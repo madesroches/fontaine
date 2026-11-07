@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
+use fontaine_agents::effort::Effort;
 use fontaine_agents::runner::ChildStatus;
 use fontaine_agents::tree::AgentRow;
 use fontaine_tools::jobs::format_age;
@@ -26,6 +27,9 @@ pub struct ListRow {
     pub name: String,
     pub depth: usize,
     pub agent_type: String,
+    /// Empty when the tree holds no model for the agent.
+    pub model: String,
+    pub effort: Option<Effort>,
     pub status: Option<ChildStatus>,
     pub elapsed: Duration,
     pub spend: String,
@@ -44,6 +48,8 @@ impl ListRow {
             name: "main".to_string(),
             depth: 0,
             agent_type: String::new(),
+            model: String::new(),
+            effort: None,
             status: None,
             elapsed: Duration::ZERO,
             spend: String::new(),
@@ -93,6 +99,8 @@ pub fn rows(
                 name: row.name.clone(),
                 depth: row.depth,
                 agent_type: row.agent_type.clone(),
+                model: row.model.clone(),
+                effort: row.effort,
                 status: Some(row.status),
                 elapsed: row
                     .ended
@@ -370,20 +378,33 @@ impl AgentList {
                 (Some(id), Some(status)) => {
                     let lead = format!("{marker} {indent}{}", row.name);
                     let tag = format!(" ({id})");
+                    let mut config = String::new();
+                    if !row.model.is_empty() {
+                        config.push_str(&format!(" {}", row.model));
+                    }
+                    if let Some(effort) = row.effort {
+                        config.push_str(&format!(" effort {effort}"));
+                    }
                     let rest = format!(
-                        " {} {} {}",
-                        row.agent_type,
+                        " {} {}",
                         row_label(status, row.idle),
                         format_age(row.elapsed)
                     );
+                    let kind = format!(" {}", row.agent_type);
                     let spend = format!(" · {}", row.spend);
-                    // The id gives way before the status, the age and the spend.
-                    let whole = lead.chars().count()
-                        + tag.chars().count()
-                        + rest.chars().count()
-                        + spend.chars().count();
-                    let tag = if whole <= width { tag } else { String::new() };
-                    (format!("{lead}{tag}{rest}"), spend)
+                    let fits = |parts: &[&str]| {
+                        parts.iter().map(|p| p.chars().count()).sum::<usize>() <= width
+                    };
+                    // The id gives way first, then the model and effort, before the status,
+                    // the age and the spend.
+                    let (tag, config) = if fits(&[&lead, &tag, &kind, &config, &rest, &spend]) {
+                        (tag, config)
+                    } else if fits(&[&lead, &kind, &config, &rest, &spend]) {
+                        (String::new(), config)
+                    } else {
+                        (String::new(), String::new())
+                    };
+                    (format!("{lead}{tag}{kind}{config}{rest}"), spend)
                 }
                 _ => (format!("{marker} main"), String::new()),
             };
@@ -458,7 +479,8 @@ mod tests {
             name: id.into(),
             parent: Some(parent.into()),
             agent_type: "worker".into(),
-            model: "m".into(),
+            model: String::new(),
+            effort: None,
             status,
             depth: if parent == "main" { 1 } else { 2 },
             spend: Spend {
@@ -969,6 +991,90 @@ mod tests {
         let text = line_text(&list, 60, 1);
         assert!(text.ends_with(" · 5 unpriced tok"), "{text}");
         assert!(!text.contains("writing"), "{text}");
+    }
+
+    fn configured(model: &str, effort: Option<Effort>, name: &str) -> AgentList {
+        let now = Instant::now();
+        let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
+        worker.name = name.into();
+        worker.model = model.into();
+        worker.effort = effort;
+        let mut list = AgentList::default();
+        list.set_rows(rows(
+            &[worker],
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            0,
+        ));
+        list
+    }
+
+    #[test]
+    fn a_wide_row_shows_the_model_and_effort_after_the_type() {
+        let list = configured("acct/sonnet", Some(Effort::High), "survey");
+        assert_eq!(
+            line_text(&list, 120, 1),
+            "◯ survey (agent-1) worker acct/sonnet effort high running 0s · 1.2k tok"
+        );
+    }
+
+    #[test]
+    fn an_unset_effort_or_an_empty_model_is_omitted() {
+        let list = configured("acct/sonnet", None, "survey");
+        assert_eq!(
+            line_text(&list, 120, 1),
+            "◯ survey (agent-1) worker acct/sonnet running 0s · 1.2k tok"
+        );
+        let list = configured("", Some(Effort::Low), "survey");
+        assert_eq!(
+            line_text(&list, 120, 1),
+            "◯ survey (agent-1) worker effort low running 0s · 1.2k tok"
+        );
+    }
+
+    #[test]
+    fn the_id_gives_way_before_the_model_and_effort_and_those_before_the_status() {
+        let list = configured("acct/sonnet", Some(Effort::High), "survey");
+        // Without the id: 56 columns.
+        let no_id = "◯ survey worker acct/sonnet effort high running 0s · 1.2k tok";
+        let width = no_id.chars().count();
+        assert_eq!(line_text(&list, width, 1), no_id);
+        let text = line_text(&list, width + 5, 1);
+        assert_eq!(text, no_id);
+        // One column short of that, both segments go together.
+        let text = line_text(&list, width - 1, 1);
+        assert_eq!(text, "◯ survey worker running 0s · 1.2k tok");
+    }
+
+    #[test]
+    fn the_unpriced_front_cut_still_protects_the_spend_with_a_model_and_effort() {
+        let now = Instant::now();
+        let mut worker = agent("agent-1", "main", ChildStatus::Running, now);
+        worker.model = "acct/sonnet".into();
+        worker.effort = Some(Effort::Max);
+        worker.spend.cost_usd = Some(0.01);
+        worker.spend.unpriced_tokens = 5;
+        let mut list = AgentList::default();
+        list.set_rows(rows(
+            &[worker],
+            None,
+            &HashSet::new(),
+            &HashSet::new(),
+            now,
+            0,
+        ));
+        let text = line_text(&list, 30, 1);
+        assert!(text.chars().count() <= 30, "{text}");
+        assert!(text.ends_with(" · 5 unpriced tok"), "{text}");
+        assert!(text.contains('…'), "{text}");
+    }
+
+    #[test]
+    fn the_main_row_ignores_model_and_effort() {
+        let list = configured("acct/sonnet", Some(Effort::High), "survey");
+        assert_eq!(line_text(&list, 80, 0), "● main");
     }
 
     #[test]

@@ -590,6 +590,7 @@ impl CoreChildRunner {
         // A type's own level, else the session's. Effort is not a permission, so a child
         // may run above or below its parent.
         let effort = agent_type.effort.or(context.state.effort());
+        context.state.agents().set_effort(id, effort);
         let generation_options = model.generation_options_warned(&context.state, effort);
         let WireIds {
             provider,
