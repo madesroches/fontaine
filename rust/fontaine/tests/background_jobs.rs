@@ -60,7 +60,7 @@ async fn a_job_that_ended_before_the_answer_gets_a_notification_turn() {
                     Turn::tool(
                         "c1",
                         "shell",
-                        json!({"command": format!("while ! test -e {}; do sleep 0.05; done; echo job-says-hi", release.display()), "run_in_background": true}),
+                        json!({"command": format!("while ! test -e '{}'; do sleep 0.05; done; echo job-says-hi", release.display()), "run_in_background": true}),
                     ),
                     Turn::text("started it"),
                     Turn::text("the job said hi"),
