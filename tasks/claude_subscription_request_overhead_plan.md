@@ -90,7 +90,7 @@ one.
 
 | Candidate | Finding | Verdict |
 |---|---|---|
-| 1. Cache the model listing | Saves 0.33 s per request, but a time window lets a credit-billed or re-resolved model through until it expires | Replaced by a stronger variant: the listing comes from the request's own process (0 s extra, no staleness) |
+| 1. Cache the model listing | Saves 0.33 s per request, but a time window lets a credit-billed or re-resolved model through until it expires | Replaced by a stronger variant: the listing comes from the request's own process (0 s extra, no staleness, and fresher than today's separate listing process) |
 | 2. Reuse the inventory process | Starts in 18 ms, asynchronously, off the critical path | Not done |
 | 3. Measure | Done, above | Recorded here and in `docs/claude-subscription.md` |
 | 4. Batch the history acks | Writing all history frames before reading makes the CLI coalesce them (101 frames → 2 results), and the resulting API request is wrong: 3,219 tokens written against 9,504 for the same history replayed sequentially, i.e. history was dropped | Not done: acks stay sequential (~4.5 ms each) |
@@ -149,16 +149,16 @@ the prompt. Using it for every launch (probes, listing, requests) keeps one code
   across requests, namespaces, sessions and resumes, so a resumed session and the guardian share
   the same prompt prefix. It sits outside any workspace and git repository, so the environment
   block's "Is a git repository" stays `false` and the CLI never reads a project.
-- **Creation:** `ClaudeSubscription::connect` creates it with `owner_only::create_dir`. An
-  `AlreadyExists` result is accepted only when `symlink_metadata` shows a directory, not a
-  symlink. A failure is a connect error carrying the I/O source.
+- **Creation:** `ClaudeSubscription::connect` runs `create_dir_all` on the data dir, then creates
+  the directory with `create_if_missing` (`memory.rs`, made `pub(crate)`), which wraps
+  `owner_only::create_dir` and accepts `AlreadyExists` only when `symlink_metadata` shows a
+  directory, not a symlink. A failure is a connect error carrying the I/O source.
 - **Emptiness, checked at every launch:** `Cli::launch` refuses to start (`ErrorKind::Cli`, with a
   message naming the directory and telling the user to empty it) when `read_dir(workdir)` yields
   any entry. This keeps the property the docs state today ("each CLI process runs in an empty
   private directory") and fails closed if something, a future CLI included, starts leaving files
   there. Fontaine never writes into it. In the harness runs, the CLI left nothing in its cwd.
-- `Cli::new` takes the workdir. The eval harness (`rust/fontaine-evals/src/live.rs`) connects
-  through the same `ConnectContext` and gets it for free.
+- `Cli::new` takes the workdir.
 
 ### 2. One cache marker on the last history user message
 
@@ -172,7 +172,9 @@ and assistant frames never do.
 Why that position: the CLI's own last-message breakpoint covers the final frame plus the CLI's
 injected tail, which the next request cannot reproduce. The last history user message is the
 newest position whose bytes the next request replays unchanged. A marker there is read back by
-the next request, through the API's 20-block lookback from that request's own marker.
+the next request, through the API's 20-block lookback from that request's own marker. Reuse holds
+while a step adds no more than about 20 blocks (a step with N parallel tool calls adds 1+N
+assistant blocks plus N tool results); a wider parallel step re-writes the history once.
 
 Why `1h`: the CLI writes its own entries with the 1-hour TTL (`ephemeral_1h_input_tokens` in every
 measured response), and an earlier breakpoint must not have a shorter TTL than a later one. `1h`
@@ -221,6 +223,9 @@ refused? ─► translate ─► check_environment ─► check_version (cached 
 - **DRY:** `Cli::initialize`'s request/response exchange moves into
   `CliChild::list_models(&mut self, idle) -> Result<Vec<ModelRow>, ClaudeError>`. Both the listing
   process (`Cli::initialize`, still used by `list()` and `/login`) and the request process use it.
+  `close_stdin()` stays in `Cli::initialize` (the listing process only). On the request process,
+  `list_models` consumes only the matching `control_response` (`Reader::accept` refuses it as
+  unknown), and every other line goes through `Reader::accept` or is refused, never skipped.
   The selected-row checks move out of `handshake` into a pure
   `check_row(rows: &[ModelRow], selection: &Selection) -> Result<(), ClaudeError>` with the same
   three refusals and texts. `handshake` is removed.
@@ -243,8 +248,8 @@ nothing the adapter validates: `--strict-mcp-config` already kept those servers 
 1. **Stable workdir** (`cli.rs`, `mod.rs`)
    - Add `workdir` to `Cli` and `Cli::new`. In `launch`, run in `workdir` and refuse a non-empty
      one. `Scratch` stays the owner of the files and their removal.
-   - In `ClaudeSubscription::connect`, create or accept `<data_dir>/claude-cli-cwd` as described.
-     Update the eval harness's `Cli::new` call if it builds one directly.
+   - In `ClaudeSubscription::connect`, create or accept `<data_dir>/claude-cli-cwd` as described,
+     making `create_if_missing` `pub(crate)`.
 2. **Marker** (`protocol.rs`)
    - Add `mark_history(frames: &mut [Frame])`, called at the end of `frames_of`. Put the
      `TTL`/marker value in one `const`.
@@ -269,18 +274,13 @@ nothing the adapter validates: `--strict-mcp-config` already kept those servers 
 - `rust/fontaine-core/src/providers/claude_subscription/protocol.rs`: `mark_history`.
 - `rust/fontaine-core/src/providers/claude_subscription/protocol/tests.rs`: marker tests.
 - `rust/fontaine-core/src/providers/claude_subscription/mod.rs`: workdir creation in `connect`.
+- `rust/fontaine-core/src/memory.rs`: `create_if_missing` made `pub(crate)`.
 - `rust/fontaine-core/tests/claude_subscription.rs`: request-flow tests.
 - `rust/fontaine-core/examples/claude_cli_double.rs`: only if step 5 needs it.
-- `rust/fontaine-evals/src/live.rs`: only if it constructs `Cli` directly.
 - `docs/claude-subscription.md`, `CHANGELOG.md`.
 
 ## Trade-offs
 
-- **Listing on the request process vs. a cached listing (the issue's candidate 1).** A window of
-  N seconds saves the same 0.33 s, but a model that turns credit-billed is caught up to N seconds
-  late, and the issue requires the checks not to get weaker. Asking the process that will serve
-  the request costs nothing extra (it answers in its own start-up time, 0.35 s) and is fresher
-  than today, where the listing comes from a different process that ran just before. Chosen.
 - **Login probe alongside vs. dropped.** `initialize`'s `account` and `system/init`'s `apiKeySource`
   probably make `auth status` redundant, but the signed-out and Console-login shapes were not
   observable without changing the machine's login. Running the probe concurrently removes its
@@ -299,8 +299,6 @@ nothing the adapter validates: `--strict-mcp-config` already kept those servers 
   message.** The final frame was measured to give no reuse. The last assistant message is never
   replayed with the bytes of a position the previous request marked, so it gives none either.
   The last history user message measured a flat write per step.
-- **Sequential acks kept.** Pipelining saves ≤ 4.5 ms per replayed user message and was measured
-  to corrupt the replayed history.
 
 ## Decisions
 
@@ -314,6 +312,9 @@ nothing the adapter validates: `--strict-mcp-config` already kept those servers 
 - 2026-11-07 The `max_tokens` recovery bug (#479) and the thinking-off 400 (#168 comment) were
   found during this measurement but are fixed separately, to keep this change about per-request
   overhead.
+- 2026-11-07 The marker TTL is `1h`, to match the CLI's own breakpoint.
+- 2026-11-07 One shared `claude-cli-cwd`, not one per account, so accounts on the same login share
+  the cache.
 
 ## Security
 
@@ -324,7 +325,7 @@ nothing the adapter validates: `--strict-mcp-config` already kept those servers 
 - The CLI still runs in an empty, owner-only directory, now a stable one that every launch checks
   for emptiness. Per-request files stay in a fresh owner-only directory removed with the process.
 - The marker is a `cache_control` field Fontaine adds itself, at a position Fontaine chooses.
-  Request content can't place or move it, because every incoming `cache_control` is still
+  Request content can't place or move it, because every incoming top-level-block `cache_control` is still
   stripped first.
 - The connector fetch switch removes a network request and does not widen anything.
 
@@ -339,13 +340,15 @@ nothing the adapter validates: `--strict-mcp-config` already kept those servers 
   data directory (`claude-cli-cwd`), checked empty before every launch. Per-request files stay in a
   temporary directory. The adapter marks the last replayed user message for the prompt cache. The
   CLI's claude.ai connectors are not fetched. Update the instruction-files paragraph that says
-  "an empty private scratch directory".
+  "an empty private scratch directory", and line 75, "starts a fresh CLI process in a private
+  temporary directory".
 - **Supported CLI versions:** replace the closing latency/cache sentence with the measured
   behavior for 2.1.319. Each request costs a CLI start (~0.4 s) plus ~5 ms per replayed user
   message. Replayed history is read from the prompt cache up to the previous request's last
   replayed user message. Each request writes the last two messages to the cache, about twice a
   native Claude Code session's write per step, because the CLI adds its own context to the final
-  message.
+  message. Reuse holds while a step adds no more than about 20 blocks; a wider parallel step
+  (about ten or more tool calls) re-writes the history once.
 
 `CHANGELOG.md` under `[Unreleased]`: a `### Changed` line for the cache reuse and the per-request
 latency drop, with the issue number.
@@ -360,7 +363,7 @@ Unit tests (`protocol/tests.rs`, `transport.rs`, `cli.rs`):
 - `mark_history`: exactly one marker in the frames, on the last cacheable block of the last
   history user frame. None when there is a single user message. Never on the final frame or an
   assistant frame. A trailing empty text block is skipped for the previous cacheable block. String
-  content becomes one marked text block. A `cache_control` arriving in the request (any position)
+  content becomes one marked text block. A `cache_control` arriving on a top-level block of the request
   is stripped and does not survive next to the adapter's marker. The value is
   `{"type": "ephemeral", "ttl": "1h"}`.
 - `check_row`: missing alias, credit-billed row and changed canonical id each give today's kind
@@ -382,8 +385,8 @@ behavior, a silent-failure class, so they are automated:
 - **No separate listing process per request.** Two completions after discovery start exactly two
   CLI processes with `--model` and no extra listing process. Each request process's first stdin
   frame is the `initialize` control request.
-- **Stable workdir.** Every invocation's cwd (main, guardian and a subagent namespace, across two
-  requests) is the same `<data_dir>/claude-cli-cwd`. It is not the directory holding the files named
+- **Stable workdir.** Every listing and request process's cwd (main, guardian and a subagent
+  namespace, across two requests; the double logs cwd only for conversations) is the same `<data_dir>/claude-cli-cwd`. It is not the directory holding the files named
   in argv, and it is empty after the requests. A file placed in it makes the next request fail with
   `ErrorKind::Cli` naming the directory, before any process starts. Update
   `dropping_a_stream_kills_the_process_tree_and_removes_the_directory` to check the per-request
@@ -419,10 +422,4 @@ here.
 
 ## Open Questions
 
-None blocking. Two choices were made on the user's behalf and can be revisited:
-
-- The marker's TTL is `1h` to match the CLI. If the account should prefer the cheaper 5-minute
-  write, it can be lowered only if the CLI's own breakpoint moves to 5 minutes too.
-- The stable directory is shared by every Fontaine session of the user. A per-account directory
-  (`claude-cli-cwd/<account>`) would also work, but would split the cache between two
-  `claude-subscription` accounts that use the same login.
+None.
