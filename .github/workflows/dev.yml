@@ -109,6 +109,8 @@ jobs:
       BUILD_MANIFEST_NAME: target/distrib/${{ join(matrix.targets, '-') }}-dist-manifest.json
     steps:
       - name: enable windows longpaths
+        # Runs before checkout, when the `rust` default directory does not exist yet.
+        working-directory: ${{ github.workspace }}
         run: |
           git config --global core.longpaths true
       - uses: actions/checkout@v6
