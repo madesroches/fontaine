@@ -68,17 +68,17 @@ so there is no "skipped without `sha256sum`" case as with the shell installer.
 The script matches the anchor line literally and requires exactly one occurrence, and takes the
 digest from the explicit `<sha256 file>`, the first field of dist's `<hex> *<name>` line, which must be one
 line with a 64-hex digest naming `fontaine-x86_64-pc-windows-msvc.zip`; any other result (missing or empty
-file, more than one line, malformed digest, another listed name) fails the run before signing, so a dist upgrade that changes the installer's text breaks `sign`, not
-a user. The release installer is therefore signed after modification (the shell installer is signed
-unmodified); the signature covers exactly the uploaded bytes.
+file, more than one line, malformed digest, another listed name) fails the run before signing.
 
 ### Dev channel
 
 `dev-installer.sh` is generalised to the PowerShell text: its replacements are chosen by the
 installer's extension (`.sh` today's four; `.ps1` the equivalents: the download base URL
 occurrences, `$app_version = '...'`, the receipt JSON `version`, the usage text), each matched
-literally with an expected count read from real output, failing on any other count. The version
-validation stays the same.
+literally with an expected count read from real output, failing on any other count. The `.ps1`
+branch reads the base version from the single `$app_version = '<ver>'` line (exactly one match
+required; the `.sh` branch matches `APP_VERSION="..."`), then applies the same
+`^[0-9]+\.[0-9]+\.[0-9]+$` check before its replacements.
 
 `sign` now sets both installers aside in `dev-installer/`, rewrites each, runs
 `windows-installer.sh` on the `.ps1`, and signs the directory with `release-sign.sh dev-installer`.
@@ -101,7 +101,7 @@ factor the existing installer block into a loop over both names rather than copy
 `release.yml` runs `windows-installer.sh` before signing and uploads the patched, signed
 `fontaine-installer.ps1` as an artifact not named `artifacts-*` (the `dev.yml` precedent; a duplicate name
 in the `artifacts-*` merge would be ambiguous). `host` downloads it after the `artifacts-*` fetch and
-overwrites the stock copy in `artifacts/` (and in `rust/target/distrib/` if `dist host` needs it) before
+overwrites the stock copy in `artifacts/` before
 `gh release create`.
 
 ### Verification parity
@@ -174,9 +174,9 @@ Windows x86_64 only (the one Windows target). No Windows arm64 build.
   Windows store, or download the archive manually), and manual-download users may see SmartScreen
   warnings (the archives are unsigned by Authenticode; verify with the minisign signature, see
   `docs/verifying-releases.md`).
-- `docs/installing.md`: a Windows installer section: command, what it writes (`%USERPROFILE%\.cargo\bin\fontaine.exe`,
+- `docs/installing.md`: a Windows installer section: command, what it writes (`%CARGO_HOME%\bin\fontaine.exe` (default `%USERPROFILE%\.cargo\bin`),
   the user `Path` registry edit unless `FONTAINE_NO_MODIFY_PATH=1`, the receipt at
-  `%LOCALAPPDATA%\fontaine\fontaine-receipt.json`), PowerShell version, the sha256 check and its
+  `%LOCALAPPDATA%\fontaine\fontaine-receipt.json`, or `%XDG_CONFIG_HOME%\fontaine` when set), PowerShell version, the sha256 check and its
   limits, SmartScreen, uninstall (binary, receipt, the `Path` entry; the cargo `bin` directory is shared
   with rustup), overwrite semantics with `cargo install`; remove "no Windows installer" and the Windows
   archive-only passage (line 3 and lines ~80-82); the command is `powershell -ExecutionPolicy Bypass -c "irm https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.ps1 | iex"`.
@@ -214,8 +214,8 @@ Windows x86_64 only (the one Windows target). No Windows arm64 build.
 Needs a published release and Windows, so not automatable in PR CI:
 
 1. On Windows x86_64, after the dev channel publishes: run the `powershell -ExecutionPolicy Bypass -c "irm https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.ps1 | iex"` command, open a new
-   terminal, `fontaine --version` prints the version, and `%LOCALAPPDATA%\fontaine\fontaine-receipt.json`
-   exists with `install_layout` `cargo-home` and, on the dev channel, a `version` containing `-dev.`.
+   terminal, `fontaine --version` prints the version, and `fontaine-receipt.json` in
+   `%LOCALAPPDATA%\fontaine` (or `%XDG_CONFIG_HOME%\fontaine` when set) exists with `install_layout` `cargo-home` and, on the dev channel, a `version` containing `-dev.`.
 2. Tamper check: download `fontaine-installer.ps1`, change the embedded digest, run it; expect a
    sha256 mismatch error and no `fontaine.exe` installed or replaced.
 3. Install release N, update to N+1: needs #175's updater; this issue's "done when" half is
