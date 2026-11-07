@@ -77,5 +77,9 @@ The change adds no new logic, so no new tests. Existing checks cover it:
   the release.
 - `cargo check --features fontaine/pg2` and the Windows clippy check from AGENTS.md still pass.
 
+## Decisions
+
+- AFK: This change keeps the `SpanBridge` span half and does not adopt 0.33.0's `span_field_hook` (`span_field_hook: None`), the most conservative option; retiring the bridge is a separate follow-up.
+
 ## Open Questions
 None.
