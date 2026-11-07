@@ -1037,7 +1037,7 @@ mod tests {
     #[test]
     fn the_id_gives_way_before_the_model_and_effort_and_those_before_the_status() {
         let list = configured("acct/sonnet", Some(Effort::High), "survey");
-        // Without the id: 56 columns.
+        // Without the id: 61 columns.
         let no_id = "◯ survey worker acct/sonnet effort high running 0s · 1.2k tok";
         let width = no_id.chars().count();
         assert_eq!(line_text(&list, width, 1), no_id);
