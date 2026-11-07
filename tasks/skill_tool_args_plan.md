@@ -40,6 +40,9 @@ pub struct SkillArgs {
 
 - `args` is canonical (Claude Code's name); schema and description advertise only `args` and
   `name`. Aliases are accepted silently on input only.
+- Schema description of `args`: "Arguments for the skill, as a single string; shell-style quoting
+  groups words. Omit when the skill takes none." Tool description gains the sentence: "Pass
+  optional `args` to give the skill arguments."
 - `lenient_args` coerces: string → as is; null → empty; array → each element stringified (strings
   as is, others as JSON), joined by a space with elements containing whitespace double-quoted so
   `split_arguments` round-trips them; object/number/bool → compact JSON text. Never fails on the
@@ -86,6 +89,8 @@ pub struct SkillArgs {
 - AFK: a payload with two spellings of one field is rejected with serde's "duplicate field" error.
 - AFK: model args may form `!` commands (`substitute` then `parts`, as for `/name args`); kept
   unchanged and documented, still gated as `shell`.
+- AFK: skill index lines are not changed to carry `argument-hint`; the model learns of arguments
+  from the tool description and the user/caller supplying them.
 
 ## Documentation
 
@@ -109,16 +114,12 @@ Unit tests in `skill.rs` (deserialization, no live anything):
 - Pins the reported bug: `{"name":"x","arguments":"tasks/p.md"}` parses with args `tasks/p.md`.
 
 Integration in `fontaine-core/tests/extensions.rs` using the existing skill fixtures:
-- `load` with args and a `$ARGUMENTS` placeholder; without placeholder (appended `ARGUMENTS:`
-  line); positional `$0`/`$1`; empty args unchanged from today; `disable-model-invocation` skill
-  still refused with args.
-- A skill with a `!` block containing `$0`, loaded with a model-supplied argument: the command
-  that reaches the shell path is the substituted text and goes through the gated runner (use the
-  existing recording/approving test double for `run_command`, asserting the pipeline saw it and
-  that a denying approver yields `[command failed: ...]`).
-- Inline `!`cmd`` variant: at most a pure `substitute`/`parts` unit assertion, no integration test.
-- A `skill(x)` deny rule applies to every accepted spelling of the call (the name key is always
-  `name`), and a `{"skill": ...}` payload is rejected as an unknown field.
+- One `load("name", "alpha \"b c\"", ROOT_AGENT)` test on an existing fixture asserting the
+  substituted text (proves `load` forwards args with `by_model = true`), plus one assertion that a
+  `disable-model-invocation` skill is still refused when args are given. Substitution, `!` gating
+  and denial are already covered by the `substitute` unit tests in `fontaine-core/src/skills.rs`,
+  `arguments_are_substituted_before_the_commands_run` and
+  `a_denied_skill_command_is_replaced_by_the_denial_and_the_skill_still_loads`.
 - Choke-point test stays green (`skill` remains `ReadOnly`).
 
 ## Open Questions
