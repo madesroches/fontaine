@@ -6,6 +6,15 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `/bug` files a Fontaine bug report as a GitHub issue. It previews the exact text, needs your
+  confirmation, scrubs known secret values, and sends the least revealing `minimal` level unless you
+  pick `full` (transcript tail). It uses `gh issue create` when available and otherwise prints a
+  prefilled issue URL and keeps the report in a local file. A submission is recorded in the ledger
+  and audit log. The model can queue drafts with `draft_bug_report` (user-scope `[feedback] drafts`
+  = `on`, `quiet` or `off`); only you submit (#462).
+
 ### Fixed
 
 - `claude-subscription`: a tool call the CLI names without the `mcp__fontaine__` prefix, for a

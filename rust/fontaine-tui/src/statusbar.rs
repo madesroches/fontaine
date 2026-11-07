@@ -242,6 +242,10 @@ pub fn render(frame: &mut Frame, area: Rect, app: &App) {
         0 => String::new(),
         n => format!(" · ⏱ {n}"),
     };
+    let scheduled = match app.bug_drafts {
+        Some(n) => format!("{scheduled} · {n} bug draft(s): /bug"),
+        None => scheduled,
+    };
     let goal = match app.goal {
         None => String::new(),
         Some((_, true)) => " · ◎ goal paused".to_string(),

@@ -800,6 +800,22 @@ impl SessionState {
         );
     }
 
+    /// The human submitted a bug report with `/bug`: recorded in the ledger and the audit log.
+    pub fn record_bug_report(&self, method: &str, level: &str, url: &str) {
+        self.append(Record::BugReport {
+            method: method.to_string(),
+            level: level.to_string(),
+            url: url.to_string(),
+        });
+        self.record_session_event(
+            "bug",
+            serde_json::json!({ "method": method, "level": level, "url": url }),
+            Tier::BugReport,
+            "bug_report",
+            &format!("bug report filed by {method} at {level} level"),
+        );
+    }
+
     /// An audit entry for something the human did to the session rather than a tool call.
     fn record_session_event(
         &self,

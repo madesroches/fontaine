@@ -134,6 +134,11 @@ impl AgentType {
             .collect();
         let mut out: Vec<String> = Vec::new();
         for tool in parent {
+            // Only the user's session drafts reports; `tools: None` types inherit everything
+            // else, so the strip lives here rather than in each type.
+            if tool == fontaine_tools::descriptor::DRAFT_BUG_REPORT {
+                continue;
+            }
             let named = wanted
                 .as_ref()
                 .is_none_or(|wanted| wanted.iter().any(|w| entry_covers(w, tool)));
@@ -302,6 +307,25 @@ mod tests {
                 ty.name
             );
         }
+    }
+
+    #[test]
+    fn no_subagent_gets_draft_bug_report_even_with_no_tool_list() {
+        let parent = names(&["read", "draft_bug_report"]);
+        let mut types = AgentTypes::builtin();
+        let mut open = types.get("worker").unwrap().clone();
+        open.name = "open".into();
+        open.tools = None;
+        types.insert(open);
+        for ty in types.iter() {
+            assert!(
+                !ty.toolset(&parent)
+                    .contains(&"draft_bug_report".to_string()),
+                "{}",
+                ty.name
+            );
+        }
+        assert!(types.get("fork").is_some());
     }
 
     #[test]

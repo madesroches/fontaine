@@ -101,6 +101,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .unwrap_or_default();
         let scheduler = runtime.session.scheduler();
         let scheduling = runtime.config.schedule.enabled;
+        self.app.bug_drafts = (runtime.config.feedback.drafts
+            == fontaine_core::config::DraftsMode::On)
+            .then(|| fontaine_core::bug_drafts::list(&self.data_dir).len())
+            .filter(|n| *n > 0);
         self.app.scheduled = if scheduling { scheduler.count() } else { 0 };
         self.app.wakeup_pending = scheduling && scheduler.wakeup_pending();
         self.app.goal = runtime.session.goal().indicator();
@@ -425,11 +429,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.app
                     .begin_unavailable(UnavailablePrompt::new(*info, candidates, reply));
             }
-            Prompt::Notice(severity, message) => self.app.transcript.push_notice(Notice {
-                severity,
-                headline: message,
-                hint: None,
-            }),
+            Prompt::Notice(severity, message) => {
+                if severity == fontaine_core::notice::Severity::Warning {
+                    self.app.remember_warning(&message);
+                }
+                self.app.transcript.push_notice(Notice {
+                    severity,
+                    headline: message,
+                    hint: None,
+                })
+            }
         }
     }
 
@@ -446,11 +455,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 prompt
             };
             match prompt {
-                Prompt::Notice(severity, message) => self.app.transcript.push_notice(Notice {
-                    severity,
-                    headline: message,
-                    hint: None,
-                }),
+                Prompt::Notice(severity, message) => {
+                    if severity == fontaine_core::notice::Severity::Warning {
+                        self.app.remember_warning(&message);
+                    }
+                    self.app.transcript.push_notice(Notice {
+                        severity,
+                        headline: message,
+                        hint: None,
+                    })
+                }
                 // A subagent's call is still waiting for its answer.
                 Prompt::Ask(request, reply)
                     if request.agent != ROOT_AGENT && !reply.is_closed() =>
@@ -747,6 +761,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::Queue(_)
                 | Action::Command { .. }
                 | Action::GuardianOff(_)
+                | Action::Bug(_)
                 | Action::AfkReview(_)
                 | Action::SkillTrust(_)
                 | Action::SetupReview(_)
@@ -1144,6 +1159,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 self.rename(runtime, &name);
                 Continue(CommandOutcome::Done)
             }
+            Command::Bug(description) => match self.bug(runtime, &description).await {
+                Break(()) => Break(()),
+                Continue(()) => Continue(CommandOutcome::Done),
+            },
             Command::Export(path) => {
                 self.export(runtime, launch_dir, &path).await;
                 Continue(CommandOutcome::Done)

@@ -33,6 +33,8 @@ pub enum Command {
     /// `/effort [level]`: shows or sets the reasoning effort for this session.
     Effort(String),
     GuardianModel(String),
+    /// `/bug [description]`: file a Fontaine bug report after a preview.
+    Bug(String),
     /// `/guardian-disable`: turn the guardian and the permission floor off for this session.
     GuardianDisable,
     /// `/guardian-enable`: turn the guardian and the permission floor back on.
@@ -113,6 +115,7 @@ impl Command {
             | Command::Goal(_)
             | Command::Loop(_)
             | Command::Afk(_)
+            | Command::Bug(_)
             | Command::Init(_) => true,
             Command::OutputStyle(argument) | Command::Plan(argument) => !argument.is_empty(),
             _ => false,
@@ -197,6 +200,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: Some("<question>"),
         description: "ask a side question without adding to the context",
         command: Command::Btw,
+    },
+    Builtin {
+        name: "bug",
+        aliases: &[],
+        hint: Some("[description]"),
+        description: "file a Fontaine bug report after previewing what is sent",
+        command: Command::Bug,
     },
     Builtin {
         name: "clear",
@@ -1003,6 +1013,18 @@ mod tests {
         );
         assert_eq!(parse_command("/vim"), Some(Command::Vim));
         assert_eq!(parse_command("/keybindings"), Some(Command::Keybindings));
+    }
+
+    #[test]
+    fn bug_parses_is_main_only_and_queues_mid_turn() {
+        assert_eq!(
+            parse_command("/bug it broke"),
+            Some(Command::Bug("it broke".into()))
+        );
+        assert_eq!(parse_command("/bug"), Some(Command::Bug(String::new())));
+        let command = parse_command("/bug").unwrap();
+        assert!(command.main_only());
+        assert!(!command.runs_mid_turn());
     }
 
     #[test]

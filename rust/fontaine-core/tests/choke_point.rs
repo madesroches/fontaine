@@ -24,6 +24,7 @@ use fontaine_core::tier::Tier;
 use fontaine_core::tools::{ExtensionTool, ExtensionTools, RegistryParams, registry};
 use fontaine_mcp::connect_transport;
 use fontaine_tools::ask_user::{AskUserTool, Question, QuestionReply, QuestionSource};
+use fontaine_tools::bug_draft::{DraftArgs, DraftBugReportTool, DraftSink};
 use fontaine_tools::descriptor::{TOOLS, find};
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::guarded::Guard;
@@ -117,6 +118,14 @@ impl ScheduleStore for NoSchedule {
     }
 }
 
+struct NoDrafts;
+
+impl DraftSink for NoDrafts {
+    fn save(&self, _: &DraftArgs) -> Result<String, String> {
+        Err("no drafts".to_string())
+    }
+}
+
 fn extension() -> ExtensionTools {
     extension_asking(AskUserTool {
         source: Arc::new(NoQuestions),
@@ -147,6 +156,9 @@ fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
         ExtensionTool::new(ask_user),
         ExtensionTool::new(ModelsTool {
             source: Arc::new(NoModels),
+        }),
+        ExtensionTool::new(DraftBugReportTool {
+            sink: Arc::new(NoDrafts),
         }),
         ExtensionTool::new(TodoTool {
             store: Arc::new(NoTodos),
@@ -227,6 +239,7 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "cron_delete",
         "schedule_wakeup",
         "models",
+        "draft_bug_report",
     ]
     .into_iter()
     .collect();

@@ -537,6 +537,11 @@ pub const KEYS: &[KeyRow] = &[
     row!("statusline.refresh_interval_secs", Scalar, |c, _| opt(c
         .statusline
         .refresh_interval_secs)),
+    row!("feedback.drafts", Scalar, |c, _| c
+        .feedback
+        .drafts
+        .as_str()
+        .to_string()),
     row!("telemetry.enabled", Scalar, |c, _| c
         .telemetry
         .enabled

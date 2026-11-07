@@ -132,6 +132,8 @@ const SHELL: &str =
     "how long a model's shell command may block or run is set only in the user file or --settings";
 const STATUSLINE: &str =
     "the status line command runs arbitrary code, so only the user file may set it";
+const FEEDBACK: &str =
+    "whether the model may queue bug-report drafts is set only in the user file or --settings";
 const AUTO_EDITS: &str = "only `false` may be set here: a repository cannot widen what `auto` lets through without a guardian verdict";
 const TELEMETRY: &str = "only `enabled = false` may be set here";
 
@@ -208,6 +210,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_trust("context", TIGHTEN),
     Rule::user_trust("shell_preclassifier", TIGHTEN),
     Rule::user_only("statusline", STATUSLINE),
+    Rule::user_only("feedback", FEEDBACK),
     Rule::if_project_local("telemetry.enabled", is_false, TELEMETRY),
     Rule::user_or_cli("telemetry.backend", TELEMETRY),
     Rule::user_or_cli("telemetry.endpoint", TELEMETRY),
@@ -596,6 +599,7 @@ mod tests {
             None,
         ),
         ("statusline", "[statusline]\ncommand = \"echo hi\"\n", None),
+        ("feedback", "[feedback]\ndrafts = \"off\"\n", None),
         (
             "telemetry.enabled",
             "[telemetry]\nenabled = false\n",

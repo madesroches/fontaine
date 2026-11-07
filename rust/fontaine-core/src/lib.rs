@@ -3,6 +3,9 @@ pub mod adjudication;
 pub mod afk_report;
 pub mod agent;
 pub mod audit;
+pub mod bug_drafts;
+pub mod bug_report;
+pub mod bug_submit;
 pub mod checkpoint;
 pub mod child_runner;
 pub mod code_execution;
@@ -45,6 +48,7 @@ pub mod prompt;
 pub mod providers;
 pub mod questions;
 pub mod quota;
+pub mod redact;
 pub mod runtime_error;
 #[cfg(feature = "pg2")]
 pub mod scanner_model;

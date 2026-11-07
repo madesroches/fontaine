@@ -448,6 +448,28 @@ pub fn render(conversation: &Conversation, id: &str, name: Option<&str>) -> Stri
     render_main(conversation, id, name, &[])
 }
 
+/// The tail of the session's main conversation, or why it could not be read.
+pub async fn transcript_tail(session: &Session, turns: usize) -> Result<String, ExportError> {
+    let root = load_async(&session.store(), CONVERSATION_LOG)
+        .await
+        .map_err(ExportError::Conversation)?;
+    Ok(render_tail(&root, turns))
+}
+
+/// The last `turns` turns of the conversation as Markdown, a turn being a user message and
+/// what followed it. Empty when the conversation has none.
+pub fn render_tail(conversation: &Conversation, turns: usize) -> String {
+    let mut doc = Doc::new();
+    render_messages(&mut doc, conversation);
+    let text = doc.out;
+    let starts: Vec<usize> = text.match_indices("## User\n").map(|(i, _)| i).collect();
+    let from = starts.len().saturating_sub(turns);
+    match starts.get(from) {
+        Some(start) => text[*start..].trim_end().to_string(),
+        None => String::new(),
+    }
+}
+
 /// The main file of a folder export: the root render with the Subagents index after the
 /// session header. With no agents it is [`render`] exactly.
 fn render_main(
@@ -557,6 +579,19 @@ mod tests {
         assert!(text.contains("## Assistant\n\nTwo files."));
         // The call and its result form one list.
         assert!(!text.contains("`\n\n- result"), "{text}");
+    }
+
+    #[test]
+    fn the_tail_keeps_only_the_last_turns() {
+        let mut conversation = sample();
+        conversation.push(Message::user("second question"));
+        conversation.push(Message::assistant("second answer"));
+        let tail = render_tail(&conversation, 1);
+        assert!(tail.starts_with("## User\n\nsecond question"), "{tail}");
+        assert!(!tail.contains("list the files"));
+        let both = render_tail(&conversation, 5);
+        assert!(both.contains("list the files") && both.contains("second answer"));
+        assert_eq!(render_tail(&Conversation::default(), 3), "");
     }
 
     #[test]

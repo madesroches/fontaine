@@ -1147,6 +1147,13 @@ impl PermissionPipeline {
                 rule: None,
             };
         }
+        // Writes only a redacted local draft; submission stays with the human.
+        if tool == fontaine_tools::descriptor::DRAFT_BUG_REPORT {
+            return Verdict::Allow {
+                tier: Tier::BugDraft,
+                rule: None,
+            };
+        }
         // Every call the child makes is gated on its own way out and its mode is never looser
         // than the parent's, so judging the spawn's prompt with a model would only repeat that
         // coverage, at the point the user just asked for the spawn. Plan mode allows it too:

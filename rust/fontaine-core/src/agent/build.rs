@@ -8,6 +8,7 @@ use fontaine_agents::registry::AgentTypes;
 use fontaine_agents::spawn::{AgentTool, SendMessageTool};
 use fontaine_agents::tools::{BoardShowTool, BoardUpdateTool};
 use fontaine_tools::ask_user::AskUserTool;
+use fontaine_tools::bug_draft::DraftBugReportTool;
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::kills::KillSwitches;
@@ -25,9 +26,10 @@ use rig_agent::tool::server::ToolServerHandle;
 use rig_core::{ErrorKind, ErrorReport};
 
 use super::{SessionModels, Setup};
+use crate::bug_drafts::FileDrafts;
 use crate::checkpoint::StoreCapture;
 use crate::child_runner::{CoreChildRunner, CoreWake, LedgerWindow};
-use crate::config::Config;
+use crate::config::{Config, DraftsMode};
 use crate::fork_context::ParentContextHook;
 use crate::gate::{AFK_STOPPED_MESSAGE, SessionState};
 use crate::instructions::{self, InstructionStage, Loaded, Sources};
@@ -37,6 +39,7 @@ use crate::native_search;
 use crate::permissions::{Approver, PermissionPipeline};
 use crate::prompt::{self, PromptParts};
 use crate::questions::HumanQuestions;
+use crate::redact::Redactor;
 use crate::runtime_error::RuntimeError;
 use crate::schedule::ReportedSchedule;
 use crate::session::{CONVERSATION_LOG, Session};
@@ -133,6 +136,12 @@ pub(super) fn build_agent(
     p.instructions.reseed(sources, &loaded);
     let (agent, native_search) = finish_builder(p, pieces.join());
     Ok((agent, pieces, loaded, native_search))
+}
+
+/// Whether the model may queue bug-report drafts: never headless, and not when the user turned
+/// them off.
+fn drafts_offered(p: &Parts<'_>) -> bool {
+    !p.setup.headless && p.config.feedback.drafts != DraftsMode::Off
 }
 
 /// Whether the scheduling tools exist in this session.
@@ -269,6 +278,16 @@ fn extension_tools(
             }),
         }),
     ];
+    if drafts_offered(p) {
+        let secrets = crate::redact::session_secrets(p.config, &p.setup.data_dir, &*p.setup.env);
+        tools.push(ExtensionTool::new(DraftBugReportTool {
+            sink: Arc::new(FileDrafts::new(
+                p.setup.data_dir.clone(),
+                &p.session.id,
+                Redactor::new(secrets),
+            )),
+        }));
+    }
     if p.config.agents.teams {
         tools.push(ExtensionTool::new(BoardShowTool {
             tree: p.state.agents().clone(),

@@ -110,6 +110,26 @@ the report can include them. Display-only state: recovering lock allowed with a 
 6. `draft_bug_report` tool, risk class, `[feedback]` config, subagent/headless exclusion.
 7. Docs and CHANGELOG.
 
+## Implementation Status
+
+Steps 1-7 are implemented in the working tree on the feature branch, uncommitted. `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings` and the full `cargo test` pass.
+
+- Core: `redact.rs`, `bug_report.rs`, `bug_submit.rs` and `bug_drafts.rs` (draft store, 3 per session); `Tier::BugDraft`
+  and `Tier::BugReport`, `Record::BugReport`, `SessionState::record_bug_report`, `export.rs` tail helper,
+  `[feedback] drafts` config (user scope only), the `draft_bug_report` arm in `permissions.rs`.
+- Tools and agents: `fontaine-tools/src/bug_draft.rs`, the `TOOLS` row, and stripping in `AgentType::toolset`.
+- TUI: `Command::Bug` (`main_only`) with its handler and prompt, and the warning ring buffer.
+- `rust/fontaine/build.rs` for the git sha and target.
+- Docs: `docs/tui.md`, `docs/tools.md`, `docs/configuration.md` (including the scope-table row),
+  the headless schema tier enum and `CHANGELOG.md`.
+
+Not done:
+
+- The `AGENTS.md` exception count and the `draft_bug_report` carve-out. The guardian denied the edit.
+- The master plan's Decisions line for the new tiers. The guardian denied the edit.
+- The commit, the branch review loop and the PR.
+
 ## Files to Modify
 
 `fontaine-core/src/{lib,ledger,config,config_catalog,config_scope,agent/*}.rs`,
