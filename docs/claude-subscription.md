@@ -158,5 +158,28 @@ Measured on 2.1.319: each request costs a CLI start (about 0.4 s) plus about 5 m
 user message. Replayed history is read from the prompt cache up to the previous request's last
 replayed user message. Each request writes the last two messages to the cache, about twice a native
 Claude Code session's write per step, because the CLI adds its own context to the final message.
+The write that is never read back (the final message) is made with a 5-minute lifetime instead of
+the 1-hour one, which cuts its billed cost by about a third; the earlier marker keeps the hour.
 Reuse holds while a step adds no more than about 20 blocks; a wider parallel step (about ten or
 more tool calls) re-writes the history once.
+
+### What the CLI still adds
+
+Even with Fontaine's own system prompt, the CLI puts four things of its own into every request,
+and no switch in 2.1.319 removes them without also breaking sign-in:
+
+- the line "You are a Claude agent, built on Anthropic's Claude Agent SDK." ahead of the system
+  prompt;
+- an `# Environment` block (working directory, whether it is a git repository, platform, shell, OS
+  version and the model name), where the working directory is a stable empty directory in the data
+  directory;
+- a `<system-reminder>` with the signed-in account's email address, on the message that asks for a
+  response;
+- the current date and a token-budget line after it.
+
+These come from the CLI, not from Fontaine, which still does not present itself as Claude Code.
+Measured on 2.1.319 with four 6000-token user messages: a native session writes about 6000 tokens per
+step; the adapter writes about 12300 (the previous message again, without the reminder, plus the new
+one), and reads the rest from the cache. The reminder sits on the final message only, so the
+previous message cannot be replayed byte for byte; repeating it on every replayed message would cost
+a reminder per message for the rest of the conversation, which is worse for long runs.

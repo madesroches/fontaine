@@ -570,6 +570,7 @@ async fn the_cli_gets_a_rebuilt_environment() {
         );
         assert!(env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] == "1");
         assert_eq!(env["ENABLE_CLAUDEAI_MCP_SERVERS"], "false");
+        assert_eq!(env["CLAUDE_CODE_MESSAGES_PROMPT_CACHE_TTL"], "5m");
         assert_eq!(
             env["GIT_CEILING_DIRECTORIES"].as_str().unwrap(),
             claude.w.data.to_str().unwrap()

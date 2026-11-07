@@ -109,6 +109,32 @@ the plan documents them rather than working around them.
 
 - 2026-11-07 Priority is usage parity with Claude Code; privacy and fidelity are secondary
   (user direction mid-run).
+- 2026-11-07 Probe, CLI 2.1.319, through a logging proxy on the real requests. The reminder is a
+  `session_context` attachment (email) and the date a `date` attachment; both are computed at the
+  start of a query turn against the attachments already in the message list, and a
+  `shouldQuery:false` frame creates none. The first query turn of a request is always the final
+  frame, so the reminder lands there, as the first block of the final user message, and the date
+  and a token-budget line follow as a trailing `system` message. `# Environment` is a `system`
+  message after the first user message, stable. Candidate 1 (no switch): sequentially,
+  `CLAUDE_CODE_REMOVE_PROMPT_STRINGS`, `CLAUDE_CODE_OVERRIDE_DATE`,
+  `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS`, `CLAUDE_CODE_DISABLE_ATTACHMENTS`,
+  `CLAUDE_CODE_SESSION_START_ANNOUNCEMENTS_BEFORE_PROMPT`, `CLAUDE_CODE_ATTACHMENTS_IN_USER_DATA`
+  and `CLAUDE_CODE_ENTRYPOINT=sdk-cli` left email, date, environment and identity all present;
+  `CLAUDE_CODE_SIMPLE=1` removes them only by making the CLI "not logged in" (it implies an API
+  key). Candidate 2 (no frame form): a first frame that is a query costs a model call; a local
+  slash command (`/cost`) makes no call but attaches no context and adds its own output to the
+  history. Candidate 3 rejected: the reminder would have to be repeated in every replayed user
+  message (about 250 tokens each for the rest of the conversation) because each earlier final
+  carried it, which costs more than the rewrite it saves once a conversation is long.
+- 2026-11-07 Measured per step, haiku, four 6000-token user messages, new process per step with the
+  history marker. Native single process: writes 6646, 6421, 6078, 6043 (reads 0, 6269, 12690,
+  18768). Adapter: writes 6645, 12667, 12636, 12289 (reads 0, 0, 6049, 12409). No candidate reaches
+  write parity (the previous final carried the reminder, so it is written again). Candidate 4
+  applies, plus one cost lever found in the probe: `CLAUDE_CODE_MESSAGES_PROMPT_CACHE_TTL=5m` makes
+  the CLI's unreadable final-message breakpoint a 5-minute write while the adapter's marker stays at
+  1 hour. Measured with it: per step 1 h writes 6050, 6351, 6014 and 5 min writes 6609, 6272, 6272
+  (reads 0, 6050, 12401); same token counts, about 19% less billed write cost than all at 1 h
+  (2x for 1 h, 1.25x for 5 min).
 
 ## Documentation
 

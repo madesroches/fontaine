@@ -52,7 +52,10 @@ All notable changes are recorded here. The format follows
   cache), the last replayed user message carries a cache marker, the model-listing check moves onto
   the request's own CLI process, the login probe runs alongside its start, and the CLI's claude.ai
   connector fetch is off. Billing and model checks still complete before any response is requested
-  (#449).
+  (#449). The CLI's own cache breakpoint on the final message, which is never read back, now has
+  a 5-minute lifetime instead of an hour (cheaper to write); the docs list what the CLI still adds to
+  every request (Agent SDK identity line, environment block, account email reminder, date) and the
+  measured cache-write cost per step (#480).
 
 ### Fixed
 
