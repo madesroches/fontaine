@@ -1,7 +1,7 @@
 # Verifying releases
 
-Every release archive, and both installers (shell and PowerShell) on both channels, have a detached [minisign](https://jedisct1.github.io/minisign/) signature
-next to it, `<archive>.minisig`, made in CI with a key Fontaine owns. A release is published only
+Every release archive, and each installer (shell and PowerShell) on both channels, has a detached [minisign](https://jedisct1.github.io/minisign/) signature
+next to it, `<file>.minisig`, made in CI with a key Fontaine owns. A release is published only
 after CI has downloaded the finished draft and verified every archive, and the installer, against the public key in
 this repository, so an unsigned or mis-signed archive or installer is never public.
 
@@ -75,7 +75,7 @@ minisign -Vm fontaine-installer.ps1 -p dev.signing.pub
 
 The trusted comment has `channel=dev` and `file=fontaine-installer.sh` (or `.ps1`); its `version` and
 `commit` name the build whose `dev-<n>` archives the script downloads. The installers do not verify
-this signature themselves; see [Installing Fontaine](installing.md#verification).
+this signature themselves; see [Installing Fontaine](installing.md#verification) and [on Windows](installing.md#verification-windows).
 
 The installers attached to a tagged release are signed the same way: download one and its
 `.minisig` from that release and verify with `release.signing.pub`; the trusted

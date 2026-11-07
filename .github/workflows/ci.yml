@@ -421,7 +421,7 @@ jobs:
 
           # windows-installer.sh patches the stock text; the patched file must parse and keep Install-Binary last.
           win_sha="$work/win.sha256"
-          printf '%s *%s\n' "$win_digest" "$win_zip" > "$win_sha"
+          printf '%s *%s\n\n' "$win_digest" "$win_zip" > "$win_sha"
           patch_win() { "$scripts/windows-installer.sh" "$1/fontaine-installer.ps1" "${2:-$win_sha}"; }
           wp="$work/wp-ok"
           make_ps1_installer "$wp"
@@ -461,7 +461,7 @@ jobs:
           expect_patch_fail missing-function-anchor m_w_no_function
           expect_patch_fail repeated-function-anchor m_w_two_functions
           : > "$work/win-empty.sha256"
-          printf '%s *%s\n%s *%s\n' "$win_digest" "$win_zip" "$win_digest" "$win_zip" > "$work/win-two.sha256"
+          printf '%s *%s\n%s *%s\n\n' "$win_digest" "$win_zip" "$win_digest" "$win_zip" > "$work/win-two.sha256"
           printf '%s *%s\n' "${win_digest:1}" "$win_zip" > "$work/win-short.sha256"
           printf '%s *%s\n' "${win_digest/%?/g}" "$win_zip" > "$work/win-nothex.sha256"
           printf '%s *%s\n' "$win_digest" "fontaine-aarch64-apple-darwin.tar.xz" > "$work/win-other.sha256"

@@ -30,9 +30,10 @@ snippet_file="$here/windows-installer-sha256.ps1"
 [ -f "$sha_file" ] || fail "'$sha_file' is not a file"
 [ -f "$snippet_file" ] || fail "'$snippet_file' is missing"
 
-mapfile -t lines < "$sha_file"
-[ "${#lines[@]}" -eq 1 ] || fail "$sha_file must hold exactly one line, found ${#lines[@]}"
-# dist writes `<hex> *<name>`; the star marks binary mode.
+# dist writes `<hex> *<name>\n\n`; the trailing blank line is dropped before counting.
+mapfile -t lines < <(grep -v '^[[:space:]]*$' "$sha_file" || true)
+[ "${#lines[@]}" -eq 1 ] || fail "$sha_file must hold exactly one non-empty line, found ${#lines[@]}"
+# The star marks binary mode.
 [[ "${lines[0]}" =~ ^([0-9a-fA-F]{64})\ \*?(.+)$ ]] || fail "$sha_file is not '<sha256> *<name>'"
 digest="${BASH_REMATCH[1]}"
 listed="${BASH_REMATCH[2]}"
