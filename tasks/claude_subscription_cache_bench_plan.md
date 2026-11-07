@@ -87,6 +87,7 @@ Flow:
    `EXIT_USAGE` (2) for bad flags (both constants from `rust/fontaine-evals/src/lib.rs`).
 
 The 2.0 default matches the documented 2× from #480; lowering it after a fix is a one-line change.
+The measured baseline sits near 2.0, so the first committed run records a measurement: a flag there is the expected finding, not a bench defect.
 Token counts only: the 5-minute versus 1-hour TTL write rates (#493) are not in rig's `Usage`, so
 the ratio does not credit that saving.
 
@@ -125,6 +126,7 @@ the ratio does not credit that saving.
 
 - Guardian calls are excluded from `model_call`; the bench runs in the default mode with only
   fast-path reads, so there are none to count.
+- AFK: Threshold stays 2.0 as #483 specifies (no 2.5 or baseline-relative flag); the baseline is ~2.05, so the first committed run records a measurement and a flag there is expected, not a failure.
 
 ## Documentation
 
