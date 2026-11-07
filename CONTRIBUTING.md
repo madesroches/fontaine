@@ -8,6 +8,7 @@ From `rust/`:
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 cargo deny check
 cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture
 cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian fixture --profile minimal
@@ -15,9 +16,9 @@ cargo run -p fontaine-evals -- --dataset ../evals/dataset --guardian none
 cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings
 ```
 
-CI runs `cargo fmt --check`, clippy, `cargo test`, `cargo deny check` and the `--guardian none` eval
+CI runs `cargo fmt --check`, clippy, `cargo test`, rustdoc with warnings denied, `cargo deny check` and the `--guardian none` eval
 on Linux, macOS and Windows; the two `fixture` eval runs, the "Release signing" step (the real minisign CLI and the
-`.github/scripts/` signing scripts against disposable keys), plus clippy and tests with
+`.github/scripts/` signing scripts against disposable keys), plus clippy, tests and rustdoc with
 `--features fontaine/pg2`, run on Linux only (macOS and Windows get a `cargo check --features
 fontaine/pg2`). Pull requests that touch only `tasks/` or `AGENTS.md` skip the Rust
 steps. The last command above is a local check that the Windows code compiles. Tests never call

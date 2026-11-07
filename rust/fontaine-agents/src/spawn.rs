@@ -450,7 +450,7 @@ pub fn remind_main(tree: &AgentTree) {
 /// run. The report goes to the parent's inbox, or to the root's when the parent has ended for
 /// good, so an idle root still gets a turn for it; an idle parent is woken for it. Then messages
 /// the human left for the child unread resume it. A run that ended `Done` is first offered more
-/// work (see [`continue_agent`]); only when it has none is it concluded, as idle.
+/// work (see `continue_agent`); only when it has none is it concluded, as idle.
 pub fn watch_report(
     tree: Arc<AgentTree>,
     ledger: Arc<dyn RootLedger>,

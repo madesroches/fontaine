@@ -18,6 +18,13 @@ All notable changes are recorded here. The format follows
   `<program> (+N args)`, show `guardian.composition.script` as `set` and
   `guardian.composition.params` as `<hidden>` (keys only), so an inline secret never prints.
 
+### Changed
+
+#### Build and release
+
+- CI builds the rustdoc for the workspace, and for the `pg2` feature on Linux, with warnings
+  denied, so a broken doc link fails the build (#197).
+
 ### Fixed
 
 - `claude-subscription`: a tool call the CLI names without the `mcp__fontaine__` prefix, for a
