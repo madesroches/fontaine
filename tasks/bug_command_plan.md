@@ -65,7 +65,7 @@ bundle), after assembly, so a secret in any field is caught.
 Constants: `REPO = "madesroches/fontaine"`, `LABELS = ["bug"]`; not configurable from any scope.
 
 - Always writes the bundle to `<data_dir>/bug-reports/<session>-<timestamp>.md` (owner-only),
-  never overwriting: add a create-new helper to `owner_only` (which has only open(append)/write/write_atomic), and add a numeric suffix to the filename on collision.
+  never overwriting: reuse `owner_only::create_new` (owner-only, `AlreadyExists` if present) and loop on `ErrorKind::AlreadyExists` with a numeric suffix on the filename.
 - `Submit::Gh`: if `gh auth status` succeeds, `gh issue create --repo REPO --label bug --title …
   --body-file <bundle body>` run through the argv API (no shell). Returns the issue URL.
 - `Submit::Url` (fallback, or user's choice): prints `https://github.com/REPO/issues/new?title=…
@@ -91,7 +91,7 @@ Takes `title`, `area`, `details`; writes `<data_dir>/bug-drafts/<id>.json` after
 network. Registered as a `TOOLS` row in `descriptor.rs` (`Destructive::Always`, `RiskClass::Arbitrary`, `path_free` true) with the new
 `Tier::BugDraft` (never guardian-judged, after the floor); the pinned array in `rows_are_pinned` is
 updated (count 27→28), and `draft_bug_report` is added to `FONTAINE_ONLY` in `descriptor.rs::names_are_unique_rule_names` (no Claude Code alias). Omitted for headless runs, capped at 3 per
-session. Tools register once on the shared tool server (`agent/build.rs::extension_tools`) and a subagent's tools come from `AgentType::toolset(parent_tools)` (`fontaine-agents/src/registry.rs`), where a type with `tools: None` (e.g. built-in `fork`) inherits all parent tools; so `draft_bug_report` is stripped for every subagent type in `toolset()`/`spawn.rs` next to `tools.retain(|t| t != "agent")`. The TUI shows a footer count of drafts; `/bug` lists drafts and loads one as the
+session. Tools register once on the shared tool server (`agent/build.rs::extension_tools`) and a subagent's tools come from `AgentType::toolset(parent_tools)` (`fontaine-agents/src/registry.rs`), where a type with `tools: None` (e.g. built-in `fork`) inherits all parent tools; so `draft_bug_report` is stripped once inside `AgentType::toolset` for every type, including `tools: None`, since `toolset` is also called from `tree.rs` and `adjudication.rs::spawn_changes_state`. The TUI shows a footer count of drafts; `/bug` lists drafts and loads one as the
 description. `[feedback] drafts = "on" | "quiet" | "off"` (user-scope only, `config_scope.rs`;
 `off` omits the tool). Submission stays user-only and outside the guardian.
 
@@ -114,7 +114,7 @@ the report can include them. Display-only state: recovering lock allowed with a 
 
 `fontaine-core/src/{lib,ledger,config,config_catalog,config_scope,agent/*}.rs`,
 `fontaine-core/src/{export,tier,permissions,gate}.rs`, `fontaine-tools/src/descriptor.rs`,
-`fontaine-agents/src/{registry,spawn}.rs`, `fontaine-core/tests/choke_point.rs`,
+`fontaine-agents/src/registry.rs`, `fontaine-core/tests/choke_point.rs`,
 `docs/schemas/headless-v1.schema.json`, `rust/fontaine/build.rs` (new), `AGENTS.md`,
 `fontaine-tui/src/{commands,app,lib,bug_prompt}.rs`,
 `fontaine-tui/src/ui/{mod.rs,commands/mod.rs}`, new files above, `docs/tui.md`,
@@ -138,8 +138,8 @@ the report can include them. Display-only state: recovering lock allowed with a 
 - 2026-11-07: `draft_bug_report` has `Destructive::Always` + `RiskClass::Arbitrary` like `send_message`, since `path_policy_is_consistent` ties `Never` to `ReadOnly`.
 - 2026-11-07: The bug submission audit entry uses a new `Tier::BugReport` (label `bug_report`, following `Tier::Afk`/`GuardianOff`), tool label `bug`, same schema fallout.
 - 2026-11-07: The `AGENTS.md` invariant's exception count goes from five to six; the `draft_bug_report` carve-out covers only writing a redacted draft to the data dir, and the submission audit tier (`Tier::BugReport`) is recorded alongside it.
-- 2026-11-07: `draft_bug_report` is stripped for every subagent type in `toolset()`/`spawn.rs`, since `tools: None` types such as `fork` inherit all parent tools.
-- 2026-11-07: The bundle file uses a new create-new helper in `owner_only`, with a numeric suffix on filename collision.
+- 2026-11-07: `draft_bug_report` is stripped once inside `AgentType::toolset` (`registry.rs`) for every type, since `tools: None` types such as `fork` inherit all parent tools.
+- 2026-11-07: The bundle file reuses `owner_only::create_new`, looping on `AlreadyExists` with a numeric suffix.
 - 2026-11-07: `/bug` is a slash command only (none headless) and is `main_only()`.
 
 ## Documentation
