@@ -229,11 +229,13 @@ impl ModelHandle {
     }
 
     /// The provider's `/models` entry for this handle's model; `None` when the handle holds no
-    /// client or the endpoint does not say.
-    pub fn served_model(&self) -> futures::future::BoxFuture<'_, Option<ServedModel>> {
+    /// client or the endpoint does not say; `Err` is why the lookup failed.
+    pub fn served_model(
+        &self,
+    ) -> futures::future::BoxFuture<'_, Result<Option<ServedModel>, String>> {
         match &self.client {
             Some(client) => client.0.served_model(&self.reference.model),
-            None => Box::pin(std::future::ready(None)),
+            None => Box::pin(std::future::ready(Ok(None))),
         }
     }
 

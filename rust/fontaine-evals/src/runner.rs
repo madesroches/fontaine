@@ -1697,8 +1697,10 @@ fn print_case(r: &CaseResult) {
 }
 
 fn served_line(served: &ServedModel) -> String {
-    let name = served.display_name.as_deref().unwrap_or(&served.id);
-    let mut line = format!("served: {name} ({})", served.id);
+    let mut line = match &served.display_name {
+        Some(name) => format!("served: {name} ({})", served.id),
+        None => format!("served: {}", served.id),
+    };
     if let Some(context) = served.context_length {
         line.push_str(&format!(", {context} tokens"));
     }
@@ -1832,5 +1834,11 @@ mod served_model_tests {
             served_line(&served),
             "served: K2.8 Preview (kimi-for-coding), 1048576 tokens"
         );
+        let bare = ServedModel {
+            id: "kimi-for-coding".into(),
+            display_name: None,
+            context_length: None,
+        };
+        assert_eq!(served_line(&bare), "served: kimi-for-coding");
     }
 }

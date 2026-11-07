@@ -125,7 +125,13 @@ pub async fn connect(
             ));
         }
     };
-    let served = handle.served_model().await;
+    let served = match handle.served_model().await {
+        Ok(served) => served,
+        Err(reason) => {
+            eprintln!("fontaine-evals: {reason}");
+            None
+        }
+    };
     let scrub_env = fontaine_core::tools::scrubbed_env(&config, std::iter::empty());
     let settings = Settings {
         timeout: Duration::from_secs(config.guardian.timeout_secs),

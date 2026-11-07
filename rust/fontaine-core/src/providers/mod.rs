@@ -231,10 +231,10 @@ pub trait AccountClient: Send + Sync {
         None
     }
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>>;
-    /// What the endpoint says about `model` beyond its id, when it offers it. Absent on any
-    /// failure: this is provenance for a record and never gates a run.
-    fn served_model(&self, _model: &str) -> BoxFuture<'_, Option<ServedModel>> {
-        Box::pin(std::future::ready(None))
+    /// What the endpoint says about `model` beyond its id, when it offers it. `Err` carries why
+    /// the lookup failed: this is provenance for a record and never gates a run.
+    fn served_model(&self, _model: &str) -> BoxFuture<'_, Result<Option<ServedModel>, String>> {
+        Box::pin(std::future::ready(Ok(None)))
     }
 }
 
@@ -372,6 +372,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_kind_without_an_override_serves_no_entry() {
-        assert_eq!(NoOverride.served_model("m").await, None);
+        assert_eq!(NoOverride.served_model("m").await, Ok(None));
     }
 }

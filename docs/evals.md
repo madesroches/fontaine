@@ -232,12 +232,14 @@ by the daemon and counts as a fail-closed infrastructure failure, not as a trunc
 
 ### Served model
 
-A provider alias can move to a newer model. When the guardian model's endpoint lists it with more
-than an id (an `openai-compatible` account's `GET <base_url>/models`), a live run records that entry
-in the scorecard `summary` as `served_model` (`id`, and `display_name` and `context_length` when the
-entry has them) and prints one `served: <display_name> (<id>), <context> tokens` line. The field is
-absent when the endpoint does not list the model or the fetch fails; a failed fetch never fails the
-run. A resumed run records what answered at its end. Only the guardian model is recorded, not a
+A provider alias can move to a newer model. When the guardian model's endpoint lists it (an
+`openai-compatible` account's `GET <base_url>/models`), a live run records that entry in the
+scorecard `summary` as `served_model` (`id`, and `display_name` and `context_length` when the entry
+has them) and prints one `served: <display_name> (<id>), <context> tokens` line, where the name falls
+back to just the id and the context part is left off when absent. The field is absent when the
+endpoint does not list the model or the fetch fails; a failed fetch prints its reason and never
+fails the run. A resumed run records what the endpoint listed when its last session connected;
+cases kept from earlier sessions may have been answered by another version. Only the guardian model is recorded, not a
 cascade's screen model.
 
 ### Verdict transport

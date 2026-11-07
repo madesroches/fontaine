@@ -93,37 +93,27 @@ struct ModelsFetcher {
 }
 
 impl ModelsFetcher {
-    async fn served(&self, model: &str) -> Option<ServedModel> {
+    /// `Err` carries why the listing could not be read; `Ok(None)` is a listing without the model.
+    async fn served(&self, model: &str) -> Result<Option<ServedModel>, String> {
         let mut request = self.client.get(&self.url).timeout(REQUEST_TIMEOUT);
         if let Some(key) = &self.key {
             request = request.bearer_auth(key);
         }
-        let response = match request.send().await {
-            Ok(response) => response,
-            Err(e) => {
-                eprintln!(
-                    "fontaine-evals: could not fetch the model list: {}",
-                    chain(&e.without_url())
-                );
-                return None;
-            }
-        };
+        let response = request.send().await.map_err(|e| {
+            format!(
+                "could not fetch the model list: {}",
+                chain(&e.without_url())
+            )
+        })?;
         let status = response.status();
         if !status.is_success() {
-            eprintln!("fontaine-evals: the model list replied {status}");
-            return None;
+            return Err(format!("the model list replied {status}"));
         }
-        let body = match response.text().await {
-            Ok(body) => body,
-            Err(e) => {
-                eprintln!(
-                    "fontaine-evals: could not read the model list: {}",
-                    chain(&e.without_url())
-                );
-                return None;
-            }
-        };
-        parse_served(&body, model)
+        let body = response
+            .text()
+            .await
+            .map_err(|e| format!("could not read the model list: {}", chain(&e.without_url())))?;
+        Ok(parse_served(&body, model))
     }
 }
 
@@ -164,9 +154,15 @@ impl AccountClient for Connected {
         .boxed()
     }
 
-    fn served_model(&self, model: &str) -> BoxFuture<'_, Option<ServedModel>> {
+    fn served_model(&self, model: &str) -> BoxFuture<'_, Result<Option<ServedModel>, String>> {
         let model = model.to_string();
-        async move { self.models.as_ref()?.served(&model).await }.boxed()
+        async move {
+            match &self.models {
+                Some(models) => models.served(&model).await,
+                None => Ok(None),
+            }
+        }
+        .boxed()
     }
 }
 
@@ -212,7 +208,7 @@ mod tests {
         let body = format!(r#"{{"data": [{{"id": "other"}}, {ENTRY}]}}"#);
         let server = serve(ResponseTemplate::new(200).set_body_string(body)).await;
         let served = fetcher(&server, None).served("kimi-for-coding").await;
-        assert_eq!(served, Some(kimi()));
+        assert_eq!(served, Ok(Some(kimi())));
     }
 
     #[tokio::test]
@@ -227,7 +223,7 @@ mod tests {
         let served = fetcher(&server, Some("sk-x"))
             .served("kimi-for-coding")
             .await;
-        assert_eq!(served, Some(kimi()));
+        assert_eq!(served, Ok(Some(kimi())));
     }
 
     #[tokio::test]
@@ -235,13 +231,20 @@ mod tests {
         let server =
             serve(ResponseTemplate::new(200).set_body_string(r#"{"data": [{"id": "other"}]}"#))
                 .await;
-        assert_eq!(fetcher(&server, None).served("kimi-for-coding").await, None);
+        assert_eq!(
+            fetcher(&server, None).served("kimi-for-coding").await,
+            Ok(None)
+        );
     }
 
     #[tokio::test]
     async fn an_http_error_yields_none() {
         let server = serve(ResponseTemplate::new(500)).await;
-        assert_eq!(fetcher(&server, None).served("kimi-for-coding").await, None);
+        let reason = fetcher(&server, None)
+            .served("kimi-for-coding")
+            .await
+            .expect_err("a 500 is a failure");
+        assert!(reason.contains("500"), "{reason}");
     }
 
     #[tokio::test]
@@ -252,11 +255,11 @@ mod tests {
         .await;
         assert_eq!(
             fetcher(&bare, None).served("kimi-for-coding").await,
-            Some(ServedModel {
+            Ok(Some(ServedModel {
                 id: "kimi-for-coding".into(),
                 display_name: None,
                 context_length: None,
-            })
+            }))
         );
         let limited = serve(ResponseTemplate::new(200).set_body_string(
             r#"{"data": [{"id": "kimi-for-coding", "limit": {"context": 262144}}]}"#,
@@ -266,6 +269,8 @@ mod tests {
             fetcher(&limited, None)
                 .served("kimi-for-coding")
                 .await
+                .ok()
+                .flatten()
                 .and_then(|s| s.context_length),
             Some(262_144)
         );
