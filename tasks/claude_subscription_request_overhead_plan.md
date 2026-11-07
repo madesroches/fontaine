@@ -146,8 +146,8 @@ system prompt, manifest), which reach the CLI only as absolute paths in argv and
 the prompt. Using it for every launch (probes, listing, requests) keeps one code path.
 
 - **Location:** `<data_dir>/claude-cli-cwd`, from `ConnectContext::data_dir`. That path is stable
-  across requests, namespaces, sessions and resumes, so a resumed session and the guardian share
-  the same prompt prefix. It is normally outside any repository (not checked; a data dir inside a git work tree brings
+  across requests, namespaces, sessions and resumes, so each caller's prompt prefix (a resumed
+  session's, or the guardians' of concurrent sessions) is the same from request to request. It is normally outside any repository (not checked; a data dir inside a git work tree brings
   the CLI's gitStatus back into the prompt and breaks caching), so the environment block's "Is a
   git repository" stays `false` and the CLI never reads a project.
 - **Creation:** `ClaudeSubscription::connect` runs `create_dir_all` on the data dir, then creates
@@ -163,7 +163,8 @@ the prompt. Using it for every launch (probes, listing, requests) keeps one code
 
 ### 2. One cache marker on the last history user message
 
-In `frames_of`, after the frames are built and the existing stripping has run, the adapter puts
+In `translate`, after `derive_session_id` has hashed `frames[0]` (so the marker never changes the
+session id), the adapter puts
 `{"type": "ephemeral", "ttl": "1h"}` on one block. That block is the last cacheable block of the
 **last user frame before the final (query) frame**. A cacheable block is a non-empty `text`, an
 `image`, a `document` or a `tool_result`. A string-content user message becomes one text block to
@@ -212,14 +213,18 @@ refused? ─► translate ─► check_environment ─► check_version (cached 
   the API. The version check still completes before any request process starts, because an older
   CLI could treat a history frame differently. That is why it stays ahead of the fork, not
   concurrent with it.
-- **Error precedence** is deterministic and matches today's order: the environment, then the
-  version, then the login error, then the row error, then replay errors. The two branches race: a login
+- **Error precedence** is deterministic: the environment, then the
+  version, then the login error, then scratch, file and launch errors of the request process, then the row error, then replay errors. The two branches race: a login
   error returns immediately and drops the request child (killing its tree); a request-branch result
   first awaits the login result, which wins if it is an error.
 - **DRY:** `Cli::initialize`'s request/response exchange moves into
-  `CliChild::list_models(&mut self, idle, reader: Option<&mut Reader>) -> Result<Vec<ModelRow>, ClaudeError>`.
-  Both the listing process (`Cli::initialize`, still used by `list()` and `/login`) and the request
-  process use it. `close_stdin()` stays in `Cli::initialize` (the listing process only). With
+  `CliChild::list_models(&mut self, request_id, idle, reader: Option<&mut Reader>) -> Result<Vec<ModelRow>, ClaudeError>`.
+  It takes the already-written `request_id` and only reads. `Cli::initialize` (still used by
+  `list()` and `/login`) keeps write, then `close_stdin()`, then `list_models`; the request process
+  writes the control request itself and leaves stdin open. Before the matching `control_response`,
+  `list_models` continues only on `Event::Nothing`; any `Ack`, `Frame` or `Complete` is an
+  `ErrorKind::Protocol` error ("the Claude CLI answered before it listed its models"), as `open`'s
+  ack loop does. With
   `None` (listing process) non-matching lines are skipped, as today. With `Some` (request process;
   its `Reader` exists right after `launch`) the matching `control_response` is consumed here
   (`Reader::accept` has no arm for it) and every other line goes through `Reader::accept`, never
@@ -247,10 +252,11 @@ none with it.
    - In `ClaudeSubscription::connect`, create or accept `<data_dir>/claude-cli-cwd` as described,
      making `create_if_missing` `pub(crate)`.
 2. **Marker** (`protocol.rs`)
-   - Add `mark_history(frames: &mut [Frame])`, called at the end of `frames_of`. Put the
+   - Add `mark_history(frames: &mut [Frame])`, called in `translate` after `derive_session_id`. Put the
      `TTL`/marker value in one `const`.
 3. **Handshake on the request process** (`cli.rs`, `transport.rs`)
-   - Extract `CliChild::list_models` from `Cli::initialize`, and make `Cli::initialize` call it.
+   - Extract the read half of `Cli::initialize` into `CliChild::list_models` (taking the written
+     `request_id`), and make `Cli::initialize` write, close stdin and call it.
    - Replace `handshake` with `check_row`, and restructure `open` into the two racing branches
      above. Keep the existing ack loop and the early-exit classification (`exit_failure`) inside
      the replay branch.
@@ -337,7 +343,7 @@ none with it.
   message. Reuse holds while a step adds no more than about 20 blocks; a wider parallel step
   (about ten or more tool calls) re-writes the history once.
 
-`CHANGELOG.md` under `[Unreleased]`: a `### Changed` line for the cache reuse and the per-request
+`CHANGELOG.md` under `[Unreleased]`: a new `### Changed` → `#### Providers` section with one entry for the cache reuse and the per-request
 latency drop, with the issue number.
 
 No other page describes the per-request process at this level. `docs/architecture.md`'s "runs the
@@ -353,6 +359,8 @@ Unit tests (`protocol/tests.rs`, `transport.rs`, `cli.rs`):
   content becomes one marked text block. A `cache_control` arriving on a top-level block of the request
   is stripped and does not survive next to the adapter's marker. The value is
   `{"type": "ephemeral", "ttl": "1h"}`.
+- Session id: conversations of 1, 2 and 3 user messages sharing a first message derive the same
+  session id.
 - `check_row` (in a separate ungated `#[cfg(test)]` module in `transport.rs`, since the existing test module there is Linux-only): missing alias, credit-billed row and changed canonical id each give today's kind
   and text. A matching row passes.
 - `FIXED_ENV` contains `ENABLE_CLAUDEAI_MCP_SERVERS=false` (extend the rebuilt-environment
