@@ -1,7 +1,7 @@
-//! Backend-neutral span handling for the export backends. One layer watches the allowlisted
-//! spans, tells the backend about their begin and end (the micromegas backend maps them to
-//! async span events; OTLP exports spans through `tracing-opentelemetry` instead) and derives
-//! the token and cost metrics and the `api_request` event from rig's completion spans.
+//! Backend-neutral metric derivation for the export backends. One layer watches the allowlisted
+//! spans and Fontaine's events and derives the token and cost metrics, the decision and guardian
+//! metrics and the `api_request` event from them. The spans themselves are exported by each
+//! backend's own layer (micromegas's capture layer, `tracing-opentelemetry` for OTLP).
 
 use std::time::Instant;
 
@@ -12,8 +12,6 @@ use tracing::span::{Attributes, Id, Record};
 use tracing::{Metadata, Subscriber};
 use tracing_subscriber::layer::{Context, Layer};
 use tracing_subscriber::registry::LookupSpan;
-
-use super::content::ContentPolicy;
 
 pub const TARGET: &str = "fontaine::telemetry";
 
@@ -35,8 +33,8 @@ pub fn is_exported_event(meta: &Metadata<'_>) -> bool {
     meta.is_event() && meta.target() == TARGET
 }
 
-/// What the bridge itself observes: the allowlisted spans, plus Fontaine's events (the
-/// decision event is counted from the event, not from a span).
+/// The allowlisted spans plus Fontaine's events: what the bridge observes (the decision event is
+/// counted from the event, not from a span) and what the micromegas capture layer exports.
 pub fn is_bridged(meta: &Metadata<'_>) -> bool {
     is_exported_span(meta) || is_exported_event(meta)
 }
@@ -53,38 +51,12 @@ pub struct Metric {
     pub attrs: Vec<(&'static str, String)>,
 }
 
-pub struct SpanEnd<'a> {
-    pub name: &'a str,
-    pub meta: &'static Metadata<'static>,
-    pub id: u64,
-    pub parent_id: u64,
-    pub depth: u32,
-    pub fields: &'a [(String, String)],
-}
-
-/// What a backend does with the bridge's observations.
+/// What a backend does with the bridge's metrics.
 pub trait Export: Send + Sync + 'static {
-    /// A span opened. A backend that maps spans itself returns the id its children name as
-    /// their parent; one that does not returns `None`.
-    fn span_begin(
-        &self,
-        _name: &str,
-        _meta: &'static Metadata<'static>,
-        _parent_id: u64,
-        _depth: u32,
-    ) -> Option<u64> {
-        None
-    }
-
-    fn span_end(&self, _end: SpanEnd<'_>) {}
-
     fn metric(&self, metric: Metric);
 }
 
 struct BridgeSpan {
-    id: u64,
-    parent_id: u64,
-    depth: u32,
     started: Instant,
     fields: Vec<(String, String)>,
 }
@@ -134,12 +106,11 @@ fn count(fields: &[(String, String)], name: &str) -> Option<u64> {
 
 pub struct SpanBridge<E> {
     export: E,
-    policy: ContentPolicy,
 }
 
 impl<E: Export> SpanBridge<E> {
-    pub fn new(export: E, policy: ContentPolicy) -> Self {
-        SpanBridge { export, policy }
+    pub fn new(export: E) -> Self {
+        SpanBridge { export }
     }
 
     fn derive(
@@ -368,21 +339,7 @@ where
         let Some(span) = ctx.span(id) else { return };
         let mut fields = Vec::new();
         attrs.record(&mut Collect(&mut fields));
-        let (parent_id, depth) = match span.parent() {
-            Some(parent) => parent
-                .extensions()
-                .get::<BridgeSpan>()
-                .map_or((0, 0), |p| (p.id, p.depth + 1)),
-            None => (0, 0),
-        };
-        let exported = self
-            .export
-            .span_begin(span.name(), span.metadata(), parent_id, depth)
-            .unwrap_or(0);
         span.extensions_mut().insert(BridgeSpan {
-            id: exported,
-            parent_id,
-            depth,
             started: Instant::now(),
             fields,
         });
@@ -443,15 +400,6 @@ where
             query_source,
             priced,
         );
-        let fields = self.policy.export_fields(&bridge.fields);
-        self.export.span_end(SpanEnd {
-            name: span.name(),
-            meta: span.metadata(),
-            id: bridge.id,
-            parent_id: bridge.parent_id,
-            depth: bridge.depth,
-            fields: &fields,
-        });
     }
 }
 
@@ -459,7 +407,6 @@ where
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use fontaine_core::config::{LoadParams, load};
     use rig_core::test_utils::TraceCapture;
     use tracing::field::Empty;
     use tracing_subscriber::layer::SubscriberExt;
@@ -489,25 +436,11 @@ mod tests {
         }
     }
 
-    fn policy() -> ContentPolicy {
-        let dir = tempfile::tempdir().unwrap();
-        let config = load(&LoadParams {
-            launch_dir: dir.path(),
-            config_dir: dir.path(),
-            data_dir: dir.path(),
-            settings_file: None,
-            cli_rules: Default::default(),
-            env: &|_| None,
-        })
-        .unwrap();
-        ContentPolicy::from_config(&config.telemetry)
-    }
-
     fn harness() -> (Recorder, TraceCapture, impl Subscriber + Send + Sync) {
         let recorder = Recorder::default();
         let capture = TraceCapture::default();
         let subscriber = tracing_subscriber::registry()
-            .with(SpanBridge::new(recorder.clone(), policy()))
+            .with(SpanBridge::new(recorder.clone()))
             .with(capture.clone());
         (recorder, capture, subscriber)
     }

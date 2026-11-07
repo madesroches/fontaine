@@ -186,12 +186,12 @@ where
             })?;
             telemetry.micromegas = Some(guard);
             layers.push(filtered(
-                span_bridge::SpanBridge::new(micromegas::MicromegasExport::new(t.traces), policy),
+                span_bridge::SpanBridge::new(micromegas::MicromegasExport::default()),
                 span_bridge::is_bridged,
             ));
             layers.push(filtered(
-                micromegas::capture_layer(),
-                span_bridge::is_exported_event,
+                micromegas::capture_layer(t.traces, policy),
+                span_bridge::is_bridged,
             ));
         }
         #[cfg(feature = "telemetry-otlp")]
@@ -203,11 +203,11 @@ where
                     traces: t.traces,
                     resource_attributes: resource_attributes(config),
                 },
-                policy.clone(),
+                policy,
             )?;
             layers.extend(built.tracing);
             layers.push(filtered(
-                span_bridge::SpanBridge::new(built.export, policy),
+                span_bridge::SpanBridge::new(built.export),
                 span_bridge::is_bridged,
             ));
             telemetry.otlp = Some(built.providers);
@@ -248,7 +248,7 @@ pub fn install(sink: Option<&DebugSink>, config: &Config, params: &InstallParams
 
 impl Telemetry {
     /// A multi-thread runtime. With the micromegas backend its workers get thread streams,
-    /// which the span events ride, and flush them as they stop.
+    /// which the captured spans ride, and flush them as they stop.
     pub fn runtime(&self) -> std::io::Result<tokio::runtime::Runtime> {
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         builder.enable_all();
