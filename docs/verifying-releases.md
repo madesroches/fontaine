@@ -1,14 +1,16 @@
 # Verifying releases
 
-Every release archive, and the shell installer on both channels, has a detached [minisign](https://jedisct1.github.io/minisign/) signature
+Every release archive, and both installers (shell and PowerShell) on both channels, have a detached [minisign](https://jedisct1.github.io/minisign/) signature
 next to it, `<archive>.minisig`, made in CI with a key Fontaine owns. A release is published only
 after CI has downloaded the finished draft and verified every archive, and the installer, against the public key in
 this repository, so an unsigned or mis-signed archive or installer is never public.
 
 The archives of a dev build live in the immutable `dev-<n>` prerelease. The long-lived `dev`
-prerelease holds only `fontaine-installer.sh` and `fontaine-installer.sh.minisig`, replaced after
-every successful dev publish; the installer is the dist script rewritten to download from that
-run's `dev-<n>`.
+prerelease holds only `fontaine-installer.sh` and `fontaine-installer.ps1` with their `.minisig`
+files, replaced after every successful dev publish; each installer is the dist script rewritten to
+download from that run's `dev-<n>`. The PowerShell installer is also patched, before it is signed, with a
+sha256 check of the archive, which dist's own script lacks; the signature covers exactly the script
+you download.
 
 ## Channels and keys
 
@@ -40,7 +42,7 @@ Expected output includes `Signature and comment signature verified`, followed by
 comment:` line. The signature file must be
 named `<archive>.minisig` and sit next to the archive, or be given with `-x`.
 
-The signed trusted comment binds the signature to one archive, or to the installer:
+The signed trusted comment binds the signature to one archive, or to one installer:
 
 ```
 fontaine-signature v1 channel=<release|dev> file=<archive name> version=<version> commit=<git sha>
@@ -48,7 +50,7 @@ fontaine-signature v1 channel=<release|dev> file=<archive name> version=<version
 
 Read it from the third line of the signature file, or from the `Trusted comment:` line minisign
 prints. Check that `channel` is the channel you meant, `file` is the archive (or
-`fontaine-installer.sh`) you downloaded and
+`fontaine-installer.sh` or `fontaine-installer.ps1`) you downloaded and
 `version` is the one you expected: a validly signed archive for another target fails this check.
 
 Each archive also has a `.sha256` file, and the release has a combined `sha256.sum`:
@@ -62,28 +64,30 @@ The checksums catch a corrupted download; only the signature proves who made the
 
 ## Verify the installer by hand
 
-Download `fontaine-installer.sh` and `fontaine-installer.sh.minisig` from the
+Download `fontaine-installer.sh` (or `fontaine-installer.ps1` for Windows) and its `.minisig` from the
 [`dev` release](https://github.com/madesroches/fontaine/releases/tag/dev) and
 [`dev.signing.pub`](../rust/fontaine/keys/dev.signing.pub), then:
 
 ```
 minisign -Vm fontaine-installer.sh -p dev.signing.pub
+minisign -Vm fontaine-installer.ps1 -p dev.signing.pub
 ```
 
-The trusted comment has `channel=dev` and `file=fontaine-installer.sh`; its `version` and `commit`
-name the build whose `dev-<n>` archives the script downloads. The installer does not verify this
-signature itself; see [Installing Fontaine](installing.md#verification).
+The trusted comment has `channel=dev` and `file=fontaine-installer.sh` (or `.ps1`); its `version` and
+`commit` name the build whose `dev-<n>` archives the script downloads. The installers do not verify
+this signature themselves; see [Installing Fontaine](installing.md#verification).
 
-The installer attached to a tagged release is signed the same way: download it and
-`fontaine-installer.sh.minisig` from that release and verify with `release.signing.pub`; the trusted
-comment has `channel=release`, `file=fontaine-installer.sh`, and the release's version and commit.
+The installers attached to a tagged release are signed the same way: download one and its
+`.minisig` from that release and verify with `release.signing.pub`; the trusted
+comment has `channel=release`, the installer's `file`, and the release's version and commit.
 
 ## What the signature does not cover
 
 The first install is trusted through HTTPS: the public key you verify against comes from this
-repository over the same channel as the archive. The shell installer (`fontaine-installer.sh`) is
-signed on both channels but does not check the minisign signature itself; it verifies the archive's sha256 only, and
-only when `sha256sum` is present (see [Installing Fontaine](installing.md)). To get a signature
+repository over the same channel as the archive. The installers (`fontaine-installer.sh` and
+`fontaine-installer.ps1`) are signed on both channels but do not check the minisign signature
+themselves; they verify the archive's sha256 only, which the shell installer does only when `sha256sum` is
+present and the PowerShell installer always does (see [Installing Fontaine](installing.md)). To get a signature
 check, download the archive and verify it as above. Fontaine does not update itself yet; once
 it does, the signature chain will be what keeps an update honest. Once Fontaine's archives enable GitHub artifact attestations, `gh attestation
 verify` will apply as a further check; the minisign key stays the root of trust.

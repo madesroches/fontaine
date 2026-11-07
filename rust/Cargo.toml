@@ -112,7 +112,7 @@ libc = "0.2.191"
 [workspace.metadata.dist]
 cargo-dist-version = "0.32.0"
 ci = "github"
-installers = ["shell"]
+installers = ["shell", "powershell"]
 # GitHub attaches source archives to every release; none is signed, so none is published by dist.
 source-tarball = false
 targets = [

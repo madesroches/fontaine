@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Usage: dev-installer.sh <installer> <tag> <version>
-# Rewrites dist's shell installer in place so a dev build can use it: dist bakes the
-# `v<cargo version>` release URL and version into the script, and neither exists for a dev tag.
+# Rewrites dist's shell or PowerShell installer (chosen by the file extension) in place so a dev
+# build can use it: dist bakes the `v<cargo version>` release URL and version into the script, and
+# neither exists for a dev tag.
 # Every substitution is matched literally with its surrounding context and the count of matches is
 # checked first, so a dist upgrade that changes the installer's text fails the dev run before
 # anything is signed or uploaded instead of shipping a half-rewritten installer.
@@ -43,12 +44,25 @@ replace() { # replace <name> <expected count> <literal> <replacement>
 }
 
 nl=$'\n'
-base="$(printf '%s' "$content" | sed -n 's/^APP_VERSION="\([^"]*\)"$/\1/p')"
-[ -n "$base" ] && [ "$(printf '%s\n' "$base" | wc -l)" -eq 1 ] || fail "APP_VERSION line not found exactly once"
-[[ "$base" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "unexpected APP_VERSION '$base'"
+case "$installer" in
+  *.sh)
+    base="$(printf '%s' "$content" | sed -n 's/^APP_VERSION="\([^"]*\)"$/\1/p')"
+    line="APP_VERSION"
+    ;;
+  *.ps1)
+    base="$(printf '%s' "$content" | sed -n "s/^\$app_version = '\([^']*\)'\$/\1/p")"
+    line="app_version"
+    ;;
+  *) fail "'$installer' is neither a .sh nor a .ps1" ;;
+esac
+[ -n "$base" ] && [ "$(printf '%s\n' "$base" | wc -l)" -eq 1 ] || fail "$line line not found exactly once"
+[[ "$base" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "unexpected $line '$base'"
 
 replace "download URL" 4 "/releases/download/v$base" "/releases/download/$tag"
-replace "APP_VERSION" 1 "${nl}APP_VERSION=\"$base\"${nl}" "${nl}APP_VERSION=\"$version\"${nl}"
+case "$installer" in
+  *.sh) replace "APP_VERSION" 1 "${nl}APP_VERSION=\"$base\"${nl}" "${nl}APP_VERSION=\"$version\"${nl}" ;;
+  *.ps1) replace "app_version" 1 "${nl}\$app_version = '$base'${nl}" "${nl}\$app_version = '$version'${nl}" ;;
+esac
 replace "receipt version" 1 ",\"version\":\"$base\"}${nl}" ",\"version\":\"$version\"}${nl}"
 replace "usage text" 1 "${nl}The installer for fontaine $base${nl}" "${nl}The installer for fontaine $version${nl}"
 

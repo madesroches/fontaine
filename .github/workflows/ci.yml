@@ -209,15 +209,16 @@ jobs:
           expect_fail wrong-commit true release "$version" "ffffffff"
           expect_fail unrecognised-asset m_unrecognised
 
-          # The installer belongs to the release channel only, and there it must be signed.
-          m_installer() { echo '#!/bin/sh' > "$1/fontaine-installer.sh"; }
+          # The installers belong to the release channel only, and there they must be signed.
+          installers="fontaine-installer.sh fontaine-installer.ps1"
+          m_installer() { echo '#!/bin/sh' > "$1/fontaine-installer.sh"; echo '# installer' > "$1/fontaine-installer.ps1"; }
           release_installer="$work/release-installer"
           make_fixture "$release_installer"
           m_installer "$release_installer"
           sign "$release_installer" main release
-          [ -f "$release_installer/fontaine-installer.sh.minisig" ]
+          for inst in $installers; do [ -f "$release_installer/$inst.minisig" ]; done
           verify "$release_installer" >/dev/null
-          echo "ok: signed installer accepted on release"
+          echo "ok: signed installers accepted on release"
           expect_rel_installer_fail() { # expect_rel_installer_fail <name> <mutation function> [verify args...]
             local name="$1" mutate="$2"
             shift 2
@@ -230,51 +231,160 @@ jobs:
             fi
             echo "ok: release installer '$name' rejected"
           }
-          m_ri_no_sig() { rm "$1/fontaine-installer.sh.minisig"; }
-          m_ri_tampered() { echo x >> "$1/fontaine-installer.sh"; }
+          m_ri_no_sig() { rm "${1:?}/$inst.minisig"; }
+          m_ri_tampered() { echo x >> "$1/$inst"; }
           m_ri_renamed_sig() { # a signature made for another file name
-            cp "$1/$a.minisig" "$1/fontaine-installer.sh.minisig"
+            cp "$1/$a.minisig" "$1/$inst.minisig"
           }
           # Re-sign only the installer with a deliberately wrong trusted comment (and key), so a
           # rejection can only come from the installer's own check.
           resign_installer() { # resign_installer <dir> <keyname> <comment>
             printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$work/$2.key" \
-              -m "$1/fontaine-installer.sh" -x "$1/fontaine-installer.sh.minisig" -t "$3" >/dev/null
+              -m "$1/$inst" -x "$1/$inst.minisig" -t "$3" >/dev/null
           }
-          comment_for() { echo "fontaine-signature v1 channel=${1:-release} file=${2:-fontaine-installer.sh} version=${3:-$version} commit=${4:-$commit}"; }
+          comment_for() { echo "fontaine-signature v1 channel=${1:-release} file=${2:-$inst} version=${3:-$version} commit=${4:-$commit}"; }
           m_ri_dev_comment() { resign_installer "$1" main "$(comment_for dev)"; }
           m_ri_other_key() { resign_installer "$1" other "$(comment_for)"; }
           m_ri_wrong_file() { resign_installer "$1" main "$(comment_for release fontaine-other.sh)"; }
-          m_ri_wrong_version() { resign_installer "$1" main "$(comment_for release fontaine-installer.sh 9.9.9)"; }
-          m_ri_wrong_commit() { resign_installer "$1" main "$(comment_for release fontaine-installer.sh "$version" ffffffff)"; }
-          expect_rel_installer_fail no-signature m_ri_no_sig
-          expect_rel_installer_fail tampered m_ri_tampered
-          expect_rel_installer_fail signature-for-other-file m_ri_renamed_sig
-          expect_rel_installer_fail dev-channel-comment m_ri_dev_comment
-          expect_rel_installer_fail signed-by-other-key m_ri_other_key
-          expect_rel_installer_fail comment-names-other-file m_ri_wrong_file
-          expect_rel_installer_fail comment-wrong-version m_ri_wrong_version
-          expect_rel_installer_fail comment-wrong-commit m_ri_wrong_commit
+          m_ri_other_installer() { # the other installer's name in the comment
+            local other=fontaine-installer.ps1
+            [ "$inst" = fontaine-installer.ps1 ] && other=fontaine-installer.sh
+            resign_installer "$1" main "$(comment_for release "$other")"
+          }
+          m_ri_wrong_version() { resign_installer "$1" main "$(comment_for release "$inst" 9.9.9)"; }
+          m_ri_wrong_commit() { resign_installer "$1" main "$(comment_for release "$inst" "$version" ffffffff)"; }
+          for inst in $installers; do
+            expect_rel_installer_fail "$inst-no-signature" m_ri_no_sig
+            expect_rel_installer_fail "$inst-tampered" m_ri_tampered
+            expect_rel_installer_fail "$inst-signature-for-other-file" m_ri_renamed_sig
+            expect_rel_installer_fail "$inst-dev-channel-comment" m_ri_dev_comment
+            expect_rel_installer_fail "$inst-signed-by-other-key" m_ri_other_key
+            expect_rel_installer_fail "$inst-comment-names-other-file" m_ri_wrong_file
+            expect_rel_installer_fail "$inst-comment-names-other-installer" m_ri_other_installer
+            expect_rel_installer_fail "$inst-comment-wrong-version" m_ri_wrong_version
+            expect_rel_installer_fail "$inst-comment-wrong-commit" m_ri_wrong_commit
+          done
           # A release archive set whose installer was added after signing is unsigned.
-          late_installer="$work/late-installer"
-          cp -r "$pristine" "$late_installer"
-          m_installer "$late_installer"
-          if verify "$late_installer" >/dev/null 2>&1; then
-            echo "::error::verify passed on an unsigned release installer"; exit 1
-          fi
-          echo "ok: unsigned release installer rejected"
+          for inst in $installers; do
+            late_installer="$work/late-$inst"
+            cp -r "$pristine" "$late_installer"
+            echo x > "$late_installer/$inst"
+            if verify "$late_installer" >/dev/null 2>&1; then
+              echo "::error::verify passed on an unsigned release $inst"; exit 1
+            fi
+            echo "ok: unsigned release $inst rejected"
+          done
           dev_fixture="$work/dev-fixture"
           make_fixture "$dev_fixture"
           sign "$dev_fixture" main dev
           verify "$dev_fixture" dev >/dev/null
-          m_installer "$dev_fixture"
-          if verify "$dev_fixture" dev >/dev/null 2>&1; then
-            echo "::error::verify passed on an installer in the dev channel"
-            exit 1
-          fi
-          echo "ok: installer rejected on dev"
+          for inst in $installers; do
+            d="$work/dev-with-$inst"
+            cp -r "$dev_fixture" "$d"
+            echo x > "$d/$inst"
+            if verify "$d" dev >/dev/null 2>&1; then
+              echo "::error::verify passed on $inst in the dev channel"
+              exit 1
+            fi
+            echo "ok: $inst rejected on dev"
+          done
 
-          # The dev installer is signed and verified on its own, in a directory of just two files.
+          # The sha256 check that patches dist's PowerShell installer is the code users run, so it is
+          # exercised here under pwsh, which GitHub's Ubuntu runners ship.
+          cat > "$work/check-sha256.ps1" <<'PWSH'
+          param($Snippet, $Archive, $Digest)
+          $ErrorActionPreference = 'Stop'
+          . $Snippet
+          function Expect-Throw($Name, $Block) {
+            $threw = $false
+            try { & $Block } catch { $threw = $true }
+            if (-not $threw) { throw "Assert-ArchiveSha256 did not throw: $Name" }
+          }
+          Assert-ArchiveSha256 -Path $Archive -Expected $Digest
+          Assert-ArchiveSha256 -Path $Archive -Expected $Digest.ToUpper()
+          Expect-Throw 'wrong digest' { Assert-ArchiveSha256 -Path $Archive -Expected ('0' * 64) }
+          Expect-Throw 'truncated digest' { Assert-ArchiveSha256 -Path $Archive -Expected $Digest.Substring(0, 63) }
+          Expect-Throw 'missing file' { Assert-ArchiveSha256 -Path "$Archive.missing" -Expected $Digest }
+          Expect-Throw 'empty expected' { Assert-ArchiveSha256 -Path $Archive -Expected '' }
+          Expect-Throw 'null expected' { Assert-ArchiveSha256 -Path $Archive -Expected $null }
+          PWSH
+          win_zip=fontaine-x86_64-pc-windows-msvc.zip
+          win_digest="$(sha256sum "$pristine/$win_zip" | cut -d' ' -f1)"
+          pwsh -NoProfile -File "$work/check-sha256.ps1" "$scripts/windows-installer-sha256.ps1" "$pristine/$win_zip" "$win_digest"
+          echo "ok: Assert-ArchiveSha256 passes a correct digest and throws on every other input"
+
+          # Parse-only check, as run on the signed dev installer before it is uploaded.
+          ps_parse() { PS1_PATH="$1" pwsh -NoProfile -Command '$e = $null; $t = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:PS1_PATH, [ref]$t, [ref]$e); if ($e.Count) { $e | ForEach-Object { $_.Message }; exit 1 }'; }
+
+          # The stock PowerShell installer text dist 0.32.0 writes, minus what is irrelevant here.
+          make_ps1_installer() { # make_ps1_installer <dir>
+            mkdir -p "$1"
+            cat > "$1/fontaine-installer.ps1" <<'FIXTURE'
+          <#
+          .SYNOPSIS
+
+          The installer for fontaine 0.1.0
+
+          .DESCRIPTION
+
+          This script detects what platform you're on and fetches an appropriate archive from
+          https://github.com/madesroches/fontaine/releases/download/v0.1.0
+          then unpacks the binaries and installs them
+          #>
+
+          param (
+              [switch]$NoModifyPath
+          )
+
+          $app_name = 'fontaine'
+          $app_version = '0.1.0'
+          if ($env:FONTAINE_DOWNLOAD_URL) {
+            $ArtifactDownloadUrls = @($env:FONTAINE_DOWNLOAD_URL)
+          } elseif ($env:INSTALLER_DOWNLOAD_URL) {
+            $ArtifactDownloadUrls = @($env:INSTALLER_DOWNLOAD_URL)
+          } elseif ($env:FONTAINE_INSTALLER_GHE_BASE_URL) {
+            $installer_base_url = $env:FONTAINE_INSTALLER_GHE_BASE_URL
+            $ArtifactDownloadUrls = @("$installer_base_url/madesroches/fontaine/releases/download/v0.1.0")
+          } elseif ($env:FONTAINE_INSTALLER_GITHUB_BASE_URL) {
+            $installer_base_url = $env:FONTAINE_INSTALLER_GITHUB_BASE_URL
+            $ArtifactDownloadUrls = @("$installer_base_url/madesroches/fontaine/releases/download/v0.1.0")
+          } else {
+            $ArtifactDownloadUrls = @("https://github.com/madesroches/fontaine/releases/download/v0.1.0")
+          }
+
+          $receipt = @"
+          {"binaries":["CARGO_DIST_BINS"],"install_layout":"unspecified","provider":{"source":"cargo-dist","version":"0.32.0"},"source":{"app_name":"fontaine","name":"fontaine","owner":"madesroches","release_type":"github"},"version":"0.1.0"}
+          "@
+
+          function Install-Binary($install_args) {
+            $fetched = Download -download_url "$($ArtifactDownloadUrls[0])" -platforms @{} -arch "x86_64"
+          }
+
+          function Invoke-DownloadFile($client, $url, $path) {
+            $client.DownloadFile($url, $path)
+          }
+
+          function Download($download_url, $platforms, $arch) {
+            $url = "$download_url/fontaine-x86_64-pc-windows-msvc.zip"
+            $wc = New-Object Net.Webclient
+            Invoke-DownloadFile -client $wc -url $url -path $dir_path
+
+            Write-Verbose "Unpacking"
+            if ($install_updater) {
+              $updater_url = "$download_url/fontaine-update"
+              Invoke-DownloadFile -client $wc -url $updater_url -path $out_name
+            }
+          }
+
+          $Null = $ArtifactDownloadUrls, $NoModifyPath
+
+          try {
+            Install-Binary "$Args"
+          } catch {
+            exit 1
+          }
+          FIXTURE
+          }
           make_installer() { # make_installer <dir>: the text dist 0.32.0 writes, minus what is irrelevant here
             mkdir -p "$1"
             sed 's/^          //' > "$1/fontaine-installer.sh" <<'FIXTURE'
@@ -306,14 +416,70 @@ jobs:
           EOF
           }
           FIXTURE
+            make_ps1_installer "$1"
           }
+
+          # windows-installer.sh patches the stock text; the patched file must parse and keep Install-Binary last.
+          win_sha="$work/win.sha256"
+          printf '%s *%s\n' "$win_digest" "$win_zip" > "$win_sha"
+          patch_win() { "$scripts/windows-installer.sh" "$1/fontaine-installer.ps1" "${2:-$win_sha}"; }
+          wp="$work/wp-ok"
+          make_ps1_installer "$wp"
+          ps_parse "$wp/fontaine-installer.ps1"
+          patch_win "$wp"
+          ps_parse "$wp/fontaine-installer.ps1"
+          p="$wp/fontaine-installer.ps1"
+          [ "$(grep -c 'Assert-ArchiveSha256 -Path' "$p")" -eq 1 ]
+          [ "$(grep -c '^function Assert-ArchiveSha256' "$p")" -eq 1 ]
+          call_line="$(grep -n "^  Assert-ArchiveSha256 -Path \$dir_path -Expected '$win_digest'\$" "$p" | cut -d: -f1)"
+          [ "$(sed -n "$((call_line - 1))p" "$p")" = '  Invoke-DownloadFile -client $wc -url $url -path $dir_path' ]
+          def_line="$(grep -n '^function Assert-ArchiveSha256' "$p" | cut -d: -f1)"
+          [ "$def_line" -lt "$(grep -n '^function Download(' "$p" | cut -d: -f1)" ]
+          [ "$def_line" -lt "$(grep -n '^  Install-Binary "\$Args"' "$p" | cut -d: -f1)" ]
+          # What users run is the shipped snippet, verbatim.
+          snippet_lines="$(wc -l < "$scripts/windows-installer-sha256.ps1")"
+          diff <(sed -n "${def_line},$((def_line + snippet_lines - 1))p" "$p") "$scripts/windows-installer-sha256.ps1"
+          echo "ok: PowerShell installer patched"
+
+          expect_patch_fail() { # expect_patch_fail <name> <mutation function> [sha file]
+            local d="$work/wp-$1"
+            make_ps1_installer "$d"
+            "$2" "$d/fontaine-installer.ps1"
+            if patch_win "$d" "${3:-$win_sha}" >/dev/null 2>&1; then
+              echo "::error::windows-installer.sh passed on '$1'"
+              exit 1
+            fi
+            echo "ok: installer patch '$1' rejected"
+          }
+          m_w_no_anchor() { sed -i '/^  Invoke-DownloadFile -client \$wc -url \$url -path \$dir_path$/d' "$1"; }
+          m_w_two_anchors() { sed -i 's/^\(  Invoke-DownloadFile -client \$wc -url \$url -path \$dir_path\)$/\1\n\1/' "$1"; }
+          m_w_no_function() { sed -i 's/^function Download(/function Fetch(/' "$1"; }
+          m_w_two_functions() { printf '\nfunction Download($x) {\n}\n' >> "$1"; }
+          m_w_none() { true; }
+          expect_patch_fail missing-download-anchor m_w_no_anchor
+          expect_patch_fail repeated-download-anchor m_w_two_anchors
+          expect_patch_fail missing-function-anchor m_w_no_function
+          expect_patch_fail repeated-function-anchor m_w_two_functions
+          : > "$work/win-empty.sha256"
+          printf '%s *%s\n%s *%s\n' "$win_digest" "$win_zip" "$win_digest" "$win_zip" > "$work/win-two.sha256"
+          printf '%s *%s\n' "${win_digest:1}" "$win_zip" > "$work/win-short.sha256"
+          printf '%s *%s\n' "${win_digest/%?/g}" "$win_zip" > "$work/win-nothex.sha256"
+          printf '%s *%s\n' "$win_digest" "fontaine-aarch64-apple-darwin.tar.xz" > "$work/win-other.sha256"
+          expect_patch_fail missing-sha256-file m_w_none "$work/win-nonexistent.sha256"
+          expect_patch_fail empty-sha256-file m_w_none "$work/win-empty.sha256"
+          expect_patch_fail two-line-sha256-file m_w_none "$work/win-two.sha256"
+          expect_patch_fail short-digest m_w_none "$work/win-short.sha256"
+          expect_patch_fail non-hex-digest m_w_none "$work/win-nothex.sha256"
+          expect_patch_fail other-archive-name m_w_none "$work/win-other.sha256"
+
+          # The dev installers are signed and verified on their own, in a directory of just four files.
           dev_version="0.1.0-dev.7+0123456"
-          rewrite() { "$scripts/dev-installer.sh" "$1/fontaine-installer.sh" dev-7 "$dev_version"; }
-          expect_rewrite_fail() { # expect_rewrite_fail <name> <mutation function>
+          rewrite() { "$scripts/dev-installer.sh" "$1" dev-7 "$dev_version"; }
+          expect_rewrite_fail() { # expect_rewrite_fail <name> <installer name> <mutation function>
             local d="$work/rw-$1"
             make_installer "$d"
-            "$2" "$d/fontaine-installer.sh"
-            if rewrite "$d" >/dev/null 2>&1; then
+            "$3" "$d/$2"
+            if rewrite "$d/$2" >/dev/null 2>&1; then
               echo "::error::dev-installer.sh passed on '$1'"
               exit 1
             fi
@@ -322,15 +488,23 @@ jobs:
 
           rw="$work/rw-ok"
           make_installer "$rw"
-          rewrite "$rw"
+          rewrite "$rw/fontaine-installer.sh"
+          rewrite "$rw/fontaine-installer.ps1"
           sh -n "$rw/fontaine-installer.sh"
+          ps_parse "$rw/fontaine-installer.ps1"
           [ "$(grep -c 'releases/download/dev-7"\{0,1\}$' "$rw/fontaine-installer.sh")" -eq 4 ]
           ! grep -q 'download/v0.1.0' "$rw/fontaine-installer.sh"
           grep -qx 'APP_VERSION="0.1.0-dev.7+0123456"' "$rw/fontaine-installer.sh"
           grep -q ',"version":"0.1.0-dev.7+0123456"}$' "$rw/fontaine-installer.sh"
           grep -q '"provider":{"source":"cargo-dist","version":"0.32.0"}' "$rw/fontaine-installer.sh"
           grep -qx 'The installer for fontaine 0.1.0-dev.7+0123456' "$rw/fontaine-installer.sh"
-          echo "ok: installer rewritten"
+          [ "$(grep -c 'releases/download/dev-7\(")\)\{0,1\}$' "$rw/fontaine-installer.ps1")" -eq 4 ]
+          ! grep -q 'download/v0.1.0' "$rw/fontaine-installer.ps1"
+          grep -qxF "\$app_version = '0.1.0-dev.7+0123456'" "$rw/fontaine-installer.ps1"
+          grep -q ',"version":"0.1.0-dev.7+0123456"}$' "$rw/fontaine-installer.ps1"
+          grep -q '"provider":{"source":"cargo-dist","version":"0.32.0"}' "$rw/fontaine-installer.ps1"
+          grep -qx 'The installer for fontaine 0.1.0-dev.7+0123456' "$rw/fontaine-installer.ps1"
+          echo "ok: installers rewritten"
 
           m_no_url() { sed -i '/^    ARTIFACT_DOWNLOAD_URLS="https:/d' "$1"; }
           m_extra_url() { echo 'x=https://github.com/madesroches/fontaine/releases/download/v0.1.0' >> "$1"; }
@@ -340,23 +514,43 @@ jobs:
           m_two_receipt() { printf '{"x":1,"version":"0.1.0"}\n' >> "$1"; }
           m_no_usage() { sed -i '/^The installer for/d' "$1"; }
           m_two_usage() { printf '\nThe installer for fontaine 0.1.0\n' >> "$1"; }
-          expect_rewrite_fail missing-url m_no_url
-          expect_rewrite_fail extra-url m_extra_url
-          expect_rewrite_fail missing-app-version m_no_app_version
-          expect_rewrite_fail repeated-app-version m_two_app_version
-          expect_rewrite_fail missing-receipt-version m_no_receipt
-          expect_rewrite_fail repeated-receipt-version m_two_receipt
-          expect_rewrite_fail missing-usage-text m_no_usage
-          expect_rewrite_fail repeated-usage-text m_two_usage
+          expect_rewrite_fail missing-url fontaine-installer.sh m_no_url
+          expect_rewrite_fail extra-url fontaine-installer.sh m_extra_url
+          expect_rewrite_fail missing-app-version fontaine-installer.sh m_no_app_version
+          expect_rewrite_fail repeated-app-version fontaine-installer.sh m_two_app_version
+          expect_rewrite_fail missing-receipt-version fontaine-installer.sh m_no_receipt
+          expect_rewrite_fail repeated-receipt-version fontaine-installer.sh m_two_receipt
+          expect_rewrite_fail missing-usage-text fontaine-installer.sh m_no_usage
+          expect_rewrite_fail repeated-usage-text fontaine-installer.sh m_two_usage
+          m_p_no_url() { sed -i '/^  \$ArtifactDownloadUrls = @("https:/d' "$1"; }
+          m_p_no_app_version() { sed -i '/^\$app_version = /d' "$1"; }
+          m_p_two_app_version() { echo "\$app_version = '0.1.0'" >> "$1"; }
+          expect_rewrite_fail ps1-missing-url fontaine-installer.ps1 m_p_no_url
+          expect_rewrite_fail ps1-extra-url fontaine-installer.ps1 m_extra_url
+          expect_rewrite_fail ps1-missing-app-version fontaine-installer.ps1 m_p_no_app_version
+          expect_rewrite_fail ps1-repeated-app-version fontaine-installer.ps1 m_p_two_app_version
+          expect_rewrite_fail ps1-missing-receipt-version fontaine-installer.ps1 m_no_receipt
+          expect_rewrite_fail ps1-repeated-receipt-version fontaine-installer.ps1 m_two_receipt
+          expect_rewrite_fail ps1-missing-usage-text fontaine-installer.ps1 m_no_usage
+          expect_rewrite_fail ps1-repeated-usage-text fontaine-installer.ps1 m_two_usage
           if "$scripts/dev-installer.sh" "$rw/fontaine-installer.sh" release-7 "$dev_version" 2>/dev/null; then
             echo "::error::dev-installer.sh accepted a non-dev tag"; exit 1
           fi
+          echo x > "$work/installer.txt"
+          if "$scripts/dev-installer.sh" "$work/installer.txt" dev-7 "$dev_version" 2>/dev/null; then
+            echo "::error::dev-installer.sh accepted an unknown extension"; exit 1
+          fi
 
+          # Sign what the dev flow produces: both installers rewritten, the PowerShell one then patched.
           signed_installer="$work/signed-installer"
           make_installer "$signed_installer"
+          rewrite "$signed_installer/fontaine-installer.sh"
+          rewrite "$signed_installer/fontaine-installer.ps1"
+          patch_win "$signed_installer"
+          ps_parse "$signed_installer/fontaine-installer.ps1"
           sign "$signed_installer" main dev-installer
           verify "$signed_installer" dev-installer >/dev/null
-          echo "ok: dev installer signed and verified"
+          echo "ok: dev installers signed and verified"
           expect_installer_fail() { # expect_installer_fail <name> <mutation function> [verify version commit]
             local name="$1" mutate="$2"
             shift 2
@@ -369,33 +563,48 @@ jobs:
             fi
             echo "ok: installer '$name' rejected"
           }
-          m_i_tampered() { echo x >> "$1/fontaine-installer.sh"; }
-          m_i_renamed() { mv "$1/fontaine-installer.sh" "$1/fontaine-other.sh"; mv "$1/fontaine-installer.sh.minisig" "$1/fontaine-other.sh.minisig"; }
-          m_i_no_sig() { rm "$1/fontaine-installer.sh.minisig"; }
+          m_i_tampered() { echo x >> "$1/$inst"; }
+          m_i_renamed() { mv "$1/$inst" "$1/fontaine-other.sh"; mv "$1/$inst.minisig" "$1/fontaine-other.sh.minisig"; }
+          m_i_no_sig() { rm "${1:?}/$inst.minisig"; }
+          m_i_no_installer() { rm "${1:?}/$inst" "${1:?}/$inst.minisig"; }
           m_i_extra() { echo x > "$1/notes.txt"; }
           m_i_same() { true; }
-          expect_installer_fail tampered m_i_tampered
-          expect_installer_fail renamed m_i_renamed
-          expect_installer_fail no-signature m_i_no_sig
+          for inst in $installers; do
+            expect_installer_fail "$inst-tampered" m_i_tampered
+            expect_installer_fail "$inst-renamed" m_i_renamed
+            expect_installer_fail "$inst-no-signature" m_i_no_sig
+            expect_installer_fail "$inst-missing" m_i_no_installer
+          done
           expect_installer_fail extra-file m_i_extra
           expect_installer_fail wrong-version m_i_same "9.9.9" "$commit"
           expect_installer_fail wrong-commit m_i_same "$version" "ffffffff"
           # A signature made under the release channel's trusted comment must not pass as the dev installer's.
-          release_signed="$work/installer-release-channel"
-          make_installer "$release_signed"
-          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$work/main.key" \
-            -m "$release_signed/fontaine-installer.sh" -x "$release_signed/fontaine-installer.sh.minisig" \
-            -t "fontaine-signature v1 channel=release file=fontaine-installer.sh version=$version commit=$commit" >/dev/null
-          if verify "$release_signed" dev-installer >/dev/null 2>&1; then
-            echo "::error::verify passed on an installer signed under the release channel"; exit 1
-          fi
-          echo "ok: installer signed under the release channel rejected"
+          for inst in $installers; do
+            release_signed="$work/installer-release-channel-$inst"
+            cp -r "$signed_installer" "$release_signed"
+            printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$work/main.key" \
+              -m "$release_signed/$inst" -x "$release_signed/$inst.minisig" \
+              -t "fontaine-signature v1 channel=release file=$inst version=$version commit=$commit" >/dev/null
+            if verify "$release_signed" dev-installer >/dev/null 2>&1; then
+              echo "::error::verify passed on $inst signed under the release channel"; exit 1
+            fi
+            echo "ok: $inst signed under the release channel rejected"
+          done
           other_signed="$work/installer-other-key"
           make_installer "$other_signed"
           if sign "$other_signed" other dev-installer 2>/dev/null; then
-            echo "::error::installer signed with the wrong key passed"; exit 1
+            echo "::error::installers signed with the wrong key passed"; exit 1
           fi
-          echo "ok: installer signed with the wrong key rejected"
+          echo "ok: installers signed with the wrong key rejected"
+          # The signer needs both installers.
+          for inst in $installers; do
+            one_missing="$work/signer-missing-$inst"
+            make_installer "$one_missing"
+            rm "${one_missing:?}/${inst:?}"
+            if sign "$one_missing" main dev-installer 2>/dev/null; then
+              echo "::error::signing passed without $inst"; exit 1
+            fi
+          done
 
           # The signer with zero archives must fail too.
           mkdir "$work/none"

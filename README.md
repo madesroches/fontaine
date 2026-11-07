@@ -27,9 +27,25 @@ the minisign signature. The installer ignores Fontaine's `[network]` proxy, CA a
 behind a proxy, set `https_proxy` / `SSL_CERT_FILE` for `curl`, or download the archive manually.
 See [Installing Fontaine](docs/installing.md).
 
-Windows, and any platform without an installer, use the archive of a `dev-<n>`
+On Windows (x86_64), run this in PowerShell or a Command Prompt:
+
+```
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.ps1 | iex"
+```
+
+It installs `fontaine.exe` to `%CARGO_HOME%\bin` (`%USERPROFILE%\.cargo\bin` by default), adds that
+directory to your user `Path`, writes an install receipt at
+`%LOCALAPPDATA%\fontaine\fontaine-receipt.json`, and checks the archive's sha256 before unpacking it;
+it does not verify the minisign signature. Fontaine needs Git for Windows at runtime, for its shell
+tool. The installer ignores Fontaine's `[network]` proxy, CA and mTLS settings: behind a proxy set
+`HTTPS_PROXY`, for a private CA install it in the Windows certificate store, or download the archive
+manually. A manually downloaded archive can trigger SmartScreen warnings, since the archives carry a
+minisign signature but no Authenticode one; verify it as in
+[Verifying releases](docs/verifying-releases.md).
+
+Any platform without an installer uses the archive of a `dev-<n>`
 [prerelease](https://github.com/madesroches/fontaine/releases); no tagged release exists yet, and
-the `dev` release holds only the installer. Unpack the archive for your
+the `dev` release holds only the installers. Unpack the archive for your
 platform and put `fontaine` on your `PATH`; the archive also holds the license, readme and
 changelog. Each archive has a detached signature; see
 [Verifying releases](docs/verifying-releases.md). With the Rust toolchain you can instead install from
@@ -39,7 +55,7 @@ source:
 cargo install --git https://github.com/madesroches/fontaine fontaine
 ```
 
-The installer and `cargo install --git` both install to `$CARGO_HOME/bin`. The installer overwrites a
+The installers and `cargo install --git` both install to `$CARGO_HOME/bin`. The installer overwrites a
 cargo-installed binary; to overwrite an installer-installed one, add `--force` to `cargo install`.
 
 Fontaine is not published to crates.io. Release binaries include the PromptGuard 2 tool-result

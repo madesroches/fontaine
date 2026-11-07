@@ -4,8 +4,9 @@
 # is granted per job to `host`, `verify-draft`, `publish` and `stable-installer` only. Every job
 # builds and records the head commit of the CI run (`workflow_run.head_sha`), never `github.sha`,
 # because `main` may have moved on by the time this workflow starts. `dev-<n>` holds the archives and has no installer;
-# the separate long-lived prerelease `dev` holds only dist's installer rewritten to fetch from the
-# `dev-<n>` of its run, signed in `sign`, and replaced by `stable-installer` after `publish`, so
+# the separate long-lived prerelease `dev` holds only dist's shell and PowerShell installers rewritten
+# to fetch from the `dev-<n>` of its run (the PowerShell one also patched with a sha256 check of the
+# archive), signed in `sign`, and replaced by `stable-installer` after `publish`, so
 # one URL always installs the latest dev build. See docs/verifying-releases.md.
 name: Dev channel
 permissions:
@@ -224,18 +225,23 @@ jobs:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
-      # The installer bakes a `v<version>` download URL and dev tags are `dev-<n>`, so it is rewritten
+      # The installers bake a `v<version>` download URL and dev tags are `dev-<n>`, so they are rewritten
       # apart from the archives, which must not gain an installer.
-      - name: Set the installer aside and remove the dist manifests
+      - name: Set the installers aside and remove the dist manifests
         run: |
           mkdir dev-installer
-          mv artifacts/fontaine-installer.sh dev-installer/
+          mv artifacts/fontaine-installer.sh artifacts/fontaine-installer.ps1 dev-installer/
           rm -f artifacts/*-dist-manifest.json
-      - name: Rewrite the installer for this dev tag
+      - name: Rewrite the installers for this dev tag
         env:
           SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
           DEV_TAG: ${{ needs.plan.outputs.tag }}
-        run: .github/scripts/dev-installer.sh dev-installer/fontaine-installer.sh "$DEV_TAG" "$SIGN_VERSION"
+        run: |
+          .github/scripts/dev-installer.sh dev-installer/fontaine-installer.sh "$DEV_TAG" "$SIGN_VERSION"
+          .github/scripts/dev-installer.sh dev-installer/fontaine-installer.ps1 "$DEV_TAG" "$SIGN_VERSION"
+      # Last, so the signature covers the bytes users download.
+      - name: Add the archive sha256 check to the PowerShell installer
+        run: .github/scripts/windows-installer.sh dev-installer/fontaine-installer.ps1 artifacts/fontaine-x86_64-pc-windows-msvc.zip.sha256
       - name: Install minisign
         run: .github/scripts/install-minisign.sh
       - name: Sign and verify
@@ -283,9 +289,9 @@ jobs:
           pattern: artifacts-*
           path: artifacts
           merge-multiple: true
-      # Same reason as in `sign`: the installer's baked `v<version>` URL does not exist for a dev tag.
-      - name: Remove the dist manifests and installer
-        run: rm -f artifacts/*-dist-manifest.json artifacts/dist-manifest.json artifacts/fontaine-installer.sh
+      # Same reason as in `sign`: the installers' baked `v<version>` URL does not exist for a dev tag.
+      - name: Remove the dist manifests and installers
+        run: rm -f artifacts/*-dist-manifest.json artifacts/dist-manifest.json artifacts/fontaine-installer.sh artifacts/fontaine-installer.ps1
       - name: Create the draft prerelease
         env:
           TAG: ${{ needs.plan.outputs.tag }}
@@ -341,7 +347,7 @@ jobs:
       - name: Publish the draft
         run: gh release edit "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
 
-  # Replaces the installer at the fixed `dev` release URL once `dev-<n>` is public. The tag `dev`
+  # Replaces the installers at the fixed `dev` release URL once `dev-<n>` is public. The tag `dev`
   # is created once and never moved; it only anchors the release.
   stable-installer:
     needs:
@@ -362,18 +368,19 @@ jobs:
           persist-credentials: false
       - name: Install minisign
         run: .github/scripts/install-minisign.sh
-      - name: Download the signed installer
+      - name: Download the signed installers
         uses: actions/download-artifact@v8
         with:
           name: dev-installer
           path: artifacts
-      - name: Verify the installer before any upload
+      - name: Verify the installers before any upload
         env:
           SIGN_VERSION: ${{ needs.plan.outputs.sign-version }}
           SIGN_COMMIT: ${{ needs.plan.outputs.sign-commit }}
         run: |
           .github/scripts/release-verify.sh dev-installer artifacts rust/fontaine/keys/dev.signing.pub "$SIGN_VERSION" "$SIGN_COMMIT"
           sh -n artifacts/fontaine-installer.sh
+          PS1_PATH="$PWD/artifacts/fontaine-installer.ps1" pwsh -NoProfile -Command '$e = $null; $t = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:PS1_PATH, [ref]$t, [ref]$e); if ($e.Count) { $e | ForEach-Object { $_.Message }; exit 1 }'
       # Runs can finish out of order and an older run can be re-run; the stable installer must
       # never go back to an older build.
       - id: guard
@@ -402,14 +409,14 @@ jobs:
           gh release create dev --repo "$GITHUB_REPOSITORY" --prerelease --latest=false --target "$HEAD_SHA" --title "Dev installer" --notes-file "$RUNNER_TEMP/notes.txt"
       # `--clobber` deletes the old asset before uploading, so the URL can 404 briefly, and a failed
       # upload leaves none; the byte-compare below fails the job and the next run restores it.
-      - name: Replace the installer
+      - name: Replace the installers
         if: steps.guard.outputs.skip != 'true'
-        run: gh release upload dev artifacts/fontaine-installer.sh artifacts/fontaine-installer.sh.minisig --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload dev artifacts/fontaine-installer.sh artifacts/fontaine-installer.sh.minisig artifacts/fontaine-installer.ps1 artifacts/fontaine-installer.ps1.minisig --clobber --repo "$GITHUB_REPOSITORY"
       - name: Check what users download
         if: steps.guard.outputs.skip != 'true'
         run: |
           mkdir fetched
-          for f in fontaine-installer.sh fontaine-installer.sh.minisig; do
+          for f in fontaine-installer.sh fontaine-installer.sh.minisig fontaine-installer.ps1 fontaine-installer.ps1.minisig; do
             curl --proto '=https' --tlsv1.2 --retry 3 --retry-all-errors -fsSL -o "fetched/$f" "https://github.com/$GITHUB_REPOSITORY/releases/download/dev/$f"
             cmp "artifacts/$f" "fetched/$f"
           done

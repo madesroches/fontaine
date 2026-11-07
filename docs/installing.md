@@ -1,21 +1,22 @@
 # Installing Fontaine
 
-Fontaine ships as a single `fontaine` binary. There are three ways to get it: the one-line installer
-(Linux and macOS), a release archive from GitHub (every platform), and `cargo install` from source.
-No tagged release exists yet, so the installer and the archives are dev builds of `main`.
+Fontaine ships as a single `fontaine` binary. There are three ways to get it: a one-line installer
+(a shell script for Linux and macOS, a PowerShell script for Windows), a release archive from GitHub
+(every platform), and `cargo install` from source. No tagged release exists yet, so the installers
+and the archives are dev builds of `main`.
 
-## The installer
+## The installer (Linux and macOS)
 
 ```
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.sh | sh
 ```
 
-This installs the latest CI-passing build of `main`. The installer is the single file on the
+This installs the latest CI-passing build of `main`. The installer is a file on the
 long-lived `dev` prerelease, replaced after every successful dev publish; it downloads the archive
 from the immutable `dev-<n>` prerelease of the build it was made for. Its receipt `version` is
 `<version>-dev.<n>+<commit>`, so a dev install is recognisable by the `-dev.` in it. It supports
-Linux x86_64 and macOS on Apple silicon and Intel. There is no Linux arm64 build and no Windows installer; use the archive
-there.
+Linux x86_64 and macOS on Apple silicon and Intel. There is no Linux arm64 build; use the archive
+there. [Windows has its own installer](#the-installer-windows).
 
 It needs `curl` or `wget`, and `tar`. It detects your platform, downloads the matching archive from
 that `dev-<n>` release, and writes:
@@ -74,12 +75,79 @@ Do not delete `~/.config/fontaine` as a whole; it is also Fontaine's configurati
 shared with rustup. Remove them only if neither rustup nor cargo is installed; otherwise you take
 `cargo` and `rustc` off your `PATH`.
 
+## The installer (Windows)
+
+```
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.ps1 | iex"
+```
+
+`-ExecutionPolicy Bypass` is needed because the default client policy, Restricted, rejects the
+downloaded script. The command runs the same in PowerShell and in a Command Prompt. This installs the
+latest CI-passing build of `main` on Windows x86_64, the one Windows target; there is no Windows
+arm64 build. The script is the second file on the long-lived `dev` prerelease, and like the shell
+installer it downloads the archive from the immutable `dev-<n>` prerelease of the build it was made
+for, with a receipt `version` of `<version>-dev.<n>+<commit>`.
+
+It needs Windows PowerShell 5.1 or PowerShell 7, both of which ship the commands it uses, and it
+writes:
+
+- `fontaine.exe` in `%CARGO_HOME%\bin` (`%USERPROFILE%\.cargo\bin` when `CARGO_HOME` is unset);
+- an install receipt at `%LOCALAPPDATA%\fontaine\fontaine-receipt.json`, or in
+  `%XDG_CONFIG_HOME%\fontaine` when `XDG_CONFIG_HOME` is set, recording the install prefix, the
+  cargo-home layout and the installed binary, so a future self-updater can tell how Fontaine was
+  installed;
+- an entry for `%CARGO_HOME%\bin` in your user `Path` (the registry key `HKCU\Environment`). Set
+  `FONTAINE_NO_MODIFY_PATH=1` to skip it.
+
+Open a new terminal, then run `fontaine --version`. Fontaine itself needs Git for Windows at runtime
+for its shell tool; see [Shell](tools.md#shell).
+
+### Verification (Windows)
+
+The installer checks the sha256 of the downloaded archive against the digest of the archive CI
+published, which is written into the script, before anything is unpacked; a mismatch aborts the
+install. dist's own PowerShell installer has no such check, so CI adds it and signs the script
+afterwards. The check always runs. It does not verify the minisign signature, because there is no
+minisign on your machine, and it does not verify itself: piped to `iex`, nothing on your machine
+verifies the script, so its trust is the HTTPS connection that delivered it. The script has a
+detached signature, `fontaine-installer.ps1.minisig` beside it on the `dev` release (dev key) and
+on each tagged release (release key); to verify the script or an archive by hand, see
+[Verifying releases](verifying-releases.md).
+
+Archives downloaded in a browser can trigger Windows SmartScreen warnings: they carry a minisign
+signature but are not Authenticode-signed; verify them as described in
+[Verifying releases](verifying-releases.md).
+
+### Proxies and certificates (Windows)
+
+The installer ignores Fontaine's `[network]` settings for proxy, CA certificates and mutual TLS. It
+honours the standard proxy environment variables such as `HTTPS_PROXY`; a private CA must be in the
+Windows certificate store. Otherwise download the archive in a browser and install it manually.
+
+### Overwrite behaviour (Windows)
+
+The installer and `cargo install --git` both write `%CARGO_HOME%\bin\fontaine.exe`. The installer
+replaces a cargo-installed binary; after the installer, `cargo install` needs `--force` to replace
+it, as above.
+
+### Uninstalling (Windows)
+
+Remove:
+
+- `%CARGO_HOME%\bin\fontaine.exe` (`%USERPROFILE%\.cargo\bin\fontaine.exe` by default);
+- the receipt, `%LOCALAPPDATA%\fontaine\fontaine-receipt.json` (or the `%XDG_CONFIG_HOME%\fontaine`
+  one).
+
+Do not delete the `fontaine` directory as a whole; it is also Fontaine's configuration directory.
+The `%CARGO_HOME%\bin` entry in your user `Path` is shared with rustup and cargo; remove it (Settings,
+System, About, Advanced system settings, Environment Variables) only if neither is installed.
+
 ## The release archive
 
 Each dev build is a `dev-<n>` [prerelease](https://github.com/madesroches/fontaine/releases) with one
 archive per platform: `fontaine-<target>.tar.xz`, or `.zip` on Windows. (The `dev` release itself
-holds only the installer.) Unpack it and put `fontaine` on your
-`PATH`; it also holds the license, readme and changelog. This is the path for Windows. Each archive
+holds only the installers.) Unpack it and put `fontaine` on your
+`PATH`; it also holds the license, readme and changelog. Use it where there is no installer. Each archive
 has a detached signature; see [Verifying releases](verifying-releases.md). A manual install writes
 no receipt.
 
