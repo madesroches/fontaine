@@ -8,10 +8,10 @@ such regressions go unnoticed. Fix the three doc comments and add a CI step that
 
 ## Current State
 Running `cargo doc --no-deps --workspace` (also with `--features fontaine/pg2`) warns:
-- `fontaine-core/src/accounts.rs:139` — public `rows` links to private `credential`.
-- `fontaine-core/src/quota.rs:43` — unresolved link ``[`fetch`]`` in a doc comment on a trait method
+- `rust/fontaine-core/src/accounts.rs:139` — public `rows` links to private `credential`.
+- `rust/fontaine-core/src/quota.rs:43` — unresolved link ``[`fetch`]`` in a doc comment on a trait method
   (`fn fetch` at line 40 is a sibling method, so the bare path does not resolve).
-- `fontaine-agents/src/spawn.rs:453` — public `watch_report` links to private `continue_agent`.
+- `rust/fontaine-agents/src/spawn.rs:453` — public `watch_report` links to private `continue_agent`.
 
 `.github/workflows/ci.yml` runs clippy, tests, and `cargo test --doc` (line ~100) but never `cargo doc`.
 
@@ -32,13 +32,15 @@ Running `cargo doc --no-deps --workspace` (also with `--features fontaine/pg2`) 
 2. Add the two CI steps to `.github/workflows/ci.yml`.
 3. Update the master plan's `ci.yml` description (`tasks/fontaine_harness_plan.md` ~line 205) to mention
    the rustdoc steps, AGENTS.md "Essential Commands" CI list, and CONTRIBUTING.md (add the rustdoc step
-   to its CI-steps paragraph and `cargo doc --no-deps --workspace` to its command list).
-4. No CHANGELOG entry (internal change).
+   to its CI-steps paragraph and `cargo doc --no-deps --workspace` to its command list). Also update
+   `tasks/design/platforms.md` (~lines 7-9, "only pg2 clippy/test and the fixture-eval steps are
+   Linux-only") to include the Linux-only pg2 rustdoc step.
+4. Add a `Build and release` entry under `## [Unreleased]` in `CHANGELOG.md` (CI now builds rustdoc with warnings denied), as CONTRIBUTING.md requires.
 
 ## Files to Modify
 - `rust/fontaine-core/src/accounts.rs`, `rust/fontaine-core/src/quota.rs`, `rust/fontaine-agents/src/spawn.rs`
 - `.github/workflows/ci.yml`
-- `tasks/fontaine_harness_plan.md`, `AGENTS.md`, `CONTRIBUTING.md`
+- `tasks/fontaine_harness_plan.md`, `tasks/design/platforms.md`, `AGENTS.md`, `CONTRIBUTING.md`, `CHANGELOG.md`
 
 ## Trade-offs
 - Dropping links vs. making the private items public: the items are deliberately private; plain code
@@ -48,7 +50,11 @@ Running `cargo doc --no-deps --workspace` (also with `--features fontaine/pg2`) 
 ## Testing Strategy
 The CI step is itself the regression test. Locally verify
 `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace` (and with `--features fontaine/pg2`) exits 0,
-and that it fails when a bad link is reintroduced.
+and that it fails when a bad link is reintroduced. The same local run also confirms ``[`Self::fetch`]``
+resolves; if it does not, fall back to plain code formatting.
+
+## Decisions
+- AFK: CHANGELOG entry added under `Build and release`, since CONTRIBUTING.md requires one for every change and has no exemption for internal ones.
 
 ## Open Questions
 None.
