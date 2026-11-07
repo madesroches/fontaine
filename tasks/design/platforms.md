@@ -28,10 +28,10 @@ that is never sufficient alone.
 
 semver 0.x, git tags `vX.Y.Z`. GitHub Releases carry prebuilt binaries for Linux, macOS and Windows
 built by cargo-dist (exact-pinned version; workflow `.github/workflows/release.yml`, set up in Phase 4,
-the first phase that produces a release); `cargo install --git https://github.com/madesroches/fontaine fontaine` also works; v1 does not publish to crates.io. The
+the first phase that produces a release); on Linux and macOS (Linux x86_64, macOS arm64 and x86_64) dist's `shell` installer, `fontaine-installer.sh`, is attached to tagged releases only (unsigned, sha256-verified, receipt for the updater; no dev-channel installer because dist bakes a `v<version>` URL); `cargo install --git https://github.com/madesroches/fontaine fontaine` also works; v1 does not publish to crates.io. The
 maintainer cuts releases — tagging and pushing the tag are human steps, never the agent's.
 `CHANGELOG.md` follows Keep a Changelog: entries accumulate under `## [Unreleased]`, which moves under
-the version heading at release. The README install section lists both install paths.
+the version heading at release. The README install section lists the installer, the manual archive and `cargo install --git`.
 
 Archives carry the root `LICENSE`, `README.md` and `CHANGELOG.md` through `include`. The release
 workflow stages the changelog into `rust/` so dist builds the release notes from the version's

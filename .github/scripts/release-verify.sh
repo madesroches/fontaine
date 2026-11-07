@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Usage: release-verify.sh <channel> <dir> <pubkey> <version> <commit>
 # Fails on the first problem; success means every archive in <dir> is signed by <pubkey> with
-# the exact trusted comment binding and matches its checksums.
+# the exact trusted comment binding and matches its checksums. The unsigned shell installer is
+# accepted on the release channel only.
 set -euo pipefail
 
 if [ "$#" -ne 5 ]; then
@@ -38,6 +39,8 @@ for path in "$dir"/* "$dir"/.[!.]*; do
     fontaine-*.tar.xz.minisig | fontaine-*.zip.minisig) ;;
     fontaine-*.tar.xz.sha256 | fontaine-*.zip.sha256) ;;
     sha256.sum) ;;
+    # Dev tags are `dev-<n>`, but dist bakes a `v<version>` download URL into the installer.
+    fontaine-installer.sh) [ "$channel" = release ] || fail "unrecognised asset '$name'" ;;
     *) fail "unrecognised asset '$name'" ;;
   esac
 done
