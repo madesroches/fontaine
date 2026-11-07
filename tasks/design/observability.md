@@ -15,7 +15,7 @@ Code's `--debug-file` analog), and (b) when `[telemetry] enabled`, one export ba
 - `micromegas` (default backend): `micromegas-telemetry-sink` guard built with local sink off,
   global tracing capture off (its `TracingCaptureLayer` is composed into Fontaine's registry for
   events), system monitor off, explicit URL + `ApiKeyRequestDecorator` (never the implicit env
-  fallback). micromegas does not capture `tracing` spans, so a Fontaine **`SpanBridge`** layer maps
+  fallback). The stock layer's span capture is off (see below), so a Fontaine **`SpanBridge`** layer maps
   each allowlisted span onto micromegas **async span events**, which carry `span_id`,
   `parent_span_id` and `depth` and are reassembled into trees by the analytics side (`async_events`
   view, `process_spans(…, 'async')`): `on_new_span` →
@@ -28,11 +28,11 @@ Code's `--debug-file` analog), and (b) when `[telemetry] enabled`, one export ba
   (`with_cpu_tracing_enabled(true)`; the bin no longer touches its environment), the tokio runtime is built with
   `TracingRuntimeExt::with_tracing_callbacks()`, which gives every worker a thread stream and unregisters it as the worker stops; the bridge never creates a stream itself (micromegas keeps a raw pointer to each one, so a thread that exited without unregistering would leave it dangling). The same layer derives the metrics (`imetric!`/`fmetric!`) on close.
   The stock `TracingCaptureLayer` can capture spans too (`capture_spans`), and the stock layer runs with
-  it off. It exports every recorded field verbatim, with no hook to drop, redact, truncate or rewrite one,
-  and its span location carries the callsite's absolute file path; the bridge exists to keep both
-  out of the export. A parity test pins that the two build the same tree. The bridge's span half is deleted
-  when upstream has a field hook and a switch that leaves `file` / `line` out of the location
-  (madesroches/micromegas#1725). Then `MicromegasExport::span_begin` / `span_end` and the location cache go,
+  it off. Its `span_field_hook` can drop, redact or truncate a field and its span location carries the
+  callsite's file path trimmed to a relative one, but nothing omits `file` / `line`; the bridge
+  exists to keep them out of the export. A parity test pins that the two build the same tree. The bridge's span half is deleted
+  when upstream has a switch that leaves `file` / `line` out of the location
+  (madesroches/micromegas#1725). Then the field hook calls the content policy's `keep`, `MicromegasExport::span_begin` / `span_end` and the location cache go,
   `capture_spans` becomes `t.traces`, and the capture layer's filter widens to `is_exported_span ||
   is_exported_event`. Field collection stays in the bridge for metric derivation on both backends. The swap
   also fixes orphaned parents: on a thread with no stream the bridge allocates an id whose begin event is
