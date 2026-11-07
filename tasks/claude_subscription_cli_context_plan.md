@@ -156,5 +156,6 @@ deviates from Claude Code's behavior.
 ## Manual Verification
 
 1. Run two consecutive requests against the real CLI (as in the #449 measurement) and compare
-   `cache_creation_input_tokens` per step to a native session's: expect one message's worth,
-   not two. Not automatable: it needs a live subscription and the real CLI.
+   `cache_creation_input_tokens` per step to a native session's: expect about two messages' worth in
+   total: about one message in `cache_creation.ephemeral_1h_input_tokens` and the final message in
+   `ephemeral_5m_input_tokens`. Not automatable: it needs a live subscription and the real CLI.
