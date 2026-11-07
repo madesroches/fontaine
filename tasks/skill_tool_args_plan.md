@@ -31,7 +31,6 @@ names models are likely to guess.
 
 ```
 pub struct SkillArgs {
-    #[serde(alias = "skill")]
     pub name: String,
     #[serde(default, alias = "arguments", alias = "argument", alias = "input", alias = "params",
             deserialize_with = "lenient_args")]
@@ -45,21 +44,15 @@ pub struct SkillArgs {
   as is, others as JSON), joined by a space with elements containing whitespace double-quoted so
   `split_arguments` round-trips them; object/number/bool → compact JSON text. Never fails on the
   value's type.
-- Unknown fields: keep `deny_unknown_fields`, as every `fontaine-tools` args struct does; a
-  silently dropped misnamed field would recreate this bug. Recorded in Decisions.
-- Aliases are the same serde field, so a payload carrying two spellings (`skill` and `name`, or
-  `args` and `arguments`) is rejected with serde's "duplicate field" error; no custom merge.
+- Unknown fields stay rejected and duplicate spellings of `args` are rejected; see Decisions.
 
 ### Threading
 
 - `SkillSource::load(&self, name, arguments, agent)` gains an `arguments: &str` parameter;
-  `SkillTool::call` passes `args.args`. `SkillRuntime::load` calls
-  `expand(name, arguments, agent, true)`. Update `NoSkills` and the existing test call sites.
-- Untrusted-input note: `expand` runs `substitute` then `parts`, so model-supplied args can form
-  `!` commands (an inline `!`cmd`` or a line-start ```! block), exactly as a user's `/name args`
-  does today. Every such command still runs through `run_command` → the `shell` path, gated by
-  `project_commands` trust and the subagent shell check. `lend_rules` grants of a user-scope skill
-  can apply to commands formed this way. Behavior is unchanged and documented.
+  `SkillTool::call` passes `args.args`. the `SkillSource` impl for
+  `SkillRuntime` calls `expand(name, arguments, agent, true)`. Update `NoSkills` and the existing test call sites.
+- Model-supplied args can form `!` commands exactly as `/name args` does today; see the `AFK:`
+  Decisions line.
 
 ## Implementation Steps
 
@@ -80,20 +73,16 @@ pub struct SkillArgs {
 - `tasks/fontaine_harness_plan.md` (Decisions → Extensibility)
 - `CHANGELOG.md`
 
-## Trade-offs
-
-- Strict single field name vs aliases: models guess `arguments`/`input`; the reported failure cost
-  a retry that dropped the input silently. Aliases are cheap and invisible in the schema.
-- Rejecting vs ignoring unknown fields: rejecting kept, see above.
-
 ## Decisions
 
-- 2026-11-07: The `skill` tool takes optional `args` (Claude Code's field) and accepts `skill`,
+- 2026-11-07: The `skill` tool takes optional `args` (Claude Code's field) and accepts
   `arguments`, `argument`, `input`, `params` as aliases, non-string values coerced to text;
   deviation from Claude Code's strict schema, reason: models guess the field name and a failed
   call drops the input (#469).
 - AFK: unknown fields stay rejected (`deny_unknown_fields`), as in every tools args struct; a
   silently dropped misnamed field would recreate the bug.
+- AFK: `skill` is NOT accepted as an alias for `name` because permission rules match on the raw
+  `name` key (`name_arg_key`); the `args` aliases are unaffected since rules never read them.
 - AFK: a payload with two spellings of one field is rejected with serde's "duplicate field" error.
 - AFK: model args may form `!` commands (`substitute` then `parts`, as for `/name args`); kept
   unchanged and documented, still gated as `shell`.
@@ -114,10 +103,9 @@ pub struct SkillArgs {
 ## Testing Strategy
 
 Unit tests in `skill.rs` (deserialization, no live anything):
-- `args` string; each alias (`skill`, `arguments`, `argument`, `input`, `params`); omitted and
+- `args` string; each alias (`arguments`, `argument`, `input`, `params`); omitted and
   empty → empty string; array of strings (with a whitespace element) → shell-quoted join; object
-  and number → JSON text; null → empty; unknown field rejected; both `skill` and `name` (or `args` and `arguments`) rejected as duplicate
-  field; missing `name` still an error.
+  and number → JSON text; null → empty; unknown field rejected (including `{"skill": ...}`); both `args` and `arguments` rejected as duplicate field; missing `name` still an error.
 - Pins the reported bug: `{"name":"x","arguments":"tasks/p.md"}` parses with args `tasks/p.md`.
 
 Integration in `fontaine-core/tests/extensions.rs` using the existing skill fixtures:
@@ -128,9 +116,9 @@ Integration in `fontaine-core/tests/extensions.rs` using the existing skill fixt
   that reaches the shell path is the substituted text and goes through the gated runner (use the
   existing recording/approving test double for `run_command`, asserting the pipeline saw it and
   that a denying approver yields `[command failed: ...]`).
-- A skill whose body contains an inline `!`cmd`` fed by a model-supplied argument, using the
-  `skills()` helper (extensions.rs ~342-383): with a denying approver the command is gated as
-  `shell` and the result is `[command failed:`.
+- Inline `!`cmd`` variant: at most a pure `substitute`/`parts` unit assertion, no integration test.
+- A `skill(x)` deny rule applies to every accepted spelling of the call (the name key is always
+  `name`), and a `{"skill": ...}` payload is rejected as an unknown field.
 - Choke-point test stays green (`skill` remains `ReadOnly`).
 
 ## Open Questions
