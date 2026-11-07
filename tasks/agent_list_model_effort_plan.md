@@ -16,7 +16,7 @@ rows, after the type: `◯ survey-tech-debt (agent-3) worker acct/sonnet effort 
 - `AgentRow` (`rust/fontaine-agents/src/tree.rs:528`) already carries `model: String`:
   `reserve_named` seeds it with the spec text (`$main` and the like) and
   `AgentTree::set_model` (`tree.rs:771`) records the resolved reference at assemble
-  (`rust/fontaine-core/src/child_runner.rs:569`). The full agents panel shows it
+  (`rust/fontaine-core/src/child_runner.rs:574`). The full agents panel shows it
   (`agents_panel.rs` `PanelRow.model`, rendered after the type); the compact list does not.
 - Effort is not recorded anywhere per agent. `CoreChildRunner::assemble` resolves the level a
   child runs at — `agent_type.effort.or(context.state.effort())` (`child_runner.rs:592`) — and
@@ -25,12 +25,12 @@ rows, after the type: `◯ survey-tech-debt (agent-3) worker acct/sonnet effort 
   as `fontaine_core::effort::Effort`.
 - The main conversation's model and effort already show in the status bar
   (`statusbar.rs:276-280`, `· m · effort high ·`, effort omitted when unset).
-- The tree snapshot `AgentTree::rows()` (`tree.rs:1899`) maps `NodeInfo` → `AgentRow`;
+- The tree snapshot `AgentTree::rows()` (`tree.rs:1916`) maps `NodeInfo` → `AgentRow`;
   `NodeInfo` literals exist at `tree.rs:594` (root), `:928` (reserve), `:1209` (rebuild from
   `RebuildRecord`, which carries `model: Option<String>` but no effort — the ledger does not
   record it).
-- `ListRow` struct literals outside `agent_list.rs`: `app.rs:2022,2039`, `view.rs:734,894`,
-  `spinner.rs:417,469` (tests included).
+- `ListRow` struct literals outside `agent_list.rs`: `app.rs:2022,2039`, `view.rs:894`,
+  `spinner.rs:417` (tests included).
 
 ## Design
 - **Record the resolved effort in the tree, like the model.** `NodeInfo` gains
@@ -51,8 +51,8 @@ rows, after the type: `◯ survey-tech-debt (agent-3) worker acct/sonnet effort 
   `effort: Option<Effort>`, mapped in `agent_list.rs::rows()`. `AgentList::lines` inserts both
   after the agent type: the model bare (as in the agents panel), the effort as
   `effort <level>` (as in the status bar; a bare level would read as a status word). Both
-  segments are omitted when empty/`None`, and the model segment is omitted when the recorded
-  reference is still an unresolved placeholder is *not* special-cased — the row shows whatever
+  segments are omitted when empty/`None`. An unresolved placeholder reference (e.g. `$main`)
+  is not special-cased — the row shows whatever
   the tree holds, exactly as the panel does. The `main` row is unchanged: its model and effort
   sit in the status bar directly above the list, and the list only draws while a subagent row
   exists anyway.
@@ -72,7 +72,7 @@ rows, after the type: `◯ survey-tech-debt (agent-3) worker acct/sonnet effort 
    `set_model`.
 3. `rust/fontaine-tui/src/agent_list.rs`: `ListRow.model`/`ListRow.effort`, mapping in `rows()`,
    rendering and give-way order in `lines()`; update the `AgentRow` literal in the tests' helper.
-4. Update every `ListRow` literal: `app.rs:2022,2039`, `view.rs:734,894`, `spinner.rs:417,469`.
+4. Update every `ListRow` literal: `app.rs:2022,2039`, `view.rs:894`, `spinner.rs:417`.
 5. Docs: `docs/tui.md` "The agent list and the agent view" (row shape and the new give-way
    order), `CHANGELOG.md`.
 
@@ -107,7 +107,7 @@ All automated, no live APIs (unit and integration tiers; nothing here needs a re
 - Integration (core, `agent_resume.rs`-style world with `MockStreamEvent` turns): a child of a
   type with `effort: Some(..)` records that level; a type without one records the session level;
   with neither set the row reads `None` — asserted through `agents().rows()` after the spawn
-  record lands, the same seam `agent_resume.rs:366` uses for the model.
+  record lands, the same seam `agent_resume.rs:398` uses for the model.
 - Unit (tui): a wide row shows `type model effort status age · spend`; `effort` omitted when
   `None`, model segment omitted when empty; give-way order at narrow widths — id drops before
   model/effort, model/effort drop before status/age, and the unpriced front-cut still protects
