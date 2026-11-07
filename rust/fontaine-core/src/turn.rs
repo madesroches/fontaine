@@ -340,6 +340,12 @@ fn error_class(error: &PromptError) -> Option<&'static str> {
 /// rejected the provider's built-in search tool; nothing retries without it, so the text says
 /// how to turn it off.
 fn failure_text(error: &PromptError, offered_search: bool) -> String {
+    // rig renders every hook stop as "the run was cancelled", the user's Esc
+    // wording; a stop is the harness's own doing (the journal guard, the AFK
+    // stop), and its reason already says why.
+    if let PromptError::Cancelled { reason, .. } = error {
+        return reason.clone();
+    }
     let mut text = error.to_string();
     let rejected_search = offered_search
         && error

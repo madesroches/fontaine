@@ -672,12 +672,17 @@ impl<S: AsyncStore + Send + Sync> InflightHook<S> {
         });
     }
 
-    async fn call(&self, pad: &Scratchpad, history: &[Arc<Message>], prompt: &Message) {
-        let Some(mut run) = pad.get::<JournalRun>() else {
-            return;
-        };
+    /// Journals the newly committed messages; on an append failure returns
+    /// the stop reason for the root hook's caller, `None` otherwise.
+    async fn call(
+        &self,
+        pad: &Scratchpad,
+        history: &[Arc<Message>],
+        prompt: &Message,
+    ) -> Option<String> {
+        let mut run = pad.get::<JournalRun>()?;
         if run.journaled == usize::MAX {
-            return;
+            return None;
         }
         let committed: Vec<Arc<Message>> = history
             .iter()
@@ -685,15 +690,26 @@ impl<S: AsyncStore + Send + Sync> InflightHook<S> {
             .cloned()
             .chain(std::iter::once(Arc::new(prompt.clone())))
             .collect();
-        let Some(new) = committed.get(run.journaled..).filter(|new| !new.is_empty()) else {
-            return;
-        };
+        let new = committed
+            .get(run.journaled..)
+            .filter(|new| !new.is_empty())?;
         match append_messages(&self.store, &journal_log(&self.id), new).await {
             Ok(()) => {
                 run.journaled = committed.len();
                 pad.insert(run);
+                None
             }
-            Err(e) => self.warn(pad, "the in-flight journal could not be written", &e),
+            Err(e) => {
+                self.warn(pad, "the in-flight journal could not be written", &e);
+                // The root hook alone stops the run: continuing leaves a
+                // non-empty but partial journal, which an interrupt would fold
+                // without the round the failed append lost. Stopping settles
+                // the run through the error path, and the recovery hook saves
+                // the full committed history. A child agent's recovery append
+                // makes its whole run retriable, so it warns and goes on.
+                self.run_records
+                    .then(|| format!("the turn could not be journaled: {}", chain(&e)))
+            }
         }
     }
 
@@ -803,9 +819,13 @@ impl<S: AsyncStore + Send + Sync> AgentHook for InflightHook<S> {
         ctx: &HookContext,
         event: CompletionCallEvent<'_>,
     ) -> CompletionCallAction {
-        self.call(ctx.scratchpad(), event.history, event.prompt)
-            .await;
-        CompletionCallAction::Continue
+        match self
+            .call(ctx.scratchpad(), event.history, event.prompt)
+            .await
+        {
+            Some(reason) => CompletionCallAction::Stop(reason),
+            None => CompletionCallAction::Continue,
+        }
     }
 
     async fn on_run_settled(&self, ctx: &HookContext, event: RunSettled<'_>) {
@@ -1103,6 +1123,139 @@ mod tests {
         let warned = warnings.0.lock().unwrap();
         assert_eq!(warned.len(), 1, "{warned:?}");
         assert!(warned[0].contains("disk gone"), "{warned:?}");
+    }
+
+    /// A store whose append after `grace` successful ones fails once, then
+    /// heals: a transient journal hiccup.
+    struct Flaky {
+        inner: MemoryStore,
+        grace: std::sync::Mutex<usize>,
+        failed: std::sync::atomic::AtomicBool,
+    }
+
+    impl AsyncStore for Flaky {
+        async fn read_log_async(&self, name: &str) -> std::io::Result<Vec<u8>> {
+            self.inner.read_log_async(name).await
+        }
+        async fn append_log_async(
+            &self,
+            name: &str,
+            len: u64,
+            bytes: &[u8],
+        ) -> Result<(), rig_memory::LogWriteError> {
+            if !self.failed.load(std::sync::atomic::Ordering::SeqCst) {
+                let mut grace = self.grace.lock().unwrap();
+                if *grace > 0 {
+                    *grace -= 1;
+                } else {
+                    self.failed.store(true, std::sync::atomic::Ordering::SeqCst);
+                    return Err(std::io::Error::other("disk full").into());
+                }
+            }
+            self.inner.append_log_async(name, len, bytes).await
+        }
+        async fn replace_log_async(
+            &self,
+            name: &str,
+            len: u64,
+            bytes: &[u8],
+        ) -> Result<(), rig_memory::LogWriteError> {
+            self.inner.replace_log_async(name, len, bytes).await
+        }
+        async fn read_file_async(&self, name: &str) -> std::io::Result<Vec<u8>> {
+            self.inner.read_file_async(name).await
+        }
+        async fn write_file_async(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+            self.inner.write_file_async(name, bytes).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_child_hook_warns_and_continues_on_a_failed_append() {
+        let inner = MemoryStore::default();
+        let store = Flaky {
+            inner: inner.clone(),
+            grace: std::sync::Mutex::new(1),
+            failed: std::sync::atomic::AtomicBool::new(false),
+        };
+        let warnings = Arc::new(Warnings::default());
+        let hook = InflightHook::new(store, "agent-1".into(), warnings.clone());
+        let pad = Scratchpad::default();
+        hook.start(&pad, 0).await;
+        assert!(hook.call(&pad, &[], &Message::user("go")).await.is_none());
+        let history = [user("go"), Arc::new(Message::assistant("calling"))];
+        let reason = hook
+            .call(&pad, &history, &Message::user("tool result"))
+            .await;
+        assert!(
+            reason.is_none(),
+            "a child run is not stopped on a journal hiccup: {reason:?}"
+        );
+        // The store healed; the next call journals what the failed append lost.
+        hook.call(&pad, &history, &Message::user("tool result"))
+            .await;
+        assert_eq!(texts(&inner, "agent-1.inflight").await.len(), 3);
+    }
+
+    /// The regression the root hook's stop guards: a transient append failure
+    /// after a finished tool round must not let a later interrupt fold a
+    /// partial journal and lose the round. The stop settles the run through
+    /// the error path; the recovery save writes the run's full committed
+    /// messages to `main`, and the settle cuts the partial journal.
+    #[tokio::test]
+    async fn a_root_hook_stops_on_a_failed_append_and_the_full_turn_is_saved() {
+        let inner = MemoryStore::default();
+        let store = Flaky {
+            inner: inner.clone(),
+            grace: std::sync::Mutex::new(1),
+            failed: std::sync::atomic::AtomicBool::new(false),
+        };
+        let warnings = Arc::new(Warnings::default());
+        let hook = InflightHook::root(store, "main".into(), warnings);
+        let pad = Scratchpad::default();
+        hook.start(&pad, 0).await;
+        hook.record_run(&Message::user("go"), 0).await;
+        assert!(hook.call(&pad, &[], &Message::user("go")).await.is_none());
+        let history = [user("go"), Arc::new(Message::assistant("calling"))];
+        let reason = hook
+            .call(&pad, &history, &Message::user("tool result"))
+            .await
+            .expect("the root hook stops the attempt");
+        assert!(
+            reason.contains("the turn could not be journaled"),
+            "{reason}"
+        );
+        assert!(reason.contains("disk full"), "{reason}");
+        // The journal holds only the first call's message: the finished round
+        // the failed append lost.
+        assert_eq!(texts(&inner, "main.inflight").await.len(), 1);
+
+        // rig settles the stopped run as an error. The recovery hook runs
+        // first and saves the run's full committed messages, the finished
+        // round included — not the partial journal.
+        let committed = [
+            user("go"),
+            Arc::new(Message::assistant("calling")),
+            user("tool result"),
+        ];
+        append_messages(&inner, "main", &committed).await.unwrap();
+        hook.settle(&pad, Some(3)).await;
+
+        let main = texts(&inner, "main").await;
+        assert_eq!(main.len(), 3, "{main:?}");
+        assert!(
+            main[1].contains("calling") && main[2].contains("tool result"),
+            "{main:?}"
+        );
+        assert!(texts(&inner, "main.inflight").await.is_empty());
+        assert!(read_run_record(&inner, "main").await.unwrap().is_none());
+        // The fold before the next turn finds a settled conversation: nothing
+        // is unsettled, so no marker and no second copy of the turn.
+        let folded = fold_unsettled(&inner, "main", Unsettled::User, None)
+            .await
+            .unwrap();
+        assert!(!folded);
+        assert_eq!(texts(&inner, "main").await.len(), 3);
     }
 
     async fn texts(store: &(impl AsyncStore + ?Sized), log: &str) -> Vec<String> {
