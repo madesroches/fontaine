@@ -45,6 +45,8 @@ pub struct Live {
     /// The model's account kind, as the model list names it.
     pub kind: &'static str,
     pub model: String,
+    /// The provider's `/models` entry for the guardian model, when the endpoint offers it.
+    pub served: Option<fontaine_core::providers::ServedModel>,
 }
 
 impl Live {
@@ -123,6 +125,7 @@ pub async fn connect(
             ));
         }
     };
+    let served = handle.served_model().await;
     let scrub_env = fontaine_core::tools::scrubbed_env(&config, std::iter::empty());
     let settings = Settings {
         timeout: Duration::from_secs(config.guardian.timeout_secs),
@@ -155,6 +158,7 @@ pub async fn connect(
         label: spec.to_string(),
         kind,
         model: model.to_string(),
+        served,
     })
 }
 

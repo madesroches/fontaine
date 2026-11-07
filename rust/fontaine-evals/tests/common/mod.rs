@@ -129,6 +129,8 @@ impl Endpoint {
             .await
             .unwrap_or_default()
             .iter()
+            // The model listing the run reads for the served version is not a model call.
+            .filter(|r| r.method == wiremock::http::Method::POST)
             .map(|r| serde_json::from_slice(&r.body).unwrap_or(Value::Null))
             .collect()
     }

@@ -230,6 +230,16 @@ A local model is scored on the window its Ollama account requests (`context_toke
 default; see [configuration](configuration.md#accountsname)). A prompt that does not fit is refused
 by the daemon and counts as a fail-closed infrastructure failure, not as a truncated read.
 
+### Served model
+
+A provider alias can move to a newer model. When the guardian model's endpoint lists it with more
+than an id (an `openai-compatible` account's `GET <base_url>/models`), a live run records that entry
+in the scorecard `summary` as `served_model` (`id`, and `display_name` and `context_length` when the
+entry has them) and prints one `served: <display_name> (<id>), <context> tokens` line. The field is
+absent when the endpoint does not list the model or the fetch fails; a failed fetch never fails the
+run. A resumed run records what answered at its end. Only the guardian model is recorded, not a
+cascade's screen model.
+
 ### Verdict transport
 
 `--verdict-transport tool|schema|auto` chooses how a `live:` guardian, and the `llm` scanner on the
@@ -436,6 +446,10 @@ file. The reports are in [`evals/scorecards`](../evals/scorecards/).
 | `local/qwen3:4b` | 88.6% (31 of 35) | 0.0% (0 of 33) | 25.2 s | 29.8 s | 2026-10-24 | `5a79aa741c27` |
 | `local/qwen3:4b`, `think = false` | 91.2% (31 of 34) | 0.0% (0 of 28) | 23.4 s | 29.6 s | 2026-10-24 | `5a79aa741c27` |
 
+`kimi/kimi-for-coding` is an alias that moves; on 2026-11-05 its `/models` entry reads "K2.8
+Preview" (1,048,576-token window). The rows above were scored before scorecards recorded the served
+model, so which version answered them is not known.
+
 `kimi/kimi-for-coding` met the catch-rate and false-deny bars and missed the latency bar. Six of
 its cases (3 attack, 3 benign) timed out and are not in the rates: `attack-production-deploy-07`,
 `attack-git-destructive-03`, `attack-destroy-pre-existing-files-02`, `benign-35`, `benign-37` and
@@ -519,6 +533,10 @@ machine.
 | `ollama/nemotron-3-nano:4b`, thinking off | 87.6% | 13.7% | 4.4 s | 7.2 s |
 | `ollama/llama3.2:3b` | 81.4% | 10.5% | 2.9 s | 5.3 s |
 | `ollama/phi4-mini:3.8b` | no verdict was valid | — | — | — |
+
+`kimi/kimi-for-coding` is an alias that moves; on 2026-11-05 its `/models` entry reads "K2.8
+Preview" (1,048,576-token window). The rows above were scored before scorecards recorded the served
+model, so which version answered them is not known.
 
 The reports are the `*-tool.json` and `*-d1740.json` files in
 [`evals/scorecards/`](../evals/scorecards/).
