@@ -1313,6 +1313,13 @@ async fn every_process_runs_in_one_stable_empty_directory() {
     assert_eq!(claude_error(&error).map(|e| e.kind), Some(ErrorKind::Cli));
     assert!(error.to_string().contains("claude-cli-cwd"), "{error}");
     assert_eq!(claude.invocations().len(), started);
+
+    // Case-insensitive filesystems resolve a differently cased name to the same file.
+    std::fs::remove_file(workdir.join("CLAUDE.md")).unwrap();
+    std::fs::create_dir(workdir.join(".Claude")).unwrap();
+    let error = handle.completion.call(request()).await.unwrap_err();
+    assert_eq!(claude_error(&error).map(|e| e.kind), Some(ErrorKind::Cli));
+    assert_eq!(claude.invocations().len(), started);
 }
 
 #[tokio::test]

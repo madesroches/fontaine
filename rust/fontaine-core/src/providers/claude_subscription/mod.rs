@@ -230,14 +230,22 @@ impl Provider for ClaudeSubscription {
 
     fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String> {
         let timeouts = Timeouts::from_env(&*ctx.env);
+        // git ignores a relative GIT_CEILING_DIRECTORIES entry, so the CLI's data dir must be absolute.
+        let data_dir = std::path::absolute(ctx.data_dir).map_err(|e| {
+            format!(
+                "cannot resolve the data directory {}: {}",
+                ctx.data_dir.display(),
+                fontaine_tools::error_chain::chain(&e)
+            )
+        })?;
         let cli = Cli::new(
             ctx.account.cli_path.clone(),
             ctx.account.claude_config_dir.clone(),
-            ctx.data_dir,
+            &data_dir,
             ctx.env.clone(),
             timeouts,
         );
-        prepare_workdir(ctx.data_dir, cli.workdir())?;
+        prepare_workdir(&data_dir, cli.workdir())?;
         let session = ctx
             .session_id
             .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);

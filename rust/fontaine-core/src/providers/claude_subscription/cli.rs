@@ -281,7 +281,10 @@ impl Cli {
         for entry in std::fs::read_dir(&self.workdir).map_err(unreadable)? {
             let entry = entry.map_err(unreadable)?;
             let name = entry.file_name();
-            if INSTRUCTION_ENTRIES.iter().any(|held| name == *held) {
+            if INSTRUCTION_ENTRIES
+                .iter()
+                .any(|held| name.eq_ignore_ascii_case(held))
+            {
                 return Err(ClaudeError::new(
                     ErrorKind::Cli,
                     format!(
