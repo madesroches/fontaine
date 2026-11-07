@@ -152,6 +152,10 @@ const FIXED_ENV: &[(&str, &str)] = &[
     ("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false"),
     ("ENABLE_TOOL_SEARCH", "false"),
     ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
+    // The CLI's breakpoint on the final message is never read back (it adds per-request context
+    // to that message, so the next request replays different bytes); the adapter's own 1 h
+    // marker earlier in the history is the one that is. 5 min makes the unread write cheaper.
+    ("CLAUDE_CODE_MESSAGES_PROMPT_CACHE_TTL", "5m"),
 ];
 
 /// Every inherited variable this adapter looks at: the ones it forwards and the ones it refuses.
