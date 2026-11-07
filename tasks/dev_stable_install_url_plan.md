@@ -34,8 +34,8 @@ Until the first tagged release, only the dev command is documented.
 - A single long-lived prerelease with tag `dev` holds two assets, `fontaine-installer.sh` and
   `fontaine-installer.sh.minisig`, replaced on every run. The installer is the rewritten dist output:
   its download base is `https://github.com/madesroches/fontaine/releases/download/dev-<n>` and its
-  embedded sha256s are those of `dev-<n>`'s archives (the same build, unchanged). It is sha256-verified
-  and signed with the dev key (see Signing the dev installer).
+  embedded sha256s are those of `dev-<n>`'s archives (the same build, unchanged). It checks each downloaded archive
+  against its embedded sha256, and is itself signed with the dev key (see Signing the dev installer).
 - The `dev` tag is created once by `gh release create` and never moved. Its `--target` commit is whatever the first
   run was; the notes say the tag only anchors the release.
 
@@ -162,17 +162,22 @@ stays open until it is done and the acceptance check passes.
   verify it by hand with minisign, and its trusted comment binds file, version and commit. The release
   installer is unsigned. Also replace the "It does not verify ... is itself unsigned" passage accordingly.
 - `README.md` install section: the dev command only; reword line 16 ("one command installs the
-  latest release") to say it installs the latest dev build.
+  latest release") to say it installs the latest dev build; also reword lines ~30-34 ("use the archive attached to each GitHub Release",
+  "Each archive has a detached signature"): until a tagged release exists the archives are on the
+  `dev-<n>` prereleases and the `dev` release holds only the installer.
 - The dev URL works once the channel is enabled (the manual step following `CONTRIBUTING.md`); the
   issue stays open until then.
 - `docs/verifying-releases.md`: say the stable `dev` release holds only the installer and its
   signature (with `minisign -Vm` instructions and the signing limit above, by reference to
-  `installing.md`); archives and their signatures live in `dev-<n>`.
+  `installing.md`); archives and their signatures live in `dev-<n>`. Also amend line ~60 ("The shell
+  installer (`fontaine-installer.sh`) is not signed and does not check the minisign signature"): the
+  dev installer is signed, the release installer is not; and widen lines ~38-41 (trusted comment "binds
+  the signature to one archive", `file=<archive name>`) to cover the installer.
 - `CONTRIBUTING.md`: extend the existing "Enabling the dev channel" paragraph (under Signing keys and
   environments) with the fact that each run also replaces `fontaine-installer.sh` on the long-lived `dev`
   release.
-- `tasks/design/platforms.md`: also update line ~34 (README lists "the installer": now two installer
-  commands) and lines ~40-42 (dev channel described only as `dev-<run_number>`: mention the stable `dev`
+- `tasks/design/platforms.md`: also update line ~34 (README lists "the installer": say it is the dev
+  installer until the first tagged release) and lines ~40-42 (dev channel described only as `dev-<run_number>`: mention the stable `dev`
   release), along with line ~31. Master plan: also update the workspace-layout line describing
   `.github/scripts/` ("minisign install, sign and verify scripts") to include the dev installer rewrite
   script. Both: replace "no dev-channel installer" with the stable-asset
@@ -189,7 +194,7 @@ stays open until it is done and the acceptance check passes.
   prove the script rejects unexpected text; after a dist version bump changes the format, the
   `dev.yml` run fails in `sign`, before any upload.
 - Self-tests for the `dev-installer` kind: an installer signs and verifies; a tampered installer or a
-  wrong file name fails; a draft directory containing the installer still fails on `dev`.
+  wrong file name fails; the existing "installer rejected on dev" test in `ci.yml` stays unchanged.
 - `dev.yml` is only exercisable on `main`; the pre-upload signature verification and syntax check and
   the post-upload byte-compare are its automated guard.
 
