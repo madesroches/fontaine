@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Usage: release-sign.sh <channel> <dir> <pubkey> <version> <commit>
-# Signs every fontaine-*.tar.xz and fontaine-*.zip in <dir> with the secret key in
+# Signs every fontaine-*.tar.xz and fontaine-*.zip in <dir>, plus fontaine-installer.sh when present
+# on the release channel, with the secret key in
 # MINISIGN_SECRET_KEY (password in MINISIGN_PASSWORD), then runs release-verify.sh over the result.
 # The kind `dev-installer` instead signs the single fontaine-installer.sh in <dir> under channel dev.
 set -euo pipefail
@@ -40,6 +41,10 @@ else
     [ -f "$path" ] && archives+=("$path")
   done
   [ "${#archives[@]}" -gt 0 ] || fail "no archives in '$dir'"
+  # dist bakes the final v<version> URL into the release installer, so it is signed as shipped.
+  if [ "$channel" = release ] && [ -f "$dir/fontaine-installer.sh" ]; then
+    archives+=("$dir/fontaine-installer.sh")
+  fi
   signed_channel="$channel"
 fi
 

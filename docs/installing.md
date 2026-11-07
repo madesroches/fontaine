@@ -37,10 +37,10 @@ release publishes. The check runs only when `sha256sum` is on the `PATH`; withou
 `shasum` instead) the installer prints a notice and continues, and `--quiet` suppresses that notice.
 It does not verify the minisign signature, because the installer has no minisign to run. The
 installer does not check its own signature either: piped to `sh`, nothing on your machine verifies
-it, so its trust is the HTTPS connection that delivered it. The dev installer does have a detached
-signature, `fontaine-installer.sh.minisig` beside it on the `dev` release, made with the dev key; if
-you download the script instead of piping it, you can verify it by hand, and the signed trusted
-comment binds the file, version and commit. The release installer, once there is one, is unsigned.
+it, so its trust is the HTTPS connection that delivered it. The installer does have a detached
+signature, `fontaine-installer.sh.minisig` beside it on the `dev` release (dev key) and on each
+tagged release (release key); if you download the script instead of piping it, you can verify it by
+hand, and the signed trusted comment binds the channel, file, version and commit.
 To check an archive's signature, download it and follow [Verifying releases](verifying-releases.md).
 
 ### Proxies and certificates

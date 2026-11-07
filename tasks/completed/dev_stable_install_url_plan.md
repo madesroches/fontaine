@@ -143,12 +143,12 @@ stays open until it is done and the acceptance check passes.
   an explicit instruction, and is unnecessary.
 - **Sign the installer**: signed on the dev channel only. Self-verification by the installer was
   rejected: the embedded key and sha would arrive in the same HTTPS fetch as the script, so it adds no
-  trust. The release installer stays unsigned (out of scope).
+  trust. The release installer was initially left unsigned; it is signed too (see the platforms design doc).
 
 ## Decisions
 
 - 2026-11-07: the `dev` tag is created once and never moved; only the release's assets change.
-- 2026-11-07: the dev installer is signed with the dev key (trusted comment binds file, version and commit), uploaded beside the installer on `dev`; the release installer stays unsigned.
+- 2026-11-07: the dev installer is signed with the dev key (trusted comment binds file, version and commit), uploaded beside the installer on `dev`; the release installer was later signed too.
 - 2026-11-07: documentation shows only the dev command until the first tagged release, per #487 Ask 3.
 - 2026-11-07: the dev installer points at the immutable `dev-<n>` archives.
 - 2026-11-07: supersedes the 2026-11-07 (#477) "No installer on the dev channel" decision in `tasks/fontaine_harness_plan.md`.
