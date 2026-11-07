@@ -788,21 +788,21 @@ impl AgentRuntime {
     /// messages `main` holds now, before auto-compaction. A fold after a kill before the
     /// run's first model call reads this as its fallback, and ties the journal to its
     /// positions when the run's save landed before the process died. The run's settle
-    /// clears it. A failure is warned; the run goes unrecorded rather than unrun.
-    pub async fn record_run_start(&self, prompt: Message, log_len_before: usize) {
+    /// clears it. The turn must not start when this write fails: nothing is journaled
+    /// yet, and a kill in the unrecorded window — the compaction that precedes the run
+    /// is long — would lose the prompt.
+    pub async fn record_run_start(
+        &self,
+        prompt: Message,
+        log_len_before: usize,
+    ) -> Result<(), rig_memory::SessionError> {
         let store = self.session.store();
         let record = turn_recovery::RunRecord {
             prompt,
             log_len_before,
         };
-        if let Err(e) = turn_recovery::write_run_record(&store, CONVERSATION_LOG, &record).await {
-            let message = format!(
-                "the run's pending record could not be written: {}",
-                chain(&e)
-            );
-            tracing::warn!("{message}");
-            self.approver.warn(&message);
-        }
+        turn_recovery::write_run_record(&store, CONVERSATION_LOG, &record).await?;
+        Ok(())
     }
 
     /// Forgets a run start whose turn will not run: a stop between the record and the run

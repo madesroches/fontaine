@@ -574,7 +574,11 @@ async fn run_one(
     // model call, leaves the prompt for the fold that keeps the turn.
     let sent = user_message(&text, &[], &modalities);
     let len = runtime.conversation_len().await.unwrap_or(usize::MAX);
-    runtime.record_run_start(sent.clone(), len).await;
+    if let Err(e) = runtime.record_run_start(sent.clone(), len).await {
+        // The turn must not run unrecorded: the compaction and the run that follow leave
+        // a long window in which a kill would lose the prompt.
+        return record_stop(&e);
+    }
     // What a stopped run is kept as when it committed nothing. An unreadable count keeps the
     // prompt rather than risk losing it.
     let fallback = Fallback {
@@ -745,6 +749,22 @@ fn budget_stop() -> Outcome {
     }
 }
 
+/// The outcome of a turn refused before it runs: its durable record could not be
+/// written, and an unrecorded turn must not start.
+fn record_stop(e: &(dyn std::error::Error + 'static)) -> Outcome {
+    Outcome {
+        subtype: Subtype::Execution,
+        text: String::new(),
+        structured: None,
+        error: Some(format!(
+            "the run's pending record could not be written: {}",
+            fontaine_tools::error_chain::chain(e)
+        )),
+        started: std::time::Instant::now(),
+        denials: Vec::new(),
+    }
+}
+
 /// What must hold before a paid call starts: a text-only answer that crossed the cap ends its
 /// own turn as a success, so the cap is enforced here, and again after the summarizing call
 /// that may precede a turn, which is paid too. `turn` is the prompt about to run, when a turn
@@ -767,9 +787,14 @@ async fn stop_before_call(
         .await;
     if let Some(text) = turn {
         let len = runtime.conversation_len().await.unwrap_or(usize::MAX);
-        runtime
+        if let Err(e) = runtime
             .record_run_start(user_message(text, &[], &main_modalities(runtime)), len)
-            .await;
+            .await
+        {
+            // The turn must not run unrecorded: the summarizing call and the turn that
+            // follow leave a long window in which a kill would lose the prompt.
+            return Some(record_stop(&e));
+        }
     }
     runtime.compact_if_needed().await;
     if over_cap(runtime, options) {

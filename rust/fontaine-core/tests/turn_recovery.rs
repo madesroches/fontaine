@@ -429,3 +429,44 @@ async fn retries_run_out_and_the_failure_is_reported_once() {
     assert!(message.contains("boom"), "{message}");
     assert_eq!(built.main.request_count(), 3);
 }
+
+#[tokio::test]
+async fn a_run_start_is_recorded_for_the_fold_a_kill_before_it_would_read() {
+    let w = World::new();
+    let built = build(&w, Manual, vec![answer_turn("done")], true);
+    built
+        .runtime
+        .record_run_start(user_message("hi", &[], &Default::default()), 0)
+        .await
+        .expect("the record writes");
+    let store = built.runtime.session.store();
+    let bytes = store.read_file_async("main.inflight.run").await.unwrap();
+    assert!(!bytes.is_empty(), "{bytes:?}");
+}
+
+#[tokio::test]
+async fn a_run_start_the_store_refuses_is_an_error_the_turn_must_not_run() {
+    let w = World::new();
+    let built = build(&w, Manual, vec![answer_turn("done")], true);
+    // The record's file path is a directory, so writing it fails; the turn the surfaces
+    // refused on this error must not start, since a kill in the unrecorded window that
+    // follows would lose the prompt.
+    let record_path = built
+        .runtime
+        .session
+        .dir
+        .join("files")
+        .join("main.inflight.run");
+    std::fs::create_dir_all(record_path.parent().unwrap()).unwrap();
+    std::fs::create_dir(&record_path).unwrap();
+    let result = built
+        .runtime
+        .record_run_start(user_message("hi", &[], &Default::default()), 0)
+        .await;
+    let e = result.expect_err("the refusal propagates to the caller");
+    assert!(
+        matches!(&e, rig_memory::SessionError::Io(_)),
+        "the store's refusal is returned, not warned away: {e}"
+    );
+    assert_eq!(built.main.request_count(), 0, "the turn never ran");
+}

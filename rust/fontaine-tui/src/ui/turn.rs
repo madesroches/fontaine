@@ -826,13 +826,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
         );
         // The run's durable record goes before the run future's compaction: a process that
         // dies during compaction still leaves the prompt for the fold that resumes the
-        // session.
-        runtime
+        // session. A failed write refuses the turn: nothing is journaled yet, and a kill in
+        // the unrecorded window would lose the prompt.
+        let mut record_error = runtime
             .record_run_start(
                 sent.clone(),
                 started_at.load(std::sync::atomic::Ordering::Relaxed),
             )
-            .await;
+            .await
+            .err();
         let record_prompt = sent.clone();
         let mut run = Box::pin(async {
             runtime.compact_if_needed().await;
@@ -840,8 +842,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
             // are post-compaction, like the fallback's.
             if let Some(len) = runtime.conversation_len().await
                 && started_at.swap(len, std::sync::atomic::Ordering::Relaxed) != len
+                && let Err(e) = runtime.record_run_start(record_prompt, len).await
             {
-                runtime.record_run_start(record_prompt, len).await;
+                // The run is journaled by now; the record is best-effort evidence, and a
+                // stale one errs on folding the turn again, never on dropping it.
+                let message = format!(
+                    "the run's pending record could not be rewritten after compaction: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                );
+                runtime.approver().warn(&message);
             }
             let ids = runtime.models.main.wire_ids();
             let (model, provider) = (ids.model, ids.provider);
@@ -865,6 +874,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
         });
         let tree = runtime.state.agents().clone();
         let end = loop {
+            if let Some(e) = record_error.take() {
+                // The turn never ran: no fold is owed, and `finish_turn` below reports the
+                // failure to the transcript.
+                break TurnEnd::Finished(TurnOutcome::Failed(format!(
+                    "the turn could not be journaled: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                )));
+            }
             let changed = tree.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();

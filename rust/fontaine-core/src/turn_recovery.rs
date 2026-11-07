@@ -568,6 +568,20 @@ impl<S: AsyncStore> InflightHook<S> {
         cut_journal(&self.store, &self.id, keep).await
     }
 
+    /// What `on_run_start` does after the journal's read failed. The root hook stops the
+    /// run before it spends a model call it cannot journal: an interrupt of the unjournaled
+    /// run would fold only the fallback prompt, losing every round the run committed. The
+    /// stop settles the run through the error path, and the recovery hook saves what it
+    /// committed. A child agent's own recovery append is its durable path, so it warns (in
+    /// `start`) and goes on.
+    fn unreadable_start(&self, e: &std::io::Error) -> RunStartAction {
+        if self.run_records {
+            RunStartAction::Stop(format!("the turn could not be journaled: {}", chain(e)))
+        } else {
+            RunStartAction::Continue
+        }
+    }
+
     /// Writes the run record a root hook keeps per attempt. A failure is warned; the attempt
     /// goes unrecorded rather than unrun.
     async fn record_run(&self, prompt: &Message, log_len_before: usize) {
@@ -625,7 +639,9 @@ impl<S: AsyncStore> InflightHook<S> {
 }
 
 impl<S: AsyncStore + Send + Sync> InflightHook<S> {
-    async fn start(&self, pad: &Scratchpad, input_len: usize) {
+    /// Returns the read failure, if any: `on_run_start` stops the root run on it, since
+    /// the run would otherwise complete its tool rounds unjournaled.
+    async fn start(&self, pad: &Scratchpad, input_len: usize) -> Option<std::io::Error> {
         let log = journal_log(&self.id);
         let carried_bytes = match self.store.read_log_async(&log).await {
             Ok(bytes) => bytes
@@ -643,7 +659,7 @@ impl<S: AsyncStore + Send + Sync> InflightHook<S> {
                     warned: false,
                 });
                 self.warn(pad, "the in-flight journal could not be read", &e);
-                return;
+                return Some(e);
             }
         };
         // An empty journal spends the previous attempt's evidence: its journal was cut
@@ -670,6 +686,7 @@ impl<S: AsyncStore + Send + Sync> InflightHook<S> {
             carried_bytes,
             warned: false,
         });
+        None
     }
 
     /// Journals the newly committed messages; on an append failure returns
@@ -804,14 +821,17 @@ impl<S: AsyncStore + Send + Sync> InflightHook<S> {
 
 impl<S: AsyncStore + Send + Sync> AgentHook for InflightHook<S> {
     async fn on_run_start(&self, ctx: &HookContext, event: RunStart<'_>) -> RunStartAction {
-        self.start(ctx.scratchpad(), event.history.len()).await;
+        let action = match self.start(ctx.scratchpad(), event.history.len()).await {
+            Some(e) => self.unreadable_start(&e),
+            None => RunStartAction::Continue,
+        };
         if self.run_records {
             // Every attempt gets its own record, the retry's prompt included: the attempt
             // before it settled and cleared its record, and a kill before this attempt's
             // settled mark must still find run-tied evidence on disk.
             self.record_run(event.prompt, event.history.len()).await;
         }
-        RunStartAction::Continue
+        action
     }
 
     async fn on_completion_call(
@@ -1120,6 +1140,122 @@ mod tests {
         hook.call(&pad, &[], &Message::user("go")).await;
         hook.call(&pad, &[user("go")], &Message::user("more")).await;
         hook.settle(&pad, None).await;
+        let warned = warnings.0.lock().unwrap();
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(warned[0].contains("disk gone"), "{warned:?}");
+    }
+
+    /// A store whose first read of the in-flight journal fails, then heals: a
+    /// transient read hiccup.
+    struct FlakyRead {
+        inner: MemoryStore,
+        failed: std::sync::atomic::AtomicBool,
+    }
+
+    impl AsyncStore for FlakyRead {
+        async fn read_log_async(&self, name: &str) -> std::io::Result<Vec<u8>> {
+            if name.ends_with(".inflight")
+                && !self.failed.swap(true, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(std::io::Error::other("disk gone"));
+            }
+            self.inner.read_log_async(name).await
+        }
+        async fn append_log_async(
+            &self,
+            name: &str,
+            len: u64,
+            bytes: &[u8],
+        ) -> Result<(), rig_memory::LogWriteError> {
+            self.inner.append_log_async(name, len, bytes).await
+        }
+        async fn replace_log_async(
+            &self,
+            name: &str,
+            len: u64,
+            bytes: &[u8],
+        ) -> Result<(), rig_memory::LogWriteError> {
+            self.inner.replace_log_async(name, len, bytes).await
+        }
+        async fn read_file_async(&self, name: &str) -> std::io::Result<Vec<u8>> {
+            self.inner.read_file_async(name).await
+        }
+        async fn write_file_async(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+            self.inner.write_file_async(name, bytes).await
+        }
+    }
+
+    /// The regression the root hook's run-start stop guards: a transient journal
+    /// read failure must not let the root run continue unjournaled, completing tool
+    /// rounds an interrupt would fold away. The stop settles the run through the error
+    /// path before its first model call; the recovery save writes the run's committed
+    /// messages to `main`, and the settle clears the partial evidence.
+    #[tokio::test]
+    async fn a_root_hook_stops_when_the_journal_read_fails_and_the_turn_is_saved() {
+        let inner = MemoryStore::default();
+        let store = FlakyRead {
+            inner: inner.clone(),
+            failed: std::sync::atomic::AtomicBool::new(false),
+        };
+        let warnings = Arc::new(Warnings::default());
+        let hook = InflightHook::root(store, "main".into(), warnings);
+        let pad = Scratchpad::default();
+        let err = hook
+            .start(&pad, 0)
+            .await
+            .expect("the read failure surfaces");
+        hook.record_run(&Message::user("go"), 0).await;
+        let RunStartAction::Stop(reason) = hook.unreadable_start(&err) else {
+            panic!("the root run is stopped: {err}");
+        };
+        assert!(
+            reason.contains("the turn could not be journaled"),
+            "{reason}"
+        );
+        assert!(reason.contains("disk gone"), "{reason}");
+        // The stop lands before the run's first model call, so no call can commit a
+        // round an interrupt would lose; the guard stays up after the store heals.
+        assert!(hook.call(&pad, &[], &Message::user("go")).await.is_none());
+
+        // rig settles the stopped run as an error. Its history is the prompt alone; the
+        // recovery hook saves it to `main`, and the settle clears the run record.
+        append_messages(&inner, "main", &[user("go")])
+            .await
+            .unwrap();
+        hook.settle(&pad, Some(1)).await;
+        let main = texts(&inner, "main").await;
+        assert_eq!(main.len(), 1, "{main:?}");
+        assert!(main[0].contains("go"), "{main:?}");
+        assert!(texts(&inner, "main.inflight").await.is_empty());
+        assert!(read_run_record(&inner, "main").await.unwrap().is_none());
+        // The fold before the next turn finds a settled conversation: nothing is
+        // unsettled, so no marker and no second copy of the prompt.
+        let folded = fold_unsettled(&inner, "main", Unsettled::User, None)
+            .await
+            .unwrap();
+        assert!(!folded);
+        assert_eq!(texts(&inner, "main").await.len(), 1);
+    }
+
+    /// A child agent cannot journal either, but its own recovery append makes the whole
+    /// run retriable, so it warns and goes on.
+    #[tokio::test]
+    async fn a_child_hook_warns_and_continues_when_the_journal_read_fails() {
+        let store = FlakyRead {
+            inner: MemoryStore::default(),
+            failed: std::sync::atomic::AtomicBool::new(false),
+        };
+        let warnings = Arc::new(Warnings::default());
+        let hook = InflightHook::new(store, "agent-1".into(), warnings.clone());
+        let pad = Scratchpad::default();
+        let err = hook
+            .start(&pad, 0)
+            .await
+            .expect("the read failure surfaces");
+        assert!(
+            matches!(hook.unreadable_start(&err), RunStartAction::Continue),
+            "a child run is not stopped on a journal read hiccup"
+        );
         let warned = warnings.0.lock().unwrap();
         assert_eq!(warned.len(), 1, "{warned:?}");
         assert!(warned[0].contains("disk gone"), "{warned:?}");
