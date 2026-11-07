@@ -13,10 +13,10 @@ This repository is under construction. The documentation describes what the curr
 
 ## Install
 
-On Linux (x86_64) and macOS (Apple silicon and Intel), one command installs the latest release:
+On Linux (x86_64) and macOS (Apple silicon and Intel), one command installs the latest dev build of `main`:
 
 ```
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/latest/download/fontaine-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.sh | sh
 ```
 
 It needs `curl` or `wget` and `tar`. It installs `fontaine` to `$CARGO_HOME/bin` (`~/.cargo/bin` by
@@ -27,8 +27,9 @@ the minisign signature. The installer ignores Fontaine's `[network]` proxy, CA a
 behind a proxy, set `https_proxy` / `SSL_CERT_FILE` for `curl`, or download the archive manually.
 See [Installing Fontaine](docs/installing.md).
 
-Windows, and any platform without an installer, use the archive attached to each
-[GitHub Release](https://github.com/madesroches/fontaine/releases). Unpack the archive for your
+Windows, and any platform without an installer, use the archive of a `dev-<n>`
+[prerelease](https://github.com/madesroches/fontaine/releases); no tagged release exists yet, and
+the `dev` release holds only the installer. Unpack the archive for your
 platform and put `fontaine` on your `PATH`; the archive also holds the license, readme and
 changelog. Each archive has a detached signature; see
 [Verifying releases](docs/verifying-releases.md). With the Rust toolchain you can instead install from

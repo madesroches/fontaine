@@ -130,8 +130,10 @@ dev-key compromise never affects `release`.
 reviewers), bootstrap the dev key, then set the repository variable `FONTAINE_DEV_CHANNEL` to
 `enabled`. Until it is set, `.github/workflows/dev.yml` skips every run and publishes nothing. A newer
 build replaces a pending one, so intermediate builds may be skipped and the channel always
-publishes the latest CI-passing build of `main`, as the prerelease `dev-<run number>`. Old dev
-prereleases are not pruned automatically.
+publishes the latest CI-passing build of `main`, as the prerelease `dev-<run number>`. Each run also
+replaces `fontaine-installer.sh` and its `.minisig` on the long-lived `dev` prerelease, the stable
+installer address, unless a newer `dev-<n>` is already published. Old dev prereleases are not
+pruned automatically.
 
 ## Golden-dataset cases
 

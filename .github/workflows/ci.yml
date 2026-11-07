@@ -209,13 +209,60 @@ jobs:
           expect_fail wrong-commit true release "$version" "ffffffff"
           expect_fail unrecognised-asset m_unrecognised
 
-          # The unsigned installer belongs to the release channel only.
+          # The installer belongs to the release channel only, and there it must be signed.
           m_installer() { echo '#!/bin/sh' > "$1/fontaine-installer.sh"; }
           release_installer="$work/release-installer"
-          cp -r "$pristine" "$release_installer"
+          make_fixture "$release_installer"
           m_installer "$release_installer"
+          sign "$release_installer" main release
+          [ -f "$release_installer/fontaine-installer.sh.minisig" ]
           verify "$release_installer" >/dev/null
-          echo "ok: installer accepted on release"
+          echo "ok: signed installer accepted on release"
+          expect_rel_installer_fail() { # expect_rel_installer_fail <name> <mutation function> [verify args...]
+            local name="$1" mutate="$2"
+            shift 2
+            local d="$work/relinst-$name"
+            cp -r "$release_installer" "$d"
+            "$mutate" "$d"
+            if verify "$d" "$@" >/dev/null 2>&1; then
+              echo "::error::verify passed on release installer case '$name'"
+              exit 1
+            fi
+            echo "ok: release installer '$name' rejected"
+          }
+          m_ri_no_sig() { rm "$1/fontaine-installer.sh.minisig"; }
+          m_ri_tampered() { echo x >> "$1/fontaine-installer.sh"; }
+          m_ri_renamed_sig() { # a signature made for another file name
+            cp "$1/$a.minisig" "$1/fontaine-installer.sh.minisig"
+          }
+          # Re-sign only the installer with a deliberately wrong trusted comment (and key), so a
+          # rejection can only come from the installer's own check.
+          resign_installer() { # resign_installer <dir> <keyname> <comment>
+            printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$work/$2.key" \
+              -m "$1/fontaine-installer.sh" -x "$1/fontaine-installer.sh.minisig" -t "$3" >/dev/null
+          }
+          comment_for() { echo "fontaine-signature v1 channel=${1:-release} file=${2:-fontaine-installer.sh} version=${3:-$version} commit=${4:-$commit}"; }
+          m_ri_dev_comment() { resign_installer "$1" main "$(comment_for dev)"; }
+          m_ri_other_key() { resign_installer "$1" other "$(comment_for)"; }
+          m_ri_wrong_file() { resign_installer "$1" main "$(comment_for release fontaine-other.sh)"; }
+          m_ri_wrong_version() { resign_installer "$1" main "$(comment_for release fontaine-installer.sh 9.9.9)"; }
+          m_ri_wrong_commit() { resign_installer "$1" main "$(comment_for release fontaine-installer.sh "$version" ffffffff)"; }
+          expect_rel_installer_fail no-signature m_ri_no_sig
+          expect_rel_installer_fail tampered m_ri_tampered
+          expect_rel_installer_fail signature-for-other-file m_ri_renamed_sig
+          expect_rel_installer_fail dev-channel-comment m_ri_dev_comment
+          expect_rel_installer_fail signed-by-other-key m_ri_other_key
+          expect_rel_installer_fail comment-names-other-file m_ri_wrong_file
+          expect_rel_installer_fail comment-wrong-version m_ri_wrong_version
+          expect_rel_installer_fail comment-wrong-commit m_ri_wrong_commit
+          # A release archive set whose installer was added after signing is unsigned.
+          late_installer="$work/late-installer"
+          cp -r "$pristine" "$late_installer"
+          m_installer "$late_installer"
+          if verify "$late_installer" >/dev/null 2>&1; then
+            echo "::error::verify passed on an unsigned release installer"; exit 1
+          fi
+          echo "ok: unsigned release installer rejected"
           dev_fixture="$work/dev-fixture"
           make_fixture "$dev_fixture"
           sign "$dev_fixture" main dev
@@ -226,6 +273,129 @@ jobs:
             exit 1
           fi
           echo "ok: installer rejected on dev"
+
+          # The dev installer is signed and verified on its own, in a directory of just two files.
+          make_installer() { # make_installer <dir>: the text dist 0.32.0 writes, minus what is irrelevant here
+            mkdir -p "$1"
+            sed 's/^          //' > "$1/fontaine-installer.sh" <<'FIXTURE'
+          #!/bin/sh
+          APP_NAME="fontaine"
+          APP_VERSION="0.1.0"
+          if [ -n "${INSTALLER_DOWNLOAD_URL:-}" ]; then
+              ARTIFACT_DOWNLOAD_URLS="$INSTALLER_DOWNLOAD_URL"
+          elif [ -n "${FONTAINE_INSTALLER_GHE_BASE_URL:-}" ]; then
+              INSTALLER_BASE_URL="$FONTAINE_INSTALLER_GHE_BASE_URL"
+              ARTIFACT_DOWNLOAD_URLS="${INSTALLER_BASE_URL}/madesroches/fontaine/releases/download/v0.1.0"
+          elif [ -n "${FONTAINE_INSTALLER_GITHUB_BASE_URL:-}" ]; then
+              INSTALLER_BASE_URL="$FONTAINE_INSTALLER_GITHUB_BASE_URL"
+              ARTIFACT_DOWNLOAD_URLS="${INSTALLER_BASE_URL}/madesroches/fontaine/releases/download/v0.1.0"
+          else
+              ARTIFACT_DOWNLOAD_URLS="https://github.com/madesroches/fontaine/releases/download/v0.1.0"
+          fi
+          read -r RECEIPT <<EORECEIPT
+          {"binaries":["CARGO_DIST_BINS"],"provider":{"source":"cargo-dist","version":"0.32.0"},"source":{"app_name":"fontaine"},"version":"0.1.0"}
+          EORECEIPT
+          usage() {
+              cat <<EOF
+          fontaine-installer.sh
+
+          The installer for fontaine 0.1.0
+
+          This script detects what platform you're on and fetches an appropriate archive from
+          https://github.com/madesroches/fontaine/releases/download/v0.1.0
+          EOF
+          }
+          FIXTURE
+          }
+          dev_version="0.1.0-dev.7+0123456"
+          rewrite() { "$scripts/dev-installer.sh" "$1/fontaine-installer.sh" dev-7 "$dev_version"; }
+          expect_rewrite_fail() { # expect_rewrite_fail <name> <mutation function>
+            local d="$work/rw-$1"
+            make_installer "$d"
+            "$2" "$d/fontaine-installer.sh"
+            if rewrite "$d" >/dev/null 2>&1; then
+              echo "::error::dev-installer.sh passed on '$1'"
+              exit 1
+            fi
+            echo "ok: installer rewrite '$1' rejected"
+          }
+
+          rw="$work/rw-ok"
+          make_installer "$rw"
+          rewrite "$rw"
+          sh -n "$rw/fontaine-installer.sh"
+          [ "$(grep -c 'releases/download/dev-7"\{0,1\}$' "$rw/fontaine-installer.sh")" -eq 4 ]
+          ! grep -q 'download/v0.1.0' "$rw/fontaine-installer.sh"
+          grep -qx 'APP_VERSION="0.1.0-dev.7+0123456"' "$rw/fontaine-installer.sh"
+          grep -q ',"version":"0.1.0-dev.7+0123456"}$' "$rw/fontaine-installer.sh"
+          grep -q '"provider":{"source":"cargo-dist","version":"0.32.0"}' "$rw/fontaine-installer.sh"
+          grep -qx 'The installer for fontaine 0.1.0-dev.7+0123456' "$rw/fontaine-installer.sh"
+          echo "ok: installer rewritten"
+
+          m_no_url() { sed -i '/^    ARTIFACT_DOWNLOAD_URLS="https:/d' "$1"; }
+          m_extra_url() { echo 'x=https://github.com/madesroches/fontaine/releases/download/v0.1.0' >> "$1"; }
+          m_no_app_version() { sed -i '/^APP_VERSION=/d' "$1"; }
+          m_two_app_version() { echo 'APP_VERSION="0.1.0"' >> "$1"; }
+          m_no_receipt() { sed -i 's/,"version":"0.1.0"}$/}/' "$1"; }
+          m_two_receipt() { printf '{"x":1,"version":"0.1.0"}\n' >> "$1"; }
+          m_no_usage() { sed -i '/^The installer for/d' "$1"; }
+          m_two_usage() { printf '\nThe installer for fontaine 0.1.0\n' >> "$1"; }
+          expect_rewrite_fail missing-url m_no_url
+          expect_rewrite_fail extra-url m_extra_url
+          expect_rewrite_fail missing-app-version m_no_app_version
+          expect_rewrite_fail repeated-app-version m_two_app_version
+          expect_rewrite_fail missing-receipt-version m_no_receipt
+          expect_rewrite_fail repeated-receipt-version m_two_receipt
+          expect_rewrite_fail missing-usage-text m_no_usage
+          expect_rewrite_fail repeated-usage-text m_two_usage
+          if "$scripts/dev-installer.sh" "$rw/fontaine-installer.sh" release-7 "$dev_version" 2>/dev/null; then
+            echo "::error::dev-installer.sh accepted a non-dev tag"; exit 1
+          fi
+
+          signed_installer="$work/signed-installer"
+          make_installer "$signed_installer"
+          sign "$signed_installer" main dev-installer
+          verify "$signed_installer" dev-installer >/dev/null
+          echo "ok: dev installer signed and verified"
+          expect_installer_fail() { # expect_installer_fail <name> <mutation function> [verify version commit]
+            local name="$1" mutate="$2"
+            shift 2
+            local d="$work/inst-$name"
+            cp -r "$signed_installer" "$d"
+            "$mutate" "$d"
+            if verify "$d" dev-installer "$@" >/dev/null 2>&1; then
+              echo "::error::verify passed on installer case '$name'"
+              exit 1
+            fi
+            echo "ok: installer '$name' rejected"
+          }
+          m_i_tampered() { echo x >> "$1/fontaine-installer.sh"; }
+          m_i_renamed() { mv "$1/fontaine-installer.sh" "$1/fontaine-other.sh"; mv "$1/fontaine-installer.sh.minisig" "$1/fontaine-other.sh.minisig"; }
+          m_i_no_sig() { rm "$1/fontaine-installer.sh.minisig"; }
+          m_i_extra() { echo x > "$1/notes.txt"; }
+          m_i_same() { true; }
+          expect_installer_fail tampered m_i_tampered
+          expect_installer_fail renamed m_i_renamed
+          expect_installer_fail no-signature m_i_no_sig
+          expect_installer_fail extra-file m_i_extra
+          expect_installer_fail wrong-version m_i_same "9.9.9" "$commit"
+          expect_installer_fail wrong-commit m_i_same "$version" "ffffffff"
+          # A signature made under the release channel's trusted comment must not pass as the dev installer's.
+          release_signed="$work/installer-release-channel"
+          make_installer "$release_signed"
+          printf '%s\n' "$MINISIGN_PASSWORD" | minisign -S -s "$work/main.key" \
+            -m "$release_signed/fontaine-installer.sh" -x "$release_signed/fontaine-installer.sh.minisig" \
+            -t "fontaine-signature v1 channel=release file=fontaine-installer.sh version=$version commit=$commit" >/dev/null
+          if verify "$release_signed" dev-installer >/dev/null 2>&1; then
+            echo "::error::verify passed on an installer signed under the release channel"; exit 1
+          fi
+          echo "ok: installer signed under the release channel rejected"
+          other_signed="$work/installer-other-key"
+          make_installer "$other_signed"
+          if sign "$other_signed" other dev-installer 2>/dev/null; then
+            echo "::error::installer signed with the wrong key passed"; exit 1
+          fi
+          echo "ok: installer signed with the wrong key rejected"
 
           # The signer with zero archives must fail too.
           mkdir "$work/none"

@@ -1,21 +1,24 @@
 # Installing Fontaine
 
 Fontaine ships as a single `fontaine` binary. There are three ways to get it: the one-line installer
-(Linux and macOS), the archive attached to a GitHub Release (every platform), and `cargo install`
-from source.
+(Linux and macOS), a release archive from GitHub (every platform), and `cargo install` from source.
+No tagged release exists yet, so the installer and the archives are dev builds of `main`.
 
 ## The installer
 
 ```
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/latest/download/fontaine-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.sh | sh
 ```
 
-The installer is attached to tagged releases, not to dev builds. It supports Linux x86_64 and macOS
-on Apple silicon and Intel. There is no Linux arm64 build and no Windows installer; use the archive
+This installs the latest CI-passing build of `main`. The installer is the single file on the
+long-lived `dev` prerelease, replaced after every successful dev publish; it downloads the archive
+from the immutable `dev-<n>` prerelease of the build it was made for. Its receipt `version` is
+`<version>-dev.<n>+<commit>`, so a dev install is recognisable by the `-dev.` in it. It supports
+Linux x86_64 and macOS on Apple silicon and Intel. There is no Linux arm64 build and no Windows installer; use the archive
 there.
 
 It needs `curl` or `wget`, and `tar`. It detects your platform, downloads the matching archive from
-the release it belongs to, and writes:
+that `dev-<n>` release, and writes:
 
 - the `fontaine` binary in `$CARGO_HOME/bin` (`~/.cargo/bin` when `CARGO_HOME` is unset);
 - an install receipt at `${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`, recording
@@ -32,9 +35,13 @@ Open a new shell, then run `fontaine --version`.
 The installer checks the archive against the sha256 embedded in the script, the same checksum the
 release publishes. The check runs only when `sha256sum` is on the `PATH`; without it (macOS ships
 `shasum` instead) the installer prints a notice and continues, and `--quiet` suppresses that notice.
-It does not verify the minisign signature, because the installer has no minisign to run and is
-itself unsigned: its trust is the HTTPS connection that delivered it. To check a signature, download
-the archive and follow [Verifying releases](verifying-releases.md).
+It does not verify the minisign signature, because the installer has no minisign to run. The
+installer does not check its own signature either: piped to `sh`, nothing on your machine verifies
+it, so its trust is the HTTPS connection that delivered it. The installer does have a detached
+signature, `fontaine-installer.sh.minisig` beside it on the `dev` release (dev key) and on each
+tagged release (release key); if you download the script instead of piping it, you can verify it by
+hand, and the signed trusted comment binds the channel, file, version and commit.
+To check an archive's signature, download it and follow [Verifying releases](verifying-releases.md).
 
 ### Proxies and certificates
 
@@ -69,8 +76,9 @@ shared with rustup. Remove them only if neither rustup nor cargo is installed; o
 
 ## The release archive
 
-Each [GitHub Release](https://github.com/madesroches/fontaine/releases) has one archive per
-platform: `fontaine-<target>.tar.xz`, or `.zip` on Windows. Unpack it and put `fontaine` on your
+Each dev build is a `dev-<n>` [prerelease](https://github.com/madesroches/fontaine/releases) with one
+archive per platform: `fontaine-<target>.tar.xz`, or `.zip` on Windows. (The `dev` release itself
+holds only the installer.) Unpack it and put `fontaine` on your
 `PATH`; it also holds the license, readme and changelog. This is the path for Windows. Each archive
 has a detached signature; see [Verifying releases](verifying-releases.md). A manual install writes
 no receipt.

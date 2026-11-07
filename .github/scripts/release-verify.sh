@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Usage: release-verify.sh <channel> <dir> <pubkey> <version> <commit>
 # Fails on the first problem; success means every archive in <dir> is signed by <pubkey> with
-# the exact trusted comment binding and matches its checksums. The unsigned shell installer is
-# accepted on the release channel only.
+# the exact trusted comment binding and matches its checksums. The shell installer is accepted on
+# the release channel only, and there it must carry a valid .minisig too. The kind `dev-installer`
+# checks a directory holding exactly the signed dev fontaine-installer.sh and its .minisig.
 set -euo pipefail
 
 if [ "$#" -ne 5 ]; then
@@ -21,13 +22,35 @@ fail() {
 }
 
 case "$channel" in
-  release | dev) ;;
+  release | dev | dev-installer) ;;
   *) fail "unknown channel '$channel'" ;;
 esac
 [ -n "$version" ] || fail "empty version"
 [ -n "$commit" ] || fail "empty commit"
 [ -d "$dir" ] || fail "'$dir' is not a directory"
 [ -f "$pubkey" ] || fail "'$pubkey' is not a file"
+
+if [ "$channel" = dev-installer ]; then
+  for path in "$dir"/* "$dir"/.[!.]*; do
+    [ -e "$path" ] || [ -L "$path" ] || continue
+    name="$(basename "$path")"
+    [ -f "$path" ] && [ ! -L "$path" ] || fail "unrecognised asset '$name' (not a regular file)"
+    case "$name" in
+      fontaine-installer.sh | fontaine-installer.sh.minisig) ;;
+      *) fail "unrecognised asset '$name'" ;;
+    esac
+  done
+  [ -f "$dir/fontaine-installer.sh" ] || fail "fontaine-installer.sh is missing"
+  [ -f "$dir/fontaine-installer.sh.minisig" ] || fail "fontaine-installer.sh has no .minisig"
+  minisign -V -q -p "$pubkey" -m "$dir/fontaine-installer.sh" -x "$dir/fontaine-installer.sh.minisig" \
+    || fail "fontaine-installer.sh: signature does not verify against $pubkey"
+  # Read only after -V succeeded, which authenticates this line through the global signature.
+  expected="trusted comment: fontaine-signature v1 channel=dev file=fontaine-installer.sh version=$version commit=$commit"
+  actual="$(sed -n '3p' "$dir/fontaine-installer.sh.minisig")"
+  [ "$actual" = "$expected" ] || fail "fontaine-installer.sh: trusted comment is '$actual', expected '$expected'"
+  echo "release-verify: installer verified for channel dev"
+  exit 0
+fi
 
 archives=()
 for path in "$dir"/* "$dir"/.[!.]*; do
@@ -40,7 +63,7 @@ for path in "$dir"/* "$dir"/.[!.]*; do
     fontaine-*.tar.xz.sha256 | fontaine-*.zip.sha256) ;;
     sha256.sum) ;;
     # Dev tags are `dev-<n>`, but dist bakes a `v<version>` download URL into the installer.
-    fontaine-installer.sh) [ "$channel" = release ] || fail "unrecognised asset '$name'" ;;
+    fontaine-installer.sh | fontaine-installer.sh.minisig) [ "$channel" = release ] || fail "unrecognised asset '$name'" ;;
     *) fail "unrecognised asset '$name'" ;;
   esac
 done
@@ -75,5 +98,15 @@ for name in "${archives[@]}"; do
 done
 
 (cd "$dir" && sha256sum -c sha256.sum >/dev/null) || fail "sha256.sum mismatch"
+
+if [ -f "$dir/fontaine-installer.sh" ]; then
+  installer="$dir/fontaine-installer.sh"
+  [ -f "$installer.minisig" ] || fail "fontaine-installer.sh has no .minisig"
+  minisign -V -q -p "$pubkey" -m "$installer" -x "$installer.minisig" \
+    || fail "fontaine-installer.sh: signature does not verify against $pubkey"
+  expected="trusted comment: fontaine-signature v1 channel=release file=fontaine-installer.sh version=$version commit=$commit"
+  actual="$(sed -n '3p' "$installer.minisig")"
+  [ "$actual" = "$expected" ] || fail "fontaine-installer.sh: trusted comment is '$actual', expected '$expected'"
+fi
 
 echo "release-verify: ${#archives[@]} archives verified for channel $channel"

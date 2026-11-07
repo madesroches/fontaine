@@ -10,8 +10,14 @@ All notable changes are recorded here. The format follows
 
 - A one-line shell installer for Linux and macOS, `fontaine-installer.sh`, is attached to each
   release. It installs to `$CARGO_HOME/bin`, checks the archive's sha256 when `sha256sum` is
-  present, and writes an install receipt for the updater. It is not signed and ignores the
-  `[network]` settings; see `docs/installing.md` (#477).
+  present, and writes an install receipt for the updater. It ignores the `[network]` settings and
+  does not check its own signature; see `docs/installing.md` (#477). Its minisign signature,
+  `fontaine-installer.sh.minisig`, is attached beside it and checked before the release is
+  published (#487).
+- A stable dev install URL, `https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.sh`,
+  installs the latest CI-passing build of `main`. Each dev publish replaces the installer and its
+  minisign signature on the long-lived `dev` prerelease; the installer downloads the immutable
+  `dev-<n>` archives and records `-dev.` in its receipt version (#487).
 - `/bug` files a Fontaine bug report as a GitHub issue. It previews the exact text, needs your
   confirmation, scrubs known secret values, and sends the least revealing `minimal` level unless you
   pick `full` (transcript tail). It uses `gh issue create` when available and otherwise prints a

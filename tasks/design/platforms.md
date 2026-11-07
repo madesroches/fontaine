@@ -28,10 +28,10 @@ that is never sufficient alone.
 
 semver 0.x, git tags `vX.Y.Z`. GitHub Releases carry prebuilt binaries for Linux, macOS and Windows
 built by cargo-dist (exact-pinned version; workflow `.github/workflows/release.yml`, set up in Phase 4,
-the first phase that produces a release); on Linux and macOS (Linux x86_64, macOS arm64 and x86_64) dist's `shell` installer, `fontaine-installer.sh`, is attached to tagged releases only (unsigned, sha256-verified, receipt for the updater; no dev-channel installer because dist bakes a `v<version>` URL); `cargo install --git https://github.com/madesroches/fontaine fontaine` also works; v1 does not publish to crates.io. The
+the first phase that produces a release); on Linux and macOS (Linux x86_64, macOS arm64 and x86_64) dist's `shell` installer, `fontaine-installer.sh`, is attached to tagged releases (signed with the release key, sha256-verified, receipt for the updater); the dev channel has a rewritten, signed copy of it at the stable `dev` release (see below); `cargo install --git https://github.com/madesroches/fontaine fontaine` also works; v1 does not publish to crates.io. The
 maintainer cuts releases — tagging and pushing the tag are human steps, never the agent's.
 `CHANGELOG.md` follows Keep a Changelog: entries accumulate under `## [Unreleased]`, which moves under
-the version heading at release. The README install section lists the installer, the manual archive and `cargo install --git`.
+the version heading at release. The README install section lists the installer (the dev installer until the first tagged release), the manual archive and `cargo install --git`.
 
 Archives carry the root `LICENSE`, `README.md` and `CHANGELOG.md` through `include`. The release
 workflow stages the changelog into `rust/` so dist builds the release notes from the version's
@@ -39,7 +39,7 @@ section. A tag without that section fails in the `plan` job.
 
 Every archive is signed. Fontaine owns one minisign key per channel: `release` (tagged releases)
 and `dev` (the latest CI-passing build of `main`, published by `.github/workflows/dev.yml` as the
-prerelease `dev-<run_number>` once the repository variable `FONTAINE_DEV_CHANNEL` is `enabled`).
+prerelease `dev-<run_number>` once the repository variable `FONTAINE_DEV_CHANNEL` is `enabled`; the long-lived prerelease `dev` holds only the installer and its signature, see below).
 The public keys are in `rust/fontaine/keys/` and compiled into the verifier module Fontaine's update path will use (no self-update yet); the private keys exist
 only as secrets of the `release-signing` (tags, required reviewer) and `dev-signing` (`main`)
 GitHub Environments, which only the `sign` jobs name. The signed trusted comment binds channel,
@@ -50,6 +50,16 @@ leaves nothing public. The `fontaine` crate's `release_signature` module is the 
 (for the updater and `fontaine update`); CI checks the archives with the upstream minisign CLI,
 pinned and checksum-verified, and an ignored test proves the two agree on the CLI's output.
 Key bootstrap, rotation and recovery are in `CONTRIBUTING.md`.
+
+The dev channel has one stable installer address, `releases/download/dev/fontaine-installer.sh`,
+an asset of the long-lived prerelease `dev` (tag created once, never moved). `dev-<n>` is immutable
+and has no installer. In `sign`, `.github/scripts/dev-installer.sh` rewrites dist's installer to
+fetch the archives of its own `dev-<n>` and to carry the dev version (`<base>-dev.<n>+<sha7>`) in
+`APP_VERSION`, the receipt and the usage text, failing on any text it does not recognise; the result is
+signed with the dev key (`release-sign.sh dev-installer`) and uploaded as the `dev-installer`
+artifact, which `host` and `verify-draft` never see. After `publish`, the `stable-installer` job
+verifies it, skips unless its `dev-<n>` is the highest published, replaces the two assets and
+byte-compares what users would download.
 
 Directories come from the `dirs` crate: config dir = `dirs::config_dir()/fontaine` (Linux
 `~/.config/fontaine`; macOS and Windows platform defaults, Windows under `%APPDATA%`), data dir =

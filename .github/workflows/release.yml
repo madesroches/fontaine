@@ -20,8 +20,8 @@
 # fails a tag with no changelog section. `plan` retries the whole dist install (the installer
 # script and the archive it fetches), since one transient error from GitHub Releases would
 # otherwise turn a PR red. The signing chain is also hand-written: after the build jobs, `sign`
-# (environment `release-signing`, the only job that sees the signing key) signs every archive,
-# `host` creates a draft release, `verify-draft` re-downloads and verifies it, and only then does
+# (environment `release-signing`, the only job that sees the signing key) signs every archive and the
+# shell installer, `host` creates a draft release, `verify-draft` re-downloads and verifies it, and only then does
 # `publish` make it public. `contents: write` is granted per job, to `host`, `verify-draft` and
 # `publish` only. See docs/verifying-releases.md.
 name: Release
@@ -256,7 +256,7 @@ jobs:
           path: |
             ${{ steps.cargo-dist.outputs.paths }}
             rust/${{ env.BUILD_MANIFEST_NAME }}
-  # Signs every archive. The only job in the workflow that names an environment, so the signing
+  # Signs every archive and the shell installer. The only job in the workflow that names an environment, so the signing
   # secrets are in scope here and nowhere else; it runs no build tools and no code from the
   # artifacts it downloads.
   sign:
