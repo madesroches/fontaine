@@ -39,7 +39,7 @@ Pure, no I/O: `BugReport::build(&Facts, Level) -> BugReport` and `BugReport::ren
 { title, body, bundle }`.
 
 - `Facts` is gathered by the caller: version, git sha and build target (compile-time `env!`
-  from a new `rust/fontaine/build.rs` that emits git sha and target, `unknown` when `.git` is absent), OS/arch,
+  from a new `rust/fontaine/build.rs` that emits git sha and target, `unknown` when `.git` is absent; `env!` values exist only in the `fontaine` bin crate, so `Facts` is assembled there and sha/target are passed into the TUI/runtime setup, never read via `env!` in `fontaine-tui`/`fontaine-core`), OS/arch,
   `$TERM` and size, install method, provider/model, guardian profile/model, permission mode,
   config rows (from the `doctor_report` renderers), contributing config scopes, recent warnings,
   guardian verdict summaries (from the ledger), session id, user description, and the transcript
@@ -56,7 +56,7 @@ Pure, no I/O: `BugReport::build(&Facts, Level) -> BugReport` and `BugReport::ren
 credentials, values of env vars named by `api_key_env` of configured accounts, MCP server env
 values, OAuth tokens) from every string, replacing them with `[redacted]`, then a token-pattern
 backstop pass (`sk-…`, `ghp_…`, bearer headers, PEM blocks). Values under 8 chars are skipped to
-avoid shredding the text. This is report scrubbing, not tool-argument matching, so the permission
+avoid shredding the text. The pattern backstop is not used for any permission decision, so the permission
 pipeline's no-regex invariant is unaffected. Redaction runs on the final rendered text (body and
 bundle), after assembly, so a secret in any field is caught.
 
@@ -64,8 +64,8 @@ bundle), after assembly, so a secret in any field is caught.
 
 Constants: `REPO = "madesroches/fontaine"`, `LABELS = ["bug"]`; not configurable from any scope.
 
-- Always writes the bundle to `<data_dir>/bug-reports/<session>-<timestamp>.md` (owner-only,
-  via `owner_only`), never overwriting.
+- Always writes the bundle to `<data_dir>/bug-reports/<session>-<timestamp>.md` (owner-only),
+  never overwriting: add a create-new helper to `owner_only` (which has only open(append)/write/write_atomic), and add a numeric suffix to the filename on collision.
 - `Submit::Gh`: if `gh auth status` succeeds, `gh issue create --repo REPO --label bug --title …
   --body-file <bundle body>` run through the argv API (no shell). Returns the issue URL.
 - `Submit::Url` (fallback, or user's choice): prints `https://github.com/REPO/issues/new?title=…
@@ -73,25 +73,25 @@ Constants: `REPO = "madesroches/fontaine"`, `LABELS = ["bug"]`; not configurable
   bundle file for the rest. Nothing is opened automatically; the URL is shown for copying.
 - Transcript is never put in the URL.
 
-### 4. TUI flow (`fontaine-tui/src/ui/commands/bug.rs`, `bug_prompt.rs`)
+### 4. TUI flow (handler `fontaine-tui/src/ui/commands/bug.rs`, prompt `fontaine-tui/src/bug_prompt.rs`)
 
 `/bug [description]`: description from the argument or a prompt. A preview screen (pattern of
 `confirm_prompt.rs`) shows the full rendered payload (scrollable), the level toggle
 (`m`inimal / `f`ull, default minimal), the submission method (gh or URL), and the destination repo.
 Enter confirms; Esc cancels with nothing written or sent. The bundle file is written only after
-confirmation (a cancelled preview leaves no file). On submit: ledger `Record::BugReport { method, level,
-url }` (with its fold arm) plus an audit `DecisionRecord` with tool label `bug` and `Tier::BugReport`
-(label `bug_report`); the URL or file path is shown in the transcript. `Command::Bug` is
-`main_only() == true`, so subagent views refuse it. The prompt lives in
+confirmation (a cancelled preview leaves no file). On submit the TUI calls a new `SessionState::record_bug_report(method, level, url)` in
+`fontaine-core/src/gate.rs` (the TUI cannot write audit records itself), which appends ledger `Record::BugReport { method, level,
+url }` (with its fold arm) and calls the private `record_session_event("bug", …, Tier::BugReport, …)` like `record_skill_trust` (tool label `bug`, tier label `bug_report`); `audit.rs` needs no change; the URL or file path is shown in the transcript. `Command::Bug` is
+`main_only() == true` (added to the explicit `main_only` matches list in `commands.rs`; it stays out of `runs_mid_turn`), so subagent views refuse it. The prompt lives in
 `fontaine-tui/src/bug_prompt.rs` with a `Prompt` variant wired in `lib.rs`/`app.rs`.
 
 ### 5. `draft_bug_report` tool
 
 Takes `title`, `area`, `details`; writes `<data_dir>/bug-drafts/<id>.json` after redaction, no
-network. Registered as a `TOOLS` row in `descriptor.rs` (`Destructive::Always`, `RiskClass::Arbitrary`) with the new
+network. Registered as a `TOOLS` row in `descriptor.rs` (`Destructive::Always`, `RiskClass::Arbitrary`, `path_free` true) with the new
 `Tier::BugDraft` (never guardian-judged, after the floor); the pinned array in `rows_are_pinned` is
-updated. Omitted for subagents and headless runs, capped at 3 per
-session. The TUI shows a footer count of drafts; `/bug` lists drafts and loads one as the
+updated (count 27→28), and `draft_bug_report` is added to `FONTAINE_ONLY` in `descriptor.rs::names_are_unique_rule_names` (no Claude Code alias). Omitted for headless runs, capped at 3 per
+session. Tools register once on the shared tool server (`agent/build.rs::extension_tools`) and a subagent's tools come from `AgentType::toolset(parent_tools)` (`fontaine-agents/src/registry.rs`), where a type with `tools: None` (e.g. built-in `fork`) inherits all parent tools; so `draft_bug_report` is stripped for every subagent type in `toolset()`/`spawn.rs` next to `tools.retain(|t| t != "agent")`. The TUI shows a footer count of drafts; `/bug` lists drafts and loads one as the
 description. `[feedback] drafts = "on" | "quiet" | "off"` (user-scope only, `config_scope.rs`;
 `off` omits the tool). Submission stays user-only and outside the guardian.
 
@@ -112,9 +112,10 @@ the report can include them. Display-only state: recovering lock allowed with a 
 
 ## Files to Modify
 
-`fontaine-core/src/{lib,ledger,audit,config,config_catalog,config_scope,agent/*}.rs`,
-`fontaine-core/src/{export,tier,permissions}.rs`, `fontaine-tools/src/descriptor.rs`,
-headless schema, `evals` expected_tier, `rust/fontaine/build.rs` (new), `AGENTS.md`,
+`fontaine-core/src/{lib,ledger,config,config_catalog,config_scope,agent/*}.rs`,
+`fontaine-core/src/{export,tier,permissions,gate}.rs`, `fontaine-tools/src/descriptor.rs`,
+`fontaine-agents/src/{registry,spawn}.rs`, `fontaine-core/tests/choke_point.rs`,
+`docs/schemas/headless-v1.schema.json`, `rust/fontaine/build.rs` (new), `AGENTS.md`,
 `fontaine-tui/src/{commands,app,lib,bug_prompt}.rs`,
 `fontaine-tui/src/ui/{mod.rs,commands/mod.rs}`, new files above, `docs/tui.md`,
 `docs/configuration.md`, `docs/tools.md`, `CHANGELOG.md`.
@@ -133,16 +134,19 @@ headless schema, `evals` expected_tier, `rust/fontaine/build.rs` (new), `AGENTS.
 - 2026-11-07: Headless `fontaine bug --session <id>` CLI is out of scope for v1; the builder is
   pure so it can be added later.
 - 2026-11-07: Target repo and labels are constants (open question 5).
-- 2026-11-07: `draft_bug_report` gets a new `Tier::BugDraft` (never guardian-judged after the floor; update `Tier::ALL`, `as_str`, headless schema, evals expected_tier) because `COORDINATION` is documented as reaching only agents of the same tree, which a data-dir write does not fit.
+- 2026-11-07: `draft_bug_report` gets a new `Tier::BugDraft` (never guardian-judged after the floor; update `Tier::ALL`, `as_str`, headless schema) because `COORDINATION` is documented as reaching only agents of the same tree, which a data-dir write does not fit.
 - 2026-11-07: `draft_bug_report` has `Destructive::Always` + `RiskClass::Arbitrary` like `send_message`, since `path_policy_is_consistent` ties `Never` to `ReadOnly`.
-- 2026-11-07: The bug submission audit entry uses a new `Tier::BugReport` (label `bug_report`, following `Tier::Afk`/`GuardianOff`), tool label `bug`, same schema/evals fallout.
+- 2026-11-07: The bug submission audit entry uses a new `Tier::BugReport` (label `bug_report`, following `Tier::Afk`/`GuardianOff`), tool label `bug`, same schema fallout.
+- 2026-11-07: The `AGENTS.md` invariant's exception count goes from five to six; the `draft_bug_report` carve-out covers only writing a redacted draft to the data dir, and the submission audit tier (`Tier::BugReport`) is recorded alongside it.
+- 2026-11-07: `draft_bug_report` is stripped for every subagent type in `toolset()`/`spawn.rs`, since `tools: None` types such as `fork` inherit all parent tools.
+- 2026-11-07: The bundle file uses a new create-new helper in `owner_only`, with a numeric suffix on filename collision.
 - 2026-11-07: `/bug` is a slash command only (none headless) and is `main_only()`.
 
 ## Documentation
 
 Update `docs/tui.md` (the command, preview, levels), `docs/configuration.md` (`[feedback]`),
 `docs/tools.md` (`draft_bug_report`), the master plan's Decisions (`Tier::BugDraft`, `Tier::BugReport`), and the `AGENTS.md`
-security-invariant list of never-guardian-judged exceptions.
+security-invariant list of never-guardian-judged exceptions ("There are five exceptions" becomes six, with a clause that `draft_bug_report` only writes a redacted draft to the data dir).
 
 ## Testing Strategy
 
@@ -152,8 +156,8 @@ security-invariant list of never-guardian-judged exceptions.
 - Integration (TUI harness, `tests/tui.rs` style): `/bug` shows a preview; Esc sends/writes
   nothing; Enter with a fake `gh` on `PATH` creates the issue and records ledger + audit; without
   `gh` the URL fallback prints and the bundle exists.
-- Choke-point test stays green with the new tool; a test asserts the tool is absent for
-  subagents, headless runs and `drafts = "off"`, and that project scope cannot set `[feedback]`.
+- `fontaine-core/tests/choke_point.rs` derives expected tools from every `TOOLS` row, filtering websearch/lsp/powershell and hard-coding `extras`: add `draft_bug_report` to that filter/extras. `descriptor.rs`: `FONTAINE_ONLY` entry and `rows_are_pinned` 27→28. `Tier::ALL` length 20→22 (order matters) plus `as_str`, and `$defs.tier.enum` in `docs/schemas/headless-v1.schema.json` (enforced by `headless_contract.rs::the_schema_tier_enum_is_exactly_the_tier_names`); evals need no code change (`Option<Tier>` via serde).
+- A test asserts the tool is absent for `fork`, a type with no `tools`, every other subagent, headless runs and `drafts = "off"`, and that project scope cannot set `[feedback]`.
 
 ## Open Questions
 
