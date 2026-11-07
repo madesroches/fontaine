@@ -40,12 +40,14 @@ can supply more than an id override it.
 the same `GET {base_url}/models` through the account's network client and parse `data[]` (or a
 bare array, as the Kimi coding endpoint returns), picking the entry whose `id` equals the model and
 reading `display_name` and `context_length` (fall back to `limit.context`). Any failure or absent
-entry yields `None`; a scorecard must never fail because the metadata was unavailable. Reuse
-`KimiQuota`'s base-URL/auth plumbing where possible rather than duplicating header handling.
+entry yields `None`. `connect` always builds a small models fetcher on `Connected` (today it holds
+only the rig client and `quota`, which is `Some` only for Kimi-quota accounts): a reqwest client
+from `ctx.network`, the trimmed base URL and the optional bearer api key, reusing the helpers in
+`kimi_quota.rs` (`reqwest_client`, the 10s `REQUEST_TIMEOUT`, bearer auth, `without_url()` error
+mapping).
 
 **Eval**: `Live` gains `served: Option<ServedModel>`, filled in `connect()` after the guardian
-resolves (the short timeout lives on the `/models` fetcher; failure is silent in the scorecard but
-reported via `eprintln!("fontaine-evals: ...")`). `Summary` gains
+resolves, with the fetcher's 10s `REQUEST_TIMEOUT`. `Summary` gains
 `served_model: Option<ServedModel>` (`skip_serializing_if = "Option::is_none"`), and `Cascade`
 gains `screen_served_model` likewise, populated from the screen's `Live`. The served data passes through `SummaryParams` and
 `CascadeParams` into `summarize()` and `cascade_summary()`, and `print_summary` reads it from
@@ -56,12 +58,13 @@ records what answered at its end.
 ## Implementation Steps
 
 1. `fontaine-core/src/providers/mod.rs`: add `ServedModel` and the defaulted trait method.
-2. `fontaine-core/src/providers/openai_compatible.rs`: implement it with a parsed `/models` fetch.
+2. `fontaine-core/src/providers/openai_compatible.rs`: build the models fetcher in `connect`, store it on `Connected`, and implement the method with a parsed `/models` fetch.
 3. `fontaine-evals/src/live.rs`: capture it in `connect()`; expose it on `Live`.
 4. `fontaine-evals/src/runner.rs`: add the fields to `Summary` and `Cascade`, pass the served data through `SummaryParams`/`CascadeParams`
    into `summarize()`/`cascade_summary()`, print the line from `Summary`.
-5. `docs/evals.md`: document the field in the scorecard description and add a "Served model"
-   column or footnote to the guardian tables that name `kimi`; `CHANGELOG.md` entry.
+5. `docs/evals.md`: describe the field near the cascade/scorecard prose (~lines 249 and 336; no
+   scorecard-field schema section exists) and add a footnote under the guardian tables that name `kimi`;
+   `CHANGELOG.md` entry under a new `### Added` heading in `[Unreleased]`.
 6. Re-run the control row (`--guardian live:kimi/kimi-for-coding`, full profile, default timeout)
    once, write `evals/scorecards/kimi-for-coding-k2-8.json` (the original stays) and
    compare the result against the 89.7% row (`docs/evals.md` ~line 518, from
