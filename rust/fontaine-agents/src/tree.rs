@@ -488,6 +488,16 @@ impl Inner {
             .map_or_else(|| to.to_string(), |n| n.info.id.clone())
     }
 
+    /// The resolved id and node of `to`, which `caller` must have started.
+    fn owned_node(&self, caller: &str, to: &str) -> Result<(String, &Node), AgentWaitError> {
+        let id = self.resolve_target(to);
+        let node = self.nodes.get(id.as_str()).ok_or(AgentWaitError::Unknown)?;
+        if node.info.parent.as_deref() != Some(caller) {
+            return Err(AgentWaitError::NotYours);
+        }
+        Ok((id, node))
+    }
+
     /// The name `id` goes by, or the id itself for a sender that is not an agent, such as a job.
     fn name_of(&self, id: &str) -> String {
         self.nodes
@@ -1789,15 +1799,16 @@ impl AgentTree {
         })
     }
 
+    /// The id of `id` (an id or name) when `caller` started it.
+    pub fn owned_child(&self, caller: &str, id: &str) -> Result<String, AgentWaitError> {
+        self.lock().owned_node(caller, id).map(|(id, _)| id)
+    }
+
     /// Where `id` stands for `caller`, who must have started it.
     fn agent_state(&self, caller: &str, id: &str) -> Result<AgentState, AgentWaitError> {
         let inner = self.lock();
-        let id = inner.resolve_target(id);
+        let (id, node) = inner.owned_node(caller, id)?;
         let id = id.as_str();
-        let node = inner.nodes.get(id).ok_or(AgentWaitError::Unknown)?;
-        if node.info.parent.as_deref() != Some(caller) {
-            return Err(AgentWaitError::NotYours);
-        }
         if node.status.is_running() {
             return Ok(AgentState::Running {
                 age: node.started.elapsed(),

@@ -990,7 +990,8 @@ impl Tool for AgentTool {
              arrives as a notification with a later tool result or turn; call `job_output` with \
              the id or the name to wait for one. When its turn ends it goes idle and keeps its \
              conversation: `send_message` wakes it for follow-up on the same work. Start a new \
-             agent for new work. A subagent that answers while its own subagents run waits \
+             agent for new work. To end one before it finishes, `job_cancel` it; to redirect \
+             it, `send_message`. A subagent that answers while its own subagents run waits \
              for them before it ends. A subagent has a subset of your tools and never more \
              authority than you, and every call it makes passes the same permission checks. \
              Agent types:\n{}",
@@ -1221,7 +1222,7 @@ impl Tool for SendMessageTool {
          (another subagent of your parent) or `main`, the main conversation. The message is \
          queued and the recipient reads it at its next turn, marked with your agent name and id. \
          An agent whose turn has ended is woken by it with its conversation intact, unless it was \
-         killed, ran out of budget or was retired. Returns \
+         killed, ran out of budget or was retired. It cannot stop an agent; `job_cancel` does. Returns \
          `{\"status\":\"queued\"}`, or an error when the agent cannot be reached or woken."
             .to_string()
     }
@@ -1267,5 +1268,28 @@ impl Tool for SendMessageTool {
                 args.to
             ))),
         }
+    }
+}
+
+/// How `job_cancel` stops a subagent: the tree's ownership rule, then the same kill as the
+/// agents panel.
+pub struct TreeKills {
+    pub tree: Arc<AgentTree>,
+    pub ledger: Arc<dyn RootLedger>,
+}
+
+impl fontaine_tools::jobs::AgentKills for TreeKills {
+    fn kill(
+        &self,
+        caller: &str,
+        id: &str,
+    ) -> Result<fontaine_tools::jobs::AgentKilled, fontaine_tools::jobs::AgentWaitError> {
+        let id = self.tree.owned_child(caller, id)?;
+        let stopped = kill_agent(&self.tree, &self.ledger, &id);
+        Ok(fontaine_tools::jobs::AgentKilled {
+            name: self.tree.name_of(&id),
+            id,
+            stopped,
+        })
     }
 }

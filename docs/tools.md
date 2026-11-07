@@ -19,7 +19,7 @@ result passes one post-call step before the model sees it.
 | `shell` | arbitrary | Runs a shell command. A command still running at its timeout keeps running as a [background job](#background-jobs). Arguments: `command`, `timeout_secs`, `cwd`, `run_in_background`. |
 | `powershell` | arbitrary | Windows only: runs a [PowerShell](#powershell) command. A command still running at its timeout keeps running as a [background job](#background-jobs). Arguments: `command`, `timeout_secs`, `cwd`, `run_in_background`. Registered only when a PowerShell interpreter is found. |
 | `job_output` | read-only | Lists the [background jobs](#background-jobs) you started, or reads what one printed since it was last read, waiting for it to end if asked; on a [monitor](#monitor) it waits and reports status instead; on a subagent's id it [waits for it to end](agents.md#waiting-for-a-subagent). Arguments: `id`, `wait_secs` (no ceiling; default 0 for a job, until it ends for a subagent). Jobs and the list: main conversation only; a subagent may use it only with the id of a subagent it started. |
-| `job_cancel` | arbitrary | Stops a background job or monitor with its whole process group. Argument: `id`. Main conversation only. |
+| `job_cancel` | arbitrary | Stops a background job or monitor with its whole process group, or a subagent you started, with its running descendants; stopping a subagent is final. Argument: `id`. Jobs and monitors: main conversation only; subagents: any agent that started them. |
 | `monitor` | arbitrary | Runs a command in the background and delivers each line it prints as a [notification](#monitor). Arguments: `command`, `description` and an optional `timeout_secs` (no default). Main conversation only. |
 | `webfetch` | arbitrary | Fetches one web page. |
 | `websearch` | arbitrary | Searches the web through the backend set in [`[websearch]`](configuration.md#websearch); registered when one is configured, or by default when `docker` or `podman` is installed. Arguments: `query`, `allowed_domains`, `blocked_domains`. |
@@ -355,7 +355,10 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
   bytes. A zero `wait_secs` asks for the status at once.
 - **`job_cancel`.** Stops the job's whole process group (`SIGTERM`, then `SIGKILL` after 2 seconds)
   and returns what it printed since it was last read, not counting what a notification already
-  carried. A job that already ended is left as it is.
+  carried. A job that already ended is left as it is. Given an `agent-N` id or a name, it stops
+  that subagent and the agents it started instead: the stop is final (the agent cannot be resumed
+  and delivers no report), an agent that already ended is left as it is, and only an agent the
+  caller started can be stopped.
 - **Output.** A job keeps its latest 1 MiB of output, in lines, with escape sequences removed and
   secrets redacted as in a plain `shell` result; earlier lines are dropped and counted. Past 2,000
   lines or 50 KB a read is cut as a `shell` result is.
@@ -365,12 +368,12 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
   50 finished jobs kept, and no per-job deadline for a background job, since a development server
   is a legitimate use.
 - **Who can use them.** The main conversation. A subagent's `shell` call never becomes a job
-  and keeps its kill-at-timeout; its `run_in_background`, `job_cancel` and `monitor` calls are
-  refused, and so is its `job_output` unless the id is that of a subagent it started.
+  and keeps its kill-at-timeout, and its `run_in_background` and `monitor` calls are refused
+  outright; its `job_cancel` and `job_output` work only on the id or name of a subagent it started.
 - **Permissions.** The command is judged by the [permission pipeline](permissions.md) when
   `shell` is called, as for any command. Moving to the background does not ask again.
   `job_output` is read-only and names no path; `job_cancel` is an arbitrary tool because it
-  signals a process, but it can only reach a job this session started, by id.
+  signals a process or stops an agent, but it can only reach a job or subagent this session's caller started, by id.
 - **Ending.** Every job is terminated when the session ends: on exit of the terminal UI, at the
   end of a headless run, and on `/resume` and `/branch`. `/clear` and a `/rewind` that restores the
   conversation terminate running jobs and drop the notes they queued. The [agents panel](tui.md#the-agents-panel) lists the jobs
@@ -396,7 +399,7 @@ own: allow it with a `monitor(...)` rule or leave it to the guardian.
   output — it waits (for `wait_secs`, and until a message arrives or you queue a command, skill or `!` line) and reports whether a
   notification was posted, the monitor ended, or it still runs; its lines and its final notice
   always arrive as notifications.
-- Like `job_cancel` it is for the main conversation only, and it counts against the limit
+- It is for the main conversation only, and it counts against the limit
   of 8 running jobs.
 
 ## Web fetch

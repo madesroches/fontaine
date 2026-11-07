@@ -209,6 +209,10 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
         shell_cwd: p.setup.shell_cwd.clone(),
         scratch: p.state.scratch.clone(),
         agent_waits: Some(p.state.agents().clone()),
+        agent_kills: Some(Arc::new(fontaine_agents::spawn::TreeKills {
+            tree: p.state.agents().clone(),
+            ledger: ledger_window.clone(),
+        })),
         wait_wake: Some(Arc::new(CoreWake {
             tree: p.state.agents().clone(),
             steering: p.steering.clone(),

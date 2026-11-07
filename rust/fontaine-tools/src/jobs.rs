@@ -78,10 +78,6 @@ pub enum JobError {
 impl fmt::Display for JobError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            JobError::UnknownJob(id) if id.starts_with("agent-") => write!(
-                f,
-                "{id} is a subagent, not a job; only the user can stop a subagent"
-            ),
             JobError::UnknownJob(id) => write!(f, "there is no job {id}"),
             JobError::TooMany => write!(
                 f,
@@ -159,6 +155,24 @@ pub trait AgentWaits: Send + Sync {
         id: &'a str,
         wait: Option<Duration>,
     ) -> BoxFuture<'a, Result<AgentState, AgentWaitError>>;
+}
+
+/// What `job_cancel` did to a subagent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentKilled {
+    /// The agent's id, whether the caller gave its id or its name.
+    pub id: String,
+    /// The name it goes by.
+    pub name: String,
+    /// `false` when it had already ended and was left alone.
+    pub stopped: bool,
+}
+
+/// The seam through which `job_cancel` stops subagents, which live in a crate that depends on
+/// this one.
+pub trait AgentKills: Send + Sync {
+    /// Stops `id` (an id or name), a child of `caller`, with its running descendants.
+    fn kill(&self, caller: &str, id: &str) -> Result<AgentKilled, AgentWaitError>;
 }
 
 /// Lets a parked wait notice news that should end it early.

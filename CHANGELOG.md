@@ -49,6 +49,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `job_cancel` now stops a subagent the caller started, by `agent-N` id or name, together with
+  its running descendants; the model no longer has to guess and fail with "only the user can stop
+  a subagent". The kill is final, as the agents panel's `x`. A subagent whose type names `agent`
+  also gets `job_cancel` and can stop its own children (#463).
+
 - A `claude-subscription` account shows its 5-hour and weekly plan usage in the status bar, in
   headless `result.account_usage` and in the custom status line input, read from the CLI's own
   `rate_limit_event` frames with no config key and no extra request; the figures appear as soon

@@ -857,9 +857,7 @@ async fn a_wait_too_long_to_represent_has_no_deadline_instead_of_expiring() {
 }
 
 #[test]
-fn an_agent_id_is_not_a_job_and_the_error_says_who_can_stop_it() {
-    let text = JobError::UnknownJob("agent-5".to_owned()).to_string();
-    assert!(text.contains("only the user can stop a subagent"), "{text}");
+fn an_unknown_job_error_names_the_job() {
     assert_eq!(
         JobError::UnknownJob("job-1".to_owned()).to_string(),
         "there is no job job-1"

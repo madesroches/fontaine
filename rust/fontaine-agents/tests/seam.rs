@@ -13,8 +13,8 @@ use fontaine_agents::runner::{
     ChildHandle, ChildReport, ChildRunner, ChildStatus, RevivalRequest, SpawnRequest,
 };
 use fontaine_agents::spawn::{
-    AgentArgs, AgentTool, SendMessageArgs, SendMessageTool, WakeError, kill_agent, remind_main,
-    retire, retire_all_idle, wake_idle,
+    AgentArgs, AgentTool, SendMessageArgs, SendMessageTool, TreeKills, WakeError, kill_agent,
+    remind_main, retire, retire_all_idle, wake_idle,
 };
 use fontaine_agents::tasks::{
     Boards, MAX_IDLE_RESUMES, QualityGate, Task, TaskBoard, TaskStatus, Teams,
@@ -23,7 +23,7 @@ use fontaine_agents::tools::{BoardShowArgs, BoardShowTool, BoardUpdateArgs, Boar
 use fontaine_agents::tree::{AgentTree, Limits, NotificationKind, RebuildRecord};
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::jobs::tools::{JobOutputArgs, JobOutputTool};
-use fontaine_tools::jobs::{AgentWaits, Jobs};
+use fontaine_tools::jobs::{AgentKills, AgentWaitError, AgentWaits, Jobs};
 use futures::future::BoxFuture;
 use rig_core::tool::{Tool, ToolContext};
 use rig_tools::OutputLimit;
@@ -2524,5 +2524,55 @@ async fn a_revival_killed_while_rebuilding_tells_the_human_and_ends_killed() {
     assert_eq!(
         team.rig.tree.status_of("agent-7"),
         Some(ChildStatus::Killed)
+    );
+}
+
+#[tokio::test]
+async fn job_cancel_seam_kills_an_owned_child_and_its_descendants_and_refuses_others() {
+    let mut types = AgentTypes::builtin();
+    let mut lead = types.get("worker").unwrap().clone();
+    lead.name = "lead".into();
+    lead.tools = None;
+    types.insert(lead);
+    let rig = rig_with(
+        Limits {
+            max_parallel: 4,
+            ..Limits::default()
+        },
+        types,
+        RootMode::Ladder(Ladder::Auto),
+    );
+    spawn(&rig, args("lead", "coordinate")).await.unwrap();
+    spawn(&rig, args("explore", "sibling")).await.unwrap();
+    rig.agent
+        .call(&mut as_agent("agent-1"), args("explore", "dig"))
+        .await
+        .unwrap();
+    let ledger: Arc<dyn RootLedger> = rig.ledger.clone();
+    let kills = TreeKills {
+        tree: rig.tree.clone(),
+        ledger,
+    };
+    assert_eq!(
+        kills.kill("agent-1", "agent-2"),
+        Err(AgentWaitError::NotYours)
+    );
+    assert_eq!(
+        kills.kill("agent-1", "agent-9"),
+        Err(AgentWaitError::Unknown)
+    );
+    assert_eq!(
+        kills.kill("agent-2", "agent-1"),
+        Err(AgentWaitError::NotYours)
+    );
+    let killed = kills.kill(ROOT_AGENT, "agent-1").unwrap();
+    assert_eq!(killed.id, "agent-1");
+    assert!(killed.stopped);
+    assert!(rig.tree.was_killed("agent-1"));
+    assert!(rig.tree.was_killed("agent-3"), "its descendant goes too");
+    assert!(!rig.tree.was_killed("agent-2"), "a sibling is untouched");
+    assert!(
+        !kills.kill(ROOT_AGENT, "agent-1").unwrap().stopped,
+        "a second kill finds it already ended"
     );
 }

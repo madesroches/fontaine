@@ -363,6 +363,7 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
         shell_cwd: shell_cwd.clone(),
         scratch: Some(scratch.path().to_path_buf()),
         agent_waits: None,
+        agent_kills: None,
         wait_wake: None,
         network: Default::default(),
         extension: None,
