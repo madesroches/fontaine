@@ -78,8 +78,8 @@ pub enum Record {
         name: String,
         digest: String,
     },
-    /// The human submitted a bug report with `/bug`. `url` is the issue URL, the prefilled-issue
-    /// URL, or the bundle path when nothing was sent.
+    /// The human submitted a bug report with `/bug`. `url` is the issue URL or the prefilled-issue
+    /// URL.
     BugReport {
         method: String,
         level: String,

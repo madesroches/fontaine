@@ -796,7 +796,9 @@ The source column is `default`, `user`, `project`, `project-local` or `cli`. A s
 scope that wins. A list key (`permissions.deny`, `hooks.pre_tool_use`, ...) shows every scope that
 contributed, highest first, and its value is the entry count. A named table (`accounts`,
 `mcp.servers`, `agents.types`, `env`, `telemetry.resource_attributes`) is one row listing the entry
-names. `[env]` shows names only, never values, and a proxy or endpoint URL is shown without its
+names. `[env]` shows names only, never values; `statusline.command` and `guardian.scanner_command` show
+as `<program> (+N args)`, `guardian.composition.script` as `set` and `guardian.composition.params`
+as `<hidden>` (keys only); and a proxy or endpoint URL is shown without its
 credentials. The column names config scopes only: a value set by a command-line flag or an
 environment variable (`--model`, screen-reader mode) is not labelled as such.
 

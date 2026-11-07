@@ -393,7 +393,7 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "plan",
         aliases: &[],
-        hint: Some("[<description> | <draft id> | discard <draft id>]"),
+        hint: Some("[description]"),
         description: "enter plan mode, optionally with a task",
         command: Command::Plan,
     },

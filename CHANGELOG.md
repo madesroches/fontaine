@@ -14,6 +14,9 @@ All notable changes are recorded here. The format follows
   prefilled issue URL and keeps the report in a local file. A submission is recorded in the ledger
   and audit log. The model can queue drafts with `draft_bug_report` (user-scope `[feedback] drafts`
   = `on`, `quiet` or `off`); only you submit (#462).
+- `/config` and `fontaine doctor` summarise `statusline.command` and `guardian.scanner_command` as
+  `<program> (+N args)`, show `guardian.composition.script` as `set` and
+  `guardian.composition.params` as `<hidden>` (keys only), so an inline secret never prints.
 
 ### Fixed
 
