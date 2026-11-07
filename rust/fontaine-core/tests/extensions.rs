@@ -507,8 +507,11 @@ async fn the_skill_tool_cannot_load_a_skill_only_the_user_may_run() {
         );
         user_skill(w, "plain", "---\ndescription: p\n---\nhello");
     });
-    assert_eq!(s.runtime.load("plain", ROOT_AGENT).await.unwrap(), "hello");
-    let refused = s.runtime.load("deploy", ROOT_AGENT).await.unwrap_err();
+    assert_eq!(
+        s.runtime.load("plain", "", ROOT_AGENT).await.unwrap(),
+        "hello"
+    );
+    let refused = s.runtime.load("deploy", "", ROOT_AGENT).await.unwrap_err();
     assert!(refused.contains("for the user"), "{refused}");
     // The user's own command works.
     assert_eq!(
@@ -518,8 +521,32 @@ async fn the_skill_tool_cannot_load_a_skill_only_the_user_may_run() {
             .unwrap(),
         "ship it"
     );
-    let unknown = s.runtime.load("nope", ROOT_AGENT).await.unwrap_err();
+    let unknown = s.runtime.load("nope", "", ROOT_AGENT).await.unwrap_err();
     assert!(unknown.contains("plain"), "{unknown}");
+}
+
+#[tokio::test]
+async fn the_skill_tool_substitutes_the_arguments_the_model_gives() {
+    let s = skills(|w| {
+        user_skill(w, "greet", "---\ndescription: g\n---\nfirst $0, second $1");
+        user_skill(
+            w,
+            "deploy",
+            "---\ndisable-model-invocation: true\n---\nship $ARGUMENTS",
+        );
+    });
+    let text = s
+        .runtime
+        .load("greet", "alpha \"b c\"", ROOT_AGENT)
+        .await
+        .unwrap();
+    assert_eq!(text, "first alpha, second b c");
+    let refused = s
+        .runtime
+        .load("deploy", "prod", ROOT_AGENT)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("for the user"), "{refused}");
 }
 
 #[tokio::test]
@@ -579,12 +606,12 @@ async fn a_skills_allowed_tools_last_to_the_end_of_the_turn_for_the_invoking_age
     assert_eq!(rig.approver.asked(), 4);
 
     // An interrupted turn drops its future; the loan ends all the same.
-    s.runtime.load("tester", ROOT_AGENT).await.unwrap();
+    s.runtime.load("tester", "", ROOT_AGENT).await.unwrap();
     drop(fontaine_core::turn::EndTurnOnDrop(&rig.state));
     assert!(rig.state.skill_grants(ROOT_AGENT).is_empty());
 
     // By the `skill` tool, the invoking agent gets it too.
-    s.runtime.load("tester", ROOT_AGENT).await.unwrap();
+    s.runtime.load("tester", "", ROOT_AGENT).await.unwrap();
     assert!(allowed(
         &rig.check("shell", json!({"command": "cargo test"})).await
     ));
