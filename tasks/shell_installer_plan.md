@@ -88,7 +88,8 @@ self-update when the receipt does not match the running executable.
 ## Implementation Steps
 
 1. `rust/Cargo.toml`: set `installers = ["shell"]`.
-2. Run `dist plan` and a local `dist build --artifacts=global` (with the pinned 0.32.0 dist) to
+2. Run `dist plan`, then a local `dist build --artifacts=local` for the host target followed by
+   `dist build --artifacts=global` (checksums are embedded only from locally built targets; pinned 0.32.0 dist), to
    inspect the generated `fontaine-installer.sh`: install dir, receipt path/format, whether the
    sha256 is embedded and how the script behaves without `sha256sum`, that `sha256.sum` leaves the
    installer out, prerequisites it checks (`curl`/`wget`, `tar`/`unzip`), proxy behaviour. Record findings
@@ -102,15 +103,17 @@ self-update when the receipt does not match the running executable.
    (all platforms, including Windows), then `cargo install --git`. State supported platforms, the
    `curl`/`wget` and `tar` prerequisites, that the sha256 check needs `sha256sum` and is otherwise
    skipped with a notice that `--quiet` suppresses, that the installer and `cargo install --git` both install to
-   `$CARGO_HOME/bin` and replace each other, the receipt, and the `[network]` caveat (the installer
+   `$CARGO_HOME/bin` (the installer overwrites a cargo-installed binary; `cargo install --git ... --force`
+   is needed to overwrite an installer-installed one), the receipt, and the `[network]` caveat (the installer
    ignores Fontaine's proxy, CA and mTLS config; behind a proxy, set `https_proxy` /
    `SSL_CERT_FILE` for `curl`, or download the archive manually).
 7. New `docs/installing.md` (one topic per page): installer command, what it writes, prerequisites,
-   `[network]` caveat, verification parity (including the `sha256sum` dependency), that the installer
-   and `cargo install --git` both install to `$CARGO_HOME/bin` and replace each other, uninstall
-   (remove the binary, the receipt `~/.config/fontaine/fontaine-receipt.json`, the lines the installer
-   added to `.profile` and the bash/zsh rc files, and the `$CARGO_HOME/env` and fish env scripts
-   (`~/.config/fish/conf.d/fontaine.env.fish`); do not delete the whole `~/.config/fontaine`, which is
+   `[network]` caveat, verification parity (including the `sha256sum` dependency), the same overwrite
+   semantics for `cargo install --git`, uninstall (remove the binary, the receipt
+   `~/.config/fontaine/fontaine-receipt.json` and `~/.config/fish/conf.d/fontaine.env.fish`, the only
+   Fontaine-specific file; `$CARGO_HOME/env`, `$CARGO_HOME/env.fish` and the `. "$HOME/.cargo/env"` rc
+   lines are shared with rustup, so removing them is safe only when rustup/cargo are not installed, as
+   it would otherwise take cargo/rustc off PATH; do not delete the whole `~/.config/fontaine`, which is
    also Fontaine's config dir; `NO_MODIFY_PATH` set at install time skips the rc edits), manual and
    source installs, and a link from `docs/index.md`. Update `docs/verifying-releases.md` to say the
    installer is not signed and verifies sha256 only, and reword the line near 61 ("Once Fontaine's
@@ -150,6 +153,7 @@ self-update when the receipt does not match the running executable.
 - AFK: The installer is itself unsigned and does not verify the minisign signature, the most
   conservative option that satisfies the issue without new key handling.
 - AFK: No installer on the dev channel (dist bakes a `v<version>` download URL; dev tags are `dev-<n>`).
+- AFK: Uninstall docs remove only the binary, the receipt and `fontaine.env.fish`; the shared `$CARGO_HOME/env`, `env.fish` and `.cargo/env` rc lines are removable only when rustup/cargo are not installed (dist shares them with rustup).
 - AFK: Linux arm64 is not claimed as supported, so `aarch64-unknown-linux-gnu` is not added.
 
 ## Documentation
@@ -161,8 +165,11 @@ self-update when the receipt does not match the running executable.
 
 - `release-verify.sh` is a silent-failure surface (a bad asset list either blocks every release or
   lets an unexpected asset through). Add cases to the inline self-tests in the `.github/workflows/ci.yml`
-  "Release signing" step (`make_fixture`, `expect_fail`): installer present on `release` passes; installer on `dev` fails; an unrelated
-  extra asset still fails.
+  "Release signing" step (`make_fixture`, `expect_fail`): installer on `dev` fails, using a dev-signed fixture
+  (`make_fixture d; sign d main dev`, mirroring the existing helpers): `verify d dev` passes, then with
+  `fontaine-installer.sh` added it fails. The release positive case is a direct `verify` on a copy of
+  `pristine` plus the installer (`expect_fail` cannot express a pass, and the `pristine` fixture fails
+  as dev already for a channel mismatch). An unrelated extra asset still fails.
 - CI's `dist plan` job (already run per PR) validates the `Cargo.toml` change.
 - Everything about running the installer against a real release needs a real GitHub Release; see
   Manual Verification.
