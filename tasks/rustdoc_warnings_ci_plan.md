@@ -18,32 +18,32 @@ Running `cargo doc --no-deps --workspace` (also with `--features fontaine/pg2`) 
 ## Design
 - Doc fixes: replace each link with plain code formatting (`` `credential` ``, `` `continue_agent` ``)
   where the target is private; for `fetch` use ``[`Self::fetch`]`` (verify it resolves, else plain code).
-- CI: add a step "Rustdoc" right after "Doctests", gated like its neighbours
-  (`if: needs.changes.outputs.code == 'true'`), running `cargo doc --no-deps --workspace` with
-  `RUSTDOCFLAGS: -D warnings` set via `env:`. Runs on all three OSes (cheap, and platform-specific
-  `cfg` code gets documented per-OS). pg2-feature docs are covered by an extra Linux-only invocation
-  `cargo doc --no-deps --workspace --features fontaine/pg2` in the same step's script, since pg2 code is
-  only compiled with the feature.
+- CI: two steps placed after "Doctests" and before "Test (pg2)" (which runs `cargo clean` because Linux
+  disk is tight, so the pg2 docs must build before it). Each has its own `env: RUSTDOCFLAGS: -D warnings`:
+  - "Rustdoc" on all OSes (cheap, and platform-specific `cfg` code gets documented per-OS), gated
+    `if: needs.changes.outputs.code == 'true'`, running `cargo doc --no-deps --workspace`.
+  - "Rustdoc (pg2)", gated `needs.changes.outputs.code == 'true' && runner.os == 'Linux'`, running
+    `cargo doc --no-deps --workspace --features fontaine/pg2`, since pg2 code is only compiled with the
+    feature. Separate steps because a step-level `if` cannot make one command of a shared script
+    Linux-only, and pwsh can mask a first-command failure.
 
 ## Implementation Steps
 1. Edit the three doc comments listed above.
-2. Add the CI step to `.github/workflows/ci.yml`.
+2. Add the two CI steps to `.github/workflows/ci.yml`.
 3. Update the master plan's `ci.yml` description (`tasks/fontaine_harness_plan.md` ~line 205) to mention
-   the rustdoc step, and AGENTS.md "Essential Commands" CI list.
-4. Add a CHANGELOG entry if the file's convention calls for one.
+   the rustdoc steps, AGENTS.md "Essential Commands" CI list, and CONTRIBUTING.md (add the rustdoc step
+   to its CI-steps paragraph and `cargo doc --no-deps --workspace` to its command list).
+4. No CHANGELOG entry (internal change).
 
 ## Files to Modify
 - `rust/fontaine-core/src/accounts.rs`, `rust/fontaine-core/src/quota.rs`, `rust/fontaine-agents/src/spawn.rs`
 - `.github/workflows/ci.yml`
-- `tasks/fontaine_harness_plan.md`, `AGENTS.md`, `CHANGELOG.md`
+- `tasks/fontaine_harness_plan.md`, `AGENTS.md`, `CONTRIBUTING.md`
 
 ## Trade-offs
 - Dropping links vs. making the private items public: the items are deliberately private; plain code
   formatting loses nothing for readers.
 - `--document-private-items` was not chosen: the issue targets public docs, and it would add noise.
-
-## Documentation
-AGENTS.md command list and the master plan's CI description (steps 3).
 
 ## Testing Strategy
 The CI step is itself the regression test. Locally verify
