@@ -16,14 +16,20 @@ submission is recorded in the ledger and audit log.
   table, `parse_command`); handlers live in `fontaine-tui/src/ui/commands/*.rs` and dispatch in
   `fontaine-tui/src/ui/mod.rs` (~L1147 for `Export`).
 - `/export` (`fontaine-core/src/export.rs`) already renders the conversation as Markdown from the
-  conversation logs; `ledger.rs` holds the session ledger (`LedgerRecord` variants such as
+  conversation logs; `ledger.rs` holds the session ledger (`Record` enum variants such as
   `GuardianOff`); `audit.rs` has `DecisionRecord` and `AuditLog`.
 - `doctor_report.rs` builds config rows via the same renderers `/config` uses, so no credential or
   env value appears. `credentials.rs` loads stored keys; `models.rs::credential()` resolves an
   account key.
 - `Approver::warn` is the user-visible warning channel; warnings are not retained today.
-- Tool risk classes: every tool registers one (`fontaine-tools/src/builtins.rs::risk_of`); the
-  choke-point test enforces it. `coordination` tools skip the guardian after the floor.
+- `RiskClass` (`fontaine-tools/src/risk.rs`) has only `ReadOnly`/`WorkspaceWrite`/`Arbitrary`; each
+  tool's class lives in the `TOOLS` table in `fontaine-tools/src/descriptor.rs` (`builtins.rs::risk_of`
+  only looks it up); the choke-point test enforces it. "Coordination" is `Tier::Coordination`
+  (`fontaine-core/src/tier.rs`), assigned in `permissions.rs` (~L1144) via `descriptor::is_coordination` (hard-coded
+  `COORDINATION` list); those tools skip the guardian after the floor.
+- No `build.rs` exists in `fontaine`; the only build metadata is `env!("CARGO_PKG_VERSION")`.
+- `export.rs::render` renders the whole conversation; it has no turn-limited variant.
+- `DecisionRecord::new` requires tool, args_digest, `Tier`, `Decision`, permission_mode, headless.
 
 ## Design
 
@@ -33,11 +39,11 @@ Pure, no I/O: `BugReport::build(&Facts, Level) -> BugReport` and `BugReport::ren
 { title, body, bundle }`.
 
 - `Facts` is gathered by the caller: version, git sha and build target (compile-time `env!`
-  via the existing build metadata, adding a `build.rs` entry in `fontaine` if absent), OS/arch,
+  from a new `rust/fontaine/build.rs` that emits git sha and target, `unknown` when `.git` is absent), OS/arch,
   `$TERM` and size, install method, provider/model, guardian profile/model, permission mode,
   config rows (from the `doctor_report` renderers), contributing config scopes, recent warnings,
   guardian verdict summaries (from the ledger), session id, user description, and the transcript
-  tail (via `export.rs`) .
+  tail (via a new turn-limited tail helper in `export.rs`, since `render` covers the whole conversation).
 - `Level::Minimal` (default): environment + config snapshot + warnings + guardian verdict
   summaries + description. `Level::Full` adds the last N turns (default 20) of transcript with
   tool calls/results.
@@ -73,22 +79,25 @@ Constants: `REPO = "madesroches/fontaine"`, `LABELS = ["bug"]`; not configurable
 `confirm_prompt.rs`) shows the full rendered payload (scrollable), the level toggle
 (`m`inimal / `f`ull, default minimal), the submission method (gh or URL), and the destination repo.
 Enter confirms; Esc cancels with nothing written or sent. The bundle file is written only after
-confirmation (a cancelled preview leaves no file). On submit: ledger `BugReport { method, level,
-url }` record plus an audit record; the URL or file path is shown in the transcript. `/bug` is
-`main_only() == false` but refused in subagent views and headless runs.
+confirmation (a cancelled preview leaves no file). On submit: ledger `Record::BugReport { method, level,
+url }` (with its fold arm) plus an audit `DecisionRecord` with tool label `bug` and `Tier::BugReport`
+(label `bug_report`); the URL or file path is shown in the transcript. `Command::Bug` is
+`main_only() == true`, so subagent views refuse it. The prompt lives in
+`fontaine-tui/src/bug_prompt.rs` with a `Prompt` variant wired in `lib.rs`/`app.rs`.
 
 ### 5. `draft_bug_report` tool
 
 Takes `title`, `area`, `details`; writes `<data_dir>/bug-drafts/<id>.json` after redaction, no
-network. Registered with the `coordination`-like never-guardian-judged class (new risk class
-entry in `risk.rs`, after the floor), omitted for subagents and headless runs, capped at 3 per
+network. Registered as a `TOOLS` row in `descriptor.rs` (`Destructive::Always`, `RiskClass::Arbitrary`) with the new
+`Tier::BugDraft` (never guardian-judged, after the floor); the pinned array in `rows_are_pinned` is
+updated. Omitted for subagents and headless runs, capped at 3 per
 session. The TUI shows a footer count of drafts; `/bug` lists drafts and loads one as the
 description. `[feedback] drafts = "on" | "quiet" | "off"` (user-scope only, `config_scope.rs`;
 `off` omits the tool). Submission stays user-only and outside the guardian.
 
 ### 6. Warnings retention
 
-`Approver::warn` calls are recorded into a bounded ring buffer (last 50) on the runtime state so
+The TUI `Approver::warn` override (`fontaine-tui/src/lib.rs`, ~L172) records into a bounded ring buffer (last 50) on the runtime state so
 the report can include them. Display-only state: recovering lock allowed with a one-line reason.
 
 ## Implementation Steps
@@ -104,7 +113,9 @@ the report can include them. Display-only state: recovering lock allowed with a 
 ## Files to Modify
 
 `fontaine-core/src/{lib,ledger,audit,config,config_catalog,config_scope,agent/*}.rs`,
-`fontaine-tools/src/{risk,builtins}.rs`, `fontaine-tui/src/{commands,app}.rs`,
+`fontaine-core/src/{export,tier,permissions}.rs`, `fontaine-tools/src/descriptor.rs`,
+headless schema, `evals` expected_tier, `rust/fontaine/build.rs` (new), `AGENTS.md`,
+`fontaine-tui/src/{commands,app,lib,bug_prompt}.rs`,
 `fontaine-tui/src/ui/{mod.rs,commands/mod.rs}`, new files above, `docs/tui.md`,
 `docs/configuration.md`, `docs/tools.md`, `CHANGELOG.md`.
 
@@ -122,11 +133,16 @@ the report can include them. Display-only state: recovering lock allowed with a 
 - 2026-11-07: Headless `fontaine bug --session <id>` CLI is out of scope for v1; the builder is
   pure so it can be added later.
 - 2026-11-07: Target repo and labels are constants (open question 5).
+- 2026-11-07: `draft_bug_report` gets a new `Tier::BugDraft` (never guardian-judged after the floor; update `Tier::ALL`, `as_str`, headless schema, evals expected_tier) because `COORDINATION` is documented as reaching only agents of the same tree, which a data-dir write does not fit.
+- 2026-11-07: `draft_bug_report` has `Destructive::Always` + `RiskClass::Arbitrary` like `send_message`, since `path_policy_is_consistent` ties `Never` to `ReadOnly`.
+- 2026-11-07: The bug submission audit entry uses a new `Tier::BugReport` (label `bug_report`, following `Tier::Afk`/`GuardianOff`), tool label `bug`, same schema/evals fallout.
+- 2026-11-07: `/bug` is a slash command only (none headless) and is `main_only()`.
 
 ## Documentation
 
 Update `docs/tui.md` (the command, preview, levels), `docs/configuration.md` (`[feedback]`),
-`docs/tools.md` (`draft_bug_report`), and the master plan's Decisions (draft tool risk class).
+`docs/tools.md` (`draft_bug_report`), the master plan's Decisions (`Tier::BugDraft`, `Tier::BugReport`), and the `AGENTS.md`
+security-invariant list of never-guardian-judged exceptions.
 
 ## Testing Strategy
 
@@ -141,5 +157,4 @@ Update `docs/tui.md` (the command, preview, levels), `docs/configuration.md` (`[
 
 ## Open Questions
 
-- Whether `draft_bug_report` needs its own risk class or can reuse `coordination` (code check at
-  implementation).
+None.
