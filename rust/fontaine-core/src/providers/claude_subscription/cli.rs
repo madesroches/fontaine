@@ -21,6 +21,7 @@ use super::transport::{next, rejected};
 use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error};
 use crate::models::SharedEnv;
 use crate::owner_only;
+use crate::providers::warn::Warn;
 use fontaine_tools::lock::lock_recovering;
 use fontaine_tools::procgroup;
 
@@ -244,6 +245,7 @@ pub struct Cli {
     env: SharedEnv,
     pub timeouts: Timeouts,
     version_ok: OnceCell<()>,
+    warn: Warn,
 }
 
 impl Cli {
@@ -253,6 +255,7 @@ impl Cli {
         data_dir: &Path,
         env: SharedEnv,
         timeouts: Timeouts,
+        warn: Warn,
     ) -> Self {
         Cli {
             program: cli_path.unwrap_or_else(|| PathBuf::from("claude")),
@@ -262,7 +265,12 @@ impl Cli {
             env,
             timeouts,
             version_ok: OnceCell::new(),
+            warn,
         }
+    }
+
+    pub(crate) fn warn(&self) -> &Warn {
+        &self.warn
     }
 
     /// The one directory every CLI process runs in. The CLI writes its working directory into
@@ -436,7 +444,7 @@ impl Cli {
     }
 
     async fn initialize(&self) -> Result<Vec<ModelRow>, ClaudeError> {
-        let scratch = Scratch::new().map_err(scratch_error)?;
+        let scratch = Scratch::new(self.warn.clone()).map_err(scratch_error)?;
         let files = ChildFiles::empty(&scratch).map_err(scratch_error)?;
         let args = fixed_args(&files, None, None, None);
         let mut child = self.launch(scratch, args, true)?;
@@ -553,7 +561,7 @@ impl Cli {
         deadline: Duration,
         timeout_kind: ErrorKind,
     ) -> Result<ProbeOutput, ClaudeError> {
-        let scratch = Scratch::new().map_err(scratch_error)?;
+        let scratch = Scratch::new(self.warn.clone()).map_err(scratch_error)?;
         let version = args.first() == Some(&"--version");
         let argv: Vec<OsString> = args.iter().map(OsString::from).collect();
         let mut child = self.launch(scratch, argv, false)?;
@@ -807,14 +815,18 @@ pub(crate) fn fixed_args(
 /// An owner-only temporary directory, removed when dropped.
 pub(crate) struct Scratch {
     pub path: PathBuf,
+    warn: Warn,
 }
 
 impl Scratch {
-    pub fn new() -> std::io::Result<Self> {
+    pub fn new(warn: Warn) -> std::io::Result<Self> {
         let dir = tempfile::Builder::new()
             .prefix("fontaine-claude-")
             .tempdir()?;
-        Ok(Scratch { path: dir.keep() })
+        Ok(Scratch {
+            path: dir.keep(),
+            warn,
+        })
     }
 
     /// Writes `name` into the directory, readable only by the current user.
@@ -829,10 +841,11 @@ impl Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         if let Err(e) = owner_only::remove_dir_all_retrying(&self.path) {
-            tracing::warn!(
-                error = %fontaine_tools::error_chain::chain(&e),
-                "could not remove the Claude CLI's temporary directory"
-            );
+            self.warn.emit(&format!(
+                "could not remove the Claude CLI's temporary directory {}: {}",
+                self.path.display(),
+                fontaine_tools::error_chain::chain(&e)
+            ));
         }
     }
 }
@@ -1249,9 +1262,10 @@ mod tests {
             data.path(),
             Arc::new(|_| None),
             Timeouts::default(),
+            Warn::process(),
         );
         std::fs::create_dir(cli.workdir()).unwrap();
-        let scratch = Scratch::new().unwrap();
+        let scratch = Scratch::new(Warn::process()).unwrap();
         let mut child = cli
             .launch(scratch, vec!["-c".into(), script.into()], true)
             .unwrap();
@@ -1325,5 +1339,36 @@ mod tests {
             );
         }
         assert_eq!(cli_context(&json!({})).version, None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_scratch_that_cannot_be_removed_warns_with_the_error_chain() {
+        use std::os::unix::fs::PermissionsExt;
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        let scratch =
+            Scratch::new(Warn::to(move |m| sink.lock().unwrap().push(m.to_owned()))).unwrap();
+        let path = scratch.path.clone();
+        std::fs::create_dir(path.join("inner")).unwrap();
+        std::fs::write(path.join("inner").join("f"), b"x").unwrap();
+        std::fs::set_permissions(path.join("inner"), std::fs::Permissions::from_mode(0o555))
+            .unwrap();
+        // Permission bits do not bind root, so the removal cannot fail there.
+        let bound = std::fs::write(path.join("inner").join("probe"), b"x").is_err();
+        drop(scratch);
+        std::fs::set_permissions(path.join("inner"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&path);
+        if !bound {
+            return;
+        }
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(seen[0].contains("temporary directory"), "{seen:?}");
+        assert!(
+            seen[0].contains("denied") || seen[0].contains("ermission"),
+            "{seen:?}"
+        );
     }
 }

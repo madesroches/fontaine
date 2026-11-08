@@ -245,6 +245,7 @@ impl Provider for ClaudeSubscription {
             &data_dir,
             ctx.env.clone(),
             timeouts,
+            ctx.warn.clone(),
         );
         prepare_workdir(&data_dir, cli.workdir())?;
         let session = ctx

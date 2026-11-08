@@ -8,6 +8,7 @@ use rig_core::operation::Completion;
 use rig_core::wire::{Body, Descriptor, Encoded, Mode, Wire};
 use serde_json::{Value, json};
 
+use super::warn::Warn;
 use super::{CacheScope, PromptCaching};
 use crate::config::CacheTtl;
 
@@ -28,10 +29,17 @@ pub(super) struct CacheWire<W> {
     /// `None` when the account does not cache.
     retention: Option<CacheRetention>,
     automatic_upstream: bool,
+    warn: Warn,
 }
 
 impl<W> CacheWire<W> {
-    pub(super) fn new(inner: W, model: &str, caching: PromptCaching, scope: CacheScope) -> Self {
+    pub(super) fn new(
+        inner: W,
+        model: &str,
+        caching: PromptCaching,
+        scope: CacheScope,
+        warn: Warn,
+    ) -> Self {
         let automatic_upstream = automatic(model);
         let retention = caching.enabled.then_some(match caching.ttl {
             CacheTtl::OneHour if !automatic_upstream => CacheRetention::Long,
@@ -42,6 +50,7 @@ impl<W> CacheWire<W> {
             scope,
             retention,
             automatic_upstream,
+            warn,
         }
     }
 }
@@ -121,7 +130,10 @@ where
                     }
                 }
                 Err(error) => {
-                    tracing::warn!(%error, "the guardian request body is not JSON; no cache marker");
+                    self.warn.emit(&format!(
+                        "the guardian request body is not JSON; no cache marker: {}",
+                        fontaine_tools::error_chain::chain(&error)
+                    ));
                 }
             }
         }
@@ -153,7 +165,7 @@ mod tests {
     }
 
     fn sent(model: &str, caching: PromptCaching, scope: CacheScope) -> Value {
-        let wire = CacheWire::new(chat(model), model, caching, scope);
+        let wire = CacheWire::new(chat(model), model, caching, scope, Warn::to(|_| {}));
         let request = CompletionRequest::new("the per-call tail")
             .preamble("the static prefix")
             .max_tokens(16);
@@ -249,6 +261,7 @@ mod tests {
             CLAUDE,
             caching(true, CacheTtl::OneHour),
             CacheScope::Conversation,
+            Warn::to(|_| {}),
         );
         let mut request = CompletionRequest::new("hi").max_tokens(16);
         request.options.cache = Some(CacheRetention::Short);
@@ -280,5 +293,59 @@ mod tests {
         let before = body.clone();
         assert!(!mark_system(&mut body, json!({"type": "ephemeral"})));
         assert_eq!(body, before);
+    }
+
+    /// An inner wire whose request body is not JSON; rig's own Chat wire never produces one.
+    #[derive(Clone)]
+    struct NotJson(Chat);
+
+    impl Wire for NotJson {
+        type Op = Completion;
+        type Payload = Encoded;
+        type Frame = <Chat as Wire>::Frame;
+        type Event = <Chat as Wire>::Event;
+        type Decoder<'id> = <Chat as Wire>::Decoder<'id>;
+        type Reassembler = <Chat as Wire>::Reassembler;
+
+        fn describe(&self) -> Descriptor<'_> {
+            self.0.describe()
+        }
+
+        fn encode(&self, request: CompletionRequest, mode: Mode) -> Result<Encoded, EncodeError> {
+            let mut encoded = self.0.encode(request, mode)?;
+            if let Body::Bytes(bytes) = encoded.request.body_mut() {
+                *bytes = b"not json".to_vec();
+            }
+            Ok(encoded)
+        }
+
+        fn decoder<'id>(&self) -> Self::Decoder<'id> {
+            self.0.decoder()
+        }
+
+        fn reassembler(&self) -> Self::Reassembler {
+            self.0.reassembler()
+        }
+    }
+
+    #[test]
+    fn a_non_json_guardian_body_warns_once() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = seen.clone();
+        let wire = CacheWire::new(
+            NotJson(chat(CLAUDE)),
+            CLAUDE,
+            caching(true, CacheTtl::FiveMinutes),
+            CacheScope::StaticPrefix,
+            Warn::to(move |m| sink.lock().unwrap().push(m.to_owned())),
+        );
+        let request = CompletionRequest::new("tail")
+            .preamble("prefix")
+            .max_tokens(16);
+        let request = Completion::prepare(request, &wire.describe()).expect("a valid request");
+        wire.encode(request, Mode::Unary).expect("encodable");
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!(seen[0].contains("not JSON"), "{seen:?}");
     }
 }

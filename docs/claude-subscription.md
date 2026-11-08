@@ -179,10 +179,10 @@ conversation is written once more on its second step.
 The adapter checks that the replay works. It compares a conversation's cache read with what the
 previous request of that conversation wrote. On a shortfall (the CLI changed its reminder, so the
 replayed bytes no longer match), it turns the layout off for that CLI version for the rest of the
-process and logs one warning naming the version; `cache-bench` measures the effect. The
-layout needs an account email in the CLI's answer. On versions below 2.1.319, without an email, or
-after a warning, the adapter keeps the earlier layout: the marker on the last replayed user message,
-read back up to that message, and each request writing the last two messages, about twice a native
+process and shows one warning in the session naming the version; `cache-bench` measures the effect. The layout
+needs an account email in the CLI's answer. On versions below 2.1.319, without an email, or after a
+warning, the adapter keeps the earlier layout: the marker on the last replayed user message, read
+back up to that message, and each request writing the last two messages, about twice a native
 session's write per step. The never-read 5-minute write there is the CLI's breakpoint on the final
 message.
 

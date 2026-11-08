@@ -454,6 +454,7 @@ fn client_for(
         session_id: src.session_id,
         network,
         env: env.clone(),
+        warn: crate::providers::warn::Warn::process(),
     })
 }
 

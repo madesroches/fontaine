@@ -9,6 +9,7 @@ use rig_core::providers::openai::{OpenAI as Client, OpenAIConfig, Route};
 use rig_core::{DynModel, Model};
 
 use super::cache_wire::CacheWire;
+use super::warn::Warn;
 use super::{AccountClient, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider};
 use crate::transport::caused_client;
 use fontaine_tools::error_chain::chain;
@@ -46,6 +47,7 @@ impl Provider for OpenRouter {
         Ok(Arc::new(Connected {
             client: config.connect(caused_client(ctx.network).map_err(|e| chain(&e))?),
             caching: PromptCaching::of(ctx.account),
+            warn: ctx.warn.clone(),
         }))
     }
 }
@@ -53,6 +55,7 @@ impl Provider for OpenRouter {
 struct Connected {
     client: Client,
     caching: PromptCaching,
+    warn: Warn,
 }
 
 impl Connected {
@@ -62,7 +65,7 @@ impl Connected {
             unreachable!("the client is configured for the Chat route");
         };
         Model::new(
-            CacheWire::new(chat, model, self.caching, scope),
+            CacheWire::new(chat, model, self.caching, scope, self.warn.clone()),
             routed.transport,
         )
         .erase()

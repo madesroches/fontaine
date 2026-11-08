@@ -86,6 +86,10 @@ All notable changes are recorded here. The format follows
   account email reminder, date) and the measured cache-write cost per step (#480).
 - The pinned rig crates move from 0.45.0 to 0.46.0. The job output cutter's quiet-stop and
   runaway-output status lines take rig 0.46's prefixes so `split_status` still recognises them.
+- Provider warnings reach the session through `Approver::warn`, so the TUI and headless runs show
+  them instead of only logging them: the `claude-subscription` cache self-check and its
+  temporary-directory cleanup failure, the `openrouter` guardian cache-marker fallback, and a
+  refreshed sign-in that could not be saved (#505).
 
 ### Fixed
 

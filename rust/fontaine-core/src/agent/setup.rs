@@ -865,7 +865,7 @@ pub(super) fn prepare(setup: &mut AgentSetup) {
         .session
         .set_autocompact_window(setup.config.context.autocompact_window);
     let approver = setup.approver.clone();
-    crate::providers::token_source::set_warn_sink(move |message| approver.warn(message));
+    crate::providers::warn::set_sink(move |message| approver.warn(message));
 }
 
 /// The loaded extensions with what is derived from them: the agent types and the skills.
