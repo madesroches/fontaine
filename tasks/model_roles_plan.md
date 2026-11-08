@@ -97,8 +97,7 @@ thinking   = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"]
   or a role name, and it overrides both for the session's chain. `[model] model` is folded into
   `roles["main"]` before validation and flattening, so `main` and `$main` in a role list are
   always defined. `--model` does not re-point `roles["main"]`. `main` or `$main` inside a role
-  list is a static splice of the configured `main`, not the live session chain; only a subagent
-  spec's `$main` follows the live chain.
+  list is a static splice of the configured `main`, not the live session chain.
 - **`[agents.types.<name>] model` also accepts a string or a list.** Each entry may be
   `<account>/<model>`, a role name, `$main` or (alone) `$guardian_default`.
 - **The `[guardian] model` key and `[guardian.composition]` models stay a single
@@ -176,7 +175,7 @@ impl ModelChain {
   today.
 - **`$main` in a subagent spec.** It shares the live session main chain, including its active
   entry. A bare `main` in a subagent spec (`Named("main")`) is an ordinary role: it uses
-  `RoleChains["main"]`, a separate chain. That keeps today's behaviour of `$main` following the current session model. Only the
+  `RoleChains["main"]`, a separate chain. Only the
   root (`AgentRuntime::fall_through`) settles the main chain. A child on `$main` that falls
   through does so for itself, rebuilding its own agent on the next entry, without moving the main
   chain's active index.
@@ -214,7 +213,7 @@ impl ModelChain {
   like `TurnOutcome`, and implements `Display`), so
   callers can act on the class.
 - **Root session.** `AgentRuntime::fall_through(&mut self) -> Option<FellThrough>`, in
-  `agent/models.rs`, walks `main_chain.fall_through_order(failed)`, where `failed` is the index the turn ran on. For each index it tries
+  `agent/models.rs`, walks `main_chain.fall_through_order(failed)`, where `failed` is `main_chain.active()` read at the start of `fall_through`. For each index it tries
   `install_main_entry(index)`, which installs an entry of the current chain without replacing it
   (`install_main` today, `agent/models.rs:140-167`, is split in two: `install_main_chain(text)`
   installs a new main chain, for startup and `/model`; `install_main_entry(index)` is shared with
@@ -241,6 +240,7 @@ impl ModelChain {
   list is spent, the turn fails as today. The surface caller (`Ui::turn` / headless `run_one`) appends
   `every model in <role> failed` to the message when `fall_through` returns `None` on a chain
   with more than one entry, naming the role, or `the model list` when `role` is `None`.
+  The continuation is a loop inside `Ui::turn` and `run_one`, not async self-recursion.
 - **Subagent.** `run_child`'s loop (`child_runner.rs:811`) does the same on `falls_through`:
   1. resolve the next entry of the child's chain through `ChildContext`;
   2. rebuild the child's agent (`RunShared` gains an `Arc<ChildContext>`, the `AgentType`, the
@@ -256,12 +256,18 @@ impl ModelChain {
   3. replace `ChildModel` (priced, provider, generation options, modalities), redo the tree's
      `set_model` for the child and the unpriced/cost-budget notice (`:571-588`);
   4. re-drive on `RETRY_NOTE`.
+
+  A child on a `Named`, `List` or type chain walks `fall_through_order(failed)` and settles the
+  shared chain on the first entry that resolves; a child on `$main` only advances its own index.
 - **One-shot jobs** (compaction, critique, setup scan). A helper
   `ModelChain::run_through(resolve, call)` tries the active entry's handle and, on an error whose
   provider cause `falls_through`, the remaining order. The core-side caller downcasts the error's
   `source()` (`CritiqueError` and `ScanError` already expose the wrapped rig `PromptError`) to
   `PromptError` and applies `turn::falls_through`, so `fontaine-guardian` stays free of the core
   types.
+  - The TUI setup scan (`auto_mode_setup.rs:152-163`) holds only `&AgentRuntime` and the switcher
+    is private to `agent/models.rs`, so a new `pub` `AgentRuntime` method returns the `setup`
+    chain from the runtime's switcher and role chains.
   - `run_through` settles the role chains it owns (compaction, critique, setup); on the main
     chain (compaction without a role) it borrows the current entry and does not settle.
   - Compaction: `CompactResult::Failed` gains a `falls_through: bool` field from the summary
@@ -355,8 +361,7 @@ impl ModelChain {
   session-only: `Switched` gains a field carrying the notice, which says which key to edit.
   What is written is the text the user typed
   (the role name for `/model coding`), not the resolved entry. `--model` does not change this:
-  today `/model` persists even with `--model` active, and that stays (the rule reads the
-  config's own source, which has no override variant).
+  today `/model` persists even with `--model` active.
 - **The setup screen** (`fontaine-tui/src/setup.rs:439`) applies the same rule: it calls
   `user_config::set_model` only under it, since an unconditional write would put `[model] model`
   beside `[models.roles] main` and the next startup would exit 2.
@@ -422,7 +427,8 @@ impl ModelChain {
      (`ledger.rs:622-639`, exhaustive).
 6. **One-shot jobs.**
    - `compaction`, `critique` and `setup` chains: `agent/goal.rs` (compaction), `auto_mode.rs`
-     and `project_env.rs` (critique and the CLI scan), and `auto_mode_setup.rs` (the TUI scan).
+     and `project_env.rs` (critique and the CLI scan), and `auto_mode_setup.rs` (the TUI scan), plus `agent/models.rs` for the `AgentRuntime`
+     method that exposes the `setup` chain.
    - `Session::compact` takes the main model and the compaction chain's model separately.
 7. **Ledger and `/cost`.**
    - `usage_ledger.rs`: `Served` and `by_model`.
@@ -474,9 +480,6 @@ impl ModelChain {
   roles.
 - `[model] model` and `[models.roles] main` together are a config error, not a precedence rule.
 - `/model` does not persist over a role or a list.
-- `[model] model` is folded into `roles["main"]` before validation; `main`/`$main` in a role list
-  is a static splice of the configured main, and `--model` does not re-point it. Only a subagent
-  spec's `$main` follows the live chain.
 - A plan limit relayed only as an `ErrorReport` is not recognised for fall-through; no text
   matching.
 - Resume restarts each chain at its first entry. Active indexes are not persisted.
@@ -559,8 +562,9 @@ Unit tests (all reachable with constructed inputs):
   - update the `sonnet` message assertion (`:184`).
 - `spawn.rs`:
   - the `model` description lists the roles;
-  - a role per-call `model` resolves;
+  - a bare role per-call `model` is forwarded as `Named`;
   - a project type's per-call `model` is still refused.
+- `child_runner.rs`: a role per-call `model` resolves (`fontaine-agents` cannot resolve roles).
 - `turn.rs`: `falls_through` for 402, 429 and 529, for status-less stream errors with each
   listed code (named and numeric), and for the plan-limit error in the `Provider` form; false for 400 and 500 and for cancellation.
 - `usage_ledger.rs` and `reports.rs`: by-model buckets and the `/cost` block.
