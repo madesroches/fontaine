@@ -81,6 +81,9 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- `claude-subscription`: a response that stops at `max_tokens` is returned truncated instead of
+  failing as native tool execution. The process is stopped at `message_stop`, so the CLI's own
+  output-limit recovery no longer runs or spends plan usage (#479).
 - `claude-subscription`: a tool call the CLI names without the `mcp__fontaine__` prefix, for a
   tool the request defines, is restored as that tool instead of failing the request and killing
   the agent with its context (#471).

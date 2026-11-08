@@ -1164,3 +1164,54 @@ fn applying_the_cache_layout_does_not_change_the_session_id() {
     assert_ne!(frames[0], t.frames[0]);
     assert_ne!(derive(&frames[0].value), t.session_id);
 }
+
+#[test]
+fn a_max_tokens_stop_ends_at_message_stop_without_a_result() {
+    let mut r = reader(&[]);
+    accept_text_response(&mut r);
+    assert!(is_nothing(feed(&mut r, terminal("max_tokens"))));
+    assert!(matches!(
+        feed(&mut r, stream(json!({"type": "message_stop"}))),
+        Ok(Event::Cut)
+    ));
+    assert!(r.cache_usage().is_none());
+    let frame = r.release().expect("the held delta");
+    assert!(frame.as_str().contains("max_tokens"));
+    assert!(r.release().is_none());
+}
+
+#[test]
+fn a_max_tokens_stop_with_an_open_block_is_truncated() {
+    let mut r = reader(&[]);
+    feed(&mut r, init()).unwrap();
+    feed(&mut r, message_start()).unwrap();
+    feed(
+        &mut r,
+        stream(json!({"type": "content_block_start", "index": 0,
+                      "content_block": {"type": "text", "text": ""}})),
+    )
+    .unwrap();
+    feed(&mut r, terminal("max_tokens")).unwrap();
+    let error = feed(&mut r, stream(json!({"type": "message_stop"}))).unwrap_err();
+    assert!(matches!(*error, ProviderError::Truncated));
+}
+
+#[test]
+fn a_max_tokens_stop_after_a_closed_tool_block_forwards_the_partial_call() {
+    let mut r = started(&["read_file"]);
+    tool_start(&mut r, 0, "toolu_A", READ).unwrap();
+    let Ok(Event::Frame(delta)) = feed(
+        &mut r,
+        stream(json!({"type": "content_block_delta", "index": 0,
+                      "delta": {"type": "input_json_delta", "partial_json": "{\"path\": \"RE"}})),
+    ) else {
+        panic!("the partial input is forwarded");
+    };
+    assert!(delta.as_str().contains("partial_json"));
+    stop_block(&mut r, 0);
+    feed(&mut r, terminal("max_tokens")).unwrap();
+    assert!(matches!(
+        feed(&mut r, stream(json!({"type": "message_stop"}))),
+        Ok(Event::Cut)
+    ));
+}

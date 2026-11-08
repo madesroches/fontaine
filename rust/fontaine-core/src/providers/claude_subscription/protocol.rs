@@ -616,6 +616,9 @@ pub enum Event {
     Ack,
     /// One complete response and its final result were validated.
     Complete,
+    /// The response ended at `max_tokens` and no result is awaited: the CLI would otherwise
+    /// start its own output-limit recovery, which this adapter never lets run.
+    Cut,
 }
 
 /// A native error category the CLI attached to its assistant message.
@@ -672,6 +675,9 @@ fn label_of(value: &Value) -> String {
     label
 }
 
+/// A `max_tokens` stop ends the response at `message_stop` with [`Event::Cut`] and no result:
+/// the CLI follows such a stop with a recovery call of its own, whose frames and result would
+/// describe more than this response and cost plan usage for nothing.
 pub struct Reader {
     expect: Expect,
     calls: BTreeMap<String, Call>,
@@ -1116,6 +1122,9 @@ impl Reader {
                     return Err(Box::new(ProviderError::Truncated));
                 }
                 self.stopped = true;
+                if self.stop_reason.as_deref() == Some("max_tokens") {
+                    return Ok(Event::Cut);
+                }
                 Ok(Event::Nothing)
             }
             "ping" => Ok(Event::Nothing),
