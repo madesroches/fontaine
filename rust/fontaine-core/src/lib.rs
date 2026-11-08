@@ -62,6 +62,8 @@ pub mod skills;
 pub mod statusline;
 pub mod steering;
 pub mod tasks;
+#[cfg(all(test, unix))]
+pub(crate) mod test_support;
 pub mod tier;
 pub mod todos;
 pub mod tool_outcome;
