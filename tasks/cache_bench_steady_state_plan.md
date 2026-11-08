@@ -46,7 +46,8 @@ steps, and reject runs with too few steps left to average.
    raise the minimum in `summarize` to 5 with the new message; reword the zero-mean error and the
    `summarize` doc comment (skips the first step for base context, the second because Fontaine's
    writes only one message and it is left out on both sides so the means cover the same steps, and
-   the last because it only answers); change the `table()` label.
+   the last, kept out only to match the original method, not because it writes less: recorded
+   scorecards show the last step writes as much as a steady one); change the `table()` label.
 2. `runner.rs`: `--files` minimum 4 and the new message; reword the `threshold` clap doc comment
    (line ~79, "mean middle-step write") to "mean steady-state write".
 3. Update unit tests in `cache_bench.rs` (see Testing Strategy).
@@ -58,7 +59,8 @@ steps, and reject runs with too few steps left to average.
 5. Docs: `evals/README.md` (flag table "at least 4", ratio paragraph, exit-code sentence "fewer than
    five model calls") and `docs/claude-subscription.md` ("leaving out the first step, the second
    (Fontaine's writes only one message; left out on both sides so the means cover the same steps)
-   and the last"; "fewer than five model calls").
+   and the last (kept out to match the original method)", replacing the unmeasured "it only
+   answers" at lines ~202-203; "fewer than five model calls").
 6. `CHANGELOG.md`: amend the existing unreleased #483 `cache-bench` entry under `## [Unreleased]` /
    `### Added` with a sentence about the steady-state mean (steps 3..N-1) and the minimum of 4
    files, ending with "(#497)"; no new entry.
@@ -83,6 +85,11 @@ steps, and reject runs with too few steps left to average.
 
 ## Decisions
 
+- AFK: the last step stays excluded (the issue asks only to drop step 2), but the stated reason
+  changes: recorded scorecards show it writes as much as a steady step (Fontaine 8871 vs 8839-9176
+  steady; Claude Code 4511 vs 4507-4560), so the doc comment and docs say it is kept out to match
+  the original method, never "it only answers". Averaging steps 3..N was the alternative, declined
+  as the wider change.
 - AFK: re-running the bench needs a signed-in subscription and live CLI (manual-only per
   AGENTS.md), so open PR #499's scorecard (ratio 1.797, old mean) is left for the maintainer to
   re-record with the new method (its stored per-step `cache_creation` values allow recomputing
