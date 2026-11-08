@@ -128,15 +128,10 @@ pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext)
 `translate` stops calling `mark_history`: the layout needs the `initialize` answer, which arrives
 on the request process. `prepare` calls `context::apply(&mut frames, &listing.context)` right after
 `check_row` and before the history replay. `translate` still derives the session id first, so
-neither the reminder nor the marker affects it. `Translated.frames` is cloned into `prepare`'s
-mutable copy, or `prepare`/`open` take `&mut Translated`, whichever keeps `open` simpler. The final
-frame `open` writes is that same mutated copy.
-
-Why exact-version gating: if a CLI changed the reminder text or its placement while the marker sat
-only on the final frame, every replayed message would differ from the entry the previous request
-wrote. Nothing would be read back, a full history rewrite per step, which is worse than today's 2×.
-The legacy layout's history marker does not have that failure mode. Breakpoints stay at four (two
-on the system prompt, the CLI's trailing one, the adapter's one), so both markers cannot be kept.
+neither the reminder nor the marker affects it. `prepare` works on its own copy of the frames,
+applies `context::apply` to it, and returns the mutated final frame alongside `(CliChild, Reader)`.
+`open` pins the `prepare` future and cannot borrow `translated` mutably meanwhile, so it writes the
+returned frame rather than `translated.frames.last()`.
 
 ### 3. Privacy
 
@@ -149,7 +144,7 @@ frames, and that stays so. `ClaudeError` text stays fixed text built from names 
 ### 4. Bench threshold
 
 `cache-bench`'s default `--threshold` drops from 2.0 to 1.25 so a regression to the 2× layout fails
-the run. The ratio over steps 3–6 should be ~1.04: ~4.5k per step plus ~170.
+the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes the one-time first-message rewrite) should be ~1.04: ~4.5k per step plus ~170.
 
 ## Implementation Steps
 
@@ -168,13 +163,15 @@ the run. The ratio over steps 3–6 should be ~1.04: ~4.5k per step plus ~170.
 4. **`context.rs`:** `VERIFIED`, the 2.1.319 template, `layout`, `apply` (reminder placement and
    marker). Move `mark_history` and `CACHE_MARKER` here from `protocol.rs`. `mark_history` becomes
    `mark(frame)`, used by both layouts with the frame each layout selects.
-5. **`protocol.rs` / `transport.rs`:** drop the `mark_history` call from `translate`, and call
-   `context::apply` in `prepare` after `check_row`.
+5. **`protocol.rs` / `transport.rs`:** drop the `mark_history` call from `translate`. `prepare`
+   calls `context::apply` on its own copy of the frames after `check_row` and returns the mutated
+   final frame with `(CliChild, Reader)`; `open` writes that returned frame.
 6. **Double** (`examples/claude_cli_double.rs`): `initialize` answers with `account` (scenario key
    `account`, default `{"email": "user@example.com", …}`) and `claude_code_version` (scenario key,
-   default the double's `version`). A scenario can omit either.
-7. **Bench:** threshold default 1.25 (`fontaine-evals/src/cache_bench.rs`, CLI arg default and the
-   `the_threshold_is_exclusive` / summary tests that pin 2.0).
+   default "2.1.319", not derived from the double's `version`, which defaults to 2.1.318). A
+   scenario can omit either.
+7. **Bench:** threshold default 1.25 (`default_value_t` at `fontaine-evals/src/runner.rs:80`, plus
+   any doc comment or help text there).
 8. **Tests** (below), **docs**, **CHANGELOG**.
 9. **Follow-up issues** to file:
    - a runtime self-check that would let an unverified CLI version use the native layout (detect a
@@ -187,9 +184,9 @@ the run. The ratio over steps 3–6 should be ~1.04: ~4.5k per step plus ~170.
 - `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (`Listing`, `CliContext`)
 - `rust/fontaine-core/src/providers/claude_subscription/protocol.rs`, `protocol/tests.rs` (marker
   moved out; existing marker tests move to `context.rs` tests)
-- `rust/fontaine-core/src/providers/claude_subscription/transport.rs` (`prepare`)
+- `rust/fontaine-core/src/providers/claude_subscription/transport.rs` (`prepare`, `open`)
 - `rust/fontaine-core/examples/claude_cli_double.rs`, `rust/fontaine-core/tests/claude_subscription.rs`
-- `rust/fontaine-evals/src/cache_bench.rs`
+- `rust/fontaine-evals/src/runner.rs`
 - `research/claude-subscription-cli-context/` (new)
 - `docs/claude-subscription.md`, `CHANGELOG.md`
 
@@ -218,6 +215,14 @@ the run. The ratio over steps 3–6 should be ~1.04: ~4.5k per step plus ~170.
 
 - 2026-11-07 Priority stays usage parity with Claude Code (issue reopen comment; prior user
   direction).
+- 2026-11-07 Exact CLI-version match only for the native layout; unverified versions stay on the
+  legacy layout until the runtime self-check follow-up lands.
+- 2026-11-07 Exact-version gating: a reminder mismatch under the final-frame-only marker loses every
+  cache read; the four-breakpoint limit (two system, the CLI's trailing one, the adapter's) forbids
+  also keeping the history marker.
+- 2026-11-07 Supersedes the archived plan's rejection of replaying the reminder
+  (`tasks/completed/claude_subscription_cli_context_plan.md`, "Candidate 3 rejected"): measured
+  ~170 tokens per user message against 8,584 vs 25,321 tokens written per step.
 
 ## Documentation
 
@@ -235,7 +240,13 @@ the run. The ratio over steps 3–6 should be ~1.04: ~4.5k per step plus ~170.
 - **Checking cache usage:** the default threshold is 1.25; a version not yet verified will exceed
   it.
 
-`CHANGELOG.md` `[Unreleased]` → `### Changed` → `#### Providers`: one entry, issue #480.
+- **Wording fix (`docs/claude-subscription.md:152-153`):** reword "(no version is live-qualified
+  yet)" so it does not contradict "verified versions (2.1.319)"; verification here concerns the
+  cache layout.
+
+`CHANGELOG.md` `[Unreleased]` → `### Changed` → `#### Providers`: one entry, issue #480. It states
+that on verified versions the cache marker moves to the final message, which amends the #449
+Providers entry saying the last replayed user message carries a cache marker.
 
 ## Testing Strategy
 
@@ -271,10 +282,9 @@ failure class, since a wrong layout changes only usage, so it is automated:
   final frame.
 - With `claude_code_version` set to an unverified version, or `account` without an email, the
   logged frames equal today's: no reminder, marker on the last history user frame. This updates the
-  existing marker assertions in the request-flow tests.
+  `aliases_resolve_to_canonical_ids_and_the_request_is_translated` (line ~790, asserts
+  `frames[0]["message"]["content"][0]["text"]`) is updated for the leading reminder block.
 - Existing billing-gate, precedence and replay tests pass unchanged.
-
-`cache_bench.rs`: the threshold tests use the new default.
 
 ## Manual Verification
 
@@ -287,6 +297,4 @@ Needs a signed-in subscription and the real CLI, which tests never run by policy
 
 ## Open Questions
 
-- Should an unverified CLI version newer than the newest verified one get the native layout
-  optimistically? The plan says no (exact match), with the self-check follow-up as the path to
-  relaxing it.
+None.
