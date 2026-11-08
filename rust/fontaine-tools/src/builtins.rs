@@ -912,7 +912,7 @@ impl ShellSettings {
     /// Whether the POSIX `shell` and `monitor` tools can run: always off Windows, and with Git
     /// Bash found on it. Without one `powershell` is the only command tool.
     pub fn posix_shell_available(&self, windows: bool) -> bool {
-        !windows || self.git_bash.is_some()
+        crate::git_bash::posix_shell_available(windows, self.git_bash.as_ref())
     }
 }
 

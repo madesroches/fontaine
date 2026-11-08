@@ -51,6 +51,12 @@ pub fn sh_command(command: &str, through_env: bool) -> ShCommand<'_> {
     }
 }
 
+/// Whether the POSIX `shell` tool exists: always off Windows, with Git Bash on it. The prompt
+/// wording and the registered tools both ask this, so they cannot disagree.
+pub fn posix_shell_available(windows: bool, git_bash: Option<&GitBash>) -> bool {
+    !windows || git_bash.is_some()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GitBash {
     pub bin: PathBuf,

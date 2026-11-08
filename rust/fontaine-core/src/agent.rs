@@ -224,7 +224,7 @@ pub(crate) fn command_shell(
 
 /// Whether the POSIX `shell` tool is registered: always off Windows, with Git Bash on it.
 pub(crate) fn posix_shell(git_bash: &Option<GitBash>) -> bool {
-    !cfg!(windows) || git_bash.is_some()
+    fontaine_tools::git_bash::posix_shell_available(cfg!(windows), git_bash.as_ref())
 }
 
 /// The parts of the setup a rebuild needs again.

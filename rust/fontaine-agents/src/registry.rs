@@ -117,8 +117,8 @@ impl AgentType {
     /// (every parent tool when it names none), cut down to the parent's, minus the ones it
     /// disallows outright. Never a tool the parent lacks.
     ///
-    /// When the parent has no `shell` (Windows without Git Bash), an entry naming `shell` on its
-    /// own, in the set or among the disallowed, covers `powershell` too, so a type written for
+    /// When the parent has no `shell` tool (the case on Windows without Git Bash), an entry naming
+    /// `shell` on its own, in the set or among the disallowed, covers `powershell` too, so a type written for
     /// `shell` keeps a command tool and one that forbids `shell` gets none. An entry with a
     /// specifier does not: it limits calls by tool name.
     pub fn toolset(&self, parent: &[String]) -> Vec<String> {
