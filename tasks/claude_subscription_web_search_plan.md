@@ -28,10 +28,7 @@ the limit and the `[websearch]` options.
   wording ("web search is unavailable", "docker or podman").
 - The `claude-subscription` CLI launch (`providers/claude_subscription/cli.rs:745-803`) passes
   `--tools ""`, `--max-turns 1`, `--permission-mode dontAsk` and an inert MCP inventory
-  (`inventory.rs`) that refuses every call. The protocol adapter refuses a request that carries a
-  hosted tool (`protocol/tests.rs:193-197`, "hosted tool"), history that holds
-  `server_tool_use` / `web_search_tool_result` blocks (`:203-215`, "without loss"), and a stream
-  that starts a `server_tool_use` block (`:575-582`, "native tool"). The Decision for #412 in the
+  (`inventory.rs`) that refuses every call. The Decision for #412 in the
   master plan (`### Providers`) records that the CLI "executes no tool".
 
 ### Investigation: can the CLI carry search?
@@ -94,7 +91,7 @@ The order is `Unsupported` first, then `Off`, then `On` → entry, then the endp
 missing or empty `base_url` counts as the official one; a kind with no `default_endpoint` is
 `Unverified`, which matches today's `?`). `Unsupported` precedes `Off` so a kind with no search is
 never told that `native = "off"` turns off a search it never had. `provider_entry` becomes a thin
-wrapper that looks up the account lazily: it passes the looked-up `Option` account into
+wrapper that looks up the account and passes the `Option` into
 `entry_for`, which maps a missing main account to `Unverified` only on the `auto`
 endpoint-comparison branch, after `Unsupported`/`Off`/`On` are decided, matching today's early
 returns. It returns the `Result`. `offered` keeps `Option` via `.ok()`.
