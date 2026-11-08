@@ -14,7 +14,7 @@ use common::claude_cli::{
 use fontaine_core::accounts::{self, SignInState};
 use fontaine_core::agent::build_guardian;
 use fontaine_core::config::AccountKind;
-use fontaine_core::models::{self, GuardianModel, ModelError, Switcher};
+use fontaine_core::models::{self, GuardianModel, ModelError, Models, Switcher};
 use fontaine_core::providers::claude_subscription::{
     CONFLICTING_ENV, ErrorKind, claude_error, inherited_env_names,
 };

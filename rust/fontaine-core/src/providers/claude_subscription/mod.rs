@@ -544,6 +544,7 @@ mod tests {
                 std::path::Path::new("/nonexistent"),
                 Arc::new(|_: &str| None),
                 Timeouts::default(),
+                crate::providers::warn::Warn::process(),
             )),
             session: String::new(),
             inventory: InventoryCommand::current_exe().expect("test executable"),
