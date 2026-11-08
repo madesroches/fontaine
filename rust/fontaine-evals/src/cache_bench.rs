@@ -159,9 +159,9 @@ fn mean_steady_creation(steps: &[Step]) -> f64 {
 /// The ratio compares the mean creation of the steady-state steps, Fontaine over Claude Code.
 /// The first step is skipped because base contexts differ. The second is skipped because only
 /// Fontaine's is cheap (it writes one message, the prompt before any tool result), so leaving it
-/// out on both sides makes the means cover the same steps. The last is kept out only to match
-/// the original method, not because it writes less: recorded scorecards show it writes as much
-/// as a steady step.
+/// out on both sides makes the means cover the same steps. The last is kept out so ratios stay
+/// comparable with recorded scorecards, not because it writes less: those scorecards show it
+/// writes as much as a steady step.
 pub fn summarize(fontaine: &[Step], claude: &[Step], threshold: f64) -> Result<Summary, String> {
     for (side, steps) in [("fontaine", fontaine), ("claude", claude)] {
         if steps.len() < 5 {

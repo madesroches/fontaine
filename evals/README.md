@@ -393,8 +393,8 @@ Each side gets its own scratch workspace of equal-sized text files and the same 
 totals, the base context (step 1's read plus write), the ratio, the threshold, `flagged`, the
 `claude --version` output and the model each side reports. The ratio is the mean cache write of the
 steady-state steps (3 to N-1), Fontaine over Claude Code; the first, second and last steps are in
-the table but not in the ratio. It exits 0 under the threshold, 1 when flagged or when a side fails or reports fewer than
-five model calls, and 2 for bad flags. See
+the table but not in the ratio. It exits 0 under the threshold, 1 when flagged or when a side
+fails or reports fewer than five model calls, and 2 for bad flags. See
 [Checking cache usage](../docs/claude-subscription.md#checking-cache-usage).
 
 ### Sequence cases
