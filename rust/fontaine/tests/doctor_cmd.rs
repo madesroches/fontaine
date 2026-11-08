@@ -188,3 +188,16 @@ async fn a_memory_index_pointing_at_a_missing_file_fails() {
     );
     assert!(out.stdout.contains("[warn] loose.md"), "{}", out.stdout);
 }
+
+#[tokio::test]
+async fn doctor_reports_the_version_that_version_prints() {
+    let s = sandbox();
+    let version = s.run(&["--version"]).await;
+    let out = s.run(&["doctor", "--connect=no", "--format=json"]).await;
+    let parsed = report(&out);
+    let row = finding(&parsed, "Install", "version");
+    assert_eq!(
+        version.stdout.trim(),
+        format!("fontaine {}", row["detail"].as_str().unwrap())
+    );
+}

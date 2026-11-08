@@ -152,7 +152,7 @@ where
     let err = |what: &str, e: &dyn std::fmt::Display| format!("{what}: {e}");
     let mut attributes = vec![
         KeyValue::new("service.name", "fontaine"),
-        KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+        KeyValue::new("service.version", crate::VERSION),
     ];
     attributes.extend(
         settings
