@@ -83,8 +83,6 @@ fontaine-tools    -> (no Fontaine crates — never fontaine-core)
 ```
 
 MCP code still cannot name a `fontaine-core` item, because the `fontaine-tools` boundary holds.
-`fontaine-agents` now has `rmcp` in its build graph through `fontaine-tools`, but every binary
-already links it through `fontaine-core`, so the set of compiled crates doesn't change.
 
 ## Implementation Steps
 
@@ -120,35 +118,24 @@ already links it through `fontaine-core`, so the set of compiled crates doesn't 
 - `rust/fontaine/examples/repo_mcp_server.rs`
 - `AGENTS.md`, `tasks/fontaine_harness_plan.md`, `docs/architecture.md`, `CHANGELOG.md`
 
-## Trade-offs
-
-- **Full merge into `fontaine-core` (the issue's proposal).** This removes three crates but turns
-  the "tools never reach core" rule from a compiler guarantee into a convention that `pub(crate)`
-  can't enforce. It also makes `core` about 92k lines, so every edit to it recompiles more code, and
-  Cargo can no longer build `tools` alongside `guardian`. The project's core property is that every
-  call passes through the gate, and the plumbing saved by the merge isn't worth losing that boundary.
-- **Fold `fontaine-mcp` into `fontaine-core`.** The issue allows either target. `fontaine-tools`
-  is the better one: `fontaine-mcp` already depends only on `tools`, its job is the
-  gate-wrapping registration that `tools` already does for the built-ins, and keeping it there
-  preserves the compiler-enforced boundary for MCP code too. Folding it into `core` would also
-  put a second `mcp` module next to the existing `fontaine-core/src/agent/mcp.rs`.
-- **Fold `fontaine-agents` too.** It is 7k lines with its own interface seam (`ChildRunner`,
-  `RootLedger`), and the crate boundary is what keeps it from reaching core. It stays separate.
-- **Do nothing.** This is cheap, but the 690-line crate has its own manifest, features and
-  workspace entry and protects nothing that `fontaine-tools` doesn't already protect.
-
 ## Decisions
+
+- 2026-11-08: fold `fontaine-mcp` into `fontaine-tools`, not `fontaine-core`: keeps the compiler-enforced boundary and avoids a second `mcp` module beside `fontaine-core/src/agent/mcp.rs`.
+- 2026-11-08: full merge into `fontaine-core` declined: the tools/core boundary would become a convention `pub(crate)` can't enforce, and core would grow to about 92k lines.
+- 2026-11-08: `fontaine-agents` stays separate: its `ChildRunner`/`RootLedger` seam is crate-enforced.
+- 2026-11-08: "do nothing" declined: the crate protects nothing `fontaine-tools` doesn't.
 
 ## Documentation
 
 - `docs/architecture.md`: remove the `fontaine-mcp/` line from the workspace map and add "MCP servers" to the map's
   `fontaine-tools/` line, remove its crate
   table row, add MCP servers (transports and wrapped registration, see [MCP servers](mcp.md)) to
-  the `fontaine-tools` row, and remove the `fontaine-mcp` lines from the dependency graph.
+  the `fontaine-tools` row, delete the `fontaine-mcp -> fontaine-tools` line from the dependency graph and drop `fontaine-mcp` from the `fontaine-core` line.
 - `tasks/fontaine_harness_plan.md`: remove `fontaine-mcp/` from the workspace layout and add
   "MCP servers (`mcp`): rig-rmcp wiring, tools registered as `RiskClass::Arbitrary`" to the
-  `fontaine-tools/` entry, update the crate dependency graph, and add a dated line at the end of
-  `### Project` in `## Decisions`: fold `fontaine-mcp` into `fontaine-tools` (8 → 7 crates); the
+  `fontaine-tools/` entry, delete the `fontaine-mcp -> fontaine-tools` line from the crate dependency graph, drop
+  `fontaine-mcp` from the `fontaine-core` line, and add a dated line at the end of
+  `### MCP` in `## Decisions`: fold `fontaine-mcp` into `fontaine-tools` (8 → 7 crates); the
   full merge into `fontaine-core` proposed in #485 was declined to keep the compiler-enforced
   tools/agents boundary.
 - `CHANGELOG.md`: a `### Changed` entry under `## [Unreleased]`: #485, `fontaine-mcp` folded into
