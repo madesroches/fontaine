@@ -309,8 +309,9 @@ pub async fn run_bench(options: &Options, date: String) -> Result<Scorecard, Str
     let mut dirs = Vec::new();
     for side in ["fontaine", "claude"] {
         let dir = scratch.path().join(side);
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        write_fixture(&dir, options.files).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+        write_fixture(&dir, options.files)
+            .map_err(|e| format!("write fixture in {}: {e}", dir.display()))?;
         dirs.push(dir);
     }
     let fontaine_out = run_side(
