@@ -129,3 +129,8 @@ targets = [
 pr-run-mode = "plan"
 # `.github/workflows/release.yml` is adapted by hand for the `rust/` workspace directory.
 allow-dirty = ["ci"]
+
+# dist 0.32 defaults this target to `macos-14`, an image GitHub no longer runs: the job is
+# cancelled before it starts and every later job in the release and dev pipelines is skipped.
+[workspace.metadata.dist.github-custom-runners]
+aarch64-apple-darwin = "macos-15"
