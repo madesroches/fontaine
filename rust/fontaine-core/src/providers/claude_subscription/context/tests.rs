@@ -134,6 +134,7 @@ fn record(frames: usize, blocks: usize, read: u64, write_1h: u64, at: Instant) -
         prints: (0..frames as u64).collect(),
         blocks: vec![blocks; frames],
         merged_tail: false,
+        unreplayable_tail: false,
         usage: CacheUsage { read, write_1h },
         at,
     }
@@ -173,6 +174,28 @@ fn the_check_gives_no_verdict_when_the_comparison_is_unsound() {
     let mut merged = record(3, 1, 1000, 500, t0);
     merged.merged_tail = true;
     assert!(!check(&merged, &record(5, 1, 0, 0, soon)));
+
+    let mut media = record(3, 1, 1000, 500, t0);
+    media.unreplayable_tail = true;
+    assert!(!check(&media, &record(5, 1, 0, 0, soon)));
+}
+
+#[test]
+fn a_final_frame_place_cannot_replay_is_flagged() {
+    let image = json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}});
+    let flagged = |content: Value| {
+        let frames = translated(json!([{"role": "user", "content": content}])).frames;
+        unreplayable(&frames[0])
+    };
+    assert!(flagged(
+        json!([{"type": "text", "text": "a"}, image.clone()])
+    ));
+    assert!(flagged(json!([result_block(Some(json!([
+        {"type": "text", "text": "a"}, image.clone()])))])));
+    assert!(!flagged(json!("plain")));
+    assert!(!flagged(json!([result_block(Some(json!("out")))])));
+    assert!(!flagged(json!([result_block(Some(json!([
+        {"type": "text", "text": "a"}])))])));
 }
 
 fn sent(session: &str, version: (u32, u32, u32), frames: &[Frame]) -> Sent {
@@ -358,14 +381,15 @@ fn a_string_tool_result_gets_the_reminder_appended() {
 }
 
 #[test]
-fn an_array_tool_result_gets_the_reminder_on_its_last_text_block() {
+fn an_array_tool_result_gets_the_reminder_as_a_new_last_text_block() {
     let frames = after(json!([result_block(Some(json!([
         {"type": "text", "text": "a"}, {"type": "text", "text": "b"}])))]));
     assert_eq!(
         content(&frames, 0),
         &json!([result_block(Some(json!([
             {"type": "text", "text": "a"},
-            {"type": "text", "text": format!("b\n\n{}", reminder())}])))])
+            {"type": "text", "text": "b"},
+            {"type": "text", "text": reminder()}])))])
     );
 }
 

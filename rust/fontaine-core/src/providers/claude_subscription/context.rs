@@ -194,6 +194,22 @@ fn place(run: &mut [Frame], reminder: &str) {
     }
 }
 
+/// Whether `place` would leave this final frame unchanged although the CLI still adds its reminder.
+fn unreplayable(frame: &Frame) -> bool {
+    let merged = kinds(frame);
+    let has_result = merged.iter().any(|kind| matches!(kind, Kind::ToolResult));
+    match merged.last() {
+        Some(Kind::Media) => true,
+        Some(Kind::ToolResult) if has_result => frame.value["message"]["content"]
+            .as_array()
+            .and_then(|blocks| blocks.last())
+            .and_then(|result| result["content"].as_array())
+            .and_then(|blocks| blocks.last())
+            .is_some_and(|block| block.get("type").and_then(Value::as_str) != Some("text")),
+        _ => false,
+    }
+}
+
 fn is_empty_text(block: &Value) -> bool {
     block.get("type").and_then(Value::as_str) == Some("text")
         && block
@@ -202,8 +218,8 @@ fn is_empty_text(block: &Value) -> bool {
             .is_none_or(str::is_empty)
 }
 
-/// The CLI appends the reminder to the last tool result's content, after a blank line unless the
-/// content is empty.
+/// The CLI appends the reminder to the last tool result's content: after a blank line to string
+/// content, as a new text block to array content.
 fn append_to_result(result: &mut Value, reminder: &str) {
     let Some(object) = result.as_object_mut() else {
         return;
@@ -217,12 +233,11 @@ fn append_to_result(result: &mut Value, reminder: &str) {
         Some(Value::String(text)) => text.push_str(&appended),
         Some(Value::Array(blocks)) if blocks.is_empty() => blocks.push(text_block(reminder)),
         Some(Value::Array(blocks)) => {
-            if let Some(Value::String(text)) = blocks
-                .last_mut()
-                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-                .and_then(|block| block.get_mut("text"))
+            if blocks
+                .last()
+                .is_some_and(|block| block.get("type").and_then(Value::as_str) == Some("text"))
             {
-                text.push_str(&appended);
+                blocks.push(text_block(reminder));
             }
         }
         Some(_) => {}
@@ -281,6 +296,7 @@ pub(super) struct Record {
     prints: Vec<u64>,
     blocks: Vec<usize>,
     merged_tail: bool,
+    unreplayable_tail: bool,
     usage: CacheUsage,
     at: Instant,
 }
@@ -294,6 +310,7 @@ pub(super) struct Sent {
     prints: Vec<u64>,
     blocks: Vec<usize>,
     merged_tail: bool,
+    unreplayable_tail: bool,
 }
 
 /// A hash per frame, taken before `apply` so it names the conversation and not the layout. It
@@ -329,6 +346,7 @@ impl Sent {
         let merged_tail = frames.len() >= 2
             && is_user(&frames[frames.len() - 2])
             && is_user(&frames[frames.len() - 1]);
+        let unreplayable_tail = frames.last().is_some_and(unreplayable);
         Sent {
             session_id: session_id.to_string(),
             version,
@@ -336,6 +354,7 @@ impl Sent {
             prints,
             blocks,
             merged_tail,
+            unreplayable_tail,
         }
     }
 }
@@ -345,7 +364,7 @@ impl Sent {
 fn check(prev: &Record, now: &Record) -> bool {
     let extends =
         now.prints.len() > prev.prints.len() && now.prints[..prev.prints.len()] == prev.prints[..];
-    if !extends || prev.merged_tail {
+    if !extends || prev.merged_tail || prev.unreplayable_tail {
         return false;
     }
     if now.at.saturating_duration_since(prev.at) >= MAX_GAP {
@@ -410,6 +429,7 @@ pub(super) fn finished(
         prints: sent.prints,
         blocks: sent.blocks,
         merged_tail: sent.merged_tail,
+        unreplayable_tail: sent.unreplayable_tail,
         usage,
         at,
     };

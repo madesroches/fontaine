@@ -60,9 +60,11 @@ proxy (`ANTHROPIC_BASE_URL`) captured each `/v1/messages` body.
 - **Placement rules**, observed on the merged content of the queried user message (a
   `shouldQuery:false` frame directly before it is merged into it):
   1. No `tool_result` block: a new first text block, `REMINDER + "\n"`.
-  2. Last block is a `tool_result`: `"\n\n" + REMINDER` appended to that result's content. With
-     string content it goes at the end of the string; with an array it goes at the end of the last
-     text block. With parallel results only the last one is changed.
+  2. Last block is a `tool_result`: with string content, `"\n\n" + REMINDER` goes at the end of the
+     string; with array content, a new last text block, exactly `REMINDER`, is pushed (existing
+     blocks unchanged). With parallel results only the last one is changed. The earlier probe's
+     dump could not distinguish the two array placements; the cache-bench capture through the
+     logging proxy settled it.
   3. Has a `tool_result` but ends with another block (text): a new last text block, `REMINDER`.
   4. Last block is a `tool_result` followed by an empty text block `{"type":"text","text":""}` (the
      common tool-loop shape Fontaine sends): the CLI drops the empty block and appends a new last
@@ -145,7 +147,7 @@ pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext, layout: Layout)
 - **Self-check**, a pure function `check(prev: &Record, now: &Record) -> bool` (true when the request shows a broken replay), run when
   a Native request completes and the same conversation's previous request was Native. All of these
   must hold, else `false`: the frames extend the previous request's frames (prefix fingerprints
-  equal); the gap is under 55 minutes (1 h TTL with margin); and the step added no more than 18
+  equal); the previous final frame is not a shape `place` leaves unchanged (the CLI still adds its reminder there, so the next read falls short); the gap is under 55 minutes (1 h TTL with margin); and the step added no more than 18
   blocks since the previous final frame (from the `Record`'s per-frame block counts) (inside the API's 20-block lookback). The expected read is
   `prev.read + prev.write_1h`. A read short of it by more than 64 tokens returns `true` and the
   caller adds the version to the broken set through `mark_broken(version) -> bool`, true only on

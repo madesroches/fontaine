@@ -28,8 +28,9 @@ They read the account email from `claude auth status --json` at runtime and cont
 ## Placement rules (merged content of the queried user message)
 
 1. No `tool_result` block: a new first text block, `REMINDER + "\n"`.
-2. Last block is a `tool_result`: `"\n\n" + REMINDER` appended to its content (end of the string,
-   or end of the last text block of an array). With parallel results only the last changes.
+2. Last block is a `tool_result`: with string content, `"\n\n" + REMINDER` appended to the string;
+   with array content, a new last text block, exactly `REMINDER`, pushed onto the array (existing
+   blocks unchanged). With parallel results only the last changes.
 3. Has a `tool_result` but ends with another block (text): a new last text block, `REMINDER`.
 4. Last block is a `tool_result` followed by an empty text block: the empty block is dropped and a
    new last text block, exactly `REMINDER`, is appended.
@@ -37,9 +38,9 @@ They read the account email from `claude auth status --json` at runtime and cont
    the string `REMINDER`; `[]` becomes `[{"type":"text","text": REMINDER}]`.
 
 Not verified, so the adapter leaves them unchanged: a `tool_result` whose array content ends in a
-`document` or image block, a final `document`/image block in a run with no `tool_result`, and
-a consecutive-user-frame run merging as described (two `shouldQuery:false` frames before an
-assistant).
+`document` or image block and a final `document`/image block in a run with no `tool_result`. A
+consecutive-user-frame run (two `shouldQuery:false` frames before an assistant) gets the reminder
+by the merged-content rules, without that merging having been measured live.
 
 ## Reminder sections
 
