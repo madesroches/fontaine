@@ -77,7 +77,7 @@ enum Command {
         files: usize,
 
         /// Flag when Fontaine's mean steady-state write exceeds Claude Code's by this ratio
-        #[arg(long, value_name = "X", default_value_t = 2.0)]
+        #[arg(long, value_name = "X", default_value_t = 1.25)]
         threshold: f64,
 
         /// The Fontaine executable

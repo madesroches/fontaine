@@ -93,8 +93,9 @@ changes per request would change the prompt after its first lines. Fontaine chec
 is empty when it connects, and before every launch refuses one that holds `CLAUDE.md`, `AGENTS.md`
 or `.claude`. Git discovery from it is capped at the data directory. The files of one request
 (settings, tool inventory, system prompt) stay in a temporary directory removed with the process.
-Fontaine marks the last replayed user message for the prompt cache, and the CLI's claude.ai
-connectors are not fetched.
+Fontaine marks one message for the prompt cache (the final message on CLI 2.1.319 and later, the
+last replayed user message otherwise; see [Supported CLI versions](#supported-cli-versions)), and
+the CLI's claude.ai connectors are not fetched.
 
 The CLI is started with its own memory, instruction files, compaction, hooks, subagents, retries,
 fallbacks, prompt suggestions, tool search and updates switched off, and refuses to start a
@@ -149,17 +150,36 @@ directory.
 
 ## Supported CLI versions
 
-The minimum is **2.1.318**. The gate is a minimum only: newer versions are accepted unqualified (no
-version is live-qualified yet), and a protocol shape the adapter does not know still fails closed. The order 2.1.319 uses to report a
+The minimum is **2.1.318**. The gate is a minimum only: newer versions are accepted, and a
+protocol shape the adapter does not know still fails closed. The cache layout below is a separate
+matter, with its own threshold at 2.1.319. The order 2.1.319 uses to report a
 denied call, inside the response before its stop, is supported alongside the earlier order after
 the stop. Windows runs the official executable with `taskkill /T /F` as the tree cleanup.
 
 Measured on 2.1.319: each request costs a CLI start (about 0.4 s) plus about 5 ms per replayed
-user message. Replayed history is read from the prompt cache up to the previous request's last
-replayed user message. Each request writes the last two messages to the cache, about twice a native
-Claude Code session's write per step, because the CLI adds its own context to the final message.
-The write that is never read back (the final message) is made with a 5-minute lifetime instead of
-the 1-hour one, which cuts its billed cost by about a third; the earlier marker keeps the hour.
+user message.
+
+On versions from 2.1.319, replayed history is read from the prompt cache up to the previous
+request's final message. The adapter repeats the CLI's own context reminder on every replayed user
+message, where the CLI put it, so each replayed message matches the request that last wrote it
+byte for byte, and it puts its cache marker on the final message. Each step then writes only its
+new messages plus about 170 tokens of the reminder per user message, near a native Claude Code
+session's write. The write that is never read back is the CLI's trailing date and token-budget
+block; it has a 5-minute lifetime instead of the 1-hour one, which cuts its billed cost by about a
+third, and the marker on the final message keeps the hour. A request of one message gets no marker,
+so a one-shot caller such as the guardian keeps the CLI's 5-minute write, and the first message of a
+conversation is written once more on its second step.
+
+The adapter checks that the replay works. It compares a conversation's cache read with what the
+previous request of that conversation wrote. On a shortfall (the CLI changed its reminder, so the
+replayed bytes no longer match), it turns the layout off for that CLI version for the rest of the
+process and logs one warning naming the version; `cache-bench` measures the effect. The
+layout needs an account email in the CLI's answer. On versions below 2.1.319, without an email, or
+after a warning, the adapter keeps the earlier layout: the marker on the last replayed user message,
+read back up to that message, and each request writing the last two messages, about twice a native
+session's write per step. The never-read 5-minute write there is the CLI's breakpoint on the final
+message.
+
 Reuse holds while a step adds no more than about 20 blocks; a wider parallel step (about ten or
 more tool calls) re-writes the history once.
 
@@ -178,11 +198,16 @@ and no switch in 2.1.319 removes them without also breaking sign-in:
 - the current date and a token-budget line after it.
 
 These come from the CLI, not from Fontaine, which still does not present itself as Claude Code.
-Measured on 2.1.319 with four 6000-token user messages: a native session writes about 6000 tokens per
-step; the adapter writes about 12300 (the previous message again, without the reminder, plus the new
-one), and reads the rest from the cache. The reminder sits on the final message only, so the
-previous message cannot be replayed byte for byte; repeating it on every replayed message would cost
-a reminder per message for the rest of the conversation, which is worse for long runs.
+Measured on 2.1.319 over a 5-step tool loop of about 8200-token tool results: a native session
+writes about one tool result per step; with the earlier layout the adapter writes about 25300 per
+step (the previous message again, without the reminder, plus the new one); with the current layout
+it writes about 8600 (the new result, the reminder and the date block), and reads the rest from the
+cache.
+
+The adapter repeats the CLI's reminder on replayed messages so they match byte for byte. The email
+it holds is the one the CLI already sends on every request: it goes to the same endpoint, and the
+adapter keeps it in memory for the request only, never in a log, the ledger or an error. The cost
+is about 170 tokens of context per user message, about 17000 tokens at 100 tool calls.
 
 ### Checking cache usage
 
@@ -202,6 +227,7 @@ every step, the totals, the CLI version and the models each side reports serving
 the mean cache write per step of Fontaine over Claude Code, leaving out the first step (it carries
 the base context), the second (Fontaine's writes only one message; left out on both sides so the
 means cover the same steps) and the last. The run exits 1 when the ratio is above `--threshold`
-(default 2.0, the gap described under [What the CLI still adds](#what-the-cli-still-adds)) or a
-side reported fewer than five model calls. Counts are tokens only: the cheaper 1-hour write rate
-is not part of them.
+(default 1.25, above the ratio the current layout is expected to reach; a CLI version on the earlier
+layout, described under [What the CLI still adds](#what-the-cli-still-adds), will exceed it) or a
+side reported fewer than five model calls. Counts are tokens only: the cheaper 1-hour write rate is
+not part of them.
