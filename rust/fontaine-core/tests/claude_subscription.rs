@@ -1695,9 +1695,26 @@ async fn the_search_entry_reaches_the_cli_and_a_search_response_decodes() {
         .await
         .unwrap();
     assert_eq!(response.text(), "It shipped.");
-    let rendered = format!("{:?}", response.choice);
-    assert!(rendered.contains("srvtoolu_01"), "{rendered}");
-    assert!(rendered.contains("EqgfCioIAxgC"), "{rendered}");
+    let content: Vec<_> = response.choice.iter().collect();
+    let [
+        AssistantContent::Opaque(call),
+        AssistantContent::Opaque(result),
+        AssistantContent::Text(text),
+    ] = content.as_slice()
+    else {
+        panic!("a server call, its result and the text: {content:?}");
+    };
+    assert_eq!(call.kind(), Some("server_tool_use"));
+    assert_eq!(call.item["id"], "srvtoolu_01");
+    assert_eq!(result.kind(), Some("web_search_tool_result"));
+    assert_eq!(
+        result.item["content"][0]["encrypted_content"],
+        "EqgfCioIAxgC"
+    );
+    let [citation] = text.citations() else {
+        panic!("one citation: {:?}", text.citations());
+    };
+    assert_eq!(citation.sources[0].cited_text.as_deref(), Some("shipped"));
 
     let run = &claude.model_runs()[0];
     let settings: Value = serde_json::from_str(run["settings"].as_str().unwrap()).unwrap();
@@ -1723,23 +1740,4 @@ async fn a_search_the_request_did_not_offer_is_refused() {
         error.to_string().contains("native tool or hosted content"),
         "{error}"
     );
-}
-
-#[tokio::test]
-async fn the_double_does_not_announce_the_search_tool_in_init() {
-    let claude = Claude::new();
-    claude.scenario(json!({"responses": [{"text": "plain"}]}));
-    let handle = main_handle(&claude).await;
-    let response = handle
-        .completion
-        .call(
-            CompletionRequest::new("go")
-                .max_tokens(64)
-                .additional_params(
-                    json!({"tools": [{"type": "web_search_20250305", "name": "web_search"}]}),
-                ),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.text(), "plain");
 }

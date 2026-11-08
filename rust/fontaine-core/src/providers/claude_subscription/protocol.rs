@@ -711,6 +711,7 @@ pub struct Reader {
     calls: BTreeMap<String, Call>,
     /// Ids of this response's web-search server calls.
     searches: BTreeSet<String>,
+    answered_searches: BTreeSet<String>,
     trail: VecDeque<(String, u32)>,
     trail_cut: bool,
     phase: Phase,
@@ -738,6 +739,7 @@ impl Reader {
             usage,
             calls: BTreeMap::new(),
             searches: BTreeSet::new(),
+            answered_searches: BTreeSet::new(),
             trail: VecDeque::new(),
             trail_cut: false,
             phase: Phase::Ack,
@@ -1114,7 +1116,10 @@ impl Reader {
                         if block
                             .get("tool_use_id")
                             .and_then(Value::as_str)
-                            .is_some_and(|id| self.searches.contains(id)) => {}
+                            .is_some_and(|id| {
+                                self.searches.contains(id)
+                                    && self.answered_searches.insert(id.to_string())
+                            }) => {}
                     _ => {
                         return Err(protocol(
                             "the Claude CLI used a native tool or hosted content",

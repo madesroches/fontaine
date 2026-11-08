@@ -1406,6 +1406,16 @@ fn a_search_inside_one_response_is_forwarded_in_order() {
 }
 
 #[test]
+fn a_second_result_for_one_server_call_is_refused() {
+    let mut r = searching();
+    feed(&mut r, search_call(0, "srvtoolu_01", "web_search")).unwrap();
+    stop_block(&mut r, 0);
+    feed(&mut r, search_result(1, "srvtoolu_01")).unwrap();
+    stop_block(&mut r, 1);
+    assert!(failure(feed(&mut r, search_result(2, "srvtoolu_01"))).contains(HOSTED));
+}
+
+#[test]
 fn a_paused_search_turn_completes_like_an_end_turn() {
     let mut r = searching();
     feed(&mut r, search_call(0, "srvtoolu_01", "web_search")).unwrap();
