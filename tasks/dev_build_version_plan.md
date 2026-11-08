@@ -85,7 +85,7 @@ over `Option<&BuildInfo>`, and use it in `bug.rs` and `reports.rs` callers so `/
 4. `cli.rs`, `doctor_cmd.rs`, `telemetry/otlp.rs`: switch to `VERSION`.
 5. `fontaine-tui`: add `build_version()`; switch `bug.rs`, `reports.rs` callers. `fontaine-core`:
    drop only the rendered `(git_sha)` suffix in `bug_report.rs` (the `git_sha` fields stay).
-6. Docs and changelog.
+6. Docs, changelog, and a dated line at the end of the master plan's `### Build and release` Decisions subsection.
 
 ## Files to Modify
 
@@ -93,7 +93,7 @@ over `Option<&BuildInfo>`, and use it in `bug.rs` and `reports.rs` callers so `/
 - `rust/fontaine/src/lib.rs`, `cli.rs`, `doctor_cmd.rs`, `telemetry/otlp.rs`
 - `rust/fontaine-tui/src/lib.rs`, `ui/commands/bug.rs`, `ui/commands/reports.rs`
 - `rust/fontaine-core/src/bug_report.rs`
-- `docs/installing.md`, and `docs/doctor.md` if it shows version output
+- `docs/installing.md`
 - `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
@@ -123,13 +123,12 @@ over `Option<&BuildInfo>`, and use it in `bug.rs` and `reports.rs` callers so `/
 Update `docs/installing.md` to describe what `fontaine --version` prints for a dev install
 (`-dev+<sha12>`, distinct from the receipt version), including the "From source" section
 (~lines 154-164): `cargo install --git` checkouts contain `.git`, so `fontaine --version` prints
-`<version>-dev+<sha12>`; update `docs/doctor.md` if it shows example
-version output; add a `CHANGELOG.md` entry under Unreleased.
+`<version>-dev+<sha12>`; add a `CHANGELOG.md` entry under Unreleased.
 
 ## Testing Strategy
 
 - Unit tests of the pure decision function: no git → plain; exact tag +
-  clean → plain; tag + untracked file only → plain; exact tag + dirty → dev+sha.dirty; no tag →
+  clean → plain; exact tag + dirty → dev+sha.dirty; no tag →
   dev+sha; tag for a different version → dev+sha; result's build metadata is non-empty and
   matches `[0-9A-Za-z-.]` (no new dependency).
 - Unit test in `fontaine-tui` of the pure fallback over `Option<&BuildInfo>` with constructed
