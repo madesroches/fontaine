@@ -165,11 +165,15 @@ async fn output_style_switches_the_prompt_the_agent_gets_and_none_removes_it() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_skill_list_is_in_the_system_prompt_without_the_skill_bodies() {
     let w = world();
+    let sent = &w;
     w.run(|ui| async move {
         idle(&ui).await;
         ui.send("hello");
         ui.wait_for("ok").await;
-        ui.press(KeyCode::Esc);
+        ui.wait_until("the request to reach the model", |_| {
+            !sent.requests().is_empty()
+        })
+        .await;
     })
     .await;
     let request = &w.requests()[0];
