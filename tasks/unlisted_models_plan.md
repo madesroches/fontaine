@@ -138,12 +138,25 @@ delegates to) sets it to `client.facts_notice(&reference.model)`; `ModelHandle::
 fallback guardian is `main.guardian_scoped()`, which carries the same notice). The TUI's `/model` and `/guardian-model`
 (`fontaine-tui/src/ui/commands/model.rs`) read the new handle's `facts_notice` after the switch
 and show it with `Transcript::warning`; the TUI reads it from `runtime.models.main` /
-`runtime.models.guardian` after `switch_main_model` / `set_guardian_model`. In the modes where
+`runtime.models.guardian` after `switch_main_model` / `set_guardian_model`. The side flows that
+install a guardian without updating `runtime.models.guardian` return the notice instead:
+`Switched` gains `facts_notice: Option<String>` (set by `use_guardian` from the installed
+`Ready` handle, `None` elsewhere it is built), `retry_guardian` returns
+`(bool, Option<String>)` (ready, and the `Ready` handle's notice), and `CredentialEffect` gains
+`guardian_notice: Option<String>` from that retry. `answer_unavailable`
+(`ui/commands/model.rs`) and `credential_effects` (`ui/providers.rs`) show it with
+`Transcript::warning`. A main model rebuilt by a credential change keeps its reference, already
+announced, so it shows nothing new. In the modes where
 `announce` returns early (Manual/AcceptEdits, which never consult the guardian), headless prints
 only the main model's `facts_notice` to stderr; the guardian's notice stays on the Auto/Afk/Plan
 path, where `announce` prints `runtime.notices()`, which carries both from `Models.notices`. A
-derived model used only by a subagent warns through `context.approver.warn(...)` in `ChildContext::model_for`'s caller, once per model reference,
-deduplicated like `first_unpriced_cap`. It is shown once per resolution of that model, never per
+derived model used only by a subagent warns through `context.approver.warn(...)` in `ChildContext::model_for`'s caller, once per model reference per
+session: the agent tree gains `first_facts_notice(&self, reference: &str) -> bool`, next to
+`first_unpriced_cap` but keyed by a set of announced references rather than one flag. The caller
+skips the check when the child's reference equals the current main reference or the live
+guardian's (`state.guardian()`), which their own paths announce, so a `$main` child or a
+`$guardian_default` fallback to main never re-warns; a different derived model each warns once.
+It is shown once per resolution of that model, never per
 request.
 
 ### 5. Refused rows are shown, not hidden
@@ -193,13 +206,16 @@ request.
    `AccountListing.refused`, `Switcher::main`/`listings` signatures, `external_check`; update
    callers: `fontaine/src/models_cmd.rs`, `fontaine-core/src/agent/models.rs` (incl. the :216
    `refused` copy), `agent/setup.rs`, `child_runner.rs` (`MainModel.listing` becomes `Listing`; after `model_for`, emit the handle's `facts_notice` via
-   `context.approver.warn`, once per model reference like `first_unpriced_cap`),
+   `context.approver.warn`, gated by `first_facts_notice` and skipped for the main and live
+   guardian references), `fontaine-agents/src/tree.rs` (`first_facts_notice`),
+   `Switched.facts_notice` / `retry_guardian`'s notice / `CredentialEffect.guardian_notice`,
    `agent/model_source.rs`, `composition_offer.rs` (test `AccountListing` literal), `model_report.rs:183-184` (test
    `AccountListing` literal), `fontaine-core/tests/model_source.rs:16-17` (`MainModel { listing }`
    literal becomes `Listing`), and the test files building `Models { main_listing: Vec::new(), .. }` (use `Listing::default()`).
 6. `model_report.rs`: `unavailable` in text and JSON.
 7. TUI: `model_picker.rs` `Row::Refused`, `impl From<&AccountListing> for Group` copying `refused`, heading rule, `body_as`, `linear.rs` test call sites,
-   the switch notice in `fontaine-tui/src/ui/commands/model.rs`.
+   the switch notice in `fontaine-tui/src/ui/commands/model.rs` (incl. `answer_unavailable`'s
+   Retry and Pick arms), the credential-change notice in `fontaine-tui/src/ui/providers.rs`.
 8. Headless: `fontaine/src/headless.rs` prints the main model's `facts_notice` warning to stderr
    in the modes where `announce` returns early (not Auto/Afk/Plan); the guardian's notice stays on
    the `runtime.notices()` path.
@@ -215,7 +231,8 @@ request.
   `rust/fontaine-core/src/agent/{models.rs,setup.rs,model_source.rs}`,
   `rust/fontaine-core/src/{child_runner.rs,composition_offer.rs}`
 - `rust/fontaine/src/{models_cmd.rs,headless.rs}`
-- `rust/fontaine-tui/src/{model_picker.rs,linear.rs,ui/commands/model.rs}`
+- `rust/fontaine-tui/src/{model_picker.rs,linear.rs,ui/commands/model.rs,ui/providers.rs}`
+- `rust/fontaine-agents/src/tree.rs`
 - `rust/fontaine-core/tests/{claude_subscription.rs,models.rs,goal.rs,model_source.rs}`,
   `rust/fontaine-tui/tests/common/mod.rs`, and the other tests building
   `Models { main_listing: Vec::new(), .. }`
@@ -247,6 +264,8 @@ request.
   follow-up applies family-sibling derivation only.
 - 2026-11-08: Listed models keep their catalog facts; a CLI flag that disagrees is a reason to
   bump rig, not to override at runtime.
+- AFK: 2026-11-08: Guardians installed by the unavailable-guardian answers and the credential-change retry return their `facts_notice` (`Switched.facts_notice`, `retry_guardian`'s `(bool, Option<String>)`, `CredentialEffect.guardian_notice`) and the TUI shows it with `Transcript::warning`; `use_guardian` stays `&self`, because otherwise those derived guardians are never announced.
+- AFK: 2026-11-08: Subagent facts notices dedupe per model reference through a session-wide set on the agent tree (`first_facts_notice`), skipping the current main and live guardian references, because one `first_unpriced_cap`-style flag would silence a second derived model and `$main`/fallback children would re-announce the main model.
 
 ## Documentation
 
@@ -294,7 +313,10 @@ All unit/integration, no live CLI (`claude_cli_double` fake only).
   `AccountListing.refused` with its reason, including when the account is the main account
   (the reuse path); `models` narrowing applies to refused rows; `haiku` is usable and listed in
   `AccountListing.models` (regression pin for Haiku hidden from the picker). A subagent whose
-  model is derived emits the `facts_notice` once through the approver.
+  model is derived emits the `facts_notice` once through the approver; a second child on the same
+  reference, and a `$main` child on a derived main model, emit none. `use_guardian` and
+  `retry_guardian` on a derived guardian return its `facts_notice`. `tree.rs`:
+  `first_facts_notice` is true once per reference.
 - `model_picker.rs` unit tests: refused row drawn with its reason, filtered by the query, skipped
   by arrows and Enter, absent when the query excludes it; a group whose query matches only
   refused rows keeps its heading.
