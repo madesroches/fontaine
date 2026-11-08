@@ -200,7 +200,8 @@ It reads six fixture files of about 2000 tokens one at a time through `fontaine 
 [headless output](headless.md#output) and from `claude -p`'s `assistant` events. The scorecard holds
 every step, the totals, the CLI version and the models each side reports serving. Read the `ratio`:
 the mean cache write per step of Fontaine over Claude Code, leaving out the first step (it carries
-the base context) and the last (it only answers). The run exits 1 when the ratio is above
+the base context), the second (Fontaine's writes only one message; left out on both sides so the
+means cover the same steps) and the last (kept out to match the original method). The run exits 1 when the ratio is above
 `--threshold` (default 2.0, the gap described under [What the CLI still
-adds](#what-the-cli-still-adds)) or a side reported fewer than three model calls. Counts are tokens
+adds](#what-the-cli-still-adds)) or a side reported fewer than five model calls. Counts are tokens
 only: the cheaper 1-hour write rate is not part of them.
