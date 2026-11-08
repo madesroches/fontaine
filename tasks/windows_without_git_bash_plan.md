@@ -65,6 +65,12 @@ The warning goes into `SessionPrep.warnings` as a `Notice::warning` (the existin
 channel, so it reaches the user through the `Approver` once):
 `Git for Windows was not found: shell commands, hooks and the status line run in PowerShell. Install Git for Windows, or set FONTAINE_GIT_BASH_PATH, to use Git Bash.`
 
+When `FONTAINE_POWERSHELL_PATH` is set (non-empty) in the no-shell row, `powershell::discover`
+returned `None` because that path is not a file, so the exit-2 message names it instead of telling
+the user to set it: `no shell found: install Git for Windows, or set FONTAINE_GIT_BASH_PATH;
+FONTAINE_POWERSHELL_PATH=<value> is not a file`. `discover`'s API is unchanged; with Git Bash found,
+a bad PowerShell override keeps today's behavior (no `powershell` tool, no message).
+
 On Linux/macOS nothing changes (`git_bash` is `None` and `sh` is native).
 
 ### One shared "command shell" for hooks, status line
@@ -122,7 +128,14 @@ changes:
   `the_registered_set_is_exactly_the_documented_one` and
   `powershell_exists_only_when_an_interpreter_was_found` (`choke_point.rs:38`, `:59`) would lose
   `shell`/`monitor`. The shared test env therefore carries a fake `GitBash` on Windows, as
-  `fontaine-tools/tests/choke_point.rs:225-231` does.
+  `fontaine-tools/tests/choke_point.rs:225-231` does. The fontaine-core test runtimes
+  (`tests/common/runtime.rs:459`, `tests/choke_point.rs:189`) set `git_bash: None, powershell:
+  None`; every runtime build constructs `HookProcess` through `CommandShell::select(..).expect(..)`
+  (`agent/setup.rs:618`), which would panic on Windows CI, and those runtimes would lose
+  `shell`/`monitor`. They use the discovered `common::git_bash()` (`tests/common/mod.rs:132-139`),
+  as `tests/extensions.rs:356` does, since these tests execute commands and a fake cannot. The
+  `statusline.rs` unit test (~:333) passes `CommandShell::Sh`, which spawns `sh` from PATH exactly
+  as its `None` does today.
 - Model-facing text names `shell` only when it is registered. The `powershell` description
   (`builtins.rs:732-733`: "use `shell` for that"), `fontaine-core/prompts/system_prompt.md` (lines
   9, 17, 26, 36, including the denial-evasion guidance), the `read`/`ls`/`glob`/`grep`
@@ -281,6 +294,11 @@ a separate feature (see Trade-offs).
   features usable with Git Bash present too, so they are left out to keep this change to the
   missing-prerequisite fix.
 
+## Decisions
+
+- AFK: A bad `FONTAINE_POWERSHELL_PATH` is surfaced only in the no-shell exit-2 message (which names the unusable value instead of telling the user to set it); `powershell::discover`'s API is unchanged and, with Git Bash found, a bad override keeps today's silent behavior — smallest change that stops the misleading advice.
+- AFK: The fontaine-core test runtimes (`tests/common/runtime.rs:459`, `tests/choke_point.rs:189`) use the discovered `common::git_bash()` and the `statusline.rs` unit test uses `CommandShell::Sh` — keeps Windows CI from panicking in `CommandShell::select(..).expect(..)` and keeps `shell`/`monitor` registered, with no behavior change off Windows.
+
 ## Documentation
 
 - `docs/tools.md`: Windows bullet — Git Bash preferred, PowerShell fallback, no-shell error,
@@ -309,7 +327,7 @@ Unit tests (all platforms, through the existing `Probe`/constructed-settings sea
   `Sh` puts it on the command line.
 - Startup selection: factor the table into a pure function in `fontaine/src/lib.rs` (git result ×
   powershell option → Ok(prep inputs + warning?) / Err(code)) and test all rows, including
-  `BadOverride` still exiting 2.
+  `BadOverride` still exiting 2 and the no-shell message naming a set `FONTAINE_POWERSHELL_PATH`.
 - Registration: `fontaine-tools/tests/choke_point.rs` — a Windows-shaped `ShellSettings` without
   Git Bash registers no `shell`/`monitor` and does register `powershell`; with Git Bash both.
   (`posix_shell_available` takes the platform as a parameter so this runs off Windows.)
