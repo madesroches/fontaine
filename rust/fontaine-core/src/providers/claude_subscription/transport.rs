@@ -272,7 +272,7 @@ impl ClaudeTransport {
                     match event {
                         Event::Ack => break,
                         Event::Nothing => {}
-                        Event::Frame(_) | Event::Complete => {
+                        Event::Frame(_) | Event::Complete | Event::Cut => {
                             return Err(provider(ClaudeError::new(
                                 ErrorKind::Protocol,
                                 "the Claude CLI answered a history frame",
@@ -461,16 +461,19 @@ fn stream(
             match accepted {
                 Ok(Event::Frame(frame)) => return Some((Ok(frame), Some(running))),
                 Ok(Event::Nothing | Event::Ack) => {}
-                Ok(Event::Complete) => {
+                Ok(event @ (Event::Complete | Event::Cut)) => {
                     if let Some(mut child) = running.child.take() {
                         child.stop().await;
                     }
+                    // A cut response has no result to cross-check, so the cache self-check
+                    // drops its record instead of reading a missing result as evidence.
+                    let cache_usage = match event {
+                        Event::Complete => running.reader.cache_usage(),
+                        _ => None,
+                    };
                     if let Some(sent) = running.sent.take()
-                        && let Some(version) = context::finished(
-                            sent,
-                            running.reader.cache_usage(),
-                            std::time::Instant::now(),
-                        )
+                        && let Some(version) =
+                            context::finished(sent, cache_usage, std::time::Instant::now())
                     {
                         tracing::warn!(
                             cli_version = format!("{}.{}.{}", version.0, version.1, version.2),

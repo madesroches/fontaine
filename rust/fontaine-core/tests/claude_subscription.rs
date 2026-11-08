@@ -1243,6 +1243,41 @@ async fn a_hang_after_the_result_is_killed_at_the_boundary() {
 }
 
 #[tokio::test]
+async fn a_max_tokens_stop_is_returned_truncated_and_the_recovery_never_runs() {
+    let claude = Claude::new();
+    let pidfile = claude.w.root.join("descendant.pid");
+    claude.scenario(json!({"responses": [{
+        "descendant": pidfile, "text": "cut off", "stop_reason": "max_tokens",
+        "hang_after_result": true,
+        // The CLI's output-limit recovery: a synthetic user turn, then another message.
+        "after_stop": [
+            {"type": "user", "message": {"role": "user", "content": "Output token limit hit."}},
+            {"type": "stream_event", "parent_tool_use_id": null,
+             "event": {"type": "message_start", "message": {"model": "claude-sonnet-5-5"}}},
+        ],
+    }]}));
+    let handle = main_handle(&claude).await;
+    let response = handle
+        .completion
+        .call(CompletionRequest::new("hi").max_tokens(16))
+        .await
+        .unwrap();
+    assert_eq!(response.text(), "cut off");
+    let pid: u32 = std::fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    for _ in 0..100 {
+        if !pid_alive(pid) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(!pid_alive(pid), "the descendant outlived the cut response");
+}
+
+#[tokio::test]
 async fn a_silent_model_process_is_a_retryable_timeout() {
     let claude = Claude::new();
     claude.set_env("FONTAINE_CLAUDE_READ_IDLE_MS", "400");

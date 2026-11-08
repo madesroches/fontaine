@@ -109,6 +109,12 @@ response, an unsolicited suggestion, a native tool or permission step, an unexpe
 stream is a failure, never a response. History the CLI cannot replay without loss (an assistant
 prefill, a mid-history role, a hosted tool) is refused.
 
+A response that stops at `max_tokens` is the exception to waiting for the result: the CLI would
+follow it with its own output-limit recovery (a synthetic user message and up to three more model
+calls, billed to the plan), so the process is stopped at that response's `message_stop` and the
+truncated response is returned as any provider's would be. The recovery never runs; only what the
+CLI generated before the stop is spent. No CLI switch for the recovery was found on 2.1.319.
+
 ## Usage, cost and the extra-usage setting
 
 Usage is subscription usage: token counts are shown (`/cost`, headless `result.usage`,
