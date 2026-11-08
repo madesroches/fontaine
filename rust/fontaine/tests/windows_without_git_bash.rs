@@ -16,7 +16,14 @@ fn without_git(config: &str) -> Sandbox {
     std::fs::create_dir_all(&empty).unwrap();
     let system_root = std::env::var("SystemRoot").expect("Windows sets SystemRoot");
     s.set_env("PATH", &format!(r"{system_root}\System32"));
-    for var in ["ProgramFiles", "ProgramFiles(x86)", "LocalAppData"] {
+    // Windows derives a 64-bit process's `ProgramFiles` from `ProgramW6432` and ignores a
+    // `ProgramFiles` set on its own, so the real Program Files stays visible unless both move.
+    for var in [
+        "ProgramFiles",
+        "ProgramW6432",
+        "ProgramFiles(x86)",
+        "LocalAppData",
+    ] {
         s.set_env(var, &empty.to_string_lossy());
     }
     s.remove_env("FONTAINE_GIT_BASH_PATH");
