@@ -115,7 +115,7 @@ proxy (`ANTHROPIC_BASE_URL`) captured each `/v1/messages` body.
 `Vec<ModelRow>`. `CliContext { email: Option<String>, version: Option<(u32, u32, u32)> }` is read
 from the answer's `account.email` (non-empty string) and `claude_code_version` (via the existing
 `parse_version`). Missing or malformed fields give `None`, never an error: they only select a
-layout. `Cli::initialize` / `discover` / `list()` ignore `context`.
+layout. `Cli::initialize` (and through it `discover` / `list()`) ignores `context`.
 
 ### 2. Two layouts, chosen per request
 
@@ -130,22 +130,22 @@ pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext, layout: Layout)
 - `const TEMPLATE_SINCE: (u32, u32, u32) = (2, 1, 319)` and `REMINDER_2_1_319`, one `const` holding
   the text above with an `{email}` placeholder. It is the one template, applied to every version
   at or above `TEMPLATE_SINCE`.
-- `layout` is `Native` when `ctx.version >= TEMPLATE_SINCE`, `ctx.email` is present and the
-  that exact version is not in the process-wide broken set. Otherwise `Legacy`.
+- `layout` is `Native` when `ctx.version >= TEMPLATE_SINCE`, `ctx.email` is present and that
+  exact version is not in the process-wide broken set. Otherwise `Legacy`.
 - **Verdict store.** One process-wide static in `context.rs` (a `LazyLock<Mutex<…>>`), so it
   survives the new `Connected` that `client_for` builds per main model, `/model` switch, subagent
   with an explicit model and non-reused guardian. It holds the set of broken CLI versions, sticky
   for the process lifetime and never persisted. A sibling static holds the per-conversation record,
-  keyed by the derived session id in a bounded map (the last 256 conversations): the previous
+  keyed by the derived session id in a bounded map (the last 256 conversations; a first-party `HashMap` plus a `VecDeque` for eviction order, no new dependency): the previous
   Native request's pre-`apply` frame fingerprint (a hash per frame), its usage
-  (`cache_read_input_tokens`, `cache_creation.ephemeral_1h_input_tokens`) and its completion time.
+  (`cache_read_input_tokens`, `cache_creation.ephemeral_1h_input_tokens`), its completion time and the per-frame block counts of the frames as sent (after `apply`).
   The statics choose only a cache layout (advisory, not permission, spend or durable), so they use
   `lock_recovering` with a one-line reason at the call site.
 - **Self-check**, a pure function `check(prev: &Record, now: &Record) -> bool` (true when the request shows a broken replay), run when
   a Native request completes and the same conversation's previous request was Native. All of these
   must hold, else `false`: the frames extend the previous request's frames (prefix fingerprints
   equal); the gap is under 55 minutes (1 h TTL with margin); and the step added no more than 18
-  blocks since the previous final frame (inside the API's 20-block lookback). The expected read is
+  blocks since the previous final frame (from the `Record`'s per-frame block counts) (inside the API's 20-block lookback). The expected read is
   `prev.read + prev.write_1h`. A read short of it by more than 64 tokens returns `true` and the
   caller adds the version to the broken set; a version never leaves it.
 - **Usage source.** `Reader::result` (`protocol.rs:1193`), on the accepted final result, already
@@ -217,10 +217,10 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
    Add each confirmed shape to the rules; leave unconfirmed ones as "left unchanged".
 3. **`cli.rs`:** `Listing`, `CliContext`, parsing in `list_models`; adjust `Cli::initialize` /
    `discover` callers and the `listing_with` unit-test helper (`cli.rs:1194-1212`, returns
-   `Vec<ModelRow>` from `list_models`) with its three tests (~`cli.rs:1217`, `1232`, `1247`).
+   `Vec<ModelRow>` from `list_models`) with its three tests (~`cli.rs:1216`, `1231`, `1246`).
 4. **`context.rs`:** `TEMPLATE_SINCE`, the 2.1.319 template, the verdict statics and `Record`, the
    pure `check`, `layout`, `apply` (reminder placement and marker). Move `mark_history` and
-   `CACHE_MARKER` here from `protocol.rs`; reword their doc comments (`protocol.rs:259-267` say the
+   `CACHE_MARKER` here from `protocol.rs`; reword their doc comments (`protocol.rs:260-261`, `264-267` say the
    marker goes on the last user frame before the final because a breakpoint there is never read
    back) to describe both layouts: Legacy marks the last history user frame, Native the final
    frame. `mark_history` becomes
@@ -388,7 +388,7 @@ failure class, since a wrong layout changes only usage, so it is automated:
   logged frames equal today's: no reminder, marker on the last history user frame. This updates the
   `aliases_resolve_to_canonical_ids_and_the_request_is_translated` (line ~790, asserts
   `frames[0]["message"]["content"][0]["text"]`) is updated for the leading reminder block.
-- Self-check, using the double's per-response `usage` script key: scripted so the second request
+- Self-check, using the double's per-response `usage` script key. The broken-version set is process-wide and the tests share one binary and parallel threads, so each self-check test scripts its own `claude_code_version` that no other test uses (e.g. "2.1.400" and "2.1.401"); the default "2.1.319" is never marked broken. Unit tests of `check` and the broken set use their own instance or distinct versions too: scripted so the second request
   of a conversation reads short, the third request's logged frames are Legacy and exactly one
   warning is emitted; scripted to match, the third stays Native.
 - Existing billing-gate, precedence and replay tests pass unchanged.
