@@ -32,8 +32,9 @@ Windows updater process and the TUI notice stay in #175.
 - HTTP clients go through `fontaine_tools::tls::build_client(network, ...)` so `[network]`
   (proxy, CA bundle, mTLS) applies. `reqwest` is a workspace dependency; `sha2` and
   `minisign-verify` are too.
-- `fontaine_core::file_lock` and `plugin::replace_dir` exist for atomic/locked replacement of
-  persisted data; there is no helper for replacing an executable.
+- `fontaine_core::file_lock` exists for locked access to persisted data (`lock_registry` in
+  `rust/fontaine/src/plugin.rs` is the precedent); there is no helper for replacing an executable
+  or for atomically rewriting a single file.
 
 ## Design
 
@@ -53,7 +54,9 @@ install  -> extract binary, atomically replace the running executable (unix rena
 report   -> one line per outcome, exit code
 ```
 
-- **Receipt match.** Self-replace only when a receipt exists, parses, and its binary,
+- **Receipt match.** The only receipt fields read are `install_prefix`, `binaries` and `version`;
+  `install_layout` is ignored. The parser rejects a relative or `~` `install_prefix` and accepts a
+  `binaries[0]` that already ends in `.exe`. Self-replace only when a receipt exists, parses, and its binary,
   `install_prefix/bin/<binaries[0]>` (`.exe` on Windows), canonicalised, equals the canonicalised
   `std::env::current_exe()`. Otherwise (cargo install, package manager,
   container, moved binary) print the upgrade hint and exit non-zero without writing anything.
@@ -81,11 +84,15 @@ report   -> one line per outcome, exit code
 - **Install, Windows.** The running exe cannot be replaced by itself; the long-term design is
   #175's separate updater process. For this command: rename the running exe to
   `fontaine.exe.old`, move the new one into place, and best-effort delete `.old` at the next
-  `fontaine update`; if the rename fails, report it and leave the install untouched. Recorded as a
-  Decisions line because it is narrower than #175.
+  `fontaine update`; if the rename fails, report it and leave the install untouched. Any stale
+  `fontaine.exe.old` is deleted at the start of the run, before the rename, so the rename never
+  collides with it. Recorded as a Decisions line because it is narrower than #175.
 - **Receipt after install.** Read-modify-write of only `version`, set to `Verified.version` (not a
-  tag-derived value); every other field is kept, the write is atomic, and an unparseable version is
-  rejected. Failure to rewrite warns via `print_warnings`/stderr and is not silent.
+  tag-derived value); every other field is kept, the write goes through a temp file in the same
+  directory plus `rename`, and an unparseable version is rejected. The whole update holds a
+  `fontaine_core::file_lock` beside the receipt (as `lock_registry` does in
+  `rust/fontaine/src/plugin.rs`) so concurrent updates serialise. Failure to rewrite warns via
+  `print_warnings`/stderr and is not silent.
 - **Exit codes.** `0` updated or already up to date; the existing config exit code for
   unreadable config (`Command::Update` dispatches after `load_config`, so `[network]` applies and a
   config error exits with the config exit code); a new nonzero for "not self-updatable", download failure and verification
@@ -132,7 +139,8 @@ report   -> one line per outcome, exit code
 ## Testing Strategy
 
 - Unit: receipt parsing and channel derivation (release, dev, malformed, missing, binary
-  mismatch); version/build-number comparison (newer, equal, older); policy rejecting a
+  mismatch, relative or `~` `install_prefix`, `binaries[0]` already ending in `.exe`, ignored
+  `install_layout`); version/build-number comparison (newer, equal, older); policy rejecting a
   wrong-channel, wrong-version or unsigned archive; a hostile archive (traversal path, symlink or
   extra members) installs nothing but the `fontaine` regular file; hint text per channel.
 - Integration (wiremock for the release index and assets, a temp "install" directory with a
@@ -147,3 +155,6 @@ report   -> one line per outcome, exit code
    receipt `version` set to the new `<base>-dev.<n>+<sha7>`. Not
    automated because it needs a real published `dev-<n>` signed by the real key (the end-to-end
    check #175 requires on all three OSes before release).
+2. Compare a receipt freshly written by a real installer (shell and PowerShell) with the fields the
+   parser reads (`install_prefix`, `binaries`, `version`), to confirm the schema matches real
+   cargo-dist output, not just the test fixtures.
