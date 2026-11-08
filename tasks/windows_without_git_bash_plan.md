@@ -83,14 +83,26 @@ pub enum CommandShell {
 }
 
 impl CommandShell {
-    pub fn select(git_bash: Option<GitBash>, powershell: Option<PowerShellSettings>) -> Option<Self>;
+    pub fn select(
+        windows: bool,
+        git_bash: Option<GitBash>,
+        powershell: Option<PowerShellSettings>,
+    ) -> Option<Self>;
     /// Program, arguments and the extra environment (after `set_env`) for `command`.
     pub fn invocation(&self, command: &str, set_env: &[(OsString, OsString)]) -> Invocation;
 }
+
+/// What to spawn: the program, its arguments and the environment pairs to set.
+pub struct Invocation {
+    pub program: OsString,
+    pub args: Vec<OsString>,
+    pub env: Vec<(OsString, OsString)>,
+}
 ```
 
-`select` returns `Sh` off Windows, `GitBash` when found, else `PowerShell` when found, else `None`
-(unreachable after startup's check). `invocation` reuses `git_bash::sh_command` /
+`select` takes the platform as a parameter (like `posix_shell_available`) and returns `Sh` off
+Windows, `GitBash` when found, else `PowerShell` when found, else `None`. Production sites pass
+`cfg!(windows)` and `expect` the startup check's guarantee when it returns `None`. `invocation` reuses `git_bash::sh_command` /
 `GitBash::path_value` and `powershell::launch_args` — no new quoting logic. `HookProcess` and
 `StatuslineScript` replace their `git_bash: Option<GitBash>` field with `shell: CommandShell` and
 build their `tokio::process::Command` from `invocation`, deleting their duplicated Git Bash
@@ -109,8 +121,13 @@ changes:
   `fontaine-tools/tests/common/mod.rs:120`) have `git_bash: None`, so on Windows CI
   `the_registered_set_is_exactly_the_documented_one` and
   `powershell_exists_only_when_an_interpreter_was_found` (`choke_point.rs:38`, `:59`) would lose
-  `shell`/`monitor`. The shared test env therefore carries a `git_bash` on Windows (or those
-  expectations follow the predicate).
+  `shell`/`monitor`. The shared test env therefore carries a fake `GitBash` on Windows, as
+  `fontaine-tools/tests/choke_point.rs:225-231` does.
+- Model-facing text names `shell` only when it is registered. The `powershell` description
+  (`builtins.rs:732-733`: "use `shell` for that"), `fontaine-core/prompts/system_prompt.md` (lines
+  9, 17, 26, 36, including the denial-evasion guidance), the `read`/`ls`/`glob`/`grep`
+  descriptions (`builtins.rs:57,184,243`) and the `job_output` description
+  (`jobs/tools.rs:293`) name `powershell` instead when `shell` is not registered.
 
 Nothing about `powershell`'s gating changes: always guardian-judged, `floor::critical_powershell`
 on the floor, bare `shell` rules covering it.
@@ -119,9 +136,14 @@ on the floor, bare `shell` rules covering it.
 
 `AgentRuntime::run_user_shell` builds `powershell_for(primary, &settings, interpreter)` when
 `git_bash` is `None` on Windows (it already has `setup.powershell`), and `shell_for` otherwise.
-`ShellTool` has a public `run(ShellArgs)`; `PowerShellTool` only has `Tool::call` (its launch
-methods are private), so it gains a matching `pub async fn run`. Extract a small private enum or a
-`Box<dyn …>` so the call site stays one line. The ledger/audit record keeps the tool name `shell`
+`ShellTool::run` delegates to rig-tools' `Shell::run`, whose start/finish are private and hard-code
+`sh`, so `PowerShellTool::run` cannot mirror it; and `PowerShellTool`'s only existing path is
+`run_job`, which needs a `&mut ToolContext` and `Jobs` and returns a `String`. `PowerShellTool`
+instead gains a foreground `pub async fn run(&self, args: ShellArgs) -> Result<ShellRun,
+ToolExecutionError>` over its existing `launch` (`builtins.rs:690`) and `launch_in`: spawn, wait
+under the same timeout and no-output timeout, cut at the same `OutputLimit`, return `ShellRun`.
+`run_user_shell` dispatches through a small private enum over the two tools (rig's `Tool` is not
+object-safe, so no `Box<dyn …>`), keeping the call site one line. The ledger/audit record keeps the tool name `shell`
 (it records the user's action, not the interpreter).
 
 ### Hooks without Git Bash fail closed (Claude Code parity)
@@ -140,9 +162,11 @@ tightens, so it respects "hooks never loosen on failure". Malformed JSON on exit
 Implementation: the hook timeout is enforced in `run_hooks` (`permissions.rs:742-751`,
 `tokio::time::timeout(hook.timeout(), hook.run(event))`), outside `CommandHook`. So
 `fails_closed(&self) -> bool` goes on the `PreToolUseHook` trait (`permissions.rs:313-337`; default
-`false`; `true` for a `CommandHook` whose shell is `CommandShell::PowerShell`). `run_hooks` turns its
-`Ok(Err)` and `Err(_)` (timeout) arms into the Git Bash deny when it returns true, and the
-`pre_tool_use` `other =>` arm in `user_hooks.rs` branches on it too.
+`false`; `true` for a `CommandHook` whose shell is `CommandShell::PowerShell`). `run_hooks` turns only
+`Ok(Err(HookError::Failed { .. }))` and `Err(_)` (timeout) into the Git Bash deny when it returns
+true. `HookError::Malformed` (unparseable JSON, unknown `permissionDecision`) reaches the same arm
+but still decides nothing. The `other =>` arm in `user_hooks.rs` keeps returning
+`HookError::failed` for non-0/2 exits and start/encode failures, with no branching of its own.
 
 ### Subagent toolsets
 
@@ -158,17 +182,6 @@ Skill `!` lines keep their existing behavior: without Git Bash the skill shell i
 command is reported as not run. Running POSIX skill snippets in PowerShell would mostly fail or do
 something else; Claude Code requires an explicit `shell: powershell` frontmatter for that, which is
 a separate feature (see Trade-offs).
-
-### Why not cmd as well
-
-Claude Code offers no cmd tool: its shells are Bash (Git Bash) and PowerShell, and its hook
-`shell` field accepts only `"bash"` or `"powershell"`. cmd also cannot preserve the
-judged-equals-run property: it has no encoded-command form, it re-parses its command line
-(`%VAR%` expansion, `^` escapes, `/S` quote stripping) after Fontaine hands it over, so the string
-the guardian judged is not reliably the one that runs — the same class of bug that forced
-`FONTAINE_SH_COMMAND` for Git Bash. PowerShell can already run cmd builtins and `.bat` files
-(`cmd /c …`, `& .\build.bat`), and those calls are judged like any other `powershell` call. So no
-cmd shell is added.
 
 ## Implementation Steps
 
@@ -186,7 +199,7 @@ cmd shell is added.
    shared test env / `choke_point.rs` expectations as described in Design §The model's tools.
 4. **Hooks** — `rust/fontaine-core/src/user_hooks.rs`, `rust/fontaine-core/src/permissions.rs`:
    `HookProcess.shell: CommandShell`, spawn through `invocation`; `PreToolUseHook::fails_closed`
-   and the fail-closed arms in `run_hooks` and the `pre_tool_use` mapping. Update every
+   and the `Failed`/timeout fail-closed mapping in `run_hooks`. Update every
    `HookProcess { git_bash: … }` construction (`agent/setup.rs`, tests). State the fail-closed
    exception in the `PreToolUseHook` trait doc (`permissions.rs:311-312`) and the `user_hooks.rs`
    module doc (line 7).
@@ -198,19 +211,27 @@ cmd shell is added.
    `rust/fontaine-tools/src/builtins.rs`: give `PowerShellTool` a
    `pub async fn run(&self, args: ShellArgs) -> Result<ShellRun, ToolExecutionError>` mirroring
    `ShellTool::run` (`builtins.rs:353`).
-7. **Subagents** — `rust/fontaine-agents/src/registry.rs`: `toolset` maps bare `shell` to also
+7. **Model-facing text** — `rust/fontaine-tools/src/builtins.rs`, `jobs/tools.rs`,
+   `rust/fontaine-core/src/prompt.rs`, `prompts/system_prompt.md`: the `powershell`, `read`/`ls`/
+   `glob`/`grep` and `job_output` descriptions and the system prompt name `powershell` when `shell`
+   is not registered. `prompt.rs` `base()` (68-104) cannot see the registered tools, so pass it
+   whether `shell` is available; update the `system_prompt__the_assembled_prompt_is_stable`
+   snapshot. Unit test: the fallback prompt names `powershell` and not `shell`.
+8. **Subagents** — `rust/fontaine-agents/src/registry.rs`: `toolset` maps bare `shell` to also
    cover `powershell` when the parent lacks `shell`.
-8. **Plan and design records** — `tasks/design/platforms.md`: replace line 10 "Git for Windows is a
+9. **Plan and design records** — `tasks/design/platforms.md`: replace line 10 "Git for Windows is a
    prerequisite" and "not found ⇒ startup error" with the fallback table, and "Hooks and `!` lines
    stay on Git Bash" with the fallback behavior. `tasks/design/permissions.md` §User hooks (lines
    ~259-261): state the fallback's fail-closed `pre_tool_use` exception.
    Master plan `## Decisions`: dated lines at the end of `### Tools` (fallback replaces the startup
    error; Monitor absent without Git Bash; worker gets
-   `powershell` only in the fallback, narrowing the 2026-10-30 line; no cmd shell), `### Build and
+   `powershell` only in the fallback, narrowing the 2026-10-30 line; no cmd shell: Claude Code has
+   none, cmd has no encoded-command form and re-parses its command line (`%VAR%`, `^`), so the
+   judged string is not the one that runs, and PowerShell runs `cmd /c` when needed), `### Build and
    release` (the superseded 2026-10-21 Git-for-Windows prerequisite line, `fontaine_harness_plan.md:435`;
    the `### Tools` 2026-10-21 line at `:923` is discovery only and stays) and `### Extensibility`
    (pre_tool_use hooks fail closed in the fallback; skill `!` lines not run in the fallback).
-9. **Docs** — see Documentation.
+10. **Docs and changelog** — see Documentation.
 
 ## Files to Modify
 
@@ -226,7 +247,12 @@ cmd shell is added.
 - Tests constructing `HookProcess`/`StatuslineScript`/`ShellSettings`
   (`fontaine-core/tests/user_hooks.rs`, `fontaine-core/tests/project_origins.rs`,
   `fontaine-core/tests/common/*`, `fontaine-tui/tests/common/mod.rs`,
-  `fontaine-tools/tests/common/mod.rs`, `fontaine-tools/tests/choke_point.rs`)
+  `fontaine-tools/tests/common/mod.rs`, `fontaine-tools/tests/choke_point.rs`,
+  `fontaine-core/tests/choke_point.rs` (:189), `fontaine-core/tests/shell_settings.rs` (:19-20),
+  `fontaine-core/tests/common/runtime.rs` (:459), the `statusline.rs` unit test (~:333))
+- `rust/fontaine-tools/src/jobs/tools.rs`, `rust/fontaine-core/src/prompt.rs`,
+  `rust/fontaine-core/prompts/system_prompt.md`
+- `CHANGELOG.md`
 - `docs/tools.md`, `docs/hooks.md`, `docs/installing.md`, `docs/agents.md`, `docs/tui.md`,
   `README.md`
 - `tasks/design/platforms.md`, `tasks/design/permissions.md`, `tasks/fontaine_harness_plan.md`
@@ -241,7 +267,6 @@ cmd shell is added.
 - **No hook `shell` field / skill `shell: powershell`.** Claude Code has both; they are independent
   features usable with Git Bash present too, so they are left out to keep this change to the
   missing-prerequisite fix.
-- **cmd rejected** — see Design §Why not cmd as well.
 
 ## Documentation
 
@@ -252,7 +277,9 @@ cmd shell is added.
   description.
 - `docs/hooks.md:36`: hooks run in PowerShell without Git Bash; `pre_tool_use` fail-closed rule.
 - `docs/installing.md:102`, `README.md:39`: Git for Windows recommended, not required.
-- `docs/tui.md` §Custom status line: same fallback note.
+- `docs/tui.md` §Custom status line: same fallback note; §Shell commands (~309-320): without Git
+  Bash, `!` lines run in PowerShell.
+- `CHANGELOG.md`: an entry under `[Unreleased]` citing #510.
 - `docs/agents.md` (built-in types table, ~line 87, worker row): `powershell` in place of `shell` on
   Windows without Git Bash.
 
@@ -270,19 +297,21 @@ Unit tests (all platforms, through the existing `Probe`/constructed-settings sea
 - Registration: `fontaine-tools/tests/choke_point.rs` — a Windows-shaped `ShellSettings` without
   Git Bash registers no `shell`/`monitor` and does register `powershell`; with Git Bash both.
   (`posix_shell_available` takes the platform as a parameter so this runs off Windows.)
-- Hooks: split the `pre_tool_use` exit-code→decision mapping into a pure function taking
-  `&HookOutput` and a `fails_closed` flag. Unit-test the fallback rows through it: exit 1 → `Deny`
-  with the Git Bash reason; exit 0 + malformed JSON → no decision; non-fallback exit 1 →
-  `HookError` (unchanged). Test the timeout row through `run_hooks` with a fake `PreToolUseHook`
-  whose `fails_closed` is true.
+- Hooks: test the `run_hooks` mapping with a fake `PreToolUseHook` whose `fails_closed` is true,
+  following `Double` in `fontaine-core/tests/hook_slot.rs:31` (its `Reply::Fail`, `Malformed` and
+  `Hang` replies): `Failed` → `Deny` with the Git Bash reason; timeout → the same `Deny`;
+  `Malformed` → no decision; with `fails_closed` false, `Failed` → `HookError` (unchanged).
+  `user_hooks` tests cover exit 1 → `HookError::Failed`.
 - Subagents: `registry.rs` — parent `[read, powershell]`: worker gets `powershell`; type
   disallowing `shell` gets none; parent `[read, shell, powershell]`: worker gets `shell` only; a
   type listing only `shell(git *)` does not get `powershell`.
 
 Windows-only integration tests (CI `windows-latest`, which has Git installed — the run hides it):
 
-- `fontaine -p` with `PATH` reduced to `%SystemRoot%\System32` and `ProgramFiles`,
-  `ProgramFiles(x86)`, `LocalAppData` pointed at an empty temp dir: starts (exit 0 with a
+- `fontaine -p` with `PATH` reduced to `%SystemRoot%\System32`, `ProgramFiles`,
+  `ProgramFiles(x86)`, `LocalAppData` pointed at an empty temp dir and `FONTAINE_GIT_BASH_PATH`
+  removed from the env, scripting a guardian verdict (judge account + `--permission-mode auto`,
+  following `rust/fontaine/tests/headless_tools.rs` ~102-106, 145): starts (exit 0 with a
   deterministic model), prints the fallback warning, and a scripted `powershell` call runs. Pins the
   reported bug (startup exit 2 without Git for Windows).
 - Same environment, a `pre_tool_use` hook `exit 1`: the call is denied with the Git Bash reason —
