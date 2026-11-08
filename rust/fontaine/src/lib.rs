@@ -7,6 +7,7 @@ mod plugin;
 mod plugin_auto_update;
 pub mod release_signature;
 pub mod telemetry;
+pub mod update;
 
 #[cfg(test)]
 #[path = "../build/version.rs"]
@@ -354,6 +355,9 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
 
     if let Some(cli::Command::AutoMode(args)) = &cli.command {
         return auto_mode::run(&cli, args, &config, &dirs, &host);
+    }
+    if let Some(cli::Command::Update) = &cli.command {
+        return update::run(&config, &host);
     }
     if let Some(cli::Command::Models(args)) = &cli.command {
         return models_cmd::run(&cli, args, &config, &dirs, &host);

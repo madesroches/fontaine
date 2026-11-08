@@ -8,6 +8,12 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `fontaine update` replaces the installed binary with the newest build on the channel it was
+  installed from (read from the install receipt), reports the result and exits. It verifies the
+  archive's minisign signature against the channel's compiled-in key and its signed channel, file
+  and version before replacing anything, never downgrades or switches channels, and refuses an
+  install that has no matching receipt (exit 3; network failures exit 4, verification failures 5).
+  On Windows it renames the running exe aside rather than using a separate updater process (#509).
 - `fontaine-evals cache-bench` runs a fixed multi-step read task through `fontaine -p` on a
   claude-subscription account and through `claude -p`, compares the per-step cache write, and
   writes a scorecard; it exits 1 when Fontaine's mean write exceeds the threshold times Claude

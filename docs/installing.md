@@ -26,7 +26,7 @@ that `dev-<n>` release, and writes:
 - the `fontaine` binary in `$CARGO_HOME/bin` (`~/.cargo/bin` when `CARGO_HOME` is unset);
 - an install receipt at `${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`, recording
   the install prefix (`$CARGO_HOME`, or `~/.cargo`), the cargo-home layout and the installed
-  binary, so a future self-updater can tell how Fontaine was installed;
+  binary, so `fontaine update` can tell how Fontaine was installed;
 - shell setup that puts `$CARGO_HOME/bin` on your `PATH`: `$CARGO_HOME/env` and `env.fish`, a line
   in your shell's rc files that sources it, and, for fish,
   `~/.config/fish/conf.d/fontaine.env.fish`. Set `FONTAINE_NO_MODIFY_PATH=1` to skip these edits.
@@ -96,7 +96,7 @@ writes:
 - `fontaine.exe` in `%CARGO_HOME%\bin` (`%USERPROFILE%\.cargo\bin` when `CARGO_HOME` is unset);
 - an install receipt at `%LOCALAPPDATA%\fontaine\fontaine-receipt.json`, or in
   `%XDG_CONFIG_HOME%\fontaine` when `XDG_CONFIG_HOME` is set, recording the install prefix, the
-  cargo-home layout and the installed binary, so a future self-updater can tell how Fontaine was
+  cargo-home layout and the installed binary, so `fontaine update` can tell how Fontaine was
   installed;
 - an entry for `%CARGO_HOME%\bin` in your user `Path` (the registry key `HKCU\Environment`). Set
   `FONTAINE_NO_MODIFY_PATH=1` to skip it.
@@ -138,12 +138,54 @@ it, as above.
 Remove:
 
 - `%CARGO_HOME%\bin\fontaine.exe` (`%USERPROFILE%\.cargo\bin\fontaine.exe` by default);
+- `%CARGO_HOME%\bin\fontaine.exe.old` and any `fontaine.exe.old-*`, which `fontaine update` leaves
+  there while a session still runs from the old binary;
 - the receipt, `%LOCALAPPDATA%\fontaine\fontaine-receipt.json` (or the `%XDG_CONFIG_HOME%\fontaine`
   one).
 
 Do not delete the `fontaine` directory as a whole; it is also Fontaine's configuration directory.
 The `%CARGO_HOME%\bin` entry in your user `Path` is shared with rustup and cargo; remove it (Settings,
 System, About, Advanced system settings, Environment Variables) only if neither is installed.
+
+## Updating
+
+```
+fontaine update
+```
+
+`fontaine update` replaces the installed binary with the newest build on the channel it was
+installed from, prints one line and exits. It starts no session. The channel is not a setting: it
+is read from the install receipt, where a version with `-dev.` in it (`<version>-dev.<n>+<commit>`)
+is the `dev` channel and any other is `release`. An update never switches channels; to change
+channel, run the other channel's installer.
+
+- On `release` it installs the latest published `vX.Y.Z` release; on `dev` the highest published
+  `dev-<n>` build, compared by build number.
+- A build that is the same or older than the installed one is reported as already up to date, and
+  nothing is installed: an update never downgrades.
+- The archive and its `.minisig` are downloaded beside the installed binary and checked against the
+  channel's compiled-in key before anything is replaced. The signed channel, file name and version
+  must match the release that was offered. The `.sha256` files are not used. A failed check leaves
+  the installed binary and receipt as they were; see [Verifying releases](verifying-releases.md).
+- The binary is replaced atomically on Linux and macOS. On Windows the running `fontaine.exe` is
+  renamed to `fontaine.exe.old` and the new one moved into place; the leftover is deleted by the
+  next `fontaine update`.
+- The receipt's `version` is rewritten to the installed build; its other fields are kept.
+- The `[network]` settings (proxy, CA bundle, mutual TLS) apply to the download.
+
+Only an install made by one of the installers above can update itself: the receipt must exist and
+describe the running binary. A `cargo install` build, a package-manager copy, a container image, a
+manually unpacked archive or a moved binary is refused with an installer command to use instead, and
+nothing is written.
+
+| Exit code | Meaning |
+| --- | --- |
+| 0 | Updated, or already up to date |
+| 1 | The update could not be installed (for example the install directory is not writable, the disk is full, no published release exists on the channel, or the release has no archive for this platform) |
+| 2 | The configuration could not be loaded |
+| 3 | This install cannot update itself |
+| 4 | The release list or the download could not be fetched (not when it was fetched and held no release); retrying may help |
+| 5 | The download failed verification (missing or bad signature, wrong channel, file or version, or an archive larger than expected) |
 
 ## The release archive
 
