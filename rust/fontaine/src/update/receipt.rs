@@ -269,8 +269,12 @@ mod tests {
 
     #[test]
     fn exe_suffix_is_not_doubled_and_layout_is_ignored() {
-        let json = r#"{"install_prefix":"/opt/x","install_layout":"hierarchical","binaries":["fontaine.exe"],"version":"1.0.0"}"#;
-        let binary = parse(json).unwrap().binary;
+        let prefix = if cfg!(windows) { r"C:\opt\x" } else { "/opt/x" };
+        let json = format!(
+            r#"{{"install_prefix":"{}","install_layout":"hierarchical","binaries":["fontaine.exe"],"version":"1.0.0"}}"#,
+            prefix.replace('\\', "\\\\")
+        );
+        let binary = parse(&json).unwrap().binary;
         assert_eq!(binary.file_name().unwrap(), "fontaine.exe");
     }
 
