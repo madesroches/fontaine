@@ -44,22 +44,19 @@ value.
 `build.rs` computes `FONTAINE_VERSION` and emits `cargo:rustc-env=FONTAINE_VERSION=...`.
 
 Release signal, first match wins:
-1. `FONTAINE_RELEASE_BUILD` env var set and non-empty → plain version (explicit escape hatch for
-   packagers and any workflow that does not build from the tag).
-2. No git information (no `.git`, e.g. a source tarball) → plain version; there is no SHA to add.
-3. `v<CARGO_PKG_VERSION>` is among the tags listed by `git tag --points-at HEAD` (`describe`
+1. No git information (no `.git`, e.g. a source tarball) → plain version; there is no SHA to add.
+2. `v<CARGO_PKG_VERSION>` is among the tags listed by `git tag --points-at HEAD` (`git describe`
    returns one tag only, and `dev.yml` also tags `main` commits `dev-<n>`) and the tree has no
    tracked changes → plain version. This is what the dist build sees, so `release.yml` needs
    no change.
-4. Otherwise → `<version>-dev+<sha12>`, with `.dirty` appended to the build metadata
+3. Otherwise → `<version>-dev+<sha12>`, with `.dirty` appended to the build metadata
    (`0.1.0-dev+91550f07ab12.dirty`) when tracked files have changes. The dirty probe is
    `git --no-optional-locks status --porcelain --untracked-files=no`: untracked files are
    ignored (the release workflow writes `rust/dist-manifest.json` before `build.rs` runs), and
    `--no-optional-locks` keeps plain `status` from rewriting `.git/index`, which `build.rs`
    watches. The result is valid semver (build metadata allows `[0-9A-Za-z-.]`).
 
-The decision is a pure function in `build.rs` of `(pkg_version, sha, exact_tag, dirty,
-release_env)` so it is unit-testable. Since `build.rs` cannot be imported by tests, put the
+The decision is a pure function in `build.rs` of `(pkg_version, sha, exact_tag, dirty)` so it is unit-testable. Since `build.rs` cannot be imported by tests, put the
 function in a small module file (`rust/fontaine/build/version.rs`, `include!`d by `build.rs`
 and `#[path]`-included by a `#[cfg(test)] mod` in the bin crate), keeping the logic in one place.
 
@@ -74,21 +71,20 @@ TUI crate (no `build.rs`): add `fontaine_tui::build_version() -> &'static str` r
 `BUILD_INFO.version` or `CARGO_PKG_VERSION` when unset (tests), delegating to a pure fallback
 over `Option<&BuildInfo>`, and use it in `bug.rs` and `reports.rs` callers so `/status` and
 `/bug` agree with `--version`. `bug_report.rs` prints the version without the appended
-`(git_sha)`. The statusline payload in `ui/mod.rs:185` stays on `CARGO_PKG_VERSION`.
+`(git_sha)` suffix; only the rendering changes. The statusline payload in `ui/mod.rs:185` stays on `CARGO_PKG_VERSION`.
 
 `build.rs` re-run triggers: also watch the git `index` file so `.dirty` flips after staging
 (plain working-tree edits cannot be watched cheaply; see Decisions).
 
 ## Implementation Steps
 
-1. `rust/fontaine/build.rs`: add the version computation (`describe`, `dirty` helpers using the
-   existing `git()`), emit `FONTAINE_VERSION`, `rerun-if-env-changed=FONTAINE_RELEASE_BUILD`,
-   watch `index`.
+1. `rust/fontaine/build.rs`: add the version computation (`tags_at_head` running `git tag --points-at HEAD`, `dirty` helpers using the
+   existing `git()`), emit `FONTAINE_VERSION`, watch `index`.
 2. Extract the pure decision function and unit-test it (see Testing).
 3. `rust/fontaine/src/lib.rs`: add `pub const VERSION`; use it in `set_build_info`.
 4. `cli.rs`, `doctor_cmd.rs`, `telemetry/otlp.rs`: switch to `VERSION`.
 5. `fontaine-tui`: add `build_version()`; switch `bug.rs`, `reports.rs` callers. `fontaine-core`:
-   drop the appended `(git_sha)` in `bug_report.rs`.
+   drop only the rendered `(git_sha)` suffix in `bug_report.rs` (the `git_sha` fields stay).
 6. Docs and changelog.
 
 ## Files to Modify
@@ -103,7 +99,7 @@ over `Option<&BuildInfo>`, and use it in `bug.rs` and `reports.rs` callers so `/
 ## Trade-offs
 
 - **Tag match vs. CI env var as the release signal**: the tag check needs no workflow edit and
-  cannot drift from what dist builds; the env var is kept only as an override.
+  cannot drift from what dist builds.
 
 ## Decisions
 
@@ -115,6 +111,9 @@ over `Option<&BuildInfo>`, and use it in `bug.rs` and `reports.rs` callers so `/
   `build.rs`, and peers parse these strings as versions.
 - `--version` (`-dev+<sha12>`) deliberately differs from the dev channel's receipt version
   (`-dev.<run_number>+<sha7>`, minted by `dev.yml`).
+- Release builds (plain version) identify their commit via the `v<version>` tag, so `/bug`
+  showing no SHA for them is intended; the `Facts.git_sha`/`BuildInfo.git_sha` fields remain
+  (not removed here).
 - `.dirty` is computed at build time only; edits to tracked files without rebuilding-triggering
   changes do not re-run `build.rs`. Accepted: a stale clean/dirty flag is better than
   re-probing git on every cargo invocation.
@@ -122,12 +121,14 @@ over `Option<&BuildInfo>`, and use it in `bug.rs` and `reports.rs` callers so `/
 ## Documentation
 
 Update `docs/installing.md` to describe what `fontaine --version` prints for a dev install
-(`-dev+<sha12>`, distinct from the receipt version); update `docs/doctor.md` if it shows example
+(`-dev+<sha12>`, distinct from the receipt version), including the "From source" section
+(~lines 154-164): `cargo install --git` checkouts contain `.git`, so `fontaine --version` prints
+`<version>-dev+<sha12>`; update `docs/doctor.md` if it shows example
 version output; add a `CHANGELOG.md` entry under Unreleased.
 
 ## Testing Strategy
 
-- Unit tests of the pure decision function: release env → plain; no git → plain; exact tag +
+- Unit tests of the pure decision function: no git → plain; exact tag +
   clean → plain; tag + untracked file only → plain; exact tag + dirty → dev+sha.dirty; no tag →
   dev+sha; tag for a different version → dev+sha; result's build metadata is non-empty and
   matches `[0-9A-Za-z-.]` (no new dependency).
@@ -135,8 +136,9 @@ version output; add a `CHANGELOG.md` entry under Unreleased.
   values: returns the info's version when `Some`, the package version when `None`. Tests never
   set the process-wide `BUILD_INFO` `OnceLock`.
 - `rust/fontaine/tests/exit_code.rs` `help_and_version_exit_zero` only checks exit 0 and
-  non-empty stdout, so it needs no change; add an assertion that `fontaine --version` output
-  equals `fontaine doctor`'s reported version via the headless surface.
+  non-empty stdout, so it needs no change. `rust/fontaine/tests/doctor_cmd.rs` gains an
+  assertion: run `doctor --connect=no --format=json` and compare the install-section version
+  with the `--version` output.
 
 ## Manual Verification
 
