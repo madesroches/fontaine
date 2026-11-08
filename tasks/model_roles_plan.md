@@ -77,7 +77,8 @@ thinking   = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"]
 - **New section.** `Settings` gains `models: Option<ModelsSection>`, where
   `ModelsSection { roles: Option<BTreeMap<String, Vec<String>>> }` uses `deny_unknown_fields`.
   The merged `Config` keeps the raw merged roles map; `Roles::from_config` runs in `load()` after
-  `check_composition` (`config.rs:3189-3209`) and checks "both set" before folding `[model] model`
+  `check_composition` (`config.rs:3189-3209`) and checks "both set in one layer" (from
+  `config.sources` for `model.model` and `models.roles.main`) before folding the winning one
   into `roles["main"]`. Later scopes replace a whole role (per-key replace,
   as `accounts` merges).
 - **Scope.** A new `config_scope` rule `Rule::user_or_cli("models", USER_FILE)`, since entries
@@ -93,7 +94,10 @@ thinking   = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"]
   - No role reaches itself (a DFS over role references), and the error names the cycle path.
 - **`[model] model` accepts a string or a list** (`#[serde(untagged)]` enum `OneOrMany`). It is
   shorthand for the `main` role. Setting both `[model] model` and `[models.roles] main` in the
-  merged config is a config error naming both keys. `--model` is a string: an `<account>/<model>`
+  same layer is a config error naming both keys and the file. Across layers they compete as one
+  scalar: the higher-precedence layer's key wins (`config_catalog::rank`), so a trusted
+  `settings.local.toml` or `--settings` `[model] model` still overrides a user-file
+  `[models.roles] main`, as it overrides a user-file `[model] model` today. `--model` is a string: an `<account>/<model>`
   or a role name, and it overrides both for the session's chain. `[model] model` is folded into
   `roles["main"]` before validation and flattening, so `main` and `$main` in a role list are
   always defined. `--model` does not re-point `roles["main"]`. `main` or `$main` inside a role
@@ -162,7 +166,7 @@ impl ModelChain {
 
 | Caller | Chain | Default when unset |
 |---|---|---|
-| Session | `--model`, else `[model] model`, else `[models.roles] main` | exit 2 (today's "no main model") |
+| Session | `--model`, else the higher-precedence of `[model] model` and `[models.roles] main` | exit 2 (today's "no main model") |
 | Subagent | per-call `model` > type `model` > session `main` | `main` chain (today: session model) |
 | Compaction | `compaction` role | the session's `main` chain, current entry |
 | Critique | `critique` role | the guardian model (today) |
@@ -290,7 +294,10 @@ impl ModelChain {
 - **Durable record.** A new `Record::ModelFellThrough { agent, role, from, to, class }` is
   appended to the session log, and the fall-through also calls `record_session_event` (audit log,
   `gate.rs:803-817`), so a resumed session and the audit log show the switch. Resume
-  starts again from each chain's first entry, as the issue allows.
+  starts the main chain and every role or type chain again at its first entry, as the issue
+  allows. A revived subagent whose type accepts a per-call `model` comes back on the concrete
+  entry it last served (`Model(<ref>)`, parsed from the tree as today), with no list to fall
+  through to.
 
 ### Project agent files and skills
 
@@ -324,9 +331,10 @@ impl ModelChain {
   ```
   Roles are fixed for a session (config), so the description joins the cached prefix and never
   changes mid-session.
-- **The `models` tool** appends the same role lines, from `agent/model_source.rs` and
-  `model_report.rs` in core. `SessionModels` gains a `roles` field, and `ModelReport::to_json`
-  includes the roles.
+- **The `models` tool** appends the same role lines after the report text, in
+  `agent/model_source.rs`. `SessionModels` gains a `roles` field. `ModelReport` and the
+  `fontaine models` output (text and JSON, whose per-model `roles` key already means the
+  main/guardian marks) are unchanged.
 
 ### Ledger and `/cost`
 
@@ -357,7 +365,9 @@ impl ModelChain {
 - **What `/model <text>` accepts.** Any model text: a reference or a role name. The session's
   main chain becomes the parsed chain.
 - **Persisting the choice.** Persistence keys on the merged config's `MainSource`, not on the
-  resolved model. `[model] model` is written only on `MainSource::Unset` or `ModelKeyString`. When it comes from `[models.roles] main` or a list, the switch is
+  resolved model. `[model] model` is written only on `MainSource::Unset` or `ModelKeyString`,
+  and only when the user file itself sets neither `[models.roles] main` nor a list
+  `[model] model` (a local override can win the merge while the user file holds a role). Otherwise the switch is
   session-only: `Switched` gains a field carrying the notice, which says which key to edit.
   What is written is the text the user typed
   (the role name for `/model coding`), not the resolved entry. `--model` does not change this:
@@ -442,8 +452,7 @@ impl ModelChain {
 ## Files to Modify
 
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`, `user_config.rs`,
-  `accounts.rs`, `permissions.rs`, `goal.rs`, `agent/build.rs`, `agent/model_source.rs`,
-  `agent/model_report.rs`
+  `accounts.rs`, `permissions.rs`, `goal.rs`, `agent/build.rs`, `agent/model_source.rs`
 - `rust/fontaine-core/tests/config.rs`, `tests/agent_pipeline.rs`, `tests/choke_point.rs`
   (struct-literal `AgentTool`), `rust/fontaine-agents/tests/seam.rs`
 - `rust/fontaine-core/src/model_roles.rs` (new), `lib.rs`
@@ -478,11 +487,16 @@ impl ModelChain {
 - Roles do not apply to the guardian, the composition models, `/btw`, the goal evaluator or the
   `llm` scanner. A pinned guardian is never substituted; a main-fallback guardian follows the main model through a fall-through (#54), and the rest are not among the issue's
   roles.
-- `[model] model` and `[models.roles] main` together are a config error, not a precedence rule.
+- `[model] model` and `[models.roles] main` in the same layer are a config error; across layers
+  the higher-precedence one wins, as a scalar merges.
 - `/model` does not persist over a role or a list.
 - A plan limit relayed only as an `ErrorReport` is not recognised for fall-through; no text
   matching.
-- Resume restarts each chain at its first entry. Active indexes are not persisted.
+- Resume restarts each chain at its first entry. Active indexes are not persisted, and a
+  revived subagent stays on the concrete entry it last served, without fall-through.
+- AFK: `[model] model` and `[models.roles] main` conflict only within one layer (exit 2); across layers the higher-precedence key wins, so today's trusted project-local / `--settings` `[model] model` override keeps working and nothing is loosened.
+- AFK: revival keeps parsing the concrete serving reference; a revived subagent of an overridable type resumes on its last served entry with no fall-through, rather than recording the spawn spec text (no new tree/ledger fields).
+- AFK: user roles are not added to `ModelReport::to_json` (its per-model `roles` key already means main/guardian marks); only the `models` tool text appends role lines, in `agent/model_source.rs`, and `model_report.rs` drops out of Files to Modify.
 
 Lines to add to `tasks/fontaine_harness_plan.md` `## Decisions`, each at the end of its
 subsection, dated on the day of implementation:
@@ -493,7 +507,8 @@ subsection, dated on the day of implementation:
 - Agents: a skill's `model` accepts a role name and stays unused. Claude Code's per-skill model
   override is not adopted (#324).
 - Config: `[models.roles]` is user file or `--settings` only. `[model] model` and
-  `[models.roles] main` together are a config error. Unknown accounts, unknown roles and cycles
+  `[models.roles] main` in one layer are a config error; across layers the higher-precedence one
+  wins, so a project-local `[model] model` still overrides. Unknown accounts, unknown roles and cycles
   are load errors (#324).
 - Providers: a model list falls through to its next entry only on a 402, 429 or 529 or a
   `claude-subscription` plan limit after the same-model retries, and stays on the entry that
@@ -550,7 +565,9 @@ Unit tests (all reachable with constructed inputs):
 - `config.rs`:
   - `$guardian_default` inside a list is refused;
   - string and list forms;
-  - `[model] model` together with `main` rejected;
+  - `[model] model` together with `main` in one layer rejected;
+  - a project-local `[model] model` overriding a user-file `main`, and `--settings` `main`
+    overriding a user-file `[model] model`;
   - an unknown account in a role;
   - project-file `[models]` rejected by scope;
   - `--settings` accepted.
