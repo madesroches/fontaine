@@ -91,6 +91,7 @@ is sent before the kill. Findings go in the PR description; if a switch exists, 
 ## Decisions
 
 - 2026-11-08: a `max_tokens` stop ends the CLI at `message_stop` instead of letting its output-limit recovery run, because it bounds plan-usage cost and avoids discarded inferences.
+- AFK: no CLI switch for the output-limit recovery is assumed (local CLI 2.1.319 shows none); the kill at `message_stop` ships regardless, and a switch is added to `FIXED_ENV` only if the live probe finds one.
 
 ## Documentation
 
@@ -119,8 +120,3 @@ reported bug: the recovery `user` frame was refused as a native tool request).
 1. With a logged-in CLI, request `max_tokens: 200` against `claude-haiku-5-5` with a prompt that
    spends the budget thinking; expect a truncated response, no error, and the process gone.
    Not automated: needs the live CLI and a subscription, and only measures the pre-kill leak.
-
-## Open Questions
-
-- Does the CLI expose a switch for the output-limit recovery? Settled by the live probe in
-  step 3; the code change does not depend on it.
