@@ -174,6 +174,14 @@ fn archive_name(target: &str) -> String {
     format!("fontaine-{target}.{ext}")
 }
 
+// A missing release is deterministic, so it is not the retryable network kind.
+fn index_error(e: release_index::IndexError) -> UpdateError {
+    match e {
+        release_index::IndexError::NoRelease(_) => UpdateError::Install(Box::new(e)),
+        _ => UpdateError::Network(Box::new(e)),
+    }
+}
+
 fn not_self_updatable(e: ReceiptError) -> UpdateError {
     let channel = match &e {
         ReceiptError::OtherBinary { channel, .. } => Some(*channel),
@@ -322,7 +330,7 @@ pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Out
 
     let release = release_index::latest(client, params.api_base, channel)
         .await
-        .map_err(|e| UpdateError::Network(Box::new(e)))?;
+        .map_err(index_error)?;
     if release_index::compare(installed, release.build) != Some(Ordering::Greater) {
         return Ok(Outcome::UpToDate {
             channel,
@@ -468,6 +476,18 @@ fn exit_for(result: Result<Outcome, UpdateError>) -> ExitCode {
 mod tests {
     use super::*;
     use release_index::SemVer;
+
+    #[test]
+    fn a_missing_release_is_not_retryable() {
+        let missing = index_error(release_index::IndexError::NoRelease(Channel::Dev));
+        assert!(matches!(missing, UpdateError::Install(_)));
+        assert_eq!(missing.exit_code(), 1);
+        let status = index_error(release_index::IndexError::Status(
+            reqwest::StatusCode::BAD_GATEWAY,
+            "https://example.test".into(),
+        ));
+        assert_eq!(status.exit_code(), EXIT_UPDATE_NETWORK);
+    }
 
     fn release(build: Build, tag: &str) -> Release {
         Release {

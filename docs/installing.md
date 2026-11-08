@@ -181,10 +181,10 @@ nothing is written.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Updated, or already up to date |
-| 1 | The update could not be installed (for example the install directory is not writable, the disk is full, or the release has no archive for this platform) |
+| 1 | The update could not be installed (for example the install directory is not writable, the disk is full, no published release exists on the channel, or the release has no archive for this platform) |
 | 2 | The configuration could not be loaded |
 | 3 | This install cannot update itself |
-| 4 | The release list or the download could not be fetched; retrying may help |
+| 4 | The release list or the download could not be fetched (not when it was fetched and held no release); retrying may help |
 | 5 | The download failed verification (missing or bad signature, wrong channel, file or version, or an archive larger than expected) |
 
 ## The release archive
