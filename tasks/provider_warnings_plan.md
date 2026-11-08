@@ -16,8 +16,6 @@ reaches the session's `Approver`.
 - Clients are built before any `Approver` exists: `models::resolve` (`ResolveParams`) runs at
   startup from ~10 call sites (`fontaine/src/lib.rs`, `auto_mode.rs`, `doctor_cmd.rs`,
   `models_cmd.rs`, `fontaine-tui/src/setup.rs`, tests), and `Switcher` re-resolves mid-session.
-  Threading an approver through `ResolveParams`/`Switcher` would touch all of them, and the
-  client would still be built before the approver is known.
 - One provider warning already reaches the user: `providers/token_source.rs:119-127` holds a
   process-wide, latest-session-wins `warn_sink()` set by `set_warn_sink`, installed in
   `agent/setup.rs:868` (`prepare`) as `approver.warn`. It falls back to `tracing::warn!` when
@@ -51,19 +49,19 @@ impl Warn {
 pub fn set_sink(sink: impl Fn(&str) + Send + Sync + 'static); // moved from token_source
 ```
 
-- `ConnectContext` gains `pub warn: Warn`; `client_for` sets `Warn::process()`. This is the
-  issue's "warn hook through `ConnectContext`/`client_for`", with the late binding the startup
-  order forces. The process-wide sink is already the accepted shape for the token warning (sources
-  are shared process-wide; the latest session wins), so this generalizes it rather than adding a
-  second mechanism.
+- `ConnectContext` gains `pub warn: Warn`; `client_for` sets `Warn::process()`.
 - `token_source::set_warn_sink` and its `warn_sink()` move into `warn.rs`; `TokenSource` emits
   through `Warn::process()`. `agent/setup.rs:868` calls `providers::warn::set_sink`.
-- claude-subscription: `Connected` keeps `ctx.warn`; `Selection`/`ClaudeTransport` carry it, and
-  `transport.rs:478` becomes `warn.emit(..)` with the same text (no `tracing` structured field;
-  the version stays in the message). `Scratch` holds a `Warn` clone so its `Drop` warning
-  reaches the user. `Cli` is built in `connect`, so it receives `ctx.warn` there.
-- `CacheWire` takes a `Warn` in `new` (its constructors in `openrouter.rs`/`anthropic.rs` pass
-  `ctx.warn`).
+- claude-subscription: `Cli` holds the `Warn` (given `ctx.warn` in `connect`). `Running`
+  (`transport.rs:400-407`) gains a `warn` field, filled from `self.cli` where it is built
+  (`transport.rs:183`), so the free fn `stream` (`transport.rs:438`) can call `warn.emit(..)` at
+  `transport.rs:478`. The version and error are structured `tracing` fields today, so the
+  self-check message text must now include the CLI version. `Scratch::new` takes a clone from
+  `Cli` (sites `transport.rs:203`, `cli.rs:439`, `cli.rs:556`) so its `Drop` warning reaches the
+  user; that message must now include the error chain (`fontaine_tools::error_chain::chain`).
+- `CacheWire` takes a `Warn` in `new`. Only `openrouter.rs:65` builds one, inside
+  `Connected::model()` after connect: openrouter's `connect` stores `ctx.warn` on its `Connected`
+  and `model()` passes `self.warn.clone()` to `CacheWire::new`.
 - Warnings are advisory text only: no decision depends on them. The sink calls `Approver::warn`,
   whose default writes to stderr and which the TUI renders in the transcript.
 - A warning emitted once per condition stays once (the self-check already fires once per CLI
@@ -76,52 +74,56 @@ pub fn set_sink(sink: impl Fn(&str) + Send + Sync + 'static); // moved from toke
    `agent/setup.rs:868`.
 3. Add `warn: Warn` to `ConnectContext`; set it in `client_for` (`models.rs`) and in the
    `ConnectContext` literal in `fontaine-core/tests/network.rs`.
-4. Thread `Warn` through claude-subscription (`Connected`, `Selection`/`ClaudeTransport`, `Cli`,
-   `Scratch`) and convert `transport.rs:478` and `cli.rs:832`.
-5. Thread `Warn` into `CacheWire::new`; convert `cache_wire.rs:124`. Update its call sites and
-   unit tests.
+4. Thread `Warn` through claude-subscription (`Cli`, `Running`, `Scratch`) and convert
+   `transport.rs:478` and `cli.rs:832`, adding the version and error chain to the message text.
+5. Thread `Warn` into `CacheWire::new` (openrouter `Connected` stores `ctx.warn`); convert
+   `cache_wire.rs:124`. Update its call sites and unit tests.
 6. Tests (below); docs and CHANGELOG.
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/providers/{warn.rs (new),mod.rs,token_source.rs,cache_wire.rs,openrouter.rs,anthropic.rs}`
+- `rust/fontaine-core/src/providers/{warn.rs (new),mod.rs,token_source.rs,cache_wire.rs,openrouter.rs}`
 - `rust/fontaine-core/src/providers/claude_subscription/{mod.rs,transport.rs,cli.rs}`
 - `rust/fontaine-core/src/{models.rs,agent/setup.rs}`
 - `rust/fontaine-core/tests/network.rs`, `rust/fontaine-core/tests/claude_subscription.rs`
-- `docs/` page covering the claude-subscription provider's cache self-check (find via grep),
-  `CHANGELOG.md`
-
-## Trade-offs
-
-- **Approver through `ResolveParams`/`Switcher`**: explicit, but needs an approver before one
-  exists and edits every `resolve` call site; rejected for the late-bound handle.
-- **Per-client sink set at connect**: same startup-order problem; the process-wide sink is
-  already what the token warning uses.
-- **A `Warn` trait object on `AccountClient`**: widens every provider's surface for three
-  claude-subscription/cache_wire call sites; `ConnectContext` is the existing per-provider input.
+- `rust/fontaine-core/tests/provider_warn.rs` (new: sink-installing tests, own binary)
+- `rust/fontaine-core/tests/provider_warn_claude_subscription.rs` (new: session-level self-check
+  test, own binary)
+- `docs/claude-subscription.md` (around lines 179-185), `CHANGELOG.md`
 
 ## Decisions
 
+- 2026-11-08: Late-bound process-wide sink rather than an approver threaded through
+  `ResolveParams`/`Switcher`: clients are built before the approver exists.
+- 2026-11-08: Generalize the `token_source` sink rather than add a second one: the latest session
+  wins.
+- 2026-11-08: Warn handle as a `ConnectContext` field rather than a `Warn` on `AccountClient`.
+
 ## Documentation
 
-Update the docs page that mentions the cache self-check warning to say it is shown in the session
-(not only logged). `CHANGELOG.md` entry. No plan-section citations in docs or comments.
+Update `docs/claude-subscription.md` (lines ~179-185, which say the adapter "logs one warning
+naming the version") to say the warning is shown in the session. `CHANGELOG.md` entry. No plan-section citations in docs or comments.
 
 ## Testing Strategy
 
-Unit tests, all against `Warn::to` so none touches the process-wide sink:
+Unit tests use `Warn::to` and never touch the process-wide sink. The sink is a never-unset
+`OnceLock`, and `cargo test` runs unit tests as threads in one binary, so every test that calls
+`set_sink` or relies on no sink being set lives in its own integration-test binary
+(`tests/provider_warn.rs`).
 
-- `Warn::emit` calls the pinned sink; `Warn::process` follows a later `set_sink` (late binding)
-  and falls back to `tracing` with none set (assert no panic; sink untouched).
-- `CacheWire` with a non-JSON StaticPrefix body emits one warning through its `Warn`.
-- claude-subscription: the self-check path (existing fake `claude_cli_double` test in
-  `tests/claude_subscription.rs`) delivers the warning to a pinned sink; `Scratch` drop failure
-  delivers one.
-- `token_source` refresh-save failure still reaches the sink (existing test moved to the new
-  module path).
-- Integration: a session built with a recording `Approver` receives the provider warning via
-  `Approver::warn` (the process-wide sink is installed by `prepare`; the test pins it by
-  running in its own test binary, as `guardian_cache_notice.rs` does).
+- Unit: `Warn::emit` calls the pinned sink.
+- Unit: `CacheWire` with a non-JSON StaticPrefix body emits one warning through its `Warn`.
+- Unit: claude-subscription self-check delivers the warning, with the CLI version in its text, to a
+  `Warn::to` sink (hand-built `Running` or context tests, since `tests/claude_subscription.rs` goes
+  through `models::resolve`, where `client_for` sets `Warn::process()`); `Scratch` drop failure
+  delivers one, with the error chain.
+- `tests/provider_warn.rs`: `Warn::process` follows a later `set_sink` (late binding); with no
+  sink set it falls back to `tracing` without panicking; a new test asserts a `token_source`
+  refresh-save failure reaches the sink set by `set_sink`.
+- Integration (new binary `tests/provider_warn_claude_subscription.rs`): drives the
+  claude-subscription self-check through `claude_cli_double` with a CLI version no other test uses
+  (`mark_broken` is once per version per process; existing tests use 2.1.400/2.1.401) and asserts
+  the warning reaches a recording `Approver::warn`.
 
 ## Open Questions
 
