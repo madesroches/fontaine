@@ -113,7 +113,7 @@ Unit tests use `Warn::to` and never touch the process-wide sink. The sink is a n
 (`tests/provider_warn.rs`).
 
 - Unit: `Warn::emit` calls the pinned sink.
-- Unit: `CacheWire` with a non-JSON StaticPrefix body emits one warning through its `Warn`.
+- Unit: `CacheWire` wrapping a fake inner wire whose `encode` returns a non-JSON `Body::Bytes` (rig's OpenAI Chat wire always emits JSON, so the `cache_wire.rs:124` branch is reachable only via a double) emits one warning through its `Warn`.
 - Unit: `Scratch` drop failure delivers one warning to a `Warn::to` sink, with the error chain.
 - `tests/provider_warn.rs`: one test function, since the steps share the process-wide sink and
   would race as parallel libtest threads. Fixed order: with no sink set, `Warn::process` falls back
