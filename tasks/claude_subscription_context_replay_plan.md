@@ -12,8 +12,10 @@ the steady-state ratio is near 1.0, or the gap is documented as the CLI's floor 
 measurement. This plan replays the reminder exactly where the CLI put it, on every replayed user
 message, and moves the adapter's cache marker to the final frame. Each replayed message is then
 byte-identical to the request that last wrote it, and each step writes only its new messages. That
-is native parity plus about 170 tokens per user message. It applies only on a CLI version whose
-reminder text and placement have been verified; every other version keeps today's layout.
+is native parity plus about 170 tokens per user message. It applies on any CLI version at or above
+2.1.319 (the version the template was taken from) for an account with an email, until a runtime
+self-check finds that version's replay not read back; that version then falls back to today's layout
+for the rest of the process.
 
 ## Current State
 
@@ -25,6 +27,10 @@ reminder text and placement have been verified; every other version keeps today'
   `initialize` control request, reads its answer with `CliChild::list_models` (`cli.rs:952`), which
   returns only the model rows (`model_rows`), runs `check_row`, then writes each history frame and
   waits for its zero-turn ack. `open` writes the final frame afterwards (`transport.rs:178-183`).
+- The provider has no `Approver`: its only user-visible warning path today is `tracing::warn!`
+  (`cli.rs:801`, `Scratch::drop`). The request's result usage is read in `Reader::result`
+  (`protocol.rs:1193`), which today only checks `output_tokens`; `Reader` also takes the shared
+  `Usage` (quota) from `ClaudeTransport`.
 - `FIXED_ENV` (`cli.rs:133`) sets `CLAUDE_CODE_MESSAGES_PROMPT_CACHE_TTL=5m` because the CLI's
   final-message breakpoint is never read back (#493).
 - `MIN_VERSION` is 2.1.318 (`cli.rs:30`); newer versions are accepted unqualified.
@@ -36,7 +42,7 @@ reminder text and placement have been verified; every other version keeps today'
 ## Findings (CLI 2.1.319, 2026-11-07, measured for this plan)
 
 The probe scripts sat in this session's scratchpad (`probe.py`, `tool_probe.py`, `tool_probe2.py`,
-`loop_probe.py`, `proxy.py` in
+`tool_probe3.py` (the probe for rules 4-5), `loop_probe.py`, `proxy.py` in
 `/tmp/claude-1000/-home-mad-fontaine/f4d86121-8607-4644-83d5-64cad65fa16e/scratchpad/`). They run
 the adapter's `fixed_args`/`FIXED_ENV` subset against the real CLI on `haiku`. A logging reverse
 proxy (`ANTHROPIC_BASE_URL`) captured each `/v1/messages` body.
@@ -74,6 +80,14 @@ proxy (`ANTHROPIC_BASE_URL`) captured each `/v1/messages` body.
   Claude Code attached this context automatically; it isn't part of the user's message. It describes the user's own account and workspace, so they don't need it reported back.
   </system-reminder>
   ```
+  The reminder can hold sections `userEmail`, `attachedProject`, `gitStatus` and `perforceMode`.
+  Measured live on 2.1.319 (2026-11-07) with an ancestor git repository (initialized, one commit)
+  above the CLI's cwd, with and without `GIT_CEILING_DIRECTORIES`, and with
+  `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1` or `includeGitInstructions:false`: no `gitStatus`
+  section appears in this mode. The stable `# Environment` block then says "Is a git repository:
+  true", which is stable per machine and does not affect replay. `attachedProject` and
+  `perforceMode` need env vars the adapter's rebuilt environment drops. A future CLI that adds a
+  section is caught by the runtime self-check (Design section 2).
   The CLI dedups only against `session_context` *attachments* in its own message list
   (`findLast` + field compare), which plain replayed text is not. So it adds a new reminder to every
   final, and a stdout event never carries the text.
@@ -109,19 +123,46 @@ A new module `rust/fontaine-core/src/providers/claude_subscription/context.rs`:
 
 ```rust
 pub(super) enum Layout { Native, Legacy }
-pub(super) fn layout(ctx: &CliContext) -> Layout   // Native only for a VERIFIED version with an email
+pub(super) fn layout(ctx: &CliContext, verdicts: &Verdicts) -> Layout
 pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext)
 ```
 
-- `VERIFIED: &[((u32, u32, u32), &str)]` maps each CLI version whose reminder text and placement
-  rules were checked live to its template. It starts as `[((2, 1, 319), REMINDER_2_1_319)]`, one
-  `const` holding the text above with an `{email}` placeholder.
-- `Layout::Native` (verified version, email present):
+- `const TEMPLATE_SINCE: (u32, u32, u32) = (2, 1, 319)` and `REMINDER_2_1_319`, one `const` holding
+  the text above with an `{email}` placeholder. It is the one template, applied to every version
+  at or above `TEMPLATE_SINCE`.
+- `layout` is `Native` when `ctx.version >= TEMPLATE_SINCE`, `ctx.email` is present and the
+  process-wide verdict for that exact version is not `Broken`. Otherwise `Legacy`.
+- **Verdict store.** `Verdicts` is one per-connection value (a field of `Connected` in `mod.rs`,
+  shared by sessions, guardians and subagents through `ClaudeTransport`): a map from CLI version to
+  `Verdict { Unknown, Confirmed, Broken }`, absent meaning `Unknown`. `Broken` is sticky for the
+  process lifetime and nothing is persisted. It also holds the per-conversation record, keyed by
+  the derived session id in a bounded map (the last 256 conversations): the previous Native
+  request's pre-`apply` frame fingerprint (a hash per frame), its usage (`cache_read_input_tokens`,
+  `cache_creation.ephemeral_1h_input_tokens`) and its completion time. The maps choose only a cache
+  layout (advisory, not permission, spend or durable), so they use `lock_recovering` with a
+  one-line reason at the call site.
+- **Self-check**, a pure function `check(prev: &Record, now: &Record) -> Option<Verdict>`, run when
+  a Native request completes and the same conversation's previous request was Native. All of these
+  must hold, else no verdict: the frames extend the previous request's frames (prefix fingerprints
+  equal); the gap is under 55 minutes (1 h TTL with margin); and the step added no more than 18
+  blocks since the previous final frame (inside the API's 20-block lookback). The expected read is
+  `prev.read + prev.write_1h`. A read short of it by more than 64 tokens gives `Broken`; meeting it
+  gives `Confirmed`. `Broken` never reverts.
+- **Usage source.** `Reader::result` (`protocol.rs:1193`), on the accepted final result, already
+  reads `value["usage"]`; it keeps `cache_read_input_tokens` and
+  `cache_creation.ephemeral_1h_input_tokens` and the stream hands them to `transport.rs`'s
+  `stream` at `Event::Complete`, which records the request and runs `check`.
+- **First `Broken` for a version** emits one warning naming the CLI version (never the email),
+  saying the cache optimization is off for that version and that `cache-bench` measures it. The
+  provider has no `Approver` today, only `tracing::warn!`. Routing it through `Approver::warn`
+  (AGENTS.md) is part of step 5: an `Approver` handle is passed into the transport from the
+  provider's construction site, with the `tracing::warn!` kept as the fallback when none is given.
+- `Layout::Native`:
   - **Reminder replay.** Each history *user run* (a maximal run of consecutive history user
-    frames) followed by an assistant frame gets the reminder, placed by rules 1–3 on the run's
+    frames) followed by an assistant frame gets the reminder, placed by rules 1–5 on the run's
     merged blocks. Rule 1 changes the run's first frame (string content becomes one text block
     first). Rules 2 to 5 change its last frame; rule 4 removes the trailing empty text block(s) and
-    appends the reminder block. A run whose shape matches no verified rule is left
+    appends the reminder block. A run whose shape matches no known rule is left
     unchanged: a tool result whose array content ends in a `document` or image block, or a final
     `document`/image block in a run with no `tool_result`. Such a run costs
     one rewrite on the request after it, not a cascade, because it replays the same way every time
@@ -129,11 +170,13 @@ pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext)
   - **Marker.** `CACHE_MARKER` goes on the last cacheable block of the **final** frame, using
     `mark_history`'s existing cacheable-block rule. No marker when there is no history user frame (as `mark_history` does today),
     so one-shot callers (the guardian) keep the CLI's 5-minute write.
-- `Layout::Legacy` (any other version, or no email): today's behavior, exactly `mark_history` on
+- `Layout::Legacy` (version below `TEMPLATE_SINCE`, no version, no email, or a `Broken` verdict):
+  today's behavior, exactly `mark_history` on
   the last history user frame.
 
 `translate` stops calling `mark_history`: the layout needs the `initialize` answer, which arrives
-on the request process. `prepare` calls `context::apply(&mut frames, &listing.context)` right after
+on the request process. `prepare` fingerprints the frames, then calls
+`context::apply(&mut frames, &listing.context)` (which calls `layout` with the verdicts) right after
 `check_row` and before the history replay. `translate` still derives the session id first, so
 neither the reminder nor the marker affects it. `prepare` takes the `Translated` by value (`open` uses
 `translated` after the select only for `frames.last()`, `transport.rs` ~178-181), applies
@@ -145,8 +188,10 @@ write after login passes.
 The reminder holds the account email, which the CLI already sends on every request. The replay
 sends the same text to the same endpoint, so nothing new leaves the machine. The adapter holds the
 email in memory only for the request. It never writes it to a log, the debug file, the ledger or an
-error message: the `tracing::debug!` at `transport.rs:405` logs rejected *stdout* lines, never
-frames, and that stays so. `ClaudeError` text stays fixed text built from names (`mod.rs` contract).
+error message: the `tracing::debug!` at `transport.rs:405` logs rejected *stdout* lines (up to 4 KB
+each), never frames. The `initialize` answer holds `account.email` and is taken by `list_models`
+before it reaches the reader or `rejected`, and must stay so. The self-check warning names the CLI
+version only, never the email. `ClaudeError` text stays fixed text built from names (`mod.rs` contract).
 
 ### 4. Bench threshold
 
@@ -155,9 +200,13 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 
 ## Implementation Steps
 
-1. **Research record.** Copy the five probe scripts from the scratchpad path above into
+1. **Research record.** Copy all six probe scripts from the scratchpad path above into
    `research/claude-subscription-cli-context/`, with a short `README.md` holding the findings
-   table. The scripts read the email from `claude auth status --json` at runtime and contain none.
+   table. The scripts read the email from `claude auth status --json` at runtime and contain none. The
+   README also records the git-ancestor probe (run inline in a shell, no script): an initialized
+   one-commit git repository above the CLI's cwd, run with and without `GIT_CEILING_DIRECTORIES`
+   and with `CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1` / `includeGitInstructions:false`, to see
+   whether a `gitStatus` section appears.
 2. **Verify the remaining shapes (live, manual, recorded in Decisions).** With `proxy.py` and the
    probe harness, check the remaining shapes on 2.1.319:
    - a `tool_result` whose array content ends in a `document` or image block;
@@ -168,9 +217,17 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 3. **`cli.rs`:** `Listing`, `CliContext`, parsing in `list_models`; adjust `Cli::initialize` /
    `discover` callers and the `listing_with` unit-test helper (`cli.rs:1194-1212`, returns
    `Vec<ModelRow>` from `list_models`) with its three tests (~`cli.rs:1217`, `1232`, `1247`).
-4. **`context.rs`:** `VERIFIED`, the 2.1.319 template, `layout`, `apply` (reminder placement and
-   marker). Move `mark_history` and `CACHE_MARKER` here from `protocol.rs`. `mark_history` becomes
+4. **`context.rs`:** `TEMPLATE_SINCE`, the 2.1.319 template, `Verdicts`/`Verdict`/`Record`, the
+   pure `check`, `layout`, `apply` (reminder placement and marker). Move `mark_history` and
+   `CACHE_MARKER` here from `protocol.rs`; reword their doc comments (`protocol.rs:259-267` say the
+   marker goes on the last user frame before the final because a breakpoint there is never read
+   back) to describe both layouts: Legacy marks the last history user frame, Native the final
+   frame. `mark_history` becomes
    `mark(frame)`, used by both layouts with the frame each layout selects. Marker-test migration:
+   `the_last_history_user_message_carries_the_one_marker` (`protocol/tests.rs:1128`),
+   `string_content_becomes_one_marked_text_block` (`:1141`, whose :1149 assertion that the final
+   frame stays a string is false under Native) and `a_single_user_message_gets_no_marker` (`:1153`)
+   move to `context.rs`, calling `context::apply` in `Legacy`, each with a Native counterpart;
    `the_marker_does_not_change_the_session_id` (`protocol/tests.rs:1177`) only checks session ids
    across 1/2/3-message conversations and stays in `protocol/tests.rs` (the new derive-apply-compare
    test is added beside it, not replacing it); `a_request_cache_control_is_stripped_and_never_replaces_the_marker`
@@ -178,33 +235,42 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
    `tool_loop` (`:1110`) helpers move or are shared. Reword the `FIXED_ENV` comment at
    `cli.rs:155-157` ("the adapter's own 1 h marker earlier in the history is the one that is" read
    back) for the native layout.
-5. **`protocol.rs` / `transport.rs`:** drop the `mark_history` call from `translate`. `prepare`
-   takes the `Translated` by value, applies `context::apply` in place after `check_row` and returns
-   the final frame with `(CliChild, Reader)`; `open` writes that returned frame.
+5. **`protocol.rs` / `transport.rs` / `mod.rs`:** drop the `mark_history` call from `translate`.
+   `prepare` takes the `Translated` by value, fingerprints the frames, applies `context::apply` in
+   place after `check_row` and returns the final frame with `(CliChild, Reader)`; `open` writes
+   that returned frame. `Reader::result` keeps the cache usage; `stream` records the request in
+   `Verdicts` at `Event::Complete` and runs `check`. `Connected` owns the `Verdicts` and passes
+   them through `ClaudeTransport::new`. Add the warning route (`Approver::warn`, see Design 2).
 6. **Double** (`examples/claude_cli_double.rs`): `initialize` answers with `account` (scenario key
    `account`, default `{"email": "user@example.com", …}`) and `claude_code_version` (scenario key,
    default "2.1.319", not derived from the double's `version`, which defaults to 2.1.318). A
-   scenario can omit either.
+   scenario can omit either. Document both new keys in the double's module doc
+   (`examples/claude_cli_double.rs:9-18`).
 7. **Bench:** threshold default 1.25 (`default_value_t` at `fontaine-evals/src/runner.rs:80`, plus
    any doc comment or help text there) and the `--threshold` row in `evals/README.md` (:387, default
-   2.0 -> 1.25).
+   2.0 -> 1.25). `rust/fontaine-evals/tests/cache_bench.rs:113`
+   (`an_unflagged_run_writes_the_scorecard_and_passes_the_shared_prompt`) runs at the default with
+   a fixture ratio of 1.5 and asserts exit 0 (:116) and not flagged (:121): change its fixture so
+   the ratio is under 1.25 and the run stays unflagged (and update the `1.5` ratio assertion).
 8. **Tests** (below), **docs**, **CHANGELOG**.
 9. **Follow-up issues** to file:
-   - a runtime self-check that would let an unverified CLI version use the native layout (detect a
-     replay mismatch from a request's `cache_read` and fall back for the session);
-   - qualifying each new CLI version with the bench and adding it to `VERIFIED`.
+   - persisting verdicts across processes;
+   - updating the template (and `TEMPLATE_SINCE`) when the self-check warning fires for a new CLI
+     version, after measuring it with the bench.
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/providers/claude_subscription/context.rs` (new), `mod.rs` (module)
+- `rust/fontaine-core/src/providers/claude_subscription/context.rs` (new), `mod.rs` (module,
+  `Connected` owns `Verdicts`)
 - `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (`Listing`, `CliContext`; reword
   the `FIXED_ENV` comment at `:155-157`)
 - `rust/fontaine-core/src/providers/claude_subscription/protocol.rs`, `protocol/tests.rs` (marker
   moved out; the marker half of the split cache-control test and the `marked`/`tool_loop` helpers
   move or are shared; the session-id test stays)
-- `rust/fontaine-core/src/providers/claude_subscription/transport.rs` (`prepare`, `open`)
+- `rust/fontaine-core/src/providers/claude_subscription/transport.rs` (`prepare`, `open`, `stream`
+  records the request); `protocol.rs` also: `Reader::result` keeps the cache usage
 - `rust/fontaine-core/examples/claude_cli_double.rs`, `rust/fontaine-core/tests/claude_subscription.rs`
-- `rust/fontaine-evals/src/runner.rs`, `evals/README.md`
+- `rust/fontaine-evals/src/runner.rs`, `rust/fontaine-evals/tests/cache_bench.rs`, `evals/README.md`
 - `research/claude-subscription-cli-context/` (new)
 - `docs/claude-subscription.md`, `CHANGELOG.md`
 
@@ -212,7 +278,8 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 
 - **Replay the reminder vs. make the CLI drop it.** No switch in 2.1.319 drops it (previous plan's
   probe), and `CLAUDE_CODE_SIMPLE` / `--bare` break subscription sign-in. Replay is the only lever
-  that reaches parity, at the cost of coupling to one CLI string.
+  that reaches parity, at the cost of coupling to one CLI string; the runtime self-check bounds
+  that coupling on versions newer than the template.
 - **Replay vs. `--resume` of a persisted CLI session** (whose transcript keeps the attachment, so
   the CLI would dedup it). The CLI's transcript records the permission-denial `tool_result` it
   answered each tool call with (`claude_cli_denial_events_plan.md`), which Fontaine's history does
@@ -229,11 +296,12 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 
 - 2026-11-07 Priority stays usage parity with Claude Code (issue reopen comment; prior user
   direction).
-- 2026-11-07 Exact CLI-version match only for the native layout; unverified versions stay on the
-  legacy layout until the runtime self-check follow-up lands.
-- 2026-11-07 Exact-version gating: a reminder mismatch under the final-frame-only marker loses every
-  cache read; the four-breakpoint limit (two system, the CLI's trailing one, the adapter's) forbids
-  also keeping the history marker.
+- 2026-11-07 User direction (CLI updates are frequent, so an exact-version list would leave the
+  optimization off almost always): native layout on any version >= 2.1.319 with a per-version
+  runtime self-check falling back to Legacy. A wrong template costs about one full-history rewrite
+  in one conversation before fallback; the four-breakpoint limit (two system, the CLI's trailing
+  one, the adapter's) still forbids also keeping the history marker.
+- 2026-11-07 Verdicts are per process and not persisted; persistence is a follow-up.
 - 2026-11-07 Supersedes the archived plan's rejection of replaying the reminder
   (`tasks/completed/claude_subscription_cli_context_plan.md`, "Candidate 3 rejected"): measured
   ~170 tokens per user message against 8,584 vs 25,321 tokens written per step.
@@ -242,40 +310,46 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 
 `docs/claude-subscription.md`:
 
-- **Supported CLI versions:** state that on verified versions (2.1.319) replayed history is read
-  from the prompt cache up to the previous request's final message. Each step then writes only its
+- **Supported CLI versions:** state that on versions from 2.1.319 replayed history is read
+  from the prompt cache up to the previous request's final message. Describe the self-check: the
+  adapter compares a conversation's cache read with what the previous request wrote, and on a
+  shortfall turns the layout off for that CLI version for the rest of the process and warns once
+  (naming the version); `cache-bench` measures it. Each step then writes only its
   new messages plus about 170 tokens of the CLI's reminder per user message, near a native session's
-  write. On other versions the adapter keeps the earlier layout (about twice the native write).
-  Reword `docs/claude-subscription.md:160-162`: on verified versions the never-read 5-minute write
+  write. On versions below 2.1.319, or after a warning, the adapter keeps the earlier layout (about twice the native write).
+  Reword `docs/claude-subscription.md:160-162`: on the native layout the never-read 5-minute write
   is the CLI's trailing date/budget block and the adapter's marker on the final message keeps the
-  hour; on other versions the current text holds.
+  hour; on the earlier layout the current text holds.
 - **What the CLI still adds:** keep the four items. Replace the closing paragraph with the measured
   per-step numbers for both layouts, and say that the adapter repeats the CLI's reminder on replayed
   messages so they match byte for byte. The email it holds is the one the CLI already sends.
   Replace "worse for long runs" with the context cost (~170 tokens per user message).
 - **Checking cache usage:** rewrite the whole parenthetical at `docs/claude-subscription.md:204`
   ("(default 2.0, the gap described under What the CLI still adds)"), not just the number: e.g.
-  default 1.25, above a verified version's expected ratio; a version not yet verified will exceed it.
+  default 1.25, above the native layout's expected ratio; a version on the earlier layout will exceed it.
 
 - **Transport overview (`docs/claude-subscription.md:96-97`):** reword "Fontaine marks the last
-  replayed user message for the prompt cache": the marker is on the final message on verified
-  versions, on the last replayed user message otherwise.
+  replayed user message for the prompt cache": the marker is on the final message on the native
+  layout, on the last replayed user message otherwise.
 - **Wording fix (`docs/claude-subscription.md:152-153`):** reword "(no version is live-qualified
-  yet)" so it does not contradict "verified versions (2.1.319)"; verification here concerns the
-  cache layout.
+  yet)" so it does not contradict the native layout's 2.1.319 threshold; that concerns the
+  cache layout only.
 
 `evals/README.md`: the `--threshold` row's default becomes 1.25.
 
 `CHANGELOG.md` `[Unreleased]` → `### Changed` → `#### Providers`: one entry, issue #480. It states
-that on verified versions the cache marker moves to the final message, which amends the #449
+that on the native layout the cache marker moves to the final message, which amends the #449
 Providers entry saying the last replayed user message carries a cache marker.
 
 ## Testing Strategy
 
 Unit tests (`context.rs`):
 
-- `layout`: verified version with an email → `Native`; unverified version, missing version or
-  missing email → `Legacy`.
+- `layout`: versions below 2.1.319 → `Legacy`; version >= 2.1.319 with an email and `Unknown` or
+  `Confirmed` → `Native`; `Broken` → `Legacy`; no email or no version → `Legacy`.
+- `check` (pure): previous read plus 1 h write met → `Confirmed`; a shortfall beyond 64 tokens →
+  `Broken`; non-extending history, a gap of 55 minutes or more, or a step adding more than 18
+  blocks → no verdict; a `Broken` version stays `Broken` after a later `Confirmed` result.
 - Each placement rule against its verified shape, asserting the exact resulting JSON:
   - text-only run (array and string content);
   - a run ending in a string-content `tool_result`;
@@ -285,14 +359,14 @@ Unit tests (`context.rs`):
   - `tool_result` plus a trailing empty text block (rule 4): the empty block is removed and the
     last block is the bare `REMINDER` text;
   - `tool_result` content `""`, absent and `[]` (rule 5), one test each.
-- An unverified shape (tool result whose array content ends in an image) is left unchanged, and
+- An unknown shape (tool result whose array content ends in an image) is left unchanged, and
   later runs still get the reminder.
 - A consecutive user run: rule 1 hits its first frame, rules 2/3 its last.
 - The final frame never gets the reminder.
 - Marker: in `Native`, exactly one marker, on the final frame's last cacheable block (e.g. its trailing
   `tool_result`), and no reminder text in the final frame. No marker when there is no history user
   frame (as `mark_history` does today). In `Legacy`, the existing `mark_history` assertions are
-  kept, rewritten to call `context::apply` in `Legacy` (the marker half of the split
+  kept, rewritten to call `context::apply` in `Legacy` (the three tests named in step 4 and the marker half of the split
   `a_request_cache_control_is_stripped_and_never_replaces_the_marker` moves from
   `protocol/tests.rs`; its strip half stays).
 - The session id is unchanged by `apply` (derive before, apply, compare); added beside
@@ -306,13 +380,16 @@ non-string fields give `None`.
 Integration against the double (`tests/claude_subscription.rs`). The cache layout is a silent
 failure class, since a wrong layout changes only usage, so it is automated:
 
-- With the default scenario (verified version, email), the frames the double logged for a
+- With the default scenario (`claude_code_version` stays "2.1.319", email), the frames the double logged for a
   3-user-message request carry the reminder in every history user frame and the marker only on the
   final frame.
-- With `claude_code_version` set to an unverified version, or `account` without an email, the
+- With `claude_code_version` set below 2.1.319, or `account` without an email, the
   logged frames equal today's: no reminder, marker on the last history user frame. This updates the
   `aliases_resolve_to_canonical_ids_and_the_request_is_translated` (line ~790, asserts
   `frames[0]["message"]["content"][0]["text"]`) is updated for the leading reminder block.
+- Self-check, using the double's per-response `usage` script key: scripted so the second request
+  of a conversation reads short, the third request's logged frames are Legacy and exactly one
+  warning is emitted; scripted to match, the third stays Native.
 - Existing billing-gate, precedence and replay tests pass unchanged.
 
 ## Manual Verification
@@ -323,6 +400,8 @@ Needs a signed-in subscription and the real CLI, which tests never run by policy
    (from `rust/`). Expect the ratio over the middle steps at ≤ 1.25, near 1.05, and the run to exit
    0. Commit the new scorecard and quote the old and new ratios in the PR. Not automated: live
    subscription.
+2. On the installed CLI (any version >= 2.1.319), run a multi-step tool loop in the TUI and confirm
+   no self-check warning appears; the bench in step 1 is the measurement a warning points to.
 
 ## Open Questions
 
