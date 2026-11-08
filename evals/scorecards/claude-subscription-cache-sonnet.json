@@ -124,9 +124,9 @@
   "summary": {
     "fontaine_base_context": 12149,
     "claude_base_context": 19601,
-    "fontaine_mean_creation": 4683.0,
-    "claude_mean_creation": 4940.2,
-    "ratio": 0.9479373304724505,
+    "fontaine_mean_creation": 4547.0,
+    "claude_mean_creation": 4536.75,
+    "ratio": 1.0022593266104591,
     "flagged": false
   }
 }
