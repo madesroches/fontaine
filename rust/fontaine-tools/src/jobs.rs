@@ -1283,8 +1283,15 @@ fn run(shared: &Shared, id: &str, mut process: Process, control: &Control, monit
             }
         }
         _ => {
-            process.stop(STOP_GRACE).ok();
-            forced = process.forced();
+            // rig no longer reports whether the stop had to kill; stdin is null for these
+            // spawns, so its own `stop` would do no more than this.
+            if process.try_wait().is_ok_and(|ended| ended.is_none()) {
+                process.group().terminate();
+                forced = process
+                    .wait_for(STOP_GRACE)
+                    .is_ok_and(|ended| ended.is_none());
+            }
+            process.kill().ok();
             drain(shared, id, &process, &mut written, PIPE_GRACE);
         }
     }

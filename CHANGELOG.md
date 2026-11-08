@@ -78,6 +78,8 @@ All notable changes are recorded here. The format follows
   version's replay is not read back. `cache-bench` flags a ratio above 1.25 by default. The docs
   list what the CLI still adds to every request (Agent SDK identity line, environment block,
   account email reminder, date) and the measured cache-write cost per step (#480).
+- The pinned rig crates move from 0.45.0 to 0.46.0. The job output cutter's quiet-stop and
+  runaway-output status lines take rig 0.46's prefixes so `split_status` still recognises them.
 
 ### Fixed
 

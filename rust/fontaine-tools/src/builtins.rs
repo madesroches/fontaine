@@ -348,6 +348,8 @@ impl Tracking {
 #[derive(Clone, Debug)]
 pub struct ShellTool {
     pub shell: Shell,
+    /// The longest timeout a call may ask for; a longer one is cut to it.
+    pub max_timeout: u64,
     pub through_env: bool,
     /// Where the main agent's calls run as jobs; without it `shell` is rig's, unchanged.
     pub jobs: Option<Arc<Jobs>>,
@@ -374,8 +376,20 @@ impl ShellTool {
         )
     }
 
+    /// rig's `shell` no longer bounds a call's timeout, so the default and the cap are applied
+    /// here.
+    fn bounded(&self, mut args: ShellArgs) -> ShellArgs {
+        let max = self.max_timeout.max(1);
+        args.timeout_secs = Some(
+            args.timeout_secs
+                .unwrap_or(DEFAULT_TIMEOUT.min(self.max_timeout))
+                .clamp(1, max),
+        );
+        args
+    }
+
     pub async fn run(&self, args: ShellArgs) -> Result<ShellRun, ToolExecutionError> {
-        let (shell, args) = self.prepared(args);
+        let (shell, args) = self.prepared(self.bounded(args));
         shell.run(args).await
     }
 
@@ -453,15 +467,15 @@ async fn run_job(
     shell: &Shell,
     jobs: &Jobs,
     context: &mut ToolContext,
-    (call, agent): (ShellCall, &str),
+    (call, agent, max_timeout): (ShellCall, &str, u64),
     promotable: bool,
     track: Option<&Tracking>,
     launch: impl FnOnce(ShellArgs, Option<&Path>) -> Result<Process, ToolExecutionError>,
 ) -> Result<String, ToolExecutionError> {
-    let max = shell.max_timeout.max(1);
+    let max = max_timeout.max(1);
     let timeout = Duration::from_secs(
         call.timeout_secs
-            .unwrap_or(DEFAULT_TIMEOUT.min(shell.max_timeout))
+            .unwrap_or(DEFAULT_TIMEOUT.min(max_timeout))
             .clamp(1, max),
     );
     let quiet = quiet_for(call.timeout_secs, timeout);
@@ -621,7 +635,7 @@ impl Tool for ShellTool {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        let max = self.shell.max_timeout.max(1);
+        let max = self.max_timeout.max(1);
         let kept = match self.shell.cut {
             Some(cut) => format!(
                 "; past {} lines or {} KB, its first and last lines and the lines with errors \
@@ -647,7 +661,7 @@ impl Tool for ShellTool {
              (a `cd` stays unless it leaves the workspace), not variables or exports. Do not start programs that wait for input, such \
              as editors or pagers. Do not assume a git repository: a failed `git` command ends \
              a `&&` chain. Check formatting only of files you changed.",
-            DEFAULT_TIMEOUT.min(self.shell.max_timeout).max(1),
+            DEFAULT_TIMEOUT.min(self.max_timeout).max(1),
             QUIET_LIMIT.as_secs(),
             OUTPUT_CAP / 1024 / 1024,
         )
@@ -683,7 +697,7 @@ impl Tool for ShellTool {
                     &self.shell,
                     &jobs,
                     context,
-                    (args, &agent),
+                    (args, &agent, self.max_timeout),
                     true,
                     track,
                     launch,
@@ -700,7 +714,7 @@ impl Tool for ShellTool {
                     &self.shell,
                     &local,
                     context,
-                    (args, &agent),
+                    (args, &agent, self.max_timeout),
                     false,
                     track,
                     launch,
@@ -711,7 +725,7 @@ impl Tool for ShellTool {
                 if args.run_in_background == Some(true) {
                     return Err(job_error(&JobError::NotRoot));
                 }
-                let (shell, shell_args) = self.prepared(args.shell_args());
+                let (shell, shell_args) = self.prepared(self.bounded(args.shell_args()));
                 shell.call(context, shell_args).await
             }
         }
@@ -725,6 +739,8 @@ impl Tool for ShellTool {
 pub struct PowerShellTool {
     /// Carries the launcher, confinement, timeout cap and output cut, as for `shell`.
     pub shell: Shell,
+    /// As for `shell`.
+    pub max_timeout: u64,
     pub interpreter: PathBuf,
     /// Where the main agent's calls run as jobs; a subagent's call waits in a registry of its own.
     pub jobs: Option<Arc<Jobs>>,
@@ -753,10 +769,10 @@ impl PowerShellTool {
     /// `ShellTool::run` does. The command is stopped, not moved to the background, when it
     /// outlives its timeout, and dropping the future stops it.
     pub async fn run(&self, args: ShellArgs) -> Result<ShellRun, ToolExecutionError> {
-        let max = self.shell.max_timeout.max(1);
+        let max = self.max_timeout.max(1);
         let timeout = Duration::from_secs(
             args.timeout_secs
-                .unwrap_or(DEFAULT_TIMEOUT.min(self.shell.max_timeout))
+                .unwrap_or(DEFAULT_TIMEOUT.min(self.max_timeout))
                 .clamp(1, max),
         );
         let quiet = quiet_for(args.timeout_secs, timeout);
@@ -799,7 +815,7 @@ impl Tool for PowerShellTool {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        let max = self.shell.max_timeout.max(1);
+        let max = self.max_timeout.max(1);
         let kept = match self.shell.cut {
             Some(cut) => format!(
                 "; past {} lines or {} KB, its first and last lines and the lines with errors \
@@ -832,7 +848,7 @@ impl Tool for PowerShellTool {
             } else {
                 ""
             },
-            DEFAULT_TIMEOUT.min(self.shell.max_timeout).max(1),
+            DEFAULT_TIMEOUT.min(self.max_timeout).max(1),
             QUIET_LIMIT.as_secs(),
             OUTPUT_CAP / 1024 / 1024,
         )
@@ -868,7 +884,7 @@ impl Tool for PowerShellTool {
                     &self.shell,
                     &jobs,
                     context,
-                    (args, &agent),
+                    (args, &agent, self.max_timeout),
                     true,
                     track,
                     launch,
@@ -884,7 +900,7 @@ impl Tool for PowerShellTool {
                     &self.shell,
                     &local,
                     context,
-                    (args, &agent),
+                    (args, &agent, self.max_timeout),
                     false,
                     track,
                     launch,
@@ -1057,10 +1073,10 @@ pub fn shell_for(root: &Path, settings: &ShellSettings) -> ShellTool {
         shell: Shell {
             launcher,
             confine: true,
-            max_timeout: settings.max_timeout_secs,
             cut: Some(OutputLimit::default()),
             ..Shell::default()
         },
+        max_timeout: settings.max_timeout_secs,
         through_env: settings.git_bash.is_some(),
         jobs: None,
         track: None,
@@ -1083,10 +1099,10 @@ pub fn powershell_for(
         shell: Shell {
             launcher,
             confine: true,
-            max_timeout: settings.max_timeout_secs,
             cut: Some(OutputLimit::default()),
             ..Shell::default()
         },
+        max_timeout: settings.max_timeout_secs,
         interpreter: interpreter.path.clone(),
         jobs: None,
         track: None,
@@ -1369,6 +1385,7 @@ mod tests {
                 cut: Some(OutputLimit::default()),
                 ..Shell::default()
             },
+            max_timeout: 600,
             interpreter: PathBuf::from("pwsh.exe"),
             jobs: None,
             track: None,
