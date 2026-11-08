@@ -15,7 +15,7 @@ preference order. When the serving entry fails with a quota-class error that per
 same-model retries, the caller falls through to the next entry and stays there. This also closes
 #289 (an ordered list for the main model) and #54 (the main-model fallback chain, guardian
 excluded). The usage ledger records which role and which entry served each call, so `/cost` can
-break spend down by model.
+break spend down by role and model.
 
 ## Current State
 
@@ -87,6 +87,7 @@ thinking   = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"]
   - Each entry passes `model_ref_ok` or names a defined role. `$main` is accepted as a synonym
     for `main`.
   - Each `<account>/<model>` entry names a configured account.
+  - Every role is validated at load, whether or not anything uses it.
   - No role reaches itself (a DFS over role references), and the error names the cycle path.
 - **`[model] model` accepts a string or a list** (`#[serde(untagged)]` enum `OneOrMany`). It is
   shorthand for the `main` role. Setting both `[model] model` and `[models.roles] main` in the
@@ -137,9 +138,11 @@ impl ModelChain {
   stickiness rule: later calls stay on the entry that worked.
 - **Inline lists.** An inline list (a `[agents.types]` list, `[model] model` as a list) gets its
   own chain keyed `type:<name>` / `main`.
-- **Text to chain.** `parse_model_text(text, &Roles) -> Result<ChainSpec, _>` turns any model
-  text into a chain. It replaces the ad-hoc `ModelRef::parse` call sites that accept a reference
-  from the user (`Switcher::main`, `ModelSpec::parse`).
+- **Text to chain.** `fontaine-agents` depends only on `fontaine-tools`, so it knows no roles:
+  `ModelSpec::parse` only splits text into a role-agnostic spec, and core resolves it. In core,
+  `Roles::chain_for(&ModelSpec)` (used by `Switcher::main` and `ChildContext::model_for`) turns
+  any spec into a chain. It replaces the ad-hoc `ModelRef::parse` call sites that accept a
+  reference from the user.
 
 ### Where the chain comes from
 
@@ -158,50 +161,67 @@ impl ModelChain {
   today.
 - **`$main` in a subagent spec.** It shares the session's `main` chain, including its active
   entry. That keeps today's behaviour of `$main` following the current session model.
-- **`ModelSpec`** becomes `{ Main, GuardianDefault, Chain(ChainSpec) }`. `as_text` renders a
-  role name or the reference list. Revival (`child_runner.rs:715`) keeps mapping a recorded main
+- **`ModelSpec`** becomes `{ Main, GuardianDefault, Named(String), List(Vec<String>) }`:
+  `Named` holds a role name and `List` holds reference strings, both unresolved in
+  `fontaine-agents`. `ChildContext::model_for` resolves them against the session's `Roles`.
+  `as_text` renders the role name or the reference list. Revival (`child_runner.rs:715`) keeps mapping a recorded main
   reference back to `Main`.
 
 ### Fall-through
 
 - **Trigger.** `fn falls_through(error: &PromptError) -> bool` in `turn.rs` is true for a
-  provider response with status 402, 429 or 529, and for the `claude-subscription` plan-limit
-  error (`ErrorKind::Limit`, `providers/claude_subscription/mod.rs:70`). It applies only after
+  provider response with status 402, 429 or 529, or whose `machine_code()` is a rate-limit,
+  overload or quota code (`overloaded_error`, `rate_limit_error`, `insufficient_quota`), because
+  rig delivers mid-stream errors as `ProviderResponseError::without_status` with only a code. It
+  is also true for the `claude-subscription` plan-limit error (`ErrorKind::Limit`,
+  `providers/claude_subscription/mod.rs:70`). It inspects both `PromptError::Provider` and
+  `PromptError::Report`, as `retryable` does, including for the plan-limit error. It applies only after
   `drive`'s same-model retries are spent. Fontaine's own token and cost budgets never trigger it:
   they are the user's limit, not the account's.
 - **Typed outcome.** `TurnOutcome::Failed(String)` becomes `TurnOutcome::Failed(TurnFailure)`
-  with `TurnFailure { message: String, falls_through: bool }` (it implements `Display`), so
+  with `TurnFailure { message: String, falls_through: bool }` (it derives `Clone, PartialEq, Eq`
+  like `TurnOutcome`, and implements `Display`), so
   callers can act on the class.
-- **Root session.** `Runtime::fall_through(&mut self) -> Option<FellThrough>`, in
+- **Root session.** `AgentRuntime::fall_through(&mut self) -> Option<FellThrough>`, in
   `agent/models.rs`, walks `main_chain.fall_through_order()`. For each index it tries
   `install_main` with that reference: the existing session-only path, which rebuilds the agent,
   updates `MainModel` and the tree root model, and moves a `MainFallback` guardian along. The
   first index that resolves is `settle`d. An entry that fails to resolve is skipped with a
-  warning. The TUI (`rust/fontaine-tui/src/ui/turn.rs`) and headless
-  (`rust/fontaine/src/headless.rs`) callers handle `Failed` with `falls_through` the same way:
+  warning. `install_main` needs `&mut AgentRuntime`, so the check is hoisted to where a
+  mutable runtime is held: every caller of `Ui::turn` (`ui/turn.rs:785`) already holds
+  `&mut AgentRuntime`, so `Ui::turn` takes it, and in headless `run` holds it between messages
+  (`headless.rs:1152`), so `handle_message`, `guarded_turn` and `run_one` take `&mut AgentRuntime`.
+  Both surfaces handle `Failed` with `falls_through` the same way, before `finish_turn` and
+  `goal_after_turn` in the TUI and before `goal_turn_ended` in headless, so a goal is not paused
+  and the failure is not reported:
   1. call `fall_through`;
   2. on `Some`, warn through `Approver::warn` (`main: anthropic/x is out of quota (429);
      continuing on kimi/y`);
-  3. run one continuation turn with `RETRY_NOTE` as its prompt. The recovery hook already saved
-     the failed attempt, as the in-`drive` retry relies on.
-  The continuation is not a human prompt, so it is not recorded as one. The implementer reuses
-  the synthetic continuation-turn path the goal loop uses, if it fits both callers. If the list
-  is spent, the turn fails as today, and the message adds `every model in <role> failed`.
+  3. run one continuation turn with `RETRY_NOTE` (made `pub` in `turn.rs`) as its prompt, through
+     `Ui::turn(.., None, ..)` in the TUI and `run_one` in headless. The recovery hook already
+     saved the failed attempt, as the in-`drive` retry relies on.
+  The continuation is not a human prompt (`human = None`), so it is not recorded as one. If the
+  list is spent, the turn fails as today, and the message adds `every model in <role> failed`.
 - **Subagent.** `run_child`'s loop (`child_runner.rs:811`) does the same on `falls_through`:
   1. resolve the next entry of the child's chain through `ChildContext`;
-  2. rebuild the child's agent with the spawn-time builder (`RunShared.agent` becomes
-     replaceable);
-  3. update the tree's model for the child;
+  2. rebuild the child's agent: the agent build is factored out of `assemble`
+     (`child_runner.rs:551-657`), which consumes the `AgentBuilder`, the hooks (Steering, Kill,
+     Recovery, Inflight) and the forked tool server, into a reusable function (`KillHook` takes
+     `shared.kill.subscribe()`). `RunShared` is `Arc`-shared with plain `agent` and
+     `model: ChildModel` fields, so both become replaceable through interior mutability;
+  3. replace `ChildModel` (priced, provider, generation options, modalities), redo the tree's
+     `set_model` for the child and the unpriced/cost-budget notice (`:571-588`);
   4. re-drive on `RETRY_NOTE`.
 - **One-shot jobs** (compaction, critique, setup scan). A helper
   `ModelChain::run_through(resolve, call)` tries the active entry's handle and, on an error whose
-  provider cause `falls_through`, the remaining order. `CritiqueError`
-  (`rust/fontaine-guardian/src/critique.rs:27`) and `ScanError`
-  (`rust/fontaine-guardian/src/env_scan.rs:62`) gain a `fn quota_exhausted(&self) -> bool` read
-  from the provider error they wrap. They keep `fontaine-guardian` free of the core types.
+  provider cause `falls_through`, the remaining order. The core-side caller downcasts the error's
+  `source()` (`CritiqueError` and `ScanError` already expose the wrapped rig `PromptError`) to
+  `PromptError` and applies `turn::falls_through`, so `fontaine-guardian` stays free of the core
+  types.
   - Compaction: `CompactResult::Failed` carries the same flag from the summary request.
   - Compaction keeps triggering on the main model's window and sends the summary request to the
-    compaction chain's model. A model that cannot take the conversation fails the compaction as
+    compaction chain's model: `Session::compact` takes the main model (threshold, window) and the
+    compaction chain's model (summary request) separately. A model that cannot take the conversation fails the compaction as
     an overflow does today.
 - **Cost-capped runs.** With an explicit `--max-budget-usd`, fall-through skips any entry whose
   model is unpriced (`ModelHandle::priced`). A capped run must stay measurable, and an unpriced
@@ -229,8 +249,9 @@ impl ModelChain {
 
 ### Discovery
 
-- **The `agent` tool's `model` parameter.** Its description is built from `Roles::describe()`
-  when the `agent` tool is registered:
+- **The `agent` tool's `model` parameter.** `AgentTool` gains a field holding the
+  `Roles::describe()` text, filled where core builds the tool (`agent/build.rs:267`), and
+  `parameters()` (`spawn.rs:1012-1015`) appends it to the description:
   ```
   Optional model for this agent: a role name, `$main`, `$guardian_default` or `<account>/<model>`.
   Defaults to the agent type's model. Roles:
@@ -239,16 +260,24 @@ impl ModelChain {
   ```
   Roles are fixed for a session (config), so the description joins the cached prefix and never
   changes mid-session.
-- **The `models` tool** (`fontaine-tools/src/models_tool.rs`) appends the same role lines.
+- **The `models` tool** appends the same role lines, from `agent/model_source.rs` and
+  `model_report.rs` in core.
 
 ### Ledger and `/cost`
 
 - **Per-model buckets.** `UsageLedger` gains `by_model: Mutex<BTreeMap<Served, Bucket>>`, where
   `Served { role: Option<String>, model: String /* <account>/<model> */ }`.
   - `SessionState::record_usage` (`gate.rs:953`) gains a `served: &Served` argument.
-  - The served value is set by `drive` (`Drive.served`), by compaction and by the guardian.
-    The guardian records `role: None` with its reference.
-  - The `by_source` buckets are unchanged, so headless `usage` keeps its v1 shape.
+  - Every `record_usage` caller names its `Served`:
+    - `drive`: its role and active entry;
+    - compaction: the `compaction` role, or `main` when unset, and the entry that served;
+    - the guardian: role `None` and the guardian reference;
+    - the goal evaluator (`add_goal_usage`, `gate.rs:982`): role `None` and its actual model;
+    - `/btw` (`agent/goal.rs:74`): role `None` and the main chain's current entry;
+    - composition `llm_usage` and reads usage (`permissions.rs:1816-1822`): role `None` and each
+      composition model's own reference, not the guardian's.
+  - The `by_source` buckets are unchanged, so headless `usage` keeps its v1 shape. The
+    `(role, model)` rows are the breakdown by role and model.
 - **`/cost`.** It adds a "by model" block under the source table, one row per `Served`, printed
   as `coding · anthropic/claude-sonnet-5-5` (or the reference alone without a role), with the
   same columns.
@@ -271,33 +300,47 @@ impl ModelChain {
    - Add the merged `roles` and the main source (`MainSource::{Override, ModelKey, Role}`).
    - Validate as described in the Config section.
    - In `config_scope.rs`, add the `models` rule.
-   - In `config_catalog.rs`, add the `/config` panel entry if the catalog lists every key: read
-     only, edited in the file.
-2. **`model_roles.rs`.** Add `Roles`, `ChainSpec`, `ModelChain`, `RoleChains`,
-   `parse_model_text` and `run_through`, with unit tests.
+   - In `config_catalog.rs`, add `row!("models.roles", Map, ..)`, read only (edited in the
+     file), for `every_settings_leaf_has_a_row`; add a `SNIPPETS` entry in `config_scope.rs` for
+     `every_row_has_a_snippet_and_no_snippet_lacks_a_row`. The `/config` panel's main-model
+     picker follows the `/model` persistence rule.
+   - Update the callers of `Config.model: Option<String>`: `fontaine-tui/src/setup.rs`,
+     `fontaine-tui/tests/setup.rs`, `fontaine-core/tests/config.rs`.
+   - In `user_config.rs`, extend `model_key_naming` to `[models.roles]` entries and the list
+     forms of `[model] model` and `[agents.types.<name>] model`, so `accounts::remove`
+     (`accounts.rs:326`) refuses an account still named there instead of leaving the next
+     startup at exit 2.
+2. **`model_roles.rs`.** Add `Roles` (with `chain_for`), `ModelChain`, `RoleChains` and
+   `run_through`, with unit tests.
 3. **`models.rs`.**
    - `resolve_with` and `Switcher::main` take model text and build the main chain from
      `MainSource`.
    - `Models` gains `main_chain: Arc<ModelChain>`.
    - `Switcher` carries the `Roles`.
 4. **Registry and spawns.**
-   - `registry.rs`: `ModelSpec::Chain`.
-   - `setup.rs`: build types from list or role specs.
-   - `extensions.rs`: the scope rules for project, plugin and user files, the undefined-role
-     warning, and skills accepting a bare name.
-   - `spawn.rs`: the dynamic `model` description and parse through `parse_model_text`.
-   - `child_runner.rs`: `model_for` over chains.
+   - `registry.rs`: `ModelSpec::Named` and `ModelSpec::List`.
+   - `setup.rs`: build types from list or role specs. `build_agent_types` (`:286`) gets a
+     fallible signature and does the defined-role check: a warning for project and plugin
+     files, an error for user files.
+   - `extensions.rs`: the scope rules for project, plugin and user files; the loader has no
+     roles (`LoadParams`, `:119-131`), so it checks syntax only and accepts a bare role name,
+     and skills accept a bare name.
+   - `spawn.rs`: `AgentTool` gets the roles description field and `parameters()` appends it.
+   - `agent/build.rs`: fill that field when building the tool.
+   - `child_runner.rs`: `model_for` over chains, resolving `Named`/`List` against `Roles`.
 5. **Fall-through.**
-   - `turn.rs`: `falls_through` and `TurnFailure`, then update every `TurnOutcome::Failed`
-     match.
-   - `agent/models.rs`: `Runtime::fall_through`.
+   - `turn.rs`: `falls_through`, `TurnFailure` and a `pub` `RETRY_NOTE`, then update every
+     `TurnOutcome::Failed` match, including `goal.rs` (`PauseReason::TurnFailed`) and
+     `fontaine/src/headless/goal.rs`.
+   - `agent/models.rs`: `AgentRuntime::fall_through`.
    - The TUI `ui/turn.rs` and `headless.rs` continuation.
    - `child_runner.rs`: the child rebuild and re-drive.
-   - `ledger.rs`: `Record::ModelFellThrough`.
+   - `ledger.rs`: `Record::ModelFellThrough`, and its arm in `LedgerView`
+     (`ledger.rs:622-639`, exhaustive).
 6. **One-shot jobs.**
    - `compaction`, `critique` and `setup` chains: `agent/goal.rs` (compaction), `auto_mode.rs`
      and `project_env.rs` (critique and the CLI scan), and `auto_mode_setup.rs` (the TUI scan).
-   - Add `quota_exhausted` to `CritiqueError` and `ScanError`.
+   - `Session::compact` takes the main model and the compaction chain's model separately.
 7. **Ledger and `/cost`.**
    - `usage_ledger.rs`: `Served` and `by_model`.
    - Thread `Served` through `record_usage` callers.
@@ -307,16 +350,17 @@ impl ModelChain {
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`
+- `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`, `user_config.rs`,
+  `accounts.rs`, `permissions.rs`, `goal.rs`, `agent/build.rs`, `agent/model_source.rs`,
+  `agent/model_report.rs`
+- `rust/fontaine-core/tests/config.rs`, `tests/agent_pipeline.rs`
 - `rust/fontaine-core/src/model_roles.rs` (new), `lib.rs`
 - `rust/fontaine-core/src/models.rs`, `agent/models.rs`, `agent/setup.rs`, `agent/goal.rs`
 - `rust/fontaine-core/src/extensions.rs`, `child_runner.rs`, `turn.rs`, `ledger.rs`,
   `usage_ledger.rs`, `gate.rs`, `session.rs`, `project_env.rs`
 - `rust/fontaine-agents/src/registry.rs`, `spawn.rs`
-- `rust/fontaine-tools/src/models_tool.rs`
-- `rust/fontaine-guardian/src/critique.rs`, `env_scan.rs`
-- `rust/fontaine/src/cli.rs` (help text), `headless.rs`, `auto_mode.rs`
-- `rust/fontaine-tui/src/ui/turn.rs`, `ui/commands/model.rs`, `ui/commands/auto_mode_setup.rs`,
+- `rust/fontaine/src/cli.rs` (help text), `headless.rs`, `headless/goal.rs`, `auto_mode.rs`
+- `rust/fontaine-tui/src/setup.rs`, `tests/setup.rs`, `src/ui/turn.rs`, `ui/commands/model.rs`, `ui/commands/auto_mode_setup.rs`,
   `reports.rs`
 - `docs/configuration.md`, `docs/agents.md`, `docs/extensions.md`, `docs/guardian.md`,
   `docs/tui.md`, `docs/headless.md`
@@ -333,13 +377,8 @@ impl ModelChain {
 - **Fall-through only on quota-class failures.** Retrying any failure on another model would hide
   real request bugs (a 400 from a malformed tool schema) behind silent switches. 529 is included
   because Claude Code's fallback model triggers on overload.
-- **Startup does not skip unresolvable entries.** A misspelled account would otherwise run every
-  session on the second choice without anyone noticing.
-- **Undefined roles in repository files fall back to the session model.** Failing would make any
-  shared Claude Code agent pack unusable without per-user setup. Defining the roles implicitly
+- **Undefined roles in repository files fall back to the session model.** Defining the roles implicitly
   (`sonnet` means some Anthropic model) would make Fontaine pick an endpoint, which it never does.
-- **One shared chain per role.** Per-spawn chains would re-hit an exhausted account on every new
-  subagent, which is the behaviour the issue rules out.
 
 ## Decisions
 
@@ -388,7 +427,13 @@ subsection, dated on the day of implementation:
   guardian itself takes no role.
 - `docs/tui.md`: `/model` accepting a role and its session-only case, and the `/cost` by-model
   block.
-- `docs/headless.md`: `--model` accepting a role, and fall-through warnings on stderr.
+- `docs/headless.md`: `--model` accepting a role, fall-through warnings on stderr, and the
+  plan-limit line (`:57`).
+- `docs/architecture.md`: the record list (`:204`) gains `ModelFellThrough`.
+- `docs/claude-subscription.md`: the fallback mention (`:15-16`), the plan-limit text
+  (`:131-133`) and the Failures row (`:141`).
+- `docs/tools.md`: the `models` tool role lines (`:30`, `:131`).
+- `docs/index.md`: "spend by source" (`:48`) becomes by source and by model.
 
 ## Testing Strategy
 
@@ -417,8 +462,9 @@ Unit tests (all reachable with constructed inputs):
   - the `model` description lists the roles;
   - a role per-call `model` resolves;
   - a project type's per-call `model` is still refused.
-- `turn.rs`: `falls_through` for 402, 429 and 529 and the plan-limit error, false for 400 and 500
-  and for cancellation.
+- `turn.rs`: `falls_through` for 402, 429 and 529, for status-less stream errors with a
+  rate-limit, overload or quota code, and for the plan-limit error, in both `Provider` and
+  `Report` forms; false for 400 and 500 and for cancellation.
 - `usage_ledger.rs` and `reports.rs`: by-model buckets and the `/cost` block.
 - `agent/models.rs`: `/model` persistence over a role or list is skipped; a single string is
   written.
@@ -434,9 +480,3 @@ Integration tests (headless `fontaine -p`, wiremock providers):
 - **List spent.** Every entry returns 429. The turn fails with the "every model" message and the
   recovery state intact.
 - **Cost cap.** A cost-capped run skips an unpriced second entry.
-
-## Open Questions
-
-- Whether the continuation turn after a root fall-through can reuse the goal loop's synthetic-turn
-  path in both the TUI and headless, or needs a small shared helper. The implementer settles this
-  from the code; it does not change the behaviour above.
