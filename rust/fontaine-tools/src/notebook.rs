@@ -719,7 +719,7 @@ impl ReadView {
         // is still worth reading.
         let (output, read) = match parsed {
             Ok(parsed) => parsed,
-            Err(args) => return self.read.call(context, args).await.map(ToolOutput::text),
+            Err(args) => return self.read.call(context, args).await,
         };
         context.insert_result(FilesRead(vec![read]))?;
         Ok(ToolOutput::text(output))
@@ -793,7 +793,7 @@ impl Tool for ReadView {
         match sniffed {
             Sniffed::Image(media) => self.image(context, &path, media, size).await,
             Sniffed::Pdf => Ok(self.pdf(&path, size)),
-            Sniffed::Other => self.read.call(context, args).await.map(ToolOutput::text),
+            Sniffed::Other => self.read.call(context, args).await,
         }
     }
 }

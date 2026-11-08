@@ -270,9 +270,9 @@ fn the_shell_is_confined_clamped_and_cut() {
     };
     let tool = builtins::shell_for(&root, &settings);
     assert!(!tool.through_env);
+    assert_eq!(tool.max_timeout, 7);
     let shell = tool.shell;
     assert!(shell.confine);
-    assert_eq!(shell.max_timeout, 7);
     assert_eq!(shell.cut, Some(OutputLimit::default()));
     assert_eq!(shell.launcher.cwd.as_deref(), Some(root.as_path()));
     assert!(
