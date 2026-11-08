@@ -135,13 +135,17 @@ impl ModelChain {
 - **One shared chain per role.** A session-wide `RoleChains` (`Arc<Mutex<BTreeMap<String,
   Arc<ModelChain>>>>`, a lock that feeds model selection, so it uses `fontaine_tools::lock::lock`)
   holds them. Every subagent spawned on `coding` shares one `active` index, which is the issue's
-  stickiness rule: later calls stay on the entry that worked.
+  stickiness rule: later calls stay on the entry that worked. One `Arc<RoleChains>` lives in
+  `Switcher` (its `Clone` shares the `Arc`, so the per-call clone in `model_for` keeps the chains),
+  and `Models`' `main_chain` is the same `Arc<ModelChain>` stored in `MainModel`, so `ChildContext`
+  reaches both.
 - **Inline lists.** An inline list (a `[agents.types]` list, `[model] model` as a list) gets its
   own chain keyed `type:<name>` / `main`.
 - **Text to chain.** `fontaine-agents` depends only on `fontaine-tools`, so it knows no roles:
   `ModelSpec::parse` only splits text into a role-agnostic spec, and core resolves it. In core,
-  `Roles::chain_for(&ModelSpec)` (used by `Switcher::main` and `ChildContext::model_for`) turns
-  any spec into a chain. It replaces the ad-hoc `ModelRef::parse` call sites that accept a
+  `RoleChains::chain_for(&Roles, &ModelSpec)` (used by `Switcher::main` and
+  `ChildContext::model_for`) turns any spec into a chain, returning the existing `Arc<ModelChain>`
+  for a role or key it has seen, so repeated calls share one `active` index. It replaces the ad-hoc `ModelRef::parse` call sites that accept a
   reference from the user.
 
 ### Where the chain comes from
@@ -161,15 +165,21 @@ impl ModelChain {
   today.
 - **`$main` in a subagent spec.** It shares the session's `main` chain, including its active
   entry. That keeps today's behaviour of `$main` following the current session model.
-- **`ModelSpec`** becomes `{ Main, GuardianDefault, Named(String), List(Vec<String>) }`:
+- **`ModelSpec`** becomes `{ Main, GuardianDefault, Model(String), Named(String), List(Vec<String>) }`:
   `Named` holds a role name and `List` holds reference strings, both unresolved in
-  `fontaine-agents`. `ChildContext::model_for` resolves them against the session's `Roles`.
-  `as_text` renders the role name or the reference list. Revival (`child_runner.rs:715`) keeps mapping a recorded main
-  reference back to `Main`.
+  `fontaine-agents`. `ChildContext::model_for` resolves them against the session's `Roles`. `switcher` is `None`
+  only when an embedder builds a session without one; there a `Named` or `List` spec fails the
+  spawn with an error tool result, as `Model(text)` does today (`child_runner.rs:390`).
+  `Model(String)` stays for a lone `<account>/<model>`, which `parse` keeps returning for it.
+  `as_text` renders the role name or the reference list. The tree and the ledger keep storing the
+  concrete serving reference, so revival (`child_runner.rs:715`) still parses it and keeps mapping
+  a recorded main reference back to `Main`.
 
 ### Fall-through
 
-- **Trigger.** `fn falls_through(error: &PromptError) -> bool` in `turn.rs` is true for a
+- **Trigger.** `fn falls_through(error: &PromptError) -> bool` in `turn.rs` is a wrapper over a
+  core taking the provider error or `ErrorReport`, which the completion-error path compaction
+  uses (`Session::compact` calls `model.call(..)`, `session.rs:537/585`) shares. The core is true for a
   provider response with status 402, 429 or 529, or whose `machine_code()` is a rate-limit,
   overload or quota code (`overloaded_error`, `rate_limit_error`, `insufficient_quota`), because
   rig delivers mid-stream errors as `ProviderResponseError::without_status` with only a code. It
@@ -190,7 +200,9 @@ impl ModelChain {
   warning. `install_main` needs `&mut AgentRuntime`, so the check is hoisted to where a
   mutable runtime is held: every caller of `Ui::turn` (`ui/turn.rs:785`) already holds
   `&mut AgentRuntime`, so `Ui::turn` takes it, and in headless `run` holds it between messages
-  (`headless.rs:1152`), so `handle_message`, `guarded_turn` and `run_one` take `&mut AgentRuntime`.
+  (`headless.rs:1152`), so `handle_message`, `guarded_turn`, `run_one` and `settle` (`headless.rs:886`) take
+  `&mut AgentRuntime`. In headless the fall-through runs inside `run_one`, before `Failed` becomes
+  the headless `Outcome`.
   Both surfaces handle `Failed` with `falls_through` the same way, before `finish_turn` and
   `goal_after_turn` in the TUI and before `goal_turn_ended` in headless, so a goal is not paused
   and the failure is not reported:
@@ -208,7 +220,10 @@ impl ModelChain {
      (`child_runner.rs:551-657`), which consumes the `AgentBuilder`, the hooks (Steering, Kill,
      Recovery, Inflight) and the forked tool server, into a reusable function (`KillHook` takes
      `shared.kill.subscribe()`). `RunShared` is `Arc`-shared with plain `agent` and
-     `model: ChildModel` fields, so both become replaceable through interior mutability;
+     `model: ChildModel` fields; the agent becomes an `Arc<Agent>` swapped under a lock and
+     cloned before each drive, and `model` is replaceable the same way. The rebuild redoes only
+     the agent, `ChildModel`, `set_model` and the unpriced notice, never the kill registration
+     (`context.kills`, `child_runner.rs:600`) or `set_child_restrictions`;
   3. replace `ChildModel` (priced, provider, generation options, modalities), redo the tree's
      `set_model` for the child and the unpriced/cost-budget notice (`:571-588`);
   4. re-drive on `RETRY_NOTE`.
@@ -241,6 +256,9 @@ impl ModelChain {
   - In a user-scope agent file, an undefined role stays an exit-2 error, as an unknown model is
     today.
   - This loosens the 2026-10-21 Agents decision. A dated Decisions line records it.
+- **Revival** (`AgentTree::revival_request`, `tree.rs:1170`) forces `Main` for a type that
+  refuses a per-call `model`; it uses `agent_type.model.clone().unwrap_or(ModelSpec::Main)`, so a
+  project or plugin type naming a role keeps it after resume.
 - **The per-call `model`** on a project or plugin type stays refused, as recorded on 2026-10-22.
   The model, which a repository can steer, still cannot move a repository-defined type.
 - **A skill's `model`** accepts a bare role name syntactically and stays unused. Claude Code
@@ -261,7 +279,8 @@ impl ModelChain {
   Roles are fixed for a session (config), so the description joins the cached prefix and never
   changes mid-session.
 - **The `models` tool** appends the same role lines, from `agent/model_source.rs` and
-  `model_report.rs` in core.
+  `model_report.rs` in core. `SessionModels` gains a `roles` field, and `ModelReport::to_json`
+  includes the roles.
 
 ### Ledger and `/cost`
 
@@ -269,9 +288,12 @@ impl ModelChain {
   `Served { role: Option<String>, model: String /* <account>/<model> */ }`.
   - `SessionState::record_usage` (`gate.rs:953`) gains a `served: &Served` argument.
   - Every `record_usage` caller names its `Served`:
-    - `drive`: its role and active entry;
+    - `drive` (`turn.rs:581`, serving both Main and Subagent): its role and active entry;
     - compaction: the `compaction` role, or `main` when unset, and the entry that served;
-    - the guardian: role `None` and the guardian reference;
+    - the guardian (`add_guardian_usage`, `gate.rs:970`, and adjudication,
+      `permissions.rs:1903`): role `None` and the guardian reference;
+    - the AFK evasion assessment (`agent/afk.rs:61`, `:68`): role `None` and the guardian
+      reference;
     - the goal evaluator (`add_goal_usage`, `gate.rs:982`): role `None` and its actual model;
     - `/btw` (`agent/goal.rs:74`): role `None` and the main chain's current entry;
     - composition `llm_usage` and reads usage (`permissions.rs:1816-1822`): role `None` and each
@@ -286,10 +308,17 @@ impl ModelChain {
 
 - **What `/model <text>` accepts.** Any model text: a reference or a role name. The session's
   main chain becomes the parsed chain.
-- **Persisting the choice.** `[model] model` is written only when the user file's main is unset
-  or a single string. When main comes from `[models.roles] main` or a list, the switch is
-  session-only, and the `Switched` notice says which key to edit. Overwriting it would drop the
-  user's preference list.
+- **Persisting the choice.** Persistence keys on the merged config's `MainSource`, not on the
+  resolved model. `[model] model` is written only when main is unset or comes from a
+  single-string `[model] model`. When it comes from `[models.roles] main` or a list, the switch is
+  session-only: `Switched` gains a field carrying the notice, which says which key to edit.
+  Overwriting it would drop the user's preference list. What is written is the text the user typed
+  (the role name for `/model coding`), not the resolved entry. `--model` does not change this:
+  today `/model` persists even with `--model` active, and that stays (`MainSource::Override`
+  is the session flag; the rule reads the config's own source).
+- **The setup screen** (`fontaine-tui/src/setup.rs:439`) applies the same rule: it calls
+  `user_config::set_model` only under it, since an unconditional write would put `[model] model`
+  beside `[models.roles] main` and the next startup would exit 2.
 - **The picker** keeps listing concrete models.
 
 ## Implementation Steps
@@ -304,21 +333,28 @@ impl ModelChain {
      file), for `every_settings_leaf_has_a_row`; add a `SNIPPETS` entry in `config_scope.rs` for
      `every_row_has_a_snippet_and_no_snippet_lacks_a_row`. The `/config` panel's main-model
      picker follows the `/model` persistence rule.
-   - Update the callers of `Config.model: Option<String>`: `fontaine-tui/src/setup.rs`,
+   - Update the callers of `Config.model: Option<String>`: `fontaine-tui/src/setup.rs` (its
+     `pick` applies the `/model` persistence rule instead of writing `[model] model`
+     unconditionally),
      `fontaine-tui/tests/setup.rs`, `fontaine-core/tests/config.rs`.
-   - In `user_config.rs`, extend `model_key_naming` to `[models.roles]` entries and the list
+   - Sites accepting role names and lists: `validate_values` (`config.rs:1311-1314`), `apply`
+     (`config.rs:2379-2380`) and `models.rs:635`.
+   - In `user_config.rs`, extend `model_key_naming` (it returns an owned `String`, and gains the
+     string form of `[agents.types.<name>] model`) to `[models.roles]` entries and the list
      forms of `[model] model` and `[agents.types.<name>] model`, so `accounts::remove`
      (`accounts.rs:326`) refuses an account still named there instead of leaving the next
      startup at exit 2.
-2. **`model_roles.rs`.** Add `Roles` (with `chain_for`), `ModelChain`, `RoleChains` and
+2. **`model_roles.rs`.** Add `Roles`, `ModelChain`, `RoleChains` (with `chain_for`) and
    `run_through`, with unit tests.
 3. **`models.rs`.**
    - `resolve_with` and `Switcher::main` take model text and build the main chain from
      `MainSource`.
    - `Models` gains `main_chain: Arc<ModelChain>`.
-   - `Switcher` carries the `Roles`.
+   - `Switcher` carries the `Roles` and the shared `Arc<RoleChains>`; `MainModel` carries the
+     `main_chain` `Arc`.
 4. **Registry and spawns.**
    - `registry.rs`: `ModelSpec::Named` and `ModelSpec::List`.
+   - `tree.rs`: `revival_request` uses the type's own `model` for non-overridable types.
    - `setup.rs`: build types from list or role specs. `build_agent_types` (`:286`) gets a
      fallible signature and does the defined-role check: a warning for project and plugin
      files, an error for user files.
@@ -345,7 +381,9 @@ impl ModelChain {
    - `usage_ledger.rs`: `Served` and `by_model`.
    - Thread `Served` through `record_usage` callers.
    - `reports.rs`: the by-model block.
-8. **`/model` persistence.** `agent/models.rs` and `ui/commands/model.rs`.
+8. **`/model` persistence.** `agent/models.rs` (`switch_main_model` keys on `MainSource` and
+   persists the typed text; `Switched` gains the session-only notice field) and
+   `ui/commands/model.rs`.
 9. **Docs** and the master plan's Decisions lines (below).
 
 ## Files to Modify
@@ -353,17 +391,19 @@ impl ModelChain {
 - `rust/fontaine-core/src/config.rs`, `config_scope.rs`, `config_catalog.rs`, `user_config.rs`,
   `accounts.rs`, `permissions.rs`, `goal.rs`, `agent/build.rs`, `agent/model_source.rs`,
   `agent/model_report.rs`
-- `rust/fontaine-core/tests/config.rs`, `tests/agent_pipeline.rs`
+- `rust/fontaine-core/tests/config.rs`, `tests/agent_pipeline.rs`, `tests/choke_point.rs`
+  (struct-literal `AgentTool`), `rust/fontaine-agents/tests/seam.rs`
 - `rust/fontaine-core/src/model_roles.rs` (new), `lib.rs`
 - `rust/fontaine-core/src/models.rs`, `agent/models.rs`, `agent/setup.rs`, `agent/goal.rs`
 - `rust/fontaine-core/src/extensions.rs`, `child_runner.rs`, `turn.rs`, `ledger.rs`,
   `usage_ledger.rs`, `gate.rs`, `session.rs`, `project_env.rs`
-- `rust/fontaine-agents/src/registry.rs`, `spawn.rs`
+- `rust/fontaine-agents/src/registry.rs`, `spawn.rs`, `tree.rs`
 - `rust/fontaine/src/cli.rs` (help text), `headless.rs`, `headless/goal.rs`, `auto_mode.rs`
 - `rust/fontaine-tui/src/setup.rs`, `tests/setup.rs`, `src/ui/turn.rs`, `ui/commands/model.rs`, `ui/commands/auto_mode_setup.rs`,
   `reports.rs`
 - `docs/configuration.md`, `docs/agents.md`, `docs/extensions.md`, `docs/guardian.md`,
-  `docs/tui.md`, `docs/headless.md`
+  `docs/tui.md`, `docs/headless.md`, `docs/architecture.md`, `docs/claude-subscription.md`,
+  `docs/tools.md`, `docs/index.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
@@ -383,7 +423,7 @@ impl ModelChain {
 ## Decisions
 
 - Roles do not apply to the guardian, the composition models, `/btw`, the goal evaluator or the
-  `llm` scanner. The guardian is never substituted (#54), and the rest are not among the issue's
+  `llm` scanner. A pinned guardian is never substituted; a main-fallback guardian follows the main model through a fall-through (#54), and the rest are not among the issue's
   roles.
 - `[model] model` and `[models.roles] main` together are a config error, not a precedence rule.
 - `/model` does not persist over a role or a list.
@@ -447,7 +487,10 @@ Unit tests (all reachable with constructed inputs):
   - `fall_through_order` from each active position;
   - `settle` shared across clones;
   - `run_through` stopping on the first success and on a non-quota error.
+- `registry.rs`: `parse` and `as_text` round-trip for a bare role, a list and a lone
+  `<account>/<model>`; update the `parse("sonnet").is_err()` assertion (`:495-503`).
 - `config.rs`:
+  - `$guardian_default` inside a list is refused;
   - string and list forms;
   - `[model] model` together with `main` rejected;
   - an unknown account in a role;
@@ -457,7 +500,8 @@ Unit tests (all reachable with constructed inputs):
   - a project agent file with a role: accepted, and a warning when the role is undefined;
   - a project agent file with `<account>/<model>`: rejected;
   - a user file with an undefined role: an error;
-  - a skill with `model: sonnet`: loads.
+  - a skill with `model: sonnet`: loads;
+  - update the `sonnet` message assertion (`:184`).
 - `spawn.rs`:
   - the `model` description lists the roles;
   - a role per-call `model` resolves;
