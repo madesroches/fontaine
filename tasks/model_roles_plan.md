@@ -92,7 +92,11 @@ thinking   = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"]
 - **`[model] model` accepts a string or a list** (`#[serde(untagged)]` enum `OneOrMany`). It is
   shorthand for the `main` role. Setting both `[model] model` and `[models.roles] main` in the
   merged config is a config error naming both keys. `--model` is a string: an `<account>/<model>`
-  or a role name, and it overrides both.
+  or a role name, and it overrides both for the session's chain. `[model] model` is folded into
+  `roles["main"]` before validation and flattening, so `main` and `$main` in a role list are
+  always defined. `--model` does not re-point `roles["main"]`. `main` or `$main` inside a role
+  list is a static splice of the configured `main`, not the live session chain; only a subagent
+  spec's `$main` follows the live chain.
 - **`[agents.types.<name>] model` also accepts a string or a list.** Each entry may be
   `<account>/<model>`, a role name, `$main` or (alone) `$guardian_default`.
 - **The `[guardian] model` key and `[guardian.composition]` models stay a single
@@ -108,7 +112,8 @@ The new module `rust/fontaine-core/src/model_roles.rs` holds both types.
 pub struct Roles { flat: BTreeMap<String, Vec<ModelRef>> }
 
 impl Roles {
-    pub fn from_config(raw: &BTreeMap<String, Vec<String>>) -> Result<Roles, ConfigError>;
+    /// Folds `[model] model` into `roles["main"]`, then validates against the accounts.
+    pub fn from_config(config: &Config) -> Result<Roles, ConfigError>;
     pub fn get(&self, name: &str) -> Option<&[ModelRef]>;
     pub fn describe(&self) -> String; // "- `coding`: anthropic/claude-sonnet-5-5, kimi/kimi-for-coding"
 }
@@ -123,9 +128,10 @@ pub struct ModelChain {
 impl ModelChain {
     pub fn active(&self) -> usize;
     pub fn active_ref(&self) -> &ModelRef;
-    /// The order to try after the active entry failed: the other entries from the most
-    /// preferred down, each at most once.
-    pub fn fall_through_order(&self) -> Vec<usize>;
+    /// The order to try after `failed` failed: the current active entry first when it differs
+    /// from `failed` (a concurrent caller already settled it), then the rest from the most
+    /// preferred down, each at most once and excluding `failed`.
+    pub fn fall_through_order(&self, failed: usize) -> Vec<usize>;
     pub fn settle(&self, index: usize);
 }
 ```
@@ -164,7 +170,10 @@ impl ModelChain {
 - **Spawns.** A spawn resolves the chain's active entry. A resolve error there fails the spawn as
   today.
 - **`$main` in a subagent spec.** It shares the session's `main` chain, including its active
-  entry. That keeps today's behaviour of `$main` following the current session model.
+  entry. That keeps today's behaviour of `$main` following the current session model. Only the
+  root (`AgentRuntime::fall_through`) settles the main chain. A child on `$main` that falls
+  through does so for itself, rebuilding its own agent on the next entry, without moving the main
+  chain's active index.
 - **`ModelSpec`** becomes `{ Main, GuardianDefault, Model(String), Named(String), List(Vec<String>) }`:
   `Named` holds a role name and `List` holds reference strings, both unresolved in
   `fontaine-agents`. `ChildContext::model_for` resolves them against the session's `Roles`. `switcher` is `None`
@@ -180,12 +189,14 @@ impl ModelChain {
 - **Trigger.** `fn falls_through(error: &PromptError) -> bool` in `turn.rs` is a wrapper over a
   core taking the provider error or `ErrorReport`, which the completion-error path compaction
   uses (`Session::compact` calls `model.call(..)`, `session.rs:537/585`) shares. The core is true for a
-  provider response with status 402, 429 or 529, or whose `machine_code()` is a rate-limit,
+  provider response with status 402, 429 or 529, or whose machine code is a rate-limit,
   overload or quota code (`overloaded_error`, `rate_limit_error`, `insufficient_quota`), because
-  rig delivers mid-stream errors as `ProviderResponseError::without_status` with only a code. It
-  is also true for the `claude-subscription` plan-limit error (`ErrorKind::Limit`,
-  `providers/claude_subscription/mod.rs:70`). It inspects both `PromptError::Provider` and
-  `PromptError::Report`, as `retryable` does, including for the plan-limit error. It applies only after
+  rig delivers mid-stream errors as `ProviderResponseError::without_status` with only a code. The
+  code is `e.provider_response().and_then(|r| r.machine_code())` for a `ProviderError` and
+  `report.code` for an `ErrorReport`. It is also true for the `claude-subscription` plan-limit
+  error (`ErrorKind::Limit`, `providers/claude_subscription/mod.rs:70`), recognised only in the
+  `PromptError::Provider` form through `claude_error()`. Status and code checks inspect both
+  `PromptError::Provider` and `PromptError::Report`, as `retryable` does. It applies only after
   `drive`'s same-model retries are spent. Fontaine's own token and cost budgets never trigger it:
   they are the user's limit, not the account's.
 - **Typed outcome.** `TurnOutcome::Failed(String)` becomes `TurnOutcome::Failed(TurnFailure)`
@@ -193,10 +204,10 @@ impl ModelChain {
   like `TurnOutcome`, and implements `Display`), so
   callers can act on the class.
 - **Root session.** `AgentRuntime::fall_through(&mut self) -> Option<FellThrough>`, in
-  `agent/models.rs`, walks `main_chain.fall_through_order()`. For each index it tries
+  `agent/models.rs`, walks `main_chain.fall_through_order(failed)`, where `failed` is the index the turn ran on. For each index it tries
   `install_main` with that reference: the existing session-only path, which rebuilds the agent,
   updates `MainModel` and the tree root model, and moves a `MainFallback` guardian along. The
-  first index that resolves is `settle`d. An entry that fails to resolve is skipped with a
+  first index that resolves is `settle`d (`settle` is given the index that worked). An entry that fails to resolve is skipped with a
   warning. `install_main` needs `&mut AgentRuntime`, so the check is hoisted to where a
   mutable runtime is held: every caller of `Ui::turn` (`ui/turn.rs:785`) already holds
   `&mut AgentRuntime`, so `Ui::turn` takes it, and in headless `run` holds it between messages
@@ -213,7 +224,9 @@ impl ModelChain {
      `Ui::turn(.., None, ..)` in the TUI and `run_one` in headless. The recovery hook already
      saved the failed attempt, as the in-`drive` retry relies on.
   The continuation is not a human prompt (`human = None`), so it is not recorded as one. If the
-  list is spent, the turn fails as today, and the message adds `every model in <role> failed`.
+  list is spent, the turn fails as today. The surface caller (`Ui::turn` / headless `run_one`) appends
+  `every model in <role> failed` to the message when `fall_through` returns `None` on a chain
+  with more than one entry, naming the role, or `the model list` when `role` is `None`.
 - **Subagent.** `run_child`'s loop (`child_runner.rs:811`) does the same on `falls_through`:
   1. resolve the next entry of the child's chain through `ChildContext`;
   2. rebuild the child's agent: the agent build is factored out of `assemble`
@@ -251,8 +264,7 @@ impl ModelChain {
   not set an `<account>/<model>`, a list or `$guardian_default`. A role reference names no
   endpoint, because the user defines every role.
   - A role the user has not defined runs the type on the session model, with one startup warning
-    naming the file and role. A repository cannot know the user's roles, and Claude Code files
-    that say `sonnet` must not stop startup.
+    naming the file and role.
   - In a user-scope agent file, an undefined role stays an exit-2 error, as an unknown model is
     today.
   - This loosens the 2026-10-21 Agents decision. A dated Decisions line records it.
@@ -312,7 +324,7 @@ impl ModelChain {
   resolved model. `[model] model` is written only when main is unset or comes from a
   single-string `[model] model`. When it comes from `[models.roles] main` or a list, the switch is
   session-only: `Switched` gains a field carrying the notice, which says which key to edit.
-  Overwriting it would drop the user's preference list. What is written is the text the user typed
+  What is written is the text the user typed
   (the role name for `/model coding`), not the resolved entry. `--model` does not change this:
   today `/model` persists even with `--model` active, and that stays (`MainSource::Override`
   is the session flag; the rule reads the config's own source).
@@ -401,7 +413,7 @@ impl ModelChain {
 - `rust/fontaine/src/cli.rs` (help text), `headless.rs`, `headless/goal.rs`, `auto_mode.rs`
 - `rust/fontaine-tui/src/setup.rs`, `tests/setup.rs`, `src/ui/turn.rs`, `ui/commands/model.rs`, `ui/commands/auto_mode_setup.rs`,
   `reports.rs`
-- `docs/configuration.md`, `docs/agents.md`, `docs/extensions.md`, `docs/guardian.md`,
+- `docs/configuration.md`, `docs/agents.md`, `docs/extensions.md`, `docs/plugins.md`, `docs/guardian.md`,
   `docs/tui.md`, `docs/headless.md`, `docs/architecture.md`, `docs/claude-subscription.md`,
   `docs/tools.md`, `docs/index.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
@@ -427,6 +439,11 @@ impl ModelChain {
   roles.
 - `[model] model` and `[models.roles] main` together are a config error, not a precedence rule.
 - `/model` does not persist over a role or a list.
+- `[model] model` is folded into `roles["main"]` before validation; `main`/`$main` in a role list
+  is a static splice of the configured main, and `--model` does not re-point it. Only a subagent
+  spec's `$main` follows the live chain.
+- A plan limit relayed only as an `ErrorReport` is not recognised for fall-through; no text
+  matching.
 - Resume restarts each chain at its first entry. Active indexes are not persisted.
 
 Lines to add to `tasks/fontaine_harness_plan.md` `## Decisions`, each at the end of its
@@ -463,10 +480,12 @@ subsection, dated on the day of implementation:
   - remove the porting note that says to rewrite `sonnet`/`opus` and say to define those roles
     instead;
   - update the `sonnet` error example.
+- `docs/plugins.md`: `:209` says plugin agent files can only narrow with "no model"; they may now
+  name a role or `$main`.
 - `docs/guardian.md`: critique and setup scan run on the `critique` / `setup` role when set; the
   guardian itself takes no role.
 - `docs/tui.md`: `/model` accepting a role and its session-only case, and the `/cost` by-model
-  block.
+  block; the command-table line (`:612`, "spend by source") gains by model.
 - `docs/headless.md`: `--model` accepting a role, fall-through warnings on stderr, and the
   plan-limit line (`:57`).
 - `docs/architecture.md`: the record list (`:204`) gains `ModelFellThrough`.
@@ -484,7 +503,8 @@ Unit tests (all reachable with constructed inputs):
   - cycle detection, direct and indirect, with the path in the message;
   - an undefined role reference;
   - name validation (`inherit`, `$x`, `a/b`);
-  - `fall_through_order` from each active position;
+  - `fall_through_order(failed)` from each active position, including `failed` different from
+    the active index (the active entry first, `failed` excluded);
   - `settle` shared across clones;
   - `run_through` stopping on the first success and on a non-quota error.
 - `registry.rs`: `parse` and `as_text` round-trip for a bare role, a list and a lone
@@ -507,8 +527,7 @@ Unit tests (all reachable with constructed inputs):
   - a role per-call `model` resolves;
   - a project type's per-call `model` is still refused.
 - `turn.rs`: `falls_through` for 402, 429 and 529, for status-less stream errors with a
-  rate-limit, overload or quota code, and for the plan-limit error, in both `Provider` and
-  `Report` forms; false for 400 and 500 and for cancellation.
+  rate-limit, overload or quota code, and for the plan-limit error in the `Provider` form; false for 400 and 500 and for cancellation.
 - `usage_ledger.rs` and `reports.rs`: by-model buckets and the `/cost` block.
 - `agent/models.rs`: `/model` persistence over a role or list is skipped; a single string is
   written.
@@ -523,4 +542,8 @@ Integration tests (headless `fontaine -p`, wiremock providers):
   starts on the settled entry.
 - **List spent.** Every entry returns 429. The turn fails with the "every model" message and the
   recovery state intact.
+
+In-process `fontaine-core` runtime test (`tests/common/runtime.rs` `build_with_models` and a
+switcher over wiremock accounts, as `tests/account_session.rs` does):
+
 - **Cost cap.** A cost-capped run skips an unpriced second entry.
