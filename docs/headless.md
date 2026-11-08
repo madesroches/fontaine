@@ -109,7 +109,7 @@ files live in `<data dir>/sessions/<session id>/`, created readable by the curre
 conversation, the task list (`todos.json`) and the [goal](#goals) (`goal.json`) are kept there between turns, and the conversation is compacted by a summarizing call when it
 outgrows the model's context window less a reserve, or earlier when
 [`[context] autocompact_window`](configuration.md#context) is set (only for a model the catalog
-lists, a derived `claude-subscription` model counting as listed, and, without that setting, only when its window is known; the summarizing call counts
+lists, a derived model counting as listed, and, without that setting, only when its window is known; the summarizing call counts
 toward the spend and the model-call count). A compaction that cannot finish leaves the
 conversation as it was, prints a warning on stderr and does not stop the run.
 

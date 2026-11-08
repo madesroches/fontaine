@@ -19,16 +19,18 @@ use rig_core::providers::anthropic::{
 use rig_core::providers::gemini::{Gemini, GeminiConfig};
 use rig_core::providers::openai::wire::Dialect;
 use rig_core::providers::openai::{OpenAI, OpenAIConfig, Route};
+use rig_core::providers::registry::ProviderId;
 use serde::Deserialize;
 use serde_json::json;
 
+use super::derived_facts::unlisted_facts;
 use super::device_flow::{
     DeviceFlow, DeviceFlowEndpoints, FlowError, REQUEST_TIMEOUT, RefreshError,
 };
 use super::token_source::{Refresher, TokenSource};
 use super::{
     AccountClient, Billing, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider,
-    SignIn, SignInError, SignInProgress, SignInStep,
+    SignIn, SignInError, SignInProgress, SignInStep, vendor,
 };
 use crate::config::{Account, Wire};
 use crate::credentials::{self, OAuthTokens, StoredCredential};
@@ -203,14 +205,24 @@ struct GoClient {
 
 impl GoClient {
     fn completion_in(&self, model: &str, scope: CacheScope) -> DynModel<Completion> {
+        let facts = unlisted_facts(vendor("opencode-go"), model);
+        macro_rules! bound {
+            ($built:expr) => {{
+                let mut built = $built;
+                if let Some(facts) = facts {
+                    built.wire = built.wire.with_facts(facts);
+                }
+                built
+            }};
+        }
         match wire(model, &self.overrides) {
-            Wire::Chat => self.chat.completion(model).erase(),
-            Wire::Responses => self.responses.completion(model).erase(),
+            Wire::Chat => bound!(self.chat.completion(model)).erase(),
+            Wire::Responses => bound!(self.responses.completion(model)).erase(),
             Wire::Messages => self
                 .caching
-                .apply(self.messages.completion(model), scope)
+                .apply(bound!(self.messages.completion(model)), scope)
                 .erase(),
-            Wire::Gemini => self.gemini.completion(model).erase(),
+            Wire::Gemini => bound!(self.gemini.completion(model)).erase(),
         }
     }
 }
@@ -226,6 +238,10 @@ impl AccountClient for GoClient {
 
     fn thinking_off(&self, model: &str) -> Option<serde_json::Value> {
         thinking_off(model, wire(model, &self.overrides))
+    }
+
+    fn catalog_vendor(&self) -> Option<ProviderId> {
+        Some(vendor("opencode-go"))
     }
 
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {

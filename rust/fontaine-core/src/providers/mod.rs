@@ -12,6 +12,7 @@ use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
 use rig_core::providers::anthropic::Messages;
 use rig_core::providers::anthropic::completion::CacheTtl as RigTtl;
+use rig_core::providers::registry::ProviderId;
 
 use crate::config::{Account, CacheTtl};
 use crate::credentials::StoredCredential;
@@ -217,10 +218,17 @@ pub trait AccountClient: Send + Sync {
     fn refused(&self) -> Vec<RefusedModel> {
         Vec::new()
     }
+    /// The catalog vendor whose listed models this account's ids are looked up under, and whose
+    /// models an unlisted id takes derived facts from; `None` when the kind's ids are not a
+    /// catalog vendor's.
+    fn catalog_vendor(&self) -> Option<ProviderId> {
+        None
+    }
     /// A warning to show once when `model` resolves, for a model whose facts are not the
     /// catalog's own.
-    fn facts_notice(&self, _model: &str) -> Option<String> {
-        None
+    fn facts_notice(&self, model: &str) -> Option<String> {
+        let derived = derived_facts::unlisted(self.catalog_vendor()?, model)?;
+        Some(derived_facts::notice(model, model, &derived.from, None))
     }
     /// What the request body must carry to turn `model`'s thinking off, where its wire needs it:
     /// the guardian and the scanner force a tool call, which a thinking model refuses.
@@ -313,6 +321,11 @@ impl PromptCaching {
 pub(crate) enum CacheScope {
     Conversation,
     StaticPrefix,
+}
+
+/// The id of a catalog vendor rig lists, by its catalog name.
+pub(crate) fn vendor(name: &str) -> ProviderId {
+    ProviderId::catalog(name).expect("rig's catalog lists every vendor a kind names")
 }
 
 pub struct ConnectContext<'a> {

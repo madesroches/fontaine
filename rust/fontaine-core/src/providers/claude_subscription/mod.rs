@@ -20,8 +20,10 @@ use rig_core::operation::Completion;
 use rig_core::providers::anthropic::AnthropicConfig;
 use rig_core::providers::registry::ProviderId;
 
-use super::derived_facts::derive;
-use super::{AccountClient, Billing, ConnectContext, CredentialPolicy, Provider, RefusedModel};
+use super::derived_facts::{derive, notice};
+use super::{
+    AccountClient, Billing, ConnectContext, CredentialPolicy, Provider, RefusedModel, vendor,
+};
 use crate::config::Account;
 use crate::quota::QuotaSource;
 use fontaine_tools::lock::{read, write};
@@ -396,13 +398,18 @@ impl AccountClient for Connected {
                 canonical,
                 derived_from: Some(from),
                 ..
-            })) => Some(format!(
-                "Model `{model}` resolves to `{canonical}`, which this build of Fontaine does not \
-                 list; its limits and features are taken from `{from}` and the Claude CLI's own \
-                 capability flags. Update Fontaine for its exact facts."
+            })) => Some(notice(
+                model,
+                canonical,
+                from,
+                Some("the Claude CLI's own capability flags"),
             )),
             _ => None,
         }
+    }
+
+    fn catalog_vendor(&self) -> Option<ProviderId> {
+        Some(vendor("anthropic"))
     }
 
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {
@@ -442,9 +449,7 @@ fn entry_of(row: &cli::ModelRow) -> Entry {
             row.id
         ));
     }
-    let Some(vendor) = ProviderId::catalog("anthropic") else {
-        return Entry::Refused("rig has no Anthropic catalog".to_string());
-    };
+    let vendor = vendor("anthropic");
     let catalog = Catalog::builtin();
     let facts = catalog.facts(vendor, &row.canonical);
     let listed = facts
@@ -467,7 +472,7 @@ fn entry_of(row: &cli::ModelRow) -> Entry {
         }),
         None => Entry::Refused(format!(
             "model `{}` resolves to `{}`, which this build of Fontaine has no model facts for and \
-             no listed model of the same family to take them from; update Fontaine",
+             no listed model of the same name pattern to take them from; update Fontaine",
             row.id, row.canonical
         )),
     }
@@ -501,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unlisted_model_of_a_listed_family_is_derived() {
+    fn an_unlisted_model_of_a_listed_shape_is_derived() {
         let route = route(entry_of(&row("haiku", "claude-haiku-9-9", false)));
         let from = route.derived_from.expect("derived");
         assert!(from.starts_with("claude-haiku-"), "{from}");
@@ -512,11 +517,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unknown_family_is_refused_with_the_reason() {
+    fn an_unknown_shape_is_refused_with_the_reason() {
         let Entry::Refused(reason) = entry_of(&row("future", "claude-quantum-9", false)) else {
-            panic!("an unknown family is refused");
+            panic!("an unknown shape is refused");
         };
-        assert!(reason.contains("same family"), "{reason}");
+        assert!(reason.contains("same name pattern"), "{reason}");
     }
 
     #[test]

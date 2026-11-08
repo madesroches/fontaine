@@ -69,11 +69,13 @@ No response is requested until every check has passed, so a refused request stil
 
 A model whose canonical id this build of Fontaine lists with an output limit uses those facts. One
 it does not list, such as a point release newer than the build, gets facts derived from the newest
-listed model of the same family (`claude-haiku-9-9` from the latest listed `claude-haiku-*`), with
-the effort levels, adaptive-thinking and thinking-off flags the CLI itself reports for the row laid
-over them, and no price. Fontaine warns once whenever such a model is resolved, naming the model it
-took the facts from, and compaction and `/context` treat it as listed. Update Fontaine for its
-exact facts. A model with no listed family, or one the CLI marks as drawing from paid usage
+listed Anthropic model of the same name pattern (`claude-haiku-9-9` from the latest listed
+`claude-haiku-*`), by the rule every account kind with a catalog vendor follows (see
+[Configuration](configuration.md#model-discovery)), with the effort levels, adaptive-thinking and
+thinking-off flags the CLI itself reports for the row laid over them, and no price. Fontaine warns
+once whenever such a model is resolved, naming the model it took the facts from, and compaction and
+`/context` treat it as listed. Update Fontaine for its exact facts. A model with no listed model of
+its name pattern, or one the CLI marks as drawing from paid usage
 credits, is still refused; `/model`, `/guardian-model` and `fontaine models` show it as
 unavailable with the reason instead of hiding it.
 

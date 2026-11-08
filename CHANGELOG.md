@@ -14,12 +14,17 @@ All notable changes are recorded here. The format follows
   and version before replacing anything, never downgrades or switches channels, and refuses an
   install that has no matching receipt (exit 3; network failures exit 4, verification failures 5).
   On Windows it renames the running exe aside rather than using a separate updater process (#509).
-- A `claude-subscription` model whose canonical id this build's catalog does not list is now
-  usable when a listed model of the same family exists: its facts come from the newest listed
-  sibling, with the Claude CLI's own effort and thinking flags laid over them and no price, and a
-  one-time warning says so. An id with no listed family stays refused. Refused rows are shown,
-  dim and unselectable with their reason, in `/model`, `/guardian-model`, the provider-setup
-  picker, `fontaine models` and the `models` tool instead of being hidden (#515).
+- A model whose id this build's catalog does not list now gets facts from the newest listed
+  model of the same name pattern (the id with its version numbers taken out, so
+  `claude-haiku-9-9` takes the newest `claude-haiku-*` and `gpt-9.9-mini` the newest
+  `gpt-*-mini`), with no price, on every account kind with a catalog vendor: `anthropic`,
+  `openai`, `gemini`, `ollama`, `opencode-go`, `openrouter` and `claude-subscription`, where the
+  Claude CLI's own effort and thinking flags are laid over them. A one-time warning says so. An
+  id with no listed model of its pattern gets no facts (and stays refused on
+  `claude-subscription`); `openai-compatible` has no catalog vendor and never derives. Refused
+  rows are shown, dim and unselectable with their reason, in `/model`, `/guardian-model`, the
+  provider-setup picker, `fontaine models` and the `models` tool instead of being hidden (#515,
+  #524).
 - `fontaine-evals cache-bench` runs a fixed multi-step read task through `fontaine -p` on a
   claude-subscription account and through `claude -p`, compares the per-step cache write, and
   writes a scorecard; it exits 1 when Fontaine's mean write exceeds the threshold times Claude

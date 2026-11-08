@@ -7,7 +7,12 @@ use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
 use rig_core::providers::anthropic::{Anthropic as Client, AnthropicConfig};
 
-use super::{AccountClient, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider};
+use rig_core::providers::registry::ProviderId;
+
+use super::derived_facts::unlisted_facts;
+use super::{
+    AccountClient, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider, vendor,
+};
 use crate::transport::caused_client;
 use fontaine_tools::error_chain::chain;
 
@@ -56,17 +61,27 @@ pub(super) struct Connected {
     caching: PromptCaching,
 }
 
+impl Connected {
+    fn model(&self, model: &str, scope: CacheScope) -> DynModel<Completion> {
+        let mut built = self.client.completion(model);
+        if let Some(facts) = unlisted_facts(vendor("anthropic"), model) {
+            built.wire = built.wire.with_facts(facts);
+        }
+        self.caching.apply(built, scope).erase()
+    }
+}
+
 impl AccountClient for Connected {
     fn completion(&self, model: &str) -> DynModel<Completion> {
-        self.caching
-            .apply(self.client.completion(model), CacheScope::Conversation)
-            .erase()
+        self.model(model, CacheScope::Conversation)
     }
 
     fn guardian_completion(&self, model: &str) -> DynModel<Completion> {
-        self.caching
-            .apply(self.client.completion(model), CacheScope::StaticPrefix)
-            .erase()
+        self.model(model, CacheScope::StaticPrefix)
+    }
+
+    fn catalog_vendor(&self) -> Option<ProviderId> {
+        Some(vendor("anthropic"))
     }
 
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {

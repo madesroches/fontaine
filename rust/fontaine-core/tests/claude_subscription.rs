@@ -227,7 +227,7 @@ fn with_guardian(claude: &Claude, model: &str) {
 }
 
 #[tokio::test]
-async fn an_unlisted_model_of_a_listed_family_resolves_with_one_notice() {
+async fn an_unlisted_model_of_a_listed_shape_resolves_with_one_notice() {
     let claude = Claude::new();
     claude.scenario(derived_scenario());
     let models = claude.resolve(Some("claude/haiku")).await.unwrap();
@@ -352,7 +352,7 @@ async fn refused_rows_are_listed_with_their_reason_and_usable_ones_stay() {
     );
     assert_eq!(listing.refused.len(), 1);
     assert_eq!(listing.refused[0].id, "future");
-    assert!(listing.refused[0].reason.contains("same family"));
+    assert!(listing.refused[0].reason.contains("same name pattern"));
 
     // The main account's listing is reused, and its refused rows survive the reuse.
     let models = claude.resolve(None).await.unwrap();
@@ -379,7 +379,7 @@ async fn the_models_allowlist_narrows_refused_rows_too() {
     let claude = Claude::with_account("models = [\"haiku\"]\n");
     claude.scenario(derived_scenario());
     let error = claude.resolve(Some("claude/future")).await.unwrap_err();
-    assert!(message(&error).contains("same family"), "{error}");
+    assert!(message(&error).contains("same name pattern"), "{error}");
 }
 
 #[tokio::test]

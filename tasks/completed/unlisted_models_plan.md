@@ -266,6 +266,10 @@ request.
   bump rig, not to override at runtime.
 - AFK: 2026-11-08: Guardians installed by the unavailable-guardian answers and the credential-change retry return their `facts_notice` (`Switched.facts_notice`, `retry_guardian`'s `(bool, Option<String>)`, `CredentialEffect.guardian_notice`) and the TUI shows it with `Transcript::warning`; `use_guardian` stays `&self`, because otherwise those derived guardians are never announced.
 - AFK: 2026-11-08: Subagent facts notices dedupe per model reference through a session-wide set on the agent tree (`first_facts_notice`), skipping the current main and live guardian references, because one `first_unpriced_cap`-style flag would silence a second derived model and `$main`/fallback children would re-announce the main model.
+- 2026-11-08: Generalized after review: derivation applies to every account kind with a catalog
+  vendor through `AccountClient::catalog_vendor` and a shared default `facts_notice`, and the base
+  is chosen by id shape (version tokens collapsed) instead of the longest `details.family` prefix,
+  which holds only for Anthropic ids; `openai-compatible` has no vendor and never derives (#524).
 
 ## Documentation
 

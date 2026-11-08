@@ -12,7 +12,8 @@ use rig_core::providers::registry::ProviderId;
 use rig_core::wire::{Descriptor, Encoded, Mode, Wire};
 use rig_core::{DynModel, Model};
 
-use super::{AccountClient, ConnectContext, CredentialPolicy, Provider};
+use super::derived_facts::unlisted;
+use super::{AccountClient, ConnectContext, CredentialPolicy, Provider, vendor};
 use crate::transport::{caused_client, reqwest_client};
 use fontaine_guardian::{OutputMode, OutputProbe, ProbeOutcome};
 use fontaine_tools::error_chain::chain;
@@ -223,13 +224,15 @@ impl AccountClient for Connected {
         // The native route: `completion()` would target the daemon's `/v1` API.
         let native = self.client.native_completion(model);
         let mut chat = native.wire;
-        // Threshold compaction reads the window from the spec, so a model the catalog lists is
-        // bound to the window the daemon actually loads. An unlisted model stays unbound: a bare
+        // Threshold compaction reads the window from the spec, so a listed or derived model is
+        // bound to the window the daemon actually loads. Any other model stays unbound: a bare
         // spec would also override rig's per-vendor tool and image rules.
-        if let Some(entry) =
-            ProviderId::catalog("ollama").and_then(|id| Catalog::builtin().get(id, model))
-        {
-            let mut spec = entry.spec.clone();
+        let ollama = vendor("ollama");
+        let spec = match Catalog::builtin().get(ollama, model) {
+            Some(entry) => Some(entry.spec.clone()),
+            None => unlisted(ollama, model).and_then(|derived| derived.facts.spec().cloned()),
+        };
+        if let Some(mut spec) = spec {
             spec.context_window = Some(self.context_tokens);
             spec.id = model.to_owned();
             chat = chat.with_facts(ModelFacts::new(spec));
@@ -243,6 +246,10 @@ impl AccountClient for Connected {
             native.transport,
         )
         .erase()
+    }
+
+    fn catalog_vendor(&self) -> Option<ProviderId> {
+        Some(vendor("ollama"))
     }
 
     fn output_probe(&self, model: &str) -> Option<Arc<dyn OutputProbe>> {

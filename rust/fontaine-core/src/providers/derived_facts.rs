@@ -1,6 +1,6 @@
-//! Model facts for an id the catalog does not list, taken from the closest listed model of the
-//! same family. Only a model whose family is already listed gets facts: an id with no known family
-//! is never guessed at.
+//! Model facts for an id the catalog does not list, taken from the newest listed model of the
+//! same id shape: the id with its version numbers taken out. Only an id whose shape the vendor
+//! already lists gets facts; any other id is never guessed at.
 
 use rig_core::catalog::{Catalog, ModelFacts, ModelSpec, ReasoningSupport};
 use rig_core::completion::Effort;
@@ -37,33 +37,52 @@ fn effort(name: &str) -> Option<Effort> {
     })
 }
 
-/// The facts of `model` on `vendor`, or `None` when no listed family prefixes it or the family
-/// has no usable entry to copy.
+const SEPARATORS: [char; 4] = ['-', '_', '/', ':'];
+
+/// `id` with each run of version tokens (digits and dots only, such as `5`, `5.4` or
+/// `20250929`) replaced by one `#`: `claude-sonnet-4-5-20250929` and `claude-sonnet-5` share
+/// `claude-sonnet-#`. `None` for an id with no version token, which says nothing about which
+/// listed model it is a release of.
+fn shape(id: &str) -> Option<String> {
+    let is_version = |token: &str| {
+        token.chars().any(|c| c.is_ascii_digit())
+            && token.chars().all(|c| c.is_ascii_digit() || c == '.')
+    };
+    let separators: Vec<char> = id.chars().filter(|c| SEPARATORS.contains(c)).collect();
+    let mut shape = String::with_capacity(id.len());
+    let mut versioned = false;
+    let mut after_version = false;
+    for (i, token) in id.split(SEPARATORS).enumerate() {
+        let version = is_version(token);
+        if version && after_version {
+            continue;
+        }
+        if let Some(separator) = i.checked_sub(1).and_then(|i| separators.get(i)) {
+            shape.push(*separator);
+        }
+        shape.push_str(if version { "#" } else { token });
+        after_version = version;
+        versioned |= version;
+    }
+    versioned.then_some(shape)
+}
+
+/// The facts of `model` on `vendor`, or `None` when no usable listed model shares its shape.
 pub fn derive(
     catalog: &Catalog,
     vendor: ProviderId,
     model: &str,
     overlay: &Capabilities,
 ) -> Option<Derived> {
-    let of_vendor = || {
-        catalog
-            .iter()
-            .filter(|spec| spec.provider.vendor() == vendor.vendor())
-    };
-    let family = of_vendor()
-        .filter_map(|spec| spec.details.family.as_deref())
-        .filter(|family| {
-            model
-                .strip_prefix(family)
-                .is_some_and(|rest| rest.starts_with('-'))
-        })
-        .max_by_key(|family| family.len())?;
+    let wanted = shape(model)?;
     // `None` ranks below any date, so an undated entry is the base only when nothing is dated.
-    let base = of_vendor()
+    let base = catalog
+        .iter()
         .filter(|spec| {
-            spec.details.family.as_deref() == Some(family)
+            spec.provider.vendor() == vendor.vendor()
                 && !spec.deprecated
                 && spec.max_output_tokens.is_some()
+                && shape(&spec.id).as_deref() == Some(wanted.as_str())
         })
         .max_by(|a, b| (&a.details.release_date, &a.id).cmp(&(&b.details.release_date, &b.id)))?;
 
@@ -75,11 +94,45 @@ pub fn derive(
     spec.details.release_date = None;
     spec.details.last_updated = None;
     spec.details.canonical_model_id = None;
+    spec.details.modes.clear();
     overlay_onto(&mut spec, overlay);
     Some(Derived {
         facts: ModelFacts::new(spec).with_catalog(catalog),
         from: base.id.clone(),
     })
+}
+
+/// The derived facts of `model` on `vendor` when the built-in catalog does not list it; `None`
+/// for a listed model, which keeps its own, and for one with no listed model of its shape.
+pub fn unlisted(vendor: ProviderId, model: &str) -> Option<Derived> {
+    let catalog = Catalog::builtin();
+    if catalog.get(vendor, model).is_some() {
+        return None;
+    }
+    derive(catalog, vendor, model, &Capabilities::default())
+}
+
+/// [`unlisted`]'s facts alone, for a wire to bind.
+pub fn unlisted_facts(vendor: ProviderId, model: &str) -> Option<ModelFacts> {
+    unlisted(vendor, model).map(|derived| derived.facts)
+}
+
+/// The one-time warning for a model whose facts were derived: `model` as selected, `resolved`
+/// the id the catalog was asked for, `from` the listed id the facts came from, and `also` any
+/// other source laid over them.
+pub fn notice(model: &str, resolved: &str, from: &str, also: Option<&str>) -> String {
+    let subject = if model == resolved {
+        format!("Model `{model}` is not listed by this build of Fontaine")
+    } else {
+        format!(
+            "Model `{model}` resolves to `{resolved}`, which this build of Fontaine does not list"
+        )
+    };
+    let also = also.map(|also| format!(" and {also}")).unwrap_or_default();
+    format!(
+        "{subject}; its limits and features are taken from `{from}`{also}. Update Fontaine for \
+         its exact facts."
+    )
 }
 
 fn overlay_onto(spec: &mut ModelSpec, overlay: &Capabilities) {
@@ -135,9 +188,8 @@ mod tests {
         ProviderId::catalog("anthropic").expect("rig lists anthropic")
     }
 
-    fn entry(id: &str, family: Option<&str>, date: Option<&str>) -> ModelSpec {
+    fn entry(id: &str, date: Option<&str>) -> ModelSpec {
         let mut spec = ModelSpec::new(anthropic(), id).with_max_output_tokens(1000);
-        spec.details.family = family.map(str::to_string);
         spec.details.release_date = date.map(str::to_string);
         spec
     }
@@ -159,79 +211,149 @@ mod tests {
     }
 
     #[test]
-    fn newest_listed_sibling_is_the_base() {
-        let catalog = catalog(vec![
-            entry("zz-old", Some("zz"), Some("2025-01-01")),
-            entry("zz-new", Some("zz"), Some("2026-03")),
-            entry("zz-mid", Some("zz"), Some("2025-09-01")),
-        ]);
-        let d = derived(&catalog, "zz-9-9", &Capabilities::default()).expect("derived");
-        assert_eq!(d.from, "zz-new");
-        assert_eq!(spec_of(&d).id, "zz-9-9");
-        assert_eq!(spec_of(&d).display_name, "zz-9-9");
-        assert_eq!(spec_of(&d).max_output_tokens, Some(1000));
+    fn a_shape_takes_out_each_run_of_version_tokens() {
+        let shape_of = |id| shape(id);
+        assert_eq!(
+            shape_of("claude-haiku-5-5").as_deref(),
+            Some("claude-haiku-#")
+        );
+        assert_eq!(
+            shape_of("claude-sonnet-4-5-20250929").as_deref(),
+            Some("claude-sonnet-#")
+        );
+        assert_eq!(shape_of("gpt-5.4-mini").as_deref(), Some("gpt-#-mini"));
+        assert_eq!(shape_of("gpt-5-2025-08-07").as_deref(), Some("gpt-#"));
+        assert_eq!(
+            shape_of("anthropic/claude-sonnet-4.5").as_deref(),
+            Some("anthropic/claude-sonnet-#")
+        );
+        assert_eq!(shape_of("qwen_2:7").as_deref(), Some("qwen_#"));
+        assert_eq!(
+            shape_of("gemini-2.5-flash-preview-09-2025").as_deref(),
+            Some("gemini-#-flash-preview-#")
+        );
     }
 
     #[test]
-    fn builtin_haiku_derives_from_a_listed_haiku() {
+    fn an_id_without_a_version_token_has_no_shape() {
+        for id in ["gpt-4o", "o3-mini", "qwen3:4b", "claude-sonnet", "...", ""] {
+            assert_eq!(shape(id), None, "{id}");
+        }
+        assert!(
+            derived(
+                Catalog::builtin(),
+                "claude-sonnet",
+                &Capabilities::default()
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn newest_listed_model_of_the_shape_is_the_base() {
+        let catalog = catalog(vec![
+            entry("zz-1", Some("2025-01-01")),
+            entry("zz-3", Some("2026-03")),
+            entry("zz-2", Some("2025-09-01")),
+            entry("zz-4-fast", Some("2027-01-01")),
+        ]);
+        let d = derived(&catalog, "zz-9-9", &Capabilities::default()).expect("derived");
+        assert_eq!(d.from, "zz-3");
+        assert_eq!(spec_of(&d).id, "zz-9-9");
+        assert_eq!(spec_of(&d).display_name, "zz-9-9");
+        assert_eq!(spec_of(&d).max_output_tokens, Some(1000));
+        let d = derived(&catalog, "zz-9-fast", &Capabilities::default()).expect("derived");
+        assert_eq!(d.from, "zz-4-fast");
+    }
+
+    #[test]
+    fn builtin_haiku_derives_from_the_newest_listed_haiku() {
         let d = derived(
             Catalog::builtin(),
             "claude-haiku-9-9",
             &Capabilities::default(),
         )
         .expect("derived");
-        assert!(d.from.starts_with("claude-haiku-"), "{}", d.from);
+        let newest = Catalog::builtin()
+            .iter()
+            .filter(|spec| {
+                spec.provider.vendor() == "anthropic"
+                    && spec.id.starts_with("claude-haiku-")
+                    && !spec.deprecated
+                    && spec.max_output_tokens.is_some()
+            })
+            .max_by(|a, b| (&a.details.release_date, &a.id).cmp(&(&b.details.release_date, &b.id)))
+            .expect("rig lists a haiku");
+        assert_eq!(d.from, newest.id);
         assert!(spec_of(&d).max_output_tokens.is_some());
     }
 
     #[test]
-    fn longest_family_prefix_wins() {
-        let catalog = catalog(vec![
-            entry("zz-a", Some("zz"), Some("2026-01-01")),
-            entry("zz-fast-a", Some("zz-fast"), Some("2024-01-01")),
-        ]);
-        let d = derived(&catalog, "zz-fast-9", &Capabilities::default()).expect("derived");
-        assert_eq!(d.from, "zz-fast-a");
+    fn builtin_openai_mini_derives_from_a_listed_mini() {
+        let openai = ProviderId::catalog("openai").expect("rig lists openai");
+        let d = derive(
+            Catalog::builtin(),
+            openai,
+            "gpt-9.9-mini",
+            &Capabilities::default(),
+        )
+        .expect("derived");
+        assert_eq!(shape(&d.from).as_deref(), Some("gpt-#-mini"), "{}", d.from);
+        assert!(unlisted(openai, "gpt-9.9-mini").is_some());
     }
 
     #[test]
-    fn family_must_end_at_a_dash() {
-        let catalog = catalog(vec![entry("zz-a", Some("zz"), Some("2026-01-01"))]);
-        assert!(derived(&catalog, "zzz-9", &Capabilities::default()).is_none());
-        assert!(derived(&catalog, "zz", &Capabilities::default()).is_none());
+    fn a_listed_model_is_not_derived_by_the_catalog_miss_helper() {
+        assert!(unlisted(anthropic(), "claude-haiku-4-5").is_none());
+        assert!(unlisted(anthropic(), "claude-haiku-4-5-20251001").is_none());
+        assert!(unlisted_facts(anthropic(), "claude-haiku-9-9").is_some());
+    }
+
+    #[test]
+    fn another_vendors_listing_is_never_the_base() {
+        let openai = ProviderId::catalog("openai").expect("rig lists openai");
+        assert!(
+            derive(
+                Catalog::builtin(),
+                openai,
+                "claude-haiku-9-9",
+                &Capabilities::default()
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn deprecated_limitless_and_undated_entries_lose() {
-        let mut deprecated = entry("zz-dep", Some("zz"), Some("2027-01-01"));
+        let mut deprecated = entry("zz-8", Some("2027-01-01"));
         deprecated.deprecated = true;
-        let mut limitless = entry("zz-nolimit", Some("zz"), Some("2027-02-01"));
+        let mut limitless = entry("zz-7", Some("2027-02-01"));
         limitless.max_output_tokens = None;
         let catalog = catalog(vec![
             deprecated,
             limitless,
-            entry("zz-undated", Some("zz"), None),
-            entry("zz-dated", Some("zz"), Some("2020-01-01")),
+            entry("zz-6", None),
+            entry("zz-1", Some("2020-01-01")),
         ]);
         let d = derived(&catalog, "zz-9", &Capabilities::default()).expect("derived");
-        assert_eq!(d.from, "zz-dated");
+        assert_eq!(d.from, "zz-1");
     }
 
     #[test]
     fn undated_is_the_base_only_when_alone_and_ties_take_the_greater_id() {
-        let alone = catalog(vec![entry("yy-a", Some("yy"), None)]);
+        let alone = catalog(vec![entry("yy-1", None)]);
         let d = derived(&alone, "yy-9", &Capabilities::default()).expect("derived");
-        assert_eq!(d.from, "yy-a");
+        assert_eq!(d.from, "yy-1");
         let tied = catalog(vec![
-            entry("xx-a", Some("xx"), Some("2026-01-01")),
-            entry("xx-b", Some("xx"), Some("2026-01-01")),
+            entry("xx-1", Some("2026-01-01")),
+            entry("xx-2", Some("2026-01-01")),
         ]);
         let d = derived(&tied, "xx-9", &Capabilities::default()).expect("derived");
-        assert_eq!(d.from, "xx-b");
+        assert_eq!(d.from, "xx-2");
     }
 
     #[test]
-    fn unknown_family_and_family_without_a_usable_entry_are_none() {
+    fn an_unknown_shape_and_a_shape_without_a_usable_entry_are_none() {
         assert!(
             derived(
                 Catalog::builtin(),
@@ -240,18 +362,34 @@ mod tests {
             )
             .is_none()
         );
-        let mut dep = entry("ww-a", Some("ww"), Some("2026-01-01"));
+        let mut dep = entry("ww-1", Some("2026-01-01"));
         dep.deprecated = true;
         let catalog = catalog(vec![dep]);
         assert!(derived(&catalog, "ww-9", &Capabilities::default()).is_none());
     }
 
     #[test]
+    fn the_notice_names_the_base_and_any_overlay() {
+        assert_eq!(
+            notice("m-9", "m-9", "m-1", None),
+            "Model `m-9` is not listed by this build of Fontaine; its limits and features are \
+             taken from `m-1`. Update Fontaine for its exact facts."
+        );
+        assert_eq!(
+            notice("m", "m-9", "m-1", Some("the flags")),
+            "Model `m` resolves to `m-9`, which this build of Fontaine does not list; its limits \
+             and features are taken from `m-1` and the flags. Update Fontaine for its exact facts."
+        );
+    }
+
+    #[test]
     fn price_and_dates_are_cleared() {
-        let mut base = entry("vv-a", Some("vv"), Some("2026-01-01"));
+        let mut base = entry("vv-1", Some("2026-01-01"));
         base.pricing = Some(rig_core::catalog::Pricing::new(1.0, 2.0));
         base.details.last_updated = Some("2026-02-01".into());
-        base.details.canonical_model_id = Some("vv-a".into());
+        base.details.canonical_model_id = Some("vv-1".into());
+        base.details.family = Some("vv".into());
+        base.details.modes.insert("fast".into(), Default::default());
         base.details.cost.reasoning = Some(3.0);
         let catalog = catalog(vec![base]);
         let d = derived(&catalog, "vv-9", &Capabilities::default()).expect("derived");
@@ -261,11 +399,12 @@ mod tests {
         assert!(spec.details.release_date.is_none());
         assert!(spec.details.last_updated.is_none());
         assert!(spec.details.canonical_model_id.is_none());
+        assert!(spec.details.modes.is_empty());
         assert_eq!(spec.details.family.as_deref(), Some("vv"));
     }
 
     fn listed_base(default: Option<Effort>, can_disable: bool) -> Catalog {
-        let mut base = entry("uu-a", Some("uu"), Some("2026-01-01"));
+        let mut base = entry("uu-1", Some("2026-01-01"));
         base.reasoning = ReasoningSupport::Listed {
             levels: vec![Effort::Low, Effort::High],
             budget: Some(1..=10),
@@ -327,7 +466,7 @@ mod tests {
 
     fn catalog_base(catalog: &Catalog) -> &ModelSpec {
         catalog
-            .get_exact(anthropic(), "uu-a")
+            .get_exact(anthropic(), "uu-1")
             .expect("the base is listed")
     }
 
@@ -353,7 +492,7 @@ mod tests {
 
     #[test]
     fn a_base_that_does_not_reason_ignores_thinking_off() {
-        let catalog = catalog(vec![entry("tt-a", Some("tt"), Some("2026-01-01"))]);
+        let catalog = catalog(vec![entry("tt-1", Some("2026-01-01"))]);
         let overlay = Capabilities {
             thinking_off: Some(true),
             ..Capabilities::default()
@@ -364,7 +503,7 @@ mod tests {
 
     #[test]
     fn levels_make_a_non_reasoning_base_listed() {
-        let catalog = catalog(vec![entry("ss-a", Some("ss"), Some("2026-01-01"))]);
+        let catalog = catalog(vec![entry("ss-1", Some("2026-01-01"))]);
         let overlay = Capabilities {
             effort_levels: Some(vec!["medium".into()]),
             ..Capabilities::default()

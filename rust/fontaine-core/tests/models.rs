@@ -76,6 +76,72 @@ async fn anthropic_uses_the_messages_wire_and_the_env_key() {
 }
 
 #[tokio::test]
+async fn an_unlisted_anthropic_model_takes_its_newest_same_shape_siblings_facts() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-9-9",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.work]\nkind = \"anthropic\"\nbase_url = \"{}\"\napi_key_env = \"WORK_KEY\"\nmodels = [\"claude-haiku-9-9\"]\n\n[model]\nmodel = \"work/claude-haiku-9-9\"\n",
+        server.uri()
+    ));
+    let config = w.load().unwrap();
+    let resolved = models::resolve(&ResolveParams {
+        config: &config,
+        data_dir: &w.data,
+        env: env_of(&[("WORK_KEY", "k")]),
+        model_override: None,
+        session_id: None,
+    })
+    .await
+    .unwrap();
+    let anthropic = rig_core::providers::registry::ProviderId::catalog("anthropic").unwrap();
+    let from = fontaine_core::providers::derived_facts::unlisted(anthropic, "claude-haiku-9-9")
+        .expect("a listed haiku shares the shape")
+        .from;
+    let sibling = rig_core::catalog::Catalog::builtin()
+        .get_exact(anthropic, &from)
+        .unwrap();
+
+    let notice = resolved.main.facts_notice.clone().expect("derived");
+    assert!(notice.contains(&format!("`{from}`")), "{notice}");
+    assert!(
+        resolved.notices.iter().any(|n| n.headline == notice),
+        "the notice reaches the startup notices"
+    );
+    let spec = resolved.main.completion.spec().expect("derived spec");
+    assert_eq!(spec.id, "claude-haiku-9-9");
+    assert!(spec.pricing.is_none());
+
+    say_hi(&resolved.main).await;
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["max_tokens"],
+        json!(sibling.max_output_tokens.expect("the base has a limit"))
+    );
+}
+
+#[tokio::test]
+async fn an_unlisted_openai_compatible_model_gets_no_derived_facts() {
+    let w = World::new();
+    w.user_file(
+        "[accounts.gw]\nkind = \"openai-compatible\"\nbase_url = \"http://localhost:1/v1\"\nmodels = [\"gpt-9.9-mini\"]\n\n[model]\nmodel = \"gw/gpt-9.9-mini\"\n",
+    );
+    let handle = resolve_main(&w, env_of(&[])).await;
+    assert!(handle.facts_notice.is_none());
+}
+
+#[tokio::test]
 async fn openai_uses_the_responses_wire_and_a_bearer_key() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -229,6 +295,18 @@ async fn a_catalog_listed_ollama_model_reports_the_configured_window() {
         handle.completion.spec().unwrap().context_window,
         Some(16384)
     );
+}
+
+#[tokio::test]
+async fn a_derived_ollama_model_reports_the_configured_window() {
+    let (_, handle) = ollama_request("glm-9.9", "context_tokens = 8192\n").await;
+    let spec = handle
+        .completion
+        .spec()
+        .expect("a listed glm shares the shape");
+    assert_eq!(spec.id, "glm-9.9");
+    assert_eq!(spec.context_window, Some(8192));
+    assert!(handle.facts_notice.is_some());
 }
 
 #[tokio::test]
