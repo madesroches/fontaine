@@ -58,6 +58,7 @@ hidden.
 `ModelRow` gains `capabilities: Capabilities`:
 
 ```rust
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Capabilities {
     /// `supportedEffortLevels`, when the row lists them; `None` when absent or not an array.
     pub effort_levels: Option<Vec<String>>,
@@ -148,8 +149,8 @@ request.
 ### 5. Refused rows are shown, not hidden
 
 - `AccountClient` gains `fn refused(&self) -> Vec<RefusedModel>` (default empty), read right after
-  `list()` on the same client; `RefusedModel { id: String, reason: String }` lives in
-  `providers/mod.rs`. `claude-subscription`'s `list()` builds an ordered `Vec<RefusedModel>` of its `Entry::Refused`
+  `list()` on the same client; `RefusedModel { id: String, reason: String }` (derives
+  `Clone, Debug, PartialEq, Eq`) lives in `providers/mod.rs`. `claude-subscription`'s `list()` builds an ordered `Vec<RefusedModel>` of its `Entry::Refused`
   rows in the same loop and stores it alongside `discovered` (a `BTreeMap` keyed by alias) for
   `refused()` to return.
 - `models.rs` introduces `pub struct Listing { pub models: Vec<String>, pub refused:
@@ -157,11 +158,14 @@ request.
   non-discovering kind gives `refused: []`; a narrowing `models` list on a discovering kind
   narrows `refused` too; a refused row narrowed away is hidden from listings but still explains
   itself through `not_offered`/`unavailable_reason` when named). `Models.main_listing` and `Switcher::main`'s second value become
-  `Listing`; call sites that need ids read `.models`. `Listing` derives `Default`. `Switcher::listings`'
+  `Listing`; call sites that need ids read `.models`. `Listing` derives `Clone, Debug, Default, PartialEq, Eq`. `Switcher::listings`'
   `main` argument becomes `Option<(&ModelRef, &Listing)>`, so the main account's refused rows
   survive the reuse; `agent/models.rs:216` (`slot.models = Ok(self.models.main_listing.clone())`)
   must copy `refused` too, or the main account's refused rows vanish from `/model`.
-- `AccountListing` gains `refused: Vec<RefusedModel>` (empty on a failed listing); the production
+- `AccountListing` gains `refused: Vec<RefusedModel>` (`vec![]` in the sources-error literal at `models.rs:971`); the non-main branch of
+  `Switcher::listings_within` (`models.rs:996-1001`) calls `client.refused()` right after
+  `client.list()` and narrows it by `account.models` the same way it narrows ids, and sets `refused`
+  in its `AccountListing` literal (`models.rs:1004`); the production
   `impl From<&AccountListing> for Group` (`model_picker.rs`, used by `/model` and the provider-setup
   picker in `fontaine-tui/src/setup.rs`) copies it, so the setup picker shows unavailable rows too.
 - `model_picker.rs`: `Group` carries the refused rows; a new `Row::Refused { label, reason }` is
@@ -184,7 +188,7 @@ request.
 3. `providers/mod.rs`: `RefusedModel`, the two `AccountClient` defaults.
 4. `claude_subscription/mod.rs`: `Route.derived_from`, the new `entry_of` order, `facts_notice`,
    `refused`.
-5. `models.rs`: `Listing` (derives `Default`), `ModelHandle.facts_notice` (set in
+5. `models.rs`: `Listing` (derives `Clone, Debug, Default, PartialEq, Eq`), `ModelHandle.facts_notice` (set in
    `guardian_from_client`, `None` in `ModelHandle::new`), notices in `resolve_with`,
    `AccountListing.refused`, `Switcher::main`/`listings` signatures, `external_check`; update
    callers: `fontaine/src/models_cmd.rs`, `fontaine-core/src/agent/models.rs` (incl. the :216
