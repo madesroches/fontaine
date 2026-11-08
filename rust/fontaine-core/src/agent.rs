@@ -264,16 +264,19 @@ pub(crate) struct Setup {
 }
 
 /// One line when the main model has no way to search: no provider search for its account, no
-/// configured backend and no container runtime for the default one.
+/// configured backend and no container runtime for the default one. It names why the provider's
+/// search does not apply.
 fn warn_if_no_search(setup: &AgentSetup) {
-    if setup.warn_no_search
-        && !native_search::provider_available(&setup.config, &setup.models)
-        && setup.config.websearch.backend.is_none()
-        && setup.config.default_search_runtime(&*setup.env).is_none()
+    if !setup.warn_no_search
+        || setup.config.websearch.backend.is_some()
+        || setup.config.default_search_runtime(&*setup.env).is_some()
     {
-        setup.approver.warn(
-            "web search is unavailable: install docker or podman, or set `[websearch] backend`",
-        );
+        return;
+    }
+    if let Some(absence) = native_search::absence(&setup.config, &setup.models) {
+        setup.approver.warn(&format!(
+            "web search is unavailable: {absence}; install docker or podman, or set `[websearch] backend`"
+        ));
     }
 }
 

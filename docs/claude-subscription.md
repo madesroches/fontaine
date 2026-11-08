@@ -115,6 +115,13 @@ calls, billed to the plan), so the process is stopped at that response's `messag
 truncated response is returned as any provider's would be. The recovery never runs; only what the
 CLI generated before the stop is spent. No CLI switch for the recovery was found on 2.1.319.
 
+## Web search
+
+The provider's own search is not offered through this kind yet. Search goes through the
+`websearch` tool instead: the default SearXNG container (needs docker or podman) or the
+`[websearch] backend` you set. `[websearch] native` has no effect for this kind. See
+[Web search](tools.md#web-search).
+
 ## Usage, cost and the extra-usage setting
 
 Usage is subscription usage: token counts are shown (`/cost`, headless `result.usage`,

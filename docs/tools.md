@@ -449,7 +449,7 @@ Search reaches the model in one of two ways, in this order:
    `websearch`, since a call there would otherwise ask or be denied. Switching modes or adding a
    rule takes effect on the next turn. If the endpoint rejects the request because of the search
    tool, the failure message says to set `native = "off"`; nothing retries without it.
-2. **The `websearch` tool**, which every other account kind uses, and so does an `anthropic`
+2. **The `websearch` tool**, which every other account kind uses (`claude-subscription` among them), and so does an `anthropic`
    account when the provider's search is not offered. It searches through `[websearch] backend`;
    with none set, it searches through a SearXNG container that Fontaine starts itself (see
    [Default search](#default-search)). `backend = "off"` removes the tool.
@@ -508,6 +508,8 @@ is not configurable and never comes from a project file.
 
 Without a container runtime there is no default: Fontaine warns once per process, at startup, that web search
 is unavailable, unless the provider's own search applies or `backend` is set (to `"off"` as well).
+The warning names why the provider's search does not apply: the account kind has none,
+`[websearch] native = "off"`, or the account's `base_url` is not the provider's own endpoint.
 `backend = "off"` disables the tool and the warning.
 
 ### Your own SearXNG

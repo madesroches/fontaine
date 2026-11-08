@@ -869,6 +869,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-04: A CLI version is supported only after live qualification shows it stops at the first complete response and sends no unsolicited request; unqualified versions fail closed in preflight (minimum 2.1.318). Protocol shapes outside the qualified matrix (older signed history, transformed history, unlisted models, credit entitlements) fail closed.
 - 2026-11-04: Usage-credit transitions cannot be seen early through any CLI API, so included-only use needs the account's extra-usage setting off; the billing guard fails closed on any credit signal in a model row, and a plan-limit failure is reported without a retry or an alternate route.
 - 2026-11-04: Providers whose models need a listing to be built (`Provider::requires_discovery`) are always listed before a main or guardian handle exists, with `models` only narrowing the listing, so guardian resolution became asynchronous and the initial listing is bounded in time.
+- 2026-11-08: `claude-subscription` offers no provider-native web search yet. A server-tool entry could ride the extra body Fontaine already writes; the adapter's fail-closed refusals (hosted tools in the request, server-tool blocks in the stream, history it cannot replay without loss) stop it, and lifting them needs live qualification against the real CLI. Left as a follow-up; the user gets Fontaine's `websearch` tool meanwhile (#522).
 
 ### Sessions
 

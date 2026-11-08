@@ -228,6 +228,12 @@ mod default_backend {
             "{warnings:?}"
         );
         assert!(warnings[0].contains("docker or podman"), "{warnings:?}");
+        assert!(
+            warnings[0].contains(
+                "`openai-compatible` accounts have no built-in search Fontaine can offer"
+            ),
+            "{warnings:?}"
+        );
     }
 
     #[test]

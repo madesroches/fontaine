@@ -51,6 +51,9 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- The startup warning that web search is unavailable now names why the main model's account
+  offers no built-in search (the account kind has none, `[websearch] native = "off"`, or an
+  unverified endpoint), so it no longer reads as a bug on `claude-subscription` accounts (#522).
 - On Windows, Fontaine starts without Git for Windows installed, as Claude Code does. Git Bash is
   still preferred when found; without it PowerShell is the command shell for the model's
   `powershell` tool, hooks, the status line and `!` lines. The `shell`

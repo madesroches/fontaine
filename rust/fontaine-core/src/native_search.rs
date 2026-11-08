@@ -4,10 +4,11 @@
 
 use serde_json::Value;
 
-use crate::config::{Config, NativeSearch, PermissionMode};
+use crate::config::{Account, Config, NativeSearch, PermissionMode};
 use crate::gate::{Rules, SessionState};
 use crate::models::Models;
 use crate::permission_rules::{SourcedRule, parse_rule};
+use crate::providers::Provider;
 
 const TOOL: &str = "websearch";
 
@@ -41,34 +42,76 @@ fn hook_covers(config: &Config) -> bool {
     })
 }
 
-/// The provider's search tool entry when the main model's account supports it and
-/// `[websearch] native` allows it.
-fn provider_entry(config: &Config, models: &Models) -> Option<Value> {
-    if config.websearch.native == NativeSearch::Off {
-        return None;
-    }
-    let provider = models.main.kind.provider();
-    let entry = provider.native_web_search()?;
-    if config.websearch.native == NativeSearch::On {
-        return Some(entry);
-    }
-    let account = config.accounts.get(&models.main.reference.account)?;
-    let base = account.base_url.as_deref().filter(|url| !url.is_empty());
-    let official = provider.default_endpoint()?;
-    base.is_none_or(|url| url.trim_end_matches('/') == official)
-        .then_some(entry)
+/// Why the main model's account offers no provider search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Absence {
+    /// The account kind has no server-side search Fontaine can offer (its `name()`).
+    Unsupported(&'static str),
+    /// `[websearch] native = "off"`.
+    Off,
+    /// `native = "auto"` and the account's `base_url` is not the kind's own endpoint.
+    Unverified,
 }
 
-/// Whether the main model's account has a provider search at all, whatever the mode and rules
-/// say this turn.
-pub(crate) fn provider_available(config: &Config, models: &Models) -> bool {
-    provider_entry(config, models).is_some()
+impl std::fmt::Display for Absence {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Absence::Unsupported(kind) => {
+                write!(f, "`{kind}` accounts have no built-in search Fontaine can offer")
+            }
+            Absence::Off => f.write_str("`[websearch] native = \"off\"` turns off the provider's search"),
+            Absence::Unverified => f.write_str(
+                "the account's `base_url` is not the provider's own endpoint, so its search needs `[websearch] native = \"on\"`",
+            ),
+        }
+    }
+}
+
+/// `Unsupported` precedes `Off` so a kind with no search is never told that `native = "off"`
+/// turns off a search it never had.
+fn entry_for(
+    native: NativeSearch,
+    provider: &dyn Provider,
+    account: Option<&Account>,
+) -> Result<Value, Absence> {
+    let entry = provider
+        .native_web_search()
+        .ok_or(Absence::Unsupported(provider.name()))?;
+    match native {
+        NativeSearch::Off => return Err(Absence::Off),
+        NativeSearch::On => return Ok(entry),
+        _ => {}
+    }
+    let account = account.ok_or(Absence::Unverified)?;
+    let base = account.base_url.as_deref().filter(|url| !url.is_empty());
+    let official = provider.default_endpoint().ok_or(Absence::Unverified)?;
+    if base.is_none_or(|url| url.trim_end_matches('/') == official) {
+        Ok(entry)
+    } else {
+        Err(Absence::Unverified)
+    }
+}
+
+/// The provider's search tool entry when the main model's account supports it and
+/// `[websearch] native` allows it.
+fn provider_entry(config: &Config, models: &Models) -> Result<Value, Absence> {
+    entry_for(
+        config.websearch.native,
+        models.main.kind.provider(),
+        config.accounts.get(&models.main.reference.account),
+    )
+}
+
+/// Why the main model's account has no provider search, whatever the mode and rules say this
+/// turn; `None` when it has one.
+pub(crate) fn absence(config: &Config, models: &Models) -> Option<Absence> {
+    provider_entry(config, models).err()
 }
 
 /// The tool entry the request carries now, or `None` when the client-side backend (if any)
 /// serves searches.
 pub(crate) fn offered(config: &Config, models: &Models, state: &SessionState) -> Option<Value> {
-    let entry = provider_entry(config, models)?;
+    let entry = provider_entry(config, models).ok()?;
     if hook_covers(config) {
         return None;
     }
@@ -166,5 +209,88 @@ mod tests {
             PermissionMode::Auto,
             &rules(&["webfetch"], &["shell"], &[])
         ));
+    }
+
+    fn kind(name: &str) -> &'static dyn Provider {
+        crate::config::AccountKind::named(name).provider()
+    }
+
+    fn account(name: &str, base_url: Option<&str>) -> Account {
+        Account::new(
+            crate::config::AccountKind::named(name),
+            base_url.map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn claude_subscription_gets_no_entry_and_the_reason_names_it() {
+        for native in [NativeSearch::Auto, NativeSearch::On] {
+            assert_eq!(
+                entry_for(native, kind("claude-subscription"), None),
+                Err(Absence::Unsupported("claude-subscription"))
+            );
+        }
+    }
+
+    #[test]
+    fn anthropic_entry_follows_mode_and_endpoint() {
+        let p = kind("anthropic");
+        let official = p.default_endpoint().unwrap();
+        assert_eq!(
+            entry_for(NativeSearch::Off, p, Some(&account("anthropic", None))),
+            Err(Absence::Off)
+        );
+        for base in [
+            None,
+            Some(""),
+            Some(official),
+            Some(format!("{official}/").as_str()),
+        ] {
+            let a = account("anthropic", base);
+            assert!(
+                entry_for(NativeSearch::Auto, p, Some(&a)).is_ok(),
+                "{base:?}"
+            );
+        }
+        let gateway = account("anthropic", Some("https://gateway.example.com"));
+        assert_eq!(
+            entry_for(NativeSearch::Auto, p, Some(&gateway)),
+            Err(Absence::Unverified)
+        );
+        assert!(entry_for(NativeSearch::On, p, Some(&gateway)).is_ok());
+    }
+
+    #[test]
+    fn a_kind_without_search_is_unsupported_even_when_off() {
+        assert_eq!(
+            entry_for(NativeSearch::Off, kind("openai-compatible"), None),
+            Err(Absence::Unsupported("openai-compatible"))
+        );
+    }
+
+    #[test]
+    fn a_missing_account_is_unverified_only_where_the_endpoint_decides() {
+        let p = kind("anthropic");
+        assert_eq!(entry_for(NativeSearch::Off, p, None), Err(Absence::Off));
+        assert!(entry_for(NativeSearch::On, p, None).is_ok());
+        assert_eq!(
+            entry_for(NativeSearch::Auto, p, None),
+            Err(Absence::Unverified)
+        );
+        assert_eq!(
+            entry_for(NativeSearch::Auto, kind("openai-compatible"), None),
+            Err(Absence::Unsupported("openai-compatible"))
+        );
+    }
+
+    #[test]
+    fn each_absence_says_its_key_phrase() {
+        assert!(
+            Absence::Unsupported("x")
+                .to_string()
+                .contains("`x` accounts")
+        );
+        assert!(Absence::Off.to_string().contains("native = \"off\""));
+        assert!(Absence::Unverified.to_string().contains("native = \"on\""));
     }
 }
