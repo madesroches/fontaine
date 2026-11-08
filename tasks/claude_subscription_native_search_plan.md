@@ -102,6 +102,8 @@ covering hooks, the `allow` rule in `manual`/`acceptEdits`/`dontAsk`).
    - `server_tool_use` is accepted only when `expect.web_search`, the `name` is
      `WEB_SEARCH_NAME`, and the id is non-empty and new (among `calls` and `searches`); the id is
      recorded in `searches`;
+   - the `tool_use` branch, which checks only `calls` today, also refuses an id already in
+     `searches`;
    - `web_search_tool_result` is accepted only when its `tool_use_id` is in `searches`;
    - both open the block like any other (so the existing delta/stop bookkeeping applies) and are
      forwarded unchanged; rig decodes them as it does for `anthropic`.
@@ -109,7 +111,8 @@ covering hooks, the `allow` rule in `manual`/`acceptEdits`/`dontAsk`).
    (`input_json_delta`, `citations_delta`) need no change: they are forwarded for any open block.
 4. **Stops.** No change. `pause_turn` is accepted with a `success` result like `end_turn`, which
    is what rig and the `anthropic` kind already do. If the CLI ever continued a paused turn on
-   its own, its second `message_start` is still "a second response" and fails closed.
+   its own, the `message_delta` with the stop reason has already set `terminal`, so its second
+   `message_start` fails closed as "the Claude CLI sent output after the response ended".
 
 Server calls are never added to `calls`, so `permission_denied`, the denial echo and the
 `error_max_turns` check (which need a `tool_use` stop) are unaffected: a CLI-reported denial or
@@ -131,10 +134,13 @@ The 2026-10-26 `### Tools` Decision already records and justifies that; this pla
 4. `providers/claude_subscription/protocol.rs`: request, history and stream changes above;
    `Translated::web_search`, `Expect::web_search`, `Reader::searches`.
 5. `providers/claude_subscription/transport.rs`: pass `translated.web_search` into `Expect`.
-6. Tests (see Testing Strategy).
-7. Docs (see Documentation).
-8. Master plan `tasks/fontaine_harness_plan.md`: Decision line at the end of `### Providers`.
-9. `CHANGELOG.md`: `## [Unreleased]` `### Added` entry (#522).
+6. `examples/claude_cli_double.rs`: leave hosted extra-body entries (a `type` other than
+   `custom`) out of the `system/init` `tools` it builds from `CLAUDE_CODE_EXTRA_BODY.tools`, as
+   the real CLI reports `tools: []` for the server tool; `validate_init` refuses `web_search`.
+7. Tests (see Testing Strategy).
+8. Docs (see Documentation).
+9. Master plan `tasks/fontaine_harness_plan.md`: Decision line at the end of `### Providers`.
+10. `CHANGELOG.md`: `## [Unreleased]` `### Added` entry (#522).
 
 ## Files to Modify
 
@@ -145,9 +151,10 @@ The 2026-10-26 `### Tools` Decision already records and justifies that; this pla
 - `rust/fontaine-core/src/providers/claude_subscription/protocol/tests.rs`
 - `rust/fontaine-core/src/providers/claude_subscription/transport.rs`
 - `rust/fontaine-core/src/native_search.rs`
+- `rust/fontaine-core/examples/claude_cli_double.rs`
 - `rust/fontaine-core/tests/native_search.rs`
 - `rust/fontaine-core/tests/claude_subscription.rs`
-- `docs/tools.md`, `docs/claude-subscription.md`
+- `docs/tools.md`, `docs/claude-subscription.md`, `docs/configuration.md`
 - `tasks/fontaine_harness_plan.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -186,6 +193,14 @@ Master-plan line to add (dated at implementation) at the end of `### Providers`:
   `tools.md#web-search`), and in "What a request is" the refused-history list says "a hosted tool
   other than web search" and the stream sentence says the provider's web search is the one server
   tool accepted.
+- `docs/tools.md` `## Web search`: scope the sentence "If the endpoint rejects the request because
+  of the search tool, the failure message says to set `native = \"off\"`" to `anthropic` accounts,
+  and say that on `claude-subscription` a rejection is reported as a plain CLI error, for which
+  `native = \"off\"` is the remedy. Item 2 ("every other account kind uses, and so does an
+  `anthropic` account when the provider's search is not offered") also names a
+  `claude-subscription` account.
+- `docs/configuration.md`, the `native` row (about line 510): `auto` applies to `anthropic`
+  accounts on the Anthropic API and to `claude-subscription` accounts; name both.
 
 ## Testing Strategy
 
@@ -194,16 +209,22 @@ Unit tests in `protocol/tests.rs`, with stream literals trimmed from the capture
 - Request: a body with custom tools plus the web-search entry → the extra body's `tools` ends
   with the entry unchanged and unaliased, the manifest and aliases list only the custom tools,
   `web_search` is true. The entry alone (no custom tools) still yields a `tools` array. Refused:
-  another hosted type, `web_search_20250305` under another name, the entry twice.
+  another hosted type, `web_search_20250305` under another name, the entry twice. The existing
+  `what_cannot_be_replayed_without_loss_is_refused` assertions that the `web_search_20250305`
+  entry is refused ("hosted tool") and that an assistant `web_search_tool_result` is refused
+  ("without loss") are retargeted to an unsupported hosted type (e.g. `code_execution_20250522`)
+  and a `server_tool_use` with another name.
 - History: an assistant message holding `server_tool_use` + `web_search_tool_result` + cited
   text replays unchanged; a `server_tool_use` with another name is refused.
 - Stream, with search offered: the captured sequence (server call with `input_json_delta`,
   result, thinking, cited text with `citations_delta`, `end_turn`, `success` result) is accepted
   and forwarded in order; a `pause_turn` stop with a `success` result completes.
 - Stream refusals: `server_tool_use` when search was not offered; under another name; a reused id
-  (including one reused from a `tool_use`); a `web_search_tool_result` with an unknown
-  `tool_use_id`; a `permission_denied` or echo naming a server call id; a second `message_start`
-  after a `pause_turn` stop.
+  (including one reused from a `tool_use`, and a `tool_use` reusing a `server_tool_use` id); a
+  `web_search_tool_result` with an unknown `tool_use_id`; a `permission_denied` or echo naming a
+  server call id; a second `message_start` after a `pause_turn` stop ("output after the response
+  ended"). The new refusals keep the existing "the Claude CLI used a native tool or hosted
+  content" message.
 
 `native_search.rs`/`tests/native_search.rs`: a `claude-subscription` main model under `auto`
 gets the entry on the request (and `provider_available` is true, so the no-search warning does
@@ -213,7 +234,8 @@ Integration (`tests/claude_subscription.rs`, through `claude_cli_double`): a req
 entry reaches the CLI's settings `CLAUDE_CODE_EXTRA_BODY` `tools`, and a scripted response with a
 search decodes through rig into the assistant content (server call, result, cited text). This
 covers the wiring from rig's encoded body through the subprocess transport, which unit tests of
-`translate` and `Reader` alone cannot.
+`translate` and `Reader` alone cannot. The double must not announce `web_search` in init `tools`
+(see Implementation Steps).
 
 ## Open Questions
 
