@@ -77,6 +77,9 @@ All notable changes are recorded here. The format follows
   lifetime that parallel test load could schedule away: the scripted job now waits for a marker
   the fake endpoint releases at the second model request, so the note reliably lands in the
   third request (#460).
+- The two skill integration tests in `fontaine-tui` no longer fail intermittently when the random
+  temp directory shown in the status bar contains "ok": they wait for the request to reach the
+  model instead of for the reply text.
 - `claude-subscription` subagents no longer fail with "did not start exactly the inert tool
   inventory" after the running `fontaine` binary is rebuilt in place (for example by
   `cargo build` while running from `target/`): on Linux the inventory is now started from the
