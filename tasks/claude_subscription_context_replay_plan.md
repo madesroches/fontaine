@@ -123,36 +123,36 @@ A new module `rust/fontaine-core/src/providers/claude_subscription/context.rs`:
 
 ```rust
 pub(super) enum Layout { Native, Legacy }
-pub(super) fn layout(ctx: &CliContext, verdicts: &Verdicts) -> Layout
-pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext)
+pub(super) fn layout(ctx: &CliContext) -> Layout // reads the static broken-version set
+pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext, layout: Layout)
 ```
 
 - `const TEMPLATE_SINCE: (u32, u32, u32) = (2, 1, 319)` and `REMINDER_2_1_319`, one `const` holding
   the text above with an `{email}` placeholder. It is the one template, applied to every version
   at or above `TEMPLATE_SINCE`.
 - `layout` is `Native` when `ctx.version >= TEMPLATE_SINCE`, `ctx.email` is present and the
-  process-wide verdict for that exact version is not `Broken`. Otherwise `Legacy`.
-- **Verdict store.** `Verdicts` is one per-connection value (a field of `Connected` in `mod.rs`,
-  shared by sessions, guardians and subagents through `ClaudeTransport`): a map from CLI version to
-  `Verdict { Unknown, Confirmed, Broken }`, absent meaning `Unknown`. `Broken` is sticky for the
-  process lifetime and nothing is persisted. It also holds the per-conversation record, keyed by
-  the derived session id in a bounded map (the last 256 conversations): the previous Native
-  request's pre-`apply` frame fingerprint (a hash per frame), its usage (`cache_read_input_tokens`,
-  `cache_creation.ephemeral_1h_input_tokens`) and its completion time. The maps choose only a cache
-  layout (advisory, not permission, spend or durable), so they use `lock_recovering` with a
-  one-line reason at the call site.
-- **Self-check**, a pure function `check(prev: &Record, now: &Record) -> Option<Verdict>`, run when
+  that exact version is not in the process-wide broken set. Otherwise `Legacy`.
+- **Verdict store.** One process-wide static in `context.rs` (a `LazyLock<Mutex<…>>`), so it
+  survives the new `Connected` that `client_for` builds per main model, `/model` switch, subagent
+  with an explicit model and non-reused guardian. It holds the set of broken CLI versions, sticky
+  for the process lifetime and never persisted. A sibling static holds the per-conversation record,
+  keyed by the derived session id in a bounded map (the last 256 conversations): the previous
+  Native request's pre-`apply` frame fingerprint (a hash per frame), its usage
+  (`cache_read_input_tokens`, `cache_creation.ephemeral_1h_input_tokens`) and its completion time.
+  The statics choose only a cache layout (advisory, not permission, spend or durable), so they use
+  `lock_recovering` with a one-line reason at the call site.
+- **Self-check**, a pure function `check(prev: &Record, now: &Record) -> bool` (true when the request shows a broken replay), run when
   a Native request completes and the same conversation's previous request was Native. All of these
-  must hold, else no verdict: the frames extend the previous request's frames (prefix fingerprints
+  must hold, else `false`: the frames extend the previous request's frames (prefix fingerprints
   equal); the gap is under 55 minutes (1 h TTL with margin); and the step added no more than 18
   blocks since the previous final frame (inside the API's 20-block lookback). The expected read is
-  `prev.read + prev.write_1h`. A read short of it by more than 64 tokens gives `Broken`; meeting it
-  gives `Confirmed`. `Broken` never reverts.
+  `prev.read + prev.write_1h`. A read short of it by more than 64 tokens returns `true` and the
+  caller adds the version to the broken set; a version never leaves it.
 - **Usage source.** `Reader::result` (`protocol.rs:1193`), on the accepted final result, already
   reads `value["usage"]`; it keeps `cache_read_input_tokens` and
   `cache_creation.ephemeral_1h_input_tokens` and the stream hands them to `transport.rs`'s
   `stream` at `Event::Complete`, which records the request and runs `check`.
-- **First `Broken` for a version** emits one warning naming the CLI version (never the email),
+- **First broken verdict for a version** emits one warning naming the CLI version (never the email),
   saying the cache optimization is off for that version and that `cache-bench` measures it. The
   provider has no `Approver` today, only `tracing::warn!`. Routing it through `Approver::warn`
   (AGENTS.md) is part of step 5: an `Approver` handle is passed into the transport from the
@@ -175,9 +175,10 @@ pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext)
   the last history user frame.
 
 `translate` stops calling `mark_history`: the layout needs the `initialize` answer, which arrives
-on the request process. `prepare` fingerprints the frames, then calls
-`context::apply(&mut frames, &listing.context)` (which calls `layout` with the verdicts) right after
-`check_row` and before the history replay. `translate` still derives the session id first, so
+on the request process. `prepare` fingerprints the frames, then calls `layout(&listing.context)`
+(reading the static verdicts) and passes the chosen `Layout` into
+`context::apply(&mut frames, &listing.context, layout)` right after `check_row` and before the
+history replay. `translate` still derives the session id first, so
 neither the reminder nor the marker affects it. `prepare` takes the `Translated` by value (`open` uses
 `translated` after the select only for `frames.last()`, `transport.rs` ~178-181), applies
 `context::apply` in place, and returns the final frame alongside `(CliChild, Reader)` for `open` to
@@ -217,7 +218,7 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 3. **`cli.rs`:** `Listing`, `CliContext`, parsing in `list_models`; adjust `Cli::initialize` /
    `discover` callers and the `listing_with` unit-test helper (`cli.rs:1194-1212`, returns
    `Vec<ModelRow>` from `list_models`) with its three tests (~`cli.rs:1217`, `1232`, `1247`).
-4. **`context.rs`:** `TEMPLATE_SINCE`, the 2.1.319 template, `Verdicts`/`Verdict`/`Record`, the
+4. **`context.rs`:** `TEMPLATE_SINCE`, the 2.1.319 template, the verdict statics and `Record`, the
    pure `check`, `layout`, `apply` (reminder placement and marker). Move `mark_history` and
    `CACHE_MARKER` here from `protocol.rs`; reword their doc comments (`protocol.rs:259-267` say the
    marker goes on the last user frame before the final because a breakpoint there is never read
@@ -238,9 +239,12 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 5. **`protocol.rs` / `transport.rs` / `mod.rs`:** drop the `mark_history` call from `translate`.
    `prepare` takes the `Translated` by value, fingerprints the frames, applies `context::apply` in
    place after `check_row` and returns the final frame with `(CliChild, Reader)`; `open` writes
-   that returned frame. `Reader::result` keeps the cache usage; `stream` records the request in
-   `Verdicts` at `Event::Complete` and runs `check`. `Connected` owns the `Verdicts` and passes
-   them through `ClaudeTransport::new`. Add the warning route (`Approver::warn`, see Design 2).
+   that returned frame. `prepare` also returns the request's record inputs (session id, CLI version,
+   chosen layout, pre-`apply` fingerprint); `Running` (`transport.rs` ~380-385) stores them.
+   `Reader` exposes the result's cache usage (`cache_read_input_tokens`,
+   `cache_creation.ephemeral_1h_input_tokens`, kept by `Reader::result`) through an accessor that
+   `stream` reads at `Event::Complete` (a unit variant, `protocol.rs` ~660), then records the
+   request in the context statics and runs `check`. Add the warning route (`Approver::warn`, see Design 2).
 6. **Double** (`examples/claude_cli_double.rs`): `initialize` answers with `account` (scenario key
    `account`, default `{"email": "user@example.com", …}`) and `claude_code_version` (scenario key,
    default "2.1.319", not derived from the double's `version`, which defaults to 2.1.318). A
@@ -260,8 +264,7 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/providers/claude_subscription/context.rs` (new), `mod.rs` (module,
-  `Connected` owns `Verdicts`)
+- `rust/fontaine-core/src/providers/claude_subscription/context.rs` (new), `mod.rs` (module)
 - `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (`Listing`, `CliContext`; reword
   the `FIXED_ENV` comment at `:155-157`)
 - `rust/fontaine-core/src/providers/claude_subscription/protocol.rs`, `protocol/tests.rs` (marker
@@ -276,14 +279,6 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 
 ## Trade-offs
 
-- **Replay the reminder vs. make the CLI drop it.** No switch in 2.1.319 drops it (previous plan's
-  probe), and `CLAUDE_CODE_SIMPLE` / `--bare` break subscription sign-in. Replay is the only lever
-  that reaches parity, at the cost of coupling to one CLI string; the runtime self-check bounds
-  that coupling on versions newer than the template.
-- **Replay vs. `--resume` of a persisted CLI session** (whose transcript keeps the attachment, so
-  the CLI would dedup it). The CLI's transcript records the permission-denial `tool_result` it
-  answered each tool call with (`claude_cli_denial_events_plan.md`), which Fontaine's history does
-  not hold. It also writes conversation transcripts into the user's Claude config dir. Rejected.
 - **Cost of a reminder per message.** About 170 tokens written once per user message (1 h rate),
   then read at 0.1× on every later step, against a rewrite of the previous message (a full step,
   ~2–8k tokens) per step today. Break-even is a few hundred steps per conversation. The context
@@ -301,7 +296,12 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
   runtime self-check falling back to Legacy. A wrong template costs about one full-history rewrite
   in one conversation before fallback; the four-breakpoint limit (two system, the CLI's trailing
   one, the adapter's) still forbids also keeping the history marker.
-- 2026-11-07 Verdicts are per process and not persisted; persistence is a follow-up.
+- 2026-11-07 Verdicts are per process (one static, not per connection) and not persisted;
+  persistence is a follow-up.
+- 2026-11-07 Replay the reminder rather than make the CLI drop it: dropping it is impossible on
+  2.1.319, and `--bare` / `CLAUDE_CODE_SIMPLE` break subscription sign-in.
+- 2026-11-07 Replay rather than `--resume` of a persisted CLI session: the CLI transcript holds
+  denial results Fontaine's history lacks, and it writes transcripts into the user's config dir.
 - 2026-11-07 Supersedes the archived plan's rejection of replaying the reminder
   (`tasks/completed/claude_subscription_cli_context_plan.md`, "Candidate 3 rejected"): measured
   ~170 tokens per user message against 8,584 vs 25,321 tokens written per step.
@@ -317,7 +317,9 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
   (naming the version); `cache-bench` measures it. Each step then writes only its
   new messages plus about 170 tokens of the CLI's reminder per user message, near a native session's
   write. On versions below 2.1.319, or after a warning, the adapter keeps the earlier layout (about twice the native write).
-  Reword `docs/claude-subscription.md:160-162`: on the native layout the never-read 5-minute write
+  Reword `docs/claude-subscription.md:158-162` (lines 158-160 say the cache is read "up to the
+  previous request's last replayed user message", that each request writes the last two messages,
+  "about twice a native … write"; 160-162 the never-read 5-minute write): on the native layout the never-read 5-minute write
   is the CLI's trailing date/budget block and the adapter's marker on the final message keeps the
   hour; on the earlier layout the current text holds.
 - **What the CLI still adds:** keep the four items. Replace the closing paragraph with the measured
@@ -345,11 +347,10 @@ Providers entry saying the last replayed user message carries a cache marker.
 
 Unit tests (`context.rs`):
 
-- `layout`: versions below 2.1.319 → `Legacy`; version >= 2.1.319 with an email and `Unknown` or
-  `Confirmed` → `Native`; `Broken` → `Legacy`; no email or no version → `Legacy`.
-- `check` (pure): previous read plus 1 h write met → `Confirmed`; a shortfall beyond 64 tokens →
-  `Broken`; non-extending history, a gap of 55 minutes or more, or a step adding more than 18
-  blocks → no verdict; a `Broken` version stays `Broken` after a later `Confirmed` result.
+- `layout`: versions below 2.1.319 → `Legacy`; version >= 2.1.319 with an email and not broken → `Native`; a broken version → `Legacy`; no email or no version → `Legacy`.
+- `check` (pure): previous read plus 1 h write met → `false`; a shortfall beyond 64 tokens →
+  `true`; non-extending history, a gap of 55 minutes or more, or a step adding more than 18
+  blocks → no verdict; a broken version stays broken after a passing check.
 - Each placement rule against its verified shape, asserting the exact resulting JSON:
   - text-only run (array and string content);
   - a run ending in a string-content `tool_result`;
