@@ -1354,10 +1354,15 @@ mod tests {
         std::fs::write(path.join("inner").join("f"), b"x").unwrap();
         std::fs::set_permissions(path.join("inner"), std::fs::Permissions::from_mode(0o555))
             .unwrap();
+        // Permission bits do not bind root, so the removal cannot fail there.
+        let bound = std::fs::write(path.join("inner").join("probe"), b"x").is_err();
         drop(scratch);
         std::fs::set_permissions(path.join("inner"), std::fs::Permissions::from_mode(0o755))
             .unwrap();
         let _ = std::fs::remove_dir_all(&path);
+        if !bound {
+            return;
+        }
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "{seen:?}");
         assert!(seen[0].contains("temporary directory"), "{seen:?}");

@@ -83,12 +83,16 @@ async fn the_process_sink_binds_late_and_the_latest_one_wins() {
             Arc::new(RotateThenLockDisk(w.data.clone())),
         );
         assert_eq!(source.token().await.unwrap(), "at-new");
+        // Permission bits do not bind root, so the save cannot fail there.
+        let bound = std::fs::write(w.data.join(".probe"), b"x").is_err();
         std::fs::set_permissions(&w.data, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let seen = b.lock().unwrap();
-        assert_eq!(seen.len(), 2, "{seen:?}");
-        assert!(
-            seen[1].contains("could not save the refreshed sign-in"),
-            "{seen:?}"
-        );
+        if bound {
+            let seen = b.lock().unwrap();
+            assert_eq!(seen.len(), 2, "{seen:?}");
+            assert!(
+                seen[1].contains("could not save the refreshed sign-in"),
+                "{seen:?}"
+            );
+        }
     }
 }
