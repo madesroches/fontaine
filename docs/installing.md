@@ -138,6 +138,8 @@ it, as above.
 Remove:
 
 - `%CARGO_HOME%\bin\fontaine.exe` (`%USERPROFILE%\.cargo\bin\fontaine.exe` by default);
+- `%CARGO_HOME%\bin\fontaine.exe.old` and any `fontaine.exe.old-*`, which `fontaine update` leaves
+  there while a session still runs from the old binary;
 - the receipt, `%LOCALAPPDATA%\fontaine\fontaine-receipt.json` (or the `%XDG_CONFIG_HOME%\fontaine`
   one).
 

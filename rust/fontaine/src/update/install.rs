@@ -200,18 +200,47 @@ pub fn binary_name() -> &'static str {
     }
 }
 
-fn aside_path(target: &Path) -> PathBuf {
+/// Where the running exe is moved aside: `<exe>.old`, or `<exe>.old-<pid>` when a process still
+/// runs from an earlier `.old` and so holds it undeletable and unreplaceable.
+fn aside_path(target: &Path, pid: Option<u32>) -> PathBuf {
     let mut name = target.as_os_str().to_os_string();
     name.push(".old");
+    if let Some(pid) = pid {
+        name.push(format!("-{pid}"));
+    }
     PathBuf::from(name)
 }
 
-/// Deletes the previous update's leftover, which Windows could not delete while it ran.
+fn is_aside_name(file_name: &std::ffi::OsStr, target: &Path) -> bool {
+    let Some(target_name) = target.file_name() else {
+        return false;
+    };
+    let mut prefix = target_name.to_os_string();
+    prefix.push(".old");
+    file_name
+        .to_str()
+        .zip(prefix.to_str())
+        .is_some_and(|(n, p)| n == p || n.starts_with(&format!("{p}-")))
+}
+
+/// Best-effort deletes every leftover of previous updates (`<exe>.old`, `<exe>.old-*`), which
+/// Windows could not delete while they ran. Reports the first failure other than a vanished file.
 pub fn remove_stale(target: &Path) -> io::Result<()> {
-    match std::fs::remove_file(aside_path(target)) {
-        Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
-        _ => Ok(()),
+    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+    let mut first_err = None;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if !is_aside_name(&entry.file_name(), target) {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                first_err.get_or_insert(e);
+            }
+            _ => {}
+        }
     }
+    first_err.map_or(Ok(()), Err)
 }
 
 /// Unpacks `archive` and replaces `target` with the binary in it. `work` is a directory on the
@@ -236,9 +265,12 @@ pub fn replace_binary(archive: &Path, target: &Path, work: &Path) -> Result<(), 
     }
     if cfg!(windows) {
         // A running exe can be renamed but not overwritten or deleted.
-        let aside = aside_path(target);
-        std::fs::rename(target, &aside)
-            .map_err(io_err("the running executable cannot be moved aside"))?;
+        let mut aside = aside_path(target, None);
+        if std::fs::rename(target, &aside).is_err() {
+            aside = aside_path(target, Some(std::process::id()));
+            std::fs::rename(target, &aside)
+                .map_err(io_err("the running executable cannot be moved aside"))?;
+        }
         if let Err(e) = staged.persist(target) {
             let _ = std::fs::rename(&aside, target);
             return Err(InstallError::Io(
@@ -383,5 +415,42 @@ mod tests {
             let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o750);
         }
+    }
+
+    #[test]
+    fn aside_names_are_unique_per_pid_and_recognised() {
+        let target = Path::new("/bin/fontaine.exe");
+        assert_eq!(aside_path(target, None), Path::new("/bin/fontaine.exe.old"));
+        assert_eq!(
+            aside_path(target, Some(42)),
+            Path::new("/bin/fontaine.exe.old-42")
+        );
+        for n in ["fontaine.exe.old", "fontaine.exe.old-42"] {
+            assert!(is_aside_name(n.as_ref(), target));
+        }
+        for n in ["fontaine.exe", "fontaine.exe.older", "other.exe.old"] {
+            assert!(!is_aside_name(n.as_ref(), target));
+        }
+    }
+
+    #[test]
+    fn remove_stale_deletes_every_leftover_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("fontaine.exe");
+        for n in [
+            "fontaine.exe",
+            "fontaine.exe.old",
+            "fontaine.exe.old-7",
+            "keep",
+        ] {
+            std::fs::write(dir.path().join(n), b"x").unwrap();
+        }
+        remove_stale(&target).unwrap();
+        let mut left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["fontaine.exe", "keep"]);
     }
 }
