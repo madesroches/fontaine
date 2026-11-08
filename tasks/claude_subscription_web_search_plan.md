@@ -131,7 +131,7 @@ backend is used, or what is offered to the model.
    offer". Keep the existing two asserts.
 4. Docs (see Documentation).
 5. Master plan `tasks/fontaine_harness_plan.md`: add the claude-subscription Decisions line at the
-   end of `### Providers` and the warning Decision at the end of `### Tools`.
+   end of `### Providers`.
 6. `CHANGELOG.md`: add an `## [Unreleased]` `### Changed` entry for the reworded startup warning
    (#522).
 7. Open a follow-up GitHub issue for provider-native search on `claude-subscription`, referencing
@@ -159,17 +159,17 @@ backend is used, or what is offered to the model.
 
 ## Decisions
 
-Master-plan lines to add (dated at implementation). The first goes at the end of `### Providers`,
-the second at the end of `### Tools`.
+Master-plan line to add (dated at implementation) at the end of `### Providers`.
 
 - `claude-subscription` offers no provider-native web search yet. A server-tool entry could ride
   the extra body Fontaine already writes; the adapter's fail-closed refusals (hosted tools in the
   request, server-tool blocks in the stream, history it cannot replay without loss) stop it, and
   lifting them needs live qualification against the real CLI. Left as a follow-up; the user gets
   Fontaine's `websearch` tool meanwhile (#522).
-- The no-search startup warning names why the main model's account offers no provider search
-  (kind without one, `native = "off"`, unverified endpoint). Claude Code has no such warning
-  (#522).
+
+- AFK: (plan resolution, not a master-plan line) No `### Tools` Decision for the reworded
+  warning. The master plan's 2026-10-26 `### Tools` line already records the no-search startup
+  warning and that Claude Code has no counterpart. Naming the reason in it is not a new deviation.
 
 ## Documentation
 
