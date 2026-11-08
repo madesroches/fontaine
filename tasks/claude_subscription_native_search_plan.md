@@ -79,18 +79,18 @@ matches on the same two constants (`WEB_SEARCH_TYPE = "web_search_20250305"`,
 
 Under `auto`, an account with no (or empty) `base_url` is the kind's own endpoint, so it is
 accepted before `default_endpoint` is consulted; `default_endpoint()` is needed only to compare a
-set `base_url`. `claude-subscription` refuses `base_url` (`BaseUrlPolicy::Fixed`), so it always
+set `base_url`. `claude-subscription` refuses `base_url` (`ClaudeSubscription::validate` refuses it), so it always
 passes `auto`. `off` and `on` are unchanged, and so is every gate in `offered` (deny/ask rules,
 covering hooks, the `allow` rule in `manual`/`acceptEdits`/`dontAsk`).
 
 ### `protocol.rs`
 
-1. **Request.** `tool_definitions` returns the custom definitions plus whether the web-search
-   server tool was requested. A hosted entry is accepted only when its `type` is
+1. **Request.** `tool_definitions` returns the custom definitions plus the accepted web-search
+   entry itself (`Option<Value>`). A hosted entry is accepted only when its `type` is
    `WEB_SEARCH_TYPE`, its `name` is `WEB_SEARCH_NAME`, and it appears once; any other hosted
-   entry keeps today's refusal. `translate` appends the entry, unaliased and unchanged, to the
+   entry keeps today's refusal. `translate` appends that entry as-is, unaliased, to the
    extra body's `tools` after the aliased custom tools (creating the array if there are none). It
-   is not added to the MCP manifest or the aliases. `Translated` gains `web_search: bool`.
+   is not added to the MCP manifest or the aliases. `Translated` gains `web_search: bool`, true when that entry is `Some`.
    A `tool_choice` naming `web_search` stays refused (it is not an alias), as nothing in Fontaine
    sends one.
 2. **History.** `assistant_content` also accepts `server_tool_use` blocks whose `name` is
@@ -139,7 +139,9 @@ The 2026-10-26 `### Tools` Decision already records and justifies that; this pla
    the real CLI reports `tools: []` for the server tool; `validate_init` refuses `web_search`.
 7. Tests (see Testing Strategy).
 8. Docs (see Documentation).
-9. Master plan `tasks/fontaine_harness_plan.md`: Decision line at the end of `### Providers`.
+9. Master plan `tasks/fontaine_harness_plan.md`: Decision line at the end of `### Providers`, and
+   amend the 2026-10-26 `### Tools` line in place ("first release: Anthropic accounts on the
+   Anthropic API") to add `claude-subscription` accounts, marked "amended <date> (#522)".
 10. `CHANGELOG.md`: `## [Unreleased]` `### Added` entry (#522).
 
 ## Files to Modify
@@ -227,8 +229,10 @@ Unit tests in `protocol/tests.rs`, with stream literals trimmed from the capture
   content" message.
 
 `native_search.rs`/`tests/native_search.rs`: a `claude-subscription` main model under `auto`
-gets the entry on the request (and `provider_available` is true, so the no-search warning does
-not fire); `off` withholds it; the existing deny/ask/hook/mode gates hold for the kind.
+gets the entry on the request (the integration test asserts `runtime.native_search_active()` and
+the entry on the sent tools; `provider_available` being true for the kind is asserted in a unit
+test in `native_search.rs`'s own `mod tests`, as it is `pub(crate)` and `build_with_models` uses a
+`DenyAll` approver); `off` withholds it; the existing deny/ask/hook/mode gates hold for the kind.
 
 Integration (`tests/claude_subscription.rs`, through `claude_cli_double`): a request carrying the
 entry reaches the CLI's settings `CLAUDE_CODE_EXTRA_BODY` `tools`, and a scripted response with a
