@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::cli::limit_error;
+use super::context::CacheUsage;
 use super::usage::{Usage, parse_rate_limit};
 use super::{ClaudeError, ErrorKind, claude_error};
 
@@ -257,48 +258,6 @@ pub fn derive_session_id(seed: &SessionSeed<'_>, system: &str, first: &Value) ->
         .to_string()
 }
 
-/// The prompt-cache breakpoint the adapter places itself. The hour matches the CLI's own
-/// breakpoint, which an earlier one may not undercut.
-const CACHE_MARKER: &str = r#"{"type": "ephemeral", "ttl": "1h"}"#;
-
-/// Puts one cache breakpoint on the last cacheable block of the last user frame before the
-/// final one. The CLI adds per-request context to the final message, so a breakpoint there is
-/// never read back; this one sits before that addition, and the next request reads it. Run after
-/// the session id is derived so the marker never changes it.
-fn mark_history(frames: &mut [Frame]) {
-    let Some((_, history)) = frames.split_last_mut() else {
-        return;
-    };
-    let Some(frame) = history
-        .iter_mut()
-        .rev()
-        .find(|frame| frame.value.get("type").and_then(Value::as_str) == Some("user"))
-    else {
-        return;
-    };
-    let marker: Value = serde_json::from_str(CACHE_MARKER).expect("the marker is valid JSON");
-    let content = &mut frame.value["message"]["content"];
-    if let Value::String(text) = content {
-        *content = json!([{"type": "text", "text": text.as_str(), "cache_control": marker}]);
-        return;
-    }
-    let cacheable = |block: &&mut Value| match block.get("type").and_then(Value::as_str) {
-        Some("text") => block
-            .get("text")
-            .and_then(Value::as_str)
-            .is_some_and(|text| !text.is_empty()),
-        Some("image" | "document" | "tool_result") => true,
-        _ => false,
-    };
-    if let Some(block) = content
-        .as_array_mut()
-        .and_then(|blocks| blocks.iter_mut().rev().find(cacheable))
-        .and_then(Value::as_object_mut)
-    {
-        block.insert("cache_control".to_string(), marker);
-    }
-}
-
 const KNOWN_FIELDS: [&str; 13] = [
     "model",
     "system",
@@ -346,9 +305,8 @@ pub fn translate(
             .map(|(name, _)| name.as_str())
             .chain(history_tool_names(object.get("messages"))),
     );
-    let mut frames = frames_of(object.get("messages"), &history)?;
+    let frames = frames_of(object.get("messages"), &history)?;
     let session_id = derive_session_id(seed, &system, &frames[0].value);
-    mark_history(&mut frames);
 
     let mut extra = Map::new();
     for key in [
@@ -734,6 +692,7 @@ pub struct Reader {
     native: Option<Native>,
     streamed_output_tokens: Option<u64>,
     usage: Option<Arc<Usage>>,
+    cache_usage: Option<CacheUsage>,
 }
 
 impl Reader {
@@ -755,6 +714,7 @@ impl Reader {
             suppressed: BTreeSet::new(),
             native: None,
             streamed_output_tokens: None,
+            cache_usage: None,
         }
     }
 
@@ -769,6 +729,11 @@ impl Reader {
     /// The held terminal delta, to be released after the process is stopped.
     pub fn release(&mut self) -> Option<WireFrame> {
         self.terminal.take()
+    }
+
+    /// The prompt-cache usage the accepted final result reported.
+    pub(super) fn cache_usage(&self) -> Option<CacheUsage> {
+        self.cache_usage
     }
 
     /// The failure category the CLI reported before it exited, if any.
@@ -1254,6 +1219,7 @@ impl Reader {
         {
             return Err(protocol("the Claude CLI's usage disagrees with its stream"));
         }
+        self.cache_usage = value.get("usage").and_then(CacheUsage::from_result);
         Ok(Event::Complete)
     }
 

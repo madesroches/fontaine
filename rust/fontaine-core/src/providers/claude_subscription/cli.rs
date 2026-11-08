@@ -152,9 +152,10 @@ const FIXED_ENV: &[(&str, &str)] = &[
     ("CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION", "false"),
     ("ENABLE_TOOL_SEARCH", "false"),
     ("ENABLE_CLAUDEAI_MCP_SERVERS", "false"),
-    // The CLI's breakpoint on the final message is never read back (it adds per-request context
-    // to that message, so the next request replays different bytes); the adapter's own 1 h
-    // marker earlier in the history is the one that is. 5 min makes the unread write cheaper.
+    // The CLI's own breakpoint sits on a trailing date/budget block that is never replayed, so
+    // it is never read back; 5 min makes that unread write cheaper. The adapter's 1 h marker is
+    // the one that is read: on the final message in the native layout, on the last replayed
+    // user message otherwise.
     ("CLAUDE_CODE_MESSAGES_PROMPT_CACHE_TTL", "5m"),
 ];
 
@@ -444,7 +445,7 @@ impl Cli {
             .write_line(&initialize_request(&request_id), self.timeouts.read_idle)
             .await?;
         child.close_stdin();
-        let rows = child
+        let listing = child
             .list_models(&request_id, self.timeouts.read_idle, None)
             .await
             .map_err(|failure| {
@@ -453,7 +454,7 @@ impl Cli {
                     .expect("a listing without a reader fails only with Claude errors")
             })?;
         child.stop().await;
-        Ok(rows)
+        Ok(listing.rows)
     }
 
     /// The environment a launch starts from, rebuilt: nothing is inherited that is not named
@@ -644,6 +645,36 @@ pub fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
         parts.next()?.parse().ok()?,
     );
     parts.next().is_none().then_some(version)
+}
+
+/// What an `initialize` answer says about the account and the CLI. Missing or malformed fields
+/// are `None`, never an error: they only select a cache layout.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CliContext {
+    pub email: Option<String>,
+    pub version: Option<(u32, u32, u32)>,
+}
+
+/// The rows of an `initialize` answer with the context it carried.
+#[derive(Debug)]
+pub struct Listing {
+    pub rows: Vec<ModelRow>,
+    pub context: CliContext,
+}
+
+pub fn cli_context(response: &Value) -> CliContext {
+    CliContext {
+        email: response
+            .get("account")
+            .and_then(|account| account.get("email"))
+            .and_then(Value::as_str)
+            .filter(|email| !email.is_empty())
+            .map(str::to_string),
+        version: response
+            .get("claude_code_version")
+            .and_then(Value::as_str)
+            .and_then(parse_version),
+    }
 }
 
 /// The rows of an `initialize` answer. A credit marker that is anything but `false` counts as a
@@ -954,7 +985,7 @@ impl CliChild {
         request_id: &str,
         idle: Duration,
         mut reader: Option<&mut Reader>,
-    ) -> Result<Vec<ModelRow>, Failure> {
+    ) -> Result<Listing, Failure> {
         let fail = |message: &str| -> Failure { protocol(message).boxed() };
         loop {
             let line = match reader.as_deref() {
@@ -1005,7 +1036,12 @@ impl CliChild {
             if response.get("subtype").and_then(Value::as_str) != Some("success") {
                 return Err(fail("the Claude CLI refused to list its models"));
             }
-            return model_rows(response.get("response").unwrap_or(&Value::Null))
+            let answer = response.get("response").unwrap_or(&Value::Null);
+            return model_rows(answer)
+                .map(|rows| Listing {
+                    rows,
+                    context: cli_context(answer),
+                })
                 .map_err(ClaudeError::boxed);
         }
     }
@@ -1190,8 +1226,22 @@ mod tests {
         assert!(model_rows(&json!({"models": [{"nothing": 1}]})).is_err());
     }
 
+    #[test]
+    fn the_email_is_in_no_listing_error_text() {
+        let email = "someone@private.example";
+        for answer in [
+            json!({"account": {"email": email}}),
+            json!({"account": {"email": email}, "models": [{"nothing": 1}]}),
+            json!({"account": {"email": email}, "models": "none"}),
+        ] {
+            let error = model_rows(&answer).unwrap_err();
+            assert!(!error.to_string().contains(email), "{error}");
+            assert!(!format!("{error:?}").contains(email), "{error:?}");
+        }
+    }
+
     #[cfg(unix)]
-    async fn listing_with(script: &str) -> Result<Vec<ModelRow>, ClaudeError> {
+    async fn listing_with(script: &str) -> Result<Listing, ClaudeError> {
         let data = tempfile::tempdir().unwrap();
         let cli = Cli::new(
             Some(PathBuf::from("/bin/sh")),
@@ -1244,12 +1294,36 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn the_answer_to_the_request_is_read_past_other_lines() {
-        let rows = listing_with(
-            r#"echo '{"type":"system"}'; echo '{"type":"control_response","response":{"request_id":"req","subtype":"success","response":{"models":[{"value":"sonnet","resolvedModel":"claude-sonnet-5-5"}]}}}'"#,
+        let listing = listing_with(
+            r#"echo '{"type":"system"}'; echo '{"type":"control_response","response":{"request_id":"req","subtype":"success","response":{"models":[{"value":"sonnet","resolvedModel":"claude-sonnet-5-5"}],"account":{"email":"a@b.c"},"claude_code_version":"2.1.319"}}}'"#,
         )
         .await
         .unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, "sonnet");
+        assert_eq!(listing.rows.len(), 1);
+        assert_eq!(listing.rows[0].id, "sonnet");
+        assert_eq!(listing.context.email.as_deref(), Some("a@b.c"));
+        assert_eq!(listing.context.version, Some((2, 1, 319)));
+    }
+
+    #[test]
+    fn the_context_is_read_and_missing_or_malformed_fields_give_none() {
+        let context = cli_context(&json!({
+            "account": {"email": "a@b.c"},
+            "claude_code_version": "2.1.319",
+        }));
+        assert_eq!(context.email.as_deref(), Some("a@b.c"));
+        assert_eq!(context.version, Some((2, 1, 319)));
+
+        for account in [json!({}), json!({"email": ""}), json!({"email": 7})] {
+            assert_eq!(cli_context(&json!({"account": account})).email, None);
+        }
+        assert_eq!(cli_context(&json!({})).email, None);
+        for version in [json!(null), json!(7), json!("2.1"), json!("x.y.z")] {
+            assert_eq!(
+                cli_context(&json!({"claude_code_version": version})).version,
+                None
+            );
+        }
+        assert_eq!(cli_context(&json!({})).version, None);
     }
 }

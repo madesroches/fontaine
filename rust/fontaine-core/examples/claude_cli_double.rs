@@ -7,7 +7,11 @@
 //! `CLAUDE_CONFIG_DIR` it uses the defaults and logs nothing.
 //!
 //! Scenario keys, all optional: `version`, `version_exit`, `version_sleep_ms`, `auth` (the JSON
-//! it prints), `auth_raw`, `auth_exit`, `auth_sleep_ms`, `models`, `init_hang`, `init_extra` (a
+//! it prints), `auth_raw`, `auth_exit`, `auth_sleep_ms`, `models`, `account` (the `account`
+//! object of the `initialize` answer, default `{"email": "user@example.com", ...}`),
+//! `claude_code_version` (the version that answer reports, default "2.1.319", independent of
+//! `version`; either key set to JSON `null` is left out of the answer), `init_hang`, `init_extra`
+//! (a
 //! JSON object merged into `system/init`), `responses`: one script per model process, the last
 //! repeating. A script has `text`, `thinking`, `tool_use`, `stop_reason`, `usage`,
 //! `total_cost_usd`, `result_subtype`, `result_extra`, `denial_echo` (the error result after the
@@ -120,6 +124,25 @@ impl Double {
         seen + 1
     }
 
+    fn initialize_answer(&self) -> Value {
+        let mut answer = json!({"models": self.models()});
+        let defaults = [
+            (
+                "account",
+                json!({"email": "user@example.com", "subscriptionType": "max"}),
+            ),
+            ("claude_code_version", json!("2.1.319")),
+        ];
+        for (key, default) in defaults {
+            match self.scenario.get(key) {
+                Some(Value::Null) => {}
+                Some(value) => answer[key] = value.clone(),
+                None => answer[key] = default,
+            }
+        }
+        answer
+    }
+
     fn models(&self) -> Value {
         self.scenario.get("models").cloned().unwrap_or_else(|| {
             json!([
@@ -215,7 +238,7 @@ impl Double {
                     "response": {
                         "subtype": "success",
                         "request_id": frame["request_id"],
-                        "response": {"models": self.models()},
+                        "response": self.initialize_answer(),
                     },
                 });
                 emit(&[reply.to_string()], false);

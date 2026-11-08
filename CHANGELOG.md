@@ -55,13 +55,17 @@ All notable changes are recorded here. The format follows
 - `claude-subscription` reads replayed history from the prompt cache and starts each request about
   0.6 s sooner. Every CLI process now runs in one stable, empty directory in the data directory
   (the CLI writes its working directory into the prompt, and a fresh path per request defeated the
-  cache), the last replayed user message carries a cache marker, the model-listing check moves onto
-  the request's own CLI process, the login probe runs alongside its start, and the CLI's claude.ai
-  connector fetch is off. Billing and model checks still complete before any response is requested
-  (#449). The CLI's own cache breakpoint on the final message, which is never read back, now has
-  a 5-minute lifetime instead of an hour (cheaper to write); the docs list what the CLI still adds to
-  every request (Agent SDK identity line, environment block, account email reminder, date) and the
-  measured cache-write cost per step (#480).
+  cache), the model-listing check moves onto the request's own CLI process, the login probe runs
+  alongside its start, and the CLI's claude.ai connector fetch is off. Billing and model checks
+  still complete before any response is requested (#449). The adapter repeats the CLI's account
+  context reminder on every replayed user message, where the CLI put it, and marks the final
+  message (CLI 2.1.319 and later; the last replayed user message otherwise), so each step writes
+  only its new messages plus about 170 tokens per user message instead of the previous message
+  again; the never-read 5-minute write is now the CLI's trailing date and budget block. A
+  per-version runtime check falls back to the earlier layout, with one warning, when a CLI
+  version's replay is not read back. `cache-bench` flags a ratio above 1.25 by default. The docs
+  list what the CLI still adds to every request (Agent SDK identity line, environment block,
+  account email reminder, date) and the measured cache-write cost per step (#480).
 
 ### Fixed
 

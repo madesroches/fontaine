@@ -384,7 +384,7 @@ cargo run -p fontaine-evals -- cache-bench --model claudemax/sonnet --out ../eva
 | `--model <account>/<model>` | The Fontaine model on a claude-subscription account. Required. |
 | `--claude-model <alias>` | The `claude -p --model` value; default the part of `--model` after the `/`. |
 | `--files <n>` | Fixture files read one at a time; default 6, at least 4. |
-| `--threshold <x>` | The ratio above which the run is flagged; default 2.0. |
+| `--threshold <x>` | The ratio above which the run is flagged; default 1.25. |
 | `--fontaine <path>`, `--claude <path>` | The executables; default `fontaine` and `claude`. |
 | `--out <path>` | The scorecard to write. Required. |
 

@@ -114,7 +114,7 @@ fn an_unflagged_run_writes_the_scorecard_and_passes_the_shared_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let code = bench(
         dir.path(),
-        &[900, 50, 300, 300, 50],
+        &[900, 50, 220, 220, 50],
         &[900, 200, 200, 200, 50],
         &[],
     );
@@ -122,7 +122,7 @@ fn an_unflagged_run_writes_the_scorecard_and_passes_the_shared_prompt() {
     let card: Scorecard =
         serde_json::from_str(&std::fs::read_to_string(dir.path().join("card.json")).unwrap())
             .unwrap();
-    assert_eq!(card.summary.ratio, 1.5);
+    assert_eq!(card.summary.ratio, 1.1);
     assert!(!card.summary.flagged);
     assert_eq!(card.claude_version, "9.9.9 (stub)");
     assert_eq!(card.claude_served_model.as_deref(), Some("claude-sonnet-x"));

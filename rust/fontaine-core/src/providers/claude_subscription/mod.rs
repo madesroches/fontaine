@@ -27,6 +27,7 @@ use fontaine_tools::lock::{read, write};
 use usage::Usage;
 
 pub mod cli;
+mod context;
 pub mod inventory;
 pub mod protocol;
 pub mod transport;

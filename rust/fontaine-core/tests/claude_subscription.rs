@@ -787,7 +787,14 @@ async fn aliases_resolve_to_canonical_ids_and_the_request_is_translated() {
         .collect();
     assert_eq!(frames.len(), 3, "{frames:?}");
     assert_eq!(frames[0]["shouldQuery"], false);
-    assert_eq!(frames[0]["message"]["content"][0]["text"], "read the file");
+    // The first block of a replayed user message is the CLI's own reminder, repeated.
+    assert!(
+        frames[0]["message"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("<system-reminder>\n")
+    );
+    assert_eq!(frames[0]["message"]["content"][1]["text"], "read the file");
     assert_eq!(frames[1]["type"], "assistant");
     assert_eq!(
         frames[1]["message"]["content"][0]["name"],
@@ -795,6 +802,145 @@ async fn aliases_resolve_to_canonical_ids_and_the_request_is_translated() {
     );
     assert!(frames[2].get("shouldQuery").is_none());
     assert_eq!(frames[2]["message"]["content"][0]["type"], "tool_result");
+}
+
+/// A conversation of `users` plain user messages, each answered by an assistant message but the
+/// last.
+fn conversation(users: usize) -> CompletionRequest {
+    tagged_conversation("", users)
+}
+
+/// A `conversation` whose first message carries `tag`, so its session id (and the process-wide
+/// self-check record under it) is its own.
+fn tagged_conversation(tag: &str, users: usize) -> CompletionRequest {
+    let mut history = Vec::new();
+    for n in 1..users {
+        let tag = if n == 1 { tag } else { "" };
+        history.push(Message::user(format!("question {n}{tag}")));
+        history.push(Message::assistant(format!("answer {n}")));
+    }
+    let tag = if users == 1 { tag } else { "" };
+    CompletionRequest::new(Message::user(format!("question {users}{tag}"))).messages(history)
+}
+
+impl Claude {
+    /// The frames the double read in its `run`th model process, initialize requests left out.
+    fn run_frames(&self, run: u64) -> Vec<Value> {
+        self.log()
+            .into_iter()
+            .filter(|entry| entry["kind"] == "frame" && entry["run"] == run)
+            .map(|entry| entry["value"].clone())
+            .collect()
+    }
+}
+
+fn has_reminder(frame: &Value) -> bool {
+    frame.to_string().contains("system-reminder")
+}
+
+/// The blocks that carry a cache marker, as (frame, block) positions.
+fn markers(frames: &[Value]) -> Vec<(usize, usize)> {
+    let mut at = Vec::new();
+    for (frame, f) in frames.iter().enumerate() {
+        for (block, b) in f["message"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if b.get("cache_control").is_some() {
+                at.push((frame, block));
+            }
+        }
+    }
+    at
+}
+
+#[tokio::test]
+async fn the_native_layout_replays_the_reminder_and_marks_only_the_final_frame() {
+    let claude = Claude::new();
+    claude.scenario(json!({"responses": [{"text": "ok"}]}));
+    let handle = main_handle(&claude).await;
+    handle.completion.call(conversation(3)).await.unwrap();
+
+    let frames = claude.run_frames(1);
+    assert_eq!(frames.len(), 5, "{frames:?}");
+    for at in [0, 2] {
+        assert!(
+            frames[at]["message"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("user@example.com"),
+            "{at}"
+        );
+    }
+    assert!(!has_reminder(&frames[1]) && !has_reminder(&frames[3]));
+    assert!(!has_reminder(&frames[4]));
+    assert_eq!(markers(&frames), [(4, 0)]);
+}
+
+#[tokio::test]
+async fn an_older_cli_or_an_account_without_an_email_keeps_the_earlier_layout() {
+    for scenario in [
+        json!({"claude_code_version": "2.1.318", "responses": [{"text": "ok"}]}),
+        json!({"claude_code_version": null, "responses": [{"text": "ok"}]}),
+        json!({"account": {"subscriptionType": "max"}, "responses": [{"text": "ok"}]}),
+        json!({"account": null, "responses": [{"text": "ok"}]}),
+    ] {
+        let claude = Claude::new();
+        claude.scenario(scenario.clone());
+        let handle = main_handle(&claude).await;
+        handle.completion.call(conversation(3)).await.unwrap();
+
+        let frames = claude.run_frames(1);
+        assert_eq!(frames.len(), 5, "{scenario}");
+        assert!(frames.iter().all(|f| !has_reminder(f)), "{scenario}");
+        assert_eq!(markers(&frames), [(2, 0)], "{scenario}");
+    }
+}
+
+fn cached(read: u64, write_1h: u64) -> Value {
+    json!({"input_tokens": 1, "output_tokens": 7, "cache_read_input_tokens": read,
+           "cache_creation": {"ephemeral_1h_input_tokens": write_1h}})
+}
+
+async fn three_steps(version: &str, second_read: u64) -> Claude {
+    let claude = Claude::new();
+    claude.scenario(json!({
+        "claude_code_version": version,
+        "responses": [
+            {"text": "a", "usage": cached(0, 500)},
+            {"text": "b", "usage": cached(second_read, 100)},
+            {"text": "c", "usage": cached(1000, 0)},
+        ],
+    }));
+    let handle = main_handle(&claude).await;
+    for users in [2, 3, 4] {
+        handle
+            .completion
+            .call(tagged_conversation(version, users))
+            .await
+            .unwrap();
+    }
+    claude
+}
+
+#[tokio::test]
+async fn a_replay_the_cache_did_not_read_back_turns_the_layout_off_for_that_version() {
+    let claude = three_steps("2.1.400", 100).await;
+    assert!(has_reminder(&claude.run_frames(2)[0]));
+    assert_eq!(markers(&claude.run_frames(2)), [(4, 0)]);
+    let third = claude.run_frames(3);
+    assert!(third.iter().all(|f| !has_reminder(f)));
+    assert_eq!(markers(&third), [(4, 0)]);
+}
+
+#[tokio::test]
+async fn a_replay_the_cache_read_back_keeps_the_layout() {
+    let claude = three_steps("2.1.401", 500).await;
+    let third = claude.run_frames(3);
+    assert!(has_reminder(&third[0]));
+    assert_eq!(markers(&third), [(6, 0)]);
 }
 
 #[tokio::test]

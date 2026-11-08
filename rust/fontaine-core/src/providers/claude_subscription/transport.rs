@@ -22,9 +22,10 @@ use super::cli::{
     ChildFiles, Cli, CliChild, ModelRow, ReadFail, Scratch, fixed_args, initialize_id,
     initialize_request, scratch_error,
 };
+use super::context::{self, Sent};
 use super::inventory::INVENTORY_FLAG;
 use super::protocol::{
-    Event, Expect, Failure, Reader, SessionSeed, Translated, exit_failure, translate,
+    Event, Expect, Failure, Frame, Reader, SessionSeed, Translated, exit_failure, translate,
 };
 use super::usage::Usage;
 use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error, read_idle_error};
@@ -160,7 +161,7 @@ impl ClaudeTransport {
         // The login probe and the request process start together. Nothing that can start an
         // inference is written until both have passed, and a failed login drops the process.
         let login = self.cli.check_login();
-        let prepare = self.prepare(&translated);
+        let prepare = self.prepare(translated);
         tokio::pin!(login, prepare);
         let prepared = tokio::select! {
             checked = &mut login => {
@@ -172,13 +173,9 @@ impl ClaudeTransport {
                 prepared
             }
         };
-        let (mut child, mut reader) = prepared?;
+        let (mut child, mut reader, sent, query) = prepared?;
 
         let idle = self.cli.timeouts.read_idle;
-        let query = translated
-            .frames
-            .last()
-            .expect("a translated request has a final frame");
         reader.expect_response();
         write_frame(&mut child, &reader, &query.value, idle).await?;
         child.close_stdin();
@@ -188,6 +185,7 @@ impl ClaudeTransport {
                 reader,
                 idle,
                 pending: VecDeque::new(),
+                sent: Some(sent),
             })
             .boxed(),
         ))
@@ -195,12 +193,16 @@ impl ClaudeTransport {
 
     /// Starts the request's process, has it list its models, checks the selected row and replays
     /// every history frame. The final frame, the only one that asks for a response, is left
-    /// unwritten.
-    async fn prepare(&self, translated: &Translated) -> Result<(CliChild, Reader), Failure> {
+    /// unwritten. The cache layout the process's own `initialize` answer selects is applied to
+    /// the frames in place.
+    async fn prepare(
+        &self,
+        mut translated: Translated,
+    ) -> Result<(CliChild, Reader, Sent, Frame), Failure> {
         let selection = &*self.selection;
         let scratch = Scratch::new().map_err(scratch_failed)?;
         let files = self
-            .write_files(&scratch, translated)
+            .write_files(&scratch, &translated)
             .map_err(scratch_failed)?;
         let args = fixed_args(
             &files,
@@ -223,8 +225,8 @@ impl ClaudeTransport {
         let request_id = initialize_id();
         write_frame(&mut child, &reader, &initialize_request(&request_id), idle).await?;
         let listing = child.list_models(&request_id, idle, Some(&mut reader));
-        let rows = match tokio::time::timeout(self.cli.timeouts.discovery, listing).await {
-            Ok(rows) => rows?,
+        let listing = match tokio::time::timeout(self.cli.timeouts.discovery, listing).await {
+            Ok(listing) => listing?,
             Err(_) => {
                 return Err(provider(ClaudeError::new(
                     ErrorKind::SetupTimeout,
@@ -232,10 +234,28 @@ impl ClaudeTransport {
                 )));
             }
         };
-        check_row(&rows, selection).map_err(provider)?;
+        check_row(&listing.rows, selection).map_err(provider)?;
 
-        let history = translated.frames.len() - 1;
-        for frame in &translated.frames[..history] {
+        let prints = context::fingerprints(&translated.frames);
+        let layout = context::layout(&listing.context);
+        context::apply(&mut translated.frames, &listing.context, layout);
+        let sent = Sent::new(
+            &translated.session_id,
+            listing.context.version,
+            layout,
+            prints,
+            &translated.frames,
+        )
+        .with_settings(context::settings_print(
+            translated.effort.as_deref(),
+            &translated.settings,
+        ));
+
+        let query = translated
+            .frames
+            .pop()
+            .expect("a translated request has a final frame");
+        for frame in &translated.frames {
             // Only a history user frame is acknowledged: the CLI answers it with a zero-turn
             // result before the replay continues. History the assistant said needs no answer.
             let acked = frame.value.get("type").and_then(|t| t.as_str()) == Some("user");
@@ -262,7 +282,7 @@ impl ClaudeTransport {
                 }
             }
         }
-        Ok((child, reader))
+        Ok((child, reader, sent, query))
     }
 
     fn write_files(
@@ -382,6 +402,8 @@ struct Running {
     reader: Reader,
     idle: Duration,
     pending: VecDeque<WireFrame>,
+    /// The request as sent, until its result is recorded.
+    sent: Option<Sent>,
 }
 
 /// The most of a rejected line the debug file keeps.
@@ -442,6 +464,20 @@ fn stream(
                 Ok(Event::Complete) => {
                     if let Some(mut child) = running.child.take() {
                         child.stop().await;
+                    }
+                    if let Some(sent) = running.sent.take()
+                        && let Some(version) = context::finished(
+                            sent,
+                            running.reader.cache_usage(),
+                            std::time::Instant::now(),
+                        )
+                    {
+                        tracing::warn!(
+                            cli_version = format!("{}.{}.{}", version.0, version.1, version.2),
+                            "the Claude CLI's replayed context was not read back from the prompt \
+                             cache; the cache optimization is off for this CLI version until \
+                             restart (`cache-bench` measures it)"
+                        );
                     }
                     running.pending.extend(running.reader.release());
                     if running.pending.is_empty() {

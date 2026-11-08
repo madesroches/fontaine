@@ -1107,55 +1107,8 @@ fn marked(t: &Translated) -> Vec<(usize, usize)> {
     at
 }
 
-fn tool_loop(extra_user: Value) -> Value {
-    request(json!({
-        "tools": [tool("read_file")],
-        "messages": [
-            {"role": "user", "content": "start"},
-            {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "t1", "content": "one"},
-                {"type": "text", "text": ""}]},
-            {"role": "assistant", "content": [
-                {"type": "tool_use", "id": "t2", "name": "read_file", "input": {}}]},
-            extra_user,
-        ],
-    }))
-}
-
 #[test]
-fn the_last_history_user_message_carries_the_one_marker() {
-    let t = translated(tool_loop(json!({"role": "user", "content": [
-        {"type": "tool_result", "tool_use_id": "t2", "content": "two"}]})));
-    // The trailing empty text block is skipped for the tool result before it.
-    assert_eq!(marked(&t), [(2, 0)]);
-    assert_eq!(
-        t.frames[2].value["message"]["content"][0]["cache_control"],
-        json!({"type": "ephemeral", "ttl": "1h"})
-    );
-    assert!(t.frames.last().unwrap().query);
-}
-
-#[test]
-fn string_content_becomes_one_marked_text_block() {
-    let t = translated(request(json!({"messages": [
-        {"role": "user", "content": "first"},
-        {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
-        {"role": "user", "content": "second"},
-    ]})));
-    assert_eq!(marked(&t), [(0, 0)]);
-    assert_eq!(t.frames[0].value["message"]["content"][0]["text"], "first");
-    assert_eq!(t.frames[2].value["message"]["content"], "second");
-}
-
-#[test]
-fn a_single_user_message_gets_no_marker() {
-    assert!(marked(&translated(request(json!({})))).is_empty());
-}
-
-#[test]
-fn a_request_cache_control_is_stripped_and_never_replaces_the_marker() {
+fn a_request_cache_control_is_stripped() {
     let t = translated(request(json!({"messages": [
         {"role": "user", "content": [
             {"type": "text", "text": "a", "cache_control": {"type": "ephemeral", "ttl": "5m"}},
@@ -1165,12 +1118,7 @@ fn a_request_cache_control_is_stripped_and_never_replaces_the_marker() {
         {"role": "user", "content": [
             {"type": "text", "text": "c", "cache_control": {"type": "ephemeral"}}]},
     ]})));
-    assert_eq!(marked(&t), [(0, 1)]);
-    assert!(
-        t.frames[2].value["message"]["content"][0]
-            .get("cache_control")
-            .is_none()
-    );
+    assert!(marked(&t).is_empty());
 }
 
 #[test]
@@ -1191,4 +1139,28 @@ fn the_marker_does_not_change_the_session_id() {
         .collect();
     assert_eq!(ids[0], ids[1]);
     assert_eq!(ids[1], ids[2]);
+}
+
+#[test]
+fn applying_the_cache_layout_does_not_change_the_session_id() {
+    use crate::providers::claude_subscription::cli::CliContext;
+    use crate::providers::claude_subscription::context::{Layout, apply};
+
+    let t = translated(request(json!({"messages": [
+        {"role": "user", "content": "start"},
+        {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        {"role": "user", "content": "more"},
+    ]})));
+    let derive = |first: &Value| derive_session_id(&seed(), "be brief", first);
+    assert_eq!(derive(&t.frames[0].value), t.session_id);
+
+    let context = CliContext {
+        email: Some("user@example.com".to_string()),
+        version: Some((2, 1, 319)),
+    };
+    let mut frames = t.frames.clone();
+    apply(&mut frames, &context, Layout::Native);
+    // The reminder changes the first frame, which is why the id is derived before `apply`.
+    assert_ne!(frames[0], t.frames[0]);
+    assert_ne!(derive(&frames[0].value), t.session_id);
 }
