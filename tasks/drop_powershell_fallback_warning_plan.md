@@ -25,9 +25,6 @@ use.
 
 ## Design
 
-- Delete `POWERSHELL_FALLBACK_WARNING` and the `warning` field of `Shells`; the `Shells` struct
-  keeps `git_bash` and `powershell`.
-- `prepare_session` stops extending `warnings` with a shell warning.
 - `FONTAINE_GIT_BASH_PATH` pointing at a non-Git-Bash stays an exit-2 error (unchanged).
 
 ## Implementation Steps
@@ -38,17 +35,18 @@ use.
    to "The shells found at startup."
 2. Update tests: in `lib.rs` drop `warning` from the `Shells` expectations, rename
    `git_bash_found_starts_as_before_with_no_warning` to `git_bash_found_starts_as_before`, and change
-   `without_git_bash_powershell_starts_with_one_warning` into a test asserting the fallback
-   selects PowerShell with `git_bash == None`; in `windows_without_git_bash.rs` replace the
+   `without_git_bash_powershell_starts_with_one_warning` into `without_git_bash_powershell_starts`,
+   asserting `chosen == Shells { git_bash: None, powershell: Some(pwsh()) }`; in `windows_without_git_bash.rs` replace the
    stderr-contains assertion with one that stderr does not contain "Git for Windows was not found".
 3. Docs: `docs/tools.md` — "Fontaine starts and PowerShell runs..." (no "with a warning");
    `tasks/design/platforms.md` table row (line 20): drop "with one warning" from "starts with one
    warning; PowerShell is the command shell".
 4. `CHANGELOG.md`: no new entry. Amend the existing unreleased #510 entry (~lines 48-54) in place:
-   drop ", with one startup warning" and append "(#513)" to its issue reference list (precedent:
-   "(#483) ... (#497)").
-5. Master plan: append a dated Decisions line at the end of `### Tools` superseding the "one
-   startup warning" part of the 2026-11-08 (#510) line.
+   drop ", with one startup warning" (~line 50) and change the closing "(#510)" at ~line 54 to
+   "(#510, #513)" (precedent: "(#451, #241)").
+5. Master plan: append this dated Decisions line at the end of `### Tools`: "- 2026-11-08 (#513):
+   Supersedes the 'one startup warning says so' part of the 2026-11-08 (#510) line: without Git
+   Bash Fontaine starts with no warning, since the model-facing text already names `powershell`."
 
 ## Files to Modify
 
@@ -67,8 +65,7 @@ use.
 
 ## Documentation
 
-`docs/tools.md` Windows paragraph; `tasks/design/platforms.md` shell table row; `CHANGELOG.md`
-(existing #510 entry amended, with #513 added to its references).
+See Implementation Steps 3-4.
 
 ## Testing Strategy
 
