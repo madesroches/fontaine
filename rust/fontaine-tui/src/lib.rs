@@ -23,6 +23,7 @@ pub mod linear;
 mod markdown;
 pub mod model_picker;
 mod notify;
+mod paste_burst;
 pub mod picker;
 pub mod provider_dialog;
 pub mod question;
@@ -572,12 +573,36 @@ pub(crate) fn read_terminal(tx: &UnboundedSender<Input>, stop: &AtomicBool, paus
             Ok(false) => continue,
             Err(_) => return,
         }
-        let input = match event::read() {
-            Ok(Event::Key(key)) => Input::Key(key),
-            Ok(Event::Paste(text)) => Input::Paste(text),
-            Ok(Event::Resize(..)) => Input::Resize,
-            Ok(_) => continue,
+        let event = match event::read() {
+            Ok(event) => event,
             Err(_) => return,
+        };
+        let input = match event {
+            Event::Key(key) if paste_burst::enabled() && paste_burst::is_burst_key(&key) => {
+                let (inputs, error) = paste_burst::coalesce(key, |gap| {
+                    if stop.load(Ordering::Relaxed) || pause.requested.load(Ordering::SeqCst) {
+                        return Ok(None);
+                    }
+                    if event::poll(gap)? {
+                        event::read().map(Some)
+                    } else {
+                        Ok(None)
+                    }
+                });
+                for input in inputs {
+                    if tx.send(input).is_err() {
+                        return;
+                    }
+                }
+                if error.is_some() {
+                    return;
+                }
+                continue;
+            }
+            Event::Key(key) => Input::Key(key),
+            Event::Paste(text) => Input::Paste(text),
+            Event::Resize(..) => Input::Resize,
+            _ => continue,
         };
         if tx.send(input).is_err() {
             return;
