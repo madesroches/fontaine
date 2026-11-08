@@ -155,8 +155,7 @@ pub fn locate(path: &Path, current_exe: &Path) -> Result<InstallInfo, ReceiptErr
     })
 }
 
-/// Rewrites only `version`, through a temp file beside the receipt so a crash leaves the old
-/// receipt whole. The caller holds the update lock.
+/// Rewrites only `version`, atomically so a crash leaves the old receipt whole. The caller holds the update lock.
 pub fn write_version(path: &Path, version: &str) -> Result<(), WriteError> {
     let json = std::fs::read_to_string(path).map_err(WriteError::Io)?;
     let mut value: Value = serde_json::from_str(&json).map_err(WriteError::Parse)?;
@@ -164,11 +163,8 @@ pub fn write_version(path: &Path, version: &str) -> Result<(), WriteError> {
     object.insert("version".to_string(), Value::String(version.to_string()));
     let mut text = serde_json::to_string_pretty(&value).map_err(WriteError::Parse)?;
     text.push('\n');
-    let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(WriteError::Io)?;
-    std::io::Write::write_all(&mut temp, text.as_bytes()).map_err(WriteError::Io)?;
-    temp.persist(path).map_err(|e| WriteError::Io(e.error))?;
-    Ok(())
+    fontaine_core::owner_only::write_atomic_keeping_mode(path, text.as_bytes())
+        .map_err(WriteError::Io)
 }
 
 #[derive(Debug)]

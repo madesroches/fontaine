@@ -179,7 +179,7 @@ nothing is written.
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Updated, or already up to date |
-| 1 | The update could not be installed (for example the install directory is not writable) |
+| 1 | The update could not be installed (for example the install directory is not writable, or the release has no archive for this platform) |
 | 2 | The configuration could not be loaded |
 | 3 | This install cannot update itself |
 | 4 | The release list or the download could not be fetched; retrying may help |

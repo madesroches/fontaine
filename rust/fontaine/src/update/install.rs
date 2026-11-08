@@ -49,18 +49,33 @@ fn io_err(what: &'static str) -> impl FnOnce(io::Error) -> InstallError {
 }
 
 /// A writer that fails once more than `MAX_UNPACKED` bytes went through it.
-struct Capped<W>(W, u64);
+struct Capped<W> {
+    inner: W,
+    written: u64,
+    tripped: bool,
+}
+
+impl<W> Capped<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            written: 0,
+            tripped: false,
+        }
+    }
+}
 
 impl<W: Write> Write for Capped<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.1 += buf.len() as u64;
-        if self.1 > MAX_UNPACKED {
+        self.written += buf.len() as u64;
+        if self.written > MAX_UNPACKED {
+            self.tripped = true;
             return Err(io::Error::other("unpacked size limit exceeded"));
         }
-        self.0.write(buf)
+        self.inner.write(buf)
     }
     fn flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+        self.inner.flush()
     }
 }
 
@@ -124,11 +139,9 @@ fn extract_tar_xz(
             BufReader::new(File::open(archive).map_err(io_err("the archive cannot be opened"))?);
         let tar_file =
             File::create(&tar_path).map_err(io_err("the unpack area is not writable"))?;
-        let mut out = Capped(io::BufWriter::new(tar_file), 0);
+        let mut out = Capped::new(io::BufWriter::new(tar_file));
         lzma_rs::xz_decompress(&mut input, &mut out).map_err(|e| match e {
-            lzma_rs::error::Error::IoError(io) if io.to_string().contains("size limit") => {
-                InstallError::TooLarge
-            }
+            lzma_rs::error::Error::IoError(_) if out.tripped => InstallError::TooLarge,
             e => InstallError::Xz(e),
         })?;
         out.flush()
@@ -166,9 +179,9 @@ fn no_binary(name: &str) -> InstallError {
 }
 
 fn copy_capped(from: &mut impl Read, to: &mut File) -> Result<(), InstallError> {
-    let mut capped = Capped(&mut *to, 0);
+    let mut capped = Capped::new(&mut *to);
     io::copy(from, &mut capped).map_err(|e| {
-        if e.to_string().contains("size limit") {
+        if capped.tripped {
             InstallError::TooLarge
         } else {
             InstallError::Io("the binary cannot be unpacked", e)

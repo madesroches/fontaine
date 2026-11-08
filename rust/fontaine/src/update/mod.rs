@@ -82,16 +82,17 @@ impl std::error::Error for UpdateError {
 pub fn upgrade_hint(channel: Option<Channel>) -> String {
     let release = "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/latest/download/fontaine-installer.sh | sh";
     let dev = "curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.sh | sh";
+    let windows_release = "powershell -ExecutionPolicy Bypass -c \"irm https://github.com/madesroches/fontaine/releases/latest/download/fontaine-installer.ps1 | iex\"";
     let windows = "powershell -ExecutionPolicy Bypass -c \"irm https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.ps1 | iex\"";
-    let one = |channel: &str, shell: &str| {
+    let one = |channel: &str, shell: &str, windows: &str| {
         format!(
             "Reinstall from the {channel} channel instead (Linux and macOS):\n  {shell}\n\
              Windows:\n  {windows}\nSee docs/installing.md."
         )
     };
     match channel {
-        Some(Channel::Release) => one("release", release),
-        Some(Channel::Dev) => one("dev", dev),
+        Some(Channel::Release) => one("release", release, windows_release),
+        Some(Channel::Dev) => one("dev", dev, windows),
         None => format!(
             "Install with a Fontaine installer to enable `fontaine update`:\n  {release}\n\
              or, for the dev channel:\n  {dev}\nWindows (dev channel):\n  {windows}\n\
@@ -315,7 +316,7 @@ pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Out
 
     let name = archive_name(params.target);
     let archive_asset = release.asset(&name).ok_or_else(|| {
-        UpdateError::Network(
+        UpdateError::Install(
             format!("release {} has no {name} for this platform", release.tag).into(),
         )
     })?;
@@ -494,6 +495,8 @@ mod tests {
         let release = upgrade_hint(Some(Channel::Release));
         assert!(release.contains("latest/download/fontaine-installer.sh"));
         assert!(!release.contains("download/dev/fontaine-installer.sh | sh"));
+        assert!(release.contains("latest/download/fontaine-installer.ps1"));
+        assert!(!release.contains("download/dev/fontaine-installer.ps1"));
     }
 
     #[test]
