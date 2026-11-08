@@ -5,10 +5,12 @@
 ## Overview
 
 `cache-bench` compares Fontaine's per-step cache write against `claude -p` using the mean over
-steps 2..N-1. Step 2 is the one cheap step (the previous message is the short original prompt,
-already in the base context), so it drags the mean down: the default 6-file run reports 1.80 while
-the steady-state ratio is about 1.97. A short run can pass a threshold a longer run would fail.
-Average steps 3..N-1 only, and reject runs with too few steps left to average.
+steps 2..N-1. Only Fontaine has a cheap step 2: its second step writes just one message (the
+previous message is the short original prompt, already in the base context), while Claude Code's
+step 2 writes a steady amount. That drags Fontaine's mean down: the default 6-file run reports 1.80
+while the steady-state ratio is about 1.97. A short run can pass a threshold a longer run would
+fail. Average steps 3..N-1 only, leaving step 2 out on both sides so the two means cover the same
+steps, and reject runs with too few steps left to average.
 
 ## Current State
 
@@ -35,16 +37,16 @@ Average steps 3..N-1 only, and reject runs with too few steps left to average.
   files gives 5 calls); update the message to say the ratio needs two steady-state steps. Default
   of 6 files is unchanged (4 steady steps' worth: steps 3..6).
 - Scorecard schema: keep the field names to stay compatible with existing JSON files, since the
-  stored values are means of "steady" steps either way; update doc comments only. Table label
+  stored values are means of "steady" steps either way; no struct or schema change. Table label
   becomes `mean write (steady-state steps)`.
-- Exit semantics are unchanged: a side with too few calls exits 1 via the existing error path.
 
 ## Implementation Steps
 
 1. `cache_bench.rs`: replace `mean_middle_creation` with `mean_steady_creation` (steps 2..len-1);
    raise the minimum in `summarize` to 5 with the new message; reword the zero-mean error and the
-   `summarize` doc comment (skips the first step for base context, the second because it writes
-   only one message, and the last because it only answers); change the `table()` label.
+   `summarize` doc comment (skips the first step for base context, the second because Fontaine's
+   writes only one message and it is left out on both sides so the means cover the same steps, and
+   the last because it only answers); change the `table()` label.
 2. `runner.rs`: `--files` minimum 4 and the new message; reword the `threshold` clap doc comment
    (line ~79, "mean middle-step write") to "mean steady-state write".
 3. Update unit tests in `cache_bench.rs` (see Testing Strategy).
@@ -55,7 +57,8 @@ Average steps 3..N-1 only, and reject runs with too few steps left to average.
    `--files` with `--threshold 0`).
 5. Docs: `evals/README.md` (flag table "at least 4", ratio paragraph, exit-code sentence "fewer than
    five model calls") and `docs/claude-subscription.md` ("leaving out the first step, the second
-   (it writes only one message) and the last"; "fewer than five model calls").
+   (Fontaine's writes only one message; left out on both sides so the means cover the same steps)
+   and the last"; "fewer than five model calls").
 6. `CHANGELOG.md`: amend the existing unreleased #483 `cache-bench` entry under `## [Unreleased]` /
    `### Added` with a sentence about the steady-state mean (steps 3..N-1) and the minimum of 4
    files, ending with "(#497)"; no new entry.
@@ -72,8 +75,9 @@ Average steps 3..N-1 only, and reject runs with too few steps left to average.
 ## Trade-offs
 
 - Excluding step 2 vs. a "settled" detector (mean after the write stops changing): the detector
-  adds heuristics and nondeterminism; the cheap step is structural (the prompt precedes any tool
-  result), so a fixed skip is exact and simple.
+  adds heuristics and nondeterminism; Fontaine's cheap second step is structural (it writes only
+  one message, the prompt preceding any tool result), so a fixed skip is exact and simple, and
+  applying it to both sides keeps the two means over the same steps.
 - Warn vs. fail on too few steps: a warning still emits a ratio that can pass a threshold wrongly;
   failing matches the existing fewer-than-3 handling.
 
