@@ -296,7 +296,7 @@ given (the primary root at the start).
   overrides the search; a value that is not a `bash.exe` inside a Git for Windows installation is
   an error and Fontaine exits with code 2. The command reaches Git Bash as written,
   including every `\\`; a syntax error names `eval` rather than `-c`. Without Git for Windows,
-  Fontaine starts with a warning and [PowerShell](#powershell) runs the commands, hooks and status
+  Fontaine starts and [PowerShell](#powershell) runs the commands, hooks and status
   line instead: there is then no `shell` and no [`monitor`](#monitor) tool, as in Claude Code. With
   neither Git Bash nor a PowerShell interpreter Fontaine exits with code 2, naming what to install
   or set.

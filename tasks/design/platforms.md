@@ -17,7 +17,7 @@ Startup picks the Windows command shell from what it found:
 | Git Bash | PowerShell | Result |
 |---|---|---|
 | found | any | `shell`, `monitor`, hooks, status line and `!` lines use Git Bash |
-| not found | found | starts with one warning; PowerShell is the command shell (Claude Code: "If Git for Windows is not installed, Claude Code uses PowerShell as the shell tool instead") |
+| not found | found | starts; PowerShell is the command shell (Claude Code: "If Git for Windows is not installed, Claude Code uses PowerShell as the shell tool instead") |
 | not found | not found | exit 2: `no shell found: install Git for Windows, or set FONTAINE_GIT_BASH_PATH or FONTAINE_POWERSHELL_PATH` (a `FONTAINE_POWERSHELL_PATH` that is not a file is named instead of advised) |
 
  The command text reaches Git Bash's `sh` in the `FONTAINE_SH_COMMAND` environment variable, which `sh -c` evaluates, rather than on the Windows command line, where the MSYS runtime re-parses it and halves every `\\`; the command that was judged is then the one that runs. A separate Windows-only `powershell` tool (Claude name `PowerShell`) runs

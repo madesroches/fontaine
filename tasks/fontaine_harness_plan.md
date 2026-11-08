@@ -973,6 +973,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-08 (#510): Narrows the 2026-10-30 line "The worker agent does not get `powershell`": when the parent has no `shell`, a type entry naming bare `shell` (in `tools` or `disallowed`) also covers `powershell`, so the worker gets it and a type that disallows `shell` has no command tool; a specifier entry such as `shell(git *)` does not. With Git Bash present nothing changes.
 - 2026-11-08 (#510): The model-facing text names `powershell` where it would name `shell` when `shell` is not registered (tool descriptions, system prompt), and the `monitor` mentions are dropped.
 - 2026-11-08 (#510): No `cmd` shell, as Claude Code has none: `cmd` has no encoded-command form and re-parses its command line (`%VAR%`, `^`), so the judged string would not be the one that runs; PowerShell runs `cmd /c` when needed.
+- 2026-11-08 (#513): Supersedes the 'one startup warning says so' part of the 2026-11-08 (#510) line: without Git Bash Fontaine starts with no warning, since the model-facing text already names `powershell`.
 
 ### TUI
 
