@@ -200,6 +200,8 @@ impl std::fmt::Display for DownloadError {
             write!(f, "{} answered {status}", self.url)
         } else if self.too_large {
             write!(f, "{} is larger than expected", self.url)
+        } else if self.io.is_some() {
+            write!(f, "{} could not be saved", self.url)
         } else {
             write!(f, "{} could not be downloaded", self.url)
         }
@@ -212,6 +214,20 @@ impl std::error::Error for DownloadError {
             .as_ref()
             .map(|e| e as _)
             .or(self.io.as_ref().map(|e| e as _))
+    }
+}
+
+impl DownloadError {
+    /// A full disk is a local fault and an oversized body is not the archive that was signed;
+    /// only transport failures are worth retrying.
+    fn into_update_error(self) -> UpdateError {
+        if self.io.is_some() {
+            UpdateError::Install(Box::new(self))
+        } else if self.too_large {
+            UpdateError::Verify(Box::new(self))
+        } else {
+            UpdateError::Network(Box::new(self))
+        }
     }
 }
 
@@ -331,7 +347,7 @@ pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Out
         file.write_all(chunk)
     })
     .await
-    .map_err(|e| UpdateError::Network(Box::new(e)))?;
+    .map_err(DownloadError::into_update_error)?;
     drop(file);
 
     let signature = match release.asset(&format!("{name}.minisig")) {
@@ -342,7 +358,7 @@ pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Out
                 Ok(())
             })
             .await
-            .map_err(|e| UpdateError::Network(Box::new(e)))?;
+            .map_err(DownloadError::into_update_error)?;
             Some(String::from_utf8_lossy(&bytes).into_owned())
         }
         None => None,
@@ -391,7 +407,7 @@ pub fn run(config: &Config, host: &crate::Host) -> ExitCode {
         Ok(client) => client,
         Err(e) => {
             eprintln!("fontaine: cannot build the HTTP client: {}", chain(&e));
-            return ExitCode::from(EXIT_UPDATE_NETWORK);
+            return ExitCode::from(crate::EXIT_CONFIG);
         }
     };
     let keys = TrustedKeys::embedded();
@@ -411,7 +427,7 @@ pub fn run(config: &Config, host: &crate::Host) -> ExitCode {
     {
         Ok(runtime) => runtime,
         Err(e) => {
-            eprintln!("fontaine: cannot start the async runtime: {e}");
+            eprintln!("fontaine: cannot start the async runtime: {}", chain(&e));
             return ExitCode::from(1);
         }
     };
@@ -487,6 +503,32 @@ mod tests {
         assert!(check_binding(Channel::Release, &rel, "a", &ok).is_ok());
         let old = verified(Channel::Release, "a", "1.2.2");
         assert!(check_binding(Channel::Release, &rel, "a", &old).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_sink_write_error_is_an_install_error_not_a_network_one() {
+        use wiremock::matchers::any;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0u8; 16]))
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        let err = download(&client, &server.uri(), 1024, |_| {
+            Err(std::io::Error::other("no space left on device"))
+        })
+        .await
+        .unwrap_err()
+        .into_update_error();
+        assert!(matches!(err, UpdateError::Install(_)));
+        assert_eq!(err.exit_code(), 1);
+
+        let err = download(&client, &server.uri(), 8, |_| Ok(()))
+            .await
+            .unwrap_err()
+            .into_update_error();
+        assert!(matches!(err, UpdateError::Verify(_)));
     }
 
     #[test]

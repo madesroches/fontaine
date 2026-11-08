@@ -272,7 +272,13 @@ pub fn replace_binary(archive: &Path, target: &Path, work: &Path) -> Result<(), 
                 .map_err(io_err("the running executable cannot be moved aside"))?;
         }
         if let Err(e) = staged.persist(target) {
-            let _ = std::fs::rename(&aside, target);
+            if std::fs::rename(&aside, target).is_err() {
+                return Err(InstallError::Io(
+                    "the new binary cannot be moved into place and the old binary could not be \
+                     restored; it remains at the path in the cause",
+                    io::Error::new(e.error.kind(), format!("{} ({})", aside.display(), e.error)),
+                ));
+            }
             return Err(InstallError::Io(
                 "the new binary cannot be moved into place",
                 e.error,
@@ -400,15 +406,16 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o750)).unwrap();
         }
-        let xz = tar_xz(&[("t/fontaine", Regular, b"new", None)]);
+        let member = format!("t/{}", binary_name());
+        let xz = tar_xz(&[(member.as_str(), Regular, b"new", None)]);
         let archive = dir.path().join("a.tar.xz");
         std::fs::write(&archive, xz).unwrap();
         let work = tempfile::tempdir_in(dir.path()).unwrap();
-        if cfg!(windows) {
-            return;
-        }
         replace_binary(&archive, &target, work.path()).unwrap();
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        if cfg!(windows) {
+            assert_eq!(std::fs::read(aside_path(&target, None)).unwrap(), b"old");
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
