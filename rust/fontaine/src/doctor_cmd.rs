@@ -57,7 +57,7 @@ async fn build_report(
     host: &Host,
     sink: Option<&DebugSink>,
 ) -> DoctorReport {
-    let version = env!("CARGO_PKG_VERSION");
+    let version = crate::VERSION;
     let dirs = match telemetry::with_debug_only(sink, || resolve_dirs(host)) {
         Ok(dirs) => dirs,
         Err(e) => {

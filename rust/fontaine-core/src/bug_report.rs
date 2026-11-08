@@ -128,7 +128,7 @@ impl BugReport {
         let _ = writeln!(out, "## Description\n\n{}\n", f.description.trim());
         let _ = writeln!(out, "## Environment\n");
         let rows = [
-            ("version", format!("{} ({})", f.version, f.git_sha)),
+            ("version", f.version.clone()),
             ("build target", f.target.clone()),
             ("os", format!("{} {}", f.os, f.arch)),
             ("terminal", format!("{} {}", f.term, f.terminal_size)),
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(r.title, "It crashes");
         for needle in [
             "It crashes",
-            "0.1.0 (abc123)",
+            "0.1.0",
             "tui.theme",
             "slow disk",
             "shell: allow",

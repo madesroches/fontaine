@@ -107,6 +107,15 @@ pub struct BuildInfo {
 
 pub(crate) static BUILD_INFO: std::sync::OnceLock<BuildInfo> = std::sync::OnceLock::new();
 
+/// The version `--version` shows; the package version when no build was recorded (tests).
+pub fn build_version() -> &'static str {
+    version_or_package(BUILD_INFO.get())
+}
+
+fn version_or_package(info: Option<&BuildInfo>) -> &'static str {
+    info.map_or(env!("CARGO_PKG_VERSION"), |b| b.version)
+}
+
 /// Records the build for `/bug`; the first call wins.
 pub fn set_build_info(info: BuildInfo) {
     let _ = BUILD_INFO.set(info);
@@ -694,4 +703,20 @@ pub async fn run(
     stop.store(true, Ordering::Relaxed);
     let _ = reader.await;
     result
+}
+
+#[cfg(test)]
+mod build_version_tests {
+    use super::*;
+
+    #[test]
+    fn the_recorded_version_wins_and_the_package_version_is_the_fallback() {
+        let info = BuildInfo {
+            version: "9.9.9-dev+abc123",
+            git_sha: "abc123",
+            target: "t",
+        };
+        assert_eq!(version_or_package(Some(&info)), "9.9.9-dev+abc123");
+        assert_eq!(version_or_package(None), env!("CARGO_PKG_VERSION"));
+    }
 }

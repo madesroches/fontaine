@@ -14,7 +14,9 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/re
 This installs the latest CI-passing build of `main`. The installer is a file on the
 long-lived `dev` prerelease, replaced after every successful dev publish; it downloads the archive
 from the immutable `dev-<n>` prerelease of the build it was made for. Its receipt `version` is
-`<version>-dev.<n>+<commit>`, so a dev install is recognisable by the `-dev.` in it. It supports
+`<version>-dev.<n>+<commit>`, so a dev install is recognisable by the `-dev.` in it. `fontaine --version` prints a different
+string, `<version>-dev+<commit>`, because the binary computes it at build time: a release build of
+the `v<version>` tag prints the plain version. It supports
 Linux x86_64 and macOS on Apple silicon and Intel. There is no Linux arm64 build; use the archive
 there. [Windows has its own installer](#the-installer-windows).
 
@@ -161,4 +163,6 @@ cargo install --git https://github.com/madesroches/fontaine fontaine
 
 Fontaine is not published to crates.io. A source build has the PromptGuard 2 tool-result scanner
 only with `--features pg2`; see [Scanning tool results](guardian.md#scanning-tool-results). A source
-install writes no receipt.
+install writes no receipt. The checkout contains `.git`, so `fontaine --version` prints
+`<version>-dev+<commit>`, with `.dirty` appended when tracked files have uncommitted changes; a
+source tarball without `.git` prints the plain version.

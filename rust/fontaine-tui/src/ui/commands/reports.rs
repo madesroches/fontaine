@@ -14,7 +14,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             .filter(|(_, state)| *state == McpState::Connected)
             .count();
         let text = reports::status(&reports::StatusInfo {
-            version: env!("CARGO_PKG_VERSION"),
+            version: crate::build_version(),
             session_id: &runtime.session.id,
             roots: &runtime.roots(),
             scratch: runtime.state.scratch.as_deref(),

@@ -254,9 +254,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         };
         let (cols, rows) = ratatui::crossterm::terminal::size().unwrap_or((0, 0));
         Facts {
-            version: build
-                .map_or(env!("CARGO_PKG_VERSION"), |b| b.version)
-                .to_string(),
+            version: crate::build_version().to_string(),
             git_sha: build.map_or("unknown", |b| b.git_sha).to_string(),
             target: build.map_or("unknown", |b| b.target).to_string(),
             os: std::env::consts::OS.to_string(),

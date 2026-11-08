@@ -8,6 +8,13 @@ mod plugin_auto_update;
 pub mod release_signature;
 pub mod telemetry;
 
+#[cfg(test)]
+#[path = "../build/version.rs"]
+mod build_version;
+
+/// `--version`, `fontaine doctor`, `/bug`, `/status` and telemetry all show this one value.
+pub const VERSION: &str = env!("FONTAINE_VERSION");
+
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -442,7 +449,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
         },
     );
     fontaine_tui::set_build_info(fontaine_tui::BuildInfo {
-        version: env!("CARGO_PKG_VERSION"),
+        version: VERSION,
         git_sha: env!("FONTAINE_GIT_SHA"),
         target: env!("FONTAINE_BUILD_TARGET"),
     });

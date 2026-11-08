@@ -47,6 +47,10 @@ All notable changes are recorded here. The format follows
 
 #### Build and release
 
+- `fontaine --version`, `fontaine doctor`, `/status`, `/bug` and the telemetry `service.version`
+  show `<version>-dev+<commit>` (plus `.dirty` for uncommitted tracked changes) on builds that are
+  not the `v<version>` tag, and the plain version on release builds; `/bug` no longer repeats the
+  commit after it (#508).
 - CI builds the rustdoc for the workspace, and for the `pg2` feature on Linux, with warnings
   denied, so a broken doc link fails the build (#197).
 

@@ -5,7 +5,7 @@ use fontaine_core::config::PermissionMode;
 use fontaine_core::effort::Effort;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "fontaine", version, about = "A terminal AI coding agent")]
+#[command(name = "fontaine", version = crate::VERSION, about = "A terminal AI coding agent")]
 pub struct Cli {
     /// Start in this directory instead of the launch directory: it becomes the project root, and
     /// relative `--settings`, `--add-dir` and `--debug-file` paths resolve against it
