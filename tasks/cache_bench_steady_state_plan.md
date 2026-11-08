@@ -22,7 +22,8 @@ Average steps 3..N-1 only, and reject runs with too few steps left to average.
 - Docs: `evals/README.md` (Prompt-cache bench: flag table `--files` "at least 3", "middle steps"
   paragraph and exit-code sentence) and `docs/claude-subscription.md` ("Checking cache usage").
 - `evals/scorecards/claude-subscription-cache-sonnet.json` named in the issue is not tracked in
-  the repository, so there is no committed scorecard to replace.
+  the repository on this branch. Open PR #499 (branch `cache-bench-first-scorecard`) commits a
+  scorecard (ratio 1.797) measured with the old mean.
 
 ## Design
 
@@ -44,19 +45,26 @@ Average steps 3..N-1 only, and reject runs with too few steps left to average.
    raise the minimum in `summarize` to 5 with the new message; reword the zero-mean error and the
    `summarize` doc comment (skips the first step for base context, the second because it writes
    only one message, and the last because it only answers); change the `table()` label.
-2. `runner.rs`: `--files` minimum 4 and the new message.
+2. `runner.rs`: `--files` minimum 4 and the new message; reword the `threshold` clap doc comment
+   (line ~79, "mean middle-step write") to "mean steady-state write".
 3. Update unit tests in `cache_bench.rs` (see Testing Strategy).
-4. Update `tests/cache_bench.rs` if it passes `--files 3` or asserts on the old wording.
+4. Update `tests/cache_bench.rs`: `bench()` default becomes `--files 4`; every creation array has at
+   least 5 steps (the too-short side in `a_side_with_too_few_steps_fails_the_bench` stays short);
+   expected ratios (e.g. 1.5) are recomputed over steps 3..N-1; `bad_flags_are_usage_errors` uses
+   "3" as the too-small `--files` value and keeps a threshold-validation case reachable (a valid
+   `--files` with `--threshold 0`).
 5. Docs: `evals/README.md` (flag table "at least 4", ratio paragraph, exit-code sentence "fewer than
    five model calls") and `docs/claude-subscription.md` ("leaving out the first step, the second
    (it writes only one message) and the last"; "fewer than five model calls").
-6. `CHANGELOG.md`: one entry under the unreleased section.
+6. `CHANGELOG.md`: amend the existing unreleased #483 `cache-bench` entry under `## [Unreleased]` /
+   `### Added` with a sentence about the steady-state mean (steps 3..N-1) and the minimum of 4
+   files, ending with "(#497)"; no new entry.
 
 ## Files to Modify
 
 - `rust/fontaine-evals/src/cache_bench.rs`
 - `rust/fontaine-evals/src/runner.rs`
-- `rust/fontaine-evals/tests/cache_bench.rs` (if affected)
+- `rust/fontaine-evals/tests/cache_bench.rs`
 - `evals/README.md`
 - `docs/claude-subscription.md`
 - `CHANGELOG.md`
@@ -71,9 +79,10 @@ Average steps 3..N-1 only, and reject runs with too few steps left to average.
 
 ## Decisions
 
-- AFK: no scorecard is tracked in the repo and re-running needs a signed-in subscription and live
-  CLI (manual-only per AGENTS.md), so the scorecard replacement is left to the maintainer; the PR
-  notes it.
+- AFK: re-running the bench needs a signed-in subscription and live CLI (manual-only per
+  AGENTS.md), so open PR #499's scorecard (ratio 1.797, old mean) is left for the maintainer to
+  re-record with the new method (its stored per-step `cache_creation` values allow recomputing
+  offline); the PR notes it.
 
 ## Documentation
 
@@ -82,10 +91,10 @@ Average steps 3..N-1 only, and reject runs with too few steps left to average.
 ## Testing Strategy
 
 Unit tests in `cache_bench.rs`, no live calls:
-- Rewrite `the_ratio_covers_the_middle_steps_only` to use five-plus steps and assert that the first,
-  second and last steps do not move the mean (put huge values in each).
-- A regression test pinning the issue: a cheap step 2 with steady steps at ratio 2.0 yields exactly
-  2.0, not the flattered value.
+- Rewrite `the_ratio_covers_the_middle_steps_only` (renamed for steady-state) to use five-plus steps
+  and assert that the first, second and last steps do not move the mean: put huge values in the
+  first and last steps and a cheap step 2, with steady steps at ratio 2.0 yielding exactly 2.0, so
+  it pins the issue.
 - Update `the_threshold_is_exclusive`, `base_context_is_the_first_steps_read_plus_creation`,
   `the_zero_native_write...` and `a_scorecard_round_trips` to at-least-5-step inputs.
 - `fewer_than_five_steps_on_either_side_is_an_error` (replacing the 3-step test) checks both sides
