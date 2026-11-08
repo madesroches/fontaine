@@ -57,7 +57,9 @@ fontaine-tools/examples/mcp_double.rs
   (`REQUIRES_USER_INTERACTION`, `GuardedSink`, `mcp_tool_name`, `McpConnectionHandle`,
   `Connected`, `McpError`, `ServerSpec`, `Transport`, `connect`, `connect_transport`). The
   `register` and `servers` submodules stay `pub`, `interaction` stays private.
-- Inside the moved files, `fontaine_tools::…` imports become `crate::…`.
+- Inside the moved files, `fontaine_tools::…` imports become `crate::…`, and the existing
+  `crate::interaction::…` and `crate::register::GuardedSink` imports (`register.rs`, `servers.rs`)
+  become `super::interaction::…` and `super::register::…`.
 - The test helpers go to `tests/mcp_common/`, not `tests/common/`. `fontaine-tools/tests/common/`
   already exists with a different `mod.rs` that every built-in-tool test pulls in, and the two
   helper sets share nothing.
@@ -89,7 +91,7 @@ already links it through `fontaine-core`, so the set of compiled crates doesn't 
 1. `git mv` the four `src/` files, the test, the two helper files and the example to the paths
    above (`lib.rs` → `src/mcp.rs`, `tests/common/` → `tests/mcp_common/`). Using `git mv` keeps
    rename history.
-2. In the moved sources, rewrite `fontaine_tools::` to `crate::` and keep `mod`/`pub mod`
+2. In the moved sources, rewrite `fontaine_tools::` to `crate::`, the existing `crate::interaction::`/`crate::register::` to `super::`, and keep `mod`/`pub mod`
    visibility as it was. In the moved test and example, rewrite `fontaine_mcp::` to
    `fontaine_tools::mcp::` and `mod common;` to `mod mcp_common;` (with the uses that go with it).
    Fix the example's `#[path = "../tests/common/server.rs"]` to `../tests/mcp_common/server.rs`.
@@ -116,13 +118,13 @@ already links it through `fontaine-core`, so the set of compiled crates doesn't 
   `rust/fontaine-core/src/agent/mcp.rs`, `rust/fontaine-core/src/permissions.rs`,
   `rust/fontaine-core/tests/choke_point.rs`
 - `rust/fontaine/examples/repo_mcp_server.rs`
-- `AGENTS.md`, `tasks/fontaine_harness_plan.md`, `docs/architecture.md`
+- `AGENTS.md`, `tasks/fontaine_harness_plan.md`, `docs/architecture.md`, `CHANGELOG.md`
 
 ## Trade-offs
 
 - **Full merge into `fontaine-core` (the issue's proposal).** This removes three crates but turns
   the "tools never reach core" rule from a compiler guarantee into a convention that `pub(crate)`
-  can't enforce. It also makes `core` about 89k lines, so every edit to it recompiles more code, and
+  can't enforce. It also makes `core` about 92k lines, so every edit to it recompiles more code, and
   Cargo can no longer build `tools` alongside `guardian`. The project's core property is that every
   call passes through the gate, and the plumbing saved by the merge isn't worth losing that boundary.
 - **Fold `fontaine-mcp` into `fontaine-core`.** The issue allows either target. `fontaine-tools`
@@ -139,7 +141,8 @@ already links it through `fontaine-core`, so the set of compiled crates doesn't 
 
 ## Documentation
 
-- `docs/architecture.md`: remove the `fontaine-mcp/` line from the workspace map, remove its crate
+- `docs/architecture.md`: remove the `fontaine-mcp/` line from the workspace map and add "MCP servers" to the map's
+  `fontaine-tools/` line, remove its crate
   table row, add MCP servers (transports and wrapped registration, see [MCP servers](mcp.md)) to
   the `fontaine-tools` row, and remove the `fontaine-mcp` lines from the dependency graph.
 - `tasks/fontaine_harness_plan.md`: remove `fontaine-mcp/` from the workspace layout and add
@@ -148,6 +151,8 @@ already links it through `fontaine-core`, so the set of compiled crates doesn't 
   `### Project` in `## Decisions`: fold `fontaine-mcp` into `fontaine-tools` (8 → 7 crates); the
   full merge into `fontaine-core` proposed in #485 was declined to keep the compiler-enforced
   tools/agents boundary.
+- `CHANGELOG.md`: a `### Changed` entry under `## [Unreleased]`: #485, `fontaine-mcp` folded into
+  `fontaine-tools` as the `mcp` module (8 → 7 crates).
 - `AGENTS.md`: drop `fontaine-mcp` from the crate list under Project layout.
 - `docs/mcp.md` names no crate, so it is unchanged.
 
