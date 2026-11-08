@@ -5,18 +5,16 @@
 
 mod common;
 
-use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
 
 use common::World;
+use common::claude_cli::{
+    Claude, argv, double, main_handle, tagged_conversation, three_steps, toml_path,
+};
 use fontaine_core::accounts::{self, SignInState};
 use fontaine_core::agent::build_guardian;
 use fontaine_core::config::AccountKind;
-use fontaine_core::models::{
-    self, GuardianModel, ModelError, Models, ResolveParams, SharedEnv, Switcher,
-};
+use fontaine_core::models::{self, GuardianModel, ModelError, Switcher};
 use fontaine_core::providers::claude_subscription::{
     CONFLICTING_ENV, ErrorKind, claude_error, inherited_env_names,
 };
@@ -27,160 +25,6 @@ use fontaine_guardian::{
 use rig_core::completion::{CompletionRequest, ToolDefinition};
 use rig_core::message::{AssistantContent, CallId, Message, ToolName};
 use serde_json::{Value, json};
-
-fn double() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "claude_cli_double.exe"
-    } else {
-        "claude_cli_double"
-    };
-    let path = dir.join(name);
-    assert!(
-        path.exists(),
-        "{} is not built: run `cargo build -p fontaine-core --example claude_cli_double`",
-        path.display()
-    );
-    path
-}
-
-/// A world with one `claude` account whose CLI is the double and whose CLI profile directory
-/// holds the scenario and the log.
-struct Claude {
-    w: World,
-    dir: PathBuf,
-    extra: Arc<Mutex<HashMap<String, String>>>,
-}
-
-impl Claude {
-    fn new() -> Claude {
-        Self::with_account("")
-    }
-
-    fn with_account(extra_account: &str) -> Claude {
-        let w = World::new();
-        let dir = w.root.join("claude-profile");
-        std::fs::create_dir_all(&dir).unwrap();
-        w.user_file(&format!(
-            "[accounts.claude]\nkind = \"claude-subscription\"\ncli_path = {}\nclaude_config_dir = {}\n{extra_account}\n[model]\nmodel = \"claude/sonnet\"\n",
-            toml_path(&double()),
-            toml_path(&dir),
-        ));
-        Claude {
-            w,
-            dir,
-            extra: Arc::default(),
-        }
-    }
-
-    fn scenario(&self, scenario: Value) {
-        std::fs::write(self.dir.join("double.json"), scenario.to_string()).unwrap();
-    }
-
-    fn set_env(&self, name: &str, value: &str) {
-        self.extra
-            .lock()
-            .unwrap()
-            .insert(name.to_string(), value.to_string());
-    }
-
-    fn unset_env(&self, name: &str) {
-        self.extra.lock().unwrap().remove(name);
-    }
-
-    /// The process environment the CLI may need, minus anything that would conflict, plus what a
-    /// test sets. Looked up live, as in production.
-    fn env(&self) -> SharedEnv {
-        let extra = self.extra.clone();
-        let root = self.w.root.clone();
-        Arc::new(move |name: &str| {
-            if let Some(value) = extra.lock().unwrap().get(name) {
-                return Some(OsString::from(value));
-            }
-            if CONFLICTING_ENV.contains(&name) || !inherited_env_names().contains(&name) {
-                return None;
-            }
-            if name == "HOME" {
-                return Some(root.clone().into_os_string());
-            }
-            std::env::var_os(name)
-        })
-    }
-
-    async fn resolve(&self, model: Option<&str>) -> Result<Models, ModelError> {
-        let config = self.w.load().unwrap();
-        models::resolve(&ResolveParams {
-            config: &config,
-            data_dir: &self.w.data,
-            env: self.env(),
-            model_override: model,
-            session_id: Some("session-1".to_string()),
-        })
-        .await
-    }
-
-    fn switcher(&self) -> Switcher {
-        Switcher::new(
-            self.w.load().unwrap(),
-            self.w.data.clone(),
-            self.env(),
-            Some("session-1".to_string()),
-        )
-    }
-
-    fn log(&self) -> Vec<Value> {
-        std::fs::read_to_string(self.dir.join("log.jsonl"))
-            .unwrap_or_default()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect()
-    }
-
-    fn invocations(&self) -> Vec<Value> {
-        self.log()
-            .into_iter()
-            .filter(|entry| entry["kind"] == "invocation")
-            .collect()
-    }
-
-    fn frames(&self) -> Vec<Value> {
-        self.log()
-            .into_iter()
-            .filter(|entry| entry["kind"] == "frame")
-            .map(|entry| entry["value"].clone())
-            .collect()
-    }
-
-    /// The user frames that ask for a response: those not marked `shouldQuery: false`.
-    fn query_frames(&self) -> Vec<Value> {
-        self.frames()
-            .into_iter()
-            .filter(|f| f["type"] == "user" && f["shouldQuery"] != json!(false))
-            .collect()
-    }
-
-    /// The model processes' invocations: those with a `--model` argument.
-    fn model_runs(&self) -> Vec<Value> {
-        self.invocations()
-            .into_iter()
-            .filter(|i| argv(i).contains(&"--model".to_string()))
-            .collect()
-    }
-}
-
-fn toml_path(path: &std::path::Path) -> String {
-    format!("{:?}", path.to_string_lossy())
-}
-
-fn argv(invocation: &Value) -> Vec<String> {
-    invocation["argv"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|a| a.as_str().unwrap().to_string())
-        .collect()
-}
 
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter()
@@ -199,10 +43,6 @@ fn read_tool() -> ToolDefinition {
         "read a file",
         json!({"type": "object", "properties": {"path": {"type": "string"}}}),
     )
-}
-
-async fn main_handle(claude: &Claude) -> models::ModelHandle {
-    claude.resolve(None).await.unwrap().main
 }
 
 // ---- configuration and accounts -------------------------------------------------------------
@@ -810,30 +650,6 @@ fn conversation(users: usize) -> CompletionRequest {
     tagged_conversation("", users)
 }
 
-/// A `conversation` whose first message carries `tag`, so its session id (and the process-wide
-/// self-check record under it) is its own.
-fn tagged_conversation(tag: &str, users: usize) -> CompletionRequest {
-    let mut history = Vec::new();
-    for n in 1..users {
-        let tag = if n == 1 { tag } else { "" };
-        history.push(Message::user(format!("question {n}{tag}")));
-        history.push(Message::assistant(format!("answer {n}")));
-    }
-    let tag = if users == 1 { tag } else { "" };
-    CompletionRequest::new(Message::user(format!("question {users}{tag}"))).messages(history)
-}
-
-impl Claude {
-    /// The frames the double read in its `run`th model process, initialize requests left out.
-    fn run_frames(&self, run: u64) -> Vec<Value> {
-        self.log()
-            .into_iter()
-            .filter(|entry| entry["kind"] == "frame" && entry["run"] == run)
-            .map(|entry| entry["value"].clone())
-            .collect()
-    }
-}
-
 fn has_reminder(frame: &Value) -> bool {
     frame.to_string().contains("system-reminder")
 }
@@ -897,32 +713,6 @@ async fn an_older_cli_or_an_account_without_an_email_keeps_the_earlier_layout() 
         assert!(frames.iter().all(|f| !has_reminder(f)), "{scenario}");
         assert_eq!(markers(&frames), [(2, 0)], "{scenario}");
     }
-}
-
-fn cached(read: u64, write_1h: u64) -> Value {
-    json!({"input_tokens": 1, "output_tokens": 7, "cache_read_input_tokens": read,
-           "cache_creation": {"ephemeral_1h_input_tokens": write_1h}})
-}
-
-async fn three_steps(version: &str, second_read: u64) -> Claude {
-    let claude = Claude::new();
-    claude.scenario(json!({
-        "claude_code_version": version,
-        "responses": [
-            {"text": "a", "usage": cached(0, 500)},
-            {"text": "b", "usage": cached(second_read, 100)},
-            {"text": "c", "usage": cached(1000, 0)},
-        ],
-    }));
-    let handle = main_handle(&claude).await;
-    for users in [2, 3, 4] {
-        handle
-            .completion
-            .call(tagged_conversation(version, users))
-            .await
-            .unwrap();
-    }
-    claude
 }
 
 #[tokio::test]

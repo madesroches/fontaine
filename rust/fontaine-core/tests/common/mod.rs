@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod claude_cli;
 pub mod pipeline;
 pub mod runtime;
 

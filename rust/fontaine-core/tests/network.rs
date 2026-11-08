@@ -51,6 +51,7 @@ async fn an_account_connects_with_its_own_proxy_over_the_global_one() {
             session_id: None,
             network: &network,
             env: std::sync::Arc::new(|_| None),
+            warn: providers::warn::Warn::process(),
         })
         .unwrap();
     let _ = client.list().await;

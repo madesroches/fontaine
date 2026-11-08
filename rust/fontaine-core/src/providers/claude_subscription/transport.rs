@@ -29,6 +29,7 @@ use super::protocol::{
 };
 use super::usage::Usage;
 use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error, read_idle_error};
+use crate::providers::warn::Warn;
 
 /// How the inert inventory is started: this executable in its hidden mode, unless a test
 /// supplies another program.
@@ -186,6 +187,7 @@ impl ClaudeTransport {
                 idle,
                 pending: VecDeque::new(),
                 sent: Some(sent),
+                warn: self.cli.warn().clone(),
             })
             .boxed(),
         ))
@@ -200,7 +202,7 @@ impl ClaudeTransport {
         mut translated: Translated,
     ) -> Result<(CliChild, Reader, Sent, Frame), Failure> {
         let selection = &*self.selection;
-        let scratch = Scratch::new().map_err(scratch_failed)?;
+        let scratch = Scratch::new(self.cli.warn().clone()).map_err(scratch_failed)?;
         let files = self
             .write_files(&scratch, &translated)
             .map_err(scratch_failed)?;
@@ -404,6 +406,7 @@ struct Running {
     pending: VecDeque<WireFrame>,
     /// The request as sent, until its result is recorded.
     sent: Option<Sent>,
+    warn: Warn,
 }
 
 /// The most of a rejected line the debug file keeps.
@@ -475,12 +478,12 @@ fn stream(
                         && let Some(version) =
                             context::finished(sent, cache_usage, std::time::Instant::now())
                     {
-                        tracing::warn!(
-                            cli_version = format!("{}.{}.{}", version.0, version.1, version.2),
-                            "the Claude CLI's replayed context was not read back from the prompt \
-                             cache; the cache optimization is off for this CLI version until \
-                             restart (`cache-bench` measures it)"
-                        );
+                        running.warn.emit(&format!(
+                            "the Claude CLI's replayed context was not read back from the \
+                             prompt cache; the cache optimization is off for CLI version \
+                             {}.{}.{} until restart (`cache-bench` measures it)",
+                            version.0, version.1, version.2
+                        ));
                     }
                     running.pending.extend(running.reader.release());
                     if running.pending.is_empty() {

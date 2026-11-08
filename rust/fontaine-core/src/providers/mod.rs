@@ -32,6 +32,7 @@ pub mod openai_compatible;
 pub mod opencode_go;
 pub mod openrouter;
 pub mod token_source;
+pub mod warn;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CredentialPolicy {
@@ -306,6 +307,7 @@ pub struct ConnectContext<'a> {
     /// The process environment, looked up live on every call. Owned so a client can keep it for
     /// the requests it makes later.
     pub env: SharedEnv,
+    pub warn: warn::Warn,
 }
 
 impl ConnectContext<'_> {

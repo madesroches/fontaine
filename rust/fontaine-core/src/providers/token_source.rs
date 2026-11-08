@@ -14,6 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use futures::future::BoxFuture;
 
 use super::device_flow::{FlowError, RefreshError};
+use super::warn::Warn;
 use crate::credentials::{self, Credentials, OAuthTokens, StoredCredential};
 
 /// A token with less than this left is refreshed before use.
@@ -112,19 +113,6 @@ pub struct TokenSource {
     /// Unix time before which a failed refresh is not retried while the token is still valid.
     retry_after: AtomicU64,
     backoff_secs: AtomicU64,
-}
-
-type WarnSink = Arc<dyn Fn(&str) + Send + Sync>;
-
-fn warn_sink() -> &'static Mutex<Option<WarnSink>> {
-    static SINK: OnceLock<Mutex<Option<WarnSink>>> = OnceLock::new();
-    SINK.get_or_init(Default::default)
-}
-
-/// Where a failure to save a rotated sign-in is reported. Sources are shared process-wide and
-/// outlive any one session, so the sink is process-wide too and the latest session wins.
-pub fn set_warn_sink(sink: impl Fn(&str) + Send + Sync + 'static) {
-    *lock(warn_sink(), "warning sink") = Some(Arc::new(sink));
 }
 
 type Registry = Mutex<HashMap<(PathBuf, String), Arc<TokenSource>>>;
@@ -278,10 +266,7 @@ impl TokenSource {
                 self.account,
                 fontaine_tools::error_chain::chain(&e)
             );
-            match lock(warn_sink(), "warning sink").clone() {
-                Some(sink) => sink(&message),
-                None => tracing::warn!("{message}"),
-            }
+            Warn::process().emit(&message);
         }
         Ok(access)
     }
