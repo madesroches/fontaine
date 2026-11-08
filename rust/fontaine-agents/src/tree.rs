@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use fontaine_tools::gate::ROOT_AGENT;
 use fontaine_tools::jobs::{AgentDelivery, AgentState, AgentWaitError, AgentWaits};
-use fontaine_tools::lock::{lock, read, write};
+use fontaine_tools::lock::{lock, lock_recovering, read, write};
 use futures::future::BoxFuture;
 use tokio::sync::Notify;
 
@@ -581,6 +581,7 @@ pub struct AgentTree {
     display: Notify,
     next: AtomicU64,
     unpriced_noticed: AtomicBool,
+    facts_noticed: Mutex<HashSet<String>>,
     /// Set when the session starts ending, after which no agent is woken.
     shutdown: AtomicBool,
     teams: RwLock<Option<Arc<Teams>>>,
@@ -635,6 +636,7 @@ impl AgentTree {
             display: Notify::new(),
             next: AtomicU64::new(next_agent),
             unpriced_noticed: AtomicBool::new(false),
+            facts_noticed: Mutex::new(HashSet::new()),
             shutdown: AtomicBool::new(false),
             teams: RwLock::new(None),
             warn: RwLock::new(None),
@@ -1583,6 +1585,13 @@ impl AgentTree {
         !self.unpriced_noticed.swap(true, Ordering::SeqCst)
     }
 
+    /// True the first time it is called for `reference`: the one-time notice that a model's facts
+    /// are derived rather than listed.
+    pub fn first_facts_notice(&self, reference: &str) -> bool {
+        // Only gates a warning, so a poisoned set is still usable.
+        lock_recovering(&self.facts_noticed).insert(reference.to_string())
+    }
+
     /// Queues `text` for `to`'s next turn, where `to` is an id, a name or `main`. Any agent may
     /// reach its parent, its children, its siblings and `main`; a name reaches no further than
     /// its id. Returns the id it went to.
@@ -2501,6 +2510,14 @@ mod tests {
         let tree = tree(1);
         assert!(tree.first_unpriced_cap());
         assert!(!tree.first_unpriced_cap());
+    }
+
+    #[test]
+    fn the_facts_notice_is_given_once_per_reference() {
+        let tree = tree(1);
+        assert!(tree.first_facts_notice("acct/a"));
+        assert!(!tree.first_facts_notice("acct/a"));
+        assert!(tree.first_facts_notice("acct/b"));
     }
 
     fn spawn(tree: &AgentTree, parent: &str) -> String {

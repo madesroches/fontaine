@@ -46,6 +46,9 @@ pub struct Switched {
     pub guardian_followed: bool,
     /// Why the choice could not be saved, when it could not.
     pub persist_error: Option<String>,
+    /// The installed guardian's facts warning, set where the runtime's own record of the
+    /// guardian is not updated and the caller cannot read it from there.
+    pub facts_notice: Option<String>,
 }
 
 /// What a credential change did to the live session.
@@ -58,6 +61,8 @@ pub struct CredentialEffect {
     pub main_error: Option<String>,
     /// The guardian is on the account: whether it can be asked now.
     pub guardian_ready: Option<bool>,
+    /// The facts warning of the guardian the retry installed, when it is a derived model.
+    pub guardian_notice: Option<String>,
 }
 
 impl AgentRuntime {
@@ -91,7 +96,10 @@ impl AgentRuntime {
         self.switcher()?
             .guardian(
                 text,
-                Some((&self.models.main.reference, &self.models.main_listing)),
+                Some((
+                    &self.models.main.reference,
+                    &self.models.main_listing.models,
+                )),
             )
             .await
             .map_err(|e| RuntimeError::caused("could not resolve the guardian model", e))
@@ -124,6 +132,7 @@ impl AgentRuntime {
             reference,
             guardian_followed,
             persist_error,
+            facts_notice: None,
         })
     }
 
@@ -213,7 +222,8 @@ impl AgentRuntime {
         self.listings.sort_by(|a, b| a.account.cmp(&b.account));
         let main = &self.models.main.reference.account;
         if let Some(slot) = self.listings.iter_mut().find(|l| l.account == *main) {
-            slot.models = Ok(self.models.main_listing.clone());
+            slot.models = Ok(self.models.main_listing.models.clone());
+            slot.refused = self.models.main_listing.refused.clone();
         }
         Ok(match account {
             Some(name) => self
@@ -296,7 +306,9 @@ impl AgentRuntime {
         let guardian_on_account = ModelRef::parse(self.state.guardian().label())
             .is_some_and(|reference| reference.account == name);
         if guardian_on_account {
-            effect.guardian_ready = Some(self.retry_guardian().await.unwrap_or(false));
+            let (ready, notice) = self.retry_guardian().await.unwrap_or((false, None));
+            effect.guardian_ready = Some(ready);
+            effect.guardian_notice = notice;
         }
         effect
     }
@@ -317,16 +329,20 @@ impl AgentRuntime {
             reference,
             guardian_followed: false,
             persist_error,
+            facts_notice: None,
         })
     }
 
     /// Tries the guardian model again, for when its credential has appeared since startup.
-    /// Returns whether it can be asked now.
-    pub async fn retry_guardian(&self) -> Result<bool, RuntimeError> {
+    /// Returns whether it can be asked now, and the facts warning of the model it installed.
+    pub async fn retry_guardian(&self) -> Result<(bool, Option<String>), RuntimeError> {
         let current = self.state.guardian();
         let model = self.guardian_for(current.label()).await?;
         self.install_guardian(&model);
-        Ok(matches!(model, GuardianModel::Ready(_)))
+        Ok(match &model {
+            GuardianModel::Ready(handle) => (true, handle.facts_notice.clone()),
+            _ => (false, None),
+        })
     }
 
     /// The "pick another" answer to an unavailable guardian: switches the guardian and, when it
@@ -338,9 +354,10 @@ impl AgentRuntime {
     pub async fn use_guardian(&self, text: &str) -> Result<Option<Switched>, RuntimeError> {
         let model = self.guardian_for(text).await?;
         self.install_guardian(&model);
-        if !matches!(model, GuardianModel::Ready(_)) {
+        let GuardianModel::Ready(handle) = &model else {
             return Ok(None);
-        }
+        };
+        let facts_notice = handle.facts_notice.clone();
         let reference = model.reference().to_string();
         let persist_error = self
             .persist(|path| user_config::set_guardian_model(path, &reference))
@@ -349,6 +366,7 @@ impl AgentRuntime {
             reference,
             guardian_followed: false,
             persist_error,
+            facts_notice,
         }))
     }
 
@@ -356,7 +374,12 @@ impl AgentRuntime {
     pub fn guardian_candidates(&self) -> Vec<ModelRef> {
         self.switcher().map_or_else(
             |_| Vec::new(),
-            |switcher| switcher.candidates(&self.models.main.reference, &self.models.main_listing),
+            |switcher| {
+                switcher.candidates(
+                    &self.models.main.reference,
+                    &self.models.main_listing.models,
+                )
+            },
         )
     }
 }

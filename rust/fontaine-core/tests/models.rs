@@ -76,6 +76,72 @@ async fn anthropic_uses_the_messages_wire_and_the_env_key() {
 }
 
 #[tokio::test]
+async fn an_unlisted_anthropic_model_takes_its_newest_same_shape_siblings_facts() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-9-9",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.work]\nkind = \"anthropic\"\nbase_url = \"{}\"\napi_key_env = \"WORK_KEY\"\nmodels = [\"claude-haiku-9-9\"]\n\n[model]\nmodel = \"work/claude-haiku-9-9\"\n",
+        server.uri()
+    ));
+    let config = w.load().unwrap();
+    let resolved = models::resolve(&ResolveParams {
+        config: &config,
+        data_dir: &w.data,
+        env: env_of(&[("WORK_KEY", "k")]),
+        model_override: None,
+        session_id: None,
+    })
+    .await
+    .unwrap();
+    let anthropic = rig_core::providers::registry::ProviderId::catalog("anthropic").unwrap();
+    let from = fontaine_core::providers::derived_facts::unlisted(anthropic, "claude-haiku-9-9")
+        .expect("a listed haiku shares the shape")
+        .from;
+    let sibling = rig_core::catalog::Catalog::builtin()
+        .get_exact(anthropic, &from)
+        .unwrap();
+
+    let notice = resolved.main.facts_notice.clone().expect("derived");
+    assert!(notice.contains(&format!("`{from}`")), "{notice}");
+    assert!(
+        resolved.notices.iter().any(|n| n.headline == notice),
+        "the notice reaches the startup notices"
+    );
+    let spec = resolved.main.completion.spec().expect("derived spec");
+    assert_eq!(spec.id, "claude-haiku-9-9");
+    assert!(spec.pricing.is_none());
+
+    say_hi(&resolved.main).await;
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body["max_tokens"],
+        json!(sibling.max_output_tokens.expect("the base has a limit"))
+    );
+}
+
+#[tokio::test]
+async fn an_unlisted_openai_compatible_model_gets_no_derived_facts() {
+    let w = World::new();
+    w.user_file(
+        "[accounts.gw]\nkind = \"openai-compatible\"\nbase_url = \"http://localhost:1/v1\"\nmodels = [\"gpt-9.9-mini\"]\n\n[model]\nmodel = \"gw/gpt-9.9-mini\"\n",
+    );
+    let handle = resolve_main(&w, env_of(&[])).await;
+    assert!(handle.facts_notice.is_none());
+}
+
+#[tokio::test]
 async fn openai_uses_the_responses_wire_and_a_bearer_key() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -229,6 +295,18 @@ async fn a_catalog_listed_ollama_model_reports_the_configured_window() {
         handle.completion.spec().unwrap().context_window,
         Some(16384)
     );
+}
+
+#[tokio::test]
+async fn a_derived_ollama_model_reports_the_configured_window() {
+    let (_, handle) = ollama_request("glm-9.9", "context_tokens = 8192\n").await;
+    let spec = handle
+        .completion
+        .spec()
+        .expect("a listed glm shares the shape");
+    assert_eq!(spec.id, "glm-9.9");
+    assert_eq!(spec.context_window, Some(8192));
+    assert!(handle.facts_notice.is_some());
 }
 
 #[tokio::test]
@@ -473,7 +551,7 @@ async fn the_main_account_is_judged_by_the_listing_already_fetched() {
         resolved.guardian.unwrap().reference().to_string(),
         "work/claude-haiku-5-5"
     );
-    assert_eq!(resolved.main_listing.len(), 2);
+    assert_eq!(resolved.main_listing.models.len(), 2);
 }
 
 #[tokio::test]
@@ -663,9 +741,7 @@ async fn listings_use_config_and_the_main_listing_without_a_request_and_list_the
     ));
     let switcher = listing_switcher(&w, &[]);
     let main = ModelRef::parse("main/m1").unwrap();
-    let listings = switcher
-        .listings(Some((&main, &["m1".to_string()])), None)
-        .await;
+    let listings = switcher.listings(Some((&main, &m1_listing())), None).await;
     let names: Vec<&str> = listings.iter().map(|l| l.account.as_str()).collect();
     assert_eq!(names, ["fixed", "live", "main"]);
     assert_eq!(listings[0].models, Ok(vec!["one".into(), "two".into()]));
@@ -674,12 +750,16 @@ async fn listings_use_config_and_the_main_listing_without_a_request_and_list_the
 
     // `only` narrows the accounts visited.
     let only = switcher
-        .listings(
-            Some((&main, &["m1".to_string()])),
-            Some(&["fixed".to_string()]),
-        )
+        .listings(Some((&main, &m1_listing())), Some(&["fixed".to_string()]))
         .await;
     assert_eq!(only.len(), 1);
+}
+
+fn m1_listing() -> fontaine_core::models::Listing {
+    fontaine_core::models::Listing {
+        models: vec!["m1".to_string()],
+        refused: Vec::new(),
+    }
 }
 
 #[tokio::test]
@@ -697,9 +777,7 @@ async fn a_failing_account_keeps_its_entry_with_the_reason() {
     ));
     let switcher = listing_switcher(&w, &[]);
     let main = ModelRef::parse("main/m1").unwrap();
-    let listings = switcher
-        .listings(Some((&main, &["m1".to_string()])), None)
-        .await;
+    let listings = switcher.listings(Some((&main, &m1_listing())), None).await;
     let names: Vec<&str> = listings.iter().map(|l| l.account.as_str()).collect();
     assert_eq!(names, ["broken", "main", "nokey"]);
     let broken = listings[0].models.as_ref().unwrap_err();
@@ -728,7 +806,7 @@ async fn a_slow_account_times_out_without_stopping_the_others() {
     let main = ModelRef::parse("main/m1").unwrap();
     let timeout = std::time::Duration::from_millis(200);
     let listings = switcher
-        .listings_within(Some((&main, &["m1".to_string()])), None, timeout)
+        .listings_within(Some((&main, &m1_listing())), None, timeout)
         .await;
     assert_eq!(
         listings[1].models,

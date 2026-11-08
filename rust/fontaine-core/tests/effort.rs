@@ -107,7 +107,7 @@ fn runtime_on(
 ) -> fontaine_core::agent::AgentRuntime {
     let models = Models {
         main: handle,
-        main_listing: Vec::new(),
+        main_listing: fontaine_core::models::Listing::default(),
         guardian: None,
         guardian_choice: GuardianChoice::Pinned,
         notices: Vec::new(),

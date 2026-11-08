@@ -58,7 +58,7 @@ pub fn build_with_scanner(
     );
     let models = Models {
         main: handle.clone(),
-        main_listing: Vec::new(),
+        main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),
         guardian_choice: GuardianChoice::MainFallback,
         notices: Vec::new(),
@@ -146,7 +146,7 @@ pub fn build_keyed_with(
     );
     let models = Models {
         main: handle.clone(),
-        main_listing: Vec::new(),
+        main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),
         guardian_choice: GuardianChoice::MainFallback,
         notices: Vec::new(),
@@ -265,7 +265,7 @@ pub fn build_over_session(
     );
     let models = Models {
         main: handle.clone(),
-        main_listing: Vec::new(),
+        main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),
         guardian_choice: GuardianChoice::MainFallback,
         notices: Vec::new(),

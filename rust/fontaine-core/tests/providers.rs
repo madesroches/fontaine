@@ -1,6 +1,13 @@
 //! The provider registry through the settings schema.
 
+mod common;
+
+use std::collections::BTreeMap;
 use std::path::Path;
+
+use common::World;
+use fontaine_core::credentials::{OAuthTokens, StoredCredential};
+use fontaine_core::providers::ConnectContext;
 
 use fontaine_core::config::{AccountKind, Column, parse_settings};
 use fontaine_core::providers;
@@ -254,4 +261,59 @@ fn claude_subscription_takes_its_two_paths_and_refuses_credentials_and_endpoints
     // The paths exist for this kind only.
     let err = parse("[accounts.o]\nkind = \"ollama\"\nclaude_config_dir = \"/x\"\n").unwrap_err();
     assert!(err.contains("accounts.o.claude_config_dir"), "{err}");
+}
+
+/// The vendor whose catalog an account's ids are looked up in, and an unlisted id derives facts
+/// from. Only a kind with no vendor of its own (an arbitrary gateway) has none.
+#[test]
+fn every_kind_but_the_arbitrary_gateway_names_a_catalog_vendor() {
+    let expected = |name: &str| match name {
+        "anthropic" | "claude-subscription" => Some("anthropic"),
+        "openai" => Some("openai"),
+        "gemini" => Some("gcp.gemini"),
+        "ollama" => Some("ollama"),
+        "opencode-go" => Some("opencode-go"),
+        "openrouter" => Some("openrouter"),
+        "openai-compatible" => None,
+        other => panic!("say which catalog vendor `{other}` looks its ids up under"),
+    };
+    for name in providers::names() {
+        let w = World::new();
+        let endpoint = if name == "claude-subscription" {
+            ""
+        } else {
+            "base_url = \"http://localhost:1/v1\"\n"
+        };
+        w.user_file(&format!("[accounts.x]\nkind = \"{name}\"\n{endpoint}"));
+        let config = w.load().unwrap();
+        let network = config.loaded_network(Some("x")).unwrap();
+        let credential = Some(if name == "opencode-go" {
+            StoredCredential::OAuth(OAuthTokens {
+                access: "a".into(),
+                refresh: "r".into(),
+                expires_at: u64::MAX,
+                extra: BTreeMap::new(),
+            })
+        } else {
+            StoredCredential::ApiKey("k".into())
+        });
+        let client = providers::find(name)
+            .unwrap()
+            .connect(ConnectContext {
+                account_name: "x",
+                account: &config.accounts["x"],
+                credential,
+                data_dir: &w.data,
+                session_id: None,
+                network: &network,
+                env: std::sync::Arc::new(|_| None),
+                warn: providers::warn::Warn::process(),
+            })
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            client.catalog_vendor().map(|vendor| vendor.vendor()),
+            expected(name),
+            "{name}"
+        );
+    }
 }

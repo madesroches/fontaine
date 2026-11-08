@@ -3,6 +3,7 @@
 
 use fontaine_core::config::AccountKind;
 use fontaine_core::models::{AccountListing, ModelRef};
+use fontaine_core::providers::RefusedModel;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -30,14 +31,22 @@ pub struct Group {
     account: String,
     kind: AccountKind,
     models: Result<Vec<String>, String>,
+    /// Rows the account listed but refuses, shown after its models and never selectable.
+    refused: Vec<RefusedModel>,
 }
 
 impl Group {
-    pub fn new(account: String, kind: AccountKind, models: Result<Vec<String>, String>) -> Group {
+    pub fn new(
+        account: String,
+        kind: AccountKind,
+        models: Result<Vec<String>, String>,
+        refused: Vec<RefusedModel>,
+    ) -> Group {
         Group {
             account,
             kind,
             models,
+            refused,
         }
     }
 }
@@ -48,6 +57,7 @@ impl From<&AccountListing> for Group {
             listing.account.clone(),
             listing.kind,
             listing.models.clone(),
+            listing.refused.clone(),
         )
     }
 }
@@ -60,6 +70,11 @@ enum Row {
         current: bool,
     },
     Failed(String),
+    Refused {
+        label: String,
+        reference: String,
+        reason: String,
+    },
 }
 
 pub struct ModelPicker {
@@ -194,7 +209,14 @@ impl ModelPicker {
                                 .map(|score| (score, model))
                         })
                         .collect();
-                    if hits.is_empty() {
+                    let refused: Vec<&RefusedModel> = group
+                        .refused
+                        .iter()
+                        .filter(|row| {
+                            fuzzy(&self.query, &format!("{}/{}", group.account, row.id)).is_some()
+                        })
+                        .collect();
+                    if hits.is_empty() && refused.is_empty() {
                         continue;
                     }
                     hits.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
@@ -209,6 +231,13 @@ impl ModelPicker {
                                 model,
                                 self.current.as_ref(),
                             ),
+                        });
+                    }
+                    for row in refused {
+                        rows.push(Row::Refused {
+                            label: row.id.clone(),
+                            reference: format!("{}/{}", group.account, row.id),
+                            reason: row.reason.clone(),
                         });
                     }
                 }
@@ -302,6 +331,17 @@ impl ModelPicker {
                     lines.push(Line::styled(clip(name.clone()), bold.fg(theme.heading)));
                 }
                 Row::Failed(reason) => lines.push(Line::styled(clip(format!("  {reason}")), dim)),
+                Row::Refused {
+                    label,
+                    reference,
+                    reason,
+                } => {
+                    let name = if qualified { reference } else { label };
+                    lines.push(Line::styled(
+                        clip(format!("  {name} — unavailable: {reason}")),
+                        dim,
+                    ));
+                }
                 Row::Model {
                     label,
                     reference,
@@ -389,11 +429,13 @@ mod tests {
                 "local".into(),
                 kind("ollama"),
                 ok(&["llama3:latest", "qwen3:4b"]),
+                vec![],
             ),
             Group::new(
                 "cloud".into(),
                 kind("openai-compatible"),
                 ok(&["haiku", "sonnet", "opus"]),
+                vec![],
             ),
         ]
     }
@@ -461,6 +503,7 @@ mod tests {
             "broken".into(),
             kind("openai-compatible"),
             Err("500 boom".into()),
+            vec![],
         ));
         let mut p = picker(&[], groups);
         let rows = text(&p);
@@ -592,6 +635,7 @@ mod tests {
             "broken".into(),
             kind("openai-compatible"),
             Err("down".into()),
+            vec![],
         ));
         let p = picker(
             &["cloud/gone", "broken/x", "removed/y", "cloud/opus"],
@@ -610,6 +654,7 @@ mod tests {
             "cloud".into(),
             kind("openai-compatible"),
             ok(&["judge-b"]),
+            vec![],
         )];
         let p = ModelPicker::new(
             PickerPurpose::Guardian,
@@ -626,7 +671,7 @@ mod tests {
     #[test]
     fn the_window_follows_the_selection_in_a_long_list() {
         let models: Vec<String> = (0..60).map(|i| format!("m{i:02}")).collect();
-        let group = Group::new("big".into(), kind("openai-compatible"), Ok(models));
+        let group = Group::new("big".into(), kind("openai-compatible"), Ok(models), vec![]);
         let mut p = picker(&[], vec![group]);
         let rows = p.body(80, MAX_ROWS, &Theme::default());
         assert_eq!(rows.len(), 1 + MAX_ROWS);
@@ -647,6 +692,7 @@ mod tests {
                 "big".into(),
                 kind("openai-compatible"),
                 Ok((0..60).map(|i| format!("m{i:02}")).collect()),
+                vec![],
             )],
         );
         p.handle_key(key(KeyCode::Up));
@@ -659,6 +705,7 @@ mod tests {
             "big".into(),
             kind("openai-compatible"),
             Ok((0..60).map(|i| format!("m{i:02}")).collect()),
+            vec![],
         );
         let mut p = picker(&[], vec![group]);
         for _ in 0..30 {
@@ -681,6 +728,80 @@ mod tests {
             p.handle_key(key(KeyCode::Enter)),
             PickerKey::Pick(PickerPurpose::Main, "cloud/sonnet".into())
         );
+    }
+
+    fn with_refused() -> Vec<Group> {
+        vec![Group::new(
+            "claude".into(),
+            kind("claude-subscription"),
+            ok(&["haiku", "sonnet"]),
+            vec![RefusedModel {
+                id: "future".into(),
+                reason: "no listed family".into(),
+            }],
+        )]
+    }
+
+    #[test]
+    fn a_refused_row_is_drawn_with_its_reason_after_the_models() {
+        let p = picker(&[], with_refused());
+        assert_eq!(
+            text(&p),
+            [
+                "header",
+                "claude",
+                "  haiku",
+                "  sonnet",
+                "  future — unavailable: no listed family"
+            ]
+        );
+        let qualified: Vec<String> = p
+            .body_as(80, MAX_ROWS, &Theme::default(), true)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(
+            qualified[4],
+            "  claude/future — unavailable: no listed family"
+        );
+    }
+
+    #[test]
+    fn a_refused_row_is_never_selected() {
+        let mut p = picker(&[], with_refused());
+        let pick = |p: &mut ModelPicker| match p.handle_key(key(KeyCode::Enter)) {
+            PickerKey::Pick(_, r) => r,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(pick(&mut p), "claude/haiku");
+        p.handle_key(key(KeyCode::Down));
+        assert_eq!(pick(&mut p), "claude/sonnet");
+        p.handle_key(key(KeyCode::Down));
+        assert_eq!(pick(&mut p), "claude/haiku");
+        p.handle_key(key(KeyCode::Up));
+        assert_eq!(pick(&mut p), "claude/sonnet");
+        type_text(&mut p, "future");
+        assert_eq!(p.handle_key(key(KeyCode::Enter)), PickerKey::None);
+    }
+
+    #[test]
+    fn a_refused_row_follows_the_filter_and_keeps_a_heading_when_alone() {
+        let mut p = picker(&[], with_refused());
+        type_text(&mut p, "futu");
+        let rows = text(&p);
+        assert_eq!(
+            rows,
+            [
+                "header",
+                "claude",
+                "  future — unavailable: no listed family"
+            ]
+        );
+        type_text(&mut p, "zzz");
+        assert!(!text(&p).iter().any(|r| r.contains("future")));
+        let mut p = picker(&[], with_refused());
+        type_text(&mut p, "haik");
+        assert!(!text(&p).iter().any(|r| r.contains("future")));
     }
 
     #[test]

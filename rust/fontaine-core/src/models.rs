@@ -15,7 +15,9 @@ use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::{Credentials, StoredCredential};
 use crate::effort::Effort;
 use crate::gate::SessionState;
-use crate::providers::{AccountClient, Billing, ConnectContext, CredentialPolicy, ServedModel};
+use crate::providers::{
+    AccountClient, Billing, ConnectContext, CredentialPolicy, RefusedModel, ServedModel,
+};
 use crate::quota::QuotaSource;
 use fontaine_guardian::models::{ModelEntry, ModelsFile};
 use fontaine_guardian::{OutputProbe, WireIds};
@@ -126,6 +128,9 @@ pub struct ModelHandle {
     scopes: Option<Scopes>,
     /// The client the handle was built from, so a completion can be rebuilt for another caller.
     client: Option<ClientRef>,
+    /// A warning to show once when the handle's model is resolved: its facts are not the
+    /// catalog's own.
+    pub facts_notice: Option<String>,
 }
 
 /// The client a handle was built from; only its presence shows in debug output.
@@ -155,6 +160,7 @@ impl ModelHandle {
             quota: None,
             scopes: None,
             client: None,
+            facts_notice: None,
         }
     }
 
@@ -213,6 +219,7 @@ impl ModelHandle {
         let output_probe = client.output_probe(&reference.model);
         let quota = client.quota_source();
         let conversation = client.completion(&reference.model);
+        let facts_notice = client.facts_notice(&reference.model);
         ModelHandle {
             reference,
             kind,
@@ -225,6 +232,7 @@ impl ModelHandle {
                 guardian,
             }),
             client: Some(ClientRef(client.clone())),
+            facts_notice,
         }
     }
 
@@ -343,8 +351,8 @@ pub enum GuardianChoice {
 #[derive(Debug)]
 pub struct Models {
     pub main: ModelHandle,
-    /// The model ids the main model's account listed when it was resolved.
-    pub main_listing: Vec<String>,
+    /// What the main model's account listed when it was resolved.
+    pub main_listing: Listing,
     pub guardian: Option<GuardianModel>,
     pub guardian_choice: GuardianChoice,
     /// Things the user should be told once at startup.
@@ -546,11 +554,39 @@ fn unknown_model(reference: &ModelRef, available: &[String]) -> ModelError {
 /// discover through a local program need more than a picker's wait, but nothing is unbounded.
 pub const RESOLVE_LISTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
 
-/// The ids `account` offers: its provider's listing, narrowed to the account's own `models` when
-/// the kind has to be listed to be usable. Bounded by [`RESOLVE_LISTING_TIMEOUT`].
-async fn list_models(client: &Client, name: &str) -> Result<Vec<String>, ModelError> {
+/// What an account offers: the ids a model can be selected by, and the rows it listed but refuses.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Listing {
+    pub models: Vec<String>,
+    pub refused: Vec<RefusedModel>,
+}
+
+impl Listing {
+    /// This listing narrowed to the ids in `allowed`.
+    fn narrowed(self, allowed: &[String]) -> Listing {
+        Listing {
+            models: self
+                .models
+                .into_iter()
+                .filter(|id| allowed.contains(id))
+                .collect(),
+            refused: self
+                .refused
+                .into_iter()
+                .filter(|row| allowed.contains(&row.id))
+                .collect(),
+        }
+    }
+}
+
+/// The ids `account` offers and the rows it refuses: its provider's listing. Bounded by
+/// [`RESOLVE_LISTING_TIMEOUT`].
+async fn list_models(client: &Client, name: &str) -> Result<Listing, ModelError> {
     match tokio::time::timeout(RESOLVE_LISTING_TIMEOUT, client.list()).await {
-        Ok(Ok(models)) => Ok(models),
+        Ok(Ok(models)) => Ok(Listing {
+            models,
+            refused: client.refused(),
+        }),
         Ok(Err(e)) => Err(ModelError::Provider(format!(
             "cannot list the models of account `{name}`: {}",
             with_causes(&e)
@@ -564,18 +600,13 @@ async fn list_models(client: &Client, name: &str) -> Result<Vec<String>, ModelEr
 /// The ids to check a requested model against. A configured `models` list stands in for a
 /// listing, except for a kind whose models can only be built after a listing: there it narrows
 /// the completed listing and never replaces it.
-async fn models_of(
-    client: &Client,
-    name: &str,
-    account: &Account,
-) -> Result<Vec<String>, ModelError> {
+async fn models_of(client: &Client, name: &str, account: &Account) -> Result<Listing, ModelError> {
     match &account.models {
-        Some(list) if !account.kind.provider().requires_discovery() => Ok(list.clone()),
-        Some(allowed) => Ok(list_models(client, name)
-            .await?
-            .into_iter()
-            .filter(|id| allowed.contains(id))
-            .collect()),
+        Some(list) if !account.kind.provider().requires_discovery() => Ok(Listing {
+            models: list.clone(),
+            refused: Vec::new(),
+        }),
+        Some(allowed) => Ok(list_models(client, name).await?.narrowed(allowed)),
         None => list_models(client, name).await,
     }
 }
@@ -588,14 +619,14 @@ fn not_offered(client: &Client, reference: &ModelRef, available: &[String]) -> M
     }
 }
 
-/// The main model's client, its model ids and its handle.
+/// The main model's client, its listing and its handle.
 async fn resolve_main_model(
     config: &Config,
     src: &Sources<'_>,
     env: &SharedEnv,
     text: &str,
     what: &str,
-) -> Result<(ModelRef, Client, Vec<String>, ModelHandle), ModelError> {
+) -> Result<(ModelRef, Client, Listing, ModelHandle), ModelError> {
     let main_ref = parse_reference(text, what)?;
     let main_account = account_of(config, &main_ref, what)?;
     let main_client = {
@@ -603,8 +634,8 @@ async fn resolve_main_model(
         client_for(&main_ref.account, main_account, env, src, &network).map_err(config_error)?
     };
     let main_models = models_of(&main_client, &main_ref.account, main_account).await?;
-    if !lists(main_account.kind, &main_models, &main_ref.model) {
-        return Err(not_offered(&main_client, &main_ref, &main_models));
+    if !lists(main_account.kind, &main_models.models, &main_ref.model) {
+        return Err(not_offered(&main_client, &main_ref, &main_models.models));
     }
     let main = ModelHandle::from_client(main_ref.clone(), main_account.kind, &main_client);
     Ok((main_ref, main_client, main_models, main))
@@ -641,6 +672,8 @@ pub async fn resolve_with(
         resolve_main_model(config, &stored, &params.env, main_text, "model").await?;
 
     let mut notices = Vec::new();
+    notices.extend(main.facts_notice.clone().map(facts_warning));
+    let main_ids = main_models.models.as_slice();
     let (guardian, guardian_choice) = match config.guardian.model.as_deref() {
         Some(text) => (
             resolve_guardian(
@@ -648,7 +681,7 @@ pub async fn resolve_with(
                 &stored,
                 &params.env,
                 text,
-                (&main_ref, &main_client, &main_models),
+                (&main_ref, &main_client, main_ids),
             )
             .await?,
             GuardianChoice::Pinned,
@@ -658,7 +691,7 @@ pub async fn resolve_with(
             config,
             &stored,
             &params.env,
-            (&main_ref, &main_client, &main_models),
+            (&main_ref, &main_client, main_ids),
         )
         .await
         {
@@ -675,6 +708,11 @@ pub async fn resolve_with(
             }
         },
     };
+    if let GuardianModel::Ready(handle) = &guardian
+        && handle.reference != main_ref
+    {
+        notices.extend(handle.facts_notice.clone().map(facts_warning));
+    }
     Ok(Models {
         main,
         main_listing: main_models,
@@ -682,6 +720,10 @@ pub async fn resolve_with(
         guardian_choice,
         notices,
     })
+}
+
+fn facts_warning(notice: String) -> crate::notice::Notice {
+    crate::notice::Notice::warning(notice, None)
 }
 
 async fn resolve_guardian(
@@ -744,8 +786,10 @@ async fn build_guardian(
     let client = match client {
         Ok(client) if discovers && reused.is_none() => {
             match models_of(&client, &reference.account, account).await {
-                Ok(listing) if lists(account.kind, &listing, &reference.model) => Ok(client),
-                Ok(listing) => return Err(not_offered(&client, &reference, &listing)),
+                Ok(listing) if lists(account.kind, &listing.models, &reference.model) => Ok(client),
+                Ok(listing) => {
+                    return Err(not_offered(&client, &reference, &listing.models));
+                }
                 Err(e) => Err(e.to_string()),
             }
         }
@@ -851,6 +895,8 @@ pub struct AccountListing {
     pub account: String,
     pub kind: AccountKind,
     pub models: Result<Vec<String>, String>,
+    /// The rows the account listed but refuses; empty when `models` is an error.
+    pub refused: Vec<RefusedModel>,
 }
 
 /// Resolves models again while a session runs, for `/model` and `/guardian-model`. It owns what
@@ -889,7 +935,7 @@ impl Switcher {
     }
 
     /// The main model `text` names, checked against what its account offers, and that listing.
-    pub async fn main(&self, text: &str) -> Result<(ModelHandle, Vec<String>), ModelError> {
+    pub async fn main(&self, text: &str) -> Result<(ModelHandle, Listing), ModelError> {
         let stored = self.sources()?;
         let (_, _, listing, handle) =
             resolve_main_model(&self.config, &stored, &self.env, text, "model").await?;
@@ -946,7 +992,7 @@ impl Switcher {
     /// failure keeps the account's entry.
     pub async fn listings(
         &self,
-        main: Option<(&ModelRef, &[String])>,
+        main: Option<(&ModelRef, &Listing)>,
         only: Option<&[String]>,
     ) -> Vec<AccountListing> {
         self.listings_within(main, only, LISTING_TIMEOUT).await
@@ -955,7 +1001,7 @@ impl Switcher {
     /// Tests only: [`Switcher::listings`] with its own per-account timeout.
     pub async fn listings_within(
         &self,
-        main: Option<(&ModelRef, &[String])>,
+        main: Option<(&ModelRef, &Listing)>,
         only: Option<&[String]>,
         timeout: std::time::Duration,
     ) -> Vec<AccountListing> {
@@ -973,6 +1019,7 @@ impl Switcher {
                         account: name.clone(),
                         kind: account.kind,
                         models: Err(reason.clone()),
+                        refused: Vec::new(),
                     })
                     .collect();
             }
@@ -980,32 +1027,44 @@ impl Switcher {
         let stored = &stored;
         futures::future::join_all(wanted.map(|(name, account)| async move {
             let discovers = account.kind.provider().requires_discovery();
-            let models = if let Some(list) = account.models.as_ref().filter(|_| !discovers) {
-                Ok(list.clone())
-            } else if let Some(main) = main.filter(|main| *name == main.0.account) {
-                Ok(main.1.to_vec())
-            } else {
-                let client = account_network(&self.config, name)
-                    .and_then(|network| client_for(name, account, &self.env, stored, &network));
-                match client {
-                    Err(reason) => Err(reason),
-                    Ok(client) => match tokio::time::timeout(timeout, client.list()).await {
-                        Ok(Ok(models)) => Ok(match &account.models {
-                            Some(allowed) => models
-                                .into_iter()
-                                .filter(|id| allowed.contains(id))
-                                .collect(),
-                            None => models,
-                        }),
-                        Ok(Err(e)) => Err(with_causes(&e)),
-                        Err(_) => Err(format!("listing timed out after {timeout:?}")),
-                    },
-                }
+            let listed: Result<Listing, String> =
+                if let Some(list) = account.models.as_ref().filter(|_| !discovers) {
+                    Ok(Listing {
+                        models: list.clone(),
+                        refused: Vec::new(),
+                    })
+                } else if let Some(main) = main.filter(|main| *name == main.0.account) {
+                    Ok(main.1.clone())
+                } else {
+                    let client = account_network(&self.config, name)
+                        .and_then(|network| client_for(name, account, &self.env, stored, &network));
+                    match client {
+                        Err(reason) => Err(reason),
+                        Ok(client) => match tokio::time::timeout(timeout, client.list()).await {
+                            Ok(Ok(models)) => {
+                                let listing = Listing {
+                                    models,
+                                    refused: client.refused(),
+                                };
+                                Ok(match &account.models {
+                                    Some(allowed) => listing.narrowed(allowed),
+                                    None => listing,
+                                })
+                            }
+                            Ok(Err(e)) => Err(with_causes(&e)),
+                            Err(_) => Err(format!("listing timed out after {timeout:?}")),
+                        },
+                    }
+                };
+            let (models, refused) = match listed {
+                Ok(listing) => (Ok(listing.models), listing.refused),
+                Err(reason) => (Err(reason), Vec::new()),
             };
             AccountListing {
                 account: name.clone(),
                 kind: account.kind,
                 models,
+                refused,
             }
         }))
         .await
@@ -1067,6 +1126,6 @@ pub(crate) async fn external_check(
         .map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     Ok(format!(
         "`{name}` is ready: {} model(s) available through the external login",
-        models.len()
+        models.models.len()
     ))
 }

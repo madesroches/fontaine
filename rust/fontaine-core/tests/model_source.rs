@@ -9,7 +9,7 @@ use common::World;
 use fontaine_core::agent::SessionModels;
 use fontaine_core::child_runner::MainModel;
 use fontaine_core::config::AccountKind;
-use fontaine_core::models::{ModelHandle, ModelRef, Switcher};
+use fontaine_core::models::{Listing, ModelHandle, ModelRef, Switcher};
 use fontaine_tools::models_tool::ModelSource;
 use rig_core::test_utils::MockCompletionModel;
 
@@ -20,7 +20,10 @@ fn main_model(text: &str, listing: &[&str]) -> MainModel {
             AccountKind::named("ollama"),
             MockCompletionModel::default().into(),
         ),
-        listing: listing.iter().map(|s| s.to_string()).collect(),
+        listing: Listing {
+            models: listing.iter().map(|s| s.to_string()).collect(),
+            refused: Vec::new(),
+        },
     }
 }
 

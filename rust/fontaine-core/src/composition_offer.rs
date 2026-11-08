@@ -424,6 +424,7 @@ mod tests {
             models: models
                 .map(|m| m.into_iter().map(str::to_owned).collect())
                 .map_err(str::to_owned),
+            refused: Vec::new(),
         }
     }
 

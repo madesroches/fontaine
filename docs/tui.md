@@ -673,7 +673,7 @@ reply as it is, and replaces the older part with the summary. It shows
 `compacted the conversation: ~41.2k → ~6.3k tokens`, or `nothing to compact` when there is nothing
 older to summarize. Esc interrupts it and leaves the conversation as it was. Messages you type
 meanwhile are put back in the input box when it ends instead of being sent. The model must be one
-the catalog lists. Compaction also runs on its own before a turn once the conversation outgrows
+the catalog lists (a derived model counts as listed). Compaction also runs on its own before a turn once the conversation outgrows
 the model's window less a reserve, or earlier if you set
 [`[context] autocompact_window`](configuration.md#context).
 
@@ -682,7 +682,7 @@ skill index, the tool definitions (MCP tools apart), the messages and what is fr
 with the point where compaction runs on its own. `/context all` also lists each instruction file (imported files and rules included)
 and tool, largest first. The numbers are estimates from a character-based counter, not the
 provider's tokenizer, and they count the same way the compaction trigger does. When the model is
-not in the catalog there is no `free` row and it never compacts automatically; a catalogued model
+not in the catalog (a derived model counts as listed) there is no `free` row and it never compacts automatically; a catalogued model
 whose window is not known has no `free` row either and compacts automatically only when
 `autocompact_window` is set. When the total is over the window it says so.
 
@@ -776,7 +776,13 @@ Successful listings are kept for the session, until a credential change for that
 entry; an account that failed, or was added since, is asked again the next time the overlay opens,
 so a credential added in the meantime shows up. An account that cannot be listed
 keeps its heading and shows why (`could not list: ...`), for example a missing credential, a
-provider error or the timeout.
+provider error or the timeout. A row an account lists but refuses, such as a `claude-subscription`
+model with no listed model of its name pattern, is drawn dim under the account's models as
+`<id> — unavailable: <reason>`. The same filter matches it, and Up, Down and Enter skip it, so it
+can never be picked. A group keeps its heading when only its unavailable rows match the filter.
+`/guardian-model`'s overlay and the provider dialog's model picker show these rows too. Switching
+to a model whose facts are derived from a listed model of the same name pattern shows a one-time
+warning in the conversation (see [model discovery](configuration.md#model-discovery)).
 
 `/guardian-model` with no argument opens the same overlay over a live listing of every account, as
 `/model` does, failures included. A pick pins the guardian and saves it as `[guardian] model`; a pick

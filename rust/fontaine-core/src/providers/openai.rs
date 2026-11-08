@@ -7,7 +7,10 @@ use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
 use rig_core::providers::openai::{OpenAI as Client, OpenAIConfig};
 
-use super::{AccountClient, ConnectContext, CredentialPolicy, Provider};
+use rig_core::providers::registry::ProviderId;
+
+use super::derived_facts::unlisted_facts;
+use super::{AccountClient, ConnectContext, CredentialPolicy, Provider, vendor};
 use crate::transport::caused_client;
 use fontaine_tools::error_chain::chain;
 
@@ -41,7 +44,15 @@ struct Connected(Client);
 
 impl AccountClient for Connected {
     fn completion(&self, model: &str) -> DynModel<Completion> {
-        self.0.completion(model).erase()
+        let mut built = self.0.completion(model);
+        if let Some(facts) = unlisted_facts(vendor("openai"), model) {
+            built.wire = built.wire.with_facts(facts);
+        }
+        built.erase()
+    }
+
+    fn catalog_vendor(&self) -> Option<ProviderId> {
+        Some(vendor("openai"))
     }
 
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {

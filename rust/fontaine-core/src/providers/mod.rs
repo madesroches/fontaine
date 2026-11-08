@@ -12,6 +12,7 @@ use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
 use rig_core::providers::anthropic::Messages;
 use rig_core::providers::anthropic::completion::CacheTtl as RigTtl;
+use rig_core::providers::registry::ProviderId;
 
 use crate::config::{Account, CacheTtl};
 use crate::credentials::StoredCredential;
@@ -23,6 +24,7 @@ pub mod anthropic;
 pub mod cache_minimum;
 mod cache_wire;
 pub mod claude_subscription;
+pub mod derived_facts;
 pub mod device_flow;
 pub mod gemini;
 pub mod kimi_quota;
@@ -211,6 +213,23 @@ pub trait AccountClient: Send + Sync {
     fn unavailable_reason(&self, _model: &str) -> Option<String> {
         None
     }
+    /// The models the last [`AccountClient::list`] saw and refused, with why, in the order the
+    /// endpoint listed them.
+    fn refused(&self) -> Vec<RefusedModel> {
+        Vec::new()
+    }
+    /// The catalog vendor whose listed models this account's ids are looked up under, and whose
+    /// models an unlisted id takes derived facts from; `None` when the kind's ids are not a
+    /// catalog vendor's.
+    fn catalog_vendor(&self) -> Option<ProviderId> {
+        None
+    }
+    /// A warning to show once when `model` resolves, for a model whose facts are not the
+    /// catalog's own.
+    fn facts_notice(&self, model: &str) -> Option<String> {
+        let derived = derived_facts::unlisted(self.catalog_vendor()?, model)?;
+        Some(derived_facts::notice(model, model, &derived.from, None))
+    }
     /// What the request body must carry to turn `model`'s thinking off, where its wire needs it:
     /// the guardian and the scanner force a tool call, which a thinking model refuses.
     fn thinking_off(&self, _model: &str) -> Option<serde_json::Value> {
@@ -237,6 +256,13 @@ pub trait AccountClient: Send + Sync {
     fn served_model(&self, _model: &str) -> BoxFuture<'_, Result<Option<ServedModel>, String>> {
         Box::pin(std::future::ready(Ok(None)))
     }
+}
+
+/// A model an endpoint lists that cannot be used, with the reason a selection is refused for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RefusedModel {
+    pub id: String,
+    pub reason: String,
 }
 
 /// The provider's own `/models` entry for a model: an alias can move, so a record that names
@@ -295,6 +321,11 @@ impl PromptCaching {
 pub(crate) enum CacheScope {
     Conversation,
     StaticPrefix,
+}
+
+/// The id of a catalog vendor rig lists, by its catalog name.
+pub(crate) fn vendor(name: &str) -> ProviderId {
+    ProviderId::catalog(name).expect("rig's catalog lists every vendor a kind names")
 }
 
 pub struct ConnectContext<'a> {

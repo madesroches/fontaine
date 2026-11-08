@@ -180,7 +180,7 @@ async fn the_runtime_answers_from_the_saved_conversation_and_changes_nothing_but
             AccountKind::named("openai-compatible"),
             main.clone().into(),
         ),
-        main_listing: Vec::new(),
+        main_listing: fontaine_core::models::Listing::default(),
         guardian: None,
         guardian_choice: GuardianChoice::Pinned,
         notices: Vec::new(),

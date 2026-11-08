@@ -20,7 +20,10 @@ use rig_core::operation::Completion;
 use rig_core::providers::anthropic::AnthropicConfig;
 use rig_core::providers::registry::ProviderId;
 
-use super::{AccountClient, Billing, ConnectContext, CredentialPolicy, Provider};
+use super::derived_facts::{derive, notice};
+use super::{
+    AccountClient, Billing, ConnectContext, CredentialPolicy, Provider, RefusedModel, vendor,
+};
 use crate::config::Account;
 use crate::quota::QuotaSource;
 use fontaine_tools::lock::{read, write};
@@ -263,6 +266,7 @@ impl Provider for ClaudeSubscription {
             inventory,
             usage: Arc::new(Usage::new()),
             discovered: RwLock::new(BTreeMap::new()),
+            refused: RwLock::new(Vec::new()),
         }))
     }
 }
@@ -304,6 +308,8 @@ pub struct Route {
     pub alias: String,
     pub canonical: String,
     pub facts: ModelFacts,
+    /// The catalog id the facts were derived from, for a model the catalog does not list.
+    pub derived_from: Option<String>,
 }
 
 struct Connected {
@@ -312,6 +318,8 @@ struct Connected {
     inventory: InventoryCommand,
     usage: Arc<Usage>,
     discovered: RwLock<BTreeMap<String, Entry>>,
+    /// The refused rows of the last listing, in the order the CLI listed them.
+    refused: RwLock<Vec<RefusedModel>>,
 }
 
 impl Connected {
@@ -380,22 +388,52 @@ impl AccountClient for Connected {
         }
     }
 
+    fn refused(&self) -> Vec<RefusedModel> {
+        read(&self.refused, "claude refused models").clone()
+    }
+
+    fn facts_notice(&self, model: &str) -> Option<String> {
+        match read(&self.discovered, "claude model catalog").get(model) {
+            Some(Entry::Usable(Route {
+                canonical,
+                derived_from: Some(from),
+                ..
+            })) => Some(notice(
+                model,
+                canonical,
+                from,
+                Some("the Claude CLI's own capability flags"),
+            )),
+            _ => None,
+        }
+    }
+
+    fn catalog_vendor(&self) -> Option<ProviderId> {
+        Some(vendor("anthropic"))
+    }
+
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {
         async move {
             let rows = self.cli.discover().await.map_err(ClaudeError::boxed)?;
             let mut entries = BTreeMap::new();
             let mut usable = Vec::new();
+            let mut refused = Vec::new();
             for row in rows {
                 if entries.contains_key(&row.id) {
                     continue;
                 }
                 let entry = entry_of(&row);
-                if matches!(entry, Entry::Usable(_)) {
-                    usable.push(row.id.clone());
+                match &entry {
+                    Entry::Usable(_) => usable.push(row.id.clone()),
+                    Entry::Refused(reason) => refused.push(RefusedModel {
+                        id: row.id.clone(),
+                        reason: reason.clone(),
+                    }),
                 }
                 entries.insert(row.id, entry);
             }
             *write(&self.discovered, "claude model catalog") = entries;
+            *write(&self.refused, "claude refused models") = refused;
             Ok(usable)
         }
         .boxed()
@@ -411,23 +449,124 @@ fn entry_of(row: &cli::ModelRow) -> Entry {
             row.id
         ));
     }
-    let Some(vendor) = ProviderId::catalog("anthropic") else {
-        return Entry::Refused("rig has no Anthropic catalog".to_string());
-    };
-    let facts = Catalog::builtin().facts(vendor, &row.canonical);
-    let usable = facts
+    let vendor = vendor("anthropic");
+    let catalog = Catalog::builtin();
+    let facts = catalog.facts(vendor, &row.canonical);
+    let listed = facts
         .spec()
         .is_some_and(|spec| spec.max_output_tokens.is_some());
-    if !usable {
-        return Entry::Refused(format!(
-            "model `{}` resolves to `{}`, which this build of Fontaine has no model facts or \
-             default output limit for; update Fontaine",
-            row.id, row.canonical
-        ));
+    if listed {
+        return Entry::Usable(Route {
+            alias: row.id.clone(),
+            canonical: row.canonical.clone(),
+            facts,
+            derived_from: None,
+        });
     }
-    Entry::Usable(Route {
-        alias: row.id.clone(),
-        canonical: row.canonical.clone(),
-        facts,
-    })
+    match derive(catalog, vendor, &row.canonical, &row.capabilities) {
+        Some(derived) => Entry::Usable(Route {
+            alias: row.id.clone(),
+            canonical: row.canonical.clone(),
+            facts: derived.facts,
+            derived_from: Some(derived.from),
+        }),
+        None => Entry::Refused(format!(
+            "model `{}` resolves to `{}`, which this build of Fontaine has no model facts for and \
+             no listed model of the same name pattern to take them from; update Fontaine",
+            row.id, row.canonical
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::derived_facts::Capabilities;
+
+    fn row(id: &str, canonical: &str, credits: bool) -> cli::ModelRow {
+        cli::ModelRow {
+            id: id.to_string(),
+            canonical: canonical.to_string(),
+            credits,
+            capabilities: Capabilities::default(),
+        }
+    }
+
+    fn route(entry: Entry) -> Route {
+        match entry {
+            Entry::Usable(route) => route,
+            Entry::Refused(reason) => panic!("refused: {reason}"),
+        }
+    }
+
+    #[test]
+    fn a_listed_model_is_not_derived() {
+        let route = route(entry_of(&row("haiku", "claude-haiku-4-5", false)));
+        assert_eq!(route.derived_from, None);
+    }
+
+    #[test]
+    fn an_unlisted_model_of_a_listed_shape_is_derived() {
+        let route = route(entry_of(&row("haiku", "claude-haiku-9-9", false)));
+        let from = route.derived_from.expect("derived");
+        assert!(from.starts_with("claude-haiku-"), "{from}");
+        let spec = route.facts.spec().expect("bound");
+        assert_eq!(spec.id, "claude-haiku-9-9");
+        assert!(spec.pricing.is_none());
+        assert!(spec.max_output_tokens.is_some());
+    }
+
+    #[test]
+    fn an_unknown_shape_is_refused_with_the_reason() {
+        let Entry::Refused(reason) = entry_of(&row("future", "claude-quantum-9", false)) else {
+            panic!("an unknown shape is refused");
+        };
+        assert!(reason.contains("same name pattern"), "{reason}");
+    }
+
+    #[test]
+    fn a_credit_row_is_refused_before_derivation() {
+        let Entry::Refused(reason) = entry_of(&row("haiku", "claude-haiku-9-9", true)) else {
+            panic!("a credit row is refused");
+        };
+        assert!(reason.contains("usage credits"), "{reason}");
+    }
+
+    #[test]
+    fn the_notice_and_refused_rows_follow_the_listing() {
+        let mut entries = BTreeMap::new();
+        for r in [
+            row("haiku", "claude-haiku-9-9", false),
+            row("sonnet", "claude-sonnet-4-5", false),
+            row("future", "claude-quantum-9", false),
+        ] {
+            entries.insert(r.id.clone(), entry_of(&r));
+        }
+        let connected = Connected {
+            cli: Arc::new(Cli::new(
+                None,
+                None,
+                std::path::Path::new("/nonexistent"),
+                Arc::new(|_: &str| None),
+                Timeouts::default(),
+                crate::providers::warn::Warn::process(),
+            )),
+            session: String::new(),
+            inventory: InventoryCommand::current_exe().expect("test executable"),
+            usage: Arc::new(Usage::new()),
+            discovered: RwLock::new(entries),
+            refused: RwLock::new(vec![RefusedModel {
+                id: "future".into(),
+                reason: "why".into(),
+            }]),
+        };
+        let notice = connected.facts_notice("haiku").expect("derived");
+        assert!(notice.starts_with("Model `haiku` resolves to `claude-haiku-9-9`"));
+        assert!(notice.contains("Update Fontaine for its exact facts."));
+        assert_eq!(connected.facts_notice("sonnet"), None);
+        assert_eq!(connected.facts_notice("future"), None);
+        assert_eq!(connected.facts_notice("missing"), None);
+        assert_eq!(connected.refused().len(), 1);
+        assert_eq!(connected.refused()[0].id, "future");
+    }
 }

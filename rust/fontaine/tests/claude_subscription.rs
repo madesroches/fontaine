@@ -378,6 +378,39 @@ async fn a_credit_billed_model_is_refused() {
     assert!(claude.model_runs().is_empty());
 }
 
+fn derived_haiku() -> Value {
+    json!({"models": [
+        {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5"},
+        {"value": "haiku", "resolvedModel": "claude-haiku-9-9"},
+    ], "responses": [{"text": "hi"}]})
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_derived_main_model_is_announced_once_in_the_default_mode() {
+    let claude = Claude::new(derived_haiku());
+    let out = claude.headless(&["--model", "claude/haiku", "hello"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let notices = out
+        .stderr
+        .lines()
+        .filter(|l| l.contains("Model `haiku` resolves to `claude-haiku-9-9`"))
+        .count();
+    assert_eq!(notices, 1, "{}", out.stderr);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_derived_main_model_is_announced_once_in_auto_mode() {
+    let claude = Claude::new(derived_haiku());
+    let out = claude.auto(&["--model", "claude/haiku", "hello"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let notices = out
+        .stderr
+        .lines()
+        .filter(|l| l.contains("Model `haiku` resolves to `claude-haiku-9-9`"))
+        .count();
+    assert_eq!(notices, 1, "{}", out.stderr);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cost_budget_on_the_subscription_is_a_usage_error() {
     let claude = Claude::new(json!({}));

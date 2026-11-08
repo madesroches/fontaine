@@ -143,7 +143,7 @@ mod default_backend {
         );
         let models = Models {
             main: handle,
-            main_listing: Vec::new(),
+            main_listing: fontaine_core::models::Listing::default(),
             guardian: None,
             guardian_choice: GuardianChoice::MainFallback,
             notices: Vec::new(),

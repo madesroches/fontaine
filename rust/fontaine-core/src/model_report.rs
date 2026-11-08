@@ -8,6 +8,7 @@ use fontaine_guardian::models::ModelEntry;
 use serde_json::{Value, json};
 
 use crate::models::{AccountListing, ModelRef};
+use crate::providers::RefusedModel;
 
 /// What a session uses a listed model for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +41,8 @@ pub struct AccountReport {
     pub kind: &'static str,
     /// The models, or the error chain of the listing that failed.
     pub models: Result<Vec<ModelRow>, String>,
+    /// The rows the account listed but refuses, with why.
+    pub unavailable: Vec<RefusedModel>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -66,6 +69,7 @@ impl ModelReport {
                         .map(|id| row(listing, id, main, guardian, validated))
                         .collect()
                 }),
+                unavailable: listing.refused.clone(),
             })
             .collect();
         ModelReport { accounts }
@@ -92,7 +96,7 @@ impl ModelReport {
                 }
                 Ok(rows) => {
                     let _ = writeln!(out, "{} ({})", account.account, account.kind);
-                    if rows.is_empty() {
+                    if rows.is_empty() && account.unavailable.is_empty() {
                         out.push_str("  (no models)\n");
                     }
                     for row in rows {
@@ -105,6 +109,9 @@ impl ModelReport {
                         }
                         out.push('\n');
                     }
+                    for refused in &account.unavailable {
+                        let _ = writeln!(out, "  {} (unavailable: {})", refused.id, refused.reason);
+                    }
                 }
             }
         }
@@ -116,15 +123,25 @@ impl ModelReport {
             .accounts
             .iter()
             .map(|account| match &account.models {
-                Ok(rows) => json!({
-                    "account": account.account,
-                    "kind": account.kind,
-                    "models": rows.iter().map(|row| json!({
-                        "id": row.id,
-                        "roles": row.roles.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
-                        "validated_guardian": row.validated_guardian,
-                    })).collect::<Vec<_>>(),
-                }),
+                Ok(rows) => {
+                    let mut value = json!({
+                        "account": account.account,
+                        "kind": account.kind,
+                        "models": rows.iter().map(|row| json!({
+                            "id": row.id,
+                            "roles": row.roles.iter().map(|r| r.as_str()).collect::<Vec<_>>(),
+                            "validated_guardian": row.validated_guardian,
+                        })).collect::<Vec<_>>(),
+                    });
+                    if !account.unavailable.is_empty() {
+                        value["unavailable"] = account
+                            .unavailable
+                            .iter()
+                            .map(|r| json!({"id": r.id, "reason": r.reason}))
+                            .collect();
+                    }
+                    value
+                }
                 Err(error) => json!({
                     "account": account.account,
                     "kind": account.kind,
@@ -187,6 +204,7 @@ mod tests {
             models: models
                 .map(|ids| ids.into_iter().map(String::from).collect())
                 .map_err(String::from),
+            refused: Vec::new(),
         }
     }
 
@@ -242,6 +260,31 @@ mod tests {
         assert_eq!(report.accounts[0].models, Err("boom".to_string()));
         assert!(!report.all_failed());
         assert!(ModelReport::build(&listings[..1], None, None, &[]).all_failed());
+    }
+
+    #[test]
+    fn unavailable_rows_follow_the_models_and_are_omitted_when_empty() {
+        let mut with = listing("a", "claude-subscription", Ok(vec!["haiku"]));
+        with.refused = vec![RefusedModel {
+            id: "future".into(),
+            reason: "update Fontaine".into(),
+        }];
+        let report = ModelReport::build(&[with], None, None, &[]);
+        assert_eq!(
+            report.render_text(),
+            "a (claude-subscription)\n  haiku\n  future (unavailable: update Fontaine)\n"
+        );
+        assert_eq!(
+            report.to_json(),
+            json!({"accounts": [{
+                "account": "a", "kind": "claude-subscription",
+                "models": [{"id": "haiku", "roles": [], "validated_guardian": false}],
+                "unavailable": [{"id": "future", "reason": "update Fontaine"}],
+            }]})
+        );
+        let plain =
+            ModelReport::build(&[listing("a", "anthropic", Ok(vec!["m"]))], None, None, &[]);
+        assert!(plain.to_json()["accounts"][0].get("unavailable").is_none());
     }
 
     #[test]

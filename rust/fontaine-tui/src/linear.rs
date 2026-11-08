@@ -761,6 +761,7 @@ mod tests {
                 account.into(),
                 fontaine_core::config::AccountKind::named("ollama"),
                 Ok(vec!["llama3".to_string()]),
+                vec![],
             )
         };
         rig.app.models = Some(ModelPicker::new(
@@ -880,6 +881,7 @@ mod tests {
                 "local".into(),
                 fontaine_core::config::AccountKind::named("ollama"),
                 Ok(vec!["llama3".to_string()]),
+                vec![],
             )],
         );
         let rows = selected(&picker.body(80, 14, &theme));

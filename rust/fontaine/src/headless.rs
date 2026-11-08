@@ -684,6 +684,17 @@ fn announce(runtime: &AgentRuntime) {
         runtime.start_mode(),
         PermissionMode::Auto | PermissionMode::Afk | PermissionMode::Plan
     ) {
+        // The guardian is never consulted here, but a subagent on its model stays quiet in
+        // expectation of this notice, so it is printed even so.
+        if let Some(notice) = &runtime.models.main.facts_notice {
+            eprintln!("fontaine: {notice}");
+        }
+        if let Some(fontaine_core::models::GuardianModel::Ready(handle)) = &runtime.models.guardian
+            && handle.reference != runtime.models.main.reference
+            && let Some(notice) = &handle.facts_notice
+        {
+            eprintln!("fontaine: {notice}");
+        }
         return;
     }
     for notice in runtime.notices() {

@@ -872,7 +872,7 @@ fn runtime_with_evaluator(
     };
     let models = Models {
         main: handle("test/main", &main),
-        main_listing: Vec::new(),
+        main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle("test/cheap", &evaluator))),
         guardian_choice: GuardianChoice::Pinned,
         notices: Vec::new(),
@@ -1042,7 +1042,7 @@ async fn an_unavailable_evaluator_model_pauses_the_goal_and_is_recorded() {
             AccountKind::named("openai-compatible"),
             main.into(),
         ),
-        main_listing: Vec::new(),
+        main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Unavailable {
             reference: ModelRef::parse("test/gone").unwrap(),
             reason: "no credential".into(),
@@ -1166,7 +1166,7 @@ async fn a_compaction_is_debited_to_the_root_so_a_goal_counts_it() {
             AccountKind::named("openai-compatible"),
             main.clone().into(),
         ),
-        main_listing: Vec::new(),
+        main_listing: fontaine_core::models::Listing::default(),
         guardian: None,
         guardian_choice: GuardianChoice::Pinned,
         notices: Vec::new(),

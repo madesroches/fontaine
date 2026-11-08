@@ -804,7 +804,7 @@ async fn a_corrupt_trust_store_is_reported_once_at_session_start() {
     );
     let models = fontaine_core::models::Models {
         main: handle,
-        main_listing: Vec::new(),
+        main_listing: fontaine_core::models::Listing::default(),
         guardian: None,
         guardian_choice: fontaine_core::models::GuardianChoice::MainFallback,
         notices: Vec::new(),

@@ -14,7 +14,7 @@ use common::claude_cli::{
 use fontaine_core::accounts::{self, SignInState};
 use fontaine_core::agent::build_guardian;
 use fontaine_core::config::AccountKind;
-use fontaine_core::models::{self, GuardianModel, ModelError, Switcher};
+use fontaine_core::models::{self, GuardianModel, ModelError, Models, Switcher};
 use fontaine_core::providers::claude_subscription::{
     CONFLICTING_ENV, ErrorKind, claude_error, inherited_env_names,
 };
@@ -155,7 +155,7 @@ async fn a_supported_cli_discovers_models_with_initialize_only() {
         {"value": "fast", "resolvedModel": "claude-opus-5-fast", "usesUsageCredits": true},
     ]}));
     let models = claude.resolve(None).await.unwrap();
-    assert_eq!(models.main_listing, ["sonnet", "haiku"]);
+    assert_eq!(models.main_listing.models, ["sonnet", "haiku"]);
     assert_eq!(models.main.reference.model, "sonnet");
     // Only `initialize` was sent: no user frame, no model run.
     let frames = claude.frames();
@@ -199,6 +199,187 @@ async fn an_id_without_catalog_facts_is_refused() {
     let error = claude.resolve(Some("claude/future")).await.unwrap_err();
     assert!(message(&error).contains("model facts"), "{error}");
     assert!(claude.resolve(None).await.is_ok());
+}
+
+fn derived_scenario() -> Value {
+    json!({"models": [
+        {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5"},
+        {"value": "haiku", "resolvedModel": "claude-haiku-9-9",
+         "supportedEffortLevels": ["low", "high", "turbo"], "supportsThinkingOff": true},
+        {"value": "future", "resolvedModel": "claude-quantum-9"},
+    ], "responses": [{"text": "ok"}]})
+}
+
+fn derived_notices(models: &Models) -> Vec<String> {
+    models
+        .notices
+        .iter()
+        .filter(|n| n.headline.contains("claude-haiku-9-9"))
+        .map(|n| n.headline.clone())
+        .collect()
+}
+
+fn with_guardian(claude: &Claude, model: &str) {
+    let config = std::fs::read_to_string(claude.w.config.join("config.toml")).unwrap();
+    claude
+        .w
+        .user_file(&format!("{config}\n[guardian]\nmodel = \"{model}\"\n"));
+}
+
+#[tokio::test]
+async fn an_unlisted_model_of_a_listed_shape_resolves_with_one_notice() {
+    let claude = Claude::new();
+    claude.scenario(derived_scenario());
+    let models = claude.resolve(Some("claude/haiku")).await.unwrap();
+    let notices = derived_notices(&models);
+    assert_eq!(notices.len(), 1, "{:?}", models.notices);
+    assert!(notices[0].starts_with("Model `haiku` resolves to `claude-haiku-9-9`"));
+    assert_eq!(
+        models.main.facts_notice.as_deref(),
+        Some(notices[0].as_str())
+    );
+
+    let base = fontaine_core::providers::derived_facts::derive(
+        rig_core::catalog::Catalog::builtin(),
+        rig_core::providers::registry::ProviderId::catalog("anthropic").unwrap(),
+        "claude-haiku-9-9",
+        &Default::default(),
+    )
+    .unwrap();
+    let limit = u64::from(base.facts.spec().unwrap().max_output_tokens.unwrap());
+    models
+        .main
+        .completion
+        .call(CompletionRequest::new("hi"))
+        .await
+        .unwrap();
+    let runs = claude.model_runs();
+    assert_eq!(
+        flag_value(&argv(&runs[0]), "--model").as_deref(),
+        Some("claude-haiku-9-9")
+    );
+    let settings: Value = serde_json::from_str(runs[0]["settings"].as_str().unwrap()).unwrap();
+    let extra: Value =
+        serde_json::from_str(settings["env"]["CLAUDE_CODE_EXTRA_BODY"].as_str().unwrap()).unwrap();
+    assert_eq!(extra["max_tokens"].as_u64(), Some(limit));
+}
+
+#[tokio::test]
+async fn a_listed_main_model_has_no_facts_notice() {
+    let claude = Claude::new();
+    claude.scenario(derived_scenario());
+    let models = claude.resolve(None).await.unwrap();
+    assert!(derived_notices(&models).is_empty(), "{:?}", models.notices);
+    assert_eq!(models.main.facts_notice, None);
+}
+
+#[tokio::test]
+async fn a_derived_guardian_warns_once_and_not_again_when_it_is_the_main_model() {
+    let claude = Claude::new();
+    claude.scenario(derived_scenario());
+    with_guardian(&claude, "claude/haiku");
+    let models = claude.resolve(None).await.unwrap();
+    assert_eq!(derived_notices(&models).len(), 1, "{:?}", models.notices);
+    assert_eq!(models.main.facts_notice, None);
+
+    let same = claude.resolve(Some("claude/haiku")).await.unwrap();
+    assert_eq!(derived_notices(&same).len(), 1, "{:?}", same.notices);
+
+    // A guardian that fell back to the derived main model shares its notice.
+    let claude = Claude::new();
+    claude.scenario(derived_scenario());
+    let fallback = claude.resolve(Some("claude/haiku")).await.unwrap();
+    assert_eq!(
+        derived_notices(&fallback).len(),
+        1,
+        "{:?}",
+        fallback.notices
+    );
+}
+
+fn runtime_over(claude: &Claude, models: Models) -> fontaine_core::agent::AgentRuntime {
+    common::runtime::build_with_models(
+        &claude.w,
+        fontaine_core::config::PermissionMode::Manual,
+        models,
+        Some(claude.switcher()),
+        false,
+        Default::default(),
+        None,
+    )
+}
+
+#[tokio::test]
+async fn use_guardian_and_retry_guardian_return_a_derived_guardians_notice() {
+    let claude = Claude::new();
+    claude.scenario(derived_scenario());
+    let models = claude.resolve(None).await.unwrap();
+    let runtime = runtime_over(&claude, models);
+    let switched = runtime
+        .use_guardian("claude/haiku")
+        .await
+        .unwrap()
+        .expect("a ready guardian");
+    assert!(
+        switched
+            .facts_notice
+            .as_deref()
+            .is_some_and(|n| n.contains("claude-haiku-9-9")),
+        "{switched:?}"
+    );
+    let (ready, notice) = runtime.retry_guardian().await.unwrap();
+    assert!(ready);
+    assert!(notice.is_some_and(|n| n.contains("claude-haiku-9-9")));
+
+    let listed = runtime
+        .use_guardian("claude/sonnet")
+        .await
+        .unwrap()
+        .expect("a ready guardian");
+    assert_eq!(listed.facts_notice, None);
+    assert_eq!(runtime.retry_guardian().await.unwrap(), (true, None));
+}
+
+#[tokio::test]
+async fn refused_rows_are_listed_with_their_reason_and_usable_ones_stay() {
+    let claude = Claude::new();
+    claude.scenario(derived_scenario());
+    let listings = claude.switcher().listings(None, None).await;
+    let listing = listings.iter().find(|l| l.account == "claude").unwrap();
+    assert_eq!(
+        listing.models.as_ref().unwrap(),
+        &["sonnet".to_string(), "haiku".to_string()]
+    );
+    assert_eq!(listing.refused.len(), 1);
+    assert_eq!(listing.refused[0].id, "future");
+    assert!(listing.refused[0].reason.contains("same name pattern"));
+
+    // The main account's listing is reused, and its refused rows survive the reuse.
+    let models = claude.resolve(None).await.unwrap();
+    assert_eq!(models.main_listing.refused.len(), 1);
+    let reused = claude
+        .switcher()
+        .listings(Some((&models.main.reference, &models.main_listing)), None)
+        .await;
+    assert_eq!(reused[0].refused, models.main_listing.refused);
+}
+
+#[tokio::test]
+async fn the_models_allowlist_narrows_refused_rows_too() {
+    let claude = Claude::with_account("models = [\"haiku\"]\n");
+    claude.scenario(derived_scenario());
+    let listings = claude.switcher().listings(None, None).await;
+    assert!(listings[0].refused.is_empty(), "{:?}", listings[0].refused);
+
+    let claude = Claude::with_account("models = [\"haiku\", \"future\"]\n");
+    claude.scenario(derived_scenario());
+    let listings = claude.switcher().listings(None, None).await;
+    assert_eq!(listings[0].refused.len(), 1);
+    // Narrowed away, a refused row still explains itself when it is named.
+    let claude = Claude::with_account("models = [\"haiku\"]\n");
+    claude.scenario(derived_scenario());
+    let error = claude.resolve(Some("claude/future")).await.unwrap_err();
+    assert!(message(&error).contains("same name pattern"), "{error}");
 }
 
 #[tokio::test]
@@ -456,7 +637,7 @@ async fn explicit_models_and_cached_listings_still_discover() {
     let error = claude.resolve(Some("claude/sonnet")).await.unwrap_err();
     assert!(message(&error).contains("does not offer"), "{error}");
     let models = claude.resolve(Some("claude/haiku")).await.unwrap();
-    assert_eq!(models.main_listing, ["haiku"]);
+    assert_eq!(models.main_listing.models, ["haiku"]);
     assert!(
         claude
             .frames()
@@ -470,7 +651,7 @@ async fn explicit_models_and_cached_listings_still_discover() {
         .switcher()
         .guardian(
             "claude/haiku",
-            Some((&models.main.reference, &models.main_listing)),
+            Some((&models.main.reference, &models.main_listing.models)),
         )
         .await
         .unwrap();
@@ -510,7 +691,7 @@ async fn the_picker_lists_the_allowlist_and_a_pinned_guardian_outside_it_is_refu
     assert_eq!(listing.models.as_ref().unwrap(), &["haiku".to_string()]);
 
     let main = claude.resolve(Some("claude/haiku")).await.unwrap();
-    let from = Some((&main.main.reference, main.main_listing.as_slice()));
+    let from = Some((&main.main.reference, main.main_listing.models.as_slice()));
     let offered = claude.switcher().guardian("claude/haiku", from).await;
     assert!(matches!(offered, Ok(GuardianModel::Ready(_))));
     let refused = claude.switcher().guardian("claude/sonnet", from).await;

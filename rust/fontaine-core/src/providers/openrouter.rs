@@ -10,7 +10,12 @@ use rig_core::{DynModel, Model};
 
 use super::cache_wire::CacheWire;
 use super::warn::Warn;
-use super::{AccountClient, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider};
+use rig_core::providers::registry::ProviderId;
+
+use super::derived_facts::unlisted_facts;
+use super::{
+    AccountClient, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider, vendor,
+};
 use crate::transport::caused_client;
 use fontaine_tools::error_chain::chain;
 
@@ -61,9 +66,12 @@ struct Connected {
 impl Connected {
     fn model(&self, model: &str, scope: CacheScope) -> DynModel<Completion> {
         let routed = self.client.completion(model);
-        let OpenAiWire::Chat(chat) = routed.wire else {
+        let OpenAiWire::Chat(mut chat) = routed.wire else {
             unreachable!("the client is configured for the Chat route");
         };
+        if let Some(facts) = unlisted_facts(vendor("openrouter"), model) {
+            chat = chat.with_facts(facts);
+        }
         Model::new(
             CacheWire::new(chat, model, self.caching, scope, self.warn.clone()),
             routed.transport,
@@ -79,6 +87,10 @@ impl AccountClient for Connected {
 
     fn guardian_completion(&self, model: &str) -> DynModel<Completion> {
         self.model(model, CacheScope::StaticPrefix)
+    }
+
+    fn catalog_vendor(&self) -> Option<ProviderId> {
+        Some(vendor("openrouter"))
     }
 
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {

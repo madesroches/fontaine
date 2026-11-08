@@ -1065,7 +1065,7 @@ mod killed {
         );
         let models = Models {
             main: handle.clone(),
-            main_listing: Vec::new(),
+            main_listing: fontaine_core::models::Listing::default(),
             guardian: Some(GuardianModel::Ready(handle)),
             guardian_choice: GuardianChoice::MainFallback,
             notices: Vec::new(),
@@ -1436,7 +1436,7 @@ mod killed {
         );
         let models = Models {
             main: handle.clone(),
-            main_listing: Vec::new(),
+            main_listing: fontaine_core::models::Listing::default(),
             guardian: Some(GuardianModel::Ready(handle)),
             guardian_choice: GuardianChoice::MainFallback,
             notices: Vec::new(),
