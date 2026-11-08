@@ -99,13 +99,21 @@ apart.
 - **Run the heuristic on all platforms**: unneeded where bracketed paste works, and risks
   misclassifying fast key sequences from remote terminals; `enabled()` limits it to Windows.
 - **Buffer chars-only bursts into a paste too**: no newline means no harm from keys, and replaying
-  keys keeps key bindings working.
+  keys keeps key bindings working. Consequence: a dropped file path (single-line, chars-only) is
+  replayed as keys, so PDF attachment by path (`dropped_pdf`) is not detected on Windows unless
+  the path arrives bracketed.
+
+## Decisions
+
+- AFK: The LF of a pasted CRLF on Windows is an unverified console behavior; no CRLF collapsing or Ctrl+J special case is added (key-level collapsing is impossible and contradicts `Enter`, `Enter` => `Paste("\n\n")`); it is settled by manual verification.
+- AFK: Dropping a file path onto the window is not detected as a PDF attachment on Windows unless it arrives bracketed, since it is a single-line chars-only burst replayed as keys; no length threshold is added.
 
 ## Documentation
 
 `docs/tui.md` (the paste text around lines 356, 434 and 889): say that on Windows consoles
 pasted text arrives as keys and is detected as a burst, so a multi-line paste is inserted rather
-than submitted.
+than submitted. Also say that attaching a PDF by dropping its path (line ~356) is not detected on
+Windows unless the path arrives as a bracketed paste.
 
 ## Testing Strategy
 
@@ -131,9 +139,6 @@ All behavior is reachable with a scripted event source:
    crossterm Windows console reader cannot be driven from a test.
 2. Type `hi`, pause, press Enter. Expected: submits.
 3. Repeat with `fontaine --ax-screen-reader` (linear interface).
-
-## Open Questions
-
-- Does Windows Terminal deliver a pasted blank line as two Enter events (`\r\n` → `Enter`,
-  `Enter`)? If it does, each pasted line break doubles. To be settled by manual verification on
-  a real console; if it does, collapse a `\r`-then-`\n` pair in the key-to-text mapping.
+4. Paste a two-line block and check what the console delivers for the LF of a pasted CRLF
+   (Enter twice, `Char('j')`+CONTROL, or nothing). Expected: one line break inserted. If it
+   differs, record what was seen; the burst rules are not changed speculatively.
