@@ -98,15 +98,15 @@ Rule:
    `details.cost` reset to default, and `details.release_date`/`last_updated`/`canonical_model_id`
    cleared.
 4. Overlay (only what the row reports):
-   - `effort_levels` present → `reasoning = ReasoningSupport::Listed { levels, budget: None,
-     can_disable, default }`, where `levels` maps `minimal|low|medium|high|xhigh|max` to rig's
-     `Effort` and **drops any string it does not know** (never claim a level it cannot name),
-     `can_disable = thinking_off.unwrap_or(base's can_disable)`, and `default` is the base's
-     default when it is in `levels`, else `None`. When the base's reasoning is not `Listed`,
-     `can_disable` falls back to `false`.
-   - `thinking_off` present and the resulting reasoning is `Listed` (whether or not
-     `effort_levels` is present) → `can_disable = thinking_off`; with a non-`Listed` base and no
-     `effort_levels` it is ignored.
+   - `levels` maps the `effort_levels` strings `minimal|low|medium|high|xhigh|max` to rig's
+     `Effort` and **drops any string it does not know** (never claim a level it cannot name); an
+     `effort_levels` list whose known subset is empty counts as absent (base reasoning kept).
+   - If `effort_levels` (known subset non-empty) is present or the base's reasoning is `Listed`,
+     the result is `Listed` with `can_disable = thinking_off.unwrap_or(base's Listed
+     can_disable, else false)`; otherwise the base's reasoning is kept and `thinking_off` is
+     ignored. With `effort_levels`, `reasoning = Listed { levels, budget: None, can_disable,
+     default }` and `default` is the base's default when it is in `levels`, else `None`;
+     without it, the base's levels, default and budget are kept.
    - `adaptive_thinking` present → `compat.adaptive_thinking`.
    - `compat.thinking_off` (the `thinking.type` string that turns reasoning off) is always the
      base's.
@@ -135,15 +135,22 @@ delegates to) sets it to `client.facts_notice(&reference.model)`; `ModelHandle::
 `resolve_with` pushes it as a `Notice::warning` for the main model and for a `Ready` guardian
 (once when both are the same model). The TUI's `/model` and `/guardian-model`
 (`fontaine-tui/src/ui/commands/model.rs`) read the new handle's `facts_notice` after the switch
-and show it with `Transcript::warning`. Headless prints the main and guardian `facts_notice`
-warnings to stderr in every mode (`announce` only prints `notices()` in Auto/Afk/Plan). It is
-shown once per resolution of that model, never per request.
+and show it with `Transcript::warning`; the TUI reads it from `runtime.models.main` /
+`runtime.models.guardian` after `switch_main_model` / `set_guardian_model`. Headless prints the
+main and guardian `facts_notice` to stderr only in the modes where `announce` returns early (not
+Auto/Afk/Plan, whose `announce` already prints `runtime.notices()`, which carries it from
+`Models.notices`). A derived model used only by a subagent warns through
+`context.approver.notice(...)` in `ChildContext::model_for`'s caller, once per model reference,
+deduplicated like `first_unpriced_cap`. It is shown once per resolution of that model, never per
+request.
 
 ### 5. Refused rows are shown, not hidden
 
 - `AccountClient` gains `fn refused(&self) -> Vec<RefusedModel>` (default empty), read right after
   `list()` on the same client; `RefusedModel { id: String, reason: String }` lives in
-  `providers/mod.rs`. `claude-subscription` returns its `Entry::Refused` rows in listing order.
+  `providers/mod.rs`. `claude-subscription`'s `list()` builds an ordered `Vec<RefusedModel>` of its `Entry::Refused`
+  rows in the same loop and stores it alongside `discovered` (a `BTreeMap` keyed by alias) for
+  `refused()` to return.
 - `models.rs` introduces `pub struct Listing { pub models: Vec<String>, pub refused:
   Vec<RefusedModel> }`. `list_models`/`models_of` return it (an explicit `models` list on a
   non-discovering kind gives `refused: []`; a narrowing `models` list on a discovering kind
@@ -177,14 +184,15 @@ shown once per resolution of that model, never per request.
    `guardian_from_client`, `None` in `ModelHandle::new`), notices in `resolve_with`,
    `AccountListing.refused`, `Switcher::main`/`listings` signatures, `external_check`; update
    callers: `fontaine/src/models_cmd.rs`, `fontaine-core/src/agent/models.rs` (incl. the :216
-   `refused` copy), `agent/setup.rs`, `child_runner.rs` (`MainModel.listing` becomes `Listing`),
+   `refused` copy), `agent/setup.rs`, `child_runner.rs` (`MainModel.listing` becomes `Listing`; after `model_for`, emit the handle's `facts_notice` via
+   `context.approver.notice`, once per model reference like `first_unpriced_cap`),
    `agent/model_source.rs`, `composition_offer.rs` (test `AccountListing` literal), and the test
    files building `Models { main_listing: Vec::new(), .. }` (use `Listing::default()`).
 6. `model_report.rs`: `unavailable` in text and JSON.
 7. TUI: `model_picker.rs` `Row::Refused` and heading rule, `body_as`, `linear.rs` test call sites,
    the switch notice in `fontaine-tui/src/ui/commands/model.rs`.
 8. Headless: `fontaine/src/headless.rs` prints the main/guardian `facts_notice` warning to stderr
-   in every mode.
+   only in the modes where `announce` returns early (not Auto/Afk/Plan).
 9. Docs and master-plan Decisions (below); file the `anthropic` follow-up issue and link it in the
    Decisions line.
 
@@ -261,7 +269,7 @@ All unit/integration, no live CLI (`claude_cli_double` fake only).
   family → `None`; family with no usable entry → `None`; id/display name replaced, pricing and
   cost cleared; overlay maps known effort strings, drops unknown ones, applies `thinking_off` and
   `adaptive_thinking`, keeps the base default only when listed; absent overlay keeps the base's
-  reasoning.
+  reasoning; an `effort_levels` list with no known string counts as absent.
 - `cli.rs` `model_rows`: flags parsed; missing and wrong-typed flags read as absent.
 - `claude_subscription/mod.rs` unit tests for `entry_of`: listed → not derived; unlisted
   same-family → derived with `from`; unknown family → refused; credit row with a known family →
@@ -271,12 +279,12 @@ All unit/integration, no live CLI (`claude_cli_double` fake only).
   derived `Ready` guardian model), and its request runs with
   the canonical id and the base's output limit; `future → claude-quantum-9` appears in
   `AccountListing.refused` with its reason, including when the account is the main account
-  (the reuse path); `models` narrowing applies to refused rows.
+  (the reuse path); `models` narrowing applies to refused rows; `haiku` is usable and listed in
+  `AccountListing.models` (regression pin for Haiku hidden from the picker). A subagent whose
+  model is derived emits the `facts_notice` once through the approver.
 - `model_picker.rs` unit tests: refused row drawn with its reason, filtered by the query, skipped
   by arrows and Enter, absent when the query excludes it; a group whose query matches only
   refused rows keeps its heading.
 - Headless integration test (fake CLI): a derived main model prints the `facts_notice` warning to
-  stderr in default mode.
+  stderr in default mode, and in one Auto-mode run prints exactly one warning line.
 - `model_report.rs` unit tests: text and JSON `unavailable` output, omitted when empty.
-- Regression pin for the bug seen in the wild (Haiku hidden from the picker): the integration test
-  above with a family member absent from the pinned catalog shows it usable in the listing.
