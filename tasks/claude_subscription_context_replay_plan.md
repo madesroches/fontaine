@@ -114,7 +114,8 @@ proxy (`ANTHROPIC_BASE_URL`) captured each `/v1/messages` body.
 `CliChild::list_models` returns a `Listing { rows: Vec<ModelRow>, context: CliContext }` instead of
 `Vec<ModelRow>`. `CliContext { email: Option<String>, version: Option<(u32, u32, u32)> }` is read
 from the answer's `account.email` (non-empty string) and `claude_code_version` (via the existing
-`parse_version`). Missing or malformed fields give `None`, never an error: they only select a
+`parse_version`) by a pure `cli_context(response: &Value) -> CliContext` next to `model_rows`,
+which `list_models` calls. Missing or malformed fields give `None`, never an error: they only select a
 layout. `Cli::initialize` (and through it `discover` / `list()`) ignores `context`.
 
 ### 2. Two layouts, chosen per request
@@ -147,16 +148,17 @@ pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext, layout: Layout)
   equal); the gap is under 55 minutes (1 h TTL with margin); and the step added no more than 18
   blocks since the previous final frame (from the `Record`'s per-frame block counts) (inside the API's 20-block lookback). The expected read is
   `prev.read + prev.write_1h`. A read short of it by more than 64 tokens returns `true` and the
-  caller adds the version to the broken set; a version never leaves it.
+  caller adds the version to the broken set through `mark_broken(version) -> bool`, true only on
+  the version's first insertion; a version never leaves it.
 - **Usage source.** `Reader::result` (`protocol.rs:1193`), on the accepted final result, already
   reads `value["usage"]`; it keeps `cache_read_input_tokens` and
   `cache_creation.ephemeral_1h_input_tokens` and the stream hands them to `transport.rs`'s
   `stream` at `Event::Complete`, which records the request and runs `check`.
-- **First broken verdict for a version** emits one warning naming the CLI version (never the email),
-  saying the cache optimization is off for that version and that `cache-bench` measures it. The
-  provider has no `Approver` today, only `tracing::warn!`. Routing it through `Approver::warn`
-  (AGENTS.md) is part of step 5: an `Approver` handle is passed into the transport from the
-  provider's construction site, with the `tracing::warn!` kept as the fallback when none is given.
+- **First broken verdict for a version** (`mark_broken` returned true) emits one `tracing::warn!`
+  naming the CLI version (never the email), saying the cache optimization is off for that version
+  and that `cache-bench` measures it. This is the provider's existing warning path (`cli.rs:801`):
+  no provider receives an `Approver` (`ConnectContext` has none and approvers attach only after
+  models resolve), so surfacing provider warnings to the user is a follow-up (step 9).
 - `Layout::Native`:
   - **Reminder replay.** Each history *user run* (a maximal run of consecutive history user
     frames) followed by an assistant frame gets the reminder, placed by rules 1–5 on the run's
@@ -217,7 +219,8 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
    Add each confirmed shape to the rules; leave unconfirmed ones as "left unchanged".
 3. **`cli.rs`:** `Listing`, `CliContext`, parsing in `list_models`; adjust `Cli::initialize` /
    `discover` callers and the `listing_with` unit-test helper (`cli.rs:1194-1212`, returns
-   `Vec<ModelRow>` from `list_models`) with its three tests (~`cli.rs:1216`, `1231`, `1246`).
+   `Vec<ModelRow>` from `list_models`) with its three tests (~`cli.rs:1216`, `1231`, `1246`). Add
+   the pure `cli_context` beside `model_rows`.
 4. **`context.rs`:** `TEMPLATE_SINCE`, the 2.1.319 template, the verdict statics and `Record`, the
    pure `check`, `layout`, `apply` (reminder placement and marker). Move `mark_history` and
    `CACHE_MARKER` here from `protocol.rs`; reword their doc comments (`protocol.rs:260-261`, `264-267` say the
@@ -244,11 +247,13 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
    `Reader` exposes the result's cache usage (`cache_read_input_tokens`,
    `cache_creation.ephemeral_1h_input_tokens`, kept by `Reader::result`) through an accessor that
    `stream` reads at `Event::Complete` (a unit variant, `protocol.rs` ~660), then records the
-   request in the context statics and runs `check`. Add the warning route (`Approver::warn`, see Design 2).
+   request in the context statics and runs `check`; on `true`, `mark_broken` and, when it reports a
+   first insertion, the `tracing::warn!` (Design 2).
 6. **Double** (`examples/claude_cli_double.rs`): `initialize` answers with `account` (scenario key
    `account`, default `{"email": "user@example.com", …}`) and `claude_code_version` (scenario key,
    default "2.1.319", not derived from the double's `version`, which defaults to 2.1.318). A
-   scenario can omit either. Document both new keys in the double's module doc
+   scenario omits either from the answer by setting its key to JSON `null` (an absent key takes
+   the default), as `text()`/`int()` already treat `null`; any other value is sent as given. Document both new keys in the double's module doc
    (`examples/claude_cli_double.rs:9-18`).
 7. **Bench:** threshold default 1.25 (`default_value_t` at `fontaine-evals/src/runner.rs:80`, plus
    any doc comment or help text there) and the `--threshold` row in `evals/README.md` (:387, default
@@ -260,12 +265,15 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 9. **Follow-up issues** to file:
    - persisting verdicts across processes;
    - updating the template (and `TEMPLATE_SINCE`) when the self-check warning fires for a new CLI
-     version, after measuring it with the bench.
+     version, after measuring it with the bench;
+   - surfacing provider warnings to the user (e.g. a warn hook through `ConnectContext`), so the
+     self-check warning reaches `Approver::warn` instead of only `tracing`.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/providers/claude_subscription/context.rs` (new), `mod.rs` (module)
-- `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (`Listing`, `CliContext`; reword
+- `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (`Listing`, `CliContext`,
+  `cli_context`; reword
   the `FIXED_ENV` comment at `:155-157`)
 - `rust/fontaine-core/src/providers/claude_subscription/protocol.rs`, `protocol/tests.rs` (marker
   moved out; the marker half of the split cache-control test and the `marked`/`tool_loop` helpers
@@ -298,6 +306,10 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
   one, the adapter's) still forbids also keeping the history marker.
 - 2026-11-07 Verdicts are per process (one static, not per connection) and not persisted;
   persistence is a follow-up.
+- AFK: 2026-11-07 The self-check warning goes through `tracing::warn!`, not `Approver::warn`: no provider receives an `Approver`, a cache-layout fallback is advisory (not audit/ledger/config/credentials), and surfacing provider warnings to the user is a follow-up issue.
+- AFK: 2026-11-07 `CliContext` is parsed by a pure `cli_context(&Value)` beside `model_rows`, so its missing/malformed-field cases are unit-tested without a process.
+- AFK: 2026-11-07 The double drops `account` or `claude_code_version` from its `initialize` answer when the scenario sets that key to JSON `null`; an absent key takes the default, matching how `text()`/`int()` treat `null`.
+- AFK: 2026-11-07 CHANGELOG amends the existing #449/#480 Providers bullet in place (marker clause and #480 text) rather than adding a new entry, since that bullet's current text is wrong on the native layout.
 - 2026-11-07 Replay the reminder rather than make the CLI drop it: dropping it is impossible on
   2.1.319, and `--bare` / `CLAUDE_CODE_SIMPLE` break subscription sign-in.
 - 2026-11-07 Replay rather than `--resume` of a persisted CLI session: the CLI transcript holds
@@ -339,9 +351,14 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 
 `evals/README.md`: the `--threshold` row's default becomes 1.25.
 
-`CHANGELOG.md` `[Unreleased]` → `### Changed` → `#### Providers`: one entry, issue #480. It states
-that on the native layout the cache marker moves to the final message, which amends the #449
-Providers entry saying the last replayed user message carries a cache marker.
+`CHANGELOG.md` `[Unreleased]` → `### Changed` → `#### Providers`: amend the existing #449/#480
+bullet in place (`CHANGELOG.md:54-63`), no new entry. Its :57 clause "the last replayed user message
+carries a cache marker" becomes layout-dependent (the final message on CLI 2.1.319 and later, the
+last replayed user message otherwise), and its #480 text (:60-63, the never-read final-message
+breakpoint and the per-step write cost) is rewritten: the adapter repeats the CLI's reminder on
+replayed messages, so each step writes only its new messages plus ~170 tokens per user message; the
+never-read 5-minute write is the CLI's trailing date/budget block; a per-version self-check falls
+back to the earlier layout.
 
 ## Testing Strategy
 
@@ -351,6 +368,8 @@ Unit tests (`context.rs`):
 - `check` (pure): previous read plus 1 h write met → `false`; a shortfall beyond 64 tokens →
   `true`; non-extending history, a gap of 55 minutes or more, or a step adding more than 18
   blocks → no verdict; a broken version stays broken after a passing check.
+- `mark_broken`: the first insertion of a version returns `true` (the warning fires), later
+  insertions of it return `false`; each test uses a version no other test uses.
 - Each placement rule against its verified shape, asserting the exact resulting JSON:
   - text-only run (array and string content);
   - a run ending in a string-content `tool_result`;
@@ -375,8 +394,8 @@ Unit tests (`context.rs`):
 - The email appears in no `ClaudeError` text (exercise every error path of `list_models` parsing
   with an email in the answer).
 
-`cli.rs`: `list_models` parses `account.email` and `claude_code_version`, and missing, empty or
-non-string fields give `None`.
+`cli.rs`: `cli_context` unit-tested on JSON values like `model_rows`: `account.email` missing,
+empty or non-string gives `None`; a missing or malformed `claude_code_version` gives `None`.
 
 Integration against the double (`tests/claude_subscription.rs`). The cache layout is a silent
 failure class, since a wrong layout changes only usage, so it is automated:
@@ -389,8 +408,9 @@ failure class, since a wrong layout changes only usage, so it is automated:
   `aliases_resolve_to_canonical_ids_and_the_request_is_translated` (line ~790, asserts
   `frames[0]["message"]["content"][0]["text"]`) is updated for the leading reminder block.
 - Self-check, using the double's per-response `usage` script key. The broken-version set is process-wide and the tests share one binary and parallel threads, so each self-check test scripts its own `claude_code_version` that no other test uses (e.g. "2.1.400" and "2.1.401"); the default "2.1.319" is never marked broken. Unit tests of `check` and the broken set use their own instance or distinct versions too: scripted so the second request
-  of a conversation reads short, the third request's logged frames are Legacy and exactly one
-  warning is emitted; scripted to match, the third stays Native.
+  of a conversation reads short, the third request's logged frames are Legacy; scripted to match,
+  the third stays Native. Warnings are not counted (they go to `tracing`); the once-only warning
+  rests on the `mark_broken` unit test below.
 - Existing billing-gate, precedence and replay tests pass unchanged.
 
 ## Manual Verification
