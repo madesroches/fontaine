@@ -553,7 +553,18 @@ async fn run_one(
                 json!({ "tool_use_id": id, "tool": tool, "success": success, "text": text }),
             )),
             SessionEvent::ToolPreview { .. } => {}
-            SessionEvent::Usage { calls_tool, .. } => {
+            SessionEvent::Usage { usage, calls_tool } => {
+                emit(event(
+                    "model_call",
+                    sid,
+                    json!({
+                        "input_tokens": usage.input_tokens.unwrap_or(0),
+                        "output_tokens": usage.output_tokens.unwrap_or(0),
+                        "cache_read_input_tokens": usage.cached_input_tokens.unwrap_or(0),
+                        "cache_creation_input_tokens": usage.cache_creation_input_tokens.unwrap_or(0),
+                        "calls_tool": calls_tool,
+                    }),
+                ));
                 // The cap is checked between turns: a spent budget stops the run before its
                 // tool calls run, but never discards an answer already complete.
                 if calls_tool

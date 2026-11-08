@@ -183,3 +183,24 @@ step; the adapter writes about 12300 (the previous message again, without the re
 one), and reads the rest from the cache. The reminder sits on the final message only, so the
 previous message cannot be replayed byte for byte; repeating it on every replayed message would cost
 a reminder per message for the rest of the conversation, which is worse for long runs.
+
+### Checking cache usage
+
+A cache miss changes no output, only usage, so the adapter's cache write is measured against
+`claude -p` with a bench in `fontaine-evals`. It needs a signed-in subscription and the real CLI, so
+it runs by hand or nightly, never in CI:
+
+```
+cargo run -p fontaine-evals -- cache-bench --model <account>/<model> \
+  --out ../evals/scorecards/claude-subscription-cache-<model>.json
+```
+
+It reads six fixture files of about 2000 tokens one at a time through `fontaine -p` and through
+`claude -p`, and takes each model call's cache write from the `model_call` events of
+[headless output](headless.md#output) and from `claude -p`'s `assistant` events. The scorecard holds
+every step, the totals, the CLI version and the models each side reports serving. Read the `ratio`:
+the mean cache write per step of Fontaine over Claude Code, leaving out the first step (it carries
+the base context) and the last (it only answers). The run exits 1 when the ratio is above
+`--threshold` (default 2.0, the gap described under [What the CLI still
+adds](#what-the-cli-still-adds)) or a side reported fewer than three model calls. Counts are tokens
+only: the cheaper 1-hour write rate is not part of them.

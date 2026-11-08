@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `fontaine-evals cache-bench` runs a fixed multi-step read task through `fontaine -p` on a
+  claude-subscription account and through `claude -p`, compares the per-step cache write, and
+  writes a scorecard; it exits 1 when Fontaine's mean write exceeds the threshold times Claude
+  Code's (#483). `fontaine -p --output-format stream-json` gains a `model_call` event with each
+  model call's token usage, which the bench reads.
 - A one-line shell installer for Linux and macOS, `fontaine-installer.sh`, is attached to each
   release. It installs to `$CARGO_HOME/bin`, checks the archive's sha256 when `sha256sum` is
   present, and writes an install receipt for the updater. It ignores the `[network]` settings and

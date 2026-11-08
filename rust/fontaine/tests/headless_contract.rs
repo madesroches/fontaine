@@ -961,3 +961,39 @@ async fn startup_sweeps_the_scratch_directories_of_dead_sessions() {
     assert!(!parent.join("dead-session").exists());
     assert!(!parent.join("dead-session.lock").exists());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_model_call_emits_a_model_call_event_that_sums_to_the_ledger_totals() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("call_1", "read", json!({"path": "note.txt"})),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    s.add_file("note.txt", "x\n");
+    let out = s.headless(&["--output-format", "stream-json", "go"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let v = validator();
+    for line in &lines {
+        assert_valid(&v, line);
+    }
+    let calls: Vec<&Value> = lines.iter().filter(|l| l["type"] == "model_call").collect();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["calls_tool"], true);
+    assert_eq!(calls[1]["calls_tool"], false);
+    assert!(lines.iter().all(|l| l["schema_version"] == 1));
+    let main = &result_of(&lines)["usage"]["main"];
+    for field in [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_input_tokens",
+        "cache_creation_input_tokens",
+    ] {
+        let sum: u64 = calls.iter().map(|c| c[field].as_u64().unwrap()).sum();
+        assert_eq!(main[field].as_u64().unwrap(), sum, "{field}");
+    }
+}
