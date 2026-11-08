@@ -912,14 +912,15 @@ mod tests {
         // shared container's failure aborts the prepare.
         let script = state.join("docker");
         let text = std::fs::read_to_string(&script).unwrap();
-        std::fs::write(
+        // `write_executable` re-adds the shebang and probe guard, so hand it only the body.
+        let body = text.splitn(3, '\n').nth(2).unwrap();
+        crate::test_support::write_executable(
             &script,
-            text.replace(
+            &body.replace(
                 "if [ \"$3\" = fontaine-searxng-a798b73c ]; then exit 1; fi",
                 "exit 1",
             ),
-        )
-        .unwrap();
+        );
         let warned = Arc::new(std::sync::Mutex::new(Vec::new()));
         let warn: Arc<dyn Fn(&str) + Send + Sync> = {
             let warned = warned.clone();

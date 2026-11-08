@@ -384,7 +384,9 @@ mod default_backend {
             "cat '{}/inspect-out' 2>/dev/null || echo false",
             state.display()
         );
-        std::fs::write(&script, text.replace(&inspect, "echo false")).unwrap();
+        // `write_executable` re-adds the shebang and probe guard, so hand it only the body.
+        let body = text.splitn(3, '\n').nth(2).unwrap();
+        common::write_executable(&script, &body.replace(&inspect, "echo false"));
     }
 
     #[cfg(unix)]
