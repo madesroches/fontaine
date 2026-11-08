@@ -36,10 +36,8 @@ All in `rust/fontaine-core/src/providers/claude_subscription/`:
 ### Terminal at message_stop for `max_tokens`
 
 In `Reader::stream_event`'s `message_stop` arm, after the existing checks (stop reason present,
-no open blocks), when `stop_reason == "max_tokens"` return a new `Event::Truncated` instead of
-`Event::Nothing`. `stopped` is set as today. `Reader` records that the response ended without a
-result (`result_seen` stays false) so a late `result` frame cannot be accepted: after the stop
-nothing further is read, so this is only a guard for the unit-test path.
+no open blocks), when `stop_reason == "max_tokens"` return a new `Event::Cut` instead of
+`Event::Nothing`. `stopped` is set as today.
 
 Skipped for this stop: the `result` checks (subtype, tool-stop/denied-call contradiction, usage
 cross-check) and `cache_usage`. They describe a completed run, and the CLI's result for a
@@ -47,21 +45,14 @@ recovered run would describe several inferences rather than this response.
 
 ### Transport
 
-`transport.rs` `stream` handles `Event::Truncated` like `Event::Complete` minus the result
+`transport.rs` `stream` handles `Event::Cut` like `Event::Complete` minus the result
 dependent work: stop the child, call `context::finished(sent, None, now)` (drops the record,
 no false "cache broken" warning), push `reader.release()` and end. To avoid duplicating the
 stop/release tail, factor it into one local helper used by both arms.
 
 The `Event` enum lives in `protocol.rs`; `Event::Complete` consumers outside `transport.rs`
-(the `prepare` ack loop at `transport.rs:273`) treat `Truncated` the same as the existing
+(the `prepare` ack loop at `transport.rs:273`) treat `Cut` the same as the existing
 unexpected-event arm.
-
-### Failure ordering
-
-The max_tokens response is accepted only if every earlier validation passed (second
-`message_start`, native tools, open blocks). A recovery that starts before the kill never
-reaches the reader because the stream ends at `message_stop`; the process-tree stop is the
-existing `CliChild::stop`.
 
 ### Recovery switch
 
@@ -74,9 +65,9 @@ is sent before the kill. Findings go in the PR description; if a switch exists, 
 
 ## Implementation Steps
 
-1. `protocol.rs`: add `Event::Truncated`; return it from `message_stop` for `max_tokens`;
+1. `protocol.rs`: add `Event::Cut`; return it from `message_stop` for `max_tokens`;
    document on the `Reader` that this stop ends the response without a result.
-2. `transport.rs`: handle `Event::Truncated` in `stream` and the `prepare` ack loop; share the
+2. `transport.rs`: handle `Event::Cut` in `stream` and the `prepare` ack loop; share the
    stop-and-release tail with `Complete`.
 3. Live probe for a CLI switch and for the pre-kill recovery rate; add the switch if found.
 4. Tests (below).
@@ -88,21 +79,18 @@ is sent before the kill. Findings go in the PR description; if a switch exists, 
 - `rust/fontaine-core/src/providers/claude_subscription/protocol/tests.rs`
 - `rust/fontaine-core/src/providers/claude_subscription/transport.rs`
 - `rust/fontaine-core/tests/claude_subscription.rs` (double-driven test)
-- the `claude_cli_double` script support if it cannot emit a post-stop `user` frame and second message
 - `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (only if a switch is found)
 - `docs/claude-subscription.md`, `CHANGELOG.md`
 
 ## Trade-offs
 
-- **Terminal at `message_stop` vs. tolerating the recovery frames**: tolerating them would let the
-  CLI keep calling the model, spending plan usage on inferences Fontaine discards, and make the
-  response depend on which of several inferences "wins". Ending at `message_stop` is the only
-  option that bounds cost.
 - **A new `Event` vs. reusing `Complete`**: `Complete` implies a validated result and carries
   `cache_usage`; a distinct event keeps the cache self-check from treating a missing result as
   evidence.
 
 ## Decisions
+
+- 2026-11-08: a `max_tokens` stop ends the CLI at `message_stop` instead of letting its output-limit recovery run, because it bounds plan-usage cost and avoids discarded inferences.
 
 ## Documentation
 
@@ -114,17 +102,16 @@ cost measured live.
 
 Unit tests in `protocol/tests.rs` (constructed frames, no process):
 
-- `max_tokens` stop then `message_stop` yields `Event::Truncated`; the held terminal delta is
+- `max_tokens` stop then `message_stop` yields `Event::Cut`; the held terminal delta is
   then released unmodified; other stops still return `Nothing` until the result.
-- A `user` recovery frame or second `message_start` after a `max_tokens` stop is never reached
-  in the transport path, and a `max_tokens` stop with an open block is still `Truncated`
-  error (`ProviderError::Truncated`), not an accepted response.
-- A `max_tokens` response containing a tool-use block is accepted as truncated (the model was
-  cut mid-call); rig surfaces the partial call as it does for other providers.
+- A `max_tokens` stop with an open block returns `Err(ProviderError::Truncated)`, not an accepted
+  response.
+- A `max_tokens` stop whose tool_use block was closed with `content_block_stop` returns
+  `Event::Cut`, and the call is forwarded with whatever partial input the stream carried.
 
 Integration test with the double (`tests/claude_subscription.rs`): a script emitting a
 `max_tokens` response, then a recovery `user` frame and a second message, yields the first
-response truncated with no protocol error, and the double observes the child stopped (pins the
+response truncated with no protocol error, and the test asserts the child stopped via the double's descendant pid not being alive (pins the
 reported bug: the recovery `user` frame was refused as a native tool request).
 
 ## Manual Verification
