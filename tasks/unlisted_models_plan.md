@@ -133,14 +133,15 @@ with the existing "update Fontaine" text, now saying no listed model of the same
 `ModelHandle` gains `facts_notice: Option<String>`. `guardian_from_client` (which `from_client`
 delegates to) sets it to `client.facts_notice(&reference.model)`; `ModelHandle::new` sets `None`.
 `resolve_with` pushes it as a `Notice::warning` for the main model and for a `Ready` guardian
-(once when both are the same model). The TUI's `/model` and `/guardian-model`
+(once when both are the same model: the dedup compares the main and guardian references, and a
+fallback guardian is `main.guardian_scoped()`, which carries the same notice). The TUI's `/model` and `/guardian-model`
 (`fontaine-tui/src/ui/commands/model.rs`) read the new handle's `facts_notice` after the switch
 and show it with `Transcript::warning`; the TUI reads it from `runtime.models.main` /
-`runtime.models.guardian` after `switch_main_model` / `set_guardian_model`. Headless prints the
-main and guardian `facts_notice` to stderr only in the modes where `announce` returns early (not
-Auto/Afk/Plan, whose `announce` already prints `runtime.notices()`, which carries it from
-`Models.notices`). A derived model used only by a subagent warns through
-`context.approver.notice(...)` in `ChildContext::model_for`'s caller, once per model reference,
+`runtime.models.guardian` after `switch_main_model` / `set_guardian_model`. In the modes where
+`announce` returns early (Manual/AcceptEdits, which never consult the guardian), headless prints
+only the main model's `facts_notice` to stderr; the guardian's notice stays on the Auto/Afk/Plan
+path, where `announce` prints `runtime.notices()`, which carries both from `Models.notices`. A
+derived model used only by a subagent warns through `context.approver.warn(...)` in `ChildContext::model_for`'s caller, once per model reference,
 deduplicated like `first_unpriced_cap`. It is shown once per resolution of that model, never per
 request.
 
@@ -154,12 +155,15 @@ request.
 - `models.rs` introduces `pub struct Listing { pub models: Vec<String>, pub refused:
   Vec<RefusedModel> }`. `list_models`/`models_of` return it (an explicit `models` list on a
   non-discovering kind gives `refused: []`; a narrowing `models` list on a discovering kind
-  narrows `refused` too). `Models.main_listing` and `Switcher::main`'s second value become
+  narrows `refused` too; a refused row narrowed away is hidden from listings but still explains
+  itself through `not_offered`/`unavailable_reason` when named). `Models.main_listing` and `Switcher::main`'s second value become
   `Listing`; call sites that need ids read `.models`. `Listing` derives `Default`. `Switcher::listings`'
   `main` argument becomes `Option<(&ModelRef, &Listing)>`, so the main account's refused rows
   survive the reuse; `agent/models.rs:216` (`slot.models = Ok(self.models.main_listing.clone())`)
   must copy `refused` too, or the main account's refused rows vanish from `/model`.
-- `AccountListing` gains `refused: Vec<RefusedModel>` (empty on a failed listing).
+- `AccountListing` gains `refused: Vec<RefusedModel>` (empty on a failed listing); the production
+  `impl From<&AccountListing> for Group` (`model_picker.rs`, used by `/model` and the provider-setup
+  picker in `fontaine-tui/src/setup.rs`) copies it, so the setup picker shows unavailable rows too.
 - `model_picker.rs`: `Group` carries the refused rows; a new `Row::Refused { label, reason }` is
   drawn dim as `  <id> — unavailable: <reason>` (clipped like every row), matched by the same
   fuzzy filter as model rows, after the group's usable models, and **never selectable**:
@@ -185,14 +189,16 @@ request.
    `AccountListing.refused`, `Switcher::main`/`listings` signatures, `external_check`; update
    callers: `fontaine/src/models_cmd.rs`, `fontaine-core/src/agent/models.rs` (incl. the :216
    `refused` copy), `agent/setup.rs`, `child_runner.rs` (`MainModel.listing` becomes `Listing`; after `model_for`, emit the handle's `facts_notice` via
-   `context.approver.notice`, once per model reference like `first_unpriced_cap`),
-   `agent/model_source.rs`, `composition_offer.rs` (test `AccountListing` literal), and the test
-   files building `Models { main_listing: Vec::new(), .. }` (use `Listing::default()`).
+   `context.approver.warn`, once per model reference like `first_unpriced_cap`),
+   `agent/model_source.rs`, `composition_offer.rs` (test `AccountListing` literal), `model_report.rs:183-184` (test
+   `AccountListing` literal), `fontaine-core/tests/model_source.rs:16-17` (`MainModel { listing }`
+   literal becomes `Listing`), and the test files building `Models { main_listing: Vec::new(), .. }` (use `Listing::default()`).
 6. `model_report.rs`: `unavailable` in text and JSON.
-7. TUI: `model_picker.rs` `Row::Refused` and heading rule, `body_as`, `linear.rs` test call sites,
+7. TUI: `model_picker.rs` `Row::Refused`, `impl From<&AccountListing> for Group` copying `refused`, heading rule, `body_as`, `linear.rs` test call sites,
    the switch notice in `fontaine-tui/src/ui/commands/model.rs`.
-8. Headless: `fontaine/src/headless.rs` prints the main/guardian `facts_notice` warning to stderr
-   only in the modes where `announce` returns early (not Auto/Afk/Plan).
+8. Headless: `fontaine/src/headless.rs` prints the main model's `facts_notice` warning to stderr
+   in the modes where `announce` returns early (not Auto/Afk/Plan); the guardian's notice stays on
+   the `runtime.notices()` path.
 9. Docs and master-plan Decisions (below); file the `anthropic` follow-up issue and link it in the
    Decisions line.
 
@@ -245,7 +251,10 @@ request.
   that a row with no listed family or a credit marker is still refused and shown with its reason.
 - `docs/configuration.md` (Model discovery) and `docs/tools.md`: the `unavailable` rows in
   `fontaine models` and the `models` tool.
-- `docs/tui.md`: unavailable rows in `/model` and `/guardian-model`.
+- `docs/tui.md`: unavailable rows in `/model`, `/guardian-model` and the provider-setup picker; the
+  picker heading rule (:767-769): a group's heading is kept also when only unavailable rows match.
+- `docs/configuration.md` (:536): effort levels come from the catalog; a derived model's come from
+  the CLI flags.
 - `docs/configuration.md` (:355-357, :907-909), `docs/tui.md` (:666-667, :674-676) and
   `docs/headless.md` (:110-111): update the statements that an uncatalogued model is never
   compacted / has no `/context` window to say a derived `claude-subscription` model counts as
@@ -286,5 +295,5 @@ All unit/integration, no live CLI (`claude_cli_double` fake only).
   by arrows and Enter, absent when the query excludes it; a group whose query matches only
   refused rows keeps its heading.
 - Headless integration test (fake CLI): a derived main model prints the `facts_notice` warning to
-  stderr in default mode, and in one Auto-mode run prints exactly one warning line.
+  stderr in default mode, and in one Auto-mode run stderr carries exactly one `facts_notice` line.
 - `model_report.rs` unit tests: text and JSON `unavailable` output, omitted when empty.
