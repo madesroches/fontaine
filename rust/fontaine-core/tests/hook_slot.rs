@@ -26,6 +26,7 @@ enum Reply {
 struct Double {
     id: &'static str,
     reply: Reply,
+    closed: bool,
 }
 
 impl PreToolUseHook for Double {
@@ -35,6 +36,10 @@ impl PreToolUseHook for Double {
 
     fn timeout(&self) -> Duration {
         Duration::from_millis(100)
+    }
+
+    fn fails_closed(&self) -> bool {
+        self.closed
     }
 
     fn run<'a>(
@@ -64,6 +69,7 @@ fn hook(id: &'static str, permission: Option<HookPermission>, input: Option<Valu
             reason: None,
             guardian_context: None,
         }),
+        closed: false,
     })
 }
 
@@ -242,7 +248,11 @@ async fn a_hook_allow_never_passes_the_floor() {
 #[tokio::test]
 async fn an_erroring_timing_out_or_malformed_hook_decides_nothing() {
     for reply in [Reply::Fail, Reply::Malformed, Reply::Hang] {
-        let double = Arc::new(Double { id: "bad", reply });
+        let double = Arc::new(Double {
+            id: "bad",
+            reply,
+            closed: false,
+        });
         let rig = rig(Manual, "", vec![double]);
         // It could have allowed; instead the normal pipeline runs and asks.
         rig.check("shell", shell("touch x")).await;
@@ -257,6 +267,40 @@ async fn an_erroring_timing_out_or_malformed_hook_decides_nothing() {
     std::fs::write(rig.work().join("a.txt"), "a").unwrap();
     assert!(allowed(&rig.check("read", json!({"path": "a.txt"})).await));
     assert!(rig.audit()[0].original_args_digest.is_none());
+}
+
+#[tokio::test]
+async fn a_fail_closed_hook_denies_when_it_fails_or_times_out_but_not_on_unreadable_output() {
+    for reply in [Reply::Fail, Reply::Hang] {
+        let double = Arc::new(Double {
+            id: "guard",
+            reply,
+            closed: true,
+        });
+        let rig = rig(Manual, "", vec![double]);
+        let d = rig.check("shell", shell("touch x")).await;
+        assert!(!allowed(&d));
+        let record = rig.audit()[0].clone();
+        assert_eq!((record.decision, record.tier), (Decision::Deny, Tier::Hook));
+        assert_eq!(record.rule.as_deref(), Some("guard"));
+        let shown = format!("{d:?}");
+        assert!(
+            shown.contains("blocking because Git Bash was not found, so only exit code 0 or 2 counts as this hook's verdict"),
+            "{shown}"
+        );
+    }
+    let double = Arc::new(Double {
+        id: "guard",
+        reply: Reply::Malformed,
+        closed: true,
+    });
+    let rig = rig(Manual, "", vec![double]);
+    rig.check("shell", shell("touch x")).await;
+    let record = rig.audit()[0].clone();
+    assert_eq!(
+        (record.decision, record.tier),
+        (Decision::Prompt, Tier::Mode)
+    );
 }
 
 /// A hook allow recorded for the original resolution must not approve a call whose symlink

@@ -578,6 +578,9 @@ fn edit(
 #[derive(Clone, Debug)]
 pub struct ReadView {
     pub read: Read,
+    /// Whether `shell` is registered; the description points at `grep` and `powershell` when
+    /// it is not.
+    pub posix_shell: bool,
 }
 
 /// What the first bytes of a file read as.
@@ -730,14 +733,24 @@ impl Tool for ReadView {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
+        let base = self.read.description();
+        // rig's text names `shell`, which does not exist in the PowerShell fallback.
+        let base = if self.posix_shell {
+            base
+        } else {
+            base.replace("`rg -n` in `shell` to find a line", "`grep` to find a line")
+                .replace(
+                    "not `cat`, `head` or `sed` in `shell`",
+                    "not `Get-Content` in `powershell`",
+                )
+        };
         format!(
-            "{} An image (PNG, JPEG, GIF, WebP) is returned to the model as an image when the \
+            "{base} An image (PNG, JPEG, GIF, WebP) is returned to the model as an image when the \
              model accepts images, and as a note otherwise; over {} MB even an image-capable \
              model gets a note. A Jupyter notebook (.ipynb) is shown as its cells: each with \
              its index, id and type, its source, and its text outputs (images are noted, not \
              shown). Edit one with `notebook_edit`. A PDF is never returned as a result: \
              attach it to your message instead.",
-            self.read.description(),
             MAX_IMAGE_BYTES / (1024 * 1024),
         )
     }
@@ -1142,6 +1155,7 @@ mod tests {
             fn read_tool(&self) -> ReadView {
                 ReadView {
                     read: crate::builtins::read_for(&self.root, &self.seen),
+                    posix_shell: true,
                 }
             }
 
@@ -1283,6 +1297,7 @@ mod tests {
             // The unconfined fallback read, as the gate's external fallback builds it.
             let tool = ReadView {
                 read: crate::builtins::read_external(&rig.root, &rig.seen),
+                posix_shell: true,
             };
             let mut context = modalities(true);
             let output = tool
@@ -1370,6 +1385,7 @@ mod tests {
             // edit, exactly as in-root.
             let read = ReadView {
                 read: crate::builtins::read_external(&rig.root, &rig.seen),
+                posix_shell: true,
             };
             read.call(&mut ToolContext::new(), ReadArgs::new(&outside))
                 .await

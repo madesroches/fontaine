@@ -4,7 +4,10 @@
 //! pipeline does not gate them; they run with the same scrubbed environment as `shell`.
 //!
 //! A hook can only add: `deny` and `ask` tighten, `allow` acts exactly as an allow rule does,
-//! and a hook that fails, times out or says something unreadable decides nothing.
+//! and a hook that fails, times out or says something unreadable decides nothing. The exception
+//! is a `pre_tool_use` hook run by PowerShell because Git for Windows is missing: a POSIX hook
+//! usually fails there, so a failed or timed-out run denies the call and only exit code 0 or 2
+//! is a verdict.
 //!
 //! The two task-board events, `task_completed` and `teammate_idle`, are quality gates and can
 //! only block: exit code 2 keeps the task open or keeps the agent working, with stderr as the
@@ -17,9 +20,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use fontaine_agents::tasks::{QualityGate, Task};
+use fontaine_tools::command_shell::CommandShell;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::CallView;
-use fontaine_tools::git_bash::{GitBash, sh_command};
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note, text_view};
 use futures::future::BoxFuture;
 use serde_json::{Value, json};
@@ -42,14 +45,14 @@ pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 /// Set in a hook's environment so a script can find the project it runs for.
 pub const PROJECT_DIR_VAR: &str = "FONTAINE_PROJECT_DIR";
 
-/// How a hook's command is run: the same environment as the `shell` tool (scrubbed, plus `[env]`), through the
-/// same shell (Git Bash on Windows).
+/// How a hook's command is run: the same environment as the `shell` tool (scrubbed, plus `[env]`),
+/// through the same shell (Git Bash on Windows, PowerShell when it is missing).
 #[derive(Clone)]
 pub struct HookProcess {
     pub scrub_env: Vec<OsString>,
     /// The user's `[env]`, set after the scrub.
     pub set_env: Vec<(OsString, OsString)>,
-    pub git_bash: Option<GitBash>,
+    pub shell: CommandShell,
     pub project_dir: PathBuf,
 }
 
@@ -63,11 +66,10 @@ pub struct HookOutput {
 
 impl HookProcess {
     async fn run(&self, command: &str, stdin: &Value) -> Result<HookOutput, HookError> {
-        let sh = sh_command(command, self.git_bash.is_some());
-        let mut process = tokio::process::Command::new("sh");
+        let invocation = self.shell.invocation(command, &self.set_env);
+        let mut process = tokio::process::Command::new(&invocation.program);
         process
-            .arg("-c")
-            .arg(sh.script)
+            .args(&invocation.args)
             .current_dir(&self.project_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -80,14 +82,8 @@ impl HookProcess {
             process.env(name, value);
         }
         process.env(PROJECT_DIR_VAR, &self.project_dir);
-        if let Some((name, value)) = sh.env {
+        for (name, value) in &invocation.env {
             process.env(name, value);
-        }
-        if let Some(git_bash) = &self.git_bash {
-            process.env(
-                "PATH",
-                git_bash.path_value(fontaine_tools::git_bash::base_path(&self.set_env)),
-            );
         }
         let mut child = process
             .spawn()
@@ -233,6 +229,10 @@ impl PreToolUseHook for CommandHook {
 
     fn can_allow(&self) -> bool {
         self.user_trust
+    }
+
+    fn fails_closed(&self) -> bool {
+        self.process.shell.is_powershell()
     }
 
     fn run<'a>(
@@ -672,7 +672,7 @@ mod tests {
         Arc::new(HookProcess {
             scrub_env: Vec::new(),
             set_env: Vec::new(),
-            git_bash: None,
+            shell: CommandShell::Sh,
             project_dir: std::env::temp_dir(),
         })
     }

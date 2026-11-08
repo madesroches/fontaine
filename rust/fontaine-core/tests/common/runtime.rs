@@ -456,7 +456,7 @@ fn build_with_origin(
         memory_root,
         mode,
         scrub_env: Vec::new(),
-        git_bash: None,
+        git_bash: super::git_bash(),
         powershell: None,
         system_prompt: None,
         append_system_prompt: None,

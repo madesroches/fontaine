@@ -227,6 +227,17 @@ pub struct HookDecision {
     pub guardian_context: Option<String>,
 }
 
+/// What a fail-closed hook's failure turns into: a denial that says why.
+fn fail_closed_denial(failure: &str) -> HookDecision {
+    HookDecision {
+        permission: Some(HookPermission::Deny),
+        reason: Some(format!(
+            "blocking because Git Bash was not found, so only exit code 0 or 2 counts as this hook's verdict ({failure})"
+        )),
+        ..HookDecision::default()
+    }
+}
+
 #[derive(Debug)]
 pub enum HookError {
     Failed {
@@ -309,7 +320,8 @@ pub struct PreToolUseEvent<'a> {
 }
 
 /// The slot for user `pre_tool_use` hooks. A hook that errors, times out or answers something
-/// unreadable contributes no decision; it never loosens anything.
+/// unreadable contributes no decision; it never loosens anything. The exception is a hook that
+/// [fails closed](PreToolUseHook::fails_closed): its failure or timeout denies the call.
 pub trait PreToolUseHook: Send + Sync {
     fn id(&self) -> String;
 
@@ -328,6 +340,12 @@ pub trait PreToolUseHook: Send + Sync {
     /// but never approve one.
     fn can_allow(&self) -> bool {
         true
+    }
+
+    /// Whether a run that fails or times out denies the call instead of deciding nothing. It
+    /// only tightens: output that cannot be read still decides nothing.
+    fn fails_closed(&self) -> bool {
+        false
     }
 
     fn run<'a>(
@@ -741,9 +759,17 @@ impl PermissionPipeline {
             let id = hook.id();
             let decision = match tokio::time::timeout(hook.timeout(), hook.run(event)).await {
                 Ok(Ok(decision)) => decision,
+                Ok(Err(e @ HookError::Failed { .. })) if hook.fails_closed() => {
+                    tracing::warn!(hook = %id, error = ?e, "a pre_tool_use hook failed; it denies the call");
+                    fail_closed_denial(&chain(&e))
+                }
                 Ok(Err(e)) => {
                     tracing::warn!(hook = %id, error = ?e, "a pre_tool_use hook failed; it decides nothing");
                     continue;
+                }
+                Err(_) if hook.fails_closed() => {
+                    tracing::warn!(hook = %id, "a pre_tool_use hook timed out; it denies the call");
+                    fail_closed_denial("it timed out")
                 }
                 Err(_) => {
                     tracing::warn!(hook = %id, "a pre_tool_use hook timed out; it decides nothing");

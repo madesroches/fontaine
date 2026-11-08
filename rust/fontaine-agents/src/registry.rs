@@ -116,9 +116,18 @@ impl AgentType {
     /// The tools a child of this type gets from a parent holding `parent`: the type's own set
     /// (every parent tool when it names none), cut down to the parent's, minus the ones it
     /// disallows outright. Never a tool the parent lacks.
+    ///
+    /// When the parent has no `shell` tool (the case on Windows without Git Bash), an entry naming
+    /// `shell` on its own, in the set or among the disallowed, covers `powershell` too, so a type written for
+    /// `shell` keeps a command tool and one that forbids `shell` gets none. An entry with a
+    /// specifier does not: it limits calls by tool name.
     pub fn toolset(&self, parent: &[String]) -> Vec<String> {
+        let posix_shell = parent.iter().any(|t| t == "shell");
         let wanted: Option<Vec<&str>> = self.tools.as_ref().map(|tools| {
             let mut wanted: Vec<&str> = tools.iter().map(|t| entry_tool(t)).collect();
+            if !posix_shell && tools.iter().any(|t| t == "shell") {
+                wanted.push("powershell");
+            }
             // A child that can start subagents needs the tools that wait for and stop them.
             if wanted.contains(&"agent") {
                 wanted.push("job_output");
@@ -131,6 +140,10 @@ impl AgentType {
             .iter()
             .filter(|entry| !entry_has_specifier(entry))
             .map(|entry| entry.as_str())
+            .flat_map(|entry| {
+                let also = (!posix_shell && entry == "shell").then_some("powershell");
+                std::iter::once(entry).chain(also)
+            })
             .collect();
         let mut out: Vec<String> = Vec::new();
         for tool in parent {
@@ -294,6 +307,32 @@ mod tests {
         );
         let explore = AgentTypes::builtin().get("explore").unwrap().clone();
         assert_eq!(explore.toolset(&parent), names(&["read", "ls"]));
+    }
+
+    #[test]
+    fn without_shell_in_the_parent_shell_entries_cover_powershell() {
+        let worker = AgentTypes::builtin().get("worker").unwrap().clone();
+        assert_eq!(
+            worker.toolset(&names(&["read", "powershell"])),
+            names(&["read", "powershell"])
+        );
+        let mut ty = worker.clone();
+        ty.disallowed = names(&["shell"]);
+        assert_eq!(
+            ty.toolset(&names(&["read", "powershell"])),
+            names(&["read"])
+        );
+        // With a parent `shell` nothing changes: the worker does not get `powershell`.
+        assert_eq!(
+            worker.toolset(&names(&["read", "shell", "powershell"])),
+            names(&["read", "shell"])
+        );
+        ty.tools = Some(names(&["read", "shell(git *)"]));
+        ty.disallowed = Vec::new();
+        assert_eq!(
+            ty.toolset(&names(&["read", "powershell"])),
+            names(&["read"])
+        );
     }
 
     #[test]

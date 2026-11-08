@@ -143,6 +143,13 @@ pub fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
     None
 }
 
+/// The shell hooks and the status line run in on this machine: Git Bash on Windows, which the
+/// tests that run commands need.
+pub fn command_shell() -> fontaine_tools::command_shell::CommandShell {
+    fontaine_tools::command_shell::CommandShell::select(cfg!(windows), git_bash(), None)
+        .expect("a Windows test machine has Git for Windows")
+}
+
 pub fn no_env(_: &str) -> Option<OsString> {
     None
 }

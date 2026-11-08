@@ -61,7 +61,7 @@ fn process_with_env(
     Arc::new(HookProcess {
         scrub_env: scrub,
         set_env,
-        git_bash: common::git_bash(),
+        shell: common::command_shell(),
         project_dir: std::env::temp_dir(),
     })
 }
@@ -702,7 +702,7 @@ async fn a_hook_that_cannot_start_keeps_the_io_error_as_its_source() {
     let process = Arc::new(HookProcess {
         scrub_env: Vec::new(),
         set_env: Vec::new(),
-        git_bash: common::git_bash(),
+        shell: common::command_shell(),
         project_dir: missing,
     });
     let h = hook(None, command(&[]), user());

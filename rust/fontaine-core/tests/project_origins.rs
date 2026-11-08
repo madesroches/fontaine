@@ -18,7 +18,7 @@ fn process() -> Arc<HookProcess> {
     Arc::new(HookProcess {
         scrub_env: Vec::new(),
         set_env: Vec::new(),
-        git_bash: None,
+        shell: fontaine_tools::command_shell::CommandShell::Sh,
         project_dir: std::env::temp_dir(),
     })
 }

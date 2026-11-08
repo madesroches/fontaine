@@ -117,7 +117,14 @@ pub fn env_with(scope: Arc<Scope>, gate: Arc<dyn ToolGate>) -> BuiltinEnv {
             pre_images: None,
             kills: None,
         },
-        shell: ShellSettings::default(),
+        // Without Git Bash on Windows there is no `shell` or `monitor`; the registry tests expect them.
+        shell: ShellSettings {
+            git_bash: cfg!(windows).then(|| fontaine_tools::git_bash::GitBash {
+                bin: PathBuf::from("git/bin"),
+                usr_bin: PathBuf::from("git/usr/bin"),
+            }),
+            ..ShellSettings::default()
+        },
         webfetch: WebfetchConfig::default(),
         websearch: None,
         searxng: Default::default(),

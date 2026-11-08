@@ -137,3 +137,24 @@ async fn a_subagent_waits_in_the_foreground_and_may_not_start_a_background_job()
         .unwrap();
     assert!(text(&out).contains("timed out after 1s"), "{}", text(&out));
 }
+
+#[tokio::test]
+async fn run_waits_for_the_command_and_reports_how_it_ended() {
+    use fontaine_tools::builtins::{ShellSettings, powershell_for};
+    use fontaine_tools::powershell::PowerShellSettings;
+    use rig_core::tool::ExitStatus;
+    use rig_tools::ShellArgs;
+
+    let d = Dirs::new();
+    let interpreter = PowerShellSettings {
+        path: std::path::PathBuf::from("powershell.exe"),
+    };
+    let tool = powershell_for(&d.dir("work"), &ShellSettings::default(), &interpreter);
+    let ran = tool
+        .run(ShellArgs::new("Write-Output 'hi'; exit 3"))
+        .await
+        .unwrap();
+    assert_eq!(ran.status, ExitStatus::Exited(3));
+    assert!(ran.output.starts_with("hi"), "{}", ran.output);
+    assert!(ran.output.ends_with("[exit code 3]"), "{}", ran.output);
+}

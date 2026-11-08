@@ -191,6 +191,7 @@ fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
             .map(|(name, text)| (name.as_str(), text.as_str())),
         append: p.setup.append_system_prompt.as_deref(),
         afk: p.state.afk_on(),
+        posix_shell: super::posix_shell(&p.setup.git_bash),
     });
     (pieces, sources, loaded)
 }

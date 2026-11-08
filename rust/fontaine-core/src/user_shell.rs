@@ -2,7 +2,7 @@
 //! outside the permission pipeline and the guardian, and are written to the ledger and the audit
 //! log so the session still shows they happened.
 
-use fontaine_tools::builtins::{ShellSettings, shell_for};
+use fontaine_tools::builtins::{ShellSettings, powershell_for, shell_for};
 use rig_core::tool::ExitStatus;
 use rig_tools::{ShellArgs, ShellRun};
 use serde_json::json;
@@ -34,21 +34,29 @@ impl AgentRuntime {
     /// Runs `command` in the primary root with the agent's shell defaults (killed after 120 s, or
     /// 60 s without output; no stdin), the scrubbed environment and the same output cut, because
     /// the output goes to the model. Dropping the future kills the process group. Writes no
-    /// record: the caller does, so an interrupted command is recorded too.
+    /// record: the caller does, so an interrupted command is recorded too. On Windows without
+    /// Git Bash the command runs in PowerShell.
     pub async fn run_user_shell(&self, command: &str) -> Result<UserShellRun, String> {
-        let shell = shell_for(
-            &self.primary_root(),
-            &ShellSettings {
-                scrub_env: self.setup.scrub_env.clone(),
-                set_env: tools::subprocess_env(&self.config),
-                git_bash: self.setup.git_bash.clone(),
-                ..ShellSettings::default()
-            },
-        );
-        let run = shell
-            .run(ShellArgs::new(command))
-            .await
-            .map_err(|e| e.to_string())?;
+        let settings = ShellSettings {
+            scrub_env: self.setup.scrub_env.clone(),
+            set_env: tools::subprocess_env(&self.config),
+            git_bash: self.setup.git_bash.clone(),
+            ..ShellSettings::default()
+        };
+        let root = self.primary_root();
+        let args = ShellArgs::new(command);
+        let run = match (
+            &self.setup.powershell,
+            settings.posix_shell_available(cfg!(windows)),
+        ) {
+            (Some(interpreter), false) => {
+                powershell_for(&root, &settings, interpreter)
+                    .run(args)
+                    .await
+            }
+            _ => shell_for(&root, &settings).run(args).await,
+        }
+        .map_err(|e| e.to_string())?;
         Ok(UserShellRun {
             command: command.to_string(),
             run,

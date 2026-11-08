@@ -13,6 +13,7 @@ use fontaine_agents::spawn;
 use fontaine_guardian::Profile;
 use fontaine_mcp::Connected;
 use fontaine_tools::builtins::Seen;
+use fontaine_tools::command_shell::CommandShell;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, ROOT_AGENT};
 use fontaine_tools::git_bash::GitBash;
@@ -208,6 +209,22 @@ pub struct AgentRuntime {
     native_search: bool,
     /// Whether the built prompt carries the AFK guidance.
     prompt_afk: bool,
+}
+
+/// The shell hooks and the status line run in: `sh` off Windows, Git Bash when found, else
+/// PowerShell. Startup refuses to run on Windows with neither, so a session never gets here
+/// without one.
+pub(crate) fn command_shell(
+    git_bash: &Option<GitBash>,
+    powershell: &Option<PowerShellSettings>,
+) -> CommandShell {
+    CommandShell::select(cfg!(windows), git_bash.clone(), powershell.clone())
+        .expect("startup requires Git Bash or PowerShell on Windows")
+}
+
+/// Whether the POSIX `shell` tool is registered: always off Windows, with Git Bash on it.
+pub(crate) fn posix_shell(git_bash: &Option<GitBash>) -> bool {
+    fontaine_tools::git_bash::posix_shell_available(cfg!(windows), git_bash.as_ref())
 }
 
 /// The parts of the setup a rebuild needs again.
@@ -632,6 +649,11 @@ impl AgentRuntime {
     /// Git Bash, used to run shell commands and hooks on Windows.
     pub fn git_bash(&self) -> &Option<GitBash> {
         &self.setup.git_bash
+    }
+
+    /// The shell the status line command and hooks run in.
+    pub fn command_shell(&self) -> CommandShell {
+        command_shell(&self.setup.git_bash, &self.setup.powershell)
     }
 
     /// The roots the completion and ledger file indexes scan: the workspace, not the memory

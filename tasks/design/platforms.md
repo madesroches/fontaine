@@ -7,17 +7,25 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 v1 supports **Linux, macOS and Windows**; platform-specific compile, lint and test coverage runs on all
 three OSes (`ubuntu-latest`, `macos-latest`, `windows-latest`); only pg2 clippy/test/rustdoc and the
 fixture-eval steps are Linux-only. Windows follows Claude Code: the `shell` tool (and hook
-commands) run through **Git Bash** — Git for Windows is a prerequisite — so the POSIX shell parser, Tier 0.5, rule matching and the critical-path
+commands) run through **Git Bash** when Git for Windows is found (preferred, not a prerequisite: see the fallback table below), so the POSIX shell parser, Tier 0.5, rule matching and the critical-path
 check apply unchanged. Discovery: locate `git.exe` on PATH (then the standard Git for Windows install
 locations), derive `<Git>\usr\bin` and `<Git>\bin`, and prepend both to the shell launcher's PATH
 (rig-tools `Launcher::with_env`) so rig's `sh` resolves; `FONTAINE_GIT_BASH_PATH` overrides discovery
-(Claude Code's `CLAUDE_CODE_GIT_BASH_PATH`); not found ⇒ startup error on Windows (exit 2, message
-naming Git for Windows and the override). Hook commands use the same discovery. The command text reaches Git Bash's `sh` in the `FONTAINE_SH_COMMAND` environment variable, which `sh -c` evaluates, rather than on the Windows command line, where the MSYS runtime re-parses it and halves every `\\`; the command that was judged is then the one that runs. A separate Windows-only `powershell` tool (Claude name `PowerShell`) runs
+(Claude Code's `CLAUDE_CODE_GIT_BASH_PATH`); one that is not a Git Bash `bash.exe` is a startup error (exit 2). Hook commands use the same discovery.
+Startup picks the Windows command shell from what it found:
+
+| Git Bash | PowerShell | Result |
+|---|---|---|
+| found | any | `shell`, `monitor`, hooks, status line and `!` lines use Git Bash |
+| not found | found | starts with one warning; PowerShell is the command shell (Claude Code: "If Git for Windows is not installed, Claude Code uses PowerShell as the shell tool instead") |
+| not found | not found | exit 2: `no shell found: install Git for Windows, or set FONTAINE_GIT_BASH_PATH or FONTAINE_POWERSHELL_PATH` (a `FONTAINE_POWERSHELL_PATH` that is not a file is named instead of advised) |
+
+ The command text reaches Git Bash's `sh` in the `FONTAINE_SH_COMMAND` environment variable, which `sh -c` evaluates, rather than on the Windows command line, where the MSYS runtime re-parses it and halves every `\\`; the command that was judged is then the one that runs. A separate Windows-only `powershell` tool (Claude name `PowerShell`) runs
 commands in `pwsh.exe` (else `powershell.exe`, else System32's Windows PowerShell; `FONTAINE_POWERSHELL_PATH` overrides), started with
 `-NoProfile -NonInteractive -OutputFormat Text -EncodedCommand`, so PowerShell parses exactly the judged text. It is registered only when an
-interpreter is found (absence is not a startup error), never pre-classifies (`Specifier::None`, outside the shell class), and
+interpreter is found (absence is not a startup error while Git Bash is found; with neither, startup fails), never pre-classifies (`Specifier::None`, outside the shell class), and
 `floor::critical_powershell` extends the critical-path floor to `Remove-Item` and its aliases with a token-level scan whose unreadable
-cases are critical. Hooks and `!` lines stay on Git Bash. Path handling (scope validator, protected paths, critical-path) accepts drive
+cases are critical. In the fallback `shell` and `monitor` are not registered (Claude Code: Monitor needs Git Bash on Windows), hook commands, the status line and `!` lines run in PowerShell through the same encoded invocation, the model-facing text names `powershell` where it would name `shell`, a subagent type that lists bare `shell` gets `powershell`, and skill `!` lines are reported as not run. Path handling (scope validator, protected paths, critical-path) accepts drive
 letters, UNC paths, MSYS-style `/c/...` argv paths (translated to drive paths before validation; an
 untranslatable one is out of scope), compares case-insensitively, and resolves junctions and
 symlinks. Critical paths on Windows include drive roots and `%USERPROFILE%`. The containment probe

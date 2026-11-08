@@ -79,6 +79,72 @@ fn powershell_exists_only_when_an_interpreter_was_found() {
 }
 
 #[test]
+fn without_git_bash_on_windows_powershell_is_the_only_command_tool() {
+    let d = Dirs::new();
+    let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
+    env.shell.git_bash = None;
+    env.shell.powershell = Some(PowerShellSettings {
+        path: d.base.join("pwsh.exe"),
+    });
+    assert!(!env.shell.posix_shell_available(true));
+    assert!(env.shell.posix_shell_available(false));
+    // Registration asks the real platform; only Windows differs from the shared fixture.
+    let names: BTreeSet<&str> = registry(&env).iter().map(|t| t.name).collect();
+    assert!(names.contains("powershell"));
+    assert_eq!(
+        names.contains("shell") || names.contains("monitor"),
+        !cfg!(windows)
+    );
+    env.shell.git_bash = Some(GitBash {
+        bin: d.base.join("bin"),
+        usr_bin: d.base.join("usr").join("bin"),
+    });
+    assert!(env.shell.posix_shell_available(true));
+    let names: BTreeSet<&str> = registry(&env).iter().map(|t| t.name).collect();
+    assert!(names.contains("shell") && names.contains("monitor") && names.contains("powershell"));
+}
+
+#[test]
+fn model_facing_text_names_shell_only_when_it_is_registered() {
+    let d = Dirs::new();
+    let mut env = env_with(scope(&d.dir("work"), &[]), Arc::new(AllowAll::default()));
+    env.shell.powershell = Some(PowerShellSettings {
+        path: d.base.join("pwsh.exe"),
+    });
+    let describe = |env: &builtins::BuiltinEnv, name: &str| {
+        registry(env)
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap()
+            .tool
+            .definition()
+            .description
+    };
+    let shell_words = |text: &str| text.contains("`shell`");
+    for name in ["read", "ls", "glob", "grep", "job_output", "powershell"] {
+        assert!(shell_words(&describe(&env, name)), "{name}");
+    }
+    if cfg!(windows) {
+        env.shell.git_bash = None;
+        for name in [
+            "read",
+            "ls",
+            "glob",
+            "grep",
+            "job_output",
+            "job_cancel",
+            "powershell",
+        ] {
+            let text = describe(&env, name);
+            assert!(!shell_words(&text), "{name}: {text}");
+            assert!(!text.contains("monitor"), "{name}: {text}");
+        }
+        assert!(describe(&env, "grep").contains("`powershell`"));
+        assert!(describe(&env, "read").contains("`powershell`"));
+    }
+}
+
+#[test]
 fn registered_names_are_known_built_in_names() {
     for tool in registered() {
         assert!(is_builtin(tool.name), "{} has no descriptor row", tool.name);

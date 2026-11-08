@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
-use fontaine_tools::git_bash::{GitBash, sh_command};
+use fontaine_tools::command_shell::CommandShell;
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -127,26 +127,26 @@ pub struct StatuslineScript {
     command: String,
     scrub_env: Vec<OsString>,
     set_env: Vec<(OsString, OsString)>,
-    git_bash: Option<GitBash>,
+    shell: CommandShell,
     project_dir: PathBuf,
     timeout: Duration,
 }
 
 impl StatuslineScript {
     /// Builds a script runner from the runtime's configuration, matching the environment posture
-    /// of hooks: scrubbed env, `[env]`, `FONTAINE_PROJECT_DIR`, and Git Bash on Windows.
+    /// of hooks: scrubbed env, `[env]`, `FONTAINE_PROJECT_DIR`, and the same shell.
     pub fn new(
         command: impl Into<String>,
         scrub_env: Vec<OsString>,
         set_env: Vec<(OsString, OsString)>,
-        git_bash: Option<GitBash>,
+        shell: CommandShell,
         project_dir: PathBuf,
     ) -> StatuslineScript {
         StatuslineScript {
             command: command.into(),
             scrub_env,
             set_env,
-            git_bash,
+            shell,
             project_dir,
             timeout: TIMEOUT,
         }
@@ -172,11 +172,10 @@ impl StatuslineScript {
     }
 
     async fn run_inner(&self, payload: &Payload) -> Result<Option<String>, std::io::Error> {
-        let sh = sh_command(&self.command, self.git_bash.is_some());
-        let mut child = Command::new("sh");
+        let invocation = self.shell.invocation(&self.command, &self.set_env);
+        let mut child = Command::new(&invocation.program);
         child
-            .arg("-c")
-            .arg(sh.script)
+            .args(&invocation.args)
             .current_dir(&self.project_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -189,14 +188,8 @@ impl StatuslineScript {
             child.env(name, value);
         }
         child.env(PROJECT_DIR_VAR, &self.project_dir);
-        if let Some((name, value)) = sh.env {
+        for (name, value) in &invocation.env {
             child.env(name, value);
-        }
-        if let Some(git_bash) = &self.git_bash {
-            child.env(
-                "PATH",
-                git_bash.path_value(fontaine_tools::git_bash::base_path(&self.set_env)),
-            );
         }
 
         let mut process = child.spawn()?;
@@ -330,7 +323,13 @@ mod tests {
     use super::*;
 
     fn script(command: &str) -> StatuslineScript {
-        StatuslineScript::new(command, Vec::new(), Vec::new(), None, std::env::temp_dir())
+        StatuslineScript::new(
+            command,
+            Vec::new(),
+            Vec::new(),
+            CommandShell::Sh,
+            std::env::temp_dir(),
+        )
     }
 
     fn payload() -> Payload {

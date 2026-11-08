@@ -618,7 +618,7 @@ pub(super) fn permission_pipeline(
     let hook_process = Arc::new(HookProcess {
         scrub_env: setup.scrub_env.clone(),
         set_env: tools::subprocess_env(&setup.config),
-        git_bash: setup.git_bash.clone(),
+        shell: super::command_shell(&setup.git_bash, &setup.powershell),
         project_dir: setup.roots[0].clone(),
     });
     let mut hooks = user_hooks::build(&setup.config, setup.project_executables, hook_process);
@@ -813,6 +813,7 @@ fn child_runner(
     let preamble_config_dir = retained.config_dir.clone();
     let preamble_home = retained.home.clone();
     let preamble_system = retained.system_prompt.clone();
+    let preamble_posix_shell = super::posix_shell(&retained.git_bash);
     Arc::new(CoreChildRunner {
         context: Arc::new(ChildContext {
             state: state.clone(),
@@ -844,6 +845,7 @@ fn child_runner(
                     output_style: None,
                     append: Some(&layer),
                     afk: preamble_state.afk_on(),
+                    posix_shell: preamble_posix_shell,
                 })
             }),
             approver: approver.clone(),

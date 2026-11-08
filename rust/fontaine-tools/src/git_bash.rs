@@ -1,6 +1,7 @@
 //! Git Bash support for the `shell` tool and hooks on Windows: discovery, and passing commands to
-//! `sh` through the environment. Git for Windows is a prerequisite: its `usr\bin` and `bin`
-//! directories go in front of the shell launcher's PATH so `sh` resolves.
+//! `sh` through the environment. Git for Windows is preferred but optional: when it is found, its
+//! `usr\bin` and `bin` directories go in front of the shell launcher's PATH so `sh` resolves;
+//! when it is not, PowerShell takes its place.
 
 use std::ffi::OsString;
 use std::fmt;
@@ -48,6 +49,12 @@ pub fn sh_command(command: &str, through_env: bool) -> ShCommand<'_> {
             env: None,
         }
     }
+}
+
+/// Whether the POSIX `shell` tool exists: always off Windows, with Git Bash on it. The prompt
+/// wording and the registered tools both ask this, so they cannot disagree.
+pub fn posix_shell_available(windows: bool, git_bash: Option<&GitBash>) -> bool {
+    !windows || git_bash.is_some()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -126,10 +133,7 @@ impl fmt::Display for GitBashError {
                 "{OVERRIDE_VAR} is `{}`, which is not a bash.exe inside a Git for Windows installation",
                 path.display()
             ),
-            GitBashError::NotFound => write!(
-                f,
-                "Git for Windows was not found: the shell tool runs through Git Bash. Install Git for Windows, or set {OVERRIDE_VAR} to the path of its bash.exe"
-            ),
+            GitBashError::NotFound => f.write_str("Git for Windows was not found"),
         }
     }
 }

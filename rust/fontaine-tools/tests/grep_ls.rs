@@ -17,6 +17,7 @@ fn write(root: &Path, name: &str, text: &str) {
 async fn grep_in(root: &Path, args: Value) -> Result<(String, ToolContext), ToolExecutionError> {
     let tool = Grep {
         search: search_for(root),
+        posix_shell: true,
     };
     let mut context = ToolContext::new();
     let args = serde_json::from_value(args).expect("arguments parse");
@@ -31,6 +32,7 @@ async fn grep(root: &Path, args: Value) -> String {
 async fn ls_in(root: &Path, args: Value) -> Result<(String, ToolContext), ToolExecutionError> {
     let tool = Ls {
         list: list_for(root),
+        posix_shell: true,
     };
     let mut context = ToolContext::new();
     let args = serde_json::from_value(args).expect("arguments parse");
