@@ -58,6 +58,12 @@ proxy (`ANTHROPIC_BASE_URL`) captured each `/v1/messages` body.
      string content it goes at the end of the string; with an array it goes at the end of the last
      text block. With parallel results only the last one is changed.
   3. Has a `tool_result` but ends with another block (text): a new last text block, `REMINDER`.
+  4. Last block is a `tool_result` followed by an empty text block `{"type":"text","text":""}` (the
+     common tool-loop shape Fontaine sends): the CLI drops the empty block and appends a new last
+     text block whose text is exactly `REMINDER` (no separator). Verified live on 2.1.319.
+  5. `tool_result` content variants under rule 2, verified live on 2.1.319: content `""` becomes the
+     string `REMINDER` (no `"\n\n"` prefix); absent content becomes the string `REMINDER`; content
+     `[]` becomes `[{"type":"text","text": REMINDER}]`.
 - **Reminder text** (2.1.319), with `{email}` the account's address:
   ```
   <system-reminder>
@@ -114,9 +120,10 @@ pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext)
   - **Reminder replay.** Each history *user run* (a maximal run of consecutive history user
     frames) followed by an assistant frame gets the reminder, placed by rules 1–3 on the run's
     merged blocks. Rule 1 changes the run's first frame (string content becomes one text block
-    first). Rules 2 and 3 change its last frame. A run whose shape matches no verified rule is left
-    unchanged: a tool result whose last content block is not text (an image), or a final block
-    that is neither text nor `tool_result` while the run holds a `tool_result`. Such a run costs
+    first). Rules 2 to 5 change its last frame; rule 4 removes the trailing empty text block(s) and
+    appends the reminder block. A run whose shape matches no verified rule is left
+    unchanged: a tool result whose array content ends in a `document` or image block, or a final
+    `document`/image block in a run with no `tool_result`. Such a run costs
     one rewrite on the request after it, not a cascade, because it replays the same way every time
     after that.
   - **Marker.** `CACHE_MARKER` goes on the last cacheable block of the **final** frame, using
@@ -128,10 +135,10 @@ pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext)
 `translate` stops calling `mark_history`: the layout needs the `initialize` answer, which arrives
 on the request process. `prepare` calls `context::apply(&mut frames, &listing.context)` right after
 `check_row` and before the history replay. `translate` still derives the session id first, so
-neither the reminder nor the marker affects it. `prepare` works on its own copy of the frames,
-applies `context::apply` to it, and returns the mutated final frame alongside `(CliChild, Reader)`.
-`open` pins the `prepare` future and cannot borrow `translated` mutably meanwhile, so it writes the
-returned frame rather than `translated.frames.last()`.
+neither the reminder nor the marker affects it. `prepare` takes the `Translated` by value (`open` uses
+`translated` after the select only for `frames.last()`, `transport.rs` ~178-181), applies
+`context::apply` in place, and returns the final frame alongside `(CliChild, Reader)` for `open` to
+write after login passes.
 
 ### 3. Privacy
 
@@ -152,9 +159,9 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
    `research/claude-subscription-cli-context/`, with a short `README.md` holding the findings
    table. The scripts read the email from `claude auth status --json` at runtime and contain none.
 2. **Verify the remaining shapes (live, manual, recorded in Decisions).** With `proxy.py` and the
-   probe harness, check two things on 2.1.319:
-   - the placement for a final user message whose last block is an image and that holds no
-     `tool_result` (expected: rule 1), and for a `tool_result` whose array content ends in an image;
+   probe harness, check the remaining shapes on 2.1.319:
+   - a `tool_result` whose array content ends in a `document` or image block;
+   - a final `document`/image block in a run with no `tool_result`;
    - that a consecutive-user-frame run (two `shouldQuery:false` user frames before an assistant)
      merges as described.
    Add each confirmed shape to the rules; leave unconfirmed ones as "left unchanged".
@@ -163,10 +170,17 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
    `Vec<ModelRow>` from `list_models`) with its three tests (~`cli.rs:1217`, `1232`, `1247`).
 4. **`context.rs`:** `VERIFIED`, the 2.1.319 template, `layout`, `apply` (reminder placement and
    marker). Move `mark_history` and `CACHE_MARKER` here from `protocol.rs`. `mark_history` becomes
-   `mark(frame)`, used by both layouts with the frame each layout selects.
+   `mark(frame)`, used by both layouts with the frame each layout selects. Marker-test migration:
+   `the_marker_does_not_change_the_session_id` (`protocol/tests.rs:1177`) only checks session ids
+   across 1/2/3-message conversations and stays in `protocol/tests.rs` (the new derive-apply-compare
+   test is added beside it, not replacing it); `a_request_cache_control_is_stripped_and_never_replaces_the_marker`
+   (`:1158`) is split, the strip half stays and the marker half moves; the `marked` (`:1097`) and
+   `tool_loop` (`:1110`) helpers move or are shared. Reword the `FIXED_ENV` comment at
+   `cli.rs:155-157` ("the adapter's own 1 h marker earlier in the history is the one that is" read
+   back) for the native layout.
 5. **`protocol.rs` / `transport.rs`:** drop the `mark_history` call from `translate`. `prepare`
-   calls `context::apply` on its own copy of the frames after `check_row` and returns the mutated
-   final frame with `(CliChild, Reader)`; `open` writes that returned frame.
+   takes the `Translated` by value, applies `context::apply` in place after `check_row` and returns
+   the final frame with `(CliChild, Reader)`; `open` writes that returned frame.
 6. **Double** (`examples/claude_cli_double.rs`): `initialize` answers with `account` (scenario key
    `account`, default `{"email": "user@example.com", …}`) and `claude_code_version` (scenario key,
    default "2.1.319", not derived from the double's `version`, which defaults to 2.1.318). A
@@ -183,9 +197,11 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 ## Files to Modify
 
 - `rust/fontaine-core/src/providers/claude_subscription/context.rs` (new), `mod.rs` (module)
-- `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (`Listing`, `CliContext`)
+- `rust/fontaine-core/src/providers/claude_subscription/cli.rs` (`Listing`, `CliContext`; reword
+  the `FIXED_ENV` comment at `:155-157`)
 - `rust/fontaine-core/src/providers/claude_subscription/protocol.rs`, `protocol/tests.rs` (marker
-  moved out; existing marker tests move to `context.rs` tests)
+  moved out; the marker half of the split cache-control test and the `marked`/`tool_loop` helpers
+  move or are shared; the session-id test stays)
 - `rust/fontaine-core/src/providers/claude_subscription/transport.rs` (`prepare`, `open`)
 - `rust/fontaine-core/examples/claude_cli_double.rs`, `rust/fontaine-core/tests/claude_subscription.rs`
 - `rust/fontaine-evals/src/runner.rs`, `evals/README.md`
@@ -229,14 +245,17 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 - **Supported CLI versions:** state that on verified versions (2.1.319) replayed history is read
   from the prompt cache up to the previous request's final message. Each step then writes only its
   new messages plus about 170 tokens of the CLI's reminder per user message, near a native session's
-  write. On other versions the adapter keeps the earlier layout (about twice the native write). The
-  5-minute-TTL sentence stays: the CLI's trailing breakpoint is still never read.
+  write. On other versions the adapter keeps the earlier layout (about twice the native write).
+  Reword `docs/claude-subscription.md:160-162`: on verified versions the never-read 5-minute write
+  is the CLI's trailing date/budget block and the adapter's marker on the final message keeps the
+  hour; on other versions the current text holds.
 - **What the CLI still adds:** keep the four items. Replace the closing paragraph with the measured
   per-step numbers for both layouts, and say that the adapter repeats the CLI's reminder on replayed
   messages so they match byte for byte. The email it holds is the one the CLI already sends.
   Replace "worse for long runs" with the context cost (~170 tokens per user message).
-- **Checking cache usage:** the default threshold is 1.25; a version not yet verified will exceed
-  it.
+- **Checking cache usage:** rewrite the whole parenthetical at `docs/claude-subscription.md:204`
+  ("(default 2.0, the gap described under What the CLI still adds)"), not just the number: e.g.
+  default 1.25, above a verified version's expected ratio; a version not yet verified will exceed it.
 
 - **Transport overview (`docs/claude-subscription.md:96-97`):** reword "Fontaine marks the last
   replayed user message for the prompt cache": the marker is on the final message on verified
@@ -262,17 +281,22 @@ Unit tests (`context.rs`):
   - a run ending in a string-content `tool_result`;
   - a run ending in an array-content `tool_result`;
   - parallel results, where only the last one changes;
-  - `tool_result` plus trailing text.
-- An unverified shape (tool result ending in an image) is left unchanged, and later runs still get
-  the reminder.
+  - `tool_result` plus trailing text;
+  - `tool_result` plus a trailing empty text block (rule 4): the empty block is removed and the
+    last block is the bare `REMINDER` text;
+  - `tool_result` content `""`, absent and `[]` (rule 5), one test each.
+- An unverified shape (tool result whose array content ends in an image) is left unchanged, and
+  later runs still get the reminder.
 - A consecutive user run: rule 1 hits its first frame, rules 2/3 its last.
 - The final frame never gets the reminder.
 - Marker: in `Native`, exactly one marker, on the final frame's last cacheable block (e.g. its trailing
   `tool_result`), and no reminder text in the final frame. No marker when there is no history user
   frame (as `mark_history` does today). In `Legacy`, the existing `mark_history` assertions are
-  kept, rewritten to call `context::apply` in `Legacy` (moved from `protocol/tests.rs`).
-- The session id is unchanged by `apply` (derive before, apply, compare); this replaces the old
-  session-id marker test.
+  kept, rewritten to call `context::apply` in `Legacy` (the marker half of the split
+  `a_request_cache_control_is_stripped_and_never_replaces_the_marker` moves from
+  `protocol/tests.rs`; its strip half stays).
+- The session id is unchanged by `apply` (derive before, apply, compare); added beside
+  `the_marker_does_not_change_the_session_id`, which stays in `protocol/tests.rs`.
 - The email appears in no `ClaudeError` text (exercise every error path of `list_models` parsing
   with an email in the answer).
 
