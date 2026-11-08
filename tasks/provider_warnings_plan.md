@@ -86,6 +86,7 @@ pub fn set_sink(sink: impl Fn(&str) + Send + Sync + 'static); // moved from toke
 - `rust/fontaine-core/src/providers/claude_subscription/{mod.rs,transport.rs,cli.rs}`
 - `rust/fontaine-core/src/{models.rs,agent/setup.rs}`
 - `rust/fontaine-core/tests/network.rs`, `rust/fontaine-core/tests/claude_subscription.rs`
+- `rust/fontaine-core/tests/common/` (receives the `claude_cli_double` helpers)
 - `rust/fontaine-core/tests/provider_warn.rs` (new: sink-installing tests, own binary)
 - `rust/fontaine-core/tests/provider_warn_claude_subscription.rs` (new: session-level self-check
   test, own binary)
@@ -113,17 +114,18 @@ Unit tests use `Warn::to` and never touch the process-wide sink. The sink is a n
 
 - Unit: `Warn::emit` calls the pinned sink.
 - Unit: `CacheWire` with a non-JSON StaticPrefix body emits one warning through its `Warn`.
-- Unit: claude-subscription self-check delivers the warning, with the CLI version in its text, to a
-  `Warn::to` sink (hand-built `Running` or context tests, since `tests/claude_subscription.rs` goes
-  through `models::resolve`, where `client_for` sets `Warn::process()`); `Scratch` drop failure
-  delivers one, with the error chain.
-- `tests/provider_warn.rs`: `Warn::process` follows a later `set_sink` (late binding); with no
-  sink set it falls back to `tracing` without panicking; a new test asserts a `token_source`
-  refresh-save failure reaches the sink set by `set_sink`.
-- Integration (new binary `tests/provider_warn_claude_subscription.rs`): drives the
-  claude-subscription self-check through `claude_cli_double` with a CLI version no other test uses
-  (`mark_broken` is once per version per process; existing tests use 2.1.400/2.1.401) and asserts
-  the warning reaches a recording `Approver::warn`.
+- Unit: `Scratch` drop failure delivers one warning to a `Warn::to` sink, with the error chain.
+- `tests/provider_warn.rs`: one test function, since the steps share the process-wide sink and
+  would race as parallel libtest threads. Fixed order: with no sink set, `Warn::process` falls back
+  to `tracing` without panicking; then `set_sink` A, and `Warn::process` (created earlier) follows
+  it (late binding); then `set_sink` B, and a `token_source` refresh-save failure (chmod pattern
+  from `tests/token_source.rs`, step gated `#[cfg(unix)]`) reaches B.
+- Integration (new binary `tests/provider_warn_claude_subscription.rs`): runs `prepare` through
+  `tests/common/runtime.rs::build_with_approver` with `Scripted` (`tests/common/pipeline.rs`) as
+  the approver, drives the claude-subscription self-check through `claude_cli_double`, and asserts
+  `Scripted.warnings` holds the warning with the CLI version string in its text. The
+  `claude_cli_double` helpers (`double()`, `Claude`, `three_steps`, `tagged_conversation`) move from
+  `tests/claude_subscription.rs` into `tests/common/`.
 
 ## Open Questions
 
