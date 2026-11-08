@@ -95,8 +95,10 @@ report   -> one line per outcome, exit code
   `print_warnings`/stderr and is not silent.
 - **Exit codes.** `0` updated or already up to date; the existing config exit code for
   unreadable config (`Command::Update` dispatches after `load_config`, so `[network]` applies and a
-  config error exits with the config exit code); a new nonzero for "not self-updatable", download failure and verification
-  failure (reuse existing constants in `lib.rs` where one fits).
+  config error exits with the config exit code); distinct new codes in `lib.rs` beside
+  `EXIT_CONFIG` (2): `EXIT_UPDATE_NOT_SELF_UPDATABLE` = 3, `EXIT_UPDATE_NETWORK` = 4 and
+  `EXIT_UPDATE_VERIFY` = 5, so scripts can tell a retryable network failure from a verification
+  failure.
 - **Error text** carries the chain via `fontaine_tools::error_chain::chain`; typed errors only for
   the kinds the caller dispatches on (`NotSelfUpdatable`, `Verify`, `Network`).
 - **Headless/guardian.** The command is a user-run CLI subcommand outside any agent session, so no
@@ -109,15 +111,25 @@ report   -> one line per outcome, exit code
    pieces above. `release_index` takes the API base URL as a parameter for tests.
 3. `rust/fontaine/src/lib.rs`: dispatch `Command::Update` beside the other subcommands, after
    `load_config`, building the client from the loaded `[network]`; returns before any session setup.
-4. Cargo: add archive extraction deps only if none of the workspace's already cover `tar.xz`/`zip`
-   (check `Cargo.lock` first; keep `cargo deny check` green).
+4. Cargo: add archive extraction deps, all pure Rust (no C toolchain beyond the workspace's, so
+   `x86_64-pc-windows-gnu` and macOS build unchanged), exact-pinned in `rust/Cargo.toml`
+   `[workspace.dependencies]`: `tar` (MIT/Apache-2.0, `default-features = false`, no xattr) and
+   `lzma-rs` (MIT, xz decoder only) for `.tar.xz`, both "latest stable at implementation time,
+   pinned exactly" (neither is in `Cargo.lock` today); `zip` `=8.6.0` (the version already in
+   `Cargo.lock` via candle, so no second copy) with `default-features = false` and a pure-Rust
+   deflate feature (zlib-rs/miniz_oxide backed; exact feature name confirmed at implementation).
+   `reqwest` stays the workspace `=0.13.5`; add `reqwest.workspace = true` to
+   `rust/fontaine/Cargo.toml` (or reach it through `fontaine_tools::tls`). Extraction is
+   in-process only; never shell out to system `tar`. Run `cargo deny check` (licenses allow
+   MIT/Apache-2.0; the zip RUSTSEC ignores concern `extract()`, which is never called: members are
+   read one at a time, only the single named binary).
 5. Docs and changelog: see Documentation.
 
 ## Files to Modify
 
 - `rust/fontaine/src/cli.rs`, `rust/fontaine/src/lib.rs`
 - new `rust/fontaine/src/update/{mod,receipt,release_index,install}.rs`
-- `rust/fontaine/Cargo.toml` (and `rust/Cargo.toml` if a dependency is added)
+- `rust/fontaine/Cargo.toml` and `rust/Cargo.toml` (`tar`, `lzma-rs`, `zip`; `reqwest` already a workspace dependency)
 - `docs/installing.md`, `docs/verifying-releases.md`, `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
@@ -127,6 +139,8 @@ report   -> one line per outcome, exit code
   channel from the receipt version (not config: no new user-scope key, and project config cannot
   flip it); it never switches channels. Windows swaps via rename-aside
   rather than #175's separate updater process.
+- AFK: archive extraction uses pure-Rust `tar` + `lzma-rs` (xz) and `zip` =8.6.0 (already in `Cargo.lock`) with a pure-Rust deflate feature, in-process only, exact-pinned; the most conservative choice because it needs no C toolchain and passes the deny license list.
+- AFK: update failures exit with distinct codes `EXIT_UPDATE_NOT_SELF_UPDATABLE` = 3, `EXIT_UPDATE_NETWORK` = 4, `EXIT_UPDATE_VERIFY` = 5 (config errors keep `EXIT_CONFIG` = 2); each kind is one the caller dispatches on and the constants are three lines.
 
 ## Documentation
 
