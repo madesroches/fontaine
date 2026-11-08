@@ -319,7 +319,8 @@ pub fn timed_out_line(
 }
 
 pub fn quiet_line(secs: u64, stopped: &str, silent: bool) -> (String, ExitStatus) {
-    let mut line = format!("[printed nothing for {secs}s, so it was stopped: {stopped}");
+    let mut line =
+        format!("[timed out after {secs}s of printing nothing, so it was stopped: {stopped}");
     if silent {
         line.push_str(SILENT);
     }
@@ -333,7 +334,7 @@ pub fn quiet_line(secs: u64, stopped: &str, silent: bool) -> (String, ExitStatus
 
 pub fn runaway_line(megabytes: u64, stopped: &str) -> (String, ExitStatus) {
     (
-        format!("[killed after printing more than {megabytes} MB: {stopped}]"),
+        format!("[stopped after printing more than {megabytes} MB: {stopped}]"),
         ExitStatus::Killed,
     )
 }
