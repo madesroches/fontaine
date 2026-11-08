@@ -43,7 +43,6 @@ fn the_tool_does_not_exist_without_a_backend_or_a_container_runtime() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_rebuild_keeps_the_launched_instance() {
-    use std::os::unix::fs::PermissionsExt;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -59,14 +58,10 @@ async fn a_rebuild_keeps_the_launched_instance() {
     let w = World::new();
     let script = w.root.join("start.sh");
     let starts = w.root.join("starts");
-    common::write(
+    common::write_executable(
         &script,
-        &format!(
-            "#!/bin/sh\necho started >> '{}'\nexec sleep 300\n",
-            starts.display()
-        ),
+        &format!("echo started >> '{}'\nexec sleep 300", starts.display()),
     );
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
     common::write(
         &w.config.join("output-styles/terse.md"),
         "---\ndescription: Short\n---\nBe brief.\n",
@@ -137,11 +132,7 @@ mod default_backend {
 
     #[cfg(unix)]
     fn fake_runtime(dir: &Path, name: &str, body: &str) {
-        use std::os::unix::fs::PermissionsExt;
-        let path = dir.join(name);
-        std::fs::create_dir_all(dir).unwrap();
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        common::write_executable(&dir.join(name), body);
     }
 
     fn start(w: &World, path: Option<PathBuf>, approver: Arc<Collect>) -> AgentRuntime {

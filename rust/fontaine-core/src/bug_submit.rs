@@ -272,10 +272,8 @@ mod tests {
 
     #[cfg(unix)]
     fn fake_gh(dir: &Path, script: &str) -> String {
-        use std::os::unix::fs::PermissionsExt;
         let path = dir.join("gh");
-        std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_executable(&path, script);
         path.display().to_string()
     }
 

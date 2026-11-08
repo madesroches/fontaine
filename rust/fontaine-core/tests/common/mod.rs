@@ -161,6 +161,37 @@ pub fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
+/// Writes an executable `#!/bin/sh` script and returns once it can be exec'd: a fork in another
+/// test thread can hold the write descriptor open and make an early exec fail with ETXTBSY.
+#[cfg(unix)]
+pub fn write_executable(path: &Path, body: &str) {
+    use std::io::ErrorKind;
+    use std::os::unix::fs::PermissionsExt;
+    // The guard makes the probe side-effect free for scripts that log to a state file.
+    write(
+        path,
+        &format!("#!/bin/sh\n[ -z \"$FONTAINE_TEST_PROBE\" ] || exit 0\n{body}\n"),
+    );
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    for _ in 0..500 {
+        match Command::new(path).env("FONTAINE_TEST_PROBE", "1").status() {
+            Ok(status) => {
+                assert!(
+                    status.success(),
+                    "probe of {} failed: {status}",
+                    path.display()
+                );
+                return;
+            }
+            Err(e) if e.kind() == ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => panic!("probe of {} failed: {e}", path.display()),
+        }
+    }
+    panic!("{} stayed busy for 5s", path.display());
+}
+
 /// Test fixtures use the git CLI; the code under test never does.
 pub fn git(dir: &Path, args: &[&str]) {
     let out = Command::new("git")
