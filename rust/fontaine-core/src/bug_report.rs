@@ -246,6 +246,7 @@ mod tests {
         ] {
             assert!(r.body.contains(needle), "{needle}");
         }
+        assert!(!r.body.contains("(abc123)"));
         assert!(!r.body.contains("Transcript tail"));
         assert!(!r.bundle.contains("Transcript tail"));
     }
