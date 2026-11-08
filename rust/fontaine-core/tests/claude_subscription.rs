@@ -807,12 +807,20 @@ async fn aliases_resolve_to_canonical_ids_and_the_request_is_translated() {
 /// A conversation of `users` plain user messages, each answered by an assistant message but the
 /// last.
 fn conversation(users: usize) -> CompletionRequest {
+    tagged_conversation("", users)
+}
+
+/// A `conversation` whose first message carries `tag`, so its session id (and the process-wide
+/// self-check record under it) is its own.
+fn tagged_conversation(tag: &str, users: usize) -> CompletionRequest {
     let mut history = Vec::new();
     for n in 1..users {
-        history.push(Message::user(format!("question {n}")));
+        let tag = if n == 1 { tag } else { "" };
+        history.push(Message::user(format!("question {n}{tag}")));
         history.push(Message::assistant(format!("answer {n}")));
     }
-    CompletionRequest::new(Message::user(format!("question {users}"))).messages(history)
+    let tag = if users == 1 { tag } else { "" };
+    CompletionRequest::new(Message::user(format!("question {users}{tag}"))).messages(history)
 }
 
 impl Claude {
@@ -908,7 +916,11 @@ async fn three_steps(version: &str, second_read: u64) -> Claude {
     }));
     let handle = main_handle(&claude).await;
     for users in [2, 3, 4] {
-        handle.completion.call(conversation(users)).await.unwrap();
+        handle
+            .completion
+            .call(tagged_conversation(version, users))
+            .await
+            .unwrap();
     }
     claude
 }

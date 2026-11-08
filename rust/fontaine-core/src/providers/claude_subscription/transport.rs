@@ -245,7 +245,11 @@ impl ClaudeTransport {
             layout,
             prints,
             &translated.frames,
-        );
+        )
+        .with_settings(context::settings_print(
+            translated.effort.as_deref(),
+            &translated.settings,
+        ));
 
         let query = translated
             .frames

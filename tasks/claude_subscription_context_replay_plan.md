@@ -60,9 +60,10 @@ proxy (`ANTHROPIC_BASE_URL`) captured each `/v1/messages` body.
 - **Placement rules**, observed on the merged content of the queried user message (a
   `shouldQuery:false` frame directly before it is merged into it):
   1. No `tool_result` block: a new first text block, `REMINDER + "\n"`.
-  2. Last block is a `tool_result`: with string content, `"\n\n" + REMINDER` goes at the end of the
-     string; with array content, a new last text block, exactly `REMINDER`, is pushed (existing
-     blocks unchanged). With parallel results only the last one is changed. The earlier probe's
+  2. Last block is a `tool_result`: with string content, trailing whitespace is trimmed
+     (`trim_end()`) and `"\n\n" + REMINDER` goes at the end; with array content whose last block is
+     text, `"\n"` is appended to that block (no trim) and a new last text block, exactly
+     `REMINDER`, is pushed (other blocks unchanged; a non-text last block is left unchanged). With parallel results only the last one is changed. The earlier probe's
      dump could not distinguish the two array placements; the cache-bench capture through the
      logging proxy settled it.
   3. Has a `tool_result` but ends with another block (text): a new last text block, `REMINDER`.
@@ -165,7 +166,7 @@ pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext, layout: Layout)
   - **Reminder replay.** Each history *user run* (a maximal run of consecutive history user
     frames) followed by an assistant frame gets the reminder, placed by rules 1–5 on the run's
     merged blocks. Rule 1 changes the run's first frame (string content becomes one text block
-    first). Rules 2 to 5 change its last frame; rule 4 removes the trailing empty text block(s) and
+    first). Rules 2 to 5 change its last frame (rule 2 trims a string result's trailing whitespace, or adds one `\n` to an array result's last text block, before the reminder); rule 4 removes the trailing empty text block(s) and
     appends the reminder block. A run whose shape matches no known rule is left
     unchanged: a tool result whose array content ends in a `document` or image block, or a final
     `document`/image block in a run with no `tool_result`. Such a run costs

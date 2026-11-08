@@ -135,6 +135,7 @@ fn record(frames: usize, blocks: usize, read: u64, write_1h: u64, at: Instant) -
         blocks: vec![blocks; frames],
         merged_tail: false,
         unreplayable_tail: false,
+        settings: 0,
         usage: CacheUsage { read, write_1h },
         at,
     }
@@ -178,6 +179,14 @@ fn the_check_gives_no_verdict_when_the_comparison_is_unsound() {
     let mut media = record(3, 1, 1000, 500, t0);
     media.unreplayable_tail = true;
     assert!(!check(&media, &record(5, 1, 0, 0, soon)));
+
+    let mut retuned = record(5, 1, 0, 0, soon);
+    retuned.settings = 1;
+    assert!(!check(&prev, &retuned));
+    assert_ne!(
+        settings_print(Some("high"), &json!({"env": {"X": "{}"}})),
+        settings_print(Some("low"), &json!({"env": {"X": "{}"}}))
+    );
 }
 
 #[test]
@@ -381,6 +390,41 @@ fn a_string_tool_result_gets_the_reminder_appended() {
 }
 
 #[test]
+fn a_string_tool_result_is_trimmed_of_trailing_whitespace_before_the_reminder() {
+    for ending in ["", "\n", "\n\n", " \n", "  ", "\t\n "] {
+        let frames = after(json!([result_block(Some(json!(format!(
+            "alpha contents{ending}"
+        ))))]));
+        assert_eq!(
+            content(&frames, 0),
+            &json!([result_block(Some(json!(format!(
+                "alpha contents\n\n{}",
+                reminder()
+            ))))])
+        );
+    }
+}
+
+#[test]
+fn a_last_text_block_gets_one_newline_untrimmed_before_the_reminder_block() {
+    for (ending, expected) in [
+        ("\n", "\n\n"),
+        ("  ", "  \n"),
+        ("\t\n ", "\t\n \n"),
+        ("", "\n"),
+    ] {
+        let frames = after(json!([result_block(Some(json!([
+            {"type": "text", "text": format!("x{ending}")}])))]));
+        assert_eq!(
+            content(&frames, 0),
+            &json!([result_block(Some(json!([
+                {"type": "text", "text": format!("x{expected}")},
+                {"type": "text", "text": reminder()}])))])
+        );
+    }
+}
+
+#[test]
 fn an_array_tool_result_gets_the_reminder_as_a_new_last_text_block() {
     let frames = after(json!([result_block(Some(json!([
         {"type": "text", "text": "a"}, {"type": "text", "text": "b"}])))]));
@@ -388,7 +432,7 @@ fn an_array_tool_result_gets_the_reminder_as_a_new_last_text_block() {
         content(&frames, 0),
         &json!([result_block(Some(json!([
             {"type": "text", "text": "a"},
-            {"type": "text", "text": "b"},
+            {"type": "text", "text": "b\n"},
             {"type": "text", "text": reminder()}])))])
     );
 }

@@ -196,11 +196,9 @@ fn place(run: &mut [Frame], reminder: &str) {
 
 /// Whether `place` would leave this final frame unchanged although the CLI still adds its reminder.
 fn unreplayable(frame: &Frame) -> bool {
-    let merged = kinds(frame);
-    let has_result = merged.iter().any(|kind| matches!(kind, Kind::ToolResult));
-    match merged.last() {
+    match kinds(frame).last() {
         Some(Kind::Media) => true,
-        Some(Kind::ToolResult) if has_result => frame.value["message"]["content"]
+        Some(Kind::ToolResult) => frame.value["message"]["content"]
             .as_array()
             .and_then(|blocks| blocks.last())
             .and_then(|result| result["content"].as_array())
@@ -218,27 +216,35 @@ fn is_empty_text(block: &Value) -> bool {
             .is_none_or(str::is_empty)
 }
 
-/// The CLI appends the reminder to the last tool result's content: after a blank line to string
-/// content, as a new text block to array content.
+/// The CLI appends the reminder to the last tool result's content: to string content after
+/// trimming its trailing whitespace and a blank line; to array content as a new text block, after
+/// a single newline appended to a last text block.
 fn append_to_result(result: &mut Value, reminder: &str) {
     let Some(object) = result.as_object_mut() else {
         return;
     };
-    let appended = format!("\n\n{reminder}");
     match object.get_mut("content") {
         None | Some(Value::Null) => {
             object.insert("content".to_string(), Value::String(reminder.to_string()));
         }
         Some(Value::String(text)) if text.is_empty() => *text = reminder.to_string(),
-        Some(Value::String(text)) => text.push_str(&appended),
+        Some(Value::String(text)) => {
+            text.truncate(text.trim_end().len());
+            text.push_str("\n\n");
+            text.push_str(reminder);
+        }
         Some(Value::Array(blocks)) if blocks.is_empty() => blocks.push(text_block(reminder)),
         Some(Value::Array(blocks)) => {
-            if blocks
-                .last()
-                .is_some_and(|block| block.get("type").and_then(Value::as_str) == Some("text"))
-            {
-                blocks.push(text_block(reminder));
+            let Some(last) = blocks
+                .last_mut()
+                .filter(|block| block.get("type").and_then(Value::as_str) == Some("text"))
+            else {
+                return;
+            };
+            if let Some(Value::String(text)) = last.get_mut("text") {
+                text.push('\n');
             }
+            blocks.push(text_block(reminder));
         }
         Some(_) => {}
     }
@@ -298,6 +304,7 @@ pub(super) struct Record {
     merged_tail: bool,
     unreplayable_tail: bool,
     usage: CacheUsage,
+    settings: u64,
     at: Instant,
 }
 
@@ -311,6 +318,16 @@ pub(super) struct Sent {
     blocks: Vec<usize>,
     merged_tail: bool,
     unreplayable_tail: bool,
+    settings: u64,
+}
+
+/// A hash of what the API's message cache is keyed on besides the messages: the effort level and
+/// the extra request body (thinking among it).
+pub(super) fn settings_print(effort: Option<&str>, settings: &Value) -> u64 {
+    let mut hasher = std::hash::DefaultHasher::new();
+    effort.hash(&mut hasher);
+    settings.to_string().hash(&mut hasher);
+    hasher.finish()
 }
 
 /// A hash per frame, taken before `apply` so it names the conversation and not the layout. It
@@ -355,7 +372,13 @@ impl Sent {
             blocks,
             merged_tail,
             unreplayable_tail,
+            settings: 0,
         }
+    }
+
+    pub(super) fn with_settings(mut self, settings: u64) -> Self {
+        self.settings = settings;
+        self
     }
 }
 
@@ -364,7 +387,7 @@ impl Sent {
 fn check(prev: &Record, now: &Record) -> bool {
     let extends =
         now.prints.len() > prev.prints.len() && now.prints[..prev.prints.len()] == prev.prints[..];
-    if !extends || prev.merged_tail || prev.unreplayable_tail {
+    if !extends || prev.merged_tail || prev.unreplayable_tail || prev.settings != now.settings {
         return false;
     }
     if now.at.saturating_duration_since(prev.at) >= MAX_GAP {
@@ -378,6 +401,7 @@ fn check(prev: &Record, now: &Record) -> bool {
     now.usage.read + READ_SLACK < expected
 }
 
+// Advisory state that only chooses a cache layout, so a poisoned lock is recovered.
 static BROKEN: LazyLock<Mutex<BTreeSet<(u32, u32, u32)>>> =
     LazyLock::new(|| Mutex::new(BTreeSet::new()));
 
@@ -419,17 +443,18 @@ pub(super) fn finished(
     usage: Option<CacheUsage>,
     at: Instant,
 ) -> Option<(u32, u32, u32)> {
-    // Advisory state that only chooses a cache layout, so a poisoned lock is recovered.
     let mut records = lock_recovering(&RECORDS);
-    let previous = records.take(&sent.session_id);
     let (Layout::Native, Some(version), Some(usage)) = (sent.layout, sent.version, usage) else {
+        records.take(&sent.session_id);
         return None;
     };
+    let previous = records.take(&sent.session_id);
     let now = Record {
         prints: sent.prints,
         blocks: sent.blocks,
         merged_tail: sent.merged_tail,
         unreplayable_tail: sent.unreplayable_tail,
+        settings: sent.settings,
         usage,
         at,
     };

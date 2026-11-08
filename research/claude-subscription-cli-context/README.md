@@ -13,7 +13,7 @@ They read the account email from `claude auth status --json` at runtime and cont
 | `tool_probe2.py` | parallel tool results, with and without a trailing text block |
 | `tool_probe3.py` | rules 4 and 5: trailing empty text block, and empty / absent / `[]` result content |
 | `loop_probe.py` | the 5-step tool loop, today's layout against the replayed reminder |
-| `proxy.py` | the logging proxy |
+| `tool_probe4.py` | rule 2's byte endings: trailing whitespace on string content and on a last text block (run with `proxy.py`) |
 
 ## Where the context goes
 
@@ -28,9 +28,13 @@ They read the account email from `claude auth status --json` at runtime and cont
 ## Placement rules (merged content of the queried user message)
 
 1. No `tool_result` block: a new first text block, `REMINDER + "\n"`.
-2. Last block is a `tool_result`: with string content, `"\n\n" + REMINDER` appended to the string;
-   with array content, a new last text block, exactly `REMINDER`, pushed onto the array (existing
-   blocks unchanged). With parallel results only the last changes.
+2. Last block is a `tool_result`: with string content, all trailing whitespace is trimmed (Rust
+   `trim_end()`) and `"\n\n" + REMINDER` appended (endings `""`, `"\n"`, `"\n\n"`, `" \n"`, `"  "`,
+   `"\t\n "` all give `"alpha contents\n\n<system-reminder>..."`); with array content whose last
+   block is text, exactly `"\n"` is appended to that block, untrimmed (`"x \n"` becomes `"x \n\n"`,
+   `"x  "` becomes `"x  \n"`), and a new last text block, exactly `REMINDER`, is pushed. An array
+   ending in a non-text block is left unchanged (unreplayable). With parallel results only the last
+   changes.
 3. Has a `tool_result` but ends with another block (text): a new last text block, `REMINDER`.
 4. Last block is a `tool_result` followed by an empty text block: the empty block is dropped and a
    new last text block, exactly `REMINDER`, is appended.
