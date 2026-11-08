@@ -20,12 +20,12 @@ reminder text and placement have been verified; every other version keeps today'
 - `protocol::translate` (`rust/fontaine-core/src/providers/claude_subscription/protocol.rs:320`)
   builds the frames (`frames_of`, `:517`), derives the session id from `frames[0]` (`:350`), then
   `mark_history` (`:268`) puts `CACHE_MARKER` (`{"type":"ephemeral","ttl":"1h"}`, `:262`) on the last
-  cacheable block of the last history user frame. A one-user-message request gets no marker.
-- `ClaudeTransport::prepare` (`transport.rs:196`) launches the request process, writes the
+  cacheable block of the last history user frame. A request with no history user frame gets no marker.
+- `ClaudeTransport::prepare` (`transport.rs:199`) launches the request process, writes the
   `initialize` control request, reads its answer with `CliChild::list_models` (`cli.rs:952`), which
   returns only the model rows (`model_rows`), runs `check_row`, then writes each history frame and
-  waits for its zero-turn ack. `open` writes the final frame afterwards (`transport.rs:177`).
-- `FIXED_ENV` (`cli.rs:131`) sets `CLAUDE_CODE_MESSAGES_PROMPT_CACHE_TTL=5m` because the CLI's
+  waits for its zero-turn ack. `open` writes the final frame afterwards (`transport.rs:178-183`).
+- `FIXED_ENV` (`cli.rs:133`) sets `CLAUDE_CODE_MESSAGES_PROMPT_CACHE_TTL=5m` because the CLI's
   final-message breakpoint is never read back (#493).
 - `MIN_VERSION` is 2.1.318 (`cli.rs:30`); newer versions are accepted unqualified.
 - `docs/claude-subscription.md` "Supported CLI versions" and "What the CLI still adds" state the
@@ -120,8 +120,8 @@ pub(super) fn apply(frames: &mut [Frame], ctx: &CliContext)
     one rewrite on the request after it, not a cascade, because it replays the same way every time
     after that.
   - **Marker.** `CACHE_MARKER` goes on the last cacheable block of the **final** frame, using
-    `mark_history`'s existing cacheable-block rule. A request with one user message gets no marker,
-    as today, so one-shot callers (the guardian) keep the CLI's 5-minute write.
+    `mark_history`'s existing cacheable-block rule. No marker when there is no history user frame (as `mark_history` does today),
+    so one-shot callers (the guardian) keep the CLI's 5-minute write.
 - `Layout::Legacy` (any other version, or no email): today's behavior, exactly `mark_history` on
   the last history user frame.
 
@@ -159,7 +159,8 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
      merges as described.
    Add each confirmed shape to the rules; leave unconfirmed ones as "left unchanged".
 3. **`cli.rs`:** `Listing`, `CliContext`, parsing in `list_models`; adjust `Cli::initialize` /
-   `discover` callers.
+   `discover` callers and the `listing_with` unit-test helper (`cli.rs:1194-1212`, returns
+   `Vec<ModelRow>` from `list_models`) with its three tests (~`cli.rs:1217`, `1232`, `1247`).
 4. **`context.rs`:** `VERIFIED`, the 2.1.319 template, `layout`, `apply` (reminder placement and
    marker). Move `mark_history` and `CACHE_MARKER` here from `protocol.rs`. `mark_history` becomes
    `mark(frame)`, used by both layouts with the frame each layout selects.
@@ -171,7 +172,8 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
    default "2.1.319", not derived from the double's `version`, which defaults to 2.1.318). A
    scenario can omit either.
 7. **Bench:** threshold default 1.25 (`default_value_t` at `fontaine-evals/src/runner.rs:80`, plus
-   any doc comment or help text there).
+   any doc comment or help text there) and the `--threshold` row in `evals/README.md` (:387, default
+   2.0 -> 1.25).
 8. **Tests** (below), **docs**, **CHANGELOG**.
 9. **Follow-up issues** to file:
    - a runtime self-check that would let an unverified CLI version use the native layout (detect a
@@ -186,7 +188,7 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
   moved out; existing marker tests move to `context.rs` tests)
 - `rust/fontaine-core/src/providers/claude_subscription/transport.rs` (`prepare`, `open`)
 - `rust/fontaine-core/examples/claude_cli_double.rs`, `rust/fontaine-core/tests/claude_subscription.rs`
-- `rust/fontaine-evals/src/runner.rs`
+- `rust/fontaine-evals/src/runner.rs`, `evals/README.md`
 - `research/claude-subscription-cli-context/` (new)
 - `docs/claude-subscription.md`, `CHANGELOG.md`
 
@@ -194,10 +196,7 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 
 - **Replay the reminder vs. make the CLI drop it.** No switch in 2.1.319 drops it (previous plan's
   probe), and `CLAUDE_CODE_SIMPLE` / `--bare` break subscription sign-in. Replay is the only lever
-  that reaches parity, at the cost of coupling to one CLI string. Exact-version gating with today's
-  layout as fallback contains that coupling.
-- **Replay vs. a split final frame (content as history plus an empty query frame).** Measured: the
-  CLI merges the two and leads the merged message with the reminder, so nothing changes.
+  that reaches parity, at the cost of coupling to one CLI string.
 - **Replay vs. `--resume` of a persisted CLI session** (whose transcript keeps the attachment, so
   the CLI would dedup it). The CLI's transcript records the permission-denial `tool_result` it
   answered each tool call with (`claude_cli_denial_events_plan.md`), which Fontaine's history does
@@ -205,8 +204,7 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 - **Cost of a reminder per message.** About 170 tokens written once per user message (1 h rate),
   then read at 0.1× on every later step, against a rewrite of the previous message (a full step,
   ~2–8k tokens) per step today. Break-even is a few hundred steps per conversation. The context
-  window grows by ~170 tokens per message, ~17k at 100 tool calls. The docs' "worse for long runs"
-  claim is replaced by these numbers.
+  window grows by ~170 tokens per message, ~17k at 100 tool calls.
 - **One-message requests stay unmarked**, so the guardian's one-shot reviews are not moved from the
   CLI's 5-minute write to the 1-hour rate. The cost is that a main conversation's second step
   rewrites the first message once.
@@ -240,9 +238,14 @@ the run. The ratio over steps 2–6 (the bench's middle steps; step 2 includes t
 - **Checking cache usage:** the default threshold is 1.25; a version not yet verified will exceed
   it.
 
+- **Transport overview (`docs/claude-subscription.md:96-97`):** reword "Fontaine marks the last
+  replayed user message for the prompt cache": the marker is on the final message on verified
+  versions, on the last replayed user message otherwise.
 - **Wording fix (`docs/claude-subscription.md:152-153`):** reword "(no version is live-qualified
   yet)" so it does not contradict "verified versions (2.1.319)"; verification here concerns the
   cache layout.
+
+`evals/README.md`: the `--threshold` row's default becomes 1.25.
 
 `CHANGELOG.md` `[Unreleased]` → `### Changed` → `#### Providers`: one entry, issue #480. It states
 that on verified versions the cache marker moves to the final message, which amends the #449
@@ -264,10 +267,12 @@ Unit tests (`context.rs`):
   the reminder.
 - A consecutive user run: rule 1 hits its first frame, rules 2/3 its last.
 - The final frame never gets the reminder.
-- Marker: in `Native`, exactly one marker, on the final frame's last cacheable block, which carries
-  rule 2's appended text. None on a one-user-message request. In `Legacy`, the existing
-  `mark_history` assertions keep passing unchanged (moved from `protocol/tests.rs`).
-- The session id is unchanged by `apply` (derive before, apply, compare).
+- Marker: in `Native`, exactly one marker, on the final frame's last cacheable block (e.g. its trailing
+  `tool_result`), and no reminder text in the final frame. No marker when there is no history user
+  frame (as `mark_history` does today). In `Legacy`, the existing `mark_history` assertions are
+  kept, rewritten to call `context::apply` in `Legacy` (moved from `protocol/tests.rs`).
+- The session id is unchanged by `apply` (derive before, apply, compare); this replaces the old
+  session-id marker test.
 - The email appears in no `ClaudeError` text (exercise every error path of `list_models` parsing
   with an email in the answer).
 
