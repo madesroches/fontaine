@@ -6,6 +6,7 @@
     { "$ref": "#/$defs/init" },
     { "$ref": "#/$defs/assistant" },
     { "$ref": "#/$defs/assistant_delta" },
+    { "$ref": "#/$defs/model_call" },
     { "$ref": "#/$defs/tool_call" },
     { "$ref": "#/$defs/gate_decision" },
     { "$ref": "#/$defs/tool_result" },
@@ -141,6 +142,30 @@
           "properties": {
             "type": { "const": "assistant_delta" },
             "text": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "model_call": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+            "cache_creation_input_tokens",
+            "calls_tool"
+          ],
+          "properties": {
+            "type": { "const": "model_call" },
+            "input_tokens": { "type": "integer", "minimum": 0 },
+            "output_tokens": { "type": "integer", "minimum": 0 },
+            "cache_read_input_tokens": { "type": "integer", "minimum": 0 },
+            "cache_creation_input_tokens": { "type": "integer", "minimum": 0 },
+            "calls_tool": { "type": "boolean" }
           }
         }
       ]

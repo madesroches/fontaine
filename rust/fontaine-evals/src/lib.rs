@@ -2,6 +2,7 @@
 //! guardian's outcomes (or the real permission pipeline's) against `expected`.
 
 pub mod baseline;
+pub mod cache_bench;
 mod case;
 pub mod live;
 mod none;

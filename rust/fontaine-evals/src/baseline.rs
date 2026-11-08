@@ -198,7 +198,7 @@ impl CcOutcome {
 }
 
 /// The events of a `claude -p` run: one JSON value, an array of events, or stream-json lines.
-fn events(output: &str) -> Result<Vec<Value>, String> {
+pub(crate) fn events(output: &str) -> Result<Vec<Value>, String> {
     let text = output.trim();
     match serde_json::from_str::<Value>(text) {
         Ok(Value::Array(events)) => Ok(events),
@@ -246,7 +246,7 @@ pub struct CaptureReport {
     pub failed: Vec<(String, String)>,
 }
 
-async fn claude_version(claude: &str) -> Result<String, String> {
+pub(crate) async fn claude_version(claude: &str) -> Result<String, String> {
     let out = tokio::process::Command::new(claude)
         .arg("--version")
         .output()

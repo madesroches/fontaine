@@ -7,7 +7,6 @@ use fontaine_core::config::PermissionMode;
 use fontaine_tools::error_chain::chain;
 use serde::{Deserialize, Serialize};
 
-use crate::baseline;
 use crate::case::{Case, Category, FixtureVerdict, Kind, Profile, load_dataset};
 use crate::live::{self, Live, Scored};
 use crate::none::{self, Outcome};
@@ -16,6 +15,7 @@ use crate::report::{self, Scorecard};
 use crate::screen::{self, Screen, ScreenScore};
 use crate::screen_report::{self, RefCase, ScreenAnalysis};
 use crate::{EXIT_FAIL, EXIT_USAGE};
+use crate::{baseline, cache_bench};
 use fontaine_core::providers::ServedModel;
 
 /// Where the inclusion-bar writer puts qualifying entries when `--models-file` is not given,
@@ -60,6 +60,37 @@ enum Command {
     Baseline {
         #[command(subcommand)]
         action: BaselineAction,
+    },
+    /// Compare per-step prompt-cache writes of `fontaine -p` and `claude -p` on a fixed read task
+    /// (live; needs a claude-subscription account and the real CLI)
+    CacheBench {
+        /// Fontaine model reference on a claude-subscription account
+        #[arg(long, value_name = "ACCOUNT/MODEL")]
+        model: String,
+
+        /// `claude -p --model` value; defaults to the part of `--model` after the `/`
+        #[arg(long, value_name = "ALIAS")]
+        claude_model: Option<String>,
+
+        /// Fixture files read one at a time
+        #[arg(long, value_name = "N", default_value_t = 6)]
+        files: usize,
+
+        /// Flag when Fontaine's mean middle-step write exceeds Claude Code's by this ratio
+        #[arg(long, value_name = "X", default_value_t = 2.0)]
+        threshold: f64,
+
+        /// The Fontaine executable
+        #[arg(long, value_name = "PATH", default_value = "fontaine")]
+        fontaine: String,
+
+        /// The Claude Code executable
+        #[arg(long, value_name = "PATH", default_value = "claude")]
+        claude: String,
+
+        /// Scorecard to write, normally `../evals/scorecards/claude-subscription-cache-<model>.json`
+        #[arg(long, value_name = "PATH")]
+        out: PathBuf,
     },
 }
 
@@ -394,8 +425,74 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> u8 {
             } => run_capture(&dataset, filter.as_deref(), &out, &claude),
             BaselineAction::Diff { baseline, run } => run_diff(&baseline, &run),
         },
+        Some(Command::CacheBench {
+            model,
+            claude_model,
+            files,
+            threshold,
+            fontaine,
+            claude,
+            out,
+        }) => run_cache_bench(
+            model,
+            claude_model,
+            files,
+            threshold,
+            fontaine,
+            claude,
+            &out,
+        ),
         None => run_score(&cli.run),
     }
+}
+
+fn run_cache_bench(
+    model: String,
+    claude_model: Option<String>,
+    files: usize,
+    threshold: f64,
+    fontaine: String,
+    claude: String,
+    out: &std::path::Path,
+) -> u8 {
+    let Some((_, name)) = model
+        .split_once('/')
+        .filter(|(a, m)| !a.is_empty() && !m.is_empty())
+    else {
+        return usage("--model must be <account>/<model>");
+    };
+    if files < 3 {
+        return usage("--files must be at least 3: the ratio needs a middle step");
+    }
+    if !threshold.is_finite() || threshold <= 0.0 {
+        return usage("--threshold must be a positive number");
+    }
+    let claude_model = claude_model.unwrap_or_else(|| name.to_string());
+    let rt = match runtime() {
+        Ok(rt) => rt,
+        Err(code) => return code,
+    };
+    let options = cache_bench::Options {
+        model,
+        claude_model,
+        files,
+        threshold,
+        fontaine,
+        claude,
+    };
+    let card = match rt.block_on(cache_bench::run_bench(&options, report::today())) {
+        Ok(card) => card,
+        Err(e) => {
+            eprintln!("fontaine-evals: cache-bench failed: {e}");
+            return EXIT_FAIL;
+        }
+    };
+    if let Err(e) = cache_bench::write_scorecard(out, &card) {
+        return usage(&format!("cannot write {}: {e}", out.display()));
+    }
+    print!("{}", card.table());
+    println!("out={}", out.display());
+    if card.summary.flagged { EXIT_FAIL } else { 0 }
 }
 
 /// The mode a `--verdict-transport` forces; `auto` and no flag leave it to the model.

@@ -11,7 +11,8 @@ evals/
 ├── dataset/*.jsonl      one JSON object per line, one case each
 ├── sequences/*.jsonl    sequence cases (AFK temperature and evasion), named with --sequences
 ├── baselines/*.jsonl    Claude Code outcomes recorded by `baseline capture`
-├── scorecards/*.json    live-run reports behind the published scorecard
+├── scorecards/*.json    live-run reports behind the published scorecard, and the
+│                        `claude-subscription-cache-<model>.json` cache-bench reports
 └── README.md            this page
 ```
 
@@ -367,6 +368,34 @@ and prints `DIFF <id>` for every case whose outcome differs. Fontaine `allow` ma
 `allowed`; Fontaine `deny` and `prompt` match `denied`. A baseline case that is missing from the
 run is listed as `UNMATCHED`. It exits 0 when no outcome differs, 1 when any does, and 2 when a
 file cannot be read.
+
+### Prompt-cache bench
+
+`cache-bench` runs one fixed read task through `fontaine -p` on a claude-subscription account and
+through `claude -p`, and compares the cache written per model call. It is manual or nightly: it
+needs a signed-in subscription and the real CLI, so neither tests nor CI run it.
+
+```
+cargo run -p fontaine-evals -- cache-bench --model claudemax/sonnet --out ../evals/scorecards/claude-subscription-cache-sonnet.json
+```
+
+| Flag | Meaning |
+|---|---|
+| `--model <account>/<model>` | The Fontaine model on a claude-subscription account. Required. |
+| `--claude-model <alias>` | The `claude -p --model` value; default the part of `--model` after the `/`. |
+| `--files <n>` | Fixture files read one at a time; default 6, at least 3. |
+| `--threshold <x>` | The ratio above which the run is flagged; default 2.0. |
+| `--fontaine <path>`, `--claude <path>` | The executables; default `fontaine` and `claude`. |
+| `--out <path>` | The scorecard to write. Required. |
+
+Each side gets its own scratch workspace of equal-sized text files and the same prompt, with a
+300 s timeout. The scorecard records every step (input, cache read, cache write, output), the
+totals, the base context (step 1's read plus write), the ratio, the threshold, `flagged`, the
+`claude --version` output and the model each side reports. The ratio is the mean cache write of the
+middle steps, Fontaine over Claude Code; the first and last steps are in the table but not in the
+ratio. It exits 0 under the threshold, 1 when flagged or when a side fails or reports fewer than
+three model calls, and 2 for bad flags. See
+[Checking cache usage](../docs/claude-subscription.md#checking-cache-usage).
 
 ### Sequence cases
 
