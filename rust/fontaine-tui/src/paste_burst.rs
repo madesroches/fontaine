@@ -155,11 +155,9 @@ mod tests {
     }
 
     #[test]
-    fn a_gap_before_enter_gives_two_separate_keys() {
-        let (first, _) = run(ch('a'), vec![]);
-        assert!(matches!(first.as_slice(), [Input::Key(k)] if k.code == KeyCode::Char('a')));
-        let (second, _) = run(enter(), vec![]);
-        assert!(matches!(second.as_slice(), [Input::Key(k)] if k.code == KeyCode::Enter));
+    fn a_gap_before_enter_leaves_the_enter_unread() {
+        let (inputs, _) = run(ch('a'), vec![Ok(None), Ok(Some(Event::Key(enter())))]);
+        assert!(matches!(inputs.as_slice(), [Input::Key(k)] if k.code == KeyCode::Char('a')));
     }
 
     #[test]

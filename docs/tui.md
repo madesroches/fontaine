@@ -364,8 +364,7 @@ pastes its path).
   deliver the key event; the paste path already handles their text.
 - A dropped file whose path lands in the input as a paste becomes a PDF attachment when the file
   sniffs as `%PDF-`; any other path stays typed text.
-  On Windows a dropped path is not detected unless the terminal delivers it as a bracketed paste;
-  see [Pasting](#pasting).
+  On Windows a dropped path is not detected as a PDF attachment; see [Pasting](#pasting).
 
 Each attachment shows as a removable chip above the typed text, with its kind and size. Backspace
 on an empty input removes the last chip. On Enter the chips become parts of the message: an image

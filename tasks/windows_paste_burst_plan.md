@@ -32,7 +32,7 @@ pub(crate) fn coalesce(
     first: KeyEvent,
     next: impl FnMut(Duration) -> io::Result<Option<Event>>,   // None = nothing within the gap,
                                                               // or stop/pause.requested is set
-) -> io::Result<Vec<Input>>
+) -> (Vec<Input>, Option<io::Error>)
 ```
 
 `coalesce` returns the inputs to send, in order, including a trailing non-burst event that ended

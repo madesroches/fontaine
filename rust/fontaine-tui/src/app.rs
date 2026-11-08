@@ -2938,17 +2938,9 @@ mod tests {
     #[test]
     fn a_multi_line_paste_is_inserted_and_does_not_submit() {
         let mut app = app();
-        let action = app.handle_input(Input::Paste(
-            "a
-b"
-            .into(),
-        ));
+        let action = app.handle_input(Input::Paste("a\nb".into()));
         assert_eq!(action, Action::None);
-        assert_eq!(
-            app.input.text(),
-            "a
-b"
-        );
+        assert_eq!(app.input.text(), "a\nb");
         assert!(app.history.is_empty());
     }
 
