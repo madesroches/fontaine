@@ -67,8 +67,8 @@ proxy (`ANTHROPIC_BASE_URL`) captured each `/v1/messages` body.
      dump could not distinguish the two array placements; the cache-bench capture through the
      logging proxy settled it.
   3. Has a `tool_result` but ends with another block (text): a new last text block, `REMINDER`.
-  4. Last block is a `tool_result` followed by an empty text block `{"type":"text","text":""}` (the
-     common tool-loop shape Fontaine sends): the CLI drops the empty block and appends a new last
+  4. Last block is a `tool_result` followed by an empty text block `{"type":"text","text":""}` (rig
+     0.45 drops blank user text blocks, so Fontaine does not send it today): the CLI drops the empty block and appends a new last
      text block whose text is exactly `REMINDER` (no separator). Verified live on 2.1.319.
   5. `tool_result` content variants under rule 2, verified live on 2.1.319: content `""` becomes the
      string `REMINDER` (no `"\n\n"` prefix); absent content becomes the string `REMINDER`; content
