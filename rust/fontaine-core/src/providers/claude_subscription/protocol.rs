@@ -13,6 +13,8 @@ use rig_core::wire::WireFrame;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::providers::{WEB_SEARCH_NAME, WEB_SEARCH_TYPE};
+
 use super::cli::limit_error;
 use super::context::CacheUsage;
 use super::usage::{Usage, parse_rate_limit};
@@ -222,6 +224,8 @@ pub struct Translated {
     pub effort: Option<String>,
     pub aliases: Aliases,
     pub session_id: String,
+    /// Whether the request carries the provider's web-search server tool.
+    pub web_search: bool,
 }
 
 /// What a session id is derived from besides the request.
@@ -294,7 +298,7 @@ pub fn translate(
         }
     }
 
-    let tools = tool_definitions(object.get("tools"))?;
+    let (tools, web_search) = tool_definitions(object.get("tools"))?;
     let aliases = Aliases::new(tools.iter().map(|(name, _)| name.as_str()));
     let system = system_text(object.get("system"))?;
     // A fork replays the parent's calls to tools the child's request omits; they still need CLI
@@ -355,6 +359,9 @@ pub fn translate(
             "inputSchema": definition.get("input_schema").cloned().unwrap_or(Value::Null),
         }));
     }
+    if let Some(entry) = &web_search {
+        listed.push(entry.clone());
+    }
     if !listed.is_empty() {
         extra.insert("tools".to_string(), Value::Array(listed));
     }
@@ -386,23 +393,36 @@ pub fn translate(
         effort,
         aliases,
         session_id,
+        web_search: web_search.is_some(),
     })
 }
 
 type Definitions = Vec<(String, Map<String, Value>)>;
 
-fn tool_definitions(tools: Option<&Value>) -> Result<Definitions, ClaudeError> {
+/// The custom definitions and, when present, the one hosted tool the adapter accepts: the
+/// provider's web search, whose block types it can replay and check.
+fn tool_definitions(tools: Option<&Value>) -> Result<(Definitions, Option<Value>), ClaudeError> {
     let Some(tools) = tools else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), None));
     };
     let tools = tools
         .as_array()
         .ok_or_else(|| unsupported("`tools` is not a list"))?;
     let mut out: Definitions = Vec::new();
+    let mut web_search = None;
     for tool in tools {
         let tool = tool
             .as_object()
             .ok_or_else(|| unsupported("a tool definition is not an object"))?;
+        let is_web_search = tool.get("type").and_then(Value::as_str) == Some(WEB_SEARCH_TYPE)
+            && tool.get("name").and_then(Value::as_str) == Some(WEB_SEARCH_NAME);
+        if is_web_search {
+            if web_search.is_some() {
+                return Err(unsupported("the web search tool is defined twice"));
+            }
+            web_search = Some(Value::Object(tool.clone()));
+            continue;
+        }
         let custom = tool
             .get("type")
             .is_none_or(|kind| kind.as_str() == Some("custom"));
@@ -421,7 +441,7 @@ fn tool_definitions(tools: Option<&Value>) -> Result<Definitions, ClaudeError> {
         }
         out.push((name.to_string(), tool.clone()));
     }
-    Ok(out)
+    Ok((out, web_search))
 }
 
 fn tool_choice(choice: &Value, aliases: &Aliases) -> Result<Value, ClaudeError> {
@@ -566,7 +586,13 @@ fn assistant_content(content: Option<&Value>, aliases: &Aliases) -> Result<Value
             .unwrap_or_default()
             .to_string();
         let kind = kind.as_str();
-        if !matches!(kind, "text" | "thinking" | "redacted_thinking" | "tool_use") {
+        let server_search = match kind {
+            "server_tool_use" => block.get("name").and_then(Value::as_str) == Some(WEB_SEARCH_NAME),
+            "web_search_tool_result" => true,
+            _ => false,
+        };
+        if !server_search && !matches!(kind, "text" | "thinking" | "redacted_thinking" | "tool_use")
+        {
             return Err(unsupported(
                 "an assistant message holds content the Claude CLI cannot replay without loss",
             ));
@@ -595,6 +621,8 @@ fn assistant_content(content: Option<&Value>, aliases: &Aliases) -> Result<Value
 pub struct Expect {
     pub models: Vec<String>,
     pub aliases: Aliases,
+    /// Whether the request offered the provider's web search.
+    pub web_search: bool,
 }
 
 /// What the reader is waiting for.
@@ -681,6 +709,8 @@ fn label_of(value: &Value) -> String {
 pub struct Reader {
     expect: Expect,
     calls: BTreeMap<String, Call>,
+    /// Ids of this response's web-search server calls.
+    searches: BTreeSet<String>,
     trail: VecDeque<(String, u32)>,
     trail_cut: bool,
     phase: Phase,
@@ -707,6 +737,7 @@ impl Reader {
             expect,
             usage,
             calls: BTreeMap::new(),
+            searches: BTreeSet::new(),
             trail: VecDeque::new(),
             trail_cut: false,
             phase: Phase::Ack,
@@ -1043,7 +1074,7 @@ impl Reader {
                             .filter(|id| !id.is_empty())
                             .ok_or_else(|| protocol("a tool call has no id"))?
                             .to_string();
-                        if self.calls.contains_key(&id) {
+                        if self.calls.contains_key(&id) || self.searches.contains(&id) {
                             return Err(protocol("the Claude CLI reused a tool call id"));
                         }
                         self.calls.insert(
@@ -1064,6 +1095,26 @@ impl Reader {
                             }
                         }
                     }
+                    Some("server_tool_use")
+                        if self.expect.web_search
+                            && block.get("name").and_then(Value::as_str)
+                                == Some(WEB_SEARCH_NAME) =>
+                    {
+                        let id = block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .filter(|id| !id.is_empty())
+                            .ok_or_else(|| protocol("a server tool call has no id"))?
+                            .to_string();
+                        if self.calls.contains_key(&id) || !self.searches.insert(id) {
+                            return Err(protocol("the Claude CLI reused a tool call id"));
+                        }
+                    }
+                    Some("web_search_tool_result")
+                        if block
+                            .get("tool_use_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|id| self.searches.contains(id)) => {}
                     _ => {
                         return Err(protocol(
                             "the Claude CLI used a native tool or hosted content",

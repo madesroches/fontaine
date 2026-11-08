@@ -53,10 +53,11 @@ fn provider_entry(config: &Config, models: &Models) -> Option<Value> {
         return Some(entry);
     }
     let account = config.accounts.get(&models.main.reference.account)?;
-    let base = account.base_url.as_deref().filter(|url| !url.is_empty());
+    let Some(base) = account.base_url.as_deref().filter(|url| !url.is_empty()) else {
+        return Some(entry);
+    };
     let official = provider.default_endpoint()?;
-    base.is_none_or(|url| url.trim_end_matches('/') == official)
-        .then_some(entry)
+    (base.trim_end_matches('/') == official).then_some(entry)
 }
 
 /// Whether the main model's account has a provider search at all, whatever the mode and rules
@@ -91,6 +92,65 @@ mod tests {
             ask: list(ask),
             allow: list(allow),
         }
+    }
+
+    fn provider_available_for(kind: &str, base_url: Option<&str>, native: &str) -> bool {
+        use crate::config::{Account, AccountKind};
+        use crate::models::{GuardianChoice, ModelHandle, ModelRef};
+        let mut config = Config::defaults(std::path::PathBuf::new());
+        config.accounts.insert(
+            "acct".to_string(),
+            Account::new(AccountKind::named(kind), base_url.map(str::to_owned)),
+        );
+        config.websearch.native = match native {
+            "off" => NativeSearch::Off,
+            "on" => NativeSearch::On,
+            _ => NativeSearch::Auto,
+        };
+        let handle = ModelHandle::new(
+            ModelRef::parse("acct/m").unwrap(),
+            AccountKind::named(kind),
+            rig_core::test_utils::MockCompletionModel::from_stream_turns(Vec::<
+                Vec<rig_core::test_utils::MockStreamEvent>,
+            >::new())
+            .into(),
+        );
+        let models = Models {
+            main: handle,
+            main_listing: Vec::new(),
+            guardian: None,
+            guardian_choice: GuardianChoice::MainFallback,
+            notices: Vec::new(),
+        };
+        provider_available(&config, &models)
+    }
+
+    #[test]
+    fn claude_subscription_has_no_endpoint_and_still_passes_auto() {
+        assert!(provider_available_for("claude-subscription", None, "auto"));
+        assert!(provider_available_for(
+            "claude-subscription",
+            Some(""),
+            "auto"
+        ));
+        assert!(provider_available_for("claude-subscription", None, "on"));
+        assert!(!provider_available_for("claude-subscription", None, "off"));
+    }
+
+    #[test]
+    fn auto_still_compares_a_set_base_url_with_the_official_endpoint() {
+        assert!(provider_available_for("anthropic", None, "auto"));
+        assert!(provider_available_for(
+            "anthropic",
+            Some("https://api.anthropic.com/"),
+            "auto"
+        ));
+        assert!(!provider_available_for(
+            "anthropic",
+            Some("https://gateway.example.com"),
+            "auto"
+        ));
+        assert!(!provider_available_for("openai", None, "auto"));
     }
 
     fn config_with_hook(matcher: Option<&str>) -> Config {

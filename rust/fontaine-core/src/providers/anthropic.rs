@@ -33,7 +33,7 @@ impl Provider for Anthropic {
 
     // The version every Anthropic hosting accepts; Azure supports only this one.
     fn native_web_search(&self) -> Option<serde_json::Value> {
-        Some(serde_json::json!({"type": "web_search_20250305", "name": "web_search"}))
+        Some(super::anthropic_web_search())
     }
 
     fn accepts_prompt_caching(&self) -> bool {

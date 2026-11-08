@@ -263,6 +263,65 @@ async fn a_host_other_than_the_anthropic_api_needs_native_on() {
     assert!(built.runtime.native_search_active());
 }
 
+const SUBSCRIPTION: &str = "[accounts.test]
+kind = \"claude-subscription\"
+";
+
+#[tokio::test]
+async fn a_claude_subscription_account_carries_it_under_auto() {
+    let w = world(SUBSCRIPTION);
+    let built = build(
+        &w,
+        PermissionMode::Auto,
+        "claude-subscription",
+        vec![answer()],
+    );
+    assert!(built.runtime.native_search_active());
+    turn(&built).await;
+    assert_eq!(sent_tools(&built), vec![entry()]);
+}
+
+#[tokio::test]
+async fn the_same_gates_hold_for_a_claude_subscription_account() {
+    let w = world(&format!(
+        "{SUBSCRIPTION}[websearch]
+native = \"off\"
+"
+    ));
+    let built = build(
+        &w,
+        PermissionMode::Auto,
+        "claude-subscription",
+        vec![answer()],
+    );
+    assert!(!built.runtime.native_search_active());
+    turn(&built).await;
+    assert!(sent_tools(&built).is_empty());
+
+    let w = world(SUBSCRIPTION);
+    let built = build(
+        &w,
+        PermissionMode::Manual,
+        "claude-subscription",
+        vec![answer()],
+    );
+    assert!(!built.runtime.native_search_active());
+
+    let w = world(&format!(
+        "{SUBSCRIPTION}[[hooks.pre_tool_use]]
+matcher = \"websearch\"
+command = \"true\"
+"
+    ));
+    let built = build(
+        &w,
+        PermissionMode::Auto,
+        "claude-subscription",
+        vec![answer()],
+    );
+    assert!(!built.runtime.native_search_active());
+}
+
 #[tokio::test]
 async fn native_off_never_carries_it() {
     let w = world(&format!("{ANTHROPIC}[websearch]\nnative = \"off\"\n"));

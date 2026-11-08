@@ -185,6 +185,10 @@ impl Provider for ClaudeSubscription {
         true
     }
 
+    fn native_web_search(&self) -> Option<serde_json::Value> {
+        Some(super::anthropic_web_search())
+    }
+
     fn validate(&self, account: &Account) -> Result<(), (&'static str, String)> {
         let refuse = |key: &'static str, why: &str| Err((key, why.to_string()));
         if account.api_key_env.is_some() {

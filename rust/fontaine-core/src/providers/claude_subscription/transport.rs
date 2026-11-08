@@ -218,6 +218,7 @@ impl ClaudeTransport {
             Expect {
                 models: vec![selection.canonical.clone(), selection.alias.clone()],
                 aliases: translated.aliases.clone(),
+                web_search: translated.web_search,
             },
             Some(self.usage.clone()),
         );

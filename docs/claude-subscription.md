@@ -115,14 +115,24 @@ each CLI process runs in an empty private directory and `CLAUDE_CODE_DISABLE_CLA
 set. Each response is read until exactly one complete message
 and one result have been validated, then the process (and its descendants) is stopped. A second
 response, an unsolicited suggestion, a native tool or permission step, an unexpected model or a cut
-stream is a failure, never a response. History the CLI cannot replay without loss (an assistant
-prefill, a mid-history role, a hosted tool) is refused.
+stream is a failure, never a response. The one server tool accepted is the provider's web search
+(see [Web search](#web-search)). History the CLI cannot replay without loss (an assistant
+prefill, a mid-history role, a hosted tool other than web search) is refused.
 
 A response that stops at `max_tokens` is the exception to waiting for the result: the CLI would
 follow it with its own output-limit recovery (a synthetic user message and up to three more model
 calls, billed to the plan), so the process is stopped at that response's `message_stop` and the
 truncated response is returned as any provider's would be. The recovery never runs; only what the
 CLI generated before the stop is spent. No CLI switch for the recovery was found on 2.1.319.
+
+## Web search
+
+The provider's own search is offered as it is for `anthropic` accounts, under the same
+`[websearch] native` setting and the same permission and hook conditions (see
+[Web search](tools.md#web-search)). The search runs inside the model's response: the CLI executes
+nothing, the search is drawn from the plan, and the searches and their results are kept in the
+conversation and replayed on later turns. With `native = "off"` or a rule or hook that withholds
+it, the `websearch` tool serves searches instead.
 
 ## Usage, cost and the extra-usage setting
 
