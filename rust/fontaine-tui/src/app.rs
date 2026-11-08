@@ -2936,6 +2936,23 @@ mod tests {
     }
 
     #[test]
+    fn a_multi_line_paste_is_inserted_and_does_not_submit() {
+        let mut app = app();
+        let action = app.handle_input(Input::Paste(
+            "a
+b"
+            .into(),
+        ));
+        assert_eq!(action, Action::None);
+        assert_eq!(
+            app.input.text(),
+            "a
+b"
+        );
+        assert!(app.history.is_empty());
+    }
+
+    #[test]
     fn a_dropped_pdf_pastes_as_an_attachment_and_other_paths_stay_text() {
         let dir = tempfile::tempdir().unwrap();
         let pdf = dir.path().join("notes.pdf");

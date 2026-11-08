@@ -242,6 +242,15 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | (`agents_panel`, no default key) | Open or close the [agents panel](#the-agents-panel), even over an approval prompt, once you [bind a key](#remapping-the-keys) to it; `/agents` always opens it. Enter on an agent row there shows its transcript. |
 | `/` at the start of the input or after a space | Opens the [slash-command menu](#slash-command-menu). |
 
+### Pasting
+
+Terminals that support bracketed paste hand the whole pasted text to the input box at once, so a
+multi-line paste is inserted rather than submitted. Windows consoles have no bracketed paste: the
+pasted text arrives as keystrokes. Fontaine treats a burst of keys, each less than 15 ms after the
+last, that holds a line break as a paste, so a multi-line paste is inserted there too. A single-line
+paste is replayed as the keys it arrived as, which is why a dropped file path is not attached as a
+PDF on Windows. Pressing Enter by hand still submits.
+
 ### Remapping the keys
 
 The global actions above live in a `[keybindings]` table of the settings: each entry maps one
@@ -355,6 +364,8 @@ pastes its path).
   deliver the key event; the paste path already handles their text.
 - A dropped file whose path lands in the input as a paste becomes a PDF attachment when the file
   sniffs as `%PDF-`; any other path stays typed text.
+  On Windows a dropped path is not detected unless the terminal delivers it as a bracketed paste;
+  see [Pasting](#pasting).
 
 Each attachment shows as a removable chip above the typed text, with its kind and size. Backspace
 on an empty input removes the last chip. On Enter the chips become parts of the message: an image

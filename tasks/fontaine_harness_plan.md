@@ -1078,6 +1078,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-04: (#51) The default is `bell`, not Claude Code's terminal-detecting `auto`, because detection needs terminal queries that time out on terminals that do not answer and a bell works everywhere.
 - 2026-11-04: (#51) `osc9` and `osc777` are generic, not Claude Code's per-terminal `iterm2`/`kitty`/`ghostty` channels, because those terminals read the same sequences and one value per sequence keeps the schema small.
 - 2026-11-04: (#51) No combined bell+OSC value (Claude Code has `iterm2_with_bell`); add on request.
+- 2026-11-08: (#514) On Windows the terminal reader treats a burst of key events (gap under 15 ms) with at least two keys and a newline as one paste, because crossterm's Windows reader never emits a bracketed paste and each pasted line would submit; Claude Code gets bracketed paste from its input layer. A dropped file path (chars only, no newline) is replayed as keys, so PDF-by-path attachment is not detected on Windows unless it arrives bracketed.
 
 ## Open Questions
 
