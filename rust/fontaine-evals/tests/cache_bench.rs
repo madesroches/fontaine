@@ -47,7 +47,7 @@ fn bench(dir: &Path, fontaine_creations: &[u64], claude_creations: &[u64], extra
         fontaine_creations,
         claude_creations,
         "acct/sonnet",
-        "3",
+        "4",
         extra,
     )
 }
@@ -112,7 +112,12 @@ fn argv(dir: &Path, name: &str) -> Vec<String> {
 #[test]
 fn an_unflagged_run_writes_the_scorecard_and_passes_the_shared_prompt() {
     let dir = tempfile::tempdir().unwrap();
-    let code = bench(dir.path(), &[900, 300, 300, 50], &[900, 200, 200, 50], &[]);
+    let code = bench(
+        dir.path(),
+        &[900, 50, 300, 300, 50],
+        &[900, 200, 200, 200, 50],
+        &[],
+    );
     assert_eq!(code, 0);
     let card: Scorecard =
         serde_json::from_str(&std::fs::read_to_string(dir.path().join("card.json")).unwrap())
@@ -127,7 +132,7 @@ fn an_unflagged_run_writes_the_scorecard_and_passes_the_shared_prompt() {
     let claude = argv(dir.path(), "claude");
     assert_eq!(fontaine[0], "-p");
     assert_eq!(fontaine[1], claude[1], "both sides get the same prompt");
-    assert!(fontaine[1].contains("f1.txt") && fontaine[1].contains("f3.txt"));
+    assert!(fontaine[1].contains("f1.txt") && fontaine[1].contains("f4.txt"));
     let pair = |args: &[String], flag: &str| -> String {
         let at = args.iter().position(|a| a == flag).unwrap();
         args[at + 1].clone()
@@ -145,7 +150,12 @@ fn an_unflagged_run_writes_the_scorecard_and_passes_the_shared_prompt() {
 #[test]
 fn a_ratio_above_the_threshold_exits_one_and_still_writes_the_scorecard() {
     let dir = tempfile::tempdir().unwrap();
-    let code = bench(dir.path(), &[900, 600, 600, 50], &[900, 200, 200, 50], &[]);
+    let code = bench(
+        dir.path(),
+        &[900, 50, 600, 600, 50],
+        &[900, 200, 200, 200, 50],
+        &[],
+    );
     assert_eq!(code, 1);
     let card: Value =
         serde_json::from_str(&std::fs::read_to_string(dir.path().join("card.json")).unwrap())
@@ -158,8 +168,8 @@ fn the_threshold_flag_moves_the_verdict() {
     let dir = tempfile::tempdir().unwrap();
     let code = bench(
         dir.path(),
-        &[900, 600, 600, 50],
-        &[900, 200, 200, 50],
+        &[900, 50, 600, 600, 50],
+        &[900, 200, 200, 200, 50],
         &["--threshold", "3.5"],
     );
     assert_eq!(code, 0);
@@ -168,7 +178,12 @@ fn the_threshold_flag_moves_the_verdict() {
 #[test]
 fn a_side_with_too_few_steps_fails_the_bench() {
     let dir = tempfile::tempdir().unwrap();
-    let code = bench(dir.path(), &[900, 300], &[900, 200, 200, 50], &[]);
+    let code = bench(
+        dir.path(),
+        &[900, 300, 300, 50],
+        &[900, 200, 200, 200, 50],
+        &[],
+    );
     assert_eq!(code, 1);
     assert!(!dir.path().join("card.json").exists());
 }
@@ -176,14 +191,14 @@ fn a_side_with_too_few_steps_fails_the_bench() {
 #[test]
 fn bad_flags_are_usage_errors() {
     let dir = tempfile::tempdir().unwrap();
-    let steps = [1, 1, 1];
+    let steps = [1, 1, 1, 1, 1];
     assert_eq!(bench(dir.path(), &steps, &steps, &["--threshold", "0"]), 2);
     assert_eq!(
-        bench_with(dir.path(), &steps, &steps, "acct/sonnet", "2", &[]),
+        bench_with(dir.path(), &steps, &steps, "acct/sonnet", "3", &[]),
         2
     );
     assert_eq!(
-        bench_with(dir.path(), &steps, &steps, "nosplit", "3", &[]),
+        bench_with(dir.path(), &steps, &steps, "nosplit", "4", &[]),
         2
     );
 }

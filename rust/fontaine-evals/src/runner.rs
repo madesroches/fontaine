@@ -76,7 +76,7 @@ enum Command {
         #[arg(long, value_name = "N", default_value_t = 6)]
         files: usize,
 
-        /// Flag when Fontaine's mean middle-step write exceeds Claude Code's by this ratio
+        /// Flag when Fontaine's mean steady-state write exceeds Claude Code's by this ratio
         #[arg(long, value_name = "X", default_value_t = 2.0)]
         threshold: f64,
 
@@ -461,8 +461,8 @@ fn run_cache_bench(
     else {
         return usage("--model must be <account>/<model>");
     };
-    if files < 3 {
-        return usage("--files must be at least 3: the ratio needs a middle step");
+    if files < 4 {
+        return usage("--files must be at least 4: the ratio needs two steady-state steps");
     }
     if !threshold.is_finite() || threshold <= 0.0 {
         return usage("--threshold must be a positive number");

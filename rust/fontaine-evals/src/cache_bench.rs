@@ -151,27 +151,31 @@ pub struct Summary {
     pub flagged: bool,
 }
 
-fn mean_middle_creation(steps: &[Step]) -> f64 {
-    let middle = &steps[1..steps.len() - 1];
-    middle.iter().map(|s| s.cache_creation as f64).sum::<f64>() / middle.len() as f64
+fn mean_steady_creation(steps: &[Step]) -> f64 {
+    let steady = &steps[2..steps.len() - 1];
+    steady.iter().map(|s| s.cache_creation as f64).sum::<f64>() / steady.len() as f64
 }
 
-/// The ratio compares the mean creation of every step but the first (which differs by base
-/// context) and the last (an answer-only turn), Fontaine over Claude Code.
+/// The ratio compares the mean creation of the steady-state steps, Fontaine over Claude Code.
+/// The first step is skipped because base contexts differ. The second is skipped because only
+/// Fontaine's is cheap (it writes one message, the prompt before any tool result), so leaving it
+/// out on both sides makes the means cover the same steps. The last is kept out so ratios stay
+/// comparable with recorded scorecards, not because it writes less: those scorecards show it
+/// writes as much as a steady step.
 pub fn summarize(fontaine: &[Step], claude: &[Step], threshold: f64) -> Result<Summary, String> {
     for (side, steps) in [("fontaine", fontaine), ("claude", claude)] {
-        if steps.len() < 3 {
+        if steps.len() < 5 {
             return Err(format!(
-                "{side} reported {} model call(s); at least 3 are needed to compare the middle steps",
+                "{side} reported {} model call(s); at least 5 are needed to average two steady-state steps",
                 steps.len()
             ));
         }
     }
-    let fontaine_mean = mean_middle_creation(fontaine);
-    let claude_mean = mean_middle_creation(claude);
+    let fontaine_mean = mean_steady_creation(fontaine);
+    let claude_mean = mean_steady_creation(claude);
     if claude_mean <= 0.0 {
         return Err(
-            "claude wrote no cache in its middle steps, so there is nothing to compare \
+            "claude wrote no cache in its steady-state steps, so there is nothing to compare \
                     against (is prompt caching off?)"
                 .into(),
         );
@@ -228,7 +232,7 @@ impl Scorecard {
         }
         let s = &self.summary;
         out.push_str(&format!(
-            "base context: fontaine={} claude={}\nmean write (middle steps): fontaine={:.0} claude={:.0}\nratio={:.2} threshold={:.2} {}\n",
+            "base context: fontaine={} claude={}\nmean write (steady-state steps): fontaine={:.0} claude={:.0}\nratio={:.2} threshold={:.2} {}\n",
             s.fontaine_base_context,
             s.claude_base_context,
             s.fontaine_mean_creation,
@@ -454,51 +458,53 @@ mod tests {
     }
 
     #[test]
-    fn the_ratio_covers_the_middle_steps_only() {
-        // The huge first and last steps must not move the ratio.
-        let fontaine = steps(&[99_999, 400, 600, 99_999]);
-        let claude = steps(&[1, 100, 300, 1]);
-        let summary = summarize(&fontaine, &claude, 2.0).unwrap();
+    fn the_ratio_covers_the_steady_state_steps_only() {
+        // The huge first and last steps and the cheap second step must not move the ratio.
+        let fontaine = steps(&[99_999, 10, 400, 600, 99_999]);
+        let claude = steps(&[1, 200, 200, 300, 1]);
+        let summary = summarize(&fontaine, &claude, 1.9).unwrap();
         assert_eq!(summary.fontaine_mean_creation, 500.0);
-        assert_eq!(summary.claude_mean_creation, 200.0);
-        assert_eq!(summary.ratio, 2.5);
+        assert_eq!(summary.claude_mean_creation, 250.0);
+        assert_eq!(summary.ratio, 2.0);
         assert!(summary.flagged);
     }
 
     #[test]
     fn the_threshold_is_exclusive() {
-        let fontaine = steps(&[0, 400, 0]);
-        let claude = steps(&[0, 200, 0]);
+        let fontaine = steps(&[0, 0, 400, 400, 0]);
+        let claude = steps(&[0, 0, 200, 200, 0]);
         assert!(!summarize(&fontaine, &claude, 2.0).unwrap().flagged);
         assert!(summarize(&fontaine, &claude, 1.99).unwrap().flagged);
     }
 
     #[test]
     fn base_context_is_the_first_steps_read_plus_creation() {
-        let mut fontaine = steps(&[5, 10, 10]);
+        let mut fontaine = steps(&[5, 10, 10, 10, 10]);
         fontaine[0].cache_read = 20;
-        let summary = summarize(&fontaine, &steps(&[3, 10, 10]), 2.0).unwrap();
+        let summary = summarize(&fontaine, &steps(&[3, 10, 10, 10, 10]), 2.0).unwrap();
         assert_eq!(summary.fontaine_base_context, 25);
         assert_eq!(summary.claude_base_context, 3);
     }
 
     #[test]
-    fn fewer_than_three_steps_on_either_side_is_an_error() {
-        let ok = steps(&[1, 2, 3]);
-        assert!(summarize(&steps(&[1, 2]), &ok, 2.0).is_err());
-        assert!(summarize(&ok, &steps(&[1, 2]), 2.0).is_err());
+    fn fewer_than_five_steps_on_either_side_is_an_error() {
+        let ok = steps(&[1, 2, 3, 4, 5]);
+        let short = steps(&[1, 2, 3, 4]);
+        assert!(summarize(&short, &ok, 2.0).is_err());
+        assert!(summarize(&ok, &short, 2.0).is_err());
+        assert!(summarize(&ok, &ok, 2.0).is_ok());
     }
 
     #[test]
     fn a_zero_native_write_is_an_error_not_a_division() {
-        let err = summarize(&steps(&[1, 5, 1]), &steps(&[1, 0, 1]), 2.0).unwrap_err();
+        let err = summarize(&steps(&[1, 5, 5, 5, 1]), &steps(&[1, 5, 0, 0, 1]), 2.0).unwrap_err();
         assert!(err.contains("nothing to compare"), "{err}");
     }
 
     #[test]
     fn a_scorecard_round_trips() {
-        let fontaine = steps(&[1, 400, 400, 2]);
-        let claude = steps(&[1, 200, 200, 2]);
+        let fontaine = steps(&[1, 50, 400, 400, 2]);
+        let claude = steps(&[1, 200, 200, 200, 2]);
         let card = Scorecard {
             date: "2026-01-02".into(),
             model: "acct/sonnet".into(),
