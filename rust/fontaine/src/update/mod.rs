@@ -321,7 +321,10 @@ pub async fn update(client: &reqwest::Client, params: &Params<'_>) -> Result<Out
         .parent()
         .expect("a binary path always has a parent");
 
-    if let Err(e) = install::remove_stale(&info.binary_path) {
+    // Only Windows renames the old binary aside; elsewhere a matching name is the user's own file.
+    if cfg!(windows)
+        && let Err(e) = install::remove_stale(&info.binary_path)
+    {
         eprintln!(
             "fontaine: warning: the previous update's leftover file could not be deleted: {}",
             chain(&e)
