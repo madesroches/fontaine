@@ -87,7 +87,7 @@ async fn it_starts_without_git_for_windows_and_runs_powershell() {
         .await;
     assert_eq!(out.code, Some(0), "{}", out.stderr);
     assert!(
-        out.stderr.contains("Git for Windows was not found: shell commands, hooks and the status line run in PowerShell"),
+        !out.stderr.contains("Git for Windows was not found"),
         "{}",
         out.stderr
     );

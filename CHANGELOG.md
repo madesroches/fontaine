@@ -47,11 +47,11 @@ All notable changes are recorded here. The format follows
 
 - On Windows, Fontaine starts without Git for Windows installed, as Claude Code does. Git Bash is
   still preferred when found; without it PowerShell is the command shell for the model's
-  `powershell` tool, hooks, the status line and `!` lines, with one startup warning. The `shell`
+  `powershell` tool, hooks, the status line and `!` lines. The `shell`
   and `monitor` tools are not offered then, and the tool descriptions and system prompt name
   `powershell` instead. A `pre_tool_use` hook run by PowerShell fails closed: anything but exit 0
   or 2 denies the call. With neither Git Bash nor PowerShell, or a `FONTAINE_GIT_BASH_PATH` that is
-  not a Git Bash, Fontaine still exits with code 2 (#510).
+  not a Git Bash, Fontaine still exits with code 2 (#510, #513).
 
 #### Build and release
 

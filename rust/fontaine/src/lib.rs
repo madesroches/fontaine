@@ -755,7 +755,6 @@ fn prepare_session(
     let Shells {
         git_bash,
         powershell,
-        warning: shell_warning,
     } = shells(host)?;
 
     let mut roots = resolve_roots(cli, config, host);
@@ -764,7 +763,6 @@ fn prepare_session(
         .iter()
         .map(|warning| Notice::warning(warning.clone(), None))
         .collect();
-    warnings.extend(shell_warning.map(|warning| Notice::warning(warning, None)));
 
     // The caller only gets the warnings back on success, so a failure prints them here.
     let (session, origin, start_type) =
@@ -898,16 +896,12 @@ fn prepare_session(
     Ok((prep, scratch))
 }
 
-/// The shells found at startup, and what to tell the user about the choice.
+/// The shells found at startup.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Shells {
     git_bash: Option<GitBash>,
     powershell: Option<PowerShellSettings>,
-    warning: Option<&'static str>,
 }
-
-#[cfg(any(windows, test))]
-const POWERSHELL_FALLBACK_WARNING: &str = "Git for Windows was not found: shell commands, hooks and the status line run in PowerShell. Install Git for Windows, or set FONTAINE_GIT_BASH_PATH, to use Git Bash.";
 
 /// Windows runs commands in Git Bash when it is found and in PowerShell when it is not. A
 /// `FONTAINE_GIT_BASH_PATH` that names something else is an error rather than a reason to switch
@@ -925,13 +919,11 @@ fn choose_shells(
         (Ok(git_bash), powershell) => Ok(Shells {
             git_bash: Some(git_bash),
             powershell,
-            warning: None,
         }),
         (Err(e @ GitBashError::BadOverride(_)), _) => Err(e.to_string()),
         (Err(GitBashError::NotFound), Some(powershell)) => Ok(Shells {
             git_bash: None,
             powershell: Some(powershell),
-            warning: Some(POWERSHELL_FALLBACK_WARNING),
         }),
         (Err(GitBashError::NotFound), None) => Err(match powershell_override {
             Some(value) => format!(
@@ -1294,28 +1286,29 @@ mod tests {
     }
 
     #[test]
-    fn git_bash_found_starts_as_before_with_no_warning() {
+    fn git_bash_found_starts_as_before() {
         for powershell in [None, Some(pwsh())] {
             let chosen = choose_shells(Ok(git()), powershell.clone(), None).unwrap();
             assert_eq!(
                 chosen,
                 Shells {
                     git_bash: Some(git()),
-                    powershell,
-                    warning: None
+                    powershell
                 }
             );
         }
     }
 
     #[test]
-    fn without_git_bash_powershell_starts_with_one_warning() {
+    fn without_git_bash_powershell_starts() {
         let chosen = choose_shells(Err(GitBashError::NotFound), Some(pwsh()), None).unwrap();
-        assert_eq!(chosen.git_bash, None);
-        assert_eq!(chosen.powershell, Some(pwsh()));
-        let warning = chosen.warning.expect("the fallback is announced");
-        assert!(warning.starts_with("Git for Windows was not found"));
-        assert!(warning.contains("FONTAINE_GIT_BASH_PATH"));
+        assert_eq!(
+            chosen,
+            Shells {
+                git_bash: None,
+                powershell: Some(pwsh())
+            }
+        );
     }
 
     #[test]
