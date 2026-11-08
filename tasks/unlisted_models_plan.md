@@ -27,8 +27,8 @@ hidden.
   `models.rs:584` (`not_offered`) reads, when a named model fails to resolve.
 - `mod.rs:316` — `Connected::model` binds the route's `ModelFacts` to rig's Anthropic Messages
   wire (`with_facts`); rig derives `max_tokens`, reasoning refusals and compat quirks from that
-  spec, and Fontaine's compaction and `/context` read `completion.spec()` (`agent.rs:1097`,
-  `session.rs:464`).
+  spec, and Fontaine's compaction and `/context` read `completion.spec()` (`agent.rs:1093`,
+  `session.rs:545`, `child_runner.rs:648`, `side_question.rs:134`).
 - `fontaine-core/src/models.rs:849` — `AccountListing { account, kind, models }`.
   `Switcher::listings` (`models.rs:955`) reuses the main account's already-fetched ids
   (`main: Option<(&ModelRef, &[String])>`) rather than re-listing it. `Models.main_listing` and
@@ -37,7 +37,8 @@ hidden.
   `Heading`, `Model`, `Failed`. `fontaine-core/src/model_report.rs` builds the `fontaine models`
   and `models`-tool report from the same `AccountListing`s.
 - `Models.notices` (`models.rs:351`) is the startup channel for one-time warnings, printed by the
-  TUI, headless and `fontaine models`.
+  TUI and `fontaine models`; headless `announce` (`headless.rs:684-690`) prints it only in
+  Auto/Afk/Plan mode.
 - rig-core 0.46.0 catalog: every current Anthropic entry carries `details.family`
   (`claude-opus`, `claude-sonnet`, `claude-haiku`, `claude-fable`) and a `release_date`; the
   deprecated `claude-*-4-0/4-1` rows have no family.
@@ -94,16 +95,21 @@ Rule:
    latest `release_date` (ties broken by the greater id); entries without a release date rank
    last. No such entry → `None`.
 3. The spec is the base's clone with `id` and `display_name` set to `model`, `pricing = None`,
-   `details.cost` reset to default, `details.release_date`/`last_updated` cleared, and
-   `deprecated = false`.
+   `details.cost` reset to default, and `details.release_date`/`last_updated`/`canonical_model_id`
+   cleared.
 4. Overlay (only what the row reports):
    - `effort_levels` present → `reasoning = ReasoningSupport::Listed { levels, budget: None,
      can_disable, default }`, where `levels` maps `minimal|low|medium|high|xhigh|max` to rig's
      `Effort` and **drops any string it does not know** (never claim a level it cannot name),
      `can_disable = thinking_off.unwrap_or(base's can_disable)`, and `default` is the base's
-     default when it is in `levels`, else `None`.
+     default when it is in `levels`, else `None`. When the base's reasoning is not `Listed`,
+     `can_disable` falls back to `false`.
+   - `thinking_off` present and the resulting reasoning is `Listed` (whether or not
+     `effort_levels` is present) → `can_disable = thinking_off`; with a non-`Listed` base and no
+     `effort_levels` it is ignored.
    - `adaptive_thinking` present → `compat.adaptive_thinking`.
-   - `thinking_off == Some(false)` → `compat.thinking_off = None`.
+   - `compat.thinking_off` (the `thinking.type` string that turns reasoning off) is always the
+     base's.
 5. `ModelFacts::new(spec).with_catalog(catalog)`.
 
 The `Capabilities` type lives in `derived_facts.rs` (it is the overlay's input), and `cli.rs`
@@ -122,14 +128,16 @@ with the existing "update Fontaine" text, now saying no listed model of the same
 
 > Model `haiku` resolves to `claude-haiku-9-9`, which this build of Fontaine does not list; its
 > limits and features are taken from `claude-haiku-5-5` and the Claude CLI's own capability
-> flags, and it has no price, so cost budgets do not apply to it. Update Fontaine for its exact
-> facts.
+> flags. Update Fontaine for its exact facts.
 
-`ModelHandle` gains `facts_notice: Option<String>`, set in `ModelHandle::from_client`.
+`ModelHandle` gains `facts_notice: Option<String>`. `guardian_from_client` (which `from_client`
+delegates to) sets it to `client.facts_notice(&reference.model)`; `ModelHandle::new` sets `None`.
 `resolve_with` pushes it as a `Notice::warning` for the main model and for a `Ready` guardian
-(once when both are the same model). The TUI's `/model` and `/guardian-model` switch show the new
-handle's notice as a warning line in the transcript. It is shown once per resolution of that
-model, never per request.
+(once when both are the same model). The TUI's `/model` and `/guardian-model`
+(`fontaine-tui/src/ui/commands/model.rs`) read the new handle's `facts_notice` after the switch
+and show it with `Transcript::warning`. Headless prints the main and guardian `facts_notice`
+warnings to stderr in every mode (`announce` only prints `notices()` in Auto/Afk/Plan). It is
+shown once per resolution of that model, never per request.
 
 ### 5. Refused rows are shown, not hidden
 
@@ -140,25 +148,21 @@ model, never per request.
   Vec<RefusedModel> }`. `list_models`/`models_of` return it (an explicit `models` list on a
   non-discovering kind gives `refused: []`; a narrowing `models` list on a discovering kind
   narrows `refused` too). `Models.main_listing` and `Switcher::main`'s second value become
-  `Listing`; call sites that need ids read `.models`. `Switcher::listings`' `main` argument becomes
-  `Option<(&ModelRef, &Listing)>`, so the main account's refused rows survive the reuse.
+  `Listing`; call sites that need ids read `.models`. `Listing` derives `Default`. `Switcher::listings`'
+  `main` argument becomes `Option<(&ModelRef, &Listing)>`, so the main account's refused rows
+  survive the reuse; `agent/models.rs:216` (`slot.models = Ok(self.models.main_listing.clone())`)
+  must copy `refused` too, or the main account's refused rows vanish from `/model`.
 - `AccountListing` gains `refused: Vec<RefusedModel>` (empty on a failed listing).
 - `model_picker.rs`: `Group` carries the refused rows; a new `Row::Refused { label, reason }` is
   drawn dim as `  <id> — unavailable: <reason>` (clipped like every row), matched by the same
   fuzzy filter as model rows, after the group's usable models, and **never selectable**:
-  `model_count`, arrow keys and Enter skip it. `linear.rs` renders it with the qualified
-  reference, as it does model rows.
+  `model_count`, arrow keys and Enter skip it. `visible()` emits a group's heading when usable
+  or refused rows match the query (today it skips a group with no model hits). `Row::Refused` is
+  rendered in `ModelPicker::body_as` in both branches (qualified uses the full reference);
+  `linear.rs` only needs its `Group` test call sites updated.
 - `model_report.rs`: `AccountReport` gains `unavailable: Vec<RefusedModel>`; the text report lists
   them under the usable rows as `<id> (unavailable: <reason>)`, the JSON report as an
   `"unavailable": [{"id", "reason"}]` array per account (omitted when empty).
-
-### 6. Other account kinds
-
-Not changed here (see Decisions). `anthropic` already gets rig's 64000 fallback for unlisted
-`claude-opus-4*`/`claude-sonnet-4*`/`claude-haiku-4-5*` ids and an explicit "`max_tokens` must be
-set" error otherwise; `openai-compatible` gateways send no default output limit. A follow-up issue
-covers applying `derive` to `anthropic` (family sibling only, as its listing has no capability
-flags).
 
 ## Implementation Steps
 
@@ -166,17 +170,22 @@ flags).
    Register in `providers/mod.rs`.
 2. `cli.rs`: `ModelRow.capabilities`, filled by `model_rows`; update the row constructors in
    `cli.rs`/`transport.rs` tests.
-3. `claude_subscription/mod.rs`: `Route.derived_from`, the new `entry_of` order, `facts_notice`,
+3. `providers/mod.rs`: `RefusedModel`, the two `AccountClient` defaults.
+4. `claude_subscription/mod.rs`: `Route.derived_from`, the new `entry_of` order, `facts_notice`,
    `refused`.
-4. `providers/mod.rs`: `RefusedModel`, the two `AccountClient` defaults.
-5. `models.rs`: `Listing`, `ModelHandle.facts_notice`, notices in `resolve_with`, `AccountListing.
-   refused`, `Switcher::main`/`listings` signatures; update callers (`fontaine/src/models_cmd.rs`,
-   `fontaine/src/auto_mode.rs`, `fontaine/src/lib.rs`, `fontaine-tui/src/setup.rs`,
-   `fontaine-core/src/agent.rs`, the TUI `/model` command, tests).
+5. `models.rs`: `Listing` (derives `Default`), `ModelHandle.facts_notice` (set in
+   `guardian_from_client`, `None` in `ModelHandle::new`), notices in `resolve_with`,
+   `AccountListing.refused`, `Switcher::main`/`listings` signatures, `external_check`; update
+   callers: `fontaine/src/models_cmd.rs`, `fontaine-core/src/agent/models.rs` (incl. the :216
+   `refused` copy), `agent/setup.rs`, `child_runner.rs` (`MainModel.listing` becomes `Listing`),
+   `agent/model_source.rs`, `composition_offer.rs` (test `AccountListing` literal), and the test
+   files building `Models { main_listing: Vec::new(), .. }` (use `Listing::default()`).
 6. `model_report.rs`: `unavailable` in text and JSON.
-7. TUI: `model_picker.rs` `Row::Refused`, `linear.rs`, the switch notice in
-   `fontaine-tui/src/ui/commands/model.rs`.
-8. Docs and master-plan Decisions (below); file the `anthropic` follow-up issue and link it in the
+7. TUI: `model_picker.rs` `Row::Refused` and heading rule, `body_as`, `linear.rs` test call sites,
+   the switch notice in `fontaine-tui/src/ui/commands/model.rs`.
+8. Headless: `fontaine/src/headless.rs` prints the main/guardian `facts_notice` warning to stderr
+   in every mode.
+9. Docs and master-plan Decisions (below); file the `anthropic` follow-up issue and link it in the
    Decisions line.
 
 ## Files to Modify
@@ -185,12 +194,16 @@ flags).
 - `rust/fontaine-core/src/providers/mod.rs`
 - `rust/fontaine-core/src/providers/claude_subscription/{mod.rs,cli.rs,transport.rs}`
 - `rust/fontaine-core/src/models.rs`, `rust/fontaine-core/src/model_report.rs`,
-  `rust/fontaine-core/src/agent.rs`
-- `rust/fontaine/src/{models_cmd.rs,auto_mode.rs,lib.rs}`
-- `rust/fontaine-tui/src/{model_picker.rs,linear.rs,setup.rs,ui/commands/model.rs}`
-- `rust/fontaine-core/tests/{claude_subscription.rs,models.rs}`
-- `docs/claude-subscription.md`, `docs/configuration.md` (Model discovery), `docs/tui.md`
-  (model picker), `docs/tools.md` (`models` tool output)
+  `rust/fontaine-core/src/agent/{models.rs,setup.rs,model_source.rs}`,
+  `rust/fontaine-core/src/{child_runner.rs,composition_offer.rs}`
+- `rust/fontaine/src/{models_cmd.rs,headless.rs}`
+- `rust/fontaine-tui/src/{model_picker.rs,linear.rs,ui/commands/model.rs}`
+- `rust/fontaine-core/tests/{claude_subscription.rs,models.rs,goal.rs,model_source.rs}`,
+  `rust/fontaine-tui/tests/common/mod.rs`, and the other tests building
+  `Models { main_listing: Vec::new(), .. }`
+- `docs/claude-subscription.md`, `docs/configuration.md` (Model discovery; compaction at
+  :355-357 and :907-909), `docs/tui.md` (model picker; :666-667, :674-676), `docs/tools.md`
+  (`models` tool output), `docs/headless.md` (:110-111)
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
@@ -211,7 +224,11 @@ flags).
 
 - 2026-11-08: Scope is `claude-subscription` only; `anthropic`/`openai-compatible` unlisted ids are
   left to a follow-up issue, because their listings carry no capability flags and the Sessions
-  2026-10-24 "no fallback spec" decision governs them.
+  2026-10-24 "no fallback spec" decision governs them. `anthropic` already gets rig's 64000
+  fallback for unlisted `claude-opus-4*`/`claude-sonnet-4*`/`claude-haiku-4-5*` ids; the
+  follow-up applies family-sibling derivation only.
+- 2026-11-08: Listed models keep their catalog facts; a CLI flag that disagrees is a reason to
+  bump rig, not to override at runtime.
 
 ## Documentation
 
@@ -221,6 +238,10 @@ flags).
 - `docs/configuration.md` (Model discovery) and `docs/tools.md`: the `unavailable` rows in
   `fontaine models` and the `models` tool.
 - `docs/tui.md`: unavailable rows in `/model` and `/guardian-model`.
+- `docs/configuration.md` (:355-357, :907-909), `docs/tui.md` (:666-667, :674-676) and
+  `docs/headless.md` (:110-111): update the statements that an uncatalogued model is never
+  compacted / has no `/context` window to say a derived `claude-subscription` model counts as
+  listed for compaction and `/context`.
 - Master plan `## Decisions`, Providers subsection (dated lines):
   - the deviation from "unlisted models fail closed" for `claude-subscription`, with the rule and
     its "unknown family stays refused" boundary;
@@ -246,17 +267,16 @@ All unit/integration, no live CLI (`claude_cli_double` fake only).
   same-family → derived with `from`; unknown family → refused; credit row with a known family →
   refused before derivation; `facts_notice` and `refused` contents.
 - `tests/claude_subscription.rs` (fake CLI): a listing with `haiku → claude-haiku-9-9` resolves
-  as the main model with one `facts_notice` warning in `Models.notices`, and its request runs with
+  as the main model with one `facts_notice` warning in `Models.notices` (and the same for a
+  derived `Ready` guardian model), and its request runs with
   the canonical id and the base's output limit; `future → claude-quantum-9` appears in
   `AccountListing.refused` with its reason, including when the account is the main account
   (the reuse path); `models` narrowing applies to refused rows.
 - `model_picker.rs` unit tests: refused row drawn with its reason, filtered by the query, skipped
-  by arrows and Enter, absent when the query excludes it.
+  by arrows and Enter, absent when the query excludes it; a group whose query matches only
+  refused rows keeps its heading.
+- Headless integration test (fake CLI): a derived main model prints the `facts_notice` warning to
+  stderr in default mode.
 - `model_report.rs` unit tests: text and JSON `unavailable` output, omitted when empty.
 - Regression pin for the bug seen in the wild (Haiku hidden from the picker): the integration test
   above with a family member absent from the pinned catalog shows it usable in the listing.
-
-## Open Questions
-
-- Should the overlay also correct catalog-listed models when the CLI's flags disagree with the
-  catalog? This plan keeps listed models untouched.
