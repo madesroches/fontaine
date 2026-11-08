@@ -6,7 +6,8 @@ describe what the current build does; each page covers one topic.
 ## Start here
 
 - [Installing Fontaine](installing.md): the one-line installer for Linux and macOS, what it writes,
-  its prerequisites and caveats, the manual archive and source installs, and uninstalling.
+  its prerequisites and caveats, the manual archive and source installs, updating with
+  `fontaine update`, and uninstalling.
 - [Architecture](architecture.md): the workspace layout, what each crate is responsible for, and
   how the pieces depend on each other.
 - [Configuration](configuration.md): every settings key, the settings scope stack and its merge

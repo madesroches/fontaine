@@ -153,6 +153,8 @@ pub enum Command {
     Models(ModelsArgs),
     /// Check the setup: config layers, trust, models, MCP servers and memory
     Doctor(DoctorArgs),
+    /// Update this installation to the newest build on the channel it was installed from
+    Update,
 }
 
 #[derive(Args, Debug, Clone)]

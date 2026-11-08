@@ -20,8 +20,11 @@ you download.
 | `dev` | the latest CI-passing build of `main`, published as the prerelease `dev-<n>` | the dev key | [`rust/fontaine/keys/dev.pub`](../rust/fontaine/keys/dev.pub) |
 
 The two channels use different keys, so a compromised dev key cannot sign a release. The keys are
-checked in and compiled into the verifier module that Fontaine's update path will use. Fontaine
-does not update itself yet, so today you verify a downloaded archive by hand, as below.
+checked in and compiled into Fontaine. `fontaine update` verifies every archive it downloads with
+the key of the channel the install came from, requires the signed channel, file name and version to
+match the release it was offered, and replaces nothing if any check fails (see
+[Updating](installing.md#updating)). To verify an archive you downloaded yourself, do it by hand, as
+below.
 
 A release is verified against `<channel>.signing.pub`, the key CI signed with, read at that
 release's tag (for `dev`, at its commit):
@@ -88,6 +91,6 @@ repository over the same channel as the archive. The installers (`fontaine-insta
 `fontaine-installer.ps1`) are signed on both channels but do not check the minisign signature
 themselves; they verify the archive's sha256 only, which the shell installer does only when `sha256sum` is
 present and the PowerShell installer always does (see [Installing Fontaine](installing.md)). To get a signature
-check, download the archive and verify it as above. Fontaine does not update itself yet; once
-it does, the signature chain will be what keeps an update honest. Once Fontaine's archives enable GitHub artifact attestations, `gh attestation
+check, download the archive and verify it as above; `fontaine update` does this itself for the
+archive it installs. Once Fontaine's archives enable GitHub artifact attestations, `gh attestation
 verify` will apply as a further check; the minisign key stays the root of trust.

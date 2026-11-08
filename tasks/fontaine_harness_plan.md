@@ -457,6 +457,9 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-08 (#508): `fontaine --version`, `doctor`, `/status`, `/bug` and telemetry `service.version` show `<version>-dev+<sha12>[.dirty]` unless `v<version>` is among the tags at `HEAD` and tracked files are clean (or there is no git), computed in `build.rs`; Claude Code documents no dev-build format. Protocol identity strings and the statusline `version` keep the plain semver, the release signature `version=` stays tag-derived, and `.dirty` is computed at build time only.
 - 2026-11-08 (#510): Supersedes the 2026-10-21 "Windows runs `shell` through Git Bash" line: Git for Windows is preferred, not a prerequisite. Without it Fontaine starts with PowerShell as the command shell (Claude Code parity); `design/platforms.md` has the table.
 
+- 2026-11-08 (#509): `fontaine update` updates only on a matching install receipt and derives the channel from the receipt version (not config: no new user-scope key, and project config cannot flip it); it never switches channels. Windows swaps via rename-aside (`fontaine.exe` to `fontaine.exe.old`, deleted by the next update) rather than #175's separate updater process; narrower than #175, which keeps the background check, staged swap and TUI notice.
+- 2026-11-08 (#509, AFK): Archive extraction uses pure-Rust `tar` + `lzma-rs` (xz) and `zip` =8.6.0 (already in `Cargo.lock`, `deflate-flate2-zlib-rs`), in-process only and exact-pinned; the most conservative choice because it needs no C toolchain and passes the deny license list.
+- 2026-11-08 (#509, AFK): Update failures exit with distinct codes `EXIT_UPDATE_NOT_SELF_UPDATABLE` = 3, `EXIT_UPDATE_NETWORK` = 4, `EXIT_UPDATE_VERIFY` = 5 (config errors keep `EXIT_CONFIG` = 2); each is a kind scripts dispatch on.
 ### Config
 
 - 2026-10-21: Unknown config keys and sections are a config error (exit 2) (Claude Code ignores them): a misspelled `[permisions]` must not silently drop deny rules.
