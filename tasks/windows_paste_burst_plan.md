@@ -20,7 +20,7 @@ into one `Input::Paste` whenever it contains a newline, so the existing paste pa
 - `app.rs` `dispatch_input` (line ~926) routes `Input::Paste` to the overlay that owns it, the
   search box or the message box; `input.rs:146` already normalises `\r\n` and `\r` to `\n`.
 - A plain `Enter` key event is submit in the message box, so unbracketed pasted text is submitted.
-- `docs/tui.md` mentions paste only around lines 226 and 354-356, assuming the bracketed path works.
+- `docs/tui.md` describes paste around lines 356, 434 and 889.
 
 ## Design
 
@@ -48,6 +48,7 @@ Rules:
   its char), `Enter` with no modifiers, or `Tab`. Pure Ctrl+char and pure Alt+char are not burst
   keys and end the burst. Ctrl+J is not special: crossterm delivers it as `Char('j')` with CONTROL.
 - A Release is dropped: it does not start, end or count toward a burst, but resets the gap timer.
+  Releases are dropped from a replayed (non-paste) burst too.
 - Only a burst key starts a burst. After it, `next` is asked for another event with a gap of
   `BURST_GAP` (15 ms), measured per event, not over the whole burst. Burst keys keep extending it;
   the first gap, or the first non-burst event, ends it. A non-burst event that ended the burst is
@@ -78,7 +79,8 @@ apart.
 3. Make the event read testable: `read_terminal` passes a closure over `event::poll`/`read` that
    returns `None` when `stop` or `pause.requested` is set; `coalesce` itself takes the closure.
 4. Unit tests (below).
-5. Update `docs/tui.md` and `CHANGELOG.md`; add the deviation line to the plan's `## Decisions`
+5. Update `docs/tui.md` and add a `CHANGELOG.md` entry under `## [Unreleased]` → `### Fixed`,
+   ending with `(#514)`; add the deviation line to the plan's `## Decisions`
    (TUI subsection).
 
 ## Files to Modify
@@ -86,7 +88,7 @@ apart.
 - `rust/fontaine-tui/src/paste_burst.rs` (new)
 - `rust/fontaine-tui/src/lib.rs`
 - `docs/tui.md`
-- `CHANGELOG.md`
+- `CHANGELOG.md` (`## [Unreleased]` → `### Fixed`, ending with `(#514)`)
 - `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Trade-offs
@@ -101,7 +103,7 @@ apart.
 
 ## Documentation
 
-`docs/tui.md` (the paste mentions around lines 226 and 354-356): say that on Windows consoles
+`docs/tui.md` (the paste text around lines 356, 434 and 889): say that on Windows consoles
 pasted text arrives as keys and is detected as a burst, so a multi-line paste is inserted rather
 than submitted.
 
@@ -111,20 +113,16 @@ All behavior is reachable with a scripted event source:
 
 - Burst of `Char`, `Enter`, `Char` yields one `Paste("ab\ncd")`-style result and no `Enter` key,
   so no submit (the bug in the issue).
-- Provisional, pending the Open Question: CRLF delivered as two Enter events yields `"\n\n"` (the
-  existing `input.rs` normaliser collapses `\r\n` text only).
 - `Enter`, `Enter` yields `Paste("\n\n")`.
 - `Enter` alone (after a gap) yields the key (submit still works by hand).
 - `Char`, then gap, then `Enter` yields two separate key results.
-- A chars-only burst is replayed as the original keys.
+- A chars-only burst of Press events is replayed as the original keys.
 - Pure Ctrl/Alt-modified chars don't start or join a burst; a Release is dropped and resets the gap
   timer; a non-burst event that ends a burst is delivered after it, in order.
 - A `Char` with CONTROL|ALT (AltGr) joins a burst and maps to its char.
 - Trailing newline: `"a"`, `Enter` yields `Paste("a\n")`.
 - An error from `next` flushes the collected inputs, then returns the error.
 - A test in `app.rs` that pasting `"a\nb"` into the message box inserts it without `Action::Submit`.
-- Setup prompts and the linear interface read through the same `read_terminal` as the unit-tested
-  `coalesce`.
 
 ## Manual Verification
 
