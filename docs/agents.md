@@ -87,6 +87,10 @@ Three types are built in:
 | `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `lsp`, `edit`, `write`, `notebook_edit`, `shell`, `send_message` |
 | `fork` | the session model | every tool the main conversation has, except `ask_user_question` |
 
+On Windows without Git Bash the main conversation has no `shell`, and `worker` gets `powershell` in
+its place; a type of your own that lists `shell` does too, and one that disallows `shell` gets no
+command tool.
+
 `$main` is the session model. `$guardian_default` is the top-ranked validated guardian model your
 accounts offer, or the session model when there is none; it is opt-in — no built-in type uses it.
 

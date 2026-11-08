@@ -752,8 +752,11 @@ fn prepare_session(
     project_executables: bool,
     record_resume: bool,
 ) -> Result<(SessionPrep, Option<Scratch>), u8> {
-    let git_bash = git_bash(host)?;
-    let powershell = powershell(host);
+    let Shells {
+        git_bash,
+        powershell,
+        warning: shell_warning,
+    } = shells(host)?;
 
     let mut roots = resolve_roots(cli, config, host);
     let mut warnings: Vec<Notice> = roots
@@ -761,6 +764,7 @@ fn prepare_session(
         .iter()
         .map(|warning| Notice::warning(warning.clone(), None))
         .collect();
+    warnings.extend(shell_warning.map(|warning| Notice::warning(warning, None)));
 
     // The caller only gets the warnings back on success, so a failure prints them here.
     let (session, origin, start_type) =
@@ -894,35 +898,72 @@ fn prepare_session(
     Ok((prep, scratch))
 }
 
-/// The shell tool runs through Git Bash on Windows; elsewhere it needs none.
+/// The shells found at startup, and what to tell the user about the choice.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Shells {
+    git_bash: Option<GitBash>,
+    powershell: Option<PowerShellSettings>,
+    warning: Option<&'static str>,
+}
+
+#[cfg(any(windows, test))]
+const POWERSHELL_FALLBACK_WARNING: &str = "Git for Windows was not found: shell commands, hooks and the status line run in PowerShell. Install Git for Windows, or set FONTAINE_GIT_BASH_PATH, to use Git Bash.";
+
+/// Windows runs commands in Git Bash when it is found and in PowerShell when it is not. A
+/// `FONTAINE_GIT_BASH_PATH` that names something else is an error rather than a reason to switch
+/// shells: the user asked for a specific bash. `powershell_override` is the non-empty
+/// `FONTAINE_POWERSHELL_PATH`, which is why discovery found no PowerShell when one is set.
+#[cfg(any(windows, test))]
+fn choose_shells(
+    git_bash: Result<GitBash, fontaine_tools::git_bash::GitBashError>,
+    powershell: Option<PowerShellSettings>,
+    powershell_override: Option<OsString>,
+) -> Result<Shells, String> {
+    use fontaine_tools::git_bash::{GitBashError, OVERRIDE_VAR as GIT_BASH_VAR};
+    use fontaine_tools::powershell::OVERRIDE_VAR as POWERSHELL_VAR;
+    match (git_bash, powershell) {
+        (Ok(git_bash), powershell) => Ok(Shells {
+            git_bash: Some(git_bash),
+            powershell,
+            warning: None,
+        }),
+        (Err(e @ GitBashError::BadOverride(_)), _) => Err(e.to_string()),
+        (Err(GitBashError::NotFound), Some(powershell)) => Ok(Shells {
+            git_bash: None,
+            powershell: Some(powershell),
+            warning: Some(POWERSHELL_FALLBACK_WARNING),
+        }),
+        (Err(GitBashError::NotFound), None) => Err(match powershell_override {
+            Some(value) => format!(
+                "no shell found: install Git for Windows, or set {GIT_BASH_VAR}; {POWERSHELL_VAR}={} is not a file",
+                value.to_string_lossy()
+            ),
+            None => format!(
+                "no shell found: install Git for Windows, or set {GIT_BASH_VAR} or {POWERSHELL_VAR}"
+            ),
+        }),
+    }
+}
+
+/// Git Bash and PowerShell on Windows; elsewhere neither, since `sh` is native.
 #[cfg(windows)]
-fn git_bash(host: &Host) -> Result<Option<GitBash>, u8> {
-    let probe = fontaine_tools::git_bash::Probe {
+fn shells(host: &Host) -> Result<Shells, u8> {
+    let git_bash = fontaine_tools::git_bash::discover(&fontaine_tools::git_bash::Probe {
         env: &*host.env,
         is_file: &|path| path.is_file(),
-    };
-    fontaine_tools::git_bash::discover(&probe)
-        .map(Some)
-        .map_err(usage_code)
+    });
+    let powershell = fontaine_tools::powershell::discover(&fontaine_tools::powershell::Probe {
+        env: &*host.env,
+        is_file: &|path| path.is_file(),
+    });
+    let powershell_override =
+        (host.env)(fontaine_tools::powershell::OVERRIDE_VAR).filter(|value| !value.is_empty());
+    choose_shells(git_bash, powershell, powershell_override).map_err(usage_code)
 }
 
 #[cfg(not(windows))]
-fn git_bash(_host: &Host) -> Result<Option<GitBash>, u8> {
-    Ok(None)
-}
-
-/// The `powershell` tool exists on Windows when an interpreter is found; elsewhere never.
-#[cfg(windows)]
-fn powershell(host: &Host) -> Option<PowerShellSettings> {
-    fontaine_tools::powershell::discover(&fontaine_tools::powershell::Probe {
-        env: &*host.env,
-        is_file: &|path| path.is_file(),
-    })
-}
-
-#[cfg(not(windows))]
-fn powershell(_host: &Host) -> Option<PowerShellSettings> {
-    None
+fn shells(_host: &Host) -> Result<Shells, u8> {
+    Ok(Shells::default())
 }
 
 async fn resolve_models(
@@ -1234,7 +1275,79 @@ mod trust_tests {
 
 #[cfg(test)]
 mod tests {
+    use fontaine_tools::git_bash::GitBashError;
+    use std::path::PathBuf;
+
     use super::*;
+
+    fn git() -> GitBash {
+        GitBash {
+            bin: PathBuf::from("/g/bin"),
+            usr_bin: PathBuf::from("/g/usr/bin"),
+        }
+    }
+
+    fn pwsh() -> PowerShellSettings {
+        PowerShellSettings {
+            path: PathBuf::from("pwsh.exe"),
+        }
+    }
+
+    #[test]
+    fn git_bash_found_starts_as_before_with_no_warning() {
+        for powershell in [None, Some(pwsh())] {
+            let chosen = choose_shells(Ok(git()), powershell.clone(), None).unwrap();
+            assert_eq!(
+                chosen,
+                Shells {
+                    git_bash: Some(git()),
+                    powershell,
+                    warning: None
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn without_git_bash_powershell_starts_with_one_warning() {
+        let chosen = choose_shells(Err(GitBashError::NotFound), Some(pwsh()), None).unwrap();
+        assert_eq!(chosen.git_bash, None);
+        assert_eq!(chosen.powershell, Some(pwsh()));
+        let warning = chosen.warning.expect("the fallback is announced");
+        assert!(warning.starts_with("Git for Windows was not found"));
+        assert!(warning.contains("FONTAINE_GIT_BASH_PATH"));
+    }
+
+    #[test]
+    fn a_bad_git_bash_override_is_an_error_even_with_powershell() {
+        let bad = GitBashError::BadOverride(PathBuf::from("/x/bash.exe"));
+        let message = choose_shells(Err(bad), Some(pwsh()), None).unwrap_err();
+        assert!(message.contains("FONTAINE_GIT_BASH_PATH"), "{message}");
+        assert!(message.contains("/x/bash.exe"), "{message}");
+    }
+
+    #[test]
+    fn no_shell_at_all_says_what_to_install_or_set() {
+        let message = choose_shells(Err(GitBashError::NotFound), None, None).unwrap_err();
+        assert_eq!(
+            message,
+            "no shell found: install Git for Windows, or set FONTAINE_GIT_BASH_PATH or FONTAINE_POWERSHELL_PATH"
+        );
+    }
+
+    #[test]
+    fn a_bad_powershell_override_is_named_instead_of_suggested() {
+        let message = choose_shells(
+            Err(GitBashError::NotFound),
+            None,
+            Some(OsString::from("C:/nope/pwsh.exe")),
+        )
+        .unwrap_err();
+        assert_eq!(
+            message,
+            "no shell found: install Git for Windows, or set FONTAINE_GIT_BASH_PATH; FONTAINE_POWERSHELL_PATH=C:/nope/pwsh.exe is not a file"
+        );
+    }
 
     #[tokio::test]
     async fn a_stalled_call_is_cut_off() {

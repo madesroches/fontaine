@@ -101,8 +101,9 @@ writes:
 - an entry for `%CARGO_HOME%\bin` in your user `Path` (the registry key `HKCU\Environment`). Set
   `FONTAINE_NO_MODIFY_PATH=1` to skip it.
 
-Open a new terminal, then run `fontaine --version`. Fontaine itself needs Git for Windows at runtime
-for its shell tool; see [Shell](tools.md#shell).
+Open a new terminal, then run `fontaine --version`. Git for Windows is recommended but not required:
+Fontaine runs commands through Git Bash when it finds it and through PowerShell when it does not;
+see [Shell](tools.md#shell).
 
 ### Verification (Windows)
 

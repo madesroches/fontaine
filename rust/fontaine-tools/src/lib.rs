@@ -3,6 +3,7 @@ pub mod bug_draft;
 pub mod builtins;
 pub mod checkpoint;
 pub mod child_env;
+pub mod command_shell;
 pub mod descriptor;
 pub mod display;
 pub mod error_chain;

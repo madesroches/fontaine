@@ -160,7 +160,8 @@ output. The command receives one JSON object on stdin and the first line of its 
 escape sequences stripped) is shown after the mode, directory, model, quota, effort, agents,
 scheduled tasks and goal segments. Any non-zero exit, timeout after five seconds, or empty output
 keeps the previous good line; with none yet, the built-in rendering is used. While a refusal, attach notice or
-viewed-agent message is showing, it takes the custom line's place.
+viewed-agent message is showing, it takes the custom line's place. The command runs through `sh -c`
+(Git Bash on Windows); on Windows without Git Bash it runs in PowerShell.
 
 ```toml
 [statusline]
@@ -312,7 +313,8 @@ coloured; Enter runs the command instead of sending a message, and the `!` is no
 - It runs as you, in the primary workspace root, with no approval prompt: it is your own action, so
   the [permission pipeline](permissions.md) and the [guardian](guardian.md) do not see it.
 - It runs with the same environment (scrubbed, plus [`[env]`](configuration.md#env)) and the same
-  output cut as the agent's `shell` tool, because the output goes to the agent. It is killed after 120 seconds, or after 60 seconds without
+  output cut as the agent's `shell` tool, because the output goes to the agent. On Windows without
+  Git Bash it runs in PowerShell, like the agent's `powershell` tool. It is killed after 120 seconds, or after 60 seconds without
   output, and has no standard input.
 - A `!` input typed while a turn runs queues like a message and runs after the turn, in the order
   typed with everything else queued.

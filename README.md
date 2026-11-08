@@ -36,8 +36,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/madesroches/fontai
 It installs `fontaine.exe` to `%CARGO_HOME%\bin` (`%USERPROFILE%\.cargo\bin` by default), adds that
 directory to your user `Path`, writes an install receipt at
 `%LOCALAPPDATA%\fontaine\fontaine-receipt.json`, and checks the archive's sha256 before unpacking it;
-it does not verify the minisign signature. Fontaine needs Git for Windows at runtime, for its shell
-tool. The installer ignores Fontaine's `[network]` proxy, CA and mTLS settings: behind a proxy set
+it does not verify the minisign signature. Git for Windows is recommended but not required: without it Fontaine runs commands in PowerShell. The installer ignores Fontaine's `[network]` proxy, CA and mTLS settings: behind a proxy set
 `HTTPS_PROXY`, for a private CA install it in the Windows certificate store, or download the archive
 manually. A manually downloaded archive can trigger SmartScreen warnings, since the archives carry a
 minisign signature but no Authenticode one; verify it as in

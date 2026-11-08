@@ -63,13 +63,15 @@ pub struct PromptParts<'a> {
     pub append: Option<&'a str>,
     /// AFK mode is on: the user is away, so a denial is final and nothing is asked.
     pub afk: bool,
+    /// Whether `shell` is registered; without it `powershell` is the command tool the base names.
+    pub posix_shell: bool,
 }
 
 fn base(
     roots: &[PathBuf],
     scratch: Option<&Path>,
     memory_root: Option<&Path>,
-    afk: bool,
+    (afk, posix_shell): (bool, bool),
 ) -> String {
     let list = roots
         .iter()
@@ -88,8 +90,12 @@ fn base(
         Some(dir) => SCRATCH_NOTE.replace("{{scratch}}", &dir.display().to_string()),
         None => String::new(),
     };
-    BASE_PROMPT
-        .replace("{{workspace_roots}}", &list)
+    let base = if posix_shell {
+        BASE_PROMPT.to_string()
+    } else {
+        BASE_PROMPT.replace("`shell`", "`powershell`")
+    };
+    base.replace("{{workspace_roots}}", &list)
         .replace("{{scratch_note}}", &scratch_note)
         .replace(
             "{{denial_recovery}}",
@@ -138,7 +144,12 @@ pub fn layers(parts: &PromptParts<'_>) -> PromptPieces {
     PromptPieces {
         base: match parts.system_prompt {
             Some(replacement) => replacement.to_string(),
-            None => base(parts.roots, parts.scratch, parts.memory_root, parts.afk),
+            None => base(
+                parts.roots,
+                parts.scratch,
+                parts.memory_root,
+                (parts.afk, parts.posix_shell),
+            ),
         },
         instructions: parts
             .instructions

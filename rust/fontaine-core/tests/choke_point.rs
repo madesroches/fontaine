@@ -186,7 +186,7 @@ fn params(rig: &Rig) -> RegistryParams {
         scrub_env: Vec::new(),
         set_env: Vec::new(),
         shell_max_timeout_secs: 600,
-        git_bash: None,
+        git_bash: common::git_bash(),
         powershell: None,
         results: Arc::new(ResultPipeline::new()),
         hide_mcp_names: false,

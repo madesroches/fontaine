@@ -36,6 +36,7 @@ fn the_assembled_prompt_is_stable() {
     let instructions = instructions();
     let assembled = prompt::assemble(&PromptParts {
         afk: false,
+        posix_shell: true,
         roots: &roots,
         scratch: None,
         memory_root: None,
@@ -80,6 +81,7 @@ fn the_roots_section_lists_every_root_with_the_primary_first() {
     let roots = roots();
     let assembled = prompt::assemble(&PromptParts {
         afk: false,
+        posix_shell: true,
         roots: &roots,
         scratch: None,
         memory_root: None,
@@ -104,6 +106,7 @@ fn the_prompt_names_the_scratch_root_and_keeps_the_user_only_rule() {
     roots.push(scratch.clone());
     let assembled = prompt::assemble(&PromptParts {
         afk: false,
+        posix_shell: true,
         roots: &roots,
         scratch: Some(&scratch),
         memory_root: None,
@@ -127,6 +130,7 @@ fn layers_come_in_order_base_then_instructions_then_append() {
     let instructions = instructions();
     let assembled = prompt::assemble(&PromptParts {
         afk: false,
+        posix_shell: true,
         roots: &roots,
         scratch: None,
         memory_root: None,
@@ -147,6 +151,7 @@ fn layers_come_in_order_base_then_instructions_then_append() {
     // The skill list, the scheduling note and the output style sit between the instructions and the appended text.
     let layered = prompt::assemble(&PromptParts {
         afk: false,
+        posix_shell: true,
         roots: &roots,
         scratch: None,
         memory_root: None,
@@ -174,6 +179,7 @@ fn a_replacement_system_prompt_replaces_only_the_base() {
     let instructions = instructions();
     let assembled = prompt::assemble(&PromptParts {
         afk: false,
+        posix_shell: true,
         roots: &roots,
         scratch: None,
         memory_root: None,
@@ -227,6 +233,7 @@ fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
     let roots = roots();
     let without = prompt::assemble(&PromptParts {
         afk: false,
+        posix_shell: true,
         roots: &roots,
         scratch: None,
         memory_root: None,
@@ -241,6 +248,7 @@ fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
     assert!(!without.contains("cron_create") && !without.contains("schedule_wakeup"));
     let with = prompt::assemble(&PromptParts {
         afk: false,
+        posix_shell: true,
         roots: &roots,
         scratch: None,
         memory_root: None,
@@ -267,6 +275,7 @@ fn the_memory_layer_follows_the_instruction_files_and_labels_its_root() {
     let layer = fontaine_core::memory::layer(&memory_root, Some("- [cmds](commands.md)"));
     let assembled = prompt::assemble(&PromptParts {
         afk: false,
+        posix_shell: true,
         roots: &roots,
         scratch: None,
         memory_root: Some(&memory_root),
@@ -285,4 +294,32 @@ fn the_memory_layer_follows_the_instruction_files_and_labels_its_root() {
     let at = |needle: &str| assembled.find(needle).unwrap();
     assert!(at("Run `cargo test` before finishing.") < at("These are notes you saved"));
     assert!(at("These are notes you saved") < at("skills"));
+}
+
+#[test]
+fn without_the_shell_tool_the_prompt_names_powershell_instead() {
+    let roots = roots();
+    let parts = |posix_shell| PromptParts {
+        afk: false,
+        posix_shell,
+        roots: &roots,
+        scratch: None,
+        memory_root: None,
+        system_prompt: None,
+        instructions: &[],
+        memory: None,
+        skill_index: None,
+        scheduling: None,
+        output_style: None,
+        append: None,
+    };
+    let with = prompt::assemble(&parts(true));
+    assert!(with.contains("`shell`") && !with.contains("`powershell`"));
+    let without = prompt::assemble(&parts(false));
+    assert!(without.contains("`powershell`"));
+    assert!(!without.contains("`shell`"), "{without}");
+    assert!(
+        without
+            .contains("never answer a denied `read`, `ls`, `glob` or `grep` by using `powershell`")
+    );
 }

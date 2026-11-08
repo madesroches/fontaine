@@ -394,7 +394,7 @@ pub async fn drive(
             command,
             runtime.scrub_env().to_vec(),
             fontaine_core::tools::subprocess_env(&runtime.config),
-            runtime.git_bash().clone(),
+            runtime.command_shell(),
             runtime.state.scope().primary().to_path_buf(),
         )
     });

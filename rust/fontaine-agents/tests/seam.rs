@@ -1032,6 +1032,7 @@ fn waiter(rig: &Rig) -> JobOutputTool {
         limit: OutputLimit::default(),
         agents: Some(rig.tree.clone() as Arc<dyn AgentWaits>),
         wake: None,
+        posix_shell: true,
     }
 }
 

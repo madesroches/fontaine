@@ -258,7 +258,10 @@ treated exactly as a matching allow rule — step 5a only, never past the floor;
 matcher's `allow` skips the guardian (Claude Code parity) and a broad matcher (by the allow-rule
 test) is suspended. A hook that errors, times out or returns
 malformed output contributes no decision; the call continues through the normal pipeline — hooks
-never loosen on failure. Hook processes are user-configured, not tool calls, and are not gated by the
+never loosen on failure. The one exception tightens: on Windows without Git Bash, hooks run in PowerShell
+and a `pre_tool_use` hook that exits with anything but 0 or 2, cannot start or times out denies the call
+(`blocking because Git Bash was not found, so only exit code 0 or 2 counts as this hook's verdict`, Claude Code's rule); malformed output on exit 0 still decides nothing, and the
+other events keep the rule above. Hook processes are user-configured, not tool calls, and are not gated by the
 pipeline. Sources follow `config.md` §Config: user and CLI hooks load always; project and project-local hooks are
 executables gated by workspace trust in the TUI, and a project hook's `allow` decision is ignored
 (project scope only tightens). No key in any scope disables hooks from a higher-trust scope. Built in Phase 5.

@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rig_core::completion::ToolAnnotations;
-use rig_core::tool::{DynamicTool, ExitStatus, Tool, ToolContext, ToolExecutionError, args_schema};
+use rig_core::tool::{
+    DynamicTool, ExitStatus, OutputCut, Tool, ToolContext, ToolExecutionError, args_schema,
+};
 pub use rig_tools::Seen;
 use rig_tools::process::{Launcher, Process, Spawn};
 use rig_tools::{
@@ -23,8 +25,8 @@ use crate::git_bash::{COMMAND_VAR, CWD_FILE_VAR, GitBash, RUN_TRACKED_SCRIPT, sh
 use crate::guarded::{Guard, GuardedTool};
 use crate::jobs::tools::{JobCancelTool, JobOutputTool, MonitorTool, job_error};
 use crate::jobs::{
-    AgentKills, AgentWaits, End, JobError, Jobs, Kill, MAX_RUNNING, NoPromote, OUTPUT_CAP,
-    QUIET_LIMIT, Start, WaitWake, cut,
+    AgentKills, AgentWaits, End, Foreground, JobError, Jobs, Kill, MAX_RUNNING, NoPromote,
+    OUTPUT_CAP, QUIET_LIMIT, Start, WaitWake, cut,
 };
 use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, ReadView};
 use crate::powershell::{self, PowerShellSettings};
@@ -40,6 +42,8 @@ use crate::websearch::{SearxngChild, Websearch, WebsearchConfig};
 #[derive(Clone, Debug)]
 pub struct Ls {
     pub list: List,
+    /// Whether `shell` is registered; the description names `powershell` when it is not.
+    pub posix_shell: bool,
 }
 
 impl Tool for Ls {
@@ -49,13 +53,19 @@ impl Tool for Ls {
     type Error = ToolExecutionError;
 
     fn description(&self) -> String {
-        "List the files under a directory, sorted, one path per line below it. Skips files \
-         ignored by git and, unless `hidden` is set or the glob names one, hidden files. With \
-         `depth`, directories below that depth are listed once as `dir/`. `ignore` takes globs \
-         of files and directories to leave out: `node_modules` names one at any depth, \
-         `src/gen` a path below the listed directory. Use it to see what a directory holds, \
-         not `ls` or `find` in `shell`."
-            .to_string()
+        format!(
+            "List the files under a directory, sorted, one path per line below it. Skips files \
+             ignored by git and, unless `hidden` is set or the glob names one, hidden files. With \
+             `depth`, directories below that depth are listed once as `dir/`. `ignore` takes globs \
+             of files and directories to leave out: `node_modules` names one at any depth, \
+             `src/gen` a path below the listed directory. Use it to see what a directory holds, \
+             not {}.",
+            if self.posix_shell {
+                "`ls` or `find` in `shell`"
+            } else {
+                "`Get-ChildItem` in `powershell`"
+            }
+        )
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -168,6 +178,8 @@ pub struct GlobArgs {
 #[derive(Clone, Debug)]
 pub struct Glob {
     pub search: Search,
+    /// Whether `shell` is registered; the description names `powershell` when it is not.
+    pub posix_shell: bool,
 }
 
 impl Tool for Glob {
@@ -181,7 +193,12 @@ impl Tool for Glob {
             "Find files whose path matches a glob pattern such as `src/**/*.rs`. Skips files \
              ignored by git and hidden files unless the pattern names one. Returns one path per \
              line, at most {MAX_FILES}. `path` is the directory to search (default: the working \
-             root). Use it to find files by name, not `find` in `shell`."
+             root). Use it to find files by name, not {}.",
+            if self.posix_shell {
+                "`find` in `shell`"
+            } else {
+                "`Get-ChildItem` in `powershell`"
+            }
         )
     }
 
@@ -222,6 +239,8 @@ impl Tool for Glob {
 #[derive(Clone, Debug)]
 pub struct Grep {
     pub search: Search,
+    /// Whether `shell` is registered; the description names `powershell` when it is not.
+    pub posix_shell: bool,
 }
 
 impl Tool for Grep {
@@ -240,7 +259,12 @@ impl Tool for Grep {
              context) or `count` (`path:N` per file). `-i` ignores case, `type` keeps one \
              file type such as `rust` or `py`, `head_limit` caps the entries returned. An \
              empty pattern with `files_with_matches` lists every file. Use it to find code, \
-             not `grep` or `rg` in `shell`."
+             not {}.",
+            if self.posix_shell {
+                "`grep` or `rg` in `shell`"
+            } else {
+                "`Select-String` in `powershell`"
+            }
         )
     }
 
@@ -474,6 +498,41 @@ async fn run_job(
         ));
     }
     let ran = jobs.foreground(&id, timeout, quiet, !no_promote).await;
+    let mut rendered = render_foreground(shell, &ran, &id, (timeout, quiet), max)?;
+    if let (Some(info), Some(file), Some(track)) = (&ran.end, &cwd_file, track)
+        && matches!(info.end, End::Exited(_))
+        && let Some(reported) = file.reported()
+        && let Some(reset) = track.cwd.observe(agent, &reported, &track.scope)
+    {
+        rendered.text.push('\n');
+        rendered.text.push_str(&reset.notice(track.scope.primary()));
+    }
+    if let Some(status) = rendered.status {
+        context.insert_result(status)?;
+    }
+    if let Some(fact) = rendered.fact {
+        context.insert_result(fact)?;
+    }
+    Ok(rendered.text)
+}
+
+/// What a foreground call tells the model and the context.
+struct Rendered {
+    text: String,
+    /// `None` when the command moved to the background and has no status yet.
+    status: Option<ExitStatus>,
+    fact: Option<OutputCut>,
+}
+
+/// The text of a foreground call that came back from `Jobs::foreground`: its output cut to the
+/// shell's limit and the line saying how it ended, or that it moved to the background.
+fn render_foreground(
+    shell: &Shell,
+    ran: &Foreground,
+    id: &str,
+    (timeout, quiet): (Duration, Option<Duration>),
+    max: u64,
+) -> Result<Rendered, ToolExecutionError> {
     let limit = shell.cut.unwrap_or_default();
     let (mut text, fact) = cut::cut(&ran.chunk.lines, ran.chunk.missed, limit);
     let silent = ran.chunk.lines.is_empty();
@@ -518,23 +577,10 @@ async fn run_job(
                 }
             };
             text.push_str(&line);
-            if let (End::Exited(_), Some(file), Some(track)) = (&info.end, &cwd_file, track)
-                && let Some(reported) = file.reported()
-                && let Some(reset) = track.cwd.observe(agent, &reported, &track.scope)
-            {
-                text.push('\n');
-                text.push_str(&reset.notice(track.scope.primary()));
-            }
             Some(status)
         }
     };
-    if let Some(status) = status {
-        context.insert_result(status)?;
-    }
-    if let Some(fact) = fact {
-        context.insert_result(fact)?;
-    }
-    Ok(text)
+    Ok(Rendered { text, status, fact })
 }
 
 /// `schema` with the `run_in_background` property added to the arguments rig's `shell` takes.
@@ -684,6 +730,8 @@ pub struct PowerShellTool {
     pub jobs: Option<Arc<Jobs>>,
     /// As for `shell`.
     pub track: Option<Tracking>,
+    /// Whether `shell` is registered; the description points at it only then.
+    pub posix_shell: bool,
 }
 
 impl PowerShellTool {
@@ -699,6 +747,39 @@ impl PowerShellTool {
         let mut shell = self.shell.clone();
         shell.launcher = shell.launcher.with_env(powershell::CWD_FILE_VAR, file);
         launch_in(&shell, &args, self.interpreter.as_os_str(), &argv)
+    }
+
+    /// Runs `args` in the foreground and returns what it printed and how it ended, as
+    /// `ShellTool::run` does. The command is stopped, not moved to the background, when it
+    /// outlives its timeout, and dropping the future stops it.
+    pub async fn run(&self, args: ShellArgs) -> Result<ShellRun, ToolExecutionError> {
+        let max = self.shell.max_timeout.max(1);
+        let timeout = Duration::from_secs(
+            args.timeout_secs
+                .unwrap_or(DEFAULT_TIMEOUT.min(self.shell.max_timeout))
+                .clamp(1, max),
+        );
+        let quiet = quiet_for(args.timeout_secs, timeout);
+        let process = self.launch(args.clone())?;
+        let jobs = Jobs::new();
+        let id = jobs
+            .start(
+                Start {
+                    command: args.command,
+                    background: false,
+                    monitor: None,
+                },
+                process,
+            )
+            .map_err(|e| job_error(&e))?;
+        let ran = jobs.foreground(&id, timeout, quiet, false).await;
+        let rendered = render_foreground(&self.shell, &ran, &id, (timeout, quiet), max)?;
+        Ok(ShellRun {
+            output: rendered.text,
+            status: rendered
+                .status
+                .expect("a call that cannot move to the background ends"),
+        })
     }
 
     fn edition(&self) -> &'static str {
@@ -730,7 +811,7 @@ impl Tool for PowerShellTool {
         };
         format!(
             "Run a PowerShell command in the current directory, or in cwd, with {}. Write \
-                PowerShell syntax, not POSIX `sh`: use `shell` for that. stdin is empty. Returns \
+                PowerShell syntax, not POSIX `sh`{}. stdin is empty. Returns \
                 the exit code and stdout and stderr interleaved line by line{kept}. A literal \
                 `exit N` sets the exit code; a failing last statement exits 1, not the native \
                 program's code, and an earlier failure does not change it (end with `exit \
@@ -746,6 +827,11 @@ impl Tool for PowerShellTool {
                 or environment changes. Do not start programs that wait for input. Use the dedicated file \
                 tools to read, search and edit files, not `Get-Content` or `Select-String`.",
             self.edition(),
+            if self.posix_shell {
+                ": use `shell` for that"
+            } else {
+                ""
+            },
             DEFAULT_TIMEOUT.min(self.shell.max_timeout).max(1),
             QUIET_LIMIT.as_secs(),
             OUTPUT_CAP / 1024 / 1024,
@@ -820,6 +906,14 @@ pub struct ShellSettings {
     pub git_bash: Option<GitBash>,
     /// The interpreter of the `powershell` tool; with none, the tool does not exist.
     pub powershell: Option<PowerShellSettings>,
+}
+
+impl ShellSettings {
+    /// Whether the POSIX `shell` and `monitor` tools can run: always off Windows, and with Git
+    /// Bash found on it. Without one `powershell` is the only command tool.
+    pub fn posix_shell_available(&self, windows: bool) -> bool {
+        !windows || self.git_bash.is_some()
+    }
 }
 
 impl Default for ShellSettings {
@@ -996,6 +1090,7 @@ pub fn powershell_for(
         interpreter: interpreter.path.clone(),
         jobs: None,
         track: None,
+        posix_shell: settings.posix_shell_available(cfg!(windows)),
     }
 }
 
@@ -1063,6 +1158,7 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
         scope: env.scope.clone(),
         scratch: env.scratch.clone(),
     };
+    let posix_shell = env.shell.posix_shell_available(cfg!(windows));
     let mut tools = vec![
         register(GuardedTool::per_root_with_fallback(
             scope.clone(),
@@ -1070,9 +1166,11 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             guard.clone(),
             |root| ReadView {
                 read: read_for(root, &seen),
+                posix_shell,
             },
             |primary| ReadView {
                 read: read_external(primary, &seen),
+                posix_shell,
             },
         )),
         register(GuardedTool::per_root_with_fallback(
@@ -1081,9 +1179,11 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             guard.clone(),
             |root| Ls {
                 list: list_for(root),
+                posix_shell,
             },
             |primary| Ls {
                 list: list_external(primary),
+                posix_shell,
             },
         )),
         register(GuardedTool::per_root_with_fallback(
@@ -1092,9 +1192,11 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             guard.clone(),
             |root| Glob {
                 search: search_for(root),
+                posix_shell,
             },
             |primary| Glob {
                 search: search_external(primary),
+                posix_shell,
             },
         )),
         register(GuardedTool::per_root_with_fallback(
@@ -1103,9 +1205,11 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             guard.clone(),
             |root| Grep {
                 search: search_for(root),
+                posix_shell,
             },
             |primary| Grep {
                 search: search_external(primary),
+                posix_shell,
             },
         )),
         register(GuardedTool::per_root_with_write_fallback(
@@ -1137,7 +1241,9 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             |root| notebook_edit_for(root, &seen),
             |primary| notebook_edit_external(primary, &seen),
         )),
-        register(
+    ];
+    if posix_shell {
+        tools.push(register(
             GuardedTool::per_root(
                 scope.clone(),
                 risk_of(ShellTool::NAME),
@@ -1149,13 +1255,16 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
                 },
             )
             .with_pre_gate(tracking.start_in()),
-        ),
+        ));
+    }
+    tools.extend([
         register(GuardedTool::single(
             JobOutputTool {
                 jobs: env.jobs.clone(),
                 limit: OutputLimit::default(),
                 agents: env.agent_waits.clone(),
                 wake: env.wait_wake.clone(),
+                posix_shell,
             },
             risk_of(JobOutputTool::NAME),
             guard.clone(),
@@ -1165,11 +1274,14 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
                 jobs: env.jobs.clone(),
                 limit: OutputLimit::default(),
                 agents: env.agent_kills.clone(),
+                posix_shell,
             },
             risk_of(JobCancelTool::NAME),
             guard.clone(),
         )),
-        register(GuardedTool::single(
+    ]);
+    if posix_shell {
+        tools.push(register(GuardedTool::single(
             MonitorTool {
                 shell: ShellTool {
                     jobs: Some(env.jobs.clone()),
@@ -1178,16 +1290,16 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             },
             risk_of(MonitorTool::NAME),
             guard.clone(),
-        )),
-        register(GuardedTool::single(
-            Webfetch::new(env.webfetch.clone(), &env.network).map_err(|source| BuildError {
-                tool: Webfetch::NAME,
-                source,
-            })?,
-            risk_of(Webfetch::NAME),
-            guard.clone(),
-        )),
-    ];
+        )));
+    }
+    tools.push(register(GuardedTool::single(
+        Webfetch::new(env.webfetch.clone(), &env.network).map_err(|source| BuildError {
+            tool: Webfetch::NAME,
+            source,
+        })?,
+        risk_of(Webfetch::NAME),
+        guard.clone(),
+    )));
     if let Some(interpreter) = &env.shell.powershell {
         tools.push(register(
             GuardedTool::per_root(
@@ -1260,6 +1372,7 @@ mod tests {
             interpreter: PathBuf::from("pwsh.exe"),
             jobs: None,
             track: None,
+            posix_shell: true,
         };
         assert!(tool.description().contains("the lines with errors"));
         let uncut = PowerShellTool {
