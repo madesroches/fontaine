@@ -781,8 +781,8 @@ model with no listed model of its name pattern, is drawn dim under the account's
 `<id> — unavailable: <reason>`. The same filter matches it, and Up, Down and Enter skip it, so it
 can never be picked. A group keeps its heading when only its unavailable rows match the filter.
 `/guardian-model`'s overlay and the provider dialog's model picker show these rows too. Switching
-to a `claude-subscription` model whose facts are derived from a listed sibling shows a one-time
-warning in the conversation.
+to a model whose facts are derived from a listed model of the same name pattern shows a one-time
+warning in the conversation (see [model discovery](configuration.md#model-discovery)).
 
 `/guardian-model` with no argument opens the same overlay over a live listing of every account, as
 `/model` does, failures included. A pick pins the guardian and saves it as `[guardian] model`; a pick
