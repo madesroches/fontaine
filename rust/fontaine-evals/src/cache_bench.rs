@@ -13,7 +13,7 @@ use crate::baseline::{claude_version, events};
 const TIMEOUT: Duration = Duration::from_secs(300);
 const WORDS_PER_FILE: usize = 1200;
 const WORDS_PER_LINE: usize = 12;
-// Equal length keeps every fixture file the same size in bytes.
+// `write_fixture` pads each word to 6 characters so files are equal-sized; none may be longer.
 const WORDS: [&str; 32] = [
     "amber", "birch", "cedar", "delta", "ember", "fjord", "glade", "harbor", "ivory", "jewel",
     "karst", "lunar", "maple", "nectar", "ocean", "prism", "quartz", "river", "stone", "tulip",
@@ -49,13 +49,19 @@ pub fn parse_fontaine_stream(output: &str) -> Result<Stream, String> {
     for event in events(output)? {
         match event.get("type").and_then(Value::as_str) {
             Some("init") => stream.model = event["model"].as_str().map(str::to_string),
-            Some("model_call") => stream.steps.push(Step {
-                input: count(&event, "input_tokens"),
-                cache_read: count(&event, "cache_read_input_tokens"),
-                cache_creation: count(&event, "cache_creation_input_tokens"),
-                output: count(&event, "output_tokens"),
-                calls_tool: event["calls_tool"].as_bool().unwrap_or(false),
-            }),
+            Some("model_call") => {
+                let cache_read = count(&event, "cache_read_input_tokens");
+                let cache_creation = count(&event, "cache_creation_input_tokens");
+                stream.steps.push(Step {
+                    // Fontaine's input total includes the cached parts; claude's does not.
+                    input: count(&event, "input_tokens")
+                        .saturating_sub(cache_read + cache_creation),
+                    cache_read,
+                    cache_creation,
+                    output: count(&event, "output_tokens"),
+                    calls_tool: event["calls_tool"].as_bool().unwrap_or(false),
+                });
+            }
             _ => {}
         }
     }
@@ -392,11 +398,11 @@ mod tests {
     fn fontaine_steps_come_from_model_calls_in_order() {
         let out = lines(&[
             json!({"type": "init", "model": "acct/sonnet"}),
-            json!({"type": "model_call", "input_tokens": 3, "output_tokens": 5,
+            json!({"type": "model_call", "input_tokens": 25, "output_tokens": 5,
                    "cache_read_input_tokens": 7, "cache_creation_input_tokens": 11,
                    "calls_tool": true}),
             json!({"type": "tool_call"}),
-            json!({"type": "model_call", "input_tokens": 1, "output_tokens": 2,
+            json!({"type": "model_call", "input_tokens": 5, "output_tokens": 2,
                    "cache_read_input_tokens": 0, "cache_creation_input_tokens": 4,
                    "calls_tool": false}),
         ]);
@@ -406,7 +412,7 @@ mod tests {
             stream.steps,
             [
                 Step {
-                    input: 3,
+                    input: 7,
                     cache_read: 7,
                     cache_creation: 11,
                     output: 5,

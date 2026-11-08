@@ -115,10 +115,12 @@ async fn a_tool_call_round_trips_through_the_wrapped_read_tool() {
         kinds(&lines),
         [
             "init",
+            "model_call",
             "tool_call",
             "gate_decision",
             "tool_result",
             "assistant",
+            "model_call",
             "result"
         ]
     );
@@ -128,18 +130,18 @@ async fn a_tool_call_round_trips_through_the_wrapped_read_tool() {
             .unwrap()
             .contains(&json!("read"))
     );
-    assert_eq!(lines[1]["tool"], "read");
-    assert_eq!(lines[1]["tool_use_id"], "call_1");
-    assert_eq!(lines[1]["args"], json!({"path": "note.txt"}));
+    assert_eq!(lines[2]["tool"], "read");
     assert_eq!(lines[2]["tool_use_id"], "call_1");
-    assert_eq!(lines[2]["tier"], "read_only_fast_path");
-    assert_eq!(lines[2]["decision"], "allow");
+    assert_eq!(lines[2]["args"], json!({"path": "note.txt"}));
     assert_eq!(lines[3]["tool_use_id"], "call_1");
-    assert!(lines[3]["text"].as_str().unwrap().contains("ping"));
-    assert_eq!(lines[3]["success"], json!(true));
-    assert_eq!(lines[4]["text"], "The tool said ping");
-    assert_eq!(lines[5]["result"], "The tool said ping");
-    assert_eq!(lines[5]["subtype"], "success");
+    assert_eq!(lines[3]["tier"], "read_only_fast_path");
+    assert_eq!(lines[3]["decision"], "allow");
+    assert_eq!(lines[4]["tool_use_id"], "call_1");
+    assert!(lines[4]["text"].as_str().unwrap().contains("ping"));
+    assert_eq!(lines[4]["success"], json!(true));
+    assert_eq!(lines[5]["text"], "The tool said ping");
+    assert_eq!(lines[7]["result"], "The tool said ping");
+    assert_eq!(lines[7]["subtype"], "success");
 
     let requests = endpoint.requests().await;
     assert_eq!(requests.len(), 2);
@@ -175,17 +177,19 @@ async fn a_task_list_call_succeeds_is_saved_in_the_session_and_survives_a_resume
         kinds(&lines),
         [
             "init",
+            "model_call",
             "tool_call",
             "gate_decision",
             "tool_result",
             "assistant",
+            "model_call",
             "result"
         ]
     );
-    assert_eq!(lines[2]["tier"], "read_only_fast_path");
-    assert_eq!(lines[3]["success"], json!(true));
+    assert_eq!(lines[3]["tier"], "read_only_fast_path");
+    assert_eq!(lines[4]["success"], json!(true));
     assert_eq!(
-        lines[3]["text"],
+        lines[4]["text"],
         "Updated todo list: 2 items (1 pending, 1 in progress, 0 completed)"
     );
     let id = lines[0]["session_id"].as_str().unwrap().to_string();
