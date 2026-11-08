@@ -39,7 +39,7 @@ use crate::agent::apply_common;
 use crate::fork_context::{FORK_NOTE, ParentContext};
 use crate::gate::{AgentViewEvent, ChildRestrictions, SessionState, spend_of};
 use crate::ledger::Record;
-use crate::models::{ModelHandle, SharedSwitcher};
+use crate::models::{Listing, ModelHandle, ModelRef, SharedSwitcher};
 use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
 use crate::steering::{Steering, SteeringHook};
@@ -101,7 +101,7 @@ impl AgentHook for KillHook {
 #[derive(Clone)]
 pub struct MainModel {
     pub handle: ModelHandle,
-    pub listing: Vec<String>,
+    pub listing: Listing,
 }
 
 /// Delivers the notifications queued for an agent along with the next tool result it reads.
@@ -380,7 +380,7 @@ impl ChildContext {
             ModelSpec::Main => main.handle,
             ModelSpec::GuardianDefault => match switcher {
                 Some(switcher) => switcher
-                    .guardian_default(&main.handle.reference, &main.listing)
+                    .guardian_default(&main.handle.reference, &main.listing.models)
                     .await
                     .map(|handle| handle.conversation_scoped())
                     .unwrap_or(main.handle),
@@ -395,6 +395,38 @@ impl ChildContext {
             }
         };
         Ok(handle.for_agent(id))
+    }
+
+    /// Tells the user once per model that a child runs on derived facts. The main model and the
+    /// live guardian announce themselves, so a child on either stays quiet.
+    fn warn_derived(&self, model: &ModelHandle) {
+        let main = read(&self.main, "main model").handle.reference.clone();
+        warn_derived_facts(
+            model,
+            &main,
+            self.state.guardian().label(),
+            self.state.agents(),
+            &*self.approver,
+        );
+    }
+}
+
+fn warn_derived_facts(
+    model: &ModelHandle,
+    main: &ModelRef,
+    guardian_label: &str,
+    tree: &AgentTree,
+    approver: &dyn Approver,
+) {
+    let Some(notice) = &model.facts_notice else {
+        return;
+    };
+    let reference = model.reference.to_string();
+    if model.reference != *main
+        && guardian_label != reference
+        && tree.first_facts_notice(&reference)
+    {
+        approver.warn(notice);
     }
 }
 
@@ -560,6 +592,7 @@ impl CoreChildRunner {
     ) -> Result<Assembled, String> {
         let context = &self.context;
         let model = context.model_for(model_spec, id).await?;
+        context.warn_derived(&model);
         let store = context.store.clone();
         if seed_fork {
             context
@@ -960,6 +993,56 @@ mod tests {
             origin: TypeOrigin::Builtin,
             inherits_context: false,
         }
+    }
+
+    #[derive(Default)]
+    struct Recording(Mutex<Vec<String>>);
+
+    impl Approver for Recording {
+        fn approve<'a>(
+            &'a self,
+            _request: crate::permissions::ApprovalRequest,
+        ) -> futures::future::BoxFuture<'a, crate::permissions::Answer> {
+            unreachable!("nothing asks for approval")
+        }
+
+        fn warn(&self, message: &str) {
+            self.0.lock().unwrap().push(message.to_string());
+        }
+    }
+
+    fn derived(reference: &str) -> ModelHandle {
+        let mut handle = ModelHandle::new(
+            ModelRef::parse(reference).unwrap(),
+            crate::config::AccountKind::named("claude-subscription"),
+            rig_core::test_utils::MockCompletionModel::default().into(),
+        );
+        handle.facts_notice = Some(format!("{reference} is derived"));
+        handle
+    }
+
+    #[test]
+    fn a_derived_child_model_warns_once_and_main_and_guardian_stay_quiet() {
+        let tree = AgentTree::new(fontaine_agents::tree::Limits::default(), 1);
+        let approver = Recording::default();
+        let main = ModelRef::parse("claude/sonnet").unwrap();
+        let warn = |reference: &str| {
+            warn_derived_facts(&derived(reference), &main, "claude/opus", &tree, &approver);
+        };
+        warn("claude/haiku");
+        warn("claude/haiku");
+        warn("claude/fable");
+        warn("claude/sonnet");
+        warn("claude/opus");
+        let told = approver.0.lock().unwrap().clone();
+        assert_eq!(told, ["claude/haiku is derived", "claude/fable is derived"]);
+        let listed = ModelHandle::new(
+            ModelRef::parse("claude/other").unwrap(),
+            crate::config::AccountKind::named("claude-subscription"),
+            rig_core::test_utils::MockCompletionModel::default().into(),
+        );
+        warn_derived_facts(&listed, &main, "claude/opus", &tree, &approver);
+        assert_eq!(approver.0.lock().unwrap().len(), 2);
     }
 
     #[test]

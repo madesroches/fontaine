@@ -4,6 +4,7 @@ use crate::{App, Ui, UnavailableAnswer};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::config::Slot;
 use fontaine_core::effort::Effort;
+use fontaine_core::models::GuardianModel;
 use fontaine_core::permissions::UnavailableChoice;
 
 impl<R: FnMut(&mut App)> Ui<R> {
@@ -26,6 +27,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     switched.persist_error,
                     overriding_scope(&runtime.config, "model.model"),
                 );
+                if let Some(notice) = runtime.models.main.facts_notice.clone() {
+                    self.app.transcript.warning(notice, None);
+                }
             }
             Err(e) => self.app.transcript.error(format!(
                 "/model: {}",
@@ -116,6 +120,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             switched.persist_error,
                             overriding_scope(&runtime.config, "guardian.model"),
                         );
+                        let notice = match &runtime.models.guardian {
+                            Some(GuardianModel::Ready(handle)) => handle.facts_notice.clone(),
+                            _ => None,
+                        };
+                        if let Some(notice) = notice {
+                            self.app.transcript.warning(notice, None);
+                        }
                     }
                 }
             }
@@ -246,8 +257,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) {
         let choice = match answer {
             UnavailableAnswer::Retry => match runtime.retry_guardian().await {
-                Ok(true) => UnavailableChoice::Retry,
-                Ok(false) => {
+                Ok((true, notice)) => {
+                    if let Some(notice) = notice {
+                        self.app.transcript.warning(notice, None);
+                    }
+                    UnavailableChoice::Retry
+                }
+                Ok((false, _)) => {
                     self.app
                         .transcript
                         .error("the guardian model is still unavailable");
@@ -268,6 +284,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         switched.persist_error,
                         overriding_scope(&runtime.config, "guardian.model"),
                     );
+                    if let Some(notice) = switched.facts_notice {
+                        self.app.transcript.warning(notice, None);
+                    }
                     UnavailableChoice::Retry
                 }
                 Ok(None) => {

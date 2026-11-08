@@ -684,6 +684,10 @@ fn announce(runtime: &AgentRuntime) {
         runtime.start_mode(),
         PermissionMode::Auto | PermissionMode::Afk | PermissionMode::Plan
     ) {
+        // The guardian is never consulted here, so only the main model's facts matter.
+        if let Some(notice) = &runtime.models.main.facts_notice {
+            eprintln!("fontaine: {notice}");
+        }
         return;
     }
     for notice in runtime.notices() {

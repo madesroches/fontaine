@@ -252,7 +252,9 @@ A `claude-subscription` account is always listed, even with a `models` list, bec
 facts come from the CLI's own answer: the list only narrows what the CLI offers. The listing
 checks the CLI, so a missing or outdated CLI, a login that is not a Max or Ultra subscription and a
 conflicting environment variable are run failures (exit code 1) with a corrective message, and a
-model the CLI marks as drawing from paid usage credits is a configuration error (exit code 2). Every
+model the CLI marks as drawing from paid usage credits is a configuration error (exit code 2). A
+model this build of Fontaine does not list gets facts derived from a listed model of the same family
+(see [Claude subscription](claude-subscription.md)); one with no listed family is refused. Every
 listing is bounded in time, including the one at startup.
 
 The model of `[guardian] model` is checked the same way when its account has a `models` list, or
@@ -273,7 +275,10 @@ marking the main model, the guardian model and the benchmark-validated guardian 
 the way the `/model` picker does: an account with a `models` list costs no call, the others are
 asked once with a 10 second limit, and an account that fails keeps its entry with the error.
 `--format=json` prints the same report as JSON (`{"accounts": [{"account", "kind", "models":
-[{"id", "roles", "validated_guardian"}]}]}`, or `{"account", "kind", "error"}` for a failed one).
+[{"id", "roles", "validated_guardian"}]}]}`, or `{"account", "kind", "error"}` for a failed one; an
+account with refused rows adds `"unavailable": [{"id", "reason"}]`).
+A row an account lists but refuses, such as a `claude-subscription` model with no listed family,
+is printed under that account's models as `<id> (unavailable: <reason>)`.
 `fontaine --model <account>/<model> models` marks that model as the main one. The exit code is 2
 for an unknown account or when no account is configured, and 1 when every requested account
 failed to list. The agent can read the same report through the `models` tool (see
@@ -354,8 +359,8 @@ daemon not to cut it, so the guardian denies the call with the daemon's message 
 available context size ... try increasing it") and the main agent shows that error. Raise
 `context_tokens` to fit the prompt. For a model in rig's catalog, compaction uses this window, starting
 when the conversation fills three quarters of a window under about 57k tokens; a
-model the catalog does not list never compacts by threshold, so a long session ends with that
-error at the window.
+model the catalog does not list (a derived `claude-subscription` model counts as listed) never
+compacts by threshold, so a long session ends with that error at the window.
 
 OpenRouter, with prompt caching (an `openai-compatible` account pointed at OpenRouter
 still works, but sends no cache markers):
@@ -533,7 +538,7 @@ max_results = 8
 | Key | Meaning | Default |
 |---|---|---|
 | `model` | The session model as `<account>/<model>`. `--model` overrides it. There is no default model: a run with neither is a configuration error (exit code 2) that names both. | unset |
-| `effort` | The main agent's reasoning effort: `off`, `low`, `medium`, `high` or `max`. `--effort` overrides it and `/effort` changes it for a session. Fontaine passes it through rig's portable setting, which maps it onto the provider's own parameter. Unset sends no reasoning parameter, so the model thinks at its own default. A level the model or its endpoint cannot take (a non-reasoning model, a level the catalog does not list for it, or a generic `openai-compatible` gateway, which has no known mapping) is left out of the request with a one-time warning, and the run goes on. Subagents use it too, unless their type sets its own. The guardian is not affected: it always runs with thinking off. Not settable from the shared project file. | unset |
+| `effort` | The main agent's reasoning effort: `off`, `low`, `medium`, `high` or `max`. `--effort` overrides it and `/effort` changes it for a session. Fontaine passes it through rig's portable setting, which maps it onto the provider's own parameter. The levels a model takes come from rig's catalog; a derived `claude-subscription` model's come from the flags the Claude CLI reports for it. Unset sends no reasoning parameter, so the model thinks at its own default. A level the model or its endpoint cannot take (a non-reasoning model, a level the catalog does not list for it, or a generic `openai-compatible` gateway, which has no known mapping) is left out of the request with a one-time warning, and the run goes on. Subagents use it too, unless their type sets its own. The guardian is not affected: it always runs with thinking off. Not settable from the shared project file. | unset |
 
 ### `[guardian]`
 
@@ -906,7 +911,8 @@ mode = "inherit"
 
 Unset, compaction runs when the model's window less the reserve is passed, and only for a model
 whose window the catalog knows. Set, it also runs for a catalog-listed model whose window is not
-known. A model the catalog does not list (a gateway or local alias) is never compacted
+known. A model the catalog does not list (a gateway or local alias; a derived
+`claude-subscription` model counts as listed) is never compacted
 automatically, with or without the setting; `/compact` cannot summarize with it either. A small
 value also shrinks what a compaction keeps: the newest messages it leaves as they are and the
 summary it asks for are each capped at a quarter of the value, so the conversation ends under it.

@@ -67,8 +67,15 @@ Before the models are listed and before every model request Fontaine:
 
 No response is requested until every check has passed, so a refused request still runs no turn.
 
-A model whose canonical id this build of Fontaine has no model facts for (output limit, features)
-is refused rather than guessed at.
+A model whose canonical id this build of Fontaine lists with an output limit uses those facts. One
+it does not list, such as a point release newer than the build, gets facts derived from the newest
+listed model of the same family (`claude-haiku-9-9` from the latest listed `claude-haiku-*`), with
+the effort levels, adaptive-thinking and thinking-off flags the CLI itself reports for the row laid
+over them, and no price. Fontaine warns once whenever such a model is resolved, naming the model it
+took the facts from, and compaction and `/context` treat it as listed. Update Fontaine for its
+exact facts. A model with no listed family, or one the CLI marks as drawing from paid usage
+credits, is still refused; `/model`, `/guardian-model` and `fontaine models` show it as
+unavailable with the reason instead of hiding it.
 
 Every CLI process is started with an empty environment rebuilt from the program, identity and temp
 paths, locale, the profile directory, proxy and TLS settings and privacy opt-outs. No other

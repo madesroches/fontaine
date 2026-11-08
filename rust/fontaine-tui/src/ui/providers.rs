@@ -152,6 +152,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
             ),
             None => {}
         }
+        // A guardian that is the main model was announced with it.
+        let guardian_is_main =
+            runtime.state.guardian().label() == runtime.models.main.reference.to_string();
+        if let Some(notice) = effect.guardian_notice.filter(|_| !guardian_is_main) {
+            self.app.transcript.warning(notice, None);
+        }
         text
     }
 

@@ -520,6 +520,7 @@ mod row_tests {
             id: id.to_string(),
             canonical: canonical.to_string(),
             credits,
+            capabilities: Default::default(),
         }
     }
 

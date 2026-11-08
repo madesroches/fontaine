@@ -21,6 +21,7 @@ use super::transport::{next, rejected};
 use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error};
 use crate::models::SharedEnv;
 use crate::owner_only;
+use crate::providers::derived_facts::Capabilities;
 use crate::providers::warn::Warn;
 use fontaine_tools::lock::lock_recovering;
 use fontaine_tools::procgroup;
@@ -229,6 +230,8 @@ pub struct ModelRow {
     pub canonical: String,
     /// Whether the row says the model draws from paid usage credits.
     pub credits: bool,
+    /// What the row says about the model's reasoning controls.
+    pub capabilities: Capabilities,
 }
 
 /// The directory, inside Fontaine's data directory, every CLI process runs in.
@@ -717,9 +720,30 @@ pub fn model_rows(response: &Value) -> Result<Vec<ModelRow>, ClaudeError> {
             id: id.to_string(),
             canonical: canonical.to_string(),
             credits,
+            capabilities: capabilities(model),
         });
     }
     Ok(rows)
+}
+
+/// The capability flags of one row; a field of the wrong type reads as absent, because the flags
+/// are only an overlay on a listed sibling's facts.
+fn capabilities(model: &Value) -> Capabilities {
+    Capabilities {
+        effort_levels: model
+            .get("supportedEffortLevels")
+            .and_then(Value::as_array)
+            .map(|levels| {
+                levels
+                    .iter()
+                    .filter_map(|level| level.as_str().map(str::to_string))
+                    .collect()
+            }),
+        adaptive_thinking: model
+            .get("supportsAdaptiveThinking")
+            .and_then(Value::as_bool),
+        thinking_off: model.get("supportsThinkingOff").and_then(Value::as_bool),
+    }
 }
 
 /// The model's settings, prompt and tool manifest, written inside the scratch directory.
@@ -1231,6 +1255,28 @@ mod tests {
         let credits: Vec<bool> = rows.iter().map(|r| r.credits).collect();
         assert_eq!(credits, [false, false, true, true]);
         assert_eq!(rows[3].canonical, "odd");
+    }
+
+    #[test]
+    fn capability_flags_are_read_and_wrong_types_read_as_absent() {
+        let rows = model_rows(&json!({"models": [
+            {"value": "a", "supportedEffortLevels": ["low", 3, "max"],
+             "supportsAdaptiveThinking": true, "supportsThinkingOff": false},
+            {"value": "b"},
+            {"value": "c", "supportedEffortLevels": "high",
+             "supportsAdaptiveThinking": "yes", "supportsThinkingOff": 1},
+        ]}))
+        .unwrap();
+        assert_eq!(
+            rows[0].capabilities,
+            Capabilities {
+                effort_levels: Some(vec!["low".into(), "max".into()]),
+                adaptive_thinking: Some(true),
+                thinking_off: Some(false),
+            }
+        );
+        assert_eq!(rows[1].capabilities, Capabilities::default());
+        assert_eq!(rows[2].capabilities, Capabilities::default());
     }
 
     #[test]

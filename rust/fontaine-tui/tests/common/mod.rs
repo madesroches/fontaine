@@ -372,7 +372,7 @@ impl World {
             data_dir: self.data.clone(),
             models: resolved.unwrap_or(Models {
                 main: model,
-                main_listing: Vec::new(),
+                main_listing: fontaine_core::models::Listing::default(),
                 guardian,
                 guardian_choice: if self.guardian_on_main {
                     GuardianChoice::MainFallback

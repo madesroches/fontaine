@@ -47,7 +47,7 @@ fn build(w: &World, mode: PermissionMode, kind: &str, turns: Vec<Vec<MockStreamE
     );
     let models = Models {
         main: handle.clone(),
-        main_listing: Vec::new(),
+        main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),
         guardian_choice: GuardianChoice::MainFallback,
         notices: Vec::new(),
