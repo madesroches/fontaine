@@ -17,7 +17,7 @@ wiring.
   lines) plus a test (`tests/mcp_registration.rs`), test helpers (`tests/common/{mod,server}.rs`)
   and an example binary (`examples/mcp_double.rs`, a stdio MCP server that the test runs from
   `target/<profile>/examples/`).
-- Its only Fontaine dependency is `fontaine-tools` (`error_chain`, `guarded`, `lock`, `risk`,
+- Its only Fontaine dependency is `fontaine-tools` (`child_env`, `error_chain`, `guarded`, `lock`, `risk`,
   `tls`). Its only consumer is `fontaine-core`:
   - `fontaine-core/src/agent.rs:14`: `use fontaine_mcp::Connected;`
   - `fontaine-core/src/agent/mcp.rs:11`: `use fontaine_mcp::{ServerSpec, Transport, connect as connect_server};`
@@ -99,7 +99,7 @@ MCP code still cannot name a `fontaine-core` item, because the `fontaine-tools` 
    `fontaine-core/src/permissions.rs`, `fontaine-core/tests/choke_point.rs` and
    `fontaine/examples/repo_mcp_server.rs`.
 6. Remove `fontaine-mcp` from `fontaine-core/Cargo.toml` and from `[workspace.dependencies]` in
-   `rust/Cargo.toml`, delete the now-empty `rust/fontaine-mcp/` directory, and let Cargo
+   `rust/Cargo.toml`, `git rm rust/fontaine-mcp/Cargo.toml` and remove the then-empty `rust/fontaine-mcp/` directory, and let Cargo
    refresh `Cargo.lock`.
 7. Update the docs and the plan (see Documentation).
 8. Run the core CI steps from `rust/`: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
@@ -138,7 +138,7 @@ MCP code still cannot name a `fontaine-core` item, because the `fontaine-tools` 
   `### MCP` in `## Decisions`: fold `fontaine-mcp` into `fontaine-tools` (8 → 7 crates); the
   full merge into `fontaine-core` proposed in #485 was declined to keep the compiler-enforced
   tools/agents boundary.
-- `CHANGELOG.md`: a `### Changed` entry under `## [Unreleased]`: #485, `fontaine-mcp` folded into
+- `CHANGELOG.md`: a `### Changed` entry under `## [Unreleased]`, in a new `#### Core` section between `#### Build and release` and `#### Providers`: #485, `fontaine-mcp` folded into
   `fontaine-tools` as the `mcp` module (8 → 7 crates).
 - `AGENTS.md`: drop `fontaine-mcp` from the crate list under Project layout.
 - `docs/mcp.md` names no crate, so it is unchanged.
