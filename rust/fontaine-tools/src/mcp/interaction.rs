@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
-use fontaine_tools::lock::{read, write};
+use crate::lock::{read, write};
 use rmcp::RoleClient;
 use rmcp::model::{ServerJsonRpcMessage, ServerResult, Tool};
 use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};

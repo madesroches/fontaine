@@ -4,17 +4,17 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 
-use fontaine_tools::error_chain::chain;
-use fontaine_tools::guarded::Guard;
-use fontaine_tools::tls::{LoadedNetwork, build_client};
+use crate::error_chain::chain;
+use crate::guarded::Guard;
+use crate::tls::{LoadedNetwork, build_client};
 use rig_core::tool::ManagedToolSink;
 use rig_rmcp::{McpClientHandler, McpConnection};
 use rmcp::model::{ClientCapabilities, ClientConfig, Implementation};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 
-use crate::interaction::{InteractionTap, Marked};
-use crate::register::GuardedSink;
+use super::interaction::{InteractionTap, Marked};
+use super::register::GuardedSink;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -216,9 +216,7 @@ where
                 .current_dir(cwd)
                 .env_clear()
                 .kill_on_drop(true);
-            process.envs(fontaine_tools::child_env::server_env(
-                env, env_vars, set_env,
-            ));
+            process.envs(crate::child_env::server_env(env, env_vars, set_env));
             let (transport, stderr) = TokioChildProcess::builder(process)
                 .stderr(Stdio::piped())
                 .spawn()

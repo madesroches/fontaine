@@ -1,16 +1,16 @@
 //! MCP servers register wrapped and `Arbitrary`, whatever they declare, and keep doing so when
 //! their tool list changes.
 
-mod common;
+mod mcp_common;
 
 use std::time::Duration;
 
-use common::server::{
+use fontaine_tools::mcp::{ServerSpec, Transport, connect, connect_transport};
+use fontaine_tools::risk::RiskClass;
+use mcp_common::server::{
     Double, echo_tool, grant_access_tool, lookup_tool, marked, unmarked_grant_access_tool,
 };
-use common::{Gate, call, guard, names, tool_server};
-use fontaine_mcp::{ServerSpec, Transport, connect, connect_transport};
-use fontaine_tools::risk::RiskClass;
+use mcp_common::{Gate, call, guard, names, tool_server};
 use rmcp::ServiceExt;
 use serde_json::json;
 
@@ -21,7 +21,7 @@ async fn serve(
     gate: std::sync::Arc<Gate>,
     handle: rig_agent::tool::server::ToolServerHandle,
 ) -> (
-    fontaine_mcp::McpConnectionHandle,
+    fontaine_tools::mcp::McpConnectionHandle,
     tokio::task::JoinHandle<()>,
 ) {
     let (c2s, sfc) = tokio::io::duplex(8192);

@@ -899,7 +899,7 @@ impl PermissionPipeline {
                 call.requires_user_interaction.then(|| {
                     (
                         Tier::AskRule,
-                        fontaine_mcp::REQUIRES_USER_INTERACTION.to_string(),
+                        fontaine_tools::mcp::REQUIRES_USER_INTERACTION.to_string(),
                         "the MCP server requires a person's approval for every call of this tool"
                             .to_string(),
                     )

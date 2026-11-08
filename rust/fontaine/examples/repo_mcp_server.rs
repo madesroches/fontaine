@@ -1,7 +1,7 @@
 //! A stdio MCP server for tests: `echo`, `lookup` (which declares itself read-only) and `env` (reports a
 //! variable of its own environment).
 
-#[path = "../../fontaine-mcp/tests/common/server.rs"]
+#[path = "../../fontaine-tools/tests/mcp_common/server.rs"]
 mod server;
 
 use rmcp::ServiceExt;

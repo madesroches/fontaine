@@ -18,7 +18,9 @@ lsp-types.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 rig-core.workspace = true
+rig-rmcp.workspace = true
 rig-tools.workspace = true
+rmcp.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -39,3 +41,7 @@ tracing-subscriber.workspace = true
 rcgen.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
+rig-agent = { workspace = true, features = ["test-utils"] }
+rmcp = { workspace = true, features = ["server", "transport-io"] }
+rig-core = { workspace = true, features = ["test-utils"] }
+tokio = { workspace = true, features = ["test-util"] }

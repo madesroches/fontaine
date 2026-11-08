@@ -15,7 +15,6 @@ chrono.workspace = true
 crossterm.workspace = true
 fontaine-agents.workspace = true
 fontaine-guardian = { workspace = true, features = ["composition"] }
-fontaine-mcp.workspace = true
 fontaine-tools.workspace = true
 futures.workspace = true
 http.workspace = true

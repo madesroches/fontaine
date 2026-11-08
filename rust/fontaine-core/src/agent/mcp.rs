@@ -8,10 +8,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use fontaine_mcp::{ServerSpec, Transport, connect as connect_server};
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::guarded::Guard;
+use fontaine_tools::mcp::{ServerSpec, Transport, connect as connect_server};
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::tls::LoadedNetwork;
 use futures::future::BoxFuture;

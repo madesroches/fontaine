@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::interaction::Marked;
-use fontaine_tools::guarded::{Guard, guard_callback};
-use fontaine_tools::risk::RiskClass;
+use super::interaction::Marked;
+use crate::guarded::{Guard, guard_callback};
+use crate::risk::RiskClass;
 use rig_core::message::ToolName;
 use rig_core::serve::adapters::ToolCallback;
 use rig_core::tool::{DynamicTool, ManagedToolSink, ManagedToolToken, ToolContext};

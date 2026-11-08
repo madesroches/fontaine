@@ -79,6 +79,10 @@ All notable changes are recorded here. The format follows
 - CI builds the rustdoc for the workspace, and for the `pg2` feature on Linux, with warnings
   denied, so a broken doc link fails the build (#197).
 
+#### Core
+
+- `fontaine-mcp` is folded into `fontaine-tools` as the `mcp` module (8 → 7 crates) (#485).
+
 #### Providers
 
 - `claude-subscription` reads replayed history from the prompt cache and starts each request about

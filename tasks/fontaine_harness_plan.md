@@ -222,15 +222,14 @@ fontaine/
 │   │                           #   `prompts/system_prompt.md`
 │   ├── fontaine-tools/         # risk metadata registry + GuardedTool wrapper around
 │   │                           #   rig-core Tool (calls the `ToolGate` trait it defines); rig-tools built-ins re-exposed with risk
-│   │                           #   classes; workspace-scope validation over `rig_tools::fs::place`; confined rig tool config
+│   │                           #   classes; workspace-scope validation over `rig_tools::fs::place`; confined rig tool config;
+│   │                           #   MCP servers (`mcp`): rig-rmcp wiring, tools registered as `RiskClass::Arbitrary`
 │   ├── fontaine-guardian/      # the guardian agent: verdict protocol (rig extractor),
 │   │                           #   prompt builder, rules config, caching, fail-closed logic, result scanner;
 │   │                           #   `prompts/` (guardian, minimal, scanner) + `data/guardian_models.toml`
 │   ├── fontaine-agents/        # parallel subagent orchestration on rig-agent: spawn/list/
 │   │                           #   interrupt, per-type tool registries, budgets (v1); defines the
 │   │                           #   `ChildRunner` trait (implemented by core)
-│   ├── fontaine-mcp/           # rig-rmcp wiring: MCP servers from config, tools registered
-│   │                           #   as RiskClass::Arbitrary, annotations → guardian hints
 │   ├── fontaine-tui/           # ratatui app: chat, approval prompts, denial/retry UI, modes
 │   └── fontaine-evals/         # eval runner (bin + lib crate, same split): scores guardian verdicts against the dataset
 ├── evals/                      # golden dataset (`evals/dataset/*.jsonl`) + README; runner is rust/fontaine-evals
@@ -247,8 +246,7 @@ Crate dependency graph (arrows point at dependencies; no cycles):
 fontaine (bin+lib)       ─▶ fontaine-core, fontaine-tui
 fontaine-evals (bin+lib) ─▶ fontaine-core, fontaine-guardian, fontaine-tools
 fontaine-tui          ─▶ fontaine-core
-fontaine-core         ─▶ fontaine-tools, fontaine-guardian, fontaine-mcp, fontaine-agents
-fontaine-mcp          ─▶ fontaine-tools
+fontaine-core         ─▶ fontaine-tools, fontaine-guardian, fontaine-agents
 fontaine-agents       ─▶ fontaine-tools
 fontaine-guardian     ─▶ (no Fontaine crates)
 fontaine-tools        ─▶ (no Fontaine crates — never fontaine-core)
@@ -750,6 +748,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 
 - 2026-10-22: Deviation — a stdio MCP server gets a scrubbed environment (a base set plus the variables in `env_vars`) and its stderr goes to the debug file; reason: provider keys and telemetry credentials must not reach a third-party process (Phase 5).
 - 2026-10-25: Deviation — an MCP server's `requiresUserInteraction` marker stays in force for the life of the connection once any `tools/list` response carried it (Claude Code follows the latest listing); overlapping refreshes and late responses could otherwise let a stale page loosen it. It only ever asks more.
+- 2026-11-08: Fold `fontaine-mcp` into `fontaine-tools` as the `mcp` module (8 → 7 crates); the full merge into `fontaine-core` proposed in #485 was declined to keep the compiler-enforced tools/agents boundary.
 
 ### Observability
 
