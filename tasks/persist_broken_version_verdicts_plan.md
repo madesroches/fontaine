@@ -41,7 +41,14 @@ struct Verdicts { path: PathBuf, broken: Mutex<BTreeSet<(u32,u32,u32)>> }
   the template or its placement logic bumps it. A bump needs no migration step: `load` keeps only
   entries whose `template` equals the current revision, and every write rewrites the file from the
   kept set, so stale entries are cleared the next time a verdict is recorded.
-- `Verdicts::load(path, warn)` runs in `Cli::new` and reads with `file_lock::read_shared`. It parses each entry's `"cli"` as a dotted u32 triple and skips entries that do not parse. A missing file is an empty set. An unreadable or
+- `Verdicts::shared(path, warn) -> Arc<Verdicts>` is the only constructor `Cli::new` uses: a process-wide
+  registry (`Mutex<HashMap<PathBuf, Arc<Verdicts>>>`) keyed by verdicts file path returns the one
+  store for that path, calling `load` on first use. `ClaudeSubscription::connect` builds one `Cli` per
+  account connection over the same data dir, so every `Cli` there shares one in-memory set, as the
+  old process-wide static did: a mark through one account is seen by the others' `layout`, with no
+  second rewrite, double mark or double warning. The registry lock only guards map access and
+  panics on poison (`fontaine_tools::lock::lock`).
+- `Verdicts::load(path, warn)` runs on a path's first `shared` call and reads with `file_lock::read_shared`. It parses each entry's `"cli"` as a dotted u32 triple and skips entries that do not parse. A missing file is an empty set. An unreadable or
   unparseable file is an empty set plus one `Warn` (a verdict the user would care about losing); the
   next `mark` overwrites it.
 - `mark(version) -> bool` inserts in memory (true only on first insertion), then persists: take
@@ -63,7 +70,7 @@ absent from the set.
 
 1. `context.rs`: add `TEMPLATE_REVISION`, the `Verdicts` type (load/contains/mark, JSON via
    `serde_json`), remove `BROKEN`/`mark_broken`; thread `&Verdicts` through `layout`/`finished`.
-2. `cli.rs`: construct `Verdicts` in `Cli::new` from `data_dir` and `warn`; `Cli` holds an
+2. `cli.rs`: get the store in `Cli::new` via `Verdicts::shared` from `data_dir` and `warn`; `Cli` holds an
    `Arc<Verdicts>` and `verdicts()` returns `&Arc<Verdicts>` (step 3 clones it into `Running`).
 3. `transport.rs`: `layout` takes `self.cli.verdicts()` in `prepare`; add an `Arc<Verdicts>` field to
    `Running`, set where it is built (`self.cli.verdicts().clone()`), and `finished` takes the store
@@ -85,9 +92,12 @@ absent from the set.
 
 ## Trade-offs
 
-- Store owned by `Cli` rather than a process static keyed by path: the static would leak state
-  between tests and between accounts' data dirs; ownership by `Cli` gives each test an isolated
-  temp dir.
+- Process-wide registry keyed by file path, rather than a store per `Cli` or a single static set: a
+  per-`Cli` store would let each account connection (same data dir) re-pay the rewrite and re-warn;
+  a single static would leak state between data dirs. Keyed by path, state is shared exactly where
+  the file is shared, and tests using distinct temp dirs stay isolated. The registry only grows by
+  one entry per data dir. Re-reading the file on each `contains` was rejected as more I/O on the
+  hot path for the same effect.
 - Re-read-and-merge under a lock instead of last-writer-wins: two concurrent Fontaine processes
   each discovering a different broken version would otherwise drop one verdict.
 - Template revision constant instead of hashing `REMINDER_TEMPLATE`: a hash would also invalidate on
@@ -114,7 +124,13 @@ All unit tests, against a temp data dir (no live CLI):
 - A missing file loads empty with no warning; a corrupt file loads empty with one warning and is
   repaired by the next `mark`.
 - A persist failure (data dir path is a file) still marks in memory and emits one warning.
+- `Verdicts::shared` on the same path returns the same `Arc` (a mark through one is seen by the
+  other, `mark` true once); a different temp dir returns an independent store.
 - Existing layout and mark-once tests, ported.
+
+## Decisions
+
+- AFK: share one `Arc<Verdicts>` per verdicts-file path through a process-wide registry (not per-`Cli` stores, not re-read-on-`contains`), because `connect` builds several `Cli`s over one data dir and the old static covered them all.
 
 ## Open Questions
 
