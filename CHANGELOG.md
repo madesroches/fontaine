@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `claude-subscription` accounts offer the provider's native web search, as `anthropic` accounts
+  do, under the same `[websearch] native` and permission conditions. The Claude CLI adapter
+  accepts that one server tool (request entry, call, result and replayed history); every other
+  hosted tool stays refused, and the startup warning about missing web search no longer shows for
+  these accounts (#522).
 - `fontaine update` replaces the installed binary with the newest build on the channel it was
   installed from (read from the install receipt), reports the result and exits. It verifies the
   archive's minisign signature against the channel's compiled-in key and its signed channel, file

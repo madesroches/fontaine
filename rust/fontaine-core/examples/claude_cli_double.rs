@@ -213,6 +213,7 @@ impl Double {
                     body.get("tools")?
                         .as_array()?
                         .iter()
+                        .filter(|t| t.get("type").is_none_or(|kind| kind == "custom"))
                         .filter_map(|t| t.get("name")?.as_str().map(str::to_string))
                         .collect(),
                 )

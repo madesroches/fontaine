@@ -192,7 +192,7 @@ fn what_cannot_be_replayed_without_loss_is_refused() {
     );
     assert!(
         refused(request(json!({"tools": [
-            {"type": "web_search_20250305", "name": "web_search"}
+            {"type": "code_execution_20250522", "name": "code_execution"}
         ]})))
         .contains("hosted tool")
     );
@@ -209,7 +209,9 @@ fn what_cannot_be_replayed_without_loss_is_refused() {
     assert!(
         refused(request(json!({"messages": [
             {"role": "user", "content": "a"},
-            {"role": "assistant", "content": [{"type": "web_search_tool_result"}]},
+            {"role": "assistant", "content": [
+                {"type": "server_tool_use", "id": "srvtoolu_1", "name": "code_execution", "input": {}}
+            ]},
             {"role": "user", "content": "b"},
         ]})))
         .contains("without loss")
@@ -251,10 +253,15 @@ fn session_ids_are_stable_and_separate_callers() {
 }
 
 fn reader(tools: &[&str]) -> Reader {
+    reader_offering(tools, false)
+}
+
+fn reader_offering(tools: &[&str], web_search: bool) -> Reader {
     let mut reader = Reader::new(
         Expect {
             models: vec!["claude-sonnet-5-5".into(), "sonnet".into()],
             aliases: Aliases::new(tools.iter().copied()),
+            web_search,
         },
         None,
     );
@@ -758,6 +765,7 @@ fn history_acknowledgments_are_zero_turn_results() {
         Expect {
             models: vec!["claude-sonnet-5-5".into()],
             aliases: Aliases::default(),
+            web_search: false,
         },
         None,
     );
@@ -775,6 +783,7 @@ fn history_acknowledgments_are_zero_turn_results() {
         Expect {
             models: vec!["claude-sonnet-5-5".into()],
             aliases: Aliases::default(),
+            web_search: false,
         },
         None,
     );
@@ -1004,6 +1013,7 @@ fn thinking_estimates_are_accepted_in_a_response_only() {
         Expect {
             models: vec!["claude-sonnet-5-5".into()],
             aliases: Aliases::default(),
+            web_search: false,
         },
         None,
     );
@@ -1074,6 +1084,7 @@ fn a_rate_limit_frame_is_recorded_and_still_nothing() {
         Expect {
             models: vec!["claude-sonnet-5-5".into()],
             aliases: Aliases::default(),
+            web_search: false,
         },
         Some(usage.clone()),
     );
@@ -1214,4 +1225,279 @@ fn a_max_tokens_stop_after_a_closed_tool_block_forwards_the_partial_call() {
         feed(&mut r, stream(json!({"type": "message_stop"}))),
         Ok(Event::Cut)
     ));
+}
+
+// ---- provider web search ----------------------------------------------------------------------
+
+fn search_entry() -> Value {
+    json!({"type": "web_search_20250305", "name": "web_search"})
+}
+
+fn extra_body(t: &Translated) -> Value {
+    serde_json::from_str(
+        t.settings["env"]["CLAUDE_CODE_EXTRA_BODY"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn the_search_entry_rides_the_extra_body_unaliased_after_the_custom_tools() {
+    let t = translated(request(
+        json!({"tools": [tool("read_file"), search_entry()]}),
+    ));
+    assert!(t.web_search);
+    let tools = extra_body(&t)["tools"].clone();
+    assert_eq!(tools.as_array().unwrap().len(), 2);
+    assert_eq!(tools[0]["name"], "mcp__fontaine__read_file");
+    assert_eq!(tools[1], search_entry());
+    assert_eq!(t.manifest.len(), 1);
+    assert_eq!(t.manifest[0]["name"], "read_file");
+    assert!(t.aliases.full("web_search").is_none());
+
+    let alone = translated(request(json!({"tools": [search_entry()]})));
+    assert!(alone.web_search);
+    assert_eq!(extra_body(&alone)["tools"], json!([search_entry()]));
+    assert!(alone.manifest.is_empty());
+
+    assert!(!translated(request(json!({"tools": [tool("read_file")]}))).web_search);
+}
+
+#[test]
+fn only_the_exact_search_entry_once_is_accepted() {
+    for entry in [
+        json!({"type": "web_search_20250305", "name": "search"}),
+        json!({"type": "web_search_20260209", "name": "web_search"}),
+        json!({"type": "code_execution_20250522", "name": "code_execution"}),
+    ] {
+        assert!(
+            refused(request(json!({"tools": [entry]}))).contains("hosted tool"),
+            "{entry}"
+        );
+    }
+    assert!(
+        refused(request(json!({"tools": [search_entry(), search_entry()]})))
+            .contains("defined twice")
+    );
+    assert!(
+        refused(request(json!({
+            "tools": [search_entry()],
+            "tool_choice": {"type": "tool", "name": "web_search"},
+        })))
+        .contains("does not define")
+    );
+}
+
+fn search_history() -> Value {
+    json!([
+        {"type": "thinking", "thinking": "plan", "signature": "sig"},
+        {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search",
+         "input": {"query": "rust 2024 edition"}},
+        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01", "content": [
+            {"type": "web_search_result", "url": "https://example.com/a", "title": "A",
+             "encrypted_content": "EqgfCioIAxgC", "page_age": null}
+        ]},
+        {"type": "text", "text": "It shipped.", "citations": [
+            {"type": "web_search_result_location", "url": "https://example.com/a",
+             "title": "A", "cited_text": "shipped", "encrypted_index": "Eo8BCioIAxgC"}
+        ]},
+    ])
+}
+
+#[test]
+fn a_replayed_search_is_passed_through_unchanged() {
+    let mut blocks = search_history();
+    blocks[1]["cache_control"] = json!({"type": "ephemeral"});
+    let t = translated(request(json!({"messages": [
+        {"role": "user", "content": "search"},
+        {"role": "assistant", "content": blocks},
+        {"role": "user", "content": "thanks"},
+    ]})));
+    assert!(!t.web_search, "history alone does not offer search");
+    assert_eq!(t.frames[1].value["message"]["content"], search_history());
+}
+
+#[test]
+fn a_replayed_server_call_to_another_tool_is_refused() {
+    let error = refused(request(json!({"messages": [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": [
+            {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_fetch", "input": {}}
+        ]},
+        {"role": "user", "content": "b"},
+    ]})));
+    assert!(error.contains("without loss"), "{error}");
+}
+
+fn block_start(index: u64, block: Value) -> Value {
+    stream(json!({"type": "content_block_start", "index": index, "content_block": block}))
+}
+
+fn delta(index: u64, delta: Value) -> Value {
+    stream(json!({"type": "content_block_delta", "index": index, "delta": delta}))
+}
+
+fn search_call(index: u64, id: &str, name: &str) -> Value {
+    block_start(
+        index,
+        json!({"type": "server_tool_use", "id": id, "name": name, "input": {}}),
+    )
+}
+
+fn search_result(index: u64, id: &str) -> Value {
+    block_start(
+        index,
+        json!({"type": "web_search_tool_result", "tool_use_id": id, "content": [
+            {"type": "web_search_result", "url": "https://example.com/a", "title": "A",
+             "encrypted_content": "EqgfCioIAxgC", "page_age": null}
+        ]}),
+    )
+}
+
+fn searching() -> Reader {
+    let mut r = reader_offering(&["read_file"], true);
+    feed(&mut r, init()).unwrap();
+    feed(&mut r, message_start()).unwrap();
+    r
+}
+
+#[test]
+fn a_search_inside_one_response_is_forwarded_in_order() {
+    let mut r = searching();
+    let lines = [
+        search_call(0, "srvtoolu_01", "web_search"),
+        delta(
+            0,
+            json!({"type": "input_json_delta", "partial_json": "{\"query\": \"rust\"}"}),
+        ),
+        stream(json!({"type": "content_block_stop", "index": 0})),
+        search_result(1, "srvtoolu_01"),
+        stream(json!({"type": "content_block_stop", "index": 1})),
+        block_start(2, json!({"type": "thinking", "thinking": ""})),
+        delta(2, json!({"type": "thinking_delta", "thinking": "ok"})),
+        delta(2, json!({"type": "signature_delta", "signature": "sig"})),
+        stream(json!({"type": "content_block_stop", "index": 2})),
+        block_start(3, json!({"type": "text", "text": "", "citations": []})),
+        delta(3, json!({"type": "text_delta", "text": "It shipped."})),
+        delta(
+            3,
+            json!({"type": "citations_delta", "citation": {
+                "type": "web_search_result_location", "url": "https://example.com/a",
+                "title": "A", "cited_text": "shipped", "encrypted_index": "Eo8B"}}),
+        ),
+        stream(json!({"type": "content_block_stop", "index": 3})),
+    ];
+    for line in lines {
+        let sent = line.to_string();
+        let Ok(Event::Frame(frame)) = feed(&mut r, line) else {
+            panic!("a frame for {sent}");
+        };
+        let forwarded: Value = serde_json::from_str(&frame.as_str()).unwrap();
+        let original: Value = serde_json::from_str(&sent).unwrap();
+        assert_eq!(forwarded, original["event"]);
+    }
+    assert!(is_nothing(feed(&mut r, terminal("end_turn"))));
+    feed(&mut r, stream(json!({"type": "message_stop"}))).unwrap();
+    assert!(matches!(
+        feed(&mut r, result("success")),
+        Ok(Event::Complete)
+    ));
+}
+
+#[test]
+fn a_second_result_for_one_server_call_is_refused() {
+    let mut r = searching();
+    feed(&mut r, search_call(0, "srvtoolu_01", "web_search")).unwrap();
+    stop_block(&mut r, 0);
+    feed(&mut r, search_result(1, "srvtoolu_01")).unwrap();
+    stop_block(&mut r, 1);
+    assert!(failure(feed(&mut r, search_result(2, "srvtoolu_01"))).contains(HOSTED));
+}
+
+#[test]
+fn a_paused_search_turn_completes_like_an_end_turn() {
+    let mut r = searching();
+    feed(&mut r, search_call(0, "srvtoolu_01", "web_search")).unwrap();
+    stop_block(&mut r, 0);
+    feed(&mut r, terminal("pause_turn")).unwrap();
+    feed(&mut r, stream(json!({"type": "message_stop"}))).unwrap();
+    assert!(matches!(
+        feed(&mut r, result("success")),
+        Ok(Event::Complete)
+    ));
+}
+
+#[test]
+fn a_second_response_after_a_pause_is_output_after_the_end() {
+    let mut r = searching();
+    feed(&mut r, search_call(0, "srvtoolu_01", "web_search")).unwrap();
+    stop_block(&mut r, 0);
+    feed(&mut r, terminal("pause_turn")).unwrap();
+    assert!(failure(feed(&mut r, message_start())).contains("after the response ended"));
+}
+
+const HOSTED: &str = "native tool or hosted content";
+
+#[test]
+fn search_blocks_the_request_did_not_offer_are_refused() {
+    let mut r = started(&["read_file"]);
+    assert!(failure(feed(&mut r, search_call(0, "srvtoolu_01", "web_search"))).contains(HOSTED));
+}
+
+#[test]
+fn a_server_call_under_another_name_is_refused() {
+    let mut r = searching();
+    assert!(failure(feed(&mut r, search_call(0, "srvtoolu_01", "web_fetch"))).contains(HOSTED));
+    let mut r = searching();
+    assert!(
+        failure(feed(
+            &mut r,
+            search_call(0, "srvtoolu_01", "mcp__fontaine__read_file")
+        ))
+        .contains(HOSTED)
+    );
+}
+
+#[test]
+fn a_reused_call_id_is_refused_across_both_kinds() {
+    let mut r = searching();
+    feed(&mut r, search_call(0, "srvtoolu_01", "web_search")).unwrap();
+    stop_block(&mut r, 0);
+    assert!(failure(feed(&mut r, search_call(1, "srvtoolu_01", "web_search"))).contains("reused"));
+
+    let mut r = searching();
+    tool_start(&mut r, 0, "shared", "mcp__fontaine__read_file").unwrap();
+    stop_block(&mut r, 0);
+    assert!(failure(feed(&mut r, search_call(1, "shared", "web_search"))).contains("reused"));
+
+    let mut r = searching();
+    feed(&mut r, search_call(0, "shared", "web_search")).unwrap();
+    stop_block(&mut r, 0);
+    assert!(
+        failure(tool_start(&mut r, 1, "shared", "mcp__fontaine__read_file")).contains("reused")
+    );
+
+    let mut r = searching();
+    assert!(failure(feed(&mut r, search_call(0, "", "web_search"))).contains("no id"));
+}
+
+#[test]
+fn a_search_result_needs_a_call_of_the_same_response() {
+    let mut r = searching();
+    assert!(failure(feed(&mut r, search_result(0, "srvtoolu_ghost"))).contains(HOSTED));
+}
+
+#[test]
+fn a_denial_or_echo_naming_a_server_call_is_refused() {
+    let mut r = searching();
+    feed(&mut r, search_call(0, "srvtoolu_01", "web_search")).unwrap();
+    assert!(feed(&mut r, denied("srvtoolu_01", "web_search")).is_err());
+
+    let mut r = searching();
+    feed(&mut r, search_call(0, "srvtoolu_01", "web_search")).unwrap();
+    stop_block(&mut r, 0);
+    feed(&mut r, terminal("tool_use")).unwrap();
+    feed(&mut r, stream(json!({"type": "message_stop"}))).unwrap();
+    assert!(feed(&mut r, echo(&["srvtoolu_01"])).is_err());
 }

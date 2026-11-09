@@ -438,8 +438,9 @@ own: allow it with a `monitor(...)` rule or leave it to the guardian.
 
 Search reaches the model in one of two ways, in this order:
 
-1. **The provider's own search**, when the account supports it. The first release has it for
-   `anthropic` accounts on the Anthropic API (`api.anthropic.com`, the default). The search runs
+1. **The provider's own search**, when the account supports it. It is available for
+   `anthropic` accounts on the Anthropic API (`api.anthropic.com`, the default) and for
+   [`claude-subscription`](claude-subscription.md#web-search) accounts. The search runs
    inside the model's response, and the model cites what it found. Other hosts of the kind (a
    gateway, Databricks) are unverified, so they use it only with `[websearch] native = "on"`, and
    `native = "off"` never uses it. It is offered only while no `deny` or `ask` rule covers
@@ -448,9 +449,11 @@ Search reaches the model in one of two ways, in this order:
    provider runs; in `manual`, `acceptEdits` and `dontAsk` it also needs an `allow` rule for
    `websearch`, since a call there would otherwise ask or be denied. Switching modes or adding a
    rule takes effect on the next turn. If the endpoint rejects the request because of the search
-   tool, the failure message says to set `native = "off"`; nothing retries without it.
-2. **The `websearch` tool**, which every other account kind uses, and so does an `anthropic`
-   account when the provider's search is not offered. It searches through `[websearch] backend`;
+   tool, the failure message on an `anthropic` account says to set `native = "off"`; nothing
+   retries without it. On a `claude-subscription` account a rejection is reported as a plain
+   Claude CLI error, for which `native = "off"` is also the remedy.
+2. **The `websearch` tool**, which every other account kind uses, and so does an `anthropic` or
+   `claude-subscription` account when the provider's search is not offered. It searches through `[websearch] backend`;
    with none set, it searches through a SearXNG container that Fontaine starts itself (see
    [Default search](#default-search)). `backend = "off"` removes the tool.
 

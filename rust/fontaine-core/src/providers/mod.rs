@@ -36,6 +36,15 @@ pub mod openrouter;
 pub mod token_source;
 pub mod warn;
 
+pub(crate) const WEB_SEARCH_TYPE: &str = "web_search_20250305";
+pub(crate) const WEB_SEARCH_NAME: &str = "web_search";
+
+/// The Anthropic server-side search entry, shared by every kind that sends it so the request
+/// and the Claude CLI adapter's acceptance cannot drift apart.
+pub(crate) fn anthropic_web_search() -> serde_json::Value {
+    serde_json::json!({"type": WEB_SEARCH_TYPE, "name": WEB_SEARCH_NAME})
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CredentialPolicy {
     /// The account is unusable without one.

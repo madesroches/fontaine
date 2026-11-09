@@ -1628,3 +1628,116 @@ async fn the_external_check_reports_the_login_instruction() {
     assert!(summary.contains("3 model"), "{summary}");
     assert!(accounts::external_log_out_summary("claude").contains("claude auth logout"));
 }
+
+fn search_events(extra: Vec<Value>) -> Vec<Value> {
+    let stream =
+        |event: Value| json!({"type": "stream_event", "parent_tool_use_id": null, "event": event});
+    let mut events = vec![
+        json!({"type": "system", "subtype": "init", "model": "claude-sonnet-5-5", "tools": [],
+               "mcp_servers": [{"name": "fontaine", "status": "connected"}], "plugins": [], "skills": []}),
+        stream(
+            json!({"type": "message_start", "message": {"model": "claude-sonnet-5-5",
+                      "usage": {"input_tokens": 9, "output_tokens": 1}}}),
+        ),
+        stream(
+            json!({"type": "content_block_start", "index": 0, "content_block":
+                      {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {}}}),
+        ),
+        stream(json!({"type": "content_block_delta", "index": 0, "delta":
+                      {"type": "input_json_delta", "partial_json": "{\"query\": \"rust edition\"}"}})),
+        stream(json!({"type": "content_block_stop", "index": 0})),
+        stream(
+            json!({"type": "content_block_start", "index": 1, "content_block":
+                      {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01", "content": [
+                       {"type": "web_search_result", "url": "https://example.com/a", "title": "A",
+                        "encrypted_content": "EqgfCioIAxgC", "page_age": null}]}}),
+        ),
+        stream(json!({"type": "content_block_stop", "index": 1})),
+        stream(
+            json!({"type": "content_block_start", "index": 2, "content_block":
+                      {"type": "text", "text": "", "citations": []}}),
+        ),
+        stream(json!({"type": "content_block_delta", "index": 2, "delta":
+                      {"type": "text_delta", "text": "It shipped."}})),
+        stream(json!({"type": "content_block_delta", "index": 2, "delta":
+                      {"type": "citations_delta", "citation": {
+                       "type": "web_search_result_location", "url": "https://example.com/a",
+                       "title": "A", "cited_text": "shipped", "encrypted_index": "Eo8B"}}})),
+        stream(json!({"type": "content_block_stop", "index": 2})),
+    ];
+    events.extend(extra);
+    events.extend([
+        stream(
+            json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"},
+                      "usage": {"output_tokens": 12}}),
+        ),
+        stream(json!({"type": "message_stop"})),
+        json!({"type": "result", "subtype": "success", "is_error": false, "num_turns": 1,
+               "result": "", "usage": {"input_tokens": 9, "output_tokens": 12}}),
+    ]);
+    events
+}
+
+#[tokio::test]
+async fn the_search_entry_reaches_the_cli_and_a_search_response_decodes() {
+    let claude = Claude::new();
+    claude.scenario(json!({"responses": [{"events": search_events(Vec::new())}]}));
+    let handle = main_handle(&claude).await;
+    let entry = json!({"type": "web_search_20250305", "name": "web_search"});
+    let response = handle
+        .completion
+        .call(
+            CompletionRequest::new("what shipped?")
+                .max_tokens(64)
+                .tools([read_tool()])
+                .additional_params(json!({"tools": [entry.clone()]})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.text(), "It shipped.");
+    let content: Vec<_> = response.choice.iter().collect();
+    let [
+        AssistantContent::Opaque(call),
+        AssistantContent::Opaque(result),
+        AssistantContent::Text(text),
+    ] = content.as_slice()
+    else {
+        panic!("a server call, its result and the text: {content:?}");
+    };
+    assert_eq!(call.kind(), Some("server_tool_use"));
+    assert_eq!(call.item["id"], "srvtoolu_01");
+    assert_eq!(result.kind(), Some("web_search_tool_result"));
+    assert_eq!(
+        result.item["content"][0]["encrypted_content"],
+        "EqgfCioIAxgC"
+    );
+    let [citation] = text.citations() else {
+        panic!("one citation: {:?}", text.citations());
+    };
+    assert_eq!(citation.sources[0].cited_text.as_deref(), Some("shipped"));
+
+    let run = &claude.model_runs()[0];
+    let settings: Value = serde_json::from_str(run["settings"].as_str().unwrap()).unwrap();
+    let extra: Value =
+        serde_json::from_str(settings["env"]["CLAUDE_CODE_EXTRA_BODY"].as_str().unwrap()).unwrap();
+    assert_eq!(extra["tools"][0]["name"], "mcp__fontaine__read_file");
+    assert_eq!(extra["tools"][1], entry);
+    let manifest: Value = serde_json::from_str(run["tools"].as_str().unwrap()).unwrap();
+    assert_eq!(manifest.as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_search_the_request_did_not_offer_is_refused() {
+    let claude = Claude::new();
+    claude.scenario(json!({"responses": [{"events": search_events(Vec::new())}]}));
+    let handle = main_handle(&claude).await;
+    let error = handle
+        .completion
+        .call(CompletionRequest::new("go").max_tokens(64))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("native tool or hosted content"),
+        "{error}"
+    );
+}
