@@ -30,9 +30,7 @@ convention) and make `fontaine update` find the binary under the layout the new 
 ## Design
 
 1. **dist config.** Add `install-path = "~/.fontaine/bin"` to `[workspace.metadata.dist]`, with a
-   one-line comment on why it is not `$CARGO_HOME`. A directory of our own is chosen over
-   `~/.local/bin` because it is not shared with other tools, is trivial to remove, and works the
-   same on Windows.
+   one-line comment on why it is not `$CARGO_HOME`.
 2. **Receipt parsing honors the layout.** `parse()` reads `install_layout`:
    `"flat"` → `<install_prefix>/<file>`; anything else, or absent (cargo-home and hierarchical
    receipts written by installs made before this change) → `<install_prefix>/bin/<file>`.
@@ -55,7 +53,9 @@ convention) and make `fontaine update` find the binary under the layout the new 
 1. `rust/Cargo.toml`: add `install-path`.
 2. Regenerate or hand-check the installers: run `dist plan` and `dist build --artifacts=global`
    (or `dist generate`) if available and inspect the produced `fontaine-installer.sh`/`.ps1` and the
-   receipt template for the recorded `install_prefix`/`install_layout`. Adjust step 3 if dist
+   receipt template for the recorded `install_prefix`/`install_layout`, and the shell setup and
+   `Path` edits dist writes for a custom path (env scripts, rc lines, fish `conf.d`, Windows `Path`
+   entry, `FONTAINE_NO_MODIFY_PATH`). Adjust step 3 if dist
    records something other than `flat` for a plain directory path. Confirm `release.yml` needs no
    change (it is allow-dirty and hand-adapted) and that `dev-installer.sh`/`windows-installer.sh`
    still apply cleanly to the new installer text.
@@ -63,7 +63,7 @@ convention) and make `fontaine update` find the binary under the layout the new 
 4. Update receipt unit tests and `update_cmd.rs` fixtures; add tests listed below.
 5. Docs: `README.md`, `docs/installing.md` (install, overwrite and uninstall sections, both
    platforms; the uninstall `Path` text becomes "remove `~/.fontaine/bin` from your `Path`" with
-   no rustup caveat), and `CHANGELOG.md` entry noting the default location change and the
+   no rustup caveat; rewrite its "writes" and "uninstall" lists from the step 2 output), and `CHANGELOG.md` entry noting the default location change and the
    migration step.
 
 ## Files to Modify
@@ -73,16 +73,12 @@ convention) and make `fontaine update` find the binary under the layout the new 
 - `README.md`, `docs/installing.md`, `CHANGELOG.md`
 - `.github/scripts/*installer*.sh` only if the dist output requires it
 
-## Trade-offs
-
-- `~/.local/bin` (uv, Claude Code) is more likely already on `Path`, but it is shared, and
-  uninstalling means deleting one file rather than a directory; `~/.fontaine/bin` is ours.
-- Migrating old installs automatically (moving the binary, rewriting the receipt) would touch files
-  the installer does not own; documenting the one-time cleanup is cheaper and safe.
-
 ## Decisions
 
-- 2026-11-08: `install-path = "~/.fontaine/bin"`, chosen over `~/.local/bin` (see Trade-offs).
+- 2026-11-08: `install-path = "~/.fontaine/bin"`, chosen over `~/.local/bin` because it is not
+  shared with other tools, is trivial to remove, and is the same on Windows.
+- 2026-11-08: No automatic migration of old installs; documenting the one-time cleanup is safer than
+  touching files the installer does not own.
 
 ## Documentation
 
@@ -97,8 +93,8 @@ Unit tests in `receipt.rs`:
   `<prefix>/bin/<file>` (pins the regression for installs made before this change);
 - `.exe` suffix is not doubled under either layout.
 
-`update_cmd.rs`: the end-to-end update runs against a flat tree and still against a legacy `bin/`
-tree.
+`update_cmd.rs`: the end-to-end update runs against a flat tree only; the legacy `bin/` case is
+covered by the receipt unit tests.
 
 ## Manual Verification
 
