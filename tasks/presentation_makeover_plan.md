@@ -24,7 +24,8 @@ settings and post-release outreach; this branch prepares them but does not chang
   the hand-written landing page that lists every page with a description. There is no site
   tooling. `tasks/design/documentation.md` says "no site tooling ships in v1" and defines the
   README as "pitch, install, quickstart, mode table, auto-mode explainer".
-- About 35 links in `docs/` leave the tree (`../evals/README.md`, `../evals/scorecards/*.json`,
+- 30 links in `docs/` leave the tree (`evals.md` 20, `verifying-releases.md` 5, `index.md` 4,
+  `architecture.md` 1: `../evals/README.md`, `../evals/scorecards/*.json`,
   `../rust/fontaine/keys/*.pub`, `../research/*.md`, `../SECURITY.md`, `../CONTRIBUTING.md`,
   `../CHANGELOG.md`). They work on GitHub but would break on a site that serves only `docs/`.
 - Release archives ship the README (`rust/fontaine/Cargo.toml:16`,
@@ -33,7 +34,7 @@ settings and post-release outreach; this branch prepares them but does not chang
 - CI: `.github/workflows/ci.yml` (Rust matrix), `dev.yml` (dev channel, gated by the repository
   variable `FONTAINE_DEV_CHANNEL == 'enabled'` so `main` stays green before the environment
   exists), `release.yml`. Helper scripts live in `.github/scripts/`. Actions are referenced by
-  major tag (`actions/checkout@v4`), and tools are installed exact-pinned through
+  major tag (`ci.yml` uses `actions/checkout@v4`; `dev.yml` and `release.yml` use `@v6`), and tools are installed exact-pinned through
   `taiki-e/install-action@v2`.
 - Repo: description "rust cli harness", no topics, no homepage, Pages and Discussions off.
 
@@ -84,8 +85,9 @@ absolute site URL.
 Every fact removed from the README must already be in its target page. The research for this plan
 confirmed that each installer caveat is in `docs/installing.md`, the Ollama `context_tokens`
 default is in `docs/configuration.md`, and the mode table (with `afk`) is in
-`docs/permissions.md#modes`. "Build from source" moves to `CONTRIBUTING.md`, which already has
-the commands; it gains one sentence about `rust/rust-toolchain.toml` and `rustup`. The step that
+`docs/permissions.md#modes`. "Build from source" moves to `CONTRIBUTING.md`, which has the test
+commands but not `cargo build` or `cargo run -p fontaine`; it gains those commands and one
+sentence about `rust/rust-toolchain.toml` and `rustup`. The step that
 deletes README text re-checks each removed sentence against its target page.
 
 ### Docs site (mdBook on GitHub Pages)
@@ -102,8 +104,9 @@ docs/                          (the book root and source: src = ".")
 ```
 
 - **Tool**: mdBook `0.5.4` (released 2026-07-06), installed through
-  `taiki-e/install-action@v2` with `tool: mdbook@0.5.4,lychee@<exact>`. The implementer pins the
-  newest lychee release that is at least two weeks old and that the action supports.
+  `taiki-e/install-action@v2` with `tool: mdbook@0.5.4,lychee@0.24.2`. lychee has no
+  install-action manifest, so it installs through the action's cargo-binstall fallback (do not set
+  `fallback: none`).
 - **`docs/book.toml`**:
   - `[book] title = "Fontaine"`, `src = "."`, with a description used as the meta description.
   - `[output.html]`: `site-url = "/fontaine/"`,
@@ -120,7 +123,10 @@ docs/                          (the book root and source: src = ".")
 - **Out-of-tree links**: rewrite every `](../...)` link in `docs/` to an absolute
   `https://github.com/madesroches/fontaine/blob/main/...` URL (`tree/main/...` for directories).
   Rewriting the source keeps the build free of link-rewriting magic and the links work in both
-  places. `docs-site.sh` fails if any `](../` link remains.
+  places. `docs-site.sh` fails if any `](../` link remains. `docs.rs` `every_relative_link_resolves`
+  skips `://` targets and lychee runs offline, so the test is extended to map
+  `https://github.com/madesroches/fontaine/(blob|tree)/main/<path>` targets to a repo path that
+  must exist (a file for `blob`, a directory for `tree`).
 - **`.github/scripts/docs-site.sh <out-dir>`** (bash, `set -euo pipefail`, Linux CI only):
   1. Coverage check: every `docs/*.md` other than `SUMMARY.md` appears in `SUMMARY.md`, every
      SUMMARY page except `index.md` is linked from `index.md`, and no `](../` link appears in
@@ -131,7 +137,8 @@ docs/                          (the book root and source: src = ".")
   4. Write `<out-dir>/llms.txt` following the llmstxt.org format: `# Fontaine`, a blockquote
      summary, then a `## Docs` list of `[Title](https://madesroches.github.io/fontaine/<page>.md)`,
      in SUMMARY order, with titles read from SUMMARY. Write `<out-dir>/llms-full.txt` as the
-     SUMMARY-ordered concatenation of the raw pages.
+     SUMMARY-ordered concatenation of the raw pages. Then fail if any listed `<page>.md` is missing
+     from `<out-dir>` or if the entry count differs from SUMMARY's page count.
 
   The site base URL is one variable at the top of the script, used in no other place.
 - **`.github/workflows/docs.yml`**:
@@ -141,11 +148,11 @@ docs/                          (the book root and source: src = ".")
   - Job `build` (ubuntu-latest): checkout, install mdbook and lychee, run `docs-site.sh _site`,
     run `lychee --offline --include-fragments --no-progress '_site/**/*.html'` to check internal
     links and anchors (offline, so CI never depends on external hosts), then upload with
-    `actions/upload-pages-artifact@v3` (path `_site`).
+    `actions/upload-pages-artifact@v5` (path `_site`). Checkout is `actions/checkout@v6`.
   - Job `deploy`: `needs: build`, runs only on a push to `main` and only when
     `vars.FONTAINE_DOCS_SITE == 'enabled'` (the same pattern as `dev.yml`, so `main` stays green
     until Pages is switched on). It uses `environment: github-pages`,
-    `permissions: pages: write, id-token: write`, `actions/deploy-pages@v4`, and
+    `permissions: pages: write, id-token: write`, `actions/deploy-pages@v5`, and
     `concurrency: { group: pages, cancel-in-progress: false }`.
 - **Site URL**: `https://madesroches.github.io/fontaine/`.
 
@@ -171,15 +178,27 @@ after 0.1.0.
 2. **Book config**: add `docs/book.toml` and `docs/SUMMARY.md`.
 3. **Build script**: add `.github/scripts/docs-site.sh`. Run it locally (install mdBook 0.5.4 with
    `cargo install mdbook --version 0.5.4 --locked`, or the release binary) and fix anything the
-   build or lychee reports (broken anchors, pages missing from SUMMARY).
+   build or lychee reports (broken anchors, pages missing from SUMMARY). Add `/_site/` and
+   `/docs/book/` to `.gitignore` (`mdbook serve docs` and `docs-site.sh _site` write there).
+   Extend `every_relative_link_resolves` in `rust/fontaine-core/tests/docs.rs` so
+   `https://github.com/madesroches/fontaine/(blob|tree)/main/<path>` targets map to a repo path
+   that must exist (file for `blob`, directory for `tree`).
 4. **Workflow**: add `.github/workflows/docs.yml`.
-5. **README**: rewrite `README.md` to the outline above. Move the toolchain sentence into
+5. **README**: rewrite `README.md` to the outline above. Move the toolchain sentence and the
+   `cargo build`, `cargo run -p fontaine` and `cargo run -p fontaine -- -p "..."` commands into
    `CONTRIBUTING.md` "Build and test", and add a short "Docs" paragraph there: preview with
    `mdbook serve docs`, check with `.github/scripts/docs-site.sh <dir>`.
 6. **Design and plan records**:
    - `tasks/design/documentation.md`: replace "no site tooling ships in v1" with the mdBook/Pages
      site and `llms.txt`, and replace the README contents line with the new outline (pitch with
-     auto and AFK mode, install, quickstart with the installed binary, why-list, links).
+     auto and AFK mode, install, quickstart with the installed binary, why-list, links). Also
+     reword lines 62–63 (the README install section) to "the two one-line installers; archives and
+     `cargo install --git` are in `docs/installing.md`", and the quickstart clause at lines 12–13
+     ("an Ollama agent model plus an Ollama guardian") to "an Ollama agent model run with the
+     installed binary, no cloud key". Record the two new authoring rules (links leaving `docs/`
+     are absolute GitHub URLs; every page is listed in both `SUMMARY.md` and `index.md`) there,
+     qualifying "relative cross-links" at line 8, in the `AGENTS.md` Project-layout `docs/`
+     bullet, and in the `CONTRIBUTING.md` "Docs" paragraph.
    - `tasks/fontaine_harness_plan.md`: add the `docs.yml` workflow and `docs-site.sh` to the
      workspace-layout paragraph (around lines 203–206), and add two dated lines at the end of the
      `### Project` Decisions subsection (see Decisions).
@@ -195,10 +214,13 @@ after 0.1.0.
 - `CONTRIBUTING.md`
 - `AGENTS.md`
 - `docs/book.toml` (new), `docs/SUMMARY.md` (new)
-- `docs/*.md`: out-of-tree links only (`architecture.md`, `evals.md`, `guardian.md`,
-  `verifying-releases.md`, `index.md` and any others the grep finds)
+- `docs/*.md`: out-of-tree links only (`evals.md`, `verifying-releases.md`, `index.md`,
+  `architecture.md`)
 - `.github/scripts/docs-site.sh` (new)
 - `.github/workflows/docs.yml` (new)
+- `.gitignore`
+- `rust/fontaine-core/tests/docs.rs`
+- `CHANGELOG.md`
 - `tasks/design/documentation.md`
 - `tasks/fontaine_harness_plan.md`
 
@@ -237,11 +259,17 @@ after 0.1.0.
 
 This change is itself documentation. It touches `README.md`, `CONTRIBUTING.md` and `AGENTS.md`,
 adds `docs/book.toml` and `docs/SUMMARY.md`, rewrites links in `docs/*.md`, and updates
-`tasks/design/documentation.md`. `CHANGELOG.md` gains an Unreleased entry when the PR is opened.
+`tasks/design/documentation.md`. `CHANGELOG.md` gains an Unreleased entry under `### Added` → `#### Build and release` (end of
+that section) when the PR is opened.
 
 ## Testing Strategy
 
-No Rust code changes. The checks are:
+The only Rust change is the extension to the `docs.rs` link test. The checks are:
+
+- `rust/fontaine-core/tests/docs.rs` `every_relative_link_resolves` checks the rewritten
+  `https://github.com/madesroches/fontaine/(blob|tree)/main/...` links against the repo tree;
+  lychee covers only site-internal links and anchors. The test's `checked_files()` already
+  includes `README.md`, so the README's relative links are checked in CI.
 
 - `docs-site.sh` runs on every PR that touches `docs/`. It fails on a page missing from
   SUMMARY.md or index.md, a dangling SUMMARY entry (`create-missing = false`), or a remaining
@@ -258,6 +286,6 @@ No Rust code changes. The checks are:
    `http://localhost:8000/`, and check that the landing page, sidebar order, search (try "AFK"),
    the `afk.html` anchors and the schema JSON link work. Rendering and navigation feel are not
    machine-checkable.
-2. Open `/tmp/site/llms.txt` and check that every page is listed with a working `.md` URL.
+2. Open `/tmp/site/llms.txt` and look at the format.
 3. View the rewritten `README.md` rendered on the PR branch on GitHub and check that the badges
-   render and the relative links resolve.
+   render.
