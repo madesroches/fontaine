@@ -104,6 +104,45 @@ fast-typing user's message is committed that way once the screen is full.
     degenerate margin, SGR 8 spaces) is the candidate to bisect on Windows. No defect in the
     bytes themselves justified a change, so none was made. Bisecting steps remain for a run on
     Windows Terminal / conhost (see `tasks/design/testing.md`, `live_area user`).
+- 2026-11-09 first fix attempt, reverted: `Anchored::scroll_region_up` turned the one-row region's
+  `CSI 1;1 r` + `CSI n S` (whole-screen SU) into cursor-to-bottom + n line feeds, on the theory
+  that SU does not feed scrollback in ConPTY. The `live_area user` example passed on Windows, but
+  `cargo run -p fontaine` was just as broken (an installed `~/.cargo/bin/fontaine.exe` from before
+  the change is not the cause: the user ran `cargo run`).
+- 2026-11-09 ConPTY harness (a real ConPTY, no Windows Terminal window): pywinpty runs the binary
+  at 60x12, a mock OpenAI-compatible SSE endpoint answers, and `pyte` rebuilds scrollback from the
+  bytes ConPTY emits (the stream Windows Terminal receives). Config comes from
+  `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR`. Eight messages are typed into the real app.
+  - `live_area user` (fixed build): every `question N` once, in order.
+  - Real app, original code: every `question N` once, but the assistant answer rows never reach
+    scrollback (only the screen).
+  - Real app, line-feed attempt: worse. Each question three times, and `Working…` and prompt-box
+    rows leak into history, because a full-screen line feed also scrolls the live area up.
+    Hence the revert. ConPTY re-renders the stream itself (cursor to row 2, a run of line feeds,
+    then a full repaint), so source-level reasoning about it is unreliable; bisect by running.
+  - The emulation is a proxy: it shows answers missing where the user reports user messages
+    missing, so the harness may still differ from Windows Terminal's own scrollback.
+  - Bisect in progress, behind a temporary `FONTAINE_BISECT` switch in `draw_frame`
+    (`off`: skip the one-row path, `nohide`: plain-space blanks, `cap2`/`cap3`: viewport capped at
+    height-2/-3 so the region is valid). Not part of the product; remove before the fix lands.
+    Results (8 questions, 16 answer rows wanted, scrollback rebuilt from the ConPTY stream):
+
+    | Variant | `question N` rows (once each wanted) | answer rows |
+    |---|---|---|
+    | base | 1 each | 2 |
+    | `off` | 1 each | 9 |
+    | `nohide` | 2 each (duplicated) | 9 |
+    | `cap2` | 0 (all lost) | 2 |
+    | `cap3` | 0 (all lost) | 3 |
+
+    - A valid region (`cap2`/`cap3`) loses every user message: SU inside a valid DECSTBM region
+      does not reach ConPTY's scrollback. This reproduces the reported symptom and agrees with the
+      SU theory for the region case.
+    - The one-row path keeps the user messages but drops most answer rows; `nohide` duplicates the
+      user rows, so the concealed blanks do keep the rows from being drawn twice.
+    - No variant restores everything. Open: why answers, committed through the same
+      `insert_before`, fare worse than user messages in the one-row path (answers are committed
+      when the live area overflows, user rows when retired; compare the frames).
 
 ## Documentation
 `tasks/design/testing.md` gains a Windows repro section; no `docs/` page describes this behavior.
