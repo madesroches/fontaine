@@ -3,7 +3,6 @@
 
 use fontaine_agents::budget::Spend;
 use fontaine_tools::error_chain::chain;
-use fontaine_tools::error_chain::chain as chain_text;
 use fontaine_tools::gate::ROOT_AGENT;
 use rig_memory::load_async;
 
@@ -133,7 +132,7 @@ impl AgentRuntime {
                     };
                     self.approver().warn(&format!(
                         "compaction: {verb} {reference}: {}",
-                        chain_text(&why)
+                        fontaine_tools::error_chain::chain(&why)
                     ));
                     CompactResult::Failed {
                         usage: None,

@@ -193,7 +193,7 @@ impl AgentRuntime {
             Ok(ModelSpec::Named(name)) => {
                 if reaches_main(&self.config.roles, &name) {
                     return Ok(Some(format!(
-                        "`{name}` reaches `main`, so saving it as `[model] model` would make the roles loop; edit your settings to change it for later sessions"
+                        "`{name}` reaches `main`, so saving it as `[model] model` would make the roles loop; edit the `{name}` role under `[models.roles]` to change it for later sessions"
                     )));
                 }
             }
@@ -488,6 +488,7 @@ impl AgentRuntime {
     /// the guardian's composition uses it.
     pub fn removable(&self, name: &str) -> Result<(), AccountsError> {
         crate::accounts::check_defined_only_in_user_file(&self.config, name)?;
+        crate::accounts::check_roles_survive(&self.config, name)?;
         let on = |reference: &str| ModelRef::parse(reference).is_some_and(|r| r.account == name);
         if self.models.main.reference.account == name {
             return Err(AccountsError::InUse {

@@ -284,9 +284,9 @@ impl ModelChain {
 
     /// Runs `call` on the active entry's handle and, on an error `falls_through` accepts, on the
     /// others in `fall_through_order(start)`. `resolve` builds a handle for an entry; `fallback`
-    /// says it is not the entry the chain started on, where `Ok(None)` skips it. A start entry
-    /// that fails to resolve returns its error at once; a later one is skipped, and the last
-    /// error is returned if nothing served. With `settle`
+    /// says it is not the entry the chain started on. An inner `Err` skips the entry, start
+    /// included, and the last error is returned if nothing served. An outer `Err` on the start
+    /// entry returns at once; on a later one it skips the entry like an inner one. With `settle`
     /// the serving entry becomes the chain's active one.
     pub async fn run_through<H, T, E, Rf, R, Cf, C>(
         &self,
@@ -297,7 +297,7 @@ impl ModelChain {
     ) -> Result<Through<T>, E>
     where
         R: FnMut(usize, bool) -> Rf,
-        Rf: Future<Output = Result<Option<H>, E>>,
+        Rf: Future<Output = Result<Result<H, E>, E>>,
         C: FnMut(H) -> Cf,
         Cf: Future<Output = Result<T, E>>,
     {
@@ -307,8 +307,11 @@ impl ModelChain {
         let mut last: Option<E> = None;
         for index in order {
             let handle = match resolve(index, index != start).await {
-                Ok(Some(handle)) => handle,
-                Ok(None) => continue,
+                Ok(Ok(handle)) => handle,
+                Ok(Err(skipped)) => {
+                    last = Some(skipped);
+                    continue;
+                }
                 Err(e) if index == start => return Err(e),
                 Err(e) => {
                     last = Some(e);
@@ -617,7 +620,7 @@ mod tests {
         let served = chain
             .run_through(
                 true,
-                |index, _| async move { Ok::<_, String>(Some(index)) },
+                |index, _| async move { Ok::<_, String>(Ok(index)) },
                 |index| {
                     called.push(index);
                     async move {
@@ -644,7 +647,7 @@ mod tests {
         let error = chain
             .run_through(
                 true,
-                |index, _| async move { Ok::<_, String>(Some(index)) },
+                |index, _| async move { Ok::<_, String>(Ok(index)) },
                 |_| {
                     calls += 1;
                     async { Err::<(), _>("bad request".to_string()) }
@@ -667,15 +670,15 @@ mod tests {
                 |index, fallback| async move {
                     match index {
                         1 => Err("no credential".to_string()),
-                        2 if fallback => Ok(None),
-                        _ => Ok(Some(index)),
+                        2 if fallback => Ok(Err("unpriced".to_string())),
+                        _ => Ok(Ok(index)),
                     }
                 },
                 |_| async { Err::<(), _>("quota".to_string()) },
                 |e: &String| e == "quota",
             )
             .await;
-        assert_eq!(result.unwrap_err(), "no credential");
+        assert_eq!(result.unwrap_err(), "unpriced");
         assert_eq!(chain.active(), 0);
     }
 }

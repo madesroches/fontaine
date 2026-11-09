@@ -993,8 +993,8 @@ impl Switcher {
     /// Runs a one-shot job on `chain`: `call` on the active entry's handle and, on an error
     /// `falls_through` accepts, on the entries in `fall_through_order(start)`. A start entry that
     /// does not resolve returns its failure at once; a later one is skipped (`unresolved` turns
-    /// the failure into the job's error, which is returned if nothing serves). With `explicit_cap` an entry other than the first that has no known price is
-    /// skipped. With `settle` the entry that served becomes the chain's active one.
+    /// the failure into the job's error, which is returned if nothing serves). With `explicit_cap` an
+    /// entry that has no known price, the first included, is skipped. With `settle` the entry that served becomes the chain's active one.
     pub async fn run_through<T, E, C, Cf>(
         &self,
         chain: &ModelChain,
@@ -1012,11 +1012,14 @@ impl Switcher {
         chain
             .run_through(
                 settle,
-                |index, fallback| async move {
+                |index, _| async move {
                     let reference = &chain.entries[index];
                     match self.main(&reference.to_string()).await {
-                        Ok((handle, _)) if fallback && explicit_cap && !handle.priced() => Ok(None),
-                        Ok((handle, _)) => Ok(Some(handle)),
+                        Ok((handle, _)) if explicit_cap && !handle.priced() => Ok(Err(unresolved(
+                            reference,
+                            config_error("it has no known price under --max-budget-usd"),
+                        ))),
+                        Ok((handle, _)) => Ok(Ok(handle)),
                         Err(e) => Err(unresolved(reference, e)),
                     }
                 },

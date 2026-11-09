@@ -13,6 +13,7 @@ use crate::effort::Effort;
 use crate::permission_rules::{RuleError, RuleSource, SourcedRule, parse_rule, validate_mcp_name};
 use crate::providers::{self, Provider};
 use crate::trust::{self, LocalClassification, ProjectDemotion};
+use fontaine_agents::registry::ModelSpec;
 use fontaine_tools::names::{is_builtin, is_mcp};
 use fontaine_tools::tls::{LoadedNetwork, NetworkError, NetworkSettings};
 
@@ -3300,7 +3301,17 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
     check_network(&config)?;
     check_scanner(&config.guardian, &user_path)?;
     check_composition(&mut config, &user_path, params.config_dir)?;
-    crate::model_roles::Roles::from_config(&config)?;
+    let roles = crate::model_roles::Roles::from_config(&config)?;
+    for (name, ty) in &config.agents.types {
+        if let Some(model) = &ty.model
+            && let Ok(spec @ (ModelSpec::Named(_) | ModelSpec::List(_))) =
+                ModelSpec::from_entries(model.entries())
+        {
+            roles.entries_of(&spec).map_err(|why| {
+                ConfigError::model(format!("[agents.types.{name}] `model`: {why}"))
+            })?;
+        }
+    }
     check_composition_credentials(&config, &user_path, params)?;
     resolve_telemetry(&config.telemetry, params)?;
     check_websearch(&config.websearch)?;

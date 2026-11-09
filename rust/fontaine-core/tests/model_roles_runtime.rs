@@ -164,6 +164,53 @@ async fn a_cost_capped_run_skips_an_unpriced_entry_it_would_fall_through_to() {
 }
 
 #[tokio::test]
+async fn a_cost_capped_one_shot_job_skips_an_unpriced_start_entry() {
+    use fontaine_core::model_roles::ModelChain;
+    use fontaine_core::models::ModelRef;
+    let (paid, free) = (gateway("gpt-4o-mini").await, gateway("m1").await);
+    let w = World::new();
+    w.user_file(&accounts(&paid, &free));
+    let lookup: fontaine_core::agent::EnvLookup = Arc::new(env);
+    let switcher = Switcher::new(w.load().unwrap(), w.data.clone(), lookup, None);
+    let refs = |texts: &[&str]| -> Vec<ModelRef> {
+        texts
+            .iter()
+            .map(|t| ModelRef::parse(t).expect("a reference"))
+            .collect()
+    };
+    let chain = ModelChain::new(None, refs(&["free/m1", "paid/gpt-4o-mini"]));
+    let served = switcher
+        .run_through(
+            &chain,
+            false,
+            true,
+            |handle| async move { Ok::<_, String>(handle.reference.to_string()) },
+            |_| true,
+            |reference, why| format!("{reference}: {why}"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        (served.value.as_str(), served.index),
+        ("paid/gpt-4o-mini", 1)
+    );
+
+    let lone = ModelChain::new(None, refs(&["free/m1"]));
+    let error = switcher
+        .run_through(
+            &lone,
+            false,
+            true,
+            |handle| async move { Ok::<_, String>(handle.reference.to_string()) },
+            |_| true,
+            |reference, why| format!("{reference}: {why}"),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.contains("no known price"), "{error}");
+}
+
+#[tokio::test]
 async fn model_flag_text_builds_a_chain_of_its_own_that_a_role_child_cannot_move() {
     let (paid, free) = (gateway("gpt-4o-mini").await, gateway("m1").await);
     let w = World::new();

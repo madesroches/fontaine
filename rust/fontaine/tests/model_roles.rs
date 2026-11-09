@@ -190,3 +190,17 @@ async fn subagents_on_a_role_share_the_entry_that_worked() {
     assert_eq!(fell[0]["role"], "coding");
     assert_eq!(fell[0]["agent"], "agent-1");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_type_naming_an_undefined_role_is_a_config_error() {
+    let quota = Endpoint::start(Wire::Chat, vec![]).await;
+    let ok = Endpoint::start(Wire::Chat, vec![]).await;
+    let s = Sandbox::new();
+    s.user_config(&format!(
+        "{}[models.roles]\nmain = [\"ok/o1\"]\n\n[agents.types.lead]\nmodel = \"nosuchrole\"\n",
+        accounts(&quota, &ok)
+    ));
+    let out = s.run(&["-p", "hello"]).await;
+    assert_eq!(out.code, Some(2), "{}", out.stderr);
+    assert!(out.stderr.contains("nosuchrole"), "{}", out.stderr);
+}
