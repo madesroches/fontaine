@@ -94,11 +94,13 @@ error list pick it up from `providers::names()`, and the generic registry tests
 
 1. Extract `GATEWAY`, `ModelsFetcher` and `parse_served` from
    `rust/fontaine-core/src/providers/openai_compatible.rs` into
-   `rust/fontaine-core/src/providers/gateway.rs` (`pub(crate)`); `openai_compatible.rs`
-   imports them. No behavior change; its existing tests move with the code they cover.
-2. Add `rust/fontaine-core/src/providers/kimi.rs`: the `Provider` impl above and a
-   `Connected` whose `completion`/`list`/`served_model` mirror `openai-compatible`'s, with
-   `quota_source` always returning the `KimiQuota` built on the resolved endpoint.
+   `rust/fontaine-core/src/providers/gateway.rs` (`pub(crate)`), declaring `pub(crate) mod gateway;`
+   in `providers/mod.rs`; `openai_compatible.rs` imports them. No behavior change; its
+   existing tests move with the code they cover.
+2. Add `rust/fontaine-core/src/providers/kimi.rs` (`pub mod kimi;` in `providers/mod.rs`):
+   the `Provider` impl above and a `Connected` whose `completion`/`list`/`served_model`
+   mirror `openai-compatible`'s, with `quota_source` always returning the `KimiQuota` built
+   on the resolved endpoint.
 3. Register `&kimi::Kimi` in `PROVIDERS` (`providers/mod.rs`).
 4. Tests:
    - `rust/fontaine-core/tests/providers.rs`: `kind = "kimi"` parses and round-trips
@@ -108,8 +110,12 @@ error list pick it up from `providers::names()`, and the generic registry tests
      quota from `{endpoint}/usages` with no `Authorization` header; the key is sent when
      present; `served_model` parses a wrapped and a bare-array `/models` reply (reuse the
      moved cases at the `gateway` module level).
-   - `rust/fontaine-core/tests/account_ops.rs` (or a sibling): building a `kind = "kimi"`
-     account yields a client with `quota_source().is_some()` and no `base_url` set.
+   - `rust/fontaine-core/tests/providers.rs`: connecting a `kind = "kimi"` account via
+     `providers::find("kimi").connect(ConnectContext {…})` (as the catalog-vendor test
+     does) yields a client with `quota_source().is_some()` and no `base_url` set.
+   - In `every_kind_but_the_arbitrary_gateway_names_a_catalog_vendor`
+     (`tests/providers.rs`), add `"kimi" => None` to the `expected` match — `kimi`, like
+     `openai-compatible`, has no catalog vendor.
    - Run the generic registry tests in `tests/providers.rs` — they iterate
      `providers::names()` and must stay green.
 5. `docs/configuration.md`: add a `kimi` row to the provider table (Chat Completions,
@@ -117,15 +123,16 @@ error list pick it up from `providers::names()`, and the generic registry tests
    `kind = "kimi"` + `api_key_env = "KIMI_API_KEY"` and no `base_url`/`quota`; reword the
    flat-rate paragraph so the quota display is built in for `kimi` accounts and remains a
    `quota = "kimi"` opt-in for `openai-compatible`; state that the moonshot.ai
-   pay-as-you-go API stays `openai-compatible`. Check `docs/tui.md` status-bar prose for the
-   same rewording need.
+   pay-as-you-go API stays `openai-compatible`. Add `kimi` to the "Where a credential comes
+   from" sentence that names the kinds sending no `Authorization` header without a key.
+   Check `docs/tui.md` status-bar prose for the same rewording need.
 6. `CHANGELOG.md`: entry under `[Unreleased]` → `Added`.
 
 ## Files to Modify
 
 - `rust/fontaine-core/src/providers/kimi.rs` (new), `providers/gateway.rs` (new),
   `providers/mod.rs`, `providers/openai_compatible.rs`
-- `rust/fontaine-core/tests/providers.rs`, `tests/account_ops.rs`
+- `rust/fontaine-core/tests/providers.rs`
 - `docs/configuration.md`, possibly `docs/tui.md`, `CHANGELOG.md`
 
 ## Trade-offs
