@@ -143,6 +143,31 @@ fast-typing user's message is committed that way once the screen is full.
     - No variant restores everything. Open: why answers, committed through the same
       `insert_before`, fare worse than user messages in the one-row path (answers are committed
       when the live area overflows, user rows when retired; compare the frames).
+- 2026-11-09 root cause. The `pyte` harness above is invalid: `pyte` implements neither `CSI S` nor
+  `CSI T`, so it ignored every scroll ratatui emits, and the table above is noise. ConPTY 1.25
+  (bundled by pywinpty, newer than WT 1.24's) forwards the program's bytes nearly verbatim, so the
+  terminal's VT interpreter decides. A classic conhost window (same `AdaptDispatch` as Windows
+  Terminal), read back with `ReadConsoleOutputCharacterW`, is the oracle: for a row scrolled off
+  the top, LF at the bottom with no margins → scrollback; LF at the bottom of margins `1;N` →
+  scrollback (the rest of the screen stays); `CSI S` with no margins, with `1;1` (invalid) or with
+  `1;N` → **dropped**. Every settled row left the screen through SU, so on Windows it reached
+  scrollback only when an unrelated line feed (e.g. a rebuild's `append_lines`) happened to push it.
+  The first attempt only replaced the one-row case, which is why the real app stayed broken.
+  - Fix: `Anchored::scroll_region_up` (the only path ratatui uses to scroll rows off, always
+    `0..viewport_top`) sets margins `1;top`, puts the cursor on their last row and line-feeds `n`
+    times, or for a one-row region line-feeds at the screen's bottom (a whole-screen scroll, which
+    is what terminals already did with the ignored `1;1` margin). This is the form Codex CLI's
+    `insert_history` uses. In tmux an LF at a region's bottom and an SU go through the same
+    `grid_view_scroll_region_up`, so Linux output is unchanged in effect. Portable, no
+    Windows-only branch, so no master-plan Decision.
+  - Conhost run of the real app (60x12, mock provider, 6 questions): before, 5 of 6 questions and 10
+    of 12 answer rows missing; after, every question once, all answer rows, no live-area rows in
+    history. After a resize (the same reprint path as an agent switch): before, 4 of 5 questions
+    lost; after, every row once, reflowed.
+  - Pinned: the vt100 harness's sink panics on any `CSI n S`, which fails 11 existing harness tests
+    with the old behavior, and
+    `settled_rows_leave_the_screen_by_line_feeds_at_the_bottom_of_top_margins` checks both
+    branches directly.
 
 ## Documentation
 `tasks/design/testing.md` gains a Windows repro section; no `docs/` page describes this behavior.
