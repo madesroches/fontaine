@@ -47,6 +47,7 @@ use crate::tier::Tier;
 use crate::trust::{self, Tracking};
 use crate::usage_ledger::Served;
 use crate::user_config;
+use crate::user_hooks::LivePlugins;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -415,6 +416,8 @@ pub struct PipelineParams {
     pub headless: bool,
     pub hooks: Vec<Arc<dyn PreToolUseHook>>,
     pub denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
+    /// The hooks plugins bring, consulted after `hooks` and `denied_hooks`; a reload swaps them.
+    pub plugin_hooks: LivePlugins,
     /// `[shell_preclassifier] allow_extra`.
     pub allow_extra: Vec<String>,
     /// The user settings file "always allow" appends to.
@@ -427,6 +430,7 @@ pub struct PermissionPipeline {
     headless: bool,
     hooks: Vec<Arc<dyn PreToolUseHook>>,
     denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
+    plugin_hooks: LivePlugins,
     preclassifier: Preclassifier,
     user_config: Option<PathBuf>,
     /// The diff an approval prompt already built, by agent, so the allowed call does not read
@@ -690,6 +694,7 @@ impl PermissionPipeline {
             headless: params.headless,
             hooks: params.hooks,
             denied_hooks: params.denied_hooks,
+            plugin_hooks: params.plugin_hooks,
             user_config: params.user_config,
             prompted: Mutex::default(),
         }
@@ -734,14 +739,15 @@ impl PermissionPipeline {
         mode: PermissionMode,
     ) -> HookOutcome {
         let mut outcome = HookOutcome::default();
-        if self.hooks.is_empty() {
+        let layer = self.plugin_hooks.get();
+        if self.hooks.is_empty() && layer.pre.is_empty() {
             return outcome;
         }
         let mut args = call.args.clone();
         let scope = self.state.scope();
         let home = self.state.home.as_deref();
         let (cwd, roots) = self.workspace_view();
-        for hook in &self.hooks {
+        for hook in self.hooks.iter().chain(layer.pre.iter()) {
             let rule = hook.matcher().and_then(|text| parse_rule(&text).ok());
             // A hook that names a matcher runs for the calls it covers; one that cannot be read
             // runs for every call, since a hook can only tighten by running.
@@ -1022,7 +1028,7 @@ impl PermissionPipeline {
         // spawn of a type that can only read is contained like a read.
         if tool == "agent"
             && adjudication::spawn_changes_state(
-                self.state.agent_types(),
+                &self.state.agent_types(),
                 self.state.agents().known_tools_of(call.agent).as_deref(),
                 args,
             )
@@ -1546,13 +1552,14 @@ impl PermissionPipeline {
     /// Tells the `permission_denied` hooks about a denial. Returns whether one of them, one the
     /// user defined, says the agent may retry exactly this call; names that hook.
     async fn denied_hooks(&self, cx: &CallCtx<'_>, tier: Tier, reason: &str) -> Option<String> {
-        if self.denied_hooks.is_empty() {
+        let layer = self.plugin_hooks.get();
+        if self.denied_hooks.is_empty() && layer.denied.is_empty() {
             return None;
         }
         let scope = self.state.scope();
         let (cwd, roots) = self.workspace_view();
         let mut retry = None;
-        for hook in &self.denied_hooks {
+        for hook in self.denied_hooks.iter().chain(layer.denied.iter()) {
             let covered = match hook.matcher().and_then(|text| parse_rule(&text).ok()) {
                 Some(rule) => matches(
                     &rule,

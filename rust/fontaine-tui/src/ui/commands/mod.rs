@@ -8,6 +8,7 @@ mod guardian;
 mod keybindings;
 mod memory;
 mod model;
+mod plugin;
 mod reports;
 mod rewind;
 mod session;

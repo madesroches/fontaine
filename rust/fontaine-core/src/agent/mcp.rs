@@ -23,7 +23,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::mcp_supervisor::{
-    McpServerState, ReconnectTarget, ServerConnector, ServerSlot, Supervisor,
+    MCP_DRAIN_BOUND, McpServerState, ReconnectTarget, ServerConnector, ServerSlot, Supervisor,
 };
 use super::{AgentRuntime, EnvLookup};
 use crate::config::{Config, McpServer};
@@ -400,10 +400,11 @@ impl AgentRuntime {
         )
     }
 
-    /// Starts the MCP servers the plan allows: those that need no approval and those named in
-    /// `approved`, all at once. A server that fails to start is reported and skipped, and keeps a
-    /// slot so `/mcp reconnect` can try it again; the session goes on.
-    pub async fn connect_mcp(&mut self, approved: &[String]) -> Vec<McpOutcome> {
+    /// The supervisor that starts and watches this session's MCP servers, made on first use.
+    fn mcp_supervisor(&mut self) -> Arc<Supervisor> {
+        if let Some(supervisor) = &self.mcp.supervisor {
+            return supervisor.clone();
+        }
         let telemetry = &self.config.telemetry;
         let reveal = telemetry.enabled && telemetry.log_tool_details;
         let guard = Guard {
@@ -440,10 +441,66 @@ impl AgentRuntime {
         let types = self.agent_types.clone();
         let supervisor = Supervisor::new(
             Arc::new(connector),
-            approver.clone(),
-            Arc::new(move || state.agents().refresh_rebuilt_toolsets(&types)),
+            approver,
+            Arc::new(move || state.agents().refresh_rebuilt_toolsets(&types.get())),
         );
         self.mcp.supervisor = Some(supervisor.clone());
+        supervisor
+    }
+
+    /// Starts the one configured server `name` that the plan lets start without asking, which is
+    /// every plugin server: a plugin's install is its approval. The server's old slot, if any,
+    /// is retired first. A failure is the outcome's `error` and leaves a `Failed` slot, as at
+    /// startup.
+    pub async fn start_mcp_server(&mut self, name: &str) -> McpOutcome {
+        let outcome = |error: Option<String>| McpOutcome {
+            server: name.to_string(),
+            error,
+        };
+        let planned = self
+            .mcp_plan()
+            .into_iter()
+            .any(|plan| plan.name == name && !plan.needs_approval);
+        if !planned {
+            return outcome(Some(format!(
+                "MCP server `{name}` is not one this session starts without approval"
+            )));
+        }
+        let spec = match server_spec(
+            &self.config,
+            name,
+            &self.primary_root(),
+            &self.setup.env,
+            &self.setup.scrub_env,
+        ) {
+            Ok(Some(spec)) => spec,
+            Ok(None) => return outcome(None),
+            Err(error) => return outcome(Some(error)),
+        };
+        let supervisor = self.mcp_supervisor();
+        let (slot, result) = supervisor.start(spec).await;
+        self.mcp.insert(slot);
+        self.state
+            .agents()
+            .refresh_rebuilt_toolsets(&self.agent_types.get());
+        outcome(result.err().map(|e| chain(&e)))
+    }
+
+    /// Unloads the MCP server `name`: no new call reaches it, calls in flight get
+    /// a ten-second bound to finish, then its connection closes. `None` when the session never
+    /// attempted it, else whether every call finished in time.
+    pub async fn stop_mcp_server(&mut self, name: &str) -> Option<bool> {
+        self.mcp
+            .remove(name, &self.tool_server, MCP_DRAIN_BOUND)
+            .await
+    }
+
+    /// Starts the MCP servers the plan allows: those that need no approval and those named in
+    /// `approved`, all at once. A server that fails to start is reported and skipped, and keeps a
+    /// slot so `/mcp reconnect` can try it again; the session goes on.
+    pub async fn connect_mcp(&mut self, approved: &[String]) -> Vec<McpOutcome> {
+        let supervisor = self.mcp_supervisor();
+        let approver = self.approver.clone();
 
         let (attempts, mut outcomes) = self.specs_to_start(approved);
         for outcome in &outcomes {
@@ -472,7 +529,7 @@ impl AgentRuntime {
         // toolsets are re-derived, parents before children, so a later revival carries them.
         self.state
             .agents()
-            .refresh_rebuilt_toolsets(&self.agent_types);
+            .refresh_rebuilt_toolsets(&self.agent_types.get());
         outcomes
     }
 

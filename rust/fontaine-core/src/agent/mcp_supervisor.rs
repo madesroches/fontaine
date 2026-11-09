@@ -30,6 +30,10 @@ use super::EnvLookup;
 const RECONNECT_BASE: Duration = Duration::from_secs(1);
 /// How many times a lost remote server is started again before it is marked failed.
 pub const RECONNECT_ATTEMPTS: u32 = 5;
+/// How long an unloaded server's in-flight calls may finish before its connection closes. A
+/// call is waited for rather than cancelled, since cancelling can leave a tool's side effect
+/// half done; one still running after the bound ends with the transport error.
+pub const MCP_DRAIN_BOUND: Duration = Duration::from_secs(10);
 /// One server's startup attempts share this deadline.
 const STARTUP_DEADLINE: Duration = CONNECT_TIMEOUT;
 /// The waits before a remote server's startup retries.
@@ -136,12 +140,6 @@ impl ServerSlot {
         self.spec.kind() == "http"
     }
 
-    fn stop_watcher(&self) {
-        if let Some(handle) = lock(&self.watcher, "MCP watcher").take() {
-            handle.abort();
-        }
-    }
-
     /// Stops the watcher and starts a new generation, returning it. The bump happens under the
     /// watcher lock, which `install` checks it against.
     fn supersede(&self) -> u64 {
@@ -187,12 +185,38 @@ impl McpServers {
             retire(&old);
         }
     }
+
+    /// Unloads the server `name`: its slot is retired, its `list_changed` sink muted (a refresh
+    /// during the drain would register the tools again), its tools removed from `tools` so no new
+    /// call starts, the calls in flight given up to `bound` to finish, and the connection closed.
+    /// Returns `None` for a server with no slot, else whether every call finished in time.
+    pub(crate) async fn remove(
+        &mut self,
+        name: &str,
+        tools: &ToolServerHandle,
+        bound: Duration,
+    ) -> Option<bool> {
+        let slot = self.slots.remove(name)?;
+        retire(&slot);
+        let connected = lock(&slot.connection, "MCP connection").take();
+        let Some(connected) = connected else {
+            return Some(true);
+        };
+        connected.mute();
+        for tool in connected.tool_names() {
+            tools.remove_tool(&tool);
+        }
+        let drained = connected.drain(bound).await;
+        connected.connection.close().await;
+        Some(drained)
+    }
 }
 
 /// Ends a slot's watcher and marks its connection as closed by us.
 fn retire(slot: &ServerSlot) {
     slot.closing.store(true, Ordering::SeqCst);
-    slot.stop_watcher();
+    // A reconnect that finishes after this is handed back by `install` instead of reviving the slot.
+    slot.supersede();
 }
 
 impl Drop for McpServers {
@@ -870,5 +894,63 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(rig.script.attempts(), 1);
         assert!(slot.closing.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn removing_a_server_closes_its_connection_and_a_remote_one_is_not_reconnected() {
+        let live = live("srv", "http").await;
+        let connection = live.connected.connection.clone();
+        let rig = rig(vec![Ok(live)]);
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        let mut servers = McpServers::default();
+        servers.insert(slot.clone());
+        let tools = ToolServer::new().run();
+
+        assert_eq!(
+            servers.remove("srv", &tools, MCP_DRAIN_BOUND).await,
+            Some(true)
+        );
+        assert!(connection.is_closed());
+        assert!(servers.states().is_empty());
+        assert!(slot.closing.load(Ordering::SeqCst));
+        assert_eq!(
+            servers.remove("srv", &tools, MCP_DRAIN_BOUND).await,
+            None,
+            "a server with no slot is not removed twice"
+        );
+        settle().await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(rig.script.attempts(), 1, "unloading is not a loss");
+        assert!(rig.said.warnings.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn removing_a_failed_server_just_drops_its_slot() {
+        let rig = rig(vec![permanent()]);
+        let (slot, _) = rig.supervisor.start(spec("stdio")).await;
+        let mut servers = McpServers::default();
+        servers.insert(slot);
+        let tools = ToolServer::new().run();
+        assert_eq!(
+            servers.remove("srv", &tools, MCP_DRAIN_BOUND).await,
+            Some(true)
+        );
+        assert!(servers.states().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_finishing_after_the_server_is_removed_is_handed_back() {
+        let rig = rig(vec![Ok(live("srv", "http").await)]);
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        let generation = slot.generation.load(Ordering::SeqCst);
+        let mut servers = McpServers::default();
+        servers.insert(slot.clone());
+        let tools = ToolServer::new().run();
+        servers.remove("srv", &tools, MCP_DRAIN_BOUND).await;
+
+        let late = live("srv", "http").await.connected;
+        assert!(rig.supervisor.install(&slot, late, generation).is_err());
+        assert!(slot.closing.load(Ordering::SeqCst));
+        assert!(lock(&slot.connection, "test").is_none());
     }
 }

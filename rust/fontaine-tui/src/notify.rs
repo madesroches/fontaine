@@ -15,6 +15,7 @@ pub(crate) enum PromptKind {
     AfkReview,
     Unavailable,
     Skills,
+    Plugin,
     SetupReview,
     SetupComposition,
 }
@@ -43,6 +44,7 @@ impl PromptKind {
             }
             PromptKind::Unavailable => "The guardian is unavailable",
             PromptKind::Skills => "Fontaine needs a skill trust decision",
+            PromptKind::Plugin => "Fontaine needs a plugin approval",
             PromptKind::SetupReview | PromptKind::SetupComposition => {
                 "Auto-mode setup needs your review"
             }

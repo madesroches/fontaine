@@ -70,8 +70,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// `/output-style`: shows the styles, or switches to one for the next turn.
     pub(crate) fn output_style(&mut self, runtime: &mut AgentRuntime, name: &str) {
         if name.is_empty() {
-            let known: Vec<String> = runtime
-                .extensions()
+            let extensions = runtime.extensions();
+            let known: Vec<String> = extensions
                 .output_styles
                 .iter()
                 .map(|s| format!("{} ({})", s.name, s.description))

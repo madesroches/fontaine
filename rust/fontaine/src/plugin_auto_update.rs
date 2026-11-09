@@ -7,13 +7,14 @@
 //! the last manual `plugin update`; otherwise it is held, the old checkout stays live, and the
 //! user is told to run `fontaine plugin update`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fontaine_core::agent::EnvLookup;
 use fontaine_core::dirs::Dirs;
 use fontaine_core::file_lock;
 use fontaine_core::notice::Notice;
+use fontaine_core::plugin_ops::{self, cleanup_leftovers};
 use fontaine_core::plugins::{
     self, InstalledPlugin, MarketplaceEntry, Registry, checkout_dir, marketplace_dir,
     registry_path, staged_dir,
@@ -21,19 +22,16 @@ use fontaine_core::plugins::{
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::plugin::{
-    AUTO_PREFIX, EnvRef, Fetch, MarketplaceFetch, MarketplaceOutcome, PluginFetch, PluginOutcome,
-    PluginSource, UNATTENDED_GIT, Workdir, fetch_marketplace, fetch_plugin, installed_parent,
-    marketplaces_parent, read_catalog, remove_dir, replace_dir,
+    MarketplaceFetch, MarketplaceOutcome, PluginFetch, PluginOutcome, UNATTENDED_GIT, Workdir,
+    fetch_marketplace, fetch_plugin, read_catalog, remove_dir,
 };
+use fontaine_core::plugin_ops::{EnvRef, Fetch, PluginSource};
 
 pub(crate) const STAMP_FILE: &str = "plugin-update.stamp";
 pub(crate) const LOG_FILE: &str = "plugin-updates.jsonl";
 
 /// An offline machine or a quick restart does not retry on every start.
 const THROTTLE: Duration = Duration::from_secs(24 * 60 * 60);
-
-/// How long a leftover backup, scratch or staged directory may sit before it is removed.
-const LEFTOVER_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -91,7 +89,7 @@ impl Update {
         let name = &self.name;
         match &self.outcome {
             Outcome::Moved { new, .. } => Notice::info(format!(
-                "{kind} `{name}` updated to {}; active next session",
+                "{kind} `{name}` updated to {}; run /reload-plugins to apply it now, or it applies next session",
                 plugins::short_pin(new)
             )),
             Outcome::Held { new, .. } => Notice::warning(
@@ -99,7 +97,7 @@ impl Update {
                     "plugin `{name}` has a new revision ({}) that changes its hooks, servers, skill commands or scripts, so the old one stays active",
                     plugins::short_pin(new)
                 ),
-                Some(format!("run `fontaine plugin update {name}` to review it")),
+                Some(format!("run `/plugin update {name}` to review it")),
             ),
             Outcome::Failed { reason } => Notice::warning(
                 format!("{kind} `{name}` could not auto-update: {reason}"),
@@ -363,7 +361,7 @@ impl Pass<'_> {
         };
         let catalog = match read_catalog(&catalog_dir) {
             Ok(catalog) => catalog,
-            Err(e) => return PluginOutcome::Failed(e),
+            Err(e) => return PluginOutcome::Failed(e.into()),
         };
         let Some(entry) = catalog.plugins.iter().find(|p| p.name == plugin.name) else {
             return PluginOutcome::Failed(format!(
@@ -387,7 +385,7 @@ impl Pass<'_> {
                 };
             }
             Ok(PluginFetch::Ready(fetched)) => *fetched,
-            Err(e) => return PluginOutcome::Failed(e),
+            Err(e) => return PluginOutcome::Failed(e.into()),
         };
         let reason = match plugins::approval_fingerprint(&fetched.temp) {
             Ok(fingerprint) if fingerprint == approved => None,
@@ -433,7 +431,6 @@ impl Pass<'_> {
             (Ok(Some(())), None) => PluginOutcome::Moved {
                 old: plugin.pin.clone(),
                 new,
-                review: None,
             },
         }
     }
@@ -450,7 +447,7 @@ fn market_outcome(outcome: MarketplaceOutcome) -> Option<Outcome> {
 fn plugin_outcome(outcome: PluginOutcome) -> Option<Outcome> {
     match outcome {
         PluginOutcome::UpToDate { .. } => None,
-        PluginOutcome::Moved { old, new, .. } => Some(Outcome::Moved { old, new }),
+        PluginOutcome::Moved { old, new } => Some(Outcome::Moved { old, new }),
         PluginOutcome::Held { new, reason } => Some(Outcome::Held { new, reason }),
         PluginOutcome::Failed(reason) => Some(Outcome::Failed { reason }),
     }
@@ -479,184 +476,9 @@ fn put_staged(temp: &Path, checkout: &Path) -> Result<(), String> {
 }
 
 /// Applies the revisions earlier passes staged, before plugins load. Returns warnings for the
-/// ones that could not be applied; those stay staged and are retried at the next start. Entries
-/// that opted out of auto-update keep their staged revision untouched.
+/// ones that could not be applied; those stay staged and are retried at the next start.
 pub(crate) fn apply_staged(config_dir: &Path, now: SystemTime) -> Vec<String> {
-    let Ok(snapshot) = plugins::read_registry(config_dir) else {
-        return Vec::new();
-    };
-    let pending = snapshot.marketplace.iter().any(|m| m.staged_pin.is_some())
-        || snapshot.plugin.iter().any(|p| p.staged_pin.is_some());
-    let missing = snapshot
-        .marketplace
-        .iter()
-        .any(|m| !marketplace_dir(config_dir, &m.name).is_dir())
-        || snapshot
-            .plugin
-            .iter()
-            .any(|p| !checkout_dir(config_dir, &p.marketplace, &p.name).is_dir());
-    // Reading the registry is all a start with nothing to do costs: no lock, no directory scan.
-    if !pending && !missing {
-        return Vec::new();
-    }
-    let lock = match file_lock::lock(&registry_path(config_dir)) {
-        Ok(lock) => lock,
-        Err(e) => {
-            return vec![format!(
-                "staged plugin updates were not applied: cannot lock the registry: {}",
-                fontaine_tools::error_chain::chain(&e)
-            )];
-        }
-    };
-    let mut warnings = Vec::new();
-    let mut registry = match plugins::read_registry(config_dir) {
-        Ok(registry) => registry,
-        Err(e) => return vec![e.to_string()],
-    };
-    cleanup_leftovers(config_dir, &registry, now);
-
-    for at in 0..registry.marketplace.len() {
-        let entry = registry.marketplace[at].clone();
-        let Some(staged_pin) = entry.staged_pin.clone() else {
-            continue;
-        };
-        if entry.auto_update == Some(false) {
-            continue;
-        }
-        match swap_in(
-            &marketplace_dir(config_dir, &entry.name),
-            &entry.name,
-            "marketplace",
-        ) {
-            Swap::Applied => registry.marketplace[at].pin = staged_pin,
-            Swap::Gone => {}
-            Swap::Failed(warning) => {
-                warnings.push(warning);
-                continue;
-            }
-        }
-        registry.marketplace[at].staged_pin = None;
-        write_back(config_dir, &registry, &mut warnings);
-    }
-    for at in 0..registry.plugin.len() {
-        let entry = registry.plugin[at].clone();
-        let Some(staged_pin) = entry.staged_pin.clone() else {
-            continue;
-        };
-        if entry.auto_update == Some(false) {
-            continue;
-        }
-        let checkout = checkout_dir(config_dir, &entry.marketplace, &entry.name);
-        match swap_in(&checkout, &entry.name, "plugin") {
-            Swap::Applied => {
-                registry.plugin[at].pin = staged_pin;
-                registry.plugin[at].held_pin = None;
-            }
-            Swap::Gone => {}
-            Swap::Failed(warning) => {
-                warnings.push(warning);
-                continue;
-            }
-        }
-        registry.plugin[at].staged_pin = None;
-        write_back(config_dir, &registry, &mut warnings);
-    }
-    drop(lock);
-    warnings
-}
-
-fn write_back(config_dir: &Path, registry: &Registry, warnings: &mut Vec<String>) {
-    if let Err(e) = plugins::write_registry(config_dir, registry) {
-        warnings.push(format!("the plugin registry was not updated: {e}"));
-    }
-}
-
-enum Swap {
-    Applied,
-    /// The staged directory is gone, so the recorded revision is stale.
-    Gone,
-    /// A rename failed (a running server holding the checkout on Windows); the staged revision
-    /// stays for the next start.
-    Failed(String),
-}
-
-/// Renames the checkout aside, the staged revision into place and deletes the backup.
-fn swap_in(checkout: &Path, name: &str, what: &str) -> Swap {
-    let staged = staged_dir(checkout);
-    if !staged.is_dir() {
-        return Swap::Gone;
-    }
-    match replace_dir(&staged, checkout) {
-        Ok(()) => Swap::Applied,
-        Err(e) => Swap::Failed(format!(
-            "the staged update of {what} `{name}` was not applied and will be retried at the next start: {e}"
-        )),
-    }
-}
-
-/// Restores a checkout an interrupted swap left only as a backup, removes backups, scratch
-/// directories and staged revisions nothing refers to. Best effort: a leftover only wastes disk.
-pub(crate) fn cleanup_leftovers(config_dir: &Path, registry: &Registry, now: SystemTime) {
-    let market_parent = marketplaces_parent(config_dir);
-    let staged_markets: Vec<&str> = registry
-        .marketplace
-        .iter()
-        .filter(|m| m.staged_pin.is_some())
-        .map(|m| m.name.as_str())
-        .collect();
-    sweep(&market_parent, &staged_markets, now);
-    for market in &registry.marketplace {
-        let staged: Vec<&str> = registry
-            .plugin
-            .iter()
-            .filter(|p| p.marketplace == market.name && p.staged_pin.is_some())
-            .map(|p| p.name.as_str())
-            .collect();
-        sweep(&installed_parent(config_dir, &market.name), &staged, now);
-    }
-}
-
-fn old_enough(path: &Path, now: SystemTime) -> bool {
-    std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|at| now.duration_since(at).ok())
-        .is_some_and(|age| age >= LEFTOVER_AGE)
-}
-
-/// One directory of checkouts: `staged` names the entries whose staged revision is recorded.
-fn sweep(parent: &Path, staged: &[&str], now: SystemTime) {
-    let Ok(read) = std::fs::read_dir(parent) else {
-        return;
-    };
-    let entries: Vec<PathBuf> = read
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-        .map(|e| e.path())
-        .collect();
-    for path in entries {
-        let file = path.file_name().unwrap_or_default().to_string_lossy();
-        if let Some(rest) = file.strip_prefix('.')
-            && let Some((name, _)) = rest.split_once(".bak-")
-        {
-            let target = parent.join(name);
-            if !target.exists() {
-                // An interrupted swap: the old checkout is all there is. The next start redoes
-                // the swap from the recorded staged revision.
-                let _ = std::fs::rename(&path, &target);
-            } else if old_enough(&path, now) {
-                remove_dir(&path);
-            }
-        } else if file.starts_with(AUTO_PREFIX) {
-            if old_enough(&path, now) {
-                remove_dir(&path);
-            }
-        } else if let Some(name) = file.strip_prefix(".staged-")
-            && !staged.contains(&name)
-        {
-            remove_dir(&path);
-        }
-    }
+    plugin_ops::apply_staged(config_dir, now, &mut |_| true).warnings
 }
 
 #[cfg(test)]

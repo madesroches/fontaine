@@ -102,9 +102,8 @@ async fn memory_text_stays_out_of_the_guardians_project_instructions() {
     let instructions = built
         .runtime
         .state
-        .auto
+        .auto_context()
         .project_instructions
-        .clone()
         .expect("the user's own files");
     assert!(instructions.contains("Run cargo test."));
     assert!(!instructions.contains("secret steering note"));

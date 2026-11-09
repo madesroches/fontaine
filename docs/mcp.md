@@ -74,6 +74,16 @@ places. Within project, `.fontaine/settings.toml` wins over `.mcp.json`, and the
 once at startup. A plugin's server whose name collides with a configured server is an error that
 names the plugin.
 
+A plugin's servers start and stop live with the plugin: `/plugin install`, `/plugin enable` and
+`/reload-plugins` start the servers of a plugin they load, and `/plugin disable`, `/plugin
+uninstall`, `/plugin update` and a reload that changes a plugin stop its servers before its
+checkout changes and start the new definitions after. A server of a plugin that did not change
+keeps running. On unload the server's tools leave the toolset first, so no new call starts;
+calls already running get up to ten seconds to finish before the connection closes, and one that
+is still running then ends with a transport error. A plugin that fails to load on reload (such as
+a server name that collides) leaves the current set running. See
+[Plugins](plugins.md#in-the-terminal-ui).
+
 A malformed `mcp-local.toml` or `.mcp.json`, or an entry in one that cannot be used, is a warning
 (at startup, in `fontaine doctor` and in `fontaine mcp`) and is skipped, so `fontaine mcp` can still
 run to repair it.

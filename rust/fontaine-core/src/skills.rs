@@ -18,6 +18,7 @@ use crate::extensions::{Extensions, Scope, Skill};
 use crate::gate::{SessionState, TrustedSkillNote};
 use crate::permission_rules::{Rule, is_broad_code_execution};
 use crate::skill_trust::TrustState;
+use fontaine_tools::live::Live;
 
 /// Whether a declared rule names a whole class of shell commands: a shell-class tool with no
 /// specifier, or one with a `*` in it, or any rule the broad-code-execution list flags (a bare
@@ -156,7 +157,7 @@ pub fn parts(body: &str) -> Vec<Part> {
 
 /// The skills a session loaded, and what running one touches.
 pub struct SkillRuntime {
-    extensions: Arc<Extensions>,
+    extensions: Arc<Live<Extensions>>,
     state: Arc<SessionState>,
     /// The registered, wrapped `shell` tool, so a skill's commands go through the gate.
     shell: Mutex<Option<DynamicTool>>,
@@ -167,7 +168,7 @@ pub struct SkillRuntime {
 
 impl SkillRuntime {
     pub fn new(
-        extensions: Arc<Extensions>,
+        extensions: Arc<Live<Extensions>>,
         state: Arc<SessionState>,
         project_commands: bool,
     ) -> SkillRuntime {
@@ -183,8 +184,9 @@ impl SkillRuntime {
         *lock(&self.shell, "skill shell") = Some(shell);
     }
 
-    pub fn extensions(&self) -> &Arc<Extensions> {
-        &self.extensions
+    /// The skills as loaded now; a reload swaps them between turns.
+    pub fn extensions(&self) -> Arc<Extensions> {
+        self.extensions.get()
     }
 
     async fn run_command(&self, skill: &Skill, agent: &str, command: &str) -> String {
@@ -236,7 +238,8 @@ impl SkillRuntime {
     /// of the file, and then only its specific rules; the wildcard shell rules of a trusted skill
     /// are never an allow in any mode and reach the guardian as context instead.
     fn lend_rules(&self, skill: &Skill, agent: &str) {
-        let trusted = self.extensions.trust_state(skill) == TrustState::Trusted;
+        let extensions = self.extensions.get();
+        let trusted = extensions.trust_state(skill) == TrustState::Trusted;
         match skill.scope {
             Scope::User => {
                 if !skill.allowed_tools.is_empty() {
@@ -257,7 +260,7 @@ impl SkillRuntime {
             }
             Scope::Plugin => {
                 if !skill.declared_tools.is_empty() {
-                    let stale = self.extensions.trust_state(skill) == TrustState::Stale;
+                    let stale = extensions.trust_state(skill) == TrustState::Stale;
                     self.state.warn_skill_not_trusted(&skill.name, stale);
                 }
             }
@@ -296,9 +299,9 @@ impl SkillRuntime {
         agent: &str,
         by_model: bool,
     ) -> Result<String, String> {
-        let Some(skill) = self.extensions.skill(name) else {
-            let known: Vec<&str> = self
-                .extensions
+        let extensions = self.extensions.get();
+        let Some(skill) = extensions.skill(name) else {
+            let known: Vec<&str> = extensions
                 .skills
                 .iter()
                 .filter(|s| !by_model || !s.disable_model_invocation)

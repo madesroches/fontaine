@@ -26,6 +26,7 @@ pub mod model_picker;
 mod notify;
 mod paste_burst;
 pub mod picker;
+pub mod plugin_prompt;
 pub mod provider_dialog;
 pub mod question;
 pub mod recent;

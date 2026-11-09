@@ -289,7 +289,7 @@ fn rig_with(limits: Limits, types: AgentTypes, root_mode: RootMode) -> Rig {
     Rig {
         agent: AgentTool {
             tree: tree.clone(),
-            types: Arc::new(types),
+            types: Arc::new(fontaine_tools::live::Live::new(types)),
             runner: runner.clone(),
             ledger: ledger.clone(),
             roles: String::new(),

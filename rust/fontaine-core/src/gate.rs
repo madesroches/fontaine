@@ -14,6 +14,7 @@ use fontaine_agents::tree::AgentTree;
 use fontaine_guardian::composition::Composition;
 use fontaine_guardian::{EnvironmentConfig, Guardian, LoopBreaker, RuleConfig, Settings};
 use fontaine_tools::gate::ROOT_AGENT;
+use fontaine_tools::live::Live;
 use fontaine_tools::lock::{lock, lock_recovering, read, write};
 use fontaine_tools::scope::Scope;
 use rig_core::completion::{UnsupportedOption, Usage};
@@ -208,7 +209,7 @@ pub struct StateParams {
     /// The session's agents, root included.
     pub agents: Arc<AgentTree>,
     /// The agent types the session can spawn, which tell the guardian what a spawn can do.
-    pub agent_types: Arc<AgentTypes>,
+    pub agent_types: Arc<Live<AgentTypes>>,
     /// Telemetry may carry MCP server and tool names (`log_tool_details`).
     pub reveal_mcp_names: bool,
     pub auto_edits: AutoEdits,
@@ -390,7 +391,7 @@ pub struct SessionState {
     /// pairing however main turns and child spawns interleave.
     effort_warned: Mutex<HashSet<(String, Effort)>>,
     agents: Arc<AgentTree>,
-    agent_types: Arc<AgentTypes>,
+    agent_types: Arc<Live<AgentTypes>>,
     reveal_mcp_names: bool,
     pub auto_edits: AutoEdits,
     waiting: Mutex<HashMap<String, usize>>,
@@ -398,7 +399,7 @@ pub struct SessionState {
     guardian: RwLock<Arc<Guardian>>,
     composition: RwLock<Option<CompositionStage>>,
     composition_warned: AtomicBool,
-    pub auto: AutoContext,
+    auto: RwLock<AutoContext>,
     breaker: Mutex<LoopBreaker>,
     denied: Mutex<Vec<DeniedCall>>,
     retries: Mutex<Vec<RetryApproval>>,
@@ -469,7 +470,7 @@ impl SessionState {
             guardian: RwLock::new(params.guardian),
             composition: RwLock::new(None),
             composition_warned: AtomicBool::new(false),
-            auto: params.auto,
+            auto: RwLock::new(params.auto),
             breaker: Mutex::default(),
             denied: Mutex::default(),
             retries: Mutex::default(),
@@ -509,8 +510,31 @@ impl SessionState {
     }
 
     /// The agent types the `agent` tool can start.
-    pub fn agent_types(&self) -> &AgentTypes {
-        &self.agent_types
+    pub fn agent_types(&self) -> Arc<AgentTypes> {
+        self.agent_types.get()
+    }
+
+    /// The guardian's standing inputs as the next adjudication reads them.
+    pub fn auto_context(&self) -> AutoContext {
+        read(&self.auto, "auto context").clone()
+    }
+
+    /// Replaces the guardian's rule prose for the next adjudication; the verdict cache key
+    /// digests the rules, so an earlier verdict never answers for the new ones.
+    pub fn set_auto_context(&self, auto: AutoContext) {
+        *write(&self.auto, "auto context") = auto;
+    }
+
+    /// Swaps the deny and ask rules a plugin brought: every `RuleSource::Plugin` entry is
+    /// replaced, every other entry is left alone.
+    pub fn set_plugin_rules(&self, deny: Vec<SourcedRule>, ask: Vec<SourcedRule>) {
+        let mut inner = write(&self.inner, "rules");
+        inner
+            .deny
+            .retain(|entry| entry.source != RuleSource::Plugin);
+        inner.deny.extend(deny);
+        inner.ask.retain(|entry| entry.source != RuleSource::Plugin);
+        inner.ask.extend(ask);
     }
 
     /// Switches the mode for the next call. The change is recorded in the ledger and reported
@@ -886,6 +910,23 @@ impl SessionState {
         record.rule = Some(rule.to_string());
         record.explanation = Some(explanation.to_string());
         crate::permissions::record_decision(self, &record);
+    }
+
+    /// Records a plugin install, update, removal, enable, disable or reload, in the ledger and
+    /// the audit log. The human typed the command; this is the evidence that it ran.
+    pub fn record_plugin_change(&self, op: &str, plugin: &str, fingerprint: &str) {
+        self.append(Record::PluginChange {
+            op: op.to_string(),
+            plugin: plugin.to_string(),
+            fingerprint: fingerprint.to_string(),
+        });
+        self.record_session_event(
+            "plugin_change",
+            serde_json::json!({ "op": op, "plugin": plugin, "fingerprint": fingerprint }),
+            Tier::Human,
+            "plugin_change",
+            &format!("plugin {op}: {plugin}"),
+        );
     }
 
     pub fn guardian(&self) -> Arc<Guardian> {
@@ -1470,7 +1511,7 @@ mod tests {
             guardian: no_guardian(),
             auto: AutoContext::default(),
             agents: agents.clone(),
-            agent_types: Arc::new(AgentTypes::builtin()),
+            agent_types: Arc::new(Live::new(AgentTypes::builtin())),
             reveal_mcp_names: false,
             auto_edits: AutoEdits::default(),
             effort: None,

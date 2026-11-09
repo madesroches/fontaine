@@ -793,6 +793,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::Bug(_)
                 | Action::AfkReview(_)
                 | Action::SkillTrust(_)
+                | Action::PluginApprove(_)
                 | Action::SetupReview(_)
                 | Action::SetupComposition(_)
                 | Action::CancelWakeup => {}
@@ -1100,6 +1101,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Action::Bug(_)
                         | Action::AfkReview(_)
                         | Action::SkillTrust(_)
+                        | Action::PluginApprove(_)
                         | Action::SetupReview(_)
                         | Action::SetupComposition(_)
                         | Action::CancelWakeup => {}

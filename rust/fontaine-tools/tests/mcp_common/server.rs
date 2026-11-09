@@ -17,6 +17,9 @@ pub struct Double {
     tools: Arc<Mutex<Vec<Tool>>>,
     peer: Arc<Mutex<Option<Peer<RoleServer>>>>,
     pub calls: Calls,
+    /// A `slow` call has started once this is notified, and ends when `finish` is.
+    pub started: Arc<tokio::sync::Notify>,
+    pub finish: Arc<tokio::sync::Notify>,
 }
 
 fn schema() -> Arc<JsonObject> {
@@ -34,6 +37,11 @@ pub fn echo_tool() -> Tool {
 /// got.
 pub fn elicit_tool() -> Tool {
     Tool::new("elicit", "Ask the user a question", schema())
+}
+
+/// A tool that runs until the test releases it with `Double::finish`.
+pub fn slow_tool() -> Tool {
+    Tool::new("slow", "Wait to be released", schema())
 }
 
 /// A tool that returns `chars` characters of text.
@@ -154,6 +162,11 @@ impl ServerHandler for Double {
                 Err(e) => format!("elicitation failed: {e}"),
             },
             "big" => "x".repeat(chars),
+            "slow" => {
+                self.started.notify_one();
+                self.finish.notified().await;
+                "slow: done".to_string()
+            }
             "fail" => {
                 return Ok(
                     CallToolResult::error(vec![ContentBlock::text("e".repeat(chars))]).into(),

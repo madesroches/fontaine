@@ -55,6 +55,10 @@ pub enum Command {
     Skills(String),
     /// `/plugins`: the installed plugins and their components.
     Plugins,
+    /// `/plugin`, or `/plugin install|uninstall|update|enable|disable ...`; the bare form lists.
+    Plugin(String),
+    /// `/reload-plugins`: applies plugin and skill changes to the running session.
+    ReloadPlugins,
     /// `/loop [interval] <prompt>`, `/loop list` or `/loop stop [id]`.
     Loop(String),
     /// `/goal <condition>`, `/goal` or `/goal clear`.
@@ -116,6 +120,8 @@ impl Command {
             | Command::Loop(_)
             | Command::Afk(_)
             | Command::Bug(_)
+            | Command::Plugin(_)
+            | Command::ReloadPlugins
             | Command::Init(_) => true,
             Command::OutputStyle(argument) | Command::Plan(argument) => !argument.is_empty(),
             _ => false,
@@ -146,7 +152,11 @@ impl Command {
                 | Command::Cost
                 | Command::Vim
                 | Command::Keybindings
-        ) || matches!(self, Command::Skills(argument) | Command::Mcp(argument) if argument.is_empty())
+        ) || matches!(
+            self,
+            Command::Skills(argument) | Command::Mcp(argument) | Command::Plugin(argument)
+                if argument.is_empty()
+        )
     }
 }
 
@@ -397,6 +407,13 @@ pub const BUILTINS: &[Builtin] = &[
         command: Command::Plan,
     },
     Builtin {
+        name: "plugin",
+        aliases: &[],
+        hint: Some("install|uninstall|update|enable|disable <name>"),
+        description: "manage plugins, or list them with no argument",
+        command: Command::Plugin,
+    },
+    Builtin {
         name: "plugins",
         aliases: &[],
         hint: None,
@@ -409,6 +426,13 @@ pub const BUILTINS: &[Builtin] = &[
         hint: None,
         description: "what this session has done so far, from the ledger",
         command: |_| Command::Recap,
+    },
+    Builtin {
+        name: "reload-plugins",
+        aliases: &[],
+        hint: None,
+        description: "apply plugin and skill changes to this session",
+        command: |_| Command::ReloadPlugins,
     },
     Builtin {
         name: "rename",
@@ -1089,6 +1113,38 @@ mod tests {
             let command = parse_command(text).expect("a command");
             assert!(command.main_only(), "{text}");
             assert!(!command.runs_mid_turn(), "{text}");
+        }
+    }
+
+    #[test]
+    fn plugin_commands_parse_are_main_only_and_only_the_bare_list_runs_mid_turn() {
+        assert_eq!(
+            parse_command("/plugin"),
+            Some(Command::Plugin(String::new()))
+        );
+        assert_eq!(
+            parse_command("/plugin install demo@local"),
+            Some(Command::Plugin("install demo@local".into()))
+        );
+        assert_eq!(
+            parse_command("/reload-plugins"),
+            Some(Command::ReloadPlugins)
+        );
+        for text in ["/plugin", "/plugin update all", "/reload-plugins"] {
+            assert!(parse_command(text).expect(text).main_only(), "{text}");
+        }
+        assert!(parse_command("/plugin").unwrap().runs_mid_turn());
+        for text in [
+            "/plugin install demo@local",
+            "/plugin uninstall demo",
+            "/plugin enable demo",
+            "/reload-plugins",
+        ] {
+            assert!(!parse_command(text).expect(text).runs_mid_turn(), "{text}");
+        }
+        let menu = builtin_menu();
+        for name in ["plugin", "reload-plugins"] {
+            assert!(menu.iter().any(|e| e.name == name), "{name}");
         }
     }
 

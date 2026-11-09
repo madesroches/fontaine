@@ -409,6 +409,7 @@ impl World {
             scanner: Default::default(),
             switcher: Some(switcher),
             extensions,
+            plugins: Default::default(),
             project_executables: self.project_executables,
             confirm_project_servers: self.confirm_servers,
             origin: fontaine_core::agent::SessionOrigin::Fresh,

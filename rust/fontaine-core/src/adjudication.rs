@@ -307,12 +307,13 @@ pub fn build(
         })
         .collect();
     let denials_from = view.denials.len().saturating_sub(PRIOR_DENIALS);
+    let auto = state.auto_context();
     AdjudicationRequest {
         task_intent: task_intent(&intent, TASK_INTENT_CHARS),
         recent_user_messages: recent,
-        project_instructions: state.auto.project_instructions.clone(),
-        environment: state.auto.environment.clone(),
-        rules: state.auto.rules.clone(),
+        project_instructions: auto.project_instructions,
+        environment: auto.environment,
+        rules: auto.rules,
         tool_call: ToolCallSummary {
             tool: tool.to_string(),
             args: args.clone(),

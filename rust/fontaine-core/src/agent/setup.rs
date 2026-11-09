@@ -16,6 +16,7 @@ use fontaine_guardian::{
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::jobs::{JobNote, JobSink};
 use fontaine_tools::kills::KillSwitches;
+use fontaine_tools::live::Live;
 use fontaine_tools::lsp::DiagnosticsStage;
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
 use fontaine_tools::shell_cwd::ShellCwd;
@@ -47,8 +48,8 @@ use crate::tasks::SessionTasks;
 use crate::tools;
 use crate::usage_ledger::Served;
 use crate::user_hooks::{
-    self, GuardianSlot, HookDeps, HookProcess, LifecycleHooks, PostHookStage, SubagentGate,
-    TeamGate, UserHook,
+    self, HookDeps, HookLayer, HookProcess, LifecycleHooks, LivePlugins, PostHookStage,
+    SubagentGate, TeamGate, UserHook,
 };
 
 /// The guardian a session runs with, from the model that was resolved for it.
@@ -366,12 +367,14 @@ pub fn build_agent_types(
 
 /// The session's agent types, built against its model roles. The warnings about a repository's
 /// agent files join the startup warnings.
-pub(super) fn session_agent_types(setup: &mut AgentSetup) -> Result<Arc<AgentTypes>, RuntimeError> {
+pub(super) fn session_agent_types(
+    setup: &mut AgentSetup,
+) -> Result<Arc<Live<AgentTypes>>, RuntimeError> {
     let roles = Roles::from_config(&setup.config)
         .map_err(|e| RuntimeError::caused("invalid model roles", e))?;
     let (types, warnings) = build_agent_types(&setup.config, &setup.extensions, &roles)?;
     setup.startup_warnings.extend(warnings);
-    Ok(Arc::new(types))
+    Ok(Arc::new(Live::new(types)))
 }
 
 /// Whether the role or list a type's `model` names resolves against the user's roles.
@@ -464,7 +467,7 @@ pub(super) fn rebuild_agents(
 pub(super) fn session_state(
     setup: &AgentSetup,
     tree: &Arc<AgentTree>,
-    agent_types: &Arc<AgentTypes>,
+    agent_types: &Arc<Live<AgentTypes>>,
 ) -> Arc<SessionState> {
     let permissions = &setup.config.permissions;
     let (environment, rules) = setup.config.effective_auto_mode();
@@ -525,7 +528,7 @@ pub(super) fn session_state(
 /// What the session state needs before the agent is built: the AFK backstop on the approver, which
 /// every approver call site after this one (the pipeline's, children's and questions') passes, the
 /// AFK stretch and the composition.
-pub(super) fn configure_state(setup: &mut AgentSetup, state: &Arc<SessionState>) {
+fn configure_state(setup: &mut AgentSetup, state: &Arc<SessionState>) {
     setup.approver = Arc::new(AfkApprover::new(setup.approver.clone(), state.clone()));
     start_afk(setup, state);
     attach_composition(state, setup);
@@ -588,16 +591,18 @@ pub(super) fn gates(
     tree: &Arc<AgentTree>,
     state: &Arc<SessionState>,
 ) -> Result<Gates, RuntimeError> {
+    configure_state(setup, state);
     super::warn_if_no_search(setup);
     let mut retained = retained(setup, state)?;
-    let hook_guardian: GuardianSlot = Arc::new(RwLock::new(setup.models.guardian.clone()));
     let HookStages {
         pipeline,
         post,
         post_failure,
         lifecycle,
-    } = permission_pipeline(setup, state, &retained.network, &hook_guardian)?;
+        plugins,
+    } = permission_pipeline(setup, state, &retained.hook_deps)?;
     retained.lifecycle = lifecycle;
+    retained.plugin_hooks = plugins.clone();
     retained
         .jobs
         .set_sink(Arc::new(TreeJobs { tree: tree.clone() }));
@@ -607,7 +612,9 @@ pub(super) fn gates(
         &setup.config,
         tree,
         state,
-        PostHookStage::new(post, state.clone()).with_failure_hooks(post_failure),
+        PostHookStage::new(post, state.clone())
+            .with_failure_hooks(post_failure)
+            .with_plugins(plugins),
         &instruction_stage,
         retained.lsp.is_active().then(|| DiagnosticsStage {
             servers: retained.lsp.clone(),
@@ -662,6 +669,7 @@ fn start_teams(
     task_completed: Vec<UserHook>,
     task_created: Vec<UserHook>,
     teammate_idle: Vec<UserHook>,
+    plugins: &LivePlugins,
 ) {
     let store = Arc::new(SessionTasks::new(
         &setup.session.dir,
@@ -675,7 +683,8 @@ fn start_teams(
             state.clone(),
             setup.approver.clone(),
         )
-        .with_task_created(task_created),
+        .with_task_created(task_created)
+        .with_plugins(plugins.clone()),
     );
     state
         .agents()
@@ -689,50 +698,53 @@ pub(super) struct HookStages {
     pub(super) post: Vec<UserHook>,
     pub(super) post_failure: Vec<UserHook>,
     pub(super) lifecycle: LifecycleHooks,
+    /// The hooks plugins bring, which a reload swaps.
+    pub(super) plugins: LivePlugins,
 }
 
-/// The one client every `http` hook posts with, when any is configured.
+/// The one client every `http` hook posts with. Always built, so a plugin loaded later in the
+/// session can bring an `http` hook; a failure is told only when a hook needs the client now.
 fn hook_client(
     setup: &AgentSetup,
     network: &fontaine_tools::tls::LoadedNetwork,
 ) -> Option<reqwest::Client> {
-    setup
-        .config
-        .hooks
-        .all()
-        .any(|hook| hook.kind == crate::config::HandlerKind::Http)
-        .then(|| fontaine_tools::tls::build_client(network, reqwest::Client::builder))
-        .and_then(|built| match built {
-            Ok(client) => Some(client),
-            Err(e) => {
+    match fontaine_tools::tls::build_client(network, reqwest::Client::builder) {
+        Ok(client) => Some(client),
+        Err(e) => {
+            if setup
+                .config
+                .hooks
+                .all()
+                .any(|hook| hook.kind == crate::config::HandlerKind::Http)
+            {
                 setup.approver.warn(&format!(
                     "http hooks cannot run: the HTTP client could not be built: {}",
                     chain(&e)
                 ));
-                None
             }
-        })
+            None
+        }
+    }
 }
 
-pub(super) fn permission_pipeline(
+/// What a hook handler needs, kept for the session so a reload can build the plugin hooks again.
+fn hook_deps(
     setup: &AgentSetup,
     state: &Arc<SessionState>,
     network: &fontaine_tools::tls::LoadedNetwork,
-    guardian: &GuardianSlot,
-) -> Result<HookStages, RuntimeError> {
+) -> HookDeps {
     let hook_process = Arc::new(HookProcess {
         scrub_env: setup.scrub_env.clone(),
         set_env: tools::subprocess_env(&setup.config),
         shell: super::command_shell(&setup.git_bash, &setup.powershell),
         project_dir: setup.roots[0].clone(),
     });
-    let http = hook_client(setup, network);
     let usage_state = state.clone();
-    let deps = HookDeps {
+    HookDeps {
         process: hook_process,
-        http,
+        http: hook_client(setup, network),
         env: setup.env.clone(),
-        guardian: guardian.clone(),
+        guardian: Arc::new(RwLock::new(setup.models.guardian.clone())),
         approver: setup.approver.clone(),
         usage: Some(Arc::new(move |agent, usage| {
             usage_state.add_guardian_usage(
@@ -742,15 +754,37 @@ pub(super) fn permission_pipeline(
                 &Served::direct(usage_state.guardian().label()),
             );
         })),
-    };
-    let mut hooks = user_hooks::build(&setup.config, setup.project_executables, &deps)
-        .map_err(|e| RuntimeError::caused("invalid [[hooks]] settings", e))?;
+    }
+}
+
+pub(super) fn permission_pipeline(
+    setup: &AgentSetup,
+    state: &Arc<SessionState>,
+    deps: &HookDeps,
+) -> Result<HookStages, RuntimeError> {
+    let guardian = &deps.guardian;
+    let plugins: LivePlugins = Arc::new(Live::new(
+        user_hooks::build_layer(
+            &setup.config,
+            setup.project_executables,
+            deps,
+            HookLayer::Plugin,
+        )
+        .map_err(|e| RuntimeError::caused("invalid [[hooks]] settings", e))?,
+    ));
+    let mut hooks = user_hooks::build_layer(
+        &setup.config,
+        setup.project_executables,
+        deps,
+        HookLayer::Frozen,
+    )
+    .map_err(|e| RuntimeError::caused("invalid [[hooks]] settings", e))?;
     let teams = setup.config.agents.teams;
     for warning in hooks.warnings(teams) {
         setup.approver.warn(&warning);
     }
     if teams {
-        let revivable = revivable_ids(&rebuild_records(&setup.session), state.agent_types())
+        let revivable = revivable_ids(&rebuild_records(&setup.session), &state.agent_types())
             .into_iter()
             .collect();
         start_teams(
@@ -760,23 +794,25 @@ pub(super) fn permission_pipeline(
             std::mem::take(&mut hooks.task_completed),
             std::mem::take(&mut hooks.task_created),
             std::mem::take(&mut hooks.teammate_idle),
+            &plugins,
         );
     }
+    // Installed even when no hook exists yet: a plugin loaded later can bring one.
     let subagents = SubagentGate::new(
         std::mem::take(&mut hooks.subagent_start),
         std::mem::take(&mut hooks.subagent_stop),
         state.clone(),
         setup.approver.clone(),
-    );
-    if !subagents.is_empty() {
-        state.agents().set_lifecycle(Arc::new(subagents));
-    }
+    )
+    .with_plugins(plugins.clone());
+    state.agents().set_lifecycle(Arc::new(subagents));
     let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
         state: state.clone(),
         approver: setup.approver.clone(),
         headless: setup.headless,
         hooks: hooks.pre,
         denied_hooks: hooks.denied,
+        plugin_hooks: plugins.clone(),
         allow_extra: setup.config.shell_preclassifier_allow_extra.clone(),
         user_config: setup.user_config.clone(),
     }));
@@ -789,7 +825,9 @@ pub(super) fn permission_pipeline(
             state.clone(),
             setup.approver.clone(),
         )
+        .with_plugins(plugins.clone())
         .with_guardian(guardian.clone()),
+        plugins,
     })
 }
 
@@ -853,6 +891,7 @@ pub(super) fn retained(
             Arc::new(RoleChains::default()),
         ),
     };
+    let hook_deps = hook_deps(setup, state, &network);
     Ok(Setup {
         network,
         roles,
@@ -882,7 +921,9 @@ pub(super) fn retained(
         shell_cwd: ShellCwd::default(),
         lsp: super::lsp::build(&setup.config, state, setup.env.clone()),
         store: setup.session.store(),
-        // The hooks replace this once they are built.
+        hook_deps,
+        // The hooks replace these once they are built.
+        plugin_hooks: Arc::default(),
         lifecycle: LifecycleHooks::new(Default::default(), state.clone(), setup.approver.clone()),
     })
 }
@@ -1030,8 +1071,8 @@ pub(super) fn extension_runtimes(
     extensions: Extensions,
     state: &Arc<SessionState>,
     project_executables: bool,
-) -> (Arc<Extensions>, Arc<SkillRuntime>) {
-    let extensions = Arc::new(extensions);
+) -> (Arc<Live<Extensions>>, Arc<SkillRuntime>) {
+    let extensions = Arc::new(Live::new(extensions));
     let skills = Arc::new(SkillRuntime::new(
         extensions.clone(),
         state.clone(),

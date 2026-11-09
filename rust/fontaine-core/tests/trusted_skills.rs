@@ -2,6 +2,7 @@
 //! guardian as context, and what a changed file does to both.
 
 mod common;
+use fontaine_tools::live::Live;
 
 use std::ffi::OsString;
 use std::sync::{Arc, Mutex};
@@ -114,7 +115,7 @@ fn load(rig: &Rig) -> (Extensions, Vec<String>) {
 }
 
 fn runtime(rig: &Rig) -> SkillRuntime {
-    SkillRuntime::new(Arc::new(load(rig).0), rig.state.clone(), true)
+    SkillRuntime::new(Arc::new(Live::new(load(rig).0)), rig.state.clone(), true)
 }
 
 fn last_tier(rig: &Rig) -> Tier {
@@ -198,7 +199,7 @@ async fn an_untrusted_or_stale_plugin_skill_lends_nothing_and_warns_once() {
     );
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].contains("/skills trust p:pr"), "{warnings:?}");
-    let runtime = SkillRuntime::new(Arc::new(extensions), s.rig.state.clone(), true);
+    let runtime = SkillRuntime::new(Arc::new(Live::new(extensions)), s.rig.state.clone(), true);
     runtime
         .expand(PLUGIN_SKILL, "", ROOT_AGENT, false)
         .await
@@ -355,7 +356,7 @@ async fn a_user_skill_keeps_lending_every_rule_and_a_trusted_one_adds_the_note()
         warnings[0].contains("trust note for the guardian is off"),
         "{warnings:?}"
     );
-    SkillRuntime::new(Arc::new(extensions), s.rig.state.clone(), true)
+    SkillRuntime::new(Arc::new(Live::new(extensions)), s.rig.state.clone(), true)
         .expand("mine", "", ROOT_AGENT, false)
         .await
         .unwrap();

@@ -25,6 +25,14 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- In-app plugin management: `/plugin install|uninstall|update|enable|disable` and
+  `/reload-plugins` in the terminal UI load, reload and unload a plugin's skills, agents, hooks,
+  rules and MCP servers in the running session without losing the conversation. An install shows
+  the plugin's whole executable surface for confirmation first, an unchanged plugin keeps running,
+  and a load that fails keeps the current set. `/reload-plugins` also picks up edited skills, agents
+  and output styles, applies staged plugin updates and a skill trust you just recorded, and a
+  notice at the turn boundary says when such files changed on disk. The plugin operations now
+  live in `fontaine-core`, shared with the `fontaine plugin` CLI (#554).
 - A `kimi` account kind for Kimi for Coding (the Kimi Code subscription): `kind = "kimi"`
   instead of `kind = "openai-compatible"` plus `base_url` plus `quota = "kimi"`. The endpoint
   is fixed at `https://api.kimi.com/coding/v1`, the key is optional, the subscription quota shows

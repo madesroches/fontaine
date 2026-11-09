@@ -2,6 +2,7 @@
 //! may not do, and what running a skill does to the permission pipeline.
 
 mod common;
+use fontaine_tools::live::Live;
 
 use std::sync::Arc;
 
@@ -426,7 +427,11 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
     let rig = Rig::with(Options::new(Manual));
     w_setup(&rig.world);
     let ext = Arc::new(load_for(&rig.world, &[]).unwrap());
-    let runtime = SkillRuntime::new(ext, rig.state.clone(), true);
+    let runtime = SkillRuntime::new(
+        Arc::new(Live::new(Arc::unwrap_or_clone(ext))),
+        rig.state.clone(),
+        true,
+    );
     let shell_cwd = fontaine_tools::shell_cwd::ShellCwd::default();
     let scratch = tempfile::tempdir().unwrap();
     let tools = registry(RegistryParams {
@@ -709,7 +714,11 @@ async fn a_project_skills_commands_do_not_run_when_the_workspace_is_not_trusted(
         "---\ndescription: p\n---\n!`echo should-not-run`",
     );
     let ext = Arc::new(load_for(&rig.world, &[]).unwrap());
-    let runtime = SkillRuntime::new(ext, rig.state.clone(), false);
+    let runtime = SkillRuntime::new(
+        Arc::new(Live::new(Arc::unwrap_or_clone(ext))),
+        rig.state.clone(),
+        false,
+    );
     let text = runtime.expand("p", "", ROOT_AGENT, false).await.unwrap();
     assert!(text.contains("not trusted"), "{text}");
     assert_eq!(rig.approver.asked(), 0);
