@@ -6,6 +6,14 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The shell and PowerShell installers install to `~/.fontaine/bin` (`%USERPROFILE%\.fontaine\bin`)
+  instead of `$CARGO_HOME/bin`, so a machine without a Rust toolchain no longer gets a `.cargo`
+  directory. `fontaine update` reads the receipt's layout, so an earlier install in
+  `$CARGO_HOME/bin` keeps updating in place. To move, run the installer again and delete the old
+  `$CARGO_HOME/bin/fontaine`; see `docs/installing.md` (#527).
+
 ### Added
 
 - `claude-subscription` accounts offer the provider's native web search, as `anthropic` accounts

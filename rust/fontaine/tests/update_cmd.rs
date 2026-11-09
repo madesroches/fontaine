@@ -62,12 +62,12 @@ struct Install {
 impl Install {
     fn new(version: &str) -> Install {
         let root = tempfile::tempdir().unwrap();
-        let prefix = root.path().canonicalize().unwrap();
-        let bin = prefix.join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        let binary = bin.join("fontaine");
+        let root_path = root.path().canonicalize().unwrap();
+        let prefix = root_path.join("install");
+        std::fs::create_dir_all(&prefix).unwrap();
+        let binary = prefix.join("fontaine");
         std::fs::write(&binary, b"OLD").unwrap();
-        let receipt = prefix.join("config").join("fontaine-receipt.json");
+        let receipt = root_path.join("config").join("fontaine-receipt.json");
         std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
         std::fs::write(
             &receipt,

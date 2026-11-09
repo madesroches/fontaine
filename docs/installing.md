@@ -23,13 +23,17 @@ there. [Windows has its own installer](#the-installer-windows).
 It needs `curl` or `wget`, and `tar`. It detects your platform, downloads the matching archive from
 that `dev-<n>` release, and writes:
 
-- the `fontaine` binary in `$CARGO_HOME/bin` (`~/.cargo/bin` when `CARGO_HOME` is unset);
+- the `fontaine` binary in `~/.fontaine/bin`;
 - an install receipt at `${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`, recording
-  the install prefix (`$CARGO_HOME`, or `~/.cargo`), the cargo-home layout and the installed
-  binary, so `fontaine update` can tell how Fontaine was installed;
-- shell setup that puts `$CARGO_HOME/bin` on your `PATH`: `$CARGO_HOME/env` and `env.fish`, a line
-  in your shell's rc files that sources it, and, for fish,
-  `~/.config/fish/conf.d/fontaine.env.fish`. Set `FONTAINE_NO_MODIFY_PATH=1` to skip these edits.
+  the install directory, the flat layout and the installed binary, so `fontaine update` can tell
+  how Fontaine was installed;
+- shell setup that puts `~/.fontaine/bin` on your `PATH`: `env` and `env.fish` scripts in
+  `~/.fontaine/bin`, a line in your shell's rc files (`.profile`, `.bashrc`, `.bash_profile`,
+  `.bash_login`, `.zshrc`, `.zshenv`) that sources `env`, and, for fish,
+  `~/.config/fish/conf.d/fontaine.env.fish`. Set `FONTAINE_NO_MODIFY_PATH=1` to skip these edits;
+  the installer also skips them when `~/.fontaine/bin` is already on your `PATH`.
+
+The installer does not touch `$CARGO_HOME` and needs no Rust toolchain.
 
 Open a new shell, then run `fontaine --version`.
 
@@ -55,27 +59,33 @@ browser and install it manually.
 
 ### Overwrite behaviour
 
-The installer and `cargo install --git` both write `$CARGO_HOME/bin/fontaine`. The installer
-replaces a cargo-installed binary. `cargo install` refuses to replace a binary it did not install,
-so after the installer add `--force`:
+The installer writes `~/.fontaine/bin/fontaine` and replaces what is there. `cargo install --git`
+writes `$CARGO_HOME/bin/fontaine` (`~/.cargo/bin` by default), so the two do not collide. If both
+exist, whichever directory comes first on your `PATH` runs, and only the installer's copy can
+`fontaine update`; delete the other to avoid confusion.
 
-```
-cargo install --git https://github.com/madesroches/fontaine fontaine --force
-```
+### Moving from an earlier installer
+
+Earlier installers wrote `$CARGO_HOME/bin/fontaine`. That install keeps updating itself in place
+through its old receipt. Running the current installer adds a second copy in `~/.fontaine/bin` and
+overwrites the receipt, after which `fontaine update` updates the new copy. Then delete the old
+`$CARGO_HOME/bin/fontaine` (`~/.cargo/bin/fontaine` by default), or the copy first on your `PATH`
+keeps running. On a machine with no Rust toolchain, also delete the leftovers: `$CARGO_HOME/env`,
+`$CARGO_HOME/env.fish`, the `. "$HOME/.cargo/env"` lines in your rc files and `~/.cargo` itself.
+Keep them if rustup or cargo is installed.
 
 ### Uninstalling
 
 Remove:
 
-- `$CARGO_HOME/bin/fontaine` (`~/.cargo/bin/fontaine` by default);
+- `~/.fontaine`, which holds the binary and the `env` and `env.fish` scripts;
 - the receipt, `${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`;
-- `~/.config/fish/conf.d/fontaine.env.fish`, the one shell file specific to Fontaine.
+- `~/.config/fish/conf.d/fontaine.env.fish`;
+- the lines in your shell's rc files that source `~/.fontaine/bin/env`.
 
-Do not delete `~/.config/fontaine` as a whole; it is also Fontaine's configuration directory.
-
-`$CARGO_HOME/env`, `$CARGO_HOME/env.fish` and the `. "$HOME/.cargo/env"` lines in your rc files are
-shared with rustup. Remove them only if neither rustup nor cargo is installed; otherwise you take
-`cargo` and `rustc` off your `PATH`.
+Do not delete `~/.config/fontaine` as a whole; it is also Fontaine's configuration directory. An
+install made by an earlier installer is in `$CARGO_HOME/bin`; see
+[Moving from an earlier installer](#moving-from-an-earlier-installer).
 
 ## The installer (Windows)
 
@@ -93,12 +103,11 @@ for, with a receipt `version` of `<version>-dev.<n>+<commit>`.
 It needs Windows PowerShell 5.1 or PowerShell 7, both of which ship the commands it uses, and it
 writes:
 
-- `fontaine.exe` in `%CARGO_HOME%\bin` (`%USERPROFILE%\.cargo\bin` when `CARGO_HOME` is unset);
+- `fontaine.exe` in `%USERPROFILE%\.fontaine\bin`;
 - an install receipt at `%LOCALAPPDATA%\fontaine\fontaine-receipt.json`, or in
-  `%XDG_CONFIG_HOME%\fontaine` when `XDG_CONFIG_HOME` is set, recording the install prefix, the
-  cargo-home layout and the installed binary, so `fontaine update` can tell how Fontaine was
-  installed;
-- an entry for `%CARGO_HOME%\bin` in your user `Path` (the registry key `HKCU\Environment`). Set
+  `%XDG_CONFIG_HOME%\fontaine` when `XDG_CONFIG_HOME` is set, recording the install directory, the
+  flat layout and the installed binary, so `fontaine update` can tell how Fontaine was installed;
+- an entry for `%USERPROFILE%\.fontaine\bin` in your user `Path` (the registry key `HKCU\Environment`). Set
   `FONTAINE_NO_MODIFY_PATH=1` to skip it.
 
 Open a new terminal, then run `fontaine --version`. Git for Windows is recommended but not required:
@@ -129,23 +138,27 @@ Windows certificate store. Otherwise download the archive in a browser and insta
 
 ### Overwrite behaviour (Windows)
 
-The installer and `cargo install --git` both write `%CARGO_HOME%\bin\fontaine.exe`. The installer
-replaces a cargo-installed binary; after the installer, `cargo install` needs `--force` to replace
-it, as above.
+The installer writes `%USERPROFILE%\.fontaine\bin\fontaine.exe` and replaces what is there.
+`cargo install --git` writes `%CARGO_HOME%\bin\fontaine.exe`, so the two do not collide; whichever
+directory comes first on your `Path` runs, and only the installer's copy can `fontaine update`.
+An install made by an earlier installer is in `%CARGO_HOME%\bin` and keeps updating itself there;
+running the current installer adds a copy under `.fontaine` and overwrites the receipt. Delete
+`%CARGO_HOME%\bin\fontaine.exe` (`%USERPROFILE%\.cargo\bin` by default) afterwards, and with no
+Rust toolchain installed also the `%CARGO_HOME%\bin` entry in your user `Path` and the `.cargo`
+directory.
 
 ### Uninstalling (Windows)
 
 Remove:
 
-- `%CARGO_HOME%\bin\fontaine.exe` (`%USERPROFILE%\.cargo\bin\fontaine.exe` by default);
-- `%CARGO_HOME%\bin\fontaine.exe.old` and any `fontaine.exe.old-*`, which `fontaine update` leaves
-  there while a session still runs from the old binary;
+- `%USERPROFILE%\.fontaine`, which holds `fontaine.exe` and, while a session still runs from the
+  old binary after `fontaine update`, `fontaine.exe.old` and any `fontaine.exe.old-*`;
 - the receipt, `%LOCALAPPDATA%\fontaine\fontaine-receipt.json` (or the `%XDG_CONFIG_HOME%\fontaine`
   one).
 
 Do not delete the `fontaine` directory as a whole; it is also Fontaine's configuration directory.
-The `%CARGO_HOME%\bin` entry in your user `Path` is shared with rustup and cargo; remove it (Settings,
-System, About, Advanced system settings, Environment Variables) only if neither is installed.
+Remove `%USERPROFILE%\.fontaine\bin` from your user `Path` (Settings, System, About, Advanced
+system settings, Environment Variables).
 
 ## Updating
 

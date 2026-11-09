@@ -19,8 +19,8 @@ On Linux (x86_64) and macOS (Apple silicon and Intel), one command installs the 
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.sh | sh
 ```
 
-It needs `curl` or `wget` and `tar`. It installs `fontaine` to `$CARGO_HOME/bin` (`~/.cargo/bin` by
-default), adds that directory to your shell profile if needed, and writes an install receipt at
+It needs `curl` or `wget` and `tar`. It installs `fontaine` to `~/.fontaine/bin`, adds that
+directory to your shell profile if needed, and writes an install receipt at
 `${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`. It checks the archive's sha256 when `sha256sum` is
 present and otherwise skips the check with a notice that `--quiet` suppresses; it does not verify
 the minisign signature. The installer ignores Fontaine's `[network]` proxy, CA and mTLS settings:
@@ -33,7 +33,7 @@ On Windows (x86_64), run this in PowerShell or a Command Prompt:
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.ps1 | iex"
 ```
 
-It installs `fontaine.exe` to `%CARGO_HOME%\bin` (`%USERPROFILE%\.cargo\bin` by default), adds that
+It installs `fontaine.exe` to `%USERPROFILE%\.fontaine\bin`, adds that
 directory to your user `Path`, writes an install receipt at
 `%LOCALAPPDATA%\fontaine\fontaine-receipt.json`, and checks the archive's sha256 before unpacking it;
 it does not verify the minisign signature. Git for Windows is recommended but not required: without it Fontaine runs commands in PowerShell. The installer ignores Fontaine's `[network]` proxy, CA and mTLS settings: behind a proxy set
@@ -54,8 +54,10 @@ source:
 cargo install --git https://github.com/madesroches/fontaine fontaine
 ```
 
-The installers and `cargo install --git` both install to `$CARGO_HOME/bin`. The installer overwrites a
-cargo-installed binary; to overwrite an installer-installed one, add `--force` to `cargo install`.
+The installers install to `~/.fontaine/bin` and `cargo install --git` to `$CARGO_HOME/bin`. With both,
+whichever directory is first on your `PATH` runs, and only the installer's copy can `fontaine update`.
+If you installed with an earlier installer, which used `$CARGO_HOME/bin`, see
+[Installing Fontaine](docs/installing.md#moving-from-an-earlier-installer).
 
 Fontaine is not published to crates.io. Release binaries include the PromptGuard 2 tool-result
 scanner; a source build has it only with `--features pg2` (`cargo install --features pg2 ...`).
