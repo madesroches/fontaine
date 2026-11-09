@@ -171,9 +171,21 @@ pub trait Framed: Backend {
 
     /// Erases the screen and then the scrollback, and homes the cursor.
     fn purge(&mut self) -> Result<(), Self::Error>;
+
+    /// Limits scrolling to `rows`, or lifts the limit with `None`. Homes the cursor.
+    fn margins(&mut self, rows: Option<std::ops::Range<u16>>) -> Result<(), Self::Error>;
 }
 
 impl<W: Write> Framed for CrosstermBackend<FrameWriter<W>> {
+    fn margins(&mut self, rows: Option<std::ops::Range<u16>>) -> io::Result<()> {
+        let bytes = match rows {
+            Some(rows) => format!("\x1b[{};{}r", rows.start + 1, rows.end),
+            None => "\x1b[r".to_string(),
+        };
+        self.writer_mut().frame.extend_from_slice(bytes.as_bytes());
+        Ok(())
+    }
+
     fn begin_frame(&mut self) {
         self.writer_mut().begin();
     }
@@ -206,6 +218,11 @@ impl Framed for TestBackend {
     }
 
     fn notify(&mut self, _bytes: &[u8]) {}
+
+    // `TestBackend` scrolls through its own `scroll_region_up`, never through margins.
+    fn margins(&mut self, _rows: Option<std::ops::Range<u16>>) -> Result<(), Self::Error> {
+        Ok(())
+    }
 
     fn purge(&mut self) -> Result<(), Self::Error> {
         // The backend keeps its scrollback to itself, so a fresh one stands for the cleared one.
@@ -281,7 +298,7 @@ impl<B: Framed> Anchor for Anchored<B> {
     }
 }
 
-impl<B: Backend> Backend for Anchored<B> {
+impl<B: Framed> Backend for Anchored<B> {
     type Error = B::Error;
 
     fn draw<'a, I>(&mut self, content: I) -> Result<(), Self::Error>
@@ -339,7 +356,27 @@ impl<B: Backend> Backend for Anchored<B> {
         region: std::ops::Range<u16>,
         line_count: u16,
     ) -> Result<(), Self::Error> {
-        self.inner.scroll_region_up(region, line_count)
+        // Rows reach the terminal's scrollback only by line feeds: Windows Terminal and conhost
+        // (whose ConPTY passes the bytes through) drop the rows a scroll-up (SU) moves off the
+        // top, whatever the margins, where xterm and tmux keep them. A line feed at the bottom of
+        // margins that start on the top row keeps them on all of these. A one-row region is
+        // invalid as margins, so it scrolls the whole screen, as an ignored SU margin did.
+        if region.start != 0 {
+            return self.inner.scroll_region_up(region, line_count);
+        }
+        let bounded = region.end >= 2;
+        let bottom = if bounded {
+            self.inner.margins(Some(region.clone()))?;
+            region.end - 1
+        } else {
+            self.inner.size()?.height.saturating_sub(1)
+        };
+        self.inner.set_cursor_position(Position::new(0, bottom))?;
+        self.inner.append_lines(line_count)?;
+        if bounded {
+            self.inner.margins(None)?;
+        }
+        Ok(())
     }
 
     fn scroll_region_down(
@@ -1175,6 +1212,17 @@ mod tests {
             }
         }
 
+        /// Whether `bytes` hold a scroll-up (`CSI n S`).
+        pub fn scrolls_up(bytes: &[u8]) -> bool {
+            bytes.windows(2).enumerate().any(|(at, w)| {
+                w == b"\x1b["
+                    && bytes[at + 2..]
+                        .iter()
+                        .find(|b| !b.is_ascii_digit())
+                        .is_some_and(|&b| b == b'S')
+            })
+        }
+
         /// Records each write before passing it on, above `Sink`, which splits what it is given.
         struct Counted(Sink, Writes);
 
@@ -1191,6 +1239,13 @@ mod tests {
 
         impl Write for Sink {
             fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                // Windows Terminal and conhost drop the rows a scroll-up moves off the screen
+                // instead of keeping them in scrollback, which this emulator would hide.
+                assert!(
+                    !scrolls_up(bytes),
+                    "a frame scrolls with SU: {:?}",
+                    String::from_utf8_lossy(bytes)
+                );
                 let mut parser = self.0.lock().unwrap();
                 let mut rest = bytes;
                 // tmux moves the visible rows into its history on a whole-screen erase too, which
@@ -1252,6 +1307,10 @@ mod tests {
 
             fn purge(&mut self) -> io::Result<()> {
                 self.inner.purge()
+            }
+
+            fn margins(&mut self, rows: Option<std::ops::Range<u16>>) -> io::Result<()> {
+                self.inner.margins(rows)
             }
         }
 
@@ -2212,6 +2271,9 @@ mod tests {
         let mut harness = emulated::Harness::new(40, 12);
         let mut app = app();
         for i in 0..20 {
+            if i % 4 == 0 {
+                app.transcript.user(format!("question {i}"));
+            }
             app.transcript.notice(format!("main {i}"));
             harness.render(&mut app, "filling");
         }
@@ -2259,8 +2321,82 @@ mod tests {
             let count = seen.iter().filter(|r| r.trim_end() == text).count();
             assert_eq!(count, 1, "{text}: {seen:?}");
         }
+        let questions: Vec<&str> = seen
+            .iter()
+            .map(|r| r.trim_end())
+            .filter(|r| r.starts_with("> question"))
+            .collect();
+        assert_eq!(
+            questions,
+            [
+                "> question 0",
+                "> question 4",
+                "> question 8",
+                "> question 12",
+                "> question 16"
+            ],
+            "{seen:?}"
+        );
         assert!(seen.iter().any(|r| r.contains("arrived while hidden")));
         assert!(!seen.iter().any(|r| r.contains("agent ")), "{seen:?}");
+    }
+
+    #[test]
+    fn a_user_message_committed_at_the_top_of_the_screen_keeps_its_row_and_blank() {
+        let mut harness = emulated::Harness::new(30, 8);
+        let mut app = app();
+        for i in 0..14 {
+            app.transcript.notice(format!("n{i}"));
+            harness.render(&mut app, "filling");
+        }
+        app.transcript.user("hello there".into());
+        harness.render(&mut app, "user");
+        for i in 0..6 {
+            app.transcript.notice(format!("after {i}"));
+            harness.render(&mut app, "after");
+        }
+        let seen = harness.scrollback();
+        let at = seen
+            .iter()
+            .position(|r| r == "> hello there")
+            .unwrap_or_else(|| panic!("{seen:?}"));
+        assert_eq!(seen[at + 1], "", "{seen:?}");
+        assert_eq!(seen[at + 2], "· after 0", "{seen:?}");
+        assert_eq!(seen.iter().filter(|r| r.contains("hello there")).count(), 1);
+    }
+
+    #[test]
+    fn settled_rows_leave_the_screen_by_line_feeds_at_the_bottom_of_top_margins() {
+        fn scrolled(region: std::ops::Range<u16>, count: u16) -> (Vec<String>, Vec<String>) {
+            let mut harness = emulated::Harness::new(10, 6);
+            for row in 0..6 {
+                harness.paint(row, &format!("r{row}"));
+            }
+            let backend = harness.screen.terminal.backend_mut();
+            Anchor::begin_frame(backend);
+            backend.scroll_region_up(region, count).unwrap();
+            Anchor::end_frame(backend).unwrap();
+            (harness.scrollback(), harness.real())
+        }
+
+        // Rows above a viewport that sits below the top: the rest of the screen stays put.
+        let (history, screen) = scrolled(0..3, 2);
+        assert_eq!(history, ["r0", "r1"]);
+        assert_eq!(screen, ["r2", "", "", "r3", "r4", "r5"]);
+
+        // A one-row region cannot be margins, so the whole screen scrolls.
+        let (history, screen) = scrolled(0..1, 1);
+        assert_eq!(history, ["r0"]);
+        assert_eq!(screen, ["r1", "r2", "r3", "r4", "r5", ""]);
+    }
+
+    #[test]
+    fn scrolls_up_spots_su_and_nothing_else() {
+        assert!(emulated::scrolls_up(b"x\x1b[1;1r\x1b[1S\x1b[r"));
+        assert!(emulated::scrolls_up(b"\x1b[S"));
+        assert!(!emulated::scrolls_up(
+            b"\x1b[1;5r\x1b[5;1H\n\x1b[r\x1b[2J\x1b[1T"
+        ));
     }
 
     #[test]

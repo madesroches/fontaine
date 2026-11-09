@@ -183,6 +183,10 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- TUI on Windows: user messages and replies reach Windows Terminal's (and conhost's) scrollback
+  again, including after an agent switch or a resize. Settled rows now leave the screen by line
+  feeds instead of a scroll-up (`CSI S`), whose rows those terminals drop instead of keeping in
+  scrollback (#543).
 - `claude-subscription`: a response that stops at `max_tokens` is returned truncated instead of
   failing as native tool execution. The process is stopped at `message_stop`, so the CLI's own
   output-limit recovery no longer runs or spends plan usage (#479).

@@ -154,8 +154,38 @@ history, which the harness cannot see. So reproduce in the terminal that reporte
    inside the tmux command and read `log`: a frame is the bytes between `ESC[?2026h` and
    `ESC[?2026l`.
 
+On Windows (Windows Terminal, and legacy conhost when reachable), the same example runs in a
+window sized to 80x12 (set it in the terminal's profile or with `mode con: cols=80 lines=12` in
+conhost):
+
+1. `cargo build -p fontaine-tui --example live_area`, then run `target\debug\examples\live_area.exe`
+   for the notices and streamed replies. Scroll the terminal's own scrollback up: each `note N`
+   and `wordN` must appear once.
+2. `live_area.exe user` commits twelve `question N` user messages with the viewport at the top
+   of the screen, then reprints the transcript the way an agent switch does. Every `question N`
+   must be in scrollback exactly once, in order, each followed by a blank row.
+3. To see the bytes a frame emits, run the example in a pty-capable shell and log stdout
+   (a frame is the bytes between `ESC[?2026h` and `ESC[?2026l`); the vt100 harness's
+   `writes_of` returns the same bytes for a test render.
+
+Windows Terminal and conhost share one VT interpreter, and the ConPTY between the program and
+Windows Terminal passes the bytes through, so a classic conhost window stands in for Windows
+Terminal and can be scripted. Start the program under `C:\Windows\System32\conhost.exe` (started any
+other way, the console may be handed to Windows Terminal, which keeps no scrollback in the console
+buffer), `AttachConsole` to the program's process, size the buffer deep and the window small with
+`SetConsoleScreenBufferSize` / `SetConsoleWindowInfo`, type with `WriteConsoleInputW`, and read
+every row with `ReadConsoleOutputCharacterW`: rows above `srWindow.Top` are the scrollback. For
+`fontaine` itself, point `FONTAINE_CONFIG_DIR` / `FONTAINE_DATA_DIR` at a config whose account is
+a local OpenAI-compatible stub that streams a fixed reply. Don't use an emulator library such as
+`pyte` on a ConPTY capture as the oracle: it ignores `CSI S` and `CSI T`, so it gets scrolling wrong.
+
+What this showed: conhost (like Windows Terminal) drops the rows a scroll-up (`CSI n S`) moves off
+the screen, whatever the margins, where xterm and tmux keep them. Only a line feed at the bottom of
+the screen, or at the bottom of margins that start on the top row, moves a row into scrollback.
+
 Whatever the cause, pin it in the vt100 harness where the model can express it (the harness
-fails any erase from the top-left corner), and keep the tmux steps as the manual check.
+fails any erase from the top-left corner and any scroll-up), and keep the tmux steps as the manual
+check.
 
 ## Manual Verification
 
