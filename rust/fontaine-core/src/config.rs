@@ -979,6 +979,10 @@ pub struct McpServer {
     /// here, already expanded.
     pub env: Option<BTreeMap<String, String>>,
     pub url: Option<String>,
+    /// The text holds `${VAR}` references to expand when the server starts: a repository's
+    /// `.mcp.json`. Never set from a settings file.
+    #[serde(skip)]
+    pub expand: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -1648,6 +1652,33 @@ fn check_network_shape(n: &NetworkSettings) -> Result<(), (String, String)> {
     Ok(())
 }
 
+/// Whether an MCP server definition is usable: exactly one of a command and a URL, the keys that
+/// belong to its transport, and a name every tool name can carry.
+pub(crate) fn check_mcp_server(name: &str, server: &McpServer) -> Result<(), String> {
+    match (&server.command, &server.url) {
+        (Some(command), None) => {
+            if command.is_empty() {
+                return Err("`command` must not be empty".to_string());
+            }
+        }
+        (None, Some(url)) => {
+            if url.is_empty() {
+                return Err("`url` must not be empty".to_string());
+            }
+            if server.args.is_some() || server.env_vars.is_some() || server.env.is_some() {
+                return Err("`args`, `env_vars` and `env` apply to stdio servers only".to_string());
+            }
+        }
+        _ => return Err("set exactly one of `command` (stdio) or `url`".to_string()),
+    }
+    if !crate::mcp_json::valid_server_name(name) {
+        return Err(
+            "server names are non-empty, contain no `__`, neither start nor end with `_`, and use only letters, digits, `_` and `-`".to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     let bad = |key: &str, msg: &str| Err(ConfigError::invalid(path, key, msg));
 
@@ -1812,38 +1843,8 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         }
     }
     for (name, server) in s.mcp.iter().flat_map(|m| m.servers.iter().flatten()) {
-        let key = format!("mcp.servers.{name}");
-        match (&server.command, &server.url) {
-            (Some(command), None) => {
-                if command.is_empty() {
-                    return bad(&key, "`command` must not be empty");
-                }
-            }
-            (None, Some(url)) => {
-                if url.is_empty() {
-                    return bad(&key, "`url` must not be empty");
-                }
-                if server.args.is_some() || server.env_vars.is_some() || server.env.is_some() {
-                    return bad(
-                        &key,
-                        "`args`, `env_vars` and `env` apply to stdio servers only",
-                    );
-                }
-            }
-            _ => return bad(&key, "set exactly one of `command` (stdio) or `url`"),
-        }
-        if name.is_empty()
-            || name.contains("__")
-            || name.starts_with('_')
-            || name.ends_with('_')
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
-            return bad(
-                &key,
-                "server names are non-empty, contain no `__`, neither start nor end with `_`, and use only letters, digits, `_` and `-`",
-            );
+        if let Err(message) = check_mcp_server(name, server) {
+            return bad(&format!("mcp.servers.{name}"), &message);
         }
     }
     for (name, server) in s.lsp.iter().flat_map(|l| l.servers.iter().flatten()) {
@@ -2426,6 +2427,8 @@ const ENV_RESERVED_PREFIX: &str = "FONTAINE_";
 pub enum Slot {
     Managed,
     Cli,
+    /// `mcp-local.toml` in the user's config directory: servers private to one workspace.
+    Local,
     ProjectLocal,
     Project,
     User,
@@ -2438,6 +2441,7 @@ impl Slot {
         match self {
             Slot::Managed => "managed",
             Slot::Cli => "cli",
+            Slot::Local => "local",
             Slot::ProjectLocal => "project-local",
             Slot::Project => "project",
             Slot::User => "user",
@@ -2638,6 +2642,9 @@ pub struct Config {
     pub mcp_servers: BTreeMap<String, McpServer>,
     /// Where each server in `mcp_servers` was defined.
     pub mcp_origins: BTreeMap<String, Origin>,
+    /// Problems that did not stop the load: a malformed `mcp-local.toml` or `.mcp.json`, an
+    /// entry in one that cannot be used, a name defined twice.
+    pub warnings: Vec<String>,
     /// The language servers of the user file and `--settings`.
     pub lsp_servers: BTreeMap<String, LspServer>,
     /// The language servers installed plugins define, in install order, under composed names.
@@ -2760,6 +2767,7 @@ impl Config {
             hooks: Hooks::default(),
             mcp_servers: BTreeMap::new(),
             mcp_origins: BTreeMap::new(),
+            warnings: Vec::new(),
             lsp_servers: BTreeMap::new(),
             plugin_lsp_servers: Vec::new(),
             auto_mode: AutoMode::default(),
@@ -3391,8 +3399,9 @@ fn diagnosis_order(slot: Slot) -> u8 {
         Slot::User => 1,
         Slot::Project => 2,
         Slot::ProjectLocal => 3,
-        Slot::Cli => 4,
-        Slot::Plugin => 5,
+        Slot::Local => 4,
+        Slot::Cli => 5,
+        Slot::Plugin => 6,
     }
 }
 
@@ -3486,6 +3495,20 @@ pub fn diagnose(params: &LoadParams<'_>) -> Vec<LayerDiagnosis> {
                 });
             }
         }
+    }
+    let local_path = params.config_dir.join(crate::mcp_config::LOCAL_FILE);
+    match crate::mcp_config::check_local_file(&local_path) {
+        Ok(false) => {}
+        outcome => out.push(LayerDiagnosis {
+            slot: Slot::Local,
+            column: Some(Column::User),
+            path: Some(local_path),
+            demotion: None,
+            outcome: match outcome {
+                Ok(_) => LayerOutcome::Loaded,
+                Err(e) => LayerOutcome::Failed(e),
+            },
+        }),
     }
     if let Some(path) = params.settings_file {
         let outcome = match std::fs::read_to_string(path) {
@@ -3641,17 +3664,36 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
         },
     ];
 
-    let mut config = Config::defaults(workspace);
+    let mut config = Config::defaults(workspace.clone());
     config.scopes.push(ScopeEntry {
         slot: Slot::Managed,
         column: None,
         path: None,
         loaded: false,
     });
+    let local_path = params.config_dir.join(crate::mcp_config::LOCAL_FILE);
+    let local_servers = crate::mcp_config::read_local(&local_path, &workspace);
+    let json_path = crate::mcp_config::json_path(&workspace);
+    let json_servers = crate::mcp_config::read_project_json(&json_path);
+    config
+        .warnings
+        .extend(local_servers.warnings.iter().cloned());
+    config
+        .warnings
+        .extend(json_servers.warnings.iter().cloned());
+
     for layer in &layers {
         let flags_only = layer.slot == Slot::Cli && cli_path.is_none();
         if flags_only && !flag_rules {
             continue;
+        }
+        if layer.slot == Slot::ProjectLocal && local_servers.file_present {
+            config.scopes.push(ScopeEntry {
+                slot: Slot::Local,
+                column: Some(Column::User),
+                path: Some(local_path.clone()),
+                loaded: local_servers.applies,
+            });
         }
         config.scopes.push(ScopeEntry {
             slot: layer.slot,
@@ -3659,13 +3701,59 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
             path: (!flags_only).then(|| layer.path.clone()),
             loaded: layer.settings.is_some(),
         });
+        if layer.slot == Slot::Project && json_servers.file_present {
+            config.scopes.push(ScopeEntry {
+                slot: Slot::Project,
+                column: Some(Column::Project),
+                path: Some(json_path.clone()),
+                loaded: true,
+            });
+        }
     }
 
+    // Name collisions resolve by position: user, then `.mcp.json`, then the project's settings,
+    // then the project-local file, then `mcp-local.toml`, then `--settings`.
+    let toml_project_servers: Vec<String> = layers
+        .iter()
+        .find(|l| l.slot == Slot::Project)
+        .and_then(|l| l.settings.as_ref())
+        .and_then(|s| s.mcp.as_ref())
+        .and_then(|m| m.servers.as_ref())
+        .map(|servers| servers.keys().cloned().collect())
+        .unwrap_or_default();
     for layer in layers.iter().rev() {
-        let Some(settings) = &layer.settings else {
-            continue;
-        };
-        config.apply(settings, layer.slot, layer.column);
+        if layer.slot == Slot::Cli {
+            for (name, server) in &local_servers.servers {
+                config.mcp_servers.insert(name.clone(), server.clone());
+                config.mcp_origins.insert(
+                    name.clone(),
+                    Origin {
+                        slot: Slot::Local,
+                        user_trust: true,
+                    },
+                );
+            }
+        }
+        if layer.slot == Slot::Project {
+            for (name, server) in &json_servers.servers {
+                if toml_project_servers.contains(name) {
+                    config.warnings.push(format!(
+                        "MCP server `{name}` is defined in both .mcp.json and .fontaine/settings.toml; the settings.toml definition is used"
+                    ));
+                }
+                config.mcp_servers.insert(name.clone(), server.clone());
+                config.mcp_origins.insert(
+                    name.clone(),
+                    Origin {
+                        slot: Slot::Project,
+                        user_trust: false,
+                    },
+                );
+            }
+        }
+        if let Some(settings) = &layer.settings {
+            config.apply(settings, layer.slot, layer.column);
+        }
     }
     config.sources = collect_sources(
         layers

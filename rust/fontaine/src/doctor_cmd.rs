@@ -5,25 +5,25 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use fontaine_core::agent::{mcp_plan, probe_server, server_spec};
 use fontaine_core::config::{self, Config, LayerDiagnosis, Slot};
 use fontaine_core::config_catalog::Running;
 use fontaine_core::containment;
 use fontaine_core::dirs::Dirs;
 use fontaine_core::doctor_report::{
-    self as report, DoctorReport, ExtensionFacts, Finding, GuardianFact, HookCount, McpGate,
-    McpRow, McpState, ModelFacts, ProjectExecutables, Section, SkillCounts, TrustFacts,
+    self as report, DoctorReport, ExtensionFacts, Finding, GuardianFact, HookCount, McpRow,
+    ModelFacts, ProjectExecutables, Section, SkillCounts, TrustFacts,
 };
 use fontaine_core::extensions::{self, Scope};
 use fontaine_core::instructions::{self, Sources};
 use fontaine_core::memory;
 use fontaine_core::models::{self, GuardianChoice, GuardianModel, LISTING_TIMEOUT, ResolveParams};
-use fontaine_core::plugins::{self, PluginContributions};
+use fontaine_core::plugins::PluginContributions;
 use fontaine_core::trust;
 use fontaine_guardian::Profile;
 use fontaine_tools::error_chain::chain;
 
 use crate::cli::{Cli, DoctorArgs, ReportFormat, Toggle};
+use crate::mcp_probe::{apply_installed_plugins, probe_servers};
 use crate::telemetry::{self, DebugSink};
 use crate::{
     Host, home_dir, load_params, resolve_dirs, resolve_roots, shared_env, timeout, trust_summary,
@@ -109,7 +109,7 @@ async fn build_report(
 
     // Plugin servers, hooks and skills belong to a session's configuration, so they are applied
     // here; staged updates are not, because applying them writes.
-    let (config, contributions, plugin_error) = apply_plugins(base, &dirs, host);
+    let (config, contributions, plugin_error) = apply_installed_plugins(base, &dirs, host);
 
     let resolved = timeout(
         LISTING_TIMEOUT,
@@ -183,31 +183,6 @@ async fn build_report(
     DoctorReport { sections }
 }
 
-/// The configuration with the installed plugins applied, or as it was with the reason they were
-/// not.
-fn apply_plugins(
-    config: Config,
-    dirs: &Dirs,
-    host: &Host,
-) -> (Config, PluginContributions, Option<String>) {
-    let loaded = plugins::load_installed(
-        &dirs.config,
-        &plugins::PluginContext {
-            project_root: &config.workspace,
-            env: &*host.env,
-        },
-    );
-    let contributions = match loaded {
-        Ok(contributions) => contributions,
-        Err(e) => return (config, PluginContributions::default(), Some(chain(&e))),
-    };
-    let mut applied = config.clone();
-    match applied.apply_plugins(&contributions) {
-        Ok(()) => (applied, contributions, None),
-        Err(e) => (config, PluginContributions::default(), Some(chain(&e))),
-    }
-}
-
 fn model_facts(models: &models::Models) -> ModelFacts {
     ModelFacts {
         main: models.main.reference.to_string(),
@@ -235,55 +210,39 @@ async fn mcp_section(
     args: &DoctorArgs,
     trusted: bool,
 ) -> Section {
-    // The interactive rule with no prompt: doctor never runs repository code the user has not
-    // let a session run.
-    let plan = mcp_plan(config, &config.workspace, &dirs.data, trusted, true);
-    let env = shared_env(host);
-    let probes = config.mcp_servers.keys().map(|name| {
-        let planned = plan.iter().find(|p| &p.name == name);
-        let gate = report::mcp_gate(planned);
-        let env = env.clone();
-        async move {
-            let state = match gate {
-                McpGate::Untrusted => McpState::NotStarted("the workspace is not trusted".into()),
-                McpGate::Unapproved => McpState::NotStarted(
-                    "a repository-defined server the user has not approved; the interactive UI asks first"
-                        .into(),
-                ),
-                McpGate::Start if args.connect == Toggle::No => {
-                    McpState::NotStarted("probe skipped (--connect=no)".into())
-                }
-                McpGate::Start => probe(config, name, &env).await,
-            };
-            let server = &config.mcp_servers[name];
-            let origin = config.mcp_origins.get(name).copied().unwrap_or_default();
+    let probed = probe_servers(
+        config,
+        dirs,
+        host,
+        trusted,
+        args.connect != Toggle::No,
+        None,
+    )
+    .await;
+    let rows: Vec<McpRow> = probed
+        .into_iter()
+        .map(|probed| {
+            let server = &config.mcp_servers[&probed.name];
+            let origin = config
+                .mcp_origins
+                .get(&probed.name)
+                .copied()
+                .unwrap_or_default();
             McpRow {
-                name: name.clone(),
+                name: probed.name,
                 origin: origin.slot.label(),
-                transport: if server.command.is_some() { "stdio" } else { "http" },
-                gate,
+                transport: if server.command.is_some() {
+                    "stdio"
+                } else {
+                    "http"
+                },
+                gate: probed.gate,
                 project: origin.is_project(),
-                state,
+                state: probed.state,
             }
-        }
-    });
-    let rows = futures::future::join_all(probes).await;
+        })
+        .collect();
     report::mcp_section(&rows)
-}
-
-async fn probe(config: &Config, name: &str, env: &fontaine_core::agent::EnvLookup) -> McpState {
-    let Some(spec) = server_spec(config, name, &config.workspace) else {
-        return McpState::Failed("names neither a command nor a URL".into());
-    };
-    let network = match config.loaded_network(None) {
-        Ok(network) => network,
-        Err(e) => return McpState::Failed(chain(&e)),
-    };
-    let env = env.clone();
-    match probe_server(&spec, &network, &move |name| env(name)).await {
-        Ok(tools) => McpState::Connected(tools),
-        Err(error) => McpState::Failed(error),
-    }
 }
 
 fn extensions_section(
@@ -310,6 +269,7 @@ fn extensions_section(
     let loaded = instructions::load(&sources);
 
     let mut warnings: Vec<String> = roots.warnings;
+    warnings.extend(config.warnings.iter().cloned());
     warnings.extend(contributions.warnings.iter().cloned());
     warnings.extend(config.lsp_table().warnings);
     let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();

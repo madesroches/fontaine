@@ -80,9 +80,17 @@ pub fn write_atomic_keeping_mode(path: &Path, contents: &[u8]) -> io::Result<()>
     replace(path, Access::KeepExisting, |file| file.write_all(contents))
 }
 
+/// [`write_atomic_keeping_mode`] for a file that lives in a repository's work tree: an existing
+/// file keeps its permissions, and a new one gets the mode `File::create` would give it (0666
+/// less the umask on Unix, the inherited ACL on Windows) rather than the temporary file's 0600.
+pub fn write_atomic_default_mode(path: &Path, contents: &[u8]) -> io::Result<()> {
+    replace(path, Access::Default, |file| file.write_all(contents))
+}
+
 enum Access {
     OwnerOnly,
     KeepExisting,
+    Default,
 }
 
 // The writer closure is the injection point for the interrupted-write test.
@@ -101,15 +109,19 @@ fn replace(
     prefix.push(".");
     // A unique name per call lets concurrent replacers of one file coexist; the TempPath
     // deletes the file on any early return.
-    let tmp = tempfile::Builder::new()
-        .prefix(&prefix)
-        .suffix(".tmp")
-        .tempfile_in(dir)?
-        .into_temp_path();
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(&prefix).suffix(".tmp");
+    #[cfg(unix)]
+    if matches!(access, Access::Default) {
+        use std::os::unix::fs::PermissionsExt;
+        // The open's mode is filtered by the umask, as `File::create`'s is.
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let tmp = builder.tempfile_in(dir)?.into_temp_path();
 
     let mut file = match access {
         Access::OwnerOnly => open(&tmp, false)?,
-        Access::KeepExisting => {
+        Access::KeepExisting | Access::Default => {
             let file = std::fs::OpenOptions::new()
                 .write(true)
                 .truncate(true)

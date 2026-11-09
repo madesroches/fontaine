@@ -74,7 +74,8 @@ no reachability probe of its own: an account with a static `models` list is not 
 listing account is asked for its models once, with a 10 second limit, as `fontaine models` does. Resolving a model refreshes an expiring OAuth token and saves it, as a
 session would.
 
-**MCP servers.** Each configured server with its origin, transport and approval state, and whether
+**MCP servers.** Each configured server with its origin (`local`, `project`, `user`, `project-local`,
+`cli` or `plugin`; a repository's `.mcp.json` is `project`), transport and approval state, and whether
 it connected (`connected (N tools)`), failed to start (a warning, since a session warns and
 continues), or was not started with the reason. Doctor follows the interactive rule without the
 prompt. User and plugin servers are started. A server from the repository is skipped when the
@@ -82,6 +83,10 @@ workspace is not trusted, and a repository-defined one is also skipped until you
 in the interactive UI, so doctor never runs repository code a session would not. Each probe lasts
 at most 10 seconds, makes one attempt without the retries a session makes, and is closed before
 doctor exits. Doctor sends no tool call, and a server's request for input is answered `cancel`.
+A `${VAR}` reference in a repository's `.mcp.json` that cannot be expanded (unset, or a credential
+variable) is a failed server with the variable named. Problems loading `mcp-local.toml` or
+`.mcp.json` are listed among the warnings of the instructions, hooks and skills section;
+[`fontaine mcp list`](mcp.md#the-fontaine-mcp-command) prints the same probes as one line per server.
 
 **Instructions, hooks, skills.** The instruction files loaded and where each came from, in load
 order; the hook count per event and scope, with project hooks marked by what a headless and an

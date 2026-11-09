@@ -464,7 +464,7 @@ fn build_with_origin(
         scratch,
         memory_root,
         mode,
-        scrub_env: Vec::new(),
+        scrub_env: world.scrub_env.lock().unwrap().clone(),
         git_bash: super::git_bash(),
         powershell: None,
         system_prompt: None,

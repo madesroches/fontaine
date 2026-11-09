@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::error_chain::chain;
@@ -289,6 +290,15 @@ pub struct Connected {
     /// closed itself: rmcp's streamable-HTTP worker retries and re-initializes without ever
     /// ending the connection.
     pub transport_failed: Arc<Notify>,
+    tool_count: Arc<AtomicUsize>,
+}
+
+impl Connected {
+    /// How many tools the server has registered now: the count follows every `list_changed`
+    /// refresh.
+    pub fn tool_count(&self) -> usize {
+        self.tool_count.load(Ordering::Relaxed)
+    }
 }
 
 /// Elicitation in form mode only, over the last protocol version whose elicitation arrives as
@@ -388,6 +398,7 @@ impl Wiring {
                 meta: ToolMeta::default(),
                 tracker: CallTracker::new(),
                 transport_failed: Arc::new(Notify::new()),
+                tool_count: Arc::new(AtomicUsize::new(0)),
             },
         }
     }
@@ -426,6 +437,7 @@ where
         connection,
         kind,
         transport_failed: wiring.shared.transport_failed,
+        tool_count: wiring.shared.tool_count,
     })
 }
 

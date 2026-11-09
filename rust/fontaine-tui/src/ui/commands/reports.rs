@@ -11,7 +11,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mcp_connected = self
             .mcp_listing(runtime)
             .iter()
-            .filter(|(_, state)| *state == McpState::Connected)
+            .filter(|(_, state)| matches!(state, McpState::Connected { .. }))
             .count();
         let text = reports::status(&reports::StatusInfo {
             version: crate::build_version(),

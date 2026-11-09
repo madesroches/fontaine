@@ -120,10 +120,11 @@ pub(crate) fn rank(slot: Slot) -> u8 {
     match slot {
         Slot::Managed => 0,
         Slot::Cli => 1,
-        Slot::ProjectLocal => 2,
-        Slot::Project => 3,
-        Slot::User => 4,
-        Slot::Plugin => 5,
+        Slot::Local => 2,
+        Slot::ProjectLocal => 3,
+        Slot::Project => 4,
+        Slot::User => 5,
+        Slot::Plugin => 6,
     }
 }
 

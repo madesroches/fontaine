@@ -273,6 +273,7 @@ mod tests {
                 env_vars: Some(vec!["MCP_TOKEN".into()]),
                 env: None,
                 url: None,
+                expand: false,
             },
         );
         let env = |name: &str| -> Option<std::ffi::OsString> {

@@ -22,11 +22,12 @@ use rig_core::tool::{DynamicTool, ManagedToolSink, ManagedToolToken};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use super::AgentRuntime;
 use super::mcp_supervisor::{
     McpServerState, ReconnectTarget, ServerConnector, ServerSlot, Supervisor,
 };
+use super::{AgentRuntime, EnvLookup};
 use crate::config::{Config, McpServer};
+use crate::mcp_json::{StartContext, expand_at_start};
 use crate::permissions::Approver;
 use crate::runtime_error::RuntimeError;
 use crate::tools;
@@ -95,21 +96,38 @@ fn env_key_matches(key: &OsString, name: &str) -> bool {
 }
 
 fn server_description(server: &McpServer) -> String {
-    match (&server.command, &server.url) {
+    let mut variables: Vec<String> = server.env_vars.clone().unwrap_or_default();
+    if server.expand {
+        let texts = server
+            .command
+            .iter()
+            .chain(server.args.iter().flatten())
+            .chain(server.env.iter().flat_map(|env| env.values()))
+            .chain(server.url.iter());
+        for text in texts {
+            for name in crate::mcp_json::references(text) {
+                if !variables.contains(&name) {
+                    variables.push(name);
+                }
+            }
+        }
+    }
+    let mut line = match (&server.command, &server.url) {
         (Some(command), _) => {
             let mut line = command.clone();
             for arg in server.args.iter().flatten() {
                 line.push(' ');
                 line.push_str(arg);
             }
-            if let Some(names) = server.env_vars.as_ref().filter(|n| !n.is_empty()) {
-                line.push_str(&format!("\nenvironment: {}", names.join(", ")));
-            }
             line
         }
         (None, Some(url)) => url.clone(),
         (None, None) => String::new(),
+    };
+    if !variables.is_empty() && !line.is_empty() {
+        line.push_str(&format!("\nenvironment: {}", variables.join(", ")));
     }
+    line
 }
 
 /// The MCP servers a session at `root` would start, and which of them need the user's say-so.
@@ -150,10 +168,84 @@ pub fn mcp_plan(
         .collect()
 }
 
-/// How to start the configured server `name` with its working directory at `root`; `None` when
-/// it is unknown or names neither a command nor a URL.
-pub fn server_spec(config: &Config, name: &str, root: &Path) -> Option<ServerSpec> {
-    let server = config.mcp_servers.get(name)?;
+/// Whether `name` holds a credential Fontaine knows of, which a repository's definition never
+/// expands: what the tool subprocesses are scrubbed of, the web-search key, and the provider
+/// variables the Claude CLI refuses.
+fn credential_check<'a>(
+    config: &'a Config,
+    scrubbed: &'a [OsString],
+) -> impl Fn(&str) -> bool + 'a {
+    move |name: &str| {
+        let matches = |other: &str| {
+            if cfg!(windows) {
+                other.eq_ignore_ascii_case(name)
+            } else {
+                other == name
+            }
+        };
+        scrubbed.iter().any(|n| matches(&n.to_string_lossy()))
+            || config.websearch.api_key_env.as_deref().is_some_and(matches)
+            || crate::providers::claude_subscription::CONFLICTING_ENV
+                .iter()
+                .any(|n| matches(n))
+    }
+}
+
+/// A repository's definition with its `${VAR}` references expanded.
+fn expanded(
+    server: &McpServer,
+    root: &Path,
+    env: &EnvLookup,
+    is_credential: &dyn Fn(&str) -> bool,
+) -> Result<McpServer, String> {
+    let env: &dyn Fn(&str) -> Option<OsString> = &|name| env(name);
+    let cx = StartContext {
+        project_dir: root,
+        env,
+        is_credential,
+    };
+    let one = |text: &String| expand_at_start(text, &cx);
+    let mut out = server.clone();
+    out.command = server.command.as_ref().map(one).transpose()?;
+    out.args = server
+        .args
+        .as_ref()
+        .map(|args| args.iter().map(one).collect::<Result<Vec<_>, _>>())
+        .transpose()?;
+    out.env = server
+        .env
+        .as_ref()
+        .map(|env| {
+            env.iter()
+                .map(|(k, v)| Ok((k.clone(), one(v)?)))
+                .collect::<Result<BTreeMap<_, _>, String>>()
+        })
+        .transpose()?;
+    out.url = server.url.as_ref().map(one).transpose()?;
+    Ok(out)
+}
+
+/// How to start the configured server `name` with its working directory at `root`; `Ok(None)`
+/// when it is unknown or names neither a command nor a URL. A repository's definition has its
+/// `${VAR}` references expanded here, through `env`; `scrubbed` are the credential variables it
+/// may not expand. A reference that cannot be expanded is an error naming it.
+pub fn server_spec(
+    config: &Config,
+    name: &str,
+    root: &Path,
+    env: &EnvLookup,
+    scrubbed: &[OsString],
+) -> Result<Option<ServerSpec>, String> {
+    let Some(defined) = config.mcp_servers.get(name) else {
+        return Ok(None);
+    };
+    let server = if defined.expand {
+        let is_credential = credential_check(config, scrubbed);
+        expanded(defined, root, env, &is_credential)
+            .map_err(|e| format!("MCP server `{name}`: {e}"))?
+    } else {
+        defined.clone()
+    };
     let transport = match (&server.command, &server.url) {
         (Some(command), _) => Transport::Stdio {
             command: command.clone(),
@@ -163,12 +255,12 @@ pub fn server_spec(config: &Config, name: &str, root: &Path) -> Option<ServerSpe
             cwd: root.to_path_buf(),
         },
         (None, Some(url)) => Transport::Http { url: url.clone() },
-        (None, None) => return None,
+        (None, None) => return Ok(None),
     };
-    Some(ServerSpec {
+    Ok(Some(ServerSpec {
         name: name.to_string(),
         transport,
-    })
+    }))
 }
 
 /// A gate that refuses every call, for a connection made only to see what a server offers.
@@ -358,24 +450,17 @@ impl AgentRuntime {
         );
         self.mcp.supervisor = Some(supervisor.clone());
 
-        let root = self.primary_root();
-        let attempts: Vec<(String, ServerSpec)> = self
-            .mcp_plan()
-            .into_iter()
-            .filter(|plan| !plan.needs_approval || approved.contains(&plan.name))
-            .filter_map(|plan| {
-                Some((
-                    plan.name.clone(),
-                    server_spec(&self.config, &plan.name, &root)?,
-                ))
-            })
-            .collect();
+        let (attempts, mut outcomes) = self.specs_to_start(approved);
+        for outcome in &outcomes {
+            if let Some(error) = &outcome.error {
+                approver.warn(error);
+            }
+        }
         let started = futures::future::join_all(attempts.into_iter().map(|(name, spec)| {
             let supervisor = supervisor.clone();
             async move { (name, supervisor.start(spec).await) }
         }))
         .await;
-        let mut outcomes = Vec::new();
         for (name, (slot, result)) in started {
             self.mcp.insert(slot);
             let error = result.err().map(|e| chain(&e));
@@ -394,6 +479,35 @@ impl AgentRuntime {
             .agents()
             .refresh_rebuilt_toolsets(&self.agent_types);
         outcomes
+    }
+
+    /// The specs of the servers to start now, and an outcome for each whose definition could not
+    /// be built, which gets no slot.
+    fn specs_to_start(&self, approved: &[String]) -> (Vec<(String, ServerSpec)>, Vec<McpOutcome>) {
+        let root = self.primary_root();
+        let mut attempts = Vec::new();
+        let mut failed = Vec::new();
+        for plan in self
+            .mcp_plan()
+            .into_iter()
+            .filter(|plan| !plan.needs_approval || approved.contains(&plan.name))
+        {
+            match server_spec(
+                &self.config,
+                &plan.name,
+                &root,
+                &self.setup.env,
+                &self.setup.scrub_env,
+            ) {
+                Ok(Some(spec)) => attempts.push((plan.name, spec)),
+                Ok(None) => {}
+                Err(error) => failed.push(McpOutcome {
+                    server: plan.name,
+                    error: Some(error),
+                }),
+            }
+        }
+        (attempts, failed)
     }
 
     /// The state of each MCP server the session attempted, by name.
@@ -433,11 +547,20 @@ impl AgentRuntime {
 
     /// Why a server with no slot cannot be restarted.
     fn not_attempted(&self, name: &str) -> String {
-        not_attempted(
-            name,
-            self.config.mcp_servers.contains_key(name),
-            &self.mcp_plan(),
-        )
+        let plan = self.mcp_plan();
+        let planned_and_cleared = plan.iter().any(|p| p.name == name && !p.needs_approval);
+        if planned_and_cleared
+            && let Err(error) = server_spec(
+                &self.config,
+                name,
+                &self.primary_root(),
+                &self.setup.env,
+                &self.setup.scrub_env,
+            )
+        {
+            return error;
+        }
+        not_attempted(name, self.config.mcp_servers.contains_key(name), &plan)
     }
 
     /// Records the user's approval of a repository-defined MCP server in the trust store.

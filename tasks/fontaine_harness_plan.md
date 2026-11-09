@@ -791,6 +791,13 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-08: (#35) The choke-point reconnect case is kept, with `close().await` on the first connection and an assertion that a call reaches the new server, because the floor's choke-point coverage is a security invariant and a duplicated check costs little.
 - 2026-11-08: (#35) The elicitation dialog and validator use a simplified field model exposed by fontaine-tools (`ElicitForm::fields()`, `FieldKind`, `ElicitForm::validate`) instead of re-exporting rmcp's schema types, so fontaine-tui keeps no rmcp dependency.
 - 2026-11-08: (#35) `connect_transport` returns a `Connected`, and `McpOptions` carries the guard, `reveal_names`, the output limits, the elicitor and the warn callback, so the connect signatures stop growing.
+- 2026-11-09: (#31) Local-scope servers live in `<config dir>/mcp-local.toml`, keyed by workspace root, not in `~/.claude.json`-style JSON: Fontaine's settings are TOML, and the file sits under the floor-protected config dir.
+- 2026-11-09: (#31) The repository's `.mcp.json` is read as project scope alongside `.fontaine/settings.toml` `[mcp.servers]`, and the TOML wins a name collision with a warning.
+- 2026-11-09: (#31) Project `.mcp.json` `${VAR}` references are expanded when the server starts, never into a credential variable (the set `tools::scrubbed_env` withholds: account and telemetry keys, the scanner HF token, `MICROMEGAS_*`, OTLP headers; plus the web-search key and the well-known provider variables); such a reference fails that server. Claude Code expands any variable. Reason: a headless run starts project servers without asking.
+- 2026-11-09: (#31) An unset `${VAR}` with no default fails only that server's start (Claude Code fails the config parse).
+- 2026-11-09: (#31) `fontaine mcp add` has `--env-var NAME` for the scrub's pass-through. It has no `-H`, `sse` transport, OAuth flags or `add-json` yet (#32, #36).
+- 2026-11-09: (#31) `fontaine mcp get` masks `env` values as `***` (Claude Code prints them): the output lands in terminals and logs.
+- 2026-11-09: (#31) `fontaine mcp list` and `get` probe only what `fontaine doctor` would, so an unapproved repository server shows as pending and is never started by the CLI.
 
 ### Observability
 

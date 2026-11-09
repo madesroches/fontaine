@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
 
@@ -58,6 +59,7 @@ pub struct GuardedSink<S> {
     warn: Arc<dyn Fn(&str) + Send + Sync>,
     tracker: CallTracker,
     transport_failed: Arc<Notify>,
+    tool_count: Arc<AtomicUsize>,
 }
 
 /// What a connection's [`GuardedSink`] shares with the rest of the connection.
@@ -65,6 +67,8 @@ pub(crate) struct Shared {
     pub(crate) meta: ToolMeta,
     pub(crate) tracker: CallTracker,
     pub(crate) transport_failed: Arc<Notify>,
+    /// How many tools the sink's last `add`/`reconcile` committed.
+    pub(crate) tool_count: Arc<AtomicUsize>,
 }
 
 impl<S> GuardedSink<S> {
@@ -84,6 +88,7 @@ impl<S> GuardedSink<S> {
             warn: options.warn.clone(),
             tracker: shared.tracker.clone(),
             transport_failed: shared.transport_failed.clone(),
+            tool_count: shared.tool_count.clone(),
         }
     }
 
@@ -173,7 +178,9 @@ impl<S> GuardedSink<S> {
 
 impl<S: ManagedToolSink> ManagedToolSink for GuardedSink<S> {
     fn add_managed_tools(&self, tools: Vec<DynamicTool>) -> HashMap<String, ManagedToolToken> {
-        self.inner.add_managed_tools(self.wrap_all(tools))
+        let wrapped = self.wrap_all(tools);
+        self.tool_count.store(wrapped.len(), Ordering::Relaxed);
+        self.inner.add_managed_tools(wrapped)
     }
 
     fn reconcile_managed_tools(
@@ -181,8 +188,9 @@ impl<S: ManagedToolSink> ManagedToolSink for GuardedSink<S> {
         expected: HashMap<String, ManagedToolToken>,
         tools: Vec<DynamicTool>,
     ) -> HashMap<String, ManagedToolToken> {
-        self.inner
-            .reconcile_managed_tools(expected, self.wrap_all(tools))
+        let wrapped = self.wrap_all(tools);
+        self.tool_count.store(wrapped.len(), Ordering::Relaxed);
+        self.inner.reconcile_managed_tools(expected, wrapped)
     }
 }
 
