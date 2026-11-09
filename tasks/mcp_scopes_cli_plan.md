@@ -81,6 +81,14 @@ the user's config directory, which the floor protects, so a repository cannot wr
 in `config::load` after project-local and before the cli layer, and before plugins. Load it only when the file has a
 `projects."<root>"` table for this workspace.
 
+Local entries do not go through `apply`, which derives `user_trust` from a settings `Column`
+and has no Local column. Each entry runs the same per-server validation as `[mcp.servers]`
+(command xor url, stdio-only keys, name rules), factored out of `validate_values`, and is
+inserted into `mcp_servers` and `mcp_origins` directly. A malformed file or an invalid entry
+warns through the load warnings and is skipped, as for `.mcp.json`, so `fontaine mcp remove`
+can repair it. `config::diagnose` parses this file on its own path, since `diagnose_file`
+parses only settings files.
+
 The local file is TOML with the same `McpServer` schema, keyed by root. It is the analogue of
 Claude Code's `~/.claude.json` `projects` map, in Fontaine's settings format.
 
@@ -152,7 +160,7 @@ These live in `rust/fontaine/src/mcp_cmd.rs`. The file edits go in a new
     `add-json`. Each is rejected with a message that names its issue (clap's own error for an
     unknown flag is enough for `add-json`).
 - **`fontaine mcp list`**
-  - One line per server, in precedence order: `<name>: <command line or URL> - <status>`. Status
+  - One line per server, in name order: `<name>: <command line or URL> - <status>`. Status
     is one of:
     - `connected (N tools)`;
     - `failed: <reason>`;
@@ -179,15 +187,18 @@ These live in `rust/fontaine/src/mcp_cmd.rs`. The file edits go in a new
   - An approval in `trust.toml` is left in place. It is keyed by digest, so it is inert.
 
 Exit codes: 0 on success; 1 for unknown name, duplicate, ambiguous remove or I/O error; 2 for
-usage and config errors, as the other subcommands do.
+usage and config errors, as `doctor` and `models` do.
 
 ### `/mcp` tool counts
 
 - `GuardedSink` (`rust/fontaine-tools/src/mcp/register.rs`) records how many tools its last
-  `add`/`reconcile` committed, in an `Arc<AtomicUsize>` the `Connected` exposes as
-  `tool_count()`.
-- `McpServerState::Connected` becomes `Connected { tools: usize }`. `Supervisor` reads the count
-  when it reports state, so a `list_changed` refresh shows up.
+  `add`/`reconcile` committed, in an `Arc<AtomicUsize>` that lives in `register::Shared` (which
+  the sink gets from `servers.rs`). `Connected` exposes it as `tool_count()`.
+- `McpServerState::Connected` becomes `Connected { tools: usize }`. The supervisor slot keeps a
+  handle to the counter, and `Supervisor::states()` fills `tools` from the live counter on each
+  call, so a `list_changed` refresh shows up. State is set only once, at connect.
+- `fontaine-tui`'s own `reports::McpState::Connected` gains the count too, and `/status`
+  filters with `matches!(state, McpState::Connected { .. })`.
 - `/mcp` renders `connected · 12 tools` (`1 tool` for a single tool). `/status` keeps its
   summary.
 
@@ -197,23 +208,33 @@ usage and config errors, as the other subcommands do.
    - Move `parse_mcp_file` and `expand_vars` from `plugins.rs` into
      `fontaine-core/src/mcp_json.rs`, with an `Expansion::{Now(ctx), AtStart}` policy, `type`
      handling, the `headers` warning and `${VAR:-default}`.
-   - Plugins call it with `Now`, and their existing tests stay green.
+   - Plugins call it with `Now`, and their existing tests stay green. `plugins.rs` imports the
+     moved expander back for its hook and LSP parsers (and a test), with behavior unchanged apart
+     from gaining `:-default`.
    - The project root uses `AtStart` and the skip-with-warning behavior for a malformed file.
 2. **Config.**
    - Add `Slot::Local` and `McpServer::expand`.
    - Read `<root>/.mcp.json` as `Slot::Project`, merged under `.fontaine/settings.toml` with the
      collision warning.
    - Read `mcp-local.toml` for this root as `Slot::Local`, applied after project-local and before
-     the cli layer.
-   - Teach `config::diagnose` and doctor's layer listing both new sources.
+     the cli layer. Entries are validated like `[mcp.servers]` and inserted directly with
+     `user_trust: true`; a malformed file or entry warns and is skipped.
+   - Push a `ScopeEntry` for `mcp-local.toml` (`Slot::Local`) and for `<root>/.mcp.json`
+     (`Slot::Project`), so doctor's layer listing (`LayerDiagnosis::from_scopes`), the headless
+     init `sources` and the scope_stack log show them.
+   - Give `config::diagnose` its own parse path for `mcp-local.toml`, and handle `Slot::Local` in
+     `config_catalog::rank`.
 3. **Start-time expansion.**
-   - `server_spec` expands raw definitions through `EnvLookup` and returns
+   - `server_spec` takes the `&agent::EnvLookup` and the scrubbed-name set, expands raw
+     definitions through them, and returns
      `Result<Option<ServerSpec>, String>`, because a missing or credential variable is an error.
      Its callers are session connect (`agent/mcp.rs`) and the doctor probe. Session connect today
      drops a `None` silently through `filter_map`; for a spec that fails to build it pushes an
      `McpOutcome { error }`, reported through the existing warn path. The doctor probe reports a
      failed server. Reconnect reuses the stored spec.
    - The credential-variable set comes from `tools::scrubbed_env(config, process_env_names)`.
+     Session connect passes `setup.env` and `setup.scrub_env`; the shared probe computes
+     `scrubbed_env(config, host.env_names)`.
    - `server_description` lists the referenced variable names.
 4. **Edit helpers.** `mcp_config.rs` gets `add_server(scope, root, name, &McpServer)` and
    `remove_server(scope, root, name) -> bool` over the three file formats, all under a lock with
@@ -223,8 +244,14 @@ usage and config errors, as the other subcommands do.
    - Add `Command::Mcp(McpArgs)` with `Add`, `List`, `Get` and `Remove` to `cli.rs`.
    - Implement them in `mcp_cmd.rs`, with the shared probe in `mcp_probe.rs`, which
      `doctor_cmd.rs` now uses too.
-6. **Tool counts.** Do the `GuardedSink` count, `McpServerState::Connected { tools }`, the `/mcp`
-   rendering, and update the match arms in `fontaine-tui` and `fontaine-core`.
+6. **Tool counts.**
+   - Put the counter in `register::Shared` and expose it on `Connected` (`servers.rs`,
+     `register.rs`); the supervisor slot keeps a handle and `Supervisor::states()` fills
+     `Connected { tools }` from it.
+   - Add the count to `fontaine-tui`'s `reports::McpState::Connected`, change the `/status`
+     filter in `ui/commands/reports.rs` to `matches!`, and render it in `/mcp`.
+   - Update the match arms and tests (`mcp_supervisor.rs` unit tests,
+     `fontaine-core/tests/mcp_reconnect.rs`, `reports.rs` tests).
 7. **Docs and records.**
    - Update the pages listed under `## Documentation`.
    - In the master plan, add the Decisions lines below under `### MCP`. In
@@ -237,12 +264,16 @@ usage and config errors, as the other subcommands do.
 - `rust/fontaine-core/src/agent/mcp.rs`, `rust/fontaine-core/src/agent/mcp_supervisor.rs`,
   `rust/fontaine-core/src/doctor_report.rs`
 - `rust/fontaine-core/src/mcp_config.rs` (new)
-- `rust/fontaine-tools/src/mcp/register.rs`, `rust/fontaine-tools/src/mcp/*` (`Connected`)
+- `rust/fontaine-core/src/config_catalog.rs`
+- `rust/fontaine-core/tests/mcp_reconnect.rs`
+- `rust/fontaine-tools/src/mcp/register.rs`, `rust/fontaine-tools/src/mcp/servers.rs`
+  (`Connected`)
 - `rust/fontaine/src/cli.rs`, `rust/fontaine/src/lib.rs`, `rust/fontaine/src/mcp_cmd.rs` (new),
   `rust/fontaine/src/mcp_probe.rs` (new), `rust/fontaine/src/doctor_cmd.rs`
 - `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/reports.rs`,
-  `rust/fontaine-tui/src/server_prompt.rs`
-- `docs/mcp.md`, `docs/plugins.md`, `docs/configuration.md`, `docs/doctor.md`, `docs/tui.md`
+  `rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/src/server_prompt.rs`
+- `docs/mcp.md`, `docs/plugins.md`, `docs/configuration.md`, `docs/doctor.md`, `docs/tui.md`,
+  `docs/headless.md`, `docs/index.md`
 - `tasks/fontaine_harness_plan.md`, `research/research-claude-code-parity.md`
 
 ## Trade-offs
@@ -277,7 +308,8 @@ Lines to add under the master plan's `### MCP`:
 
 ## Documentation
 
-- `docs/mcp.md`: a new "Scopes" section replacing "Where they are declared", with scopes and
+- `docs/mcp.md`: a new "Scopes" section replacing the bold "Where they are declared" paragraph
+  in "Declaring servers", with scopes and
   precedence; `.mcp.json` support and `${VAR}`/`${VAR:-default}` expansion with the credential
   rule, in "Servers a repository defines" (`.mcp.json` as a repository source); the `fontaine mcp`
   subcommands; and tool counts in `/mcp`.
@@ -287,6 +319,9 @@ Lines to add under the master plan's `### MCP`:
   `[mcp.servers.<name>]` cross-link.
 - `docs/doctor.md`: local and `.mcp.json` sources in the MCP section.
 - `docs/tui.md`: the `/mcp` line format.
+- `docs/headless.md`: an `mcp` row in the subcommand table, with the same "a prompt of exactly
+  `mcp` runs the subcommand" note as the other rows, linking to `mcp.md`.
+- `docs/index.md`: mention the `fontaine mcp` CLI on the `mcp.md` entry.
 
 ## Testing Strategy
 
@@ -332,8 +367,10 @@ and the `repo_mcp_server` example):
 
 - `add` then `list` then `get` then `remove` for each scope.
 - `remove` with the same name in two scopes exits 1 and names both `-s` commands.
-- `list` shows an unapproved project server as pending and does not start it. Assert it with a
-  marker-file server, the way `project_executables.rs` checks that a server never ran. This is the
+- `list` shows an unapproved project server as pending and does not start it. Use the `hook_marker`
+  example (`project_executables.rs` uses it from line 157), or another binary that writes a marker
+  on start, as the `.mcp.json` server command, and assert the marker file is absent after
+  `fontaine mcp list`. This is the
   silent failure that matters, a repository's code running from a CLI listing, so it is an
   automated test.
 - A `fontaine-core` runtime test (harness in `fontaine-core/tests/common/runtime.rs`, as
