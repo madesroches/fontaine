@@ -41,12 +41,13 @@ struct Verdicts { path: PathBuf, broken: Mutex<BTreeSet<(u32,u32,u32)>> }
   the template or its placement logic bumps it. A bump needs no migration step: `load` keeps only
   entries whose `template` equals the current revision, and every write rewrites the file from the
   kept set, so stale entries are cleared the next time a verdict is recorded.
-- `Verdicts::load(path, warn)` runs in `Cli::new`. A missing file is an empty set. An unreadable or
+- `Verdicts::load(path, warn)` runs in `Cli::new` and reads with `file_lock::read_shared`. It parses each entry's `"cli"` as a dotted u32 triple and skips entries that do not parse. A missing file is an empty set. An unreadable or
   unparseable file is an empty set plus one `Warn` (a verdict the user would care about losing); the
   next `mark` overwrites it.
 - `mark(version) -> bool` inserts in memory (true only on first insertion), then persists: take
-  `file_lock::lock` on the file, re-read it to merge verdicts another process wrote, add the
-  version, `owner_only::write_atomic`. A persist failure is reported through `Warn` and does not
+  `file_lock::lock` on the file, re-read it with plain `std::fs::read_to_string` (not `file_lock::read_shared`, which must not be called
+  by a holder of `lock` for the same target) to merge verdicts another process wrote, add the
+  version (written as `"{}.{}.{}"`), `owner_only::write_atomic`. A persist failure is reported through `Warn` and does not
   undo the in-memory verdict, so the process still falls back.
 - `layout(context, &Verdicts)` and `finished(sent, usage, at, &Verdicts)` take the store instead of
   reading the static; `transport.rs` passes `self.cli.verdicts()` in `prepare` for `layout`; `finished` runs in the
@@ -62,8 +63,8 @@ absent from the set.
 
 1. `context.rs`: add `TEMPLATE_REVISION`, the `Verdicts` type (load/contains/mark, JSON via
    `serde_json`), remove `BROKEN`/`mark_broken`; thread `&Verdicts` through `layout`/`finished`.
-2. `cli.rs`: construct `Verdicts` in `Cli::new` from `data_dir` and `warn`; add `verdicts()`
-   accessor.
+2. `cli.rs`: construct `Verdicts` in `Cli::new` from `data_dir` and `warn`; `Cli` holds an
+   `Arc<Verdicts>` and `verdicts()` returns `&Arc<Verdicts>` (step 3 clones it into `Running`).
 3. `transport.rs`: `layout` takes `self.cli.verdicts()` in `prepare`; add an `Arc<Verdicts>` field to
    `Running`, set where it is built (`self.cli.verdicts().clone()`), and `finished` takes the store
    from `running`; update the warning text.
@@ -113,7 +114,6 @@ All unit tests, against a temp data dir (no live CLI):
 - A missing file loads empty with no warning; a corrupt file loads empty with one warning and is
   repaired by the next `mark`.
 - A persist failure (data dir path is a file) still marks in memory and emits one warning.
-- The written file is owner-only on Unix (mode 0600).
 - Existing layout and mark-once tests, ported.
 
 ## Open Questions
