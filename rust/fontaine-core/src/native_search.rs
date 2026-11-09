@@ -117,7 +117,7 @@ mod tests {
         );
         let models = Models {
             main: handle,
-            main_listing: Vec::new(),
+            main_listing: crate::models::Listing::default(),
             guardian: None,
             guardian_choice: GuardianChoice::MainFallback,
             notices: Vec::new(),
