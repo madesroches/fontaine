@@ -47,8 +47,8 @@ Make Fontaine's MCP client survive real-world servers, as Claude Code does. Ther
   do cap: `shell` cuts at 2,000 lines / 50 KB (`jobs/cut.rs`) and `webfetch` at 100,000 chars.
   rig-tools ships `Spill(PathBuf)` (`spill.rs`), which creates `<tool>-<n>.txt` files, but
   Fontaine does not use it yet.
-- The session scratch directory (`AgentRuntime` state `scratch: Option<PathBuf>`,
-  `fontaine-core/src/scratch.rs`) is a private workspace root, so `read` of a file in it takes the
+- The session scratch directory (`SessionState.scratch: Option<PathBuf>`, reached as
+  `AgentRuntime.state.scratch`; `fontaine-core/src/scratch.rs`) is a private workspace root, so `read` of a file in it takes the
   in-root read path.
 - `Approver` (`fontaine-core/src/permissions.rs:91`) has `approve`, `notice`, `warn`,
   `guardian_unavailable` and `ask_user`, each with a "nobody can answer" default. `DenyAll` serves
@@ -220,7 +220,9 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
 **fontaine-tui.**
 - `McpState` adds `Pending { attempt: u32 }`, rendered as `pending (reconnecting, attempt 2 of 5)`.
   `/mcp` merges the TUI's own `LeftOff`/`NotTrusted` entries with `runtime.mcp_states()` at render
-  time instead of the startup snapshot.
+  time instead of the startup snapshot. `start_mcp` stops pushing `Connected`/`Failed` into
+  `mcp_status` and keeps only `LeftOff`/`NotTrusted` there, still printing its connect notices;
+  `/mcp` renders those entries plus `mcp_states()`, sorted by name.
 - `/mcp reconnect <name>` and `/mcp reconnect all` call `reconnect_mcp` and print each outcome as a
   notice or error, as `start_mcp` does. Any other `/mcp` argument gets the usage line. Neither
   `enable` nor `disable` is added.
@@ -278,7 +280,7 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 - The doctor probe uses `CancelAll`.
 
 **fontaine-core.**
-- `Approver::elicit(&self, form: ElicitForm) -> BoxFuture<ElicitReply>` defaults to `Cancel`, so
+- `Approver::elicit` (`fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply>`) defaults to `Cancel`, so
   `DenyAll` (headless) cancels. `AfkApprover` answers `Cancel` while AFK is on and forwards
   otherwise.
 - `ApproverElicitor(Arc<dyn Approver>)` implements `Elicitor` and is the one `connect_mcp` passes
@@ -325,8 +327,9 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
    feature to the dev-deps. Add an eliciting tool to `tests/mcp_common/server.rs`. Write unit tests
    with the `Script` transport pattern from `interaction.rs`.
 4. **Core wiring.** Add `Approver::elicit` (default `Cancel`), the `AfkApprover` override,
-   `ApproverElicitor`, and `OutputLimits` from `MAX_MCP_OUTPUT_TOKENS` + scratch. Update
-   `connect_mcp` to take `McpOptions`. `probe_server` builds its `McpOptions` internally (with
+   `ApproverElicitor`, and `OutputLimits` from `MAX_MCP_OUTPUT_TOKENS` + scratch.
+   `connect_mcp` builds and passes `McpOptions` internally; its signature is unchanged.
+   `probe_server` builds its `McpOptions` internally too (with
    `CancelAll` and no spill), so `doctor_cmd.rs` is unchanged. Add audit and telemetry for
    elicitation.
 5. **Supervisor (core).** Add `agent/mcp_supervisor.rs` with `McpServers`, `ServerSlot` (one per
@@ -337,6 +340,11 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
    `/mcp reconnect <name|all>` (command split and parse in `commands.rs`, dispatched through
    `dispatch_inner`), the `elicitation.rs` dialog (rendered in `view.rs`), the `Prompt` variant,
    `ChannelApprover::elicit`, and the `App::answer_for_afk` / `App::prune_closed` handling.
+   Plumb the new prompt through every place that enumerates prompts: `notify.rs` `PromptKind` and
+   `App::pending_prompt` (bell and desktop notification); `spinner.rs` pause; in `app.rs`, key
+   routing in `handle_key`, the open-prompt checks, and `deny_pending` (Esc interrupt sends
+   `Cancel`); in `ui/mod.rs`, the exhaustive `Prompt` matches in `on_prompt`, `drain_prompts` and
+   `answer_unattended` (answers `Cancel`).
 7. **Integration tests** (see Testing Strategy).
 8. **Master plan.** Add the Decisions lines below to the end of the `### MCP` subsection of
    `tasks/fontaine_harness_plan.md`, except the `/mcp reconnect` supersede line, which goes at the
@@ -366,7 +374,8 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 - `rust/fontaine-core/tests/choke_point.rs` — reconnect case
 - `rust/fontaine-tui/src/elicitation.rs` (new), `rust/fontaine-tui/src/lib.rs`,
   `rust/fontaine-tui/src/app.rs` (`answer_for_afk`, `prune_closed`), `rust/fontaine-tui/src/view.rs`,
-  `rust/fontaine-tui/src/reports.rs`,
+  `rust/fontaine-tui/src/reports.rs`, `rust/fontaine-tui/src/notify.rs`,
+  `rust/fontaine-tui/src/spinner.rs`,
   `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/ui/mod.rs` (`dispatch_inner`), `rust/fontaine-tui/src/ui/commands/*` (`/mcp reconnect`, `/status`),
   `rust/fontaine-tui/src/question.rs` (`clean`), `rust/fontaine-tui/src/linear.rs`
 - `rust/fontaine-tui/src/commands.rs` — `runs_mid_turn`, hint, split, parse tests
