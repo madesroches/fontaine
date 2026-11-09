@@ -103,7 +103,14 @@ of naming fields. Adding an event later then touches one `match`.
 - `allowed_env_vars` names none of the variables `fontaine_core::tools::scrubbed_env(config,
   process_env_names)` (`tools.rs:29`) scrubs. This needs the merged `Config`, while per-file
   validation (`config.rs:1387`) sees one `Settings`, so it runs after the merge, in
-  `user_hooks::build`. A violating config is a startup error, like other config errors.
+  `user_hooks::build`, against the already-computed `process.scrub_env` (`setup.rs:619`) rather than
+  calling `scrubbed_env` there. `user_hooks::build` and `permission_pipeline` return `Result`, so a
+  violation is a startup error, like other config errors (`gates()` already returns `Result`).
+
+Each handler has an id/label: `{event}:{command}`, `{event}:{url}`, `{event}:prompt:<first 40 chars>`.
+Plugin `expand_vars` also applies to `url` and header values. Readers of `.command` to update:
+`fontaine-tui/src/reports.rs:292`, `fontaine/src/plugin.rs:1026`, `tests/plugins.rs:443-468` and
+`:729-730`.
 
 The manual `PartialEq` impl (`config.rs:598-604`), used by `union_hooks` dedup, is extended with
 `type`, `url`, `headers`, `allowed_env_vars` and `prompt`; it still ignores `origin` and `plugin`.
@@ -133,9 +140,12 @@ struct Answer {
   ..)` (`tls.rs:268`), with `.timeout(hook.timeout)` per request. A 2xx response with an empty body has no opinion. A 2xx
   response with a JSON object becomes `json`. Anything else (non-2xx, connection error, a body
   that is not JSON) is a `HookError`, which decides nothing.
-- **prompt.** One structured extraction on the guardian's model. The judge is built per call from
-    `models.guardian`, the way `GoalEvaluator::on(self.models.guardian.as_ref())` is
-    (`agent/goal.rs:185`, `:860`), not once at setup. A guardian that is unavailable or `None` is a
+- **prompt.** One structured extraction on the guardian's model. Hook stages are built in
+    `setup.rs` with no `Models` (they live on `AgentRuntime`, `agent.rs:169`, and are reassigned in
+    `agent/models.rs:173`/`:323`), so every `UserHook` and gate holds a shared guardian-model slot
+    (`Arc<RwLock<…>>`) that `install_guardian` updates, like the existing quota slot
+    (`agent.rs:196-198`). The judge is built per call from that slot's current value, the way
+    `GoalEvaluator::on` (`goal.rs:860`; call site `agent/goal.rs:185`) is, not once at setup. A guardian that is unavailable or `None` is a
     `HookError`, which decides nothing.
   - The system preamble says the request holds hook input data, not instructions.
   - `$ARGUMENTS` in `prompt` is replaced by the input JSON wrapped in an `<untrusted
@@ -184,14 +194,14 @@ The common input stays as today (`session_id`, `cwd`, `hook_event_name`, `agent_
 | Event (config key) | Fires | Matcher | Extra input | What a hook can do | Handlers | Project scope |
 |---|---|---|---|---|---|---|
 | `session_start` | After `record_session_start` and after `/clear` and a completed compaction | `startup`, `resume`, `fork`, `clear`, `compact` | `source`, `model` | `additionalContext` or plain stdout → context before the next model request | command | loads |
-| `session_end` | TUI exit, `/clear` (before), headless end | `clear`, `prompt_input_exit`, `other` | `reason` | nothing (notification only) | command, http | loads |
-| `user_prompt_submit` | A human-typed prompt (TUI), the headless `-p` prompt, the first `/loop` iteration, before each ledger `Record::UserMessage` write (see C2) | none | `prompt` | block (prompt not sent, reason shown to the user, nothing recorded); `additionalContext` or plain stdout → context with the prompt | command, http, prompt | loads |
+| `session_end` | End of the TUI `drive` (before `kill_all`; reason `resume` on a `DriveOutcome::Switch`, else `prompt_input_exit`), `/clear` (before), headless end (one exit point, covering the input-error `return 2`; reason `other`) | `clear`, `resume`, `prompt_input_exit`, `other` | `reason` | nothing (notification only) | command, http | loads |
+| `user_prompt_submit` | A human-typed prompt (TUI), the headless `-p` prompt, the headless `/goal` set, the first `/loop` iteration, before the ledger user-message write at each of the sites listed in C2 | none | `prompt` | block (prompt not sent, reason shown to the user, nothing recorded); `additionalContext` or plain stdout → context with the prompt | command, http, prompt | loads |
 | `stop` | A root turn ended with `TurnOutcome::Answer` (not Stopped, Failed, MaxTurns) | none | `stop_hook_active`, `last_assistant_message` | block or `additionalContext` → another run with the reason as harness note; prompt `impossible: true` lets it stop | command, http, prompt | **ignored with warning** (forces spend) |
 | `stop_failure` | A root turn ended with `TurnOutcome::Failed` | the error kind (`rate_limit`, `overloaded`, `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `billing_error`, `invalid_request`, `model_not_found`, `server_error`, `max_output_tokens`, `cloud_credential_error`, `unknown`) | `error`, `error_details`, `last_assistant_message` | nothing | command, http | loads |
 | `subagent_start` | Before a spawned child's first run | agent type | `agent_type` | `additionalContext` → harness note ahead of the child's first prompt | command, http | loads |
 | `subagent_stop` | In `continue_agent` for a child whose run ended `Done`, after mail and before `teammate_idle` | agent type | `stop_hook_active`, `agent_type`, `last_assistant_message` | block or `additionalContext` → the child is resumed with the reason | command, http, prompt | **ignored with warning** (forces spend) |
 | `pre_compact` | Before `Session::compact` asks the model | `manual` (Asked), `auto` (Threshold only; nothing constructs Overflow) | `trigger`, `custom_instructions` (the `/compact` focus or null) | block: an Asked or Threshold compaction is skipped with the reason as a warning. Plain stdout on exit 0 is appended to the summary focus | command, http | loads |
-| `post_compact` | After a compaction saved its summary | `manual`, `auto` | `trigger`, `compact_summary` | nothing | command, http | loads |
+| `post_compact` | After a compaction saved its summary | `manual`, `auto` | `trigger`, `compact_summary` (added to `CompactResult::Compacted`) | nothing | command, http | loads |
 | `post_tool_use_failure` | In the result pipeline when the outcome is `Err` (`post_tool_use` now fires only on `Ok`, as in Claude Code) | tool rule | `error` | `additionalContext` → appended to the error the agent reads; block → its reason appended | command, http, prompt | loads |
 | `notification` | The TUI notifier sees a new pending prompt of kind `PromptKind::Approval` or `PromptKind::Question`, whatever `[tui] notify` is set to; run in the background, never awaited by the UI | `permission_prompt` (an approval), `elicitation_dialog` (an `ask_user_question` or other question prompt) | `message`, `title`, `notification_type` | nothing | command, http | loads |
 | `task_created` | In `board_update create`, before the create takes the board lock | none | `task` (Fontaine's task shape without `id`), plus Claude Code's `task_subject`, `task_description`, `teammate_name` | block → not created, the reason is the tool error | command, http, prompt | loads |
@@ -208,24 +218,29 @@ ends. `stop_hook_active` is `true` on any continuation after the first.
 
 **Ordering with `/goal`.** On a root `Answer`, the `stop` hooks run first. Only when no hook
 blocks does the goal evaluator run. No shared goal step exists: TUI `Ui::goal_step` (`fontaine-tui/src/ui/goal.rs:32`) runs from the
-idle loop only with a goal, and the headless loop (`headless.rs:1032-1060`) runs only while a goal
-is active. So add a core `AgentRuntime` method returning `Option<String /* continuation note */>`,
-called on every root turn end with its `TurnOutcome`, whether or not a goal is active, before the
-goal pieces (`goal_turn_ended` / `next_goal_step`, `agent/goal.rs:112-208`). `ui/turn.rs` and
-headless's turn end both call it.
+idle loop only with a goal, after `Ui::turn` has already ended, and the headless loop
+(`headless.rs:1032-1060`) runs only while a goal is active. So add a core `AgentRuntime` method
+returning `Option<String /* continuation note */>`, called once per root turn end with its
+`TurnOutcome`, whether or not a goal is active, before the goal pieces (`goal_turn_ended` /
+`next_goal_step`, `agent/goal.rs:112-208`). The TUI calls it in `Ui::turn` before `goal_after_turn`
+(`ui/turn.rs:~1035`), not from `ui/goal.rs`. Headless calls it in `run_one` (`headless.rs:~645-653`),
+where the `TurnOutcome` still exists, which covers `guarded_turn` (`:879-891`) and the notification
+turns of `settle` (`:897-927`).
 
 **Headless.** A blocked `user_prompt_submit` ends the `-p` run before any model call, with exit 0, subtype
 `success`, and `result` = the block message followed by `Original prompt: <prompt>`.
 
 **Subagent wiring.** `subagent_start` and `subagent_stop` must work with `[agents] teams` off, so
 they do not go into `QualityGate`. Add a `LifecycleGate` trait in `fontaine-agents` (`spawn.rs`),
-held by `AgentTree` with a no-op default, with methods
-`subagent_start(id, type) -> Vec<String>` and
-`subagent_stop(id, type, last, active) -> Option<String>`. `user_hooks::SubagentGate` implements
+held by `AgentTree` with a no-op default, with methods returning futures like `QualityGate`:
+`subagent_start<'a>(..) -> BoxFuture<'a, Vec<String>>` and
+`subagent_stop<'a>(..) -> BoxFuture<'a, Option<String>>`. `user_hooks::SubagentGate` implements
 it. `subagent_start` fires in the spawn closure at `child_runner.rs:716-722`. `subagent_stop`
 fires in `continue_agent` after the mail check and before the teams-off early return
-(`spawn.rs:571-572`), with its own `Reason::SubagentStop` variant, because the existing
-`Reason::Hook` (`spawn.rs:533`) `expect`s teams.
+(`spawn.rs:571-572`), as an else-if arm before the teams branch (a block skips `teammate_idle` that round), with its own `Reason::SubagentStop` variant, because the existing
+`Reason::Hook` (`spawn.rs:533`) `expect`s teams. `continue_agent` takes `&report.text` (from `watch_report`, `spawn.rs:463`) for
+`last_assistant_message`. Its cap is counted in its `match` arm after `continue_blocker`, like
+`Reason::Hook`, with its own harness note.
 
 **Matchers for non-tool events.** A `Values` or `AgentType` matcher is `|`-separated exact names.
 An omitted matcher, `""` or `*` matches all. A `Values` matcher naming a value outside the event's
@@ -279,49 +294,64 @@ load error in TOML and is ignored for plugins, as today.
 
 ### Phase B — handlers
 1. `config.rs`: `Hook.type`, `url`, `headers`, `allowed_env_vars`, `prompt`. Make `command`
-   optional. Add the validation from Design §2 (the `allowed_env_vars` check runs after the merge).
+   optional. Add the validation from Design §2 (the `allowed_env_vars` check runs after the merge, against `process.scrub_env`).
 2. `user_hooks.rs`: `Handler`, `Answer`, `UserHook` (rename `CommandHook`). Port the five
    existing events onto `Answer`, keeping their observable behavior.
 3. The `http` handler on one client from `fontaine_tools::tls::build_client(&setup.network, ..)`
    built at setup, with a per-request timeout. Add header interpolation.
-4. The `prompt` handler: a `HookJudge` built per call from `models.guardian`, the way
+4. The `prompt` handler: a `HookJudge` built per call from the shared guardian-model slot (updated in `install_guardian`), the way
    `GoalEvaluator::on` is; guardian Unavailable/None is a `HookError`; usage goes to
    `SessionState::add_guardian_usage`. Factor the shared extraction and timeout code out of
    `goal.rs` instead of copying it (DRY).
 5. Add `systemMessage` → `Approver::warn`, and the 10,000-character cap. Pass `Arc<dyn Approver>`
    into `UserHook`, `PostHookStage::new` / `result_pipeline()` and the new gates.
 6. Add the trust drop for project `http`/`prompt` and for `IgnoredWithWarning` events in
-   `build()`.
+   `build()`. Make `build()` and `permission_pipeline` return `Result` for the `allowed_env_vars`
+   violation.
 
 ### Phase C — events
 1. `post_tool_use_failure`: split `PostHookStage` by outcome. Send `error` for the failure event.
 2. `user_prompt_submit`: `AgentRuntime::prompt_submit(&str) -> PromptGate { Blocked(reason) |
-   Proceed { context } }`. Call it before each ledger `Record::UserMessage` write (not before `record_run_start`, which
+   Proceed { context } }`. Call it before the ledger user-message write at each of these sites (not before `record_run_start`, which
    writes only turn-recovery): typed submit `ui/turn.rs:794-800`, skill `ui/turn.rs:490`, `/goal`
    set `ui/mod.rs:1075`, `/init` `ui/mod.rs:1106`, first `/loop` iteration `ui/schedule.rs:194`,
-   and `headless.rs:970`. The context is prefixed to the run's model prompt as a
+   `headless.rs:970`, and the headless `/goal` set (`headless.rs:1019`, `GoalArg::Set`). Other
+   `Record::UserMessage` writes (`steering.rs:277`, `child_runner.rs:452`, `questions.rs:36`) are not
+   in scope. The context is prefixed to the run's model prompt as a
    harness note.
 3. `stop`: the core `AgentRuntime` method called on every root turn end, before the goal pieces;
-   the continuation cap; add `fontaine-tui/src/ui/goal.rs` and `ui/turn.rs` call sites and
-   headless's turn end.
+   the continuation cap; one call site in `Ui::turn` (`ui/turn.rs`, before `goal_after_turn`) and one in
+   headless `run_one`.
 4. `stop_failure`: classify the failure (provider HTTP status, rig error, claude_subscription kinds
    at `protocol.rs:848-850`) into the 12-value set in the matcher row, and carry kind and details out
    of `run_turn` in `TurnOutcome::Failed` (today `Failed(String)`; `error_class`, `turn.rs:331`,
-   gives rig codes only). Fire the hook from the same call site as `stop`.
+   gives rig codes only). Fire the hook where the `TurnOutcome` is still intact (headless `run_one` before conversion to
+   `Outcome`, `headless.rs:653`; `Ui::turn`). Failures not from a provider call (`ui/turn.rs:875`,
+   `:914`; `turn.rs:651`) get kind `unknown`. Update the `TurnOutcome::Failed` consumers.
 5. `session_start` and `session_end`: fire from `record_session_start` (source from
    `SessionOrigin`: `Fresh` → `startup`, `Continued` → `resume`, or `fork` when `how` marks a fork;
    `branch` → `fork`), `clear_conversation` (end `clear` before, start `clear` after), after
-   compaction (start `compact`), TUI exit and headless end. Queue pending context on
-   `SessionState` and drain it into the next run's prompt.
+   compaction (start `compact`), the end of the TUI `drive` before `kill_all` (`resume` on a
+   `DriveOutcome::Switch`, `fontaine-tui/src/lib.rs:516-519`, `fontaine/src/lib.rs:498-536`, else
+   `prompt_input_exit`) and one headless exit point covering the input-error `return 2`
+   (`headless.rs:1158-1161`, reason `other`). Queue pending context on `SessionState`; the queue is
+   root-only, drained only by root-turn prompt assembly (TUI `Ui::turn`, headless `handle_message`),
+   and cleared on `/clear` and rewind. The runtime keeps the lifecycle hook set (a `LifecycleHooks`
+   field on `AgentRuntime`, taken out of `BuiltHooks` in setup).
 6. `pre_compact` and `post_compact` in `Session::compact`. Pass the hooks in through the runtime
-   (`agent/goal.rs` `compact_with`), not into `Session`, which stays hook-free.
+   (`agent/goal.rs` `compact_with`), not into `Session`, which stays hook-free. Add the summary text
+   to `CompactResult::Compacted { usage, before, after }` (`session.rs:99-111`), which lacks it, for
+   `compact_summary`.
 7. `subagent_start` and `subagent_stop`: `LifecycleGate` in `fontaine-agents/src/spawn.rs`. Call
    `subagent_stop` in `continue_agent` after the mail check and before the teams-off early return,
-   with a new `Reason::SubagentStop` and its own cap counter, and `subagent_start` in the spawn
+   with a new `Reason::SubagentStop` and its own cap counter (counted in its `match` arm after
+   `continue_blocker`, with its own harness note; pass `&report.text` into `continue_agent`), and `subagent_start` in the spawn
    closure at `child_runner.rs:716-722`. Implement it in `user_hooks.rs`. Install it in
    `setup.rs`.
-8. `task_created`: extend `QualityGate` with `task_created`. Call it from the `board_update`
-   create path before `Board::create`, with no board lock held.
+8. `task_created`: extend `QualityGate` with `task_created`, with a default `None` impl (so the test
+   `NoGate`, `tasks.rs:907`, needs no change). Call it from `board_update`'s create path
+   (`fontaine-agents/src/tools.rs:272-283`) before `TaskBoard::create` (`tasks.rs:240`), with no board
+   lock held. Pass the `task_created` hooks into `start_teams` (`setup.rs:594-595`).
 9. `notification`: give the TUI a core handle `AgentRuntime::notify_hooks(kind, message, title)`
    that spawns the hooks without awaiting them. `Notifier::observe` returns `None` for `NotifyMethod::Off` (`notify.rs:71-72`), so make it return
    the new-prompt edge (its `PromptKind`) separately from the bytes, and pass a hook-notify closure
@@ -340,7 +370,9 @@ load error in TOML and is ignored for plugins, as today.
 2. `docs/configuration.md` (hook keys), `docs/plugins.md` (hook types and events),
    `docs/agents.md` (subagent hooks), `docs/tui.md` (`/hooks` and the notification hook),
    `docs/telemetry.md` (`fontaine.hook` fields, add `hook_type`), the `docs/hooks.md` §Spans edit
-   (lifecycle events have no `fontaine.permission` parent).
+   (lifecycle events have no `fontaine.permission` parent), `docs/index.md` (lists five events,
+   `:28-29`), `docs/tools.md:358` (background job output reaches `post_tool_use`),
+   `tasks/design/config.md:90` (hook events), `docs/doctor.md:85-87` (per-event hook counts).
 3. `tasks/design/permissions.md` §User hooks: the event set and handler trust rules, and
    `tasks/design/observability.md:52`.
 4. `research/research-claude-code-parity.md`: update the two hook rows.
@@ -358,13 +390,13 @@ load error in TOML and is ignored for plugins, as today.
   `child_runner.rs`, `gate.rs` (`SessionState` pending hook context), `turn.rs`
   (`TurnOutcome::Failed`), `config_scope.rs`, `native_search.rs`
 - `rust/fontaine-core/src/plugins.rs`, `doctor_report.rs`
-- `rust/fontaine-agents/src/spawn.rs`, `tasks.rs`, plus the `board_update` tool
-- `rust/fontaine/src/headless.rs`, `plugin.rs`, `doctor_cmd.rs`, `lib.rs`
-- `rust/fontaine-tui/src/ui/turn.rs`, `ui/mod.rs`, `ui/goal.rs`, `ui/schedule.rs`, `reports.rs`, `screen.rs`, `notify.rs`
-- tests: `rust/fontaine-core/tests/{user_hooks,config,plugins,project_origins,teams}.rs`, new
+- `rust/fontaine-agents/src/spawn.rs`, `tasks.rs`, `tools.rs` (`board_update`)
+- `rust/fontaine/src/headless.rs`, `headless/goal.rs`, `plugin.rs`, `doctor_cmd.rs`, `lib.rs`
+- `rust/fontaine-tui/src/ui/turn.rs`, `ui/mod.rs`, `ui/schedule.rs`, `reports.rs`, `screen.rs`, `notify.rs`, `ui/tests.rs`
+- tests: `rust/fontaine-core/tests/{user_hooks,config,plugins,project_origins,teams,native_search,turn_recovery,goal,audit_telemetry,billing}.rs`, new
   `rust/fontaine-core/tests/lifecycle_hooks.rs`, `rust/fontaine-tui/tests/` (notification)
-- `docs/hooks.md`, `docs/configuration.md`, `docs/plugins.md`, `docs/agents.md`, `docs/tui.md`, `docs/telemetry.md`
-- `tasks/design/permissions.md`, `tasks/design/observability.md`, `tasks/fontaine_harness_plan.md`,
+- `docs/hooks.md`, `docs/configuration.md`, `docs/plugins.md`, `docs/agents.md`, `docs/tui.md`, `docs/telemetry.md`, `docs/index.md`, `docs/tools.md`, `docs/doctor.md`
+- `tasks/design/permissions.md`, `tasks/design/config.md`, `tasks/design/observability.md`, `tasks/fontaine_harness_plan.md`,
   `research/research-claude-code-parity.md`
 
 ## Trade-offs
@@ -439,6 +471,7 @@ load error in TOML and is ignored for plugins, as today.
 - `docs/agents.md`: `subagent_start`/`subagent_stop`, `task_created`.
 - `docs/tui.md`: `/hooks` output, the notification hook.
 - `docs/telemetry.md`: `hook_type` on `fontaine.hook`.
+- `docs/index.md`, `docs/tools.md`, `docs/doctor.md`, `tasks/design/config.md`: the event lists and counts.
 - `tasks/design/permissions.md` §User hooks, the master plan Decisions, the parity matrix.
 
 ## Testing Strategy
@@ -490,8 +523,8 @@ the runtime with `rig_core::test_utils` deterministic models and shell-script ho
 TUI test (`fontaine-tui/tests/`, `TestBackend`): a pending approval fires the `notification`
 hook once with `permission_prompt`, also when `[tui] notify = "off"`.
 
-The existing `tests/user_hooks.rs` stays green unchanged, except for the deliberate
-`post_tool_use` on-failure change.
+`tests/user_hooks.rs` keeps its assertions, updated for the enum and the `CommandHook` → `UserHook`
+rename. No existing test asserts `post_tool_use` fires on `Err`; add one that it does not.
 
 ## Manual Verification
 
