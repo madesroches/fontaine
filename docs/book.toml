@@ -1,0 +1,15 @@
+[book]
+title = "Fontaine"
+description = "Documentation for Fontaine, a terminal AI coding agent with a guardian that judges risky tool calls and an AFK mode that runs unattended."
+src = "."
+
+[build]
+create-missing = false
+
+[output.html]
+site-url = "/fontaine/"
+git-repository-url = "https://github.com/madesroches/fontaine"
+edit-url-template = "https://github.com/madesroches/fontaine/edit/main/docs/{path}"
+
+[output.html.search]
+enable = true

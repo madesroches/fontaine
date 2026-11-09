@@ -88,7 +88,8 @@ all tests pass:
   Bevy-based `rig-harness` / `rig-tui`.
 - Keep `fontaine-guardian` dependency-light and lift-out-able (embeddable by other harnesses).
 - `docs/` is the standalone, website-ready home for all product documentation (one topic per
-  page; `README.md` stays a thin front door). Documentation is a per-phase deliverable — every
+  page; `README.md` stays a thin front door; links leaving `docs/` are absolute GitHub URLs and
+  every page is listed in both `docs/SUMMARY.md` and `docs/index.md`). Documentation is a per-phase deliverable — every
   phase plan ends with a docs step; ship doc updates with the feature they describe.
 - The plan is greenfield: check the Phase Tracker in the master plan and the owning phase plan
   (phases 0–6) before starting work, and don't jump ahead of the phase currently being built.
@@ -153,6 +154,8 @@ From `rust/`:
   Linux only (macOS and Windows run `cargo check --features fontaine/pg2`), everything else on all
   three OSes. Later phases add steps (`--guardian none` eval run); `dist plan` runs once per PR in
   `release.yml`'s `plan` job. The master plan's workspace layout lists the full `ci.yml` step set.
+- `.github/scripts/docs-site.sh <dir>` (from the repo root) — builds and checks the docs site (Linux; needs `mdbook`
+  and `lychee`).
 - `cargo clippy --all-targets --target x86_64-pc-windows-gnu -- -D warnings` — local compile check
   of the Windows code (the toolchain file installs the target).
 - `RIG_PROVIDER_TEST_MODE=record cargo test -p fontaine --test cassettes` —

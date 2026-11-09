@@ -2,7 +2,16 @@
 
 ## Build and test
 
-From `rust/`:
+You need the Rust toolchain; `rust/rust-toolchain.toml` pins the version and `rustup` installs it
+on first use. From `rust/`:
+
+```
+cargo build
+cargo run -p fontaine
+cargo run -p fontaine -- -p "explain what a Cargo workspace is"
+```
+
+The checks CI runs:
 
 ```
 cargo fmt --check
@@ -23,6 +32,14 @@ on Linux, macOS and Windows; the two `fixture` eval runs, the "Release signing" 
 fontaine/pg2`). Pull requests that touch only `tasks/` or `AGENTS.md` skip the Rust
 steps. The last command above is a local check that the Windows code compiles. Tests never call
 live model APIs.
+
+## Docs
+
+`docs/` is published as an mdBook site. Preview it with `mdbook serve docs`, and run the checks
+CI runs with `.github/scripts/docs-site.sh <dir>` (needs `mdbook` and, for the link check,
+`lychee`). Links that leave `docs/` are absolute `https://github.com/madesroches/fontaine/blob/main/...`
+URLs (`tree/main/...` for directories), and every page is listed in both `docs/SUMMARY.md` and
+`docs/index.md`; the script fails otherwise.
 
 ## Branches and commits
 

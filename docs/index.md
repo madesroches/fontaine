@@ -65,12 +65,12 @@ describe what the current build does; each page covers one topic.
 
 - [Guardian scorecard](evals.md): catch rate, false-deny rate and latency per guardian model, and
   the inclusion bar for the default-guardian list.
-- [Golden dataset and eval runner](../evals/README.md): the case format, the categories, and how to
+- [Golden dataset and eval runner](https://github.com/madesroches/fontaine/blob/main/evals/README.md): the case format, the categories, and how to
   run the offline scoring and the live guardian mode.
 
 ## Project
 
-- [Contributing](../CONTRIBUTING.md): build and test commands, branch and commit rules, and how to
+- [Contributing](https://github.com/madesroches/fontaine/blob/main/CONTRIBUTING.md): build and test commands, branch and commit rules, and how to
   submit golden-dataset cases.
-- [Security policy](../SECURITY.md): how to report a vulnerability.
-- [Changelog](../CHANGELOG.md): what changed in each release.
+- [Security policy](https://github.com/madesroches/fontaine/blob/main/SECURITY.md): how to report a vulnerability.
+- [Changelog](https://github.com/madesroches/fontaine/blob/main/CHANGELOG.md): what changed in each release.

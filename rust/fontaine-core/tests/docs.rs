@@ -120,6 +120,11 @@ fn every_toml_block_validates() {
     assert!(checked > 0, "found no toml blocks to check");
 }
 
+// Links leaving docs/ are absolute so the published site can follow them; they must still
+// name a path that exists in the repository.
+const REPO_BLOB_PREFIX: &str = "https://github.com/madesroches/fontaine/blob/main/";
+const REPO_TREE_PREFIX: &str = "https://github.com/madesroches/fontaine/tree/main/";
+
 #[test]
 fn every_relative_link_resolves() {
     let root = repo_root();
@@ -133,15 +138,26 @@ fn every_relative_link_resolves() {
             let target = &after[..end];
             rest = &after[end..];
 
-            if target.is_empty()
+            let path_part = target.split('#').next().unwrap();
+            let resolved = if let Some(repo_path) = path_part.strip_prefix(REPO_BLOB_PREFIX) {
+                root.join(repo_path)
+            } else if let Some(repo_path) = path_part.strip_prefix(REPO_TREE_PREFIX) {
+                let dir = root.join(repo_path);
+                assert!(
+                    dir.is_dir(),
+                    "{}: link `{target}` is not a directory",
+                    file.display()
+                );
+                dir
+            } else if target.is_empty()
                 || target.starts_with('#')
                 || target.contains("://")
                 || target.starts_with("mailto:")
             {
                 continue;
-            }
-            let path_part = target.split('#').next().unwrap();
-            let resolved = file.parent().unwrap().join(path_part);
+            } else {
+                file.parent().unwrap().join(path_part)
+            };
             assert!(
                 resolved.exists(),
                 "{}: link `{target}` does not resolve",

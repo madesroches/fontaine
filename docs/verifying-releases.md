@@ -16,8 +16,8 @@ you download.
 
 | Channel | What it carries | Signed with | Public key |
 |---|---|---|---|
-| `release` | tagged releases (`vX.Y.Z`) | the release key | [`rust/fontaine/keys/release.pub`](../rust/fontaine/keys/release.pub) |
-| `dev` | the latest CI-passing build of `main`, published as the prerelease `dev-<n>` | the dev key | [`rust/fontaine/keys/dev.pub`](../rust/fontaine/keys/dev.pub) |
+| `release` | tagged releases (`vX.Y.Z`) | the release key | [`rust/fontaine/keys/release.pub`](https://github.com/madesroches/fontaine/blob/main/rust/fontaine/keys/release.pub) |
+| `dev` | the latest CI-passing build of `main`, published as the prerelease `dev-<n>` | the dev key | [`rust/fontaine/keys/dev.pub`](https://github.com/madesroches/fontaine/blob/main/rust/fontaine/keys/dev.pub) |
 
 The two channels use different keys, so a compromised dev key cannot sign a release. The keys are
 checked in and compiled into Fontaine. `fontaine update` verifies every archive it downloads with
@@ -28,8 +28,8 @@ below.
 
 A release is verified against `<channel>.signing.pub`, the key CI signed with, read at that
 release's tag (for `dev`, at its commit):
-[`release.signing.pub`](../rust/fontaine/keys/release.signing.pub) and
-[`dev.signing.pub`](../rust/fontaine/keys/dev.signing.pub). It differs from `<channel>.pub` only in
+[`release.signing.pub`](https://github.com/madesroches/fontaine/blob/main/rust/fontaine/keys/release.signing.pub) and
+[`dev.signing.pub`](https://github.com/madesroches/fontaine/blob/main/rust/fontaine/keys/dev.signing.pub). It differs from `<channel>.pub` only in
 a key-rotation release, where `<channel>.pub` already holds the next key.
 
 ## Verify an archive by hand
@@ -69,7 +69,7 @@ The checksums catch a corrupted download; only the signature proves who made the
 
 Download `fontaine-installer.sh` (or `fontaine-installer.ps1` for Windows) and its `.minisig` from the
 [`dev` release](https://github.com/madesroches/fontaine/releases/tag/dev) and
-[`dev.signing.pub`](../rust/fontaine/keys/dev.signing.pub), then:
+[`dev.signing.pub`](https://github.com/madesroches/fontaine/blob/main/rust/fontaine/keys/dev.signing.pub), then:
 
 ```
 minisign -Vm fontaine-installer.sh -p dev.signing.pub

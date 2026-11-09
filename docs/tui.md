@@ -381,7 +381,7 @@ costs. A `read` of a PDF never returns the file — the result is a stub pointin
 ## History
 
 Every input you submit, `/` commands and `!` commands included, is kept in `history.jsonl` in the
-[data directory](configuration.md#files-in-these-directories), readable by the current user only.
+[data directory](configuration.md#where-files-live), readable by the current user only.
 It holds what you typed, so treat it like your shell history. The file is shared by all projects;
 each line records the primary root it was typed in, and only this project's lines are recalled. It
 keeps the newest 5,000 lines. A file that cannot be read or written is reported once and the
@@ -1186,7 +1186,7 @@ and shows that agent's transcript, which is how you reach an agent that has left
 [agent list](#the-agent-list-and-the-agent-view). A running agent's spend line also ends in
 `· writing 4.2k chars` while its model is mid-step, as in the list; it clears when the step ends.
 
-With [task boards](agents.md#task-boards) on and tasks on a board, a **Board of <name>** section
+With [task boards](agents.md#task-boards) on and tasks on a board, a **Board of \<name\>** section
 per board owner below the jobs lists each task: its id, status and title, then its owner's name (or `nobody`) and the
 tasks blocking it. It is for reading only, and the title is shown with control characters taken
 out, since an agent wrote it. `/tasks` stays an alias of `/agents`; the board is not the
