@@ -40,9 +40,8 @@ Make Fontaine's MCP client survive real-world servers, as Claude Code does. Ther
   `DenyEveryCall` and a `CountingSink`.
 - `fontaine-tui/src/ui/mcp.rs` `start_mcp` records a static `Vec<(String, McpState)>` at startup.
   `fontaine-tui/src/reports.rs` `McpState` is `Connected | Failed | LeftOff | NotTrusted`, and
-  `mcp_with_origins` renders `/mcp`. The master plan's MCP Decisions say "`/mcp` takes no
-  `reconnect`/`enable`/`disable` arguments until #35" (2026-10-24), recorded in the master plan's
-  `### TUI` subsection.
+  `mcp_with_origins` renders `/mcp`. The 2026-10-24 line "`/mcp` takes no `reconnect`/`enable`/`disable` arguments until #35" is among
+  the master plan's `### TUI` Decisions.
 - MCP results are not capped. rig-rmcp's `mcp_result_output` turns a `CallToolResult` into a
   `ToolOutput`, which the guard's `ResultPipeline` (scanner, redaction) then processes. Other tools
   do cap: `shell` cuts at 2,000 lines / 50 KB (`jobs/cut.rs`) and `webfetch` at 100,000 chars.
@@ -132,16 +131,23 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
 
 **fontaine-tools (`servers.rs`).**
 - Give `McpError` a `kind: McpErrorKind { Transient, Permanent }` and a boxed `source` field, so
-  the cause is no longer flattened into `message`. This is the "typed error enum where a caller
+  the cause is no longer flattened into `message`: `message` becomes a short context prefix and the
+  rmcp error moves to `source`. This is the "typed error enum where a caller
   dispatches on the kind" case in AGENTS.md. The kind is set where the error is made, from the
-  typed rmcp error. A failed HTTP connect surfaces as
-  `ClientInitializeError::TransportError { error: DynamicTransportError }`, whose boxed error
-  downcasts to `StreamableHttpError<reqwest::Error>` (recurse into `LegacyFallbackFailed`):
-  - `Transient`: `Client(e)` with `e.is_connect()` or `e.is_timeout()`, `Io`, and expiry of the
-    connect timeout below.
-  - `Permanent`: `AuthRequired` / `InsufficientScope`, `SessionExpired`, protocol errors, a spawn
-    failure, and `UnexpectedServerResponse(String)`. rmcp turns every other non-2xx response
-    (5xx, 429, 404 included) into that variant with no status, so they cannot be told apart.
+  typed rmcp error. A failed connect is a `ClientInitializeError` (recurse into
+  `LegacyFallbackFailed`, a variant of it), or an `McpClientError` from rig-rmcp's initial
+  `tools/list` inside `handler.connect`. A `TransportError { error: DynamicTransportError }`'s boxed
+  error downcasts to `StreamableHttpError<reqwest::Error>`. Every variant gets a kind:
+  - `Transient`: `StreamableHttpError::Client(e)` with `e.is_connect()` or `e.is_timeout()`, `Io`,
+    `Sse`, `UnexpectedEndOfStream`, `SessionRecoveryTimeout`; `ClientInitializeError::ConnectionClosed`;
+    `McpClientError::Timeout` and `McpClientError::Request` (a server mid-restart looks like
+    these); and expiry of the connect timeout below.
+  - `Permanent`: `AuthRequired` / `InsufficientScope`, `SessionExpired`, `ReinitializationFailed`,
+    `ClientInitializeError::JsonRpcError` (a non-2xx answer with a JSON-RPC error body), other
+    protocol and deserialize errors, a spawn failure, and `UnexpectedServerResponse(String)`. rmcp
+    turns every other non-2xx response (5xx, 429 included) into that variant with no status, so they
+    cannot be told apart. A 404 at initialize is also `UnexpectedServerResponse`, since
+    `SessionExpired` needs a session id, and so is a 401/403 without `WWW-Authenticate`.
 - Every connect attempt (startup retries and reconnects) is wrapped in `tokio::time::timeout`
   (30 s), because `build_client` sets none.
 
@@ -155,10 +161,10 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
       state: RwLock<McpServerState>,       // lock_recovering: display/advisory only
       connection: Mutex<Option<Connected>>, // None while Failed
       watcher: Mutex<Option<JoinHandle<()>>>,
+      closing: AtomicBool,                 // set before Fontaine closes a connection itself
   }
   #[derive(Clone, Debug, PartialEq, Eq)]
   pub enum McpServerState {
-      Connecting,
       Connected,
       Reconnecting { attempt: u32 },   // 1..=5
       Failed(String),                  // rendered error chain
@@ -207,6 +213,12 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
 - `/mcp reconnect <name>` and `/mcp reconnect all` call `reconnect_mcp` and print each outcome as a
   notice or error, as `start_mcp` does. Any other `/mcp` argument gets the usage line. Neither
   `enable` nor `disable` is added.
+- `runs_mid_turn` keeps only a bare `/mcp` (split on an empty argument, as `/skills` is), because
+  those commands run in the synchronous `run_immediate(&AgentRuntime)`, which must not block.
+  `/mcp reconnect` is dispatched through `dispatch_inner(&mut AgentRuntime)` and awaited there, with
+  a "reconnecting `<name>`" notice drawn before the await.
+- `/status` counts connected servers from `runtime.mcp_states()` instead of the static `mcp_status`
+  snapshot. `McpState` gets no `Connecting` mapping because `McpServerState` has none.
 
 **Headless.** The same retry and backoff apply. A stdio server that exits stays failed for the rest
 of the run (see Decisions).
@@ -233,8 +245,8 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
   - A `ServerJsonRpcMessage::Request` carrying `ServerRequest::ElicitRequest` is not passed to
     rmcp. A request with `ElicitRequestParams::FormElicitationParams` (a request with no `mode`
     means form) spawns a task that calls `elicitor.elicit(form)`. One with
-    `ElicitRequestParams::UrlElicitationParams`, or a schema the client cannot render, is answered
-    `Decline` at once, with a `tracing::warn`.
+    `ElicitRequestParams::UrlElicitationParams` is answered `Decline` at once, with a
+    `tracing::warn`.
   - A `notifications/cancelled` for a pending elicitation id aborts that task; nothing is sent
     back. The notification is still forwarded to rmcp.
   - Everything else passes through unchanged.
@@ -248,7 +260,8 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
   `receive` future often (it is one `select!` branch) and an awaited send could be dropped or
   repeated.
 - **Validation before sending `Accept`.** The answer must match the requested schema: required
-  fields present, string length bounds, number ranges, enum membership, and boolean type. The
+  fields present, string length bounds, string `format` (email, uri, date, date-time), number ranges, enum
+  membership, multi-select `min_items` / `max_items`, and boolean type. The
   dialog validates as the human types, and the tap validates again as a backstop. If the backstop
   fails, the tap answers `Decline` and logs a warning.
 - The doctor probe uses `CancelAll`.
@@ -266,19 +279,23 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 
 **fontaine-tui (`elicitation.rs`, new dialog, modelled on `question.rs`).**
 - The header reads `MCP server `<name>` asks for input`, followed by the server's message, cleaned
-  of control characters with the same `clean` helper as `question.rs`. Then comes one row per
-  schema property, in schema order: its `title` (or the key) with `description`, and a required
+  of control characters with the same `clean` helper as `question.rs` (made `pub(crate)`;
+  newlines in the message are kept, other control characters stripped). Then comes one row per
+  schema property, in `property_order` (by key when it is `None`): its `title` (or the key) with `description`, and a required
   marker.
-  - A string, number or integer row is an `InputBuffer` field.
+  - A string, number or integer row is an `InputBuffer` field, pre-filled from the property's
+    `default`.
   - A boolean row is a checkbox.
-  - An enum row is a single-select list; a multi-select enum gets checkboxes.
+  - An enum row is a single-select list; a multi-select enum gets checkboxes. Titled enums and the
+    legacy `enumNames` show their titles.
 - Keys: Tab/Shift-Tab and Up/Down move between fields, Enter submits (blocked with an inline error
   while validation fails), Esc cancels (`Cancel`), and Ctrl-D declines (`Decline`).
   `ANSWER_GRACE` applies as it does in the other dialogs.
 - A footer line reads "This goes to the server, not to the model. Don't enter secrets you wouldn't
   give this server."
-- `ChannelApprover::elicit` queues the dialog the same way `ask_user` does, and screen-reader mode
-  announces it the same way.
+- `ChannelApprover::elicit` queues the dialog the same way `ask_user` does through a new `Prompt`
+  variant. `answer_unattended` answers it `Cancel`, and the closed-reply pruning drops it. `linear.rs`
+  renders the dialog in screen-reader mode.
 
 ## Implementation Steps
 
@@ -288,18 +305,22 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 2. **Error kind (tools).** Add `McpErrorKind` and the boxed `source` to `McpError`, classify at the
    error sites in `servers.rs`, and wrap each connect attempt in the 30 s timeout. Write unit tests.
 3. **Elicitation tap (tools).** Add `mcp/elicitation.rs`: the types, `Elicitor`, `CancelAll` and
-   `ElicitationTap`. Declare the form capability in `client_config()`. Write unit tests with the
-   `Script` transport pattern from `interaction.rs`.
+   `ElicitationTap`. Declare the form capability in `client_config()`. Add the rmcp `elicitation`
+   feature to the dev-deps. Add an eliciting tool to `tests/mcp_common/server.rs`. Write unit tests
+   with the `Script` transport pattern from `interaction.rs`.
 4. **Core wiring.** Add `Approver::elicit` (default `Cancel`), the `AfkApprover` override,
    `ApproverElicitor`, and `OutputLimits` from `MAX_MCP_OUTPUT_TOKENS` + scratch. Update
-   `connect_mcp` and `probe_server` to take `McpOptions`, and add audit and telemetry for
+   `connect_mcp` to take `McpOptions`. `probe_server` builds its `McpOptions` internally (with
+   `CancelAll` and no spill), so `doctor_cmd.rs` is unchanged. Add audit and telemetry for
    elicitation.
 5. **Supervisor (core).** Add `agent/mcp_supervisor.rs` with `McpServers`, `ServerSlot` (one per
    attempted server, holding its `spec`), `McpServerState`, the startup retry, the watcher with
    backoff, `reconnect_mcp` and `mcp_states`. Replace `AgentRuntime::mcp`. Add the choke-point
    case (drop the connection, `connect_transport` again over a new duplex pipe).
-6. **TUI.** Add `McpState::Pending`, live `/mcp` rendering, `/mcp reconnect <name|all>`, the
-   `elicitation.rs` dialog, and `ChannelApprover::elicit`.
+6. **TUI.** Add `McpState::Pending`, live `/mcp` and `/status` rendering from `mcp_states()`,
+   `/mcp reconnect <name|all>` (command split and parse in `commands.rs`, dispatched through
+   `dispatch_inner`), the `elicitation.rs` dialog, the `Prompt` variant, and
+   `ChannelApprover::elicit`.
 7. **Integration tests** (see Testing Strategy).
 8. **Master plan.** Add the Decisions lines below to the end of the `### MCP` subsection of
    `tasks/fontaine_harness_plan.md`, except the `/mcp reconnect` supersede line, which goes at the
@@ -326,12 +347,17 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
   `rust/fontaine-core/src/agent.rs`
 - `rust/fontaine-core/src/audit.rs` — elicitation record
 - `rust/fontaine-core/tests/choke_point.rs` — reconnect case
-- `rust/fontaine/src/doctor_cmd.rs` — probe signature, if it changes
 - `rust/fontaine-tui/src/elicitation.rs` (new), `rust/fontaine-tui/src/lib.rs`,
   `rust/fontaine-tui/src/app.rs`, `rust/fontaine-tui/src/reports.rs`,
-  `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/ui/commands/*` (`/mcp reconnect`)
-- `rust/fontaine-tools/Cargo.toml` — dev-dependency feature `transport-streamable-http-server` on
-  `rmcp` (tests only)
+  `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/ui/mod.rs` (`dispatch_inner`,
+  `answer_unattended`, pruning), `rust/fontaine-tui/src/ui/commands/*` (`/mcp reconnect`, `/status`),
+  `rust/fontaine-tui/src/question.rs` (`clean`), `rust/fontaine-tui/src/linear.rs`
+- `rust/fontaine-tui/src/commands.rs` — `runs_mid_turn`, hint, split, parse tests
+- `rust/fontaine-tools/Cargo.toml`, `rust/fontaine/Cargo.toml` — `elicitation` feature on the
+  `rmcp` dev-dependency
+- `rust/fontaine-tools/tests/mcp_common/server.rs` — an eliciting tool (used by
+  `rust/fontaine/examples/repo_mcp_server.rs`)
+- `rust/fontaine-core/tests/` — HTTP reconnect test with a wiremock JSON-RPC responder
 - `docs/mcp.md`, `docs/tui.md`, `docs/headless.md`, `docs/afk.md`, `docs/telemetry.md`,
   `docs/doctor.md`, `docs/configuration.md`
 - `tasks/fontaine_harness_plan.md` — Decisions
@@ -357,8 +383,10 @@ line, which goes at the end of `### TUI`:
   (follow-up issue).
 - Results that carry image content are not capped or spilled. Fontaine has no image token
   estimate for them yet.
-- DATE (supersedes the 2026-10-24 "`/mcp` takes no reconnect/enable/disable arguments until #35"
+- DATE (supersedes the 2026-10-24 "`/mcp` takes no `reconnect`/`enable`/`disable` arguments until #35."
   line): `/mcp reconnect <name|all>` is offered. `enable` and `disable` are still not offered.
+- The 2026-10-24 line "`/help`, `/status`, `/permissions`, `/mcp`, `/hooks` and `/skills` are
+  read-only transcript notices ..." no longer covers `/mcp reconnect`, which acts on servers.
 - `/mcp reconnect` only restarts servers attempted this session, including ones that failed at
   startup. It never starts a left-off or untrusted one.
 - The disconnect text reads "run /mcp reconnect <name>" where Claude Code says "open /mcp to
@@ -377,12 +405,6 @@ line, which goes at the end of `### TUI`:
   telemetry.
 - Elicitation never changes a permission decision. No dialog is reachable in headless runs, in AFK,
   or in the doctor probe.
-- Reconnect re-registers only through `GuardedSink`, so the choke-point and fail-closed properties
-  are unchanged. Reconnecting cannot start a server that approval or trust kept off.
-- `maxResultSizeChars` is a server-declared value. It only raises a buffer size, clamped to
-  500,000, and never loosens a decision.
-- A spilled file is unscreened on disk, but every read of it goes through the result pipeline
-  (scanner and redaction), like any other file in a root.
 
 ## Documentation
 
@@ -420,8 +442,10 @@ Unit tests (`cargo test`):
   - Dropping the tap aborts a pending elicitation.
   - Other messages pass through untouched.
   - The schema backstop declines an invalid `Accept`.
-- `servers.rs`: `McpErrorKind` classification for refused connections (`Transient`), 401, 5xx and
-  404 (wiremock; `Permanent`), spawn failures, and expiry of the connect timeout (`Transient`).
+- `servers.rs`: `McpErrorKind` classification for refused connections, a connection reset or end of
+  stream during initialize, a `tools/list` timeout, and expiry of the connect timeout (`Transient`);
+  401 with and without `WWW-Authenticate`, 5xx, 404 at initialize, a non-2xx JSON-RPC error body,
+  `LegacyFallbackFailed` and spawn failures (wiremock where an HTTP server is needed; `Permanent`).
 - Supervisor (`tokio::time::pause`):
   - The backoff schedule is 1, 2, 4, 8, 16 s.
   - The server is marked failed after 5 attempts and after a `Permanent` error.
@@ -443,7 +467,8 @@ Integration:
 - `fontaine-core/tests/choke_point.rs`: drop the `McpConnection`, call `connect_transport` again
   over a new duplex pipe, and assert every re-registered tool still has a risk class and reaches
   the gate. A silent break here would let an unwrapped tool through, so this is automated.
-- HTTP reconnect end to end: an in-process streamable-HTTP rmcp server (tests-only feature) is
+- HTTP reconnect end to end (`fontaine-core/tests`): a wiremock streamable-HTTP JSON-RPC responder
+  (copied from `fontaine-tools/tests/mcp_registration.rs`, or moved somewhere both crates can use) is
   stopped and restarted on the same port. Assert that the state goes
   `Reconnecting → Connected` and that the tool works again. This is a concurrency path a scripted
   transport cannot reproduce, because it exercises rmcp's real HTTP session teardown and
@@ -453,8 +478,8 @@ Integration:
 
 ## Manual Verification
 
-1. `cargo run -p fontaine` with a local MCP server that elicits (for example the rmcp
-   `elicitation` example built as a stdio server, configured under `[mcp.servers]`). Ask the model
+1. `cargo run -p fontaine` with `rust/fontaine/examples/repo_mcp_server.rs` (built on the
+   eliciting tool in `mcp_common/server.rs`), configured under `[mcp.servers]`. Ask the model
    to call the tool. The form dialog appears, and submitting returns the values to the server.
    This is checked by hand because how the dialog looks has to be judged by eye.
 2. Reproduce the dialog layout in a real tmux at 80×24 and in screen-reader mode, as
