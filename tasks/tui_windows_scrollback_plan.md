@@ -45,25 +45,27 @@ fast-typing user's message is committed that way once the screen is full.
 1. **Reproduce and capture (no code change).** Build `cargo build -p fontaine-tui --example
    live_area` and run it in Windows Terminal at a small size; compare scrollback against the
    tmux result. Capture the bytes of one frame (`ESC[?2026h` ... `ESC[?2026l`) for (a) a
-   user-message commit with the viewport at the top and (b) a `reprint`. If `live_area` does not
-   exercise a user message or an agent switch, extend the example (it is test tooling, no product
-   behavior change) so it does.
+   user-message commit with the viewport at the top and (b) a `reprint`. Extend the example
+   (it is test tooling, no product behavior change) with user-message and reprint scenarios; it
+   currently drives only a notice, tool calls and assistant deltas.
 2. **Bisect the cause** by toggling one variable at a time in the example: drop `HIDDEN`
    (use plain spaces), emit `ESC[3J` before `ESC[2J`, split the purge into its own frame, avoid the
    full-screen scroll. The first toggle that restores scrollback on Windows names the cause.
 3. **Fix at the emission point**, narrowly, in `screen.rs` (`one_row_region` handling and/or
    `Framed::purge`), keeping Linux/tmux output unchanged unless the new form is equally correct
    there. A Windows-only branch is acceptable only if no portable form works; record it in the
-   master plan's `## Decisions`.
+   master plan's `## Decisions`, at the end of its TUI subsection.
 4. **Pin it.** Add a vt100-harness test reproducing the offending byte pattern that the harness can
    express (the harness already rejects `ESC[2J` without a following `ESC[3J`; extend its
    rejection set with whatever pattern step 2 identifies, e.g. a concealed attribute on
-   inserted rows). Add transcript-level tests that a user message and an agent-switch reprint
-   put every user row into `scrollback()` exactly once.
+   inserted rows). Extend the existing
+   `viewing_an_agent_erases_the_scrollback_and_writes_only_that_transcript` with an
+   every-user-row-once-in-order assertion on `scrollback()`.
 
 ## Implementation Steps
 1. Reproduce on Windows Terminal; write findings (bytes, which hypothesis) into this plan's
-   `## Decisions`.
+   `## Decisions`. Only the final dated decision (a deviation) goes in
+   `tasks/fontaine_harness_plan.md`'s `## Decisions`, at the end of its TUI subsection.
 2. Bisect per Design step 2; choose the fix.
 3. Implement in `rust/fontaine-tui/src/screen.rs` (and `transcript.rs` only if the cause is in
    row generation).
@@ -73,7 +75,7 @@ fast-typing user's message is committed that way once the screen is full.
 
 ## Files to Modify
 - `rust/fontaine-tui/src/screen.rs` (fix, harness checks, tests)
-- `rust/fontaine-tui/examples/live_area.rs` (if it needs user-message / reprint scenarios)
+- `rust/fontaine-tui/examples/live_area.rs` (user-message and reprint scenarios)
 - `rust/fontaine-tui/src/transcript.rs` (only if the cause is row generation)
 - `tasks/design/testing.md`, `CHANGELOG.md`, `tasks/fontaine_harness_plan.md` (`## Decisions`)
 
@@ -92,8 +94,10 @@ fast-typing user's message is committed that way once the screen is full.
 ## Testing Strategy
 - vt100-harness regression test pinning the byte pattern that Windows mishandles (names issue
   #543); it must fail before the fix.
-- Unit tests: after a user message committed at the top of the screen and after `App::view`
-  switches, each user row appears exactly once in `scrollback()`, in order.
+- Unit tests: extend `viewing_an_agent_erases_the_scrollback_and_writes_only_that_transcript` to
+  assert every user row appears exactly once in `scrollback()`, in order; add a test for a user
+  message committed at the top of the screen only if the existing commit tests (`screen.rs`
+  ~l.684/697) do not cover it.
 - Existing tmux-oriented harness tests stay green, proving Linux output is unchanged.
 - The real ConPTY behavior cannot be reached by an automated test in CI (no Windows pty harness
   in the suite); a silent regression there is visible immediately in use, so it stays manual.
