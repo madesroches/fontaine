@@ -292,7 +292,7 @@ fn roles_are_validated_when_the_config_loads() {
 fn an_agent_type_model_takes_a_string_a_role_or_a_list_but_not_a_list_with_guardian_default() {
     let w = World::new();
     w.user_file(&format!(
-        "{TWO_ACCOUNTS}[models.roles]\ncoding = [\"a/x\"]\n\n[agents.types.one]\nmodel = \"coding\"\n\n[agents.types.two]\nmodel = [\"coding\", \"$main\", \"b/y\"]\n\n[agents.types.three]\nmodel = \"$guardian_default\"\n"
+        "{TWO_ACCOUNTS}[model]\nmodel = \"a/x\"\n\n[models.roles]\ncoding = [\"a/x\"]\n\n[agents.types.one]\nmodel = \"coding\"\n\n[agents.types.two]\nmodel = [\"coding\", \"$main\", \"b/y\"]\n\n[agents.types.three]\nmodel = \"$guardian_default\"\n"
     ));
     assert!(w.load().is_ok());
     w.user_file(&format!(

@@ -325,14 +325,11 @@ fn a_role_the_user_never_defined_is_an_error_in_a_user_agent_file_and_in_a_confi
 
     let w = World::new();
     w.user_file("[agents.types.t]\nmodel = [\"ghost\", \"a/b\"]\n");
-    let ext = load_for(&w, &[]).unwrap();
-    let config = w.load().unwrap();
-    let roles = Roles::from_config(&config).unwrap();
-    let error = build_agent_types(&config, &ext, &roles)
-        .err()
-        .unwrap()
-        .to_string();
-    assert!(error.contains("ghost"), "{error}");
+    let error = w.load().unwrap_err().to_string();
+    assert!(
+        error.contains("agents.types.t") && error.contains("ghost"),
+        "{error}"
+    );
 }
 
 #[test]
