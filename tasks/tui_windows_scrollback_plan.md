@@ -86,7 +86,8 @@ fast-typing user's message is committed that way once the screen is full.
   vt100 harness and tmux checks meaningful.
 
 ## Decisions
-(none yet: filled in by the diagnosis step)
+- AFK: conhost: validate the fix on both Windows Terminal and legacy conhost when both are reachable; otherwise validate on Windows Terminal and note conhost as unverified.
+- (Diagnosis findings are added below by step 1.)
 
 ## Documentation
 `tasks/design/testing.md` gains a Windows repro section; no `docs/` page describes this behavior.
@@ -111,7 +112,3 @@ for the `live_area` example:
    user messages visible.
 3. Spawn a subagent, switch to it and back (agents panel), scroll back. Expected: the full
    transcript is in scrollback once.
-
-## Open Questions
-- Does the bug reproduce in legacy conhost as well as Windows Terminal? (Decided by step 1; fix
-  targets both if so.)
