@@ -140,7 +140,13 @@ fn every_relative_link_resolves() {
 
             let path_part = target.split('#').next().unwrap();
             let resolved = if let Some(repo_path) = path_part.strip_prefix(REPO_BLOB_PREFIX) {
-                root.join(repo_path)
+                let linked = root.join(repo_path);
+                assert!(
+                    linked.is_file(),
+                    "{}: link `{target}` is not a file",
+                    file.display()
+                );
+                linked
             } else if let Some(repo_path) = path_part.strip_prefix(REPO_TREE_PREFIX) {
                 let dir = root.join(repo_path);
                 assert!(

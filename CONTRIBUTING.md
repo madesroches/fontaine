@@ -36,8 +36,8 @@ live model APIs.
 ## Docs
 
 `docs/` is published as an mdBook site. Preview it with `mdbook serve docs`, and run the checks
-CI runs with `.github/scripts/docs-site.sh <dir>` (needs `mdbook` and, for the link check,
-`lychee`). Links that leave `docs/` are absolute `https://github.com/madesroches/fontaine/blob/main/...`
+CI runs with `.github/scripts/docs-site.sh <dir>` (needs `mdbook` and `lychee`; it also
+checks links in the built site). Links that leave `docs/` are absolute `https://github.com/madesroches/fontaine/blob/main/...`
 URLs (`tree/main/...` for directories), and every page is listed in both `docs/SUMMARY.md` and
 `docs/index.md`; the script fails otherwise.
 

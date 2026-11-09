@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Checks the docs tree, builds the mdBook site into <out-dir> and writes the agent-facing
-# Markdown copies plus llms.txt / llms-full.txt. Needs mdbook on PATH. Linux CI only.
+# Markdown copies plus llms.txt / llms-full.txt. Needs mdbook and lychee on PATH. Linux CI only.
 set -euo pipefail
 
 SITE_URL="https://madesroches.github.io/fontaine"
@@ -41,6 +41,8 @@ rm -rf "$out"
 mdbook build "$docs" -d "$out"
 # src = "." publishes the book config alongside the pages.
 rm -f "$out/book.toml" "$out/SUMMARY.md"
+# ... and so does a stale docs/book from a local `mdbook serve docs`.
+rm -rf "$out/book"
 
 for page in "${pages[@]}"; do
   cp "$docs/$page" "$out/$page"
@@ -71,4 +73,7 @@ for page in "${pages[@]}"; do
   [ -f "$out/$page" ] || complain "$page is missing from $out"
 done
 [ "$fail" -eq 0 ] || exit 1
+# Offline, so CI never depends on external hosts. 404.html is excluded because mdBook renders
+# it with <base href="/fontaine/">, whose root-relative links offline lychee cannot resolve.
+lychee --offline --include-fragments --no-progress --exclude-path "$out/404.html" "$out/**/*.html"
 echo "docs-site: built $out (${#pages[@]} pages)"

@@ -28,9 +28,6 @@ jobs:
         with:
           tool: mdbook@0.5.4,lychee@0.24.2
       - run: .github/scripts/docs-site.sh _site
-      # Offline, so CI never depends on external hosts. 404.html is excluded because mdBook renders
-      # it with <base href="/fontaine/">, whose root-relative links offline lychee cannot resolve.
-      - run: lychee --offline --include-fragments --no-progress --exclude-path _site/404.html '_site/**/*.html'
       - uses: actions/upload-pages-artifact@v5
         with:
           path: _site

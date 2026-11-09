@@ -145,7 +145,7 @@ docs/                          (the book root and source: src = ".")
     `.github/scripts/docs-site.sh` and `.github/workflows/docs.yml`, plus `workflow_dispatch`.
     `permissions: contents: read` at the top.
   - Job `build` (ubuntu-latest): checkout, install mdbook and lychee, run `docs-site.sh _site`,
-    run `lychee --offline --include-fragments --no-progress --exclude-path _site/404.html '_site/**/*.html'` to check internal
+    which ends with `lychee --offline --include-fragments --no-progress --exclude-path "$out/404.html" "$out/**/*.html"` to check internal
     links and anchors (offline, so CI never depends on external hosts; `404.html` is excluded because
     mdBook renders it with `<base href="/fontaine/">`, whose root-relative links offline lychee
     cannot resolve, so it goes unchecked), then upload with
@@ -275,7 +275,7 @@ The only Rust change is the extension to the `docs.rs` link test. The checks are
 - `docs-site.sh` runs on every PR that touches `docs/`. It fails on a page missing from
   SUMMARY.md or index.md, a dangling SUMMARY entry (`create-missing = false`), or a remaining
   `](../` link.
-- The lychee step in `docs.yml` over the built HTML catches
+- The lychee step at the end of `docs-site.sh` over the built HTML catches
   every broken internal link and anchor. This is the check that would otherwise fail silently as docs evolve.
 - The implementer runs the script and lychee locally before committing (step 3), and also makes
   sure the existing CI still passes: Rust jobs are unaffected, and `README.md` is still included

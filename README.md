@@ -19,6 +19,8 @@ when denials pile up.
 
 ## Install
 
+There is no tagged release yet: the installers deliver the latest dev build of `main` (see [installing](docs/installing.md)).
+
 On Linux (x86_64) and macOS (Apple silicon and Intel):
 
 ```
@@ -57,7 +59,7 @@ headless run. Other providers and accounts are in [Configuration](docs/configura
 - [The guardian and auto mode](docs/guardian.md) fail closed, and the [scorecard](docs/evals.md) measures catch and false-deny rates per guardian model.
 - [Permission modes and the floor](docs/permissions.md): six modes (`manual`, `acceptEdits`, `plan`, `dontAsk`, `auto`, `afk`) over one deterministic floor.
 - [Subagents and task boards](docs/agents.md) run asynchronously, and a child is never looser than its parent.
-- Claude Code compatibility: `CLAUDE.md` and `AGENTS.md` ([instructions](docs/instructions.md)), `.claude/` skills ([extensions](docs/extensions.md)), [plugins](docs/plugins.md), hooks and MCP servers.
+- Claude Code compatibility: `CLAUDE.md` and `AGENTS.md` are read directly ([instructions](docs/instructions.md)). Skills, agent files, [plugins](docs/plugins.md) and hooks use Claude Code's formats, and `.claude/` files port by copying ([extensions](docs/extensions.md)).
 - Any provider: Anthropic, OpenAI, Gemini, OpenRouter, Ollama and OpenAI-compatible endpoints, plus a Claude subscription ([configuration](docs/configuration.md)).
 
 ## Documentation
