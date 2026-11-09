@@ -194,9 +194,11 @@ usage and config errors, as `doctor` and `models` do.
 - `GuardedSink` (`rust/fontaine-tools/src/mcp/register.rs`) records how many tools its last
   `add`/`reconcile` committed, in an `Arc<AtomicUsize>` that lives in `register::Shared` (which
   the sink gets from `servers.rs`). `Connected` exposes it as `tool_count()`.
-- `McpServerState::Connected` becomes `Connected { tools: usize }`. The supervisor slot keeps a
-  handle to the counter, and `Supervisor::states()` fills `tools` from the live counter on each
-  call, so a `list_changed` refresh shows up. State is set only once, at connect.
+- `McpServerState::Connected` becomes `Connected { tools: usize }`. `McpServers::states()`
+  (`mcp_supervisor.rs`) fills `tools` from `Connected::tool_count()` on the connection the slot
+  stores, on each call. A reconnect replaces that connection and builds a new `Shared`, so reading
+  through the stored connection keeps the count current after a `list_changed` refresh and a
+  reconnect.
 - `fontaine-tui`'s own `reports::McpState::Connected` gains the count too, and `/status`
   filters with `matches!(state, McpState::Connected { .. })`.
 - `/mcp` renders `connected · 12 tools` (`1 tool` for a single tool). `/status` keeps its
@@ -213,7 +215,11 @@ usage and config errors, as `doctor` and `models` do.
      from gaining `:-default`.
    - The project root uses `AtStart` and the skip-with-warning behavior for a malformed file.
 2. **Config.**
-   - Add `Slot::Local` and `McpServer::expand`.
+   - Add `Slot::Local` and `McpServer::expand`. Handle the new slot in both exhaustive `Slot`
+     matches, `config_catalog::rank` and `diagnosis_order` (`config.rs:3389`). Split the reverse
+     layer loop (`config.rs:3663`) so local entries go in between project-local and cli.
+     Add the new field to the `McpServer` struct literals in `redact.rs` and `tests/plugins.rs`
+     (`McpServer` has no `Default`).
    - Read `<root>/.mcp.json` as `Slot::Project`, merged under `.fontaine/settings.toml` with the
      collision warning.
    - Read `mcp-local.toml` for this root as `Slot::Local`, applied after project-local and before
@@ -246,14 +252,16 @@ usage and config errors, as `doctor` and `models` do.
      `doctor_cmd.rs` now uses too.
 6. **Tool counts.**
    - Put the counter in `register::Shared` and expose it on `Connected` (`servers.rs`,
-     `register.rs`); the supervisor slot keeps a handle and `Supervisor::states()` fills
-     `Connected { tools }` from it.
+     `register.rs`); `McpServers::states()` fills
+     `Connected { tools }` from the slot's stored connection.
    - Add the count to `fontaine-tui`'s `reports::McpState::Connected`, change the `/status`
      filter in `ui/commands/reports.rs` to `matches!`, and render it in `/mcp`.
    - Update the match arms and tests (`mcp_supervisor.rs` unit tests,
      `fontaine-core/tests/mcp_reconnect.rs`, `reports.rs` tests).
 7. **Docs and records.**
    - Update the pages listed under `## Documentation`.
+   - In `CHANGELOG.md`, add under Added: local scope, the `fontaine mcp` CLI and `/mcp` tool
+     counts; under Changed: a repository's `.mcp.json` is read as project scope (#31).
    - In the master plan, add the Decisions lines below under `### MCP`. In
      `research/research-claude-code-parity.md`, update the MCP-scopes row to done.
 
@@ -265,16 +273,17 @@ usage and config errors, as `doctor` and `models` do.
   `rust/fontaine-core/src/doctor_report.rs`
 - `rust/fontaine-core/src/mcp_config.rs` (new)
 - `rust/fontaine-core/src/config_catalog.rs`
-- `rust/fontaine-core/tests/mcp_reconnect.rs`
+- `rust/fontaine-core/tests/mcp_reconnect.rs`, `rust/fontaine-core/tests/common/runtime.rs`,
+  `rust/fontaine-core/tests/plugins.rs`, `rust/fontaine-core/src/redact.rs`
 - `rust/fontaine-tools/src/mcp/register.rs`, `rust/fontaine-tools/src/mcp/servers.rs`
-  (`Connected`)
+  (`Connected`), `rust/fontaine-tools/tests/mcp_registration.rs`
 - `rust/fontaine/src/cli.rs`, `rust/fontaine/src/lib.rs`, `rust/fontaine/src/mcp_cmd.rs` (new),
   `rust/fontaine/src/mcp_probe.rs` (new), `rust/fontaine/src/doctor_cmd.rs`
 - `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/reports.rs`,
-  `rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/src/server_prompt.rs`
+  `rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/tests/agents.rs`
 - `docs/mcp.md`, `docs/plugins.md`, `docs/configuration.md`, `docs/doctor.md`, `docs/tui.md`,
   `docs/headless.md`, `docs/index.md`
-- `tasks/fontaine_harness_plan.md`, `research/research-claude-code-parity.md`
+- `CHANGELOG.md`, `tasks/fontaine_harness_plan.md`, `research/research-claude-code-parity.md`
 
 ## Trade-offs
 
@@ -359,7 +368,9 @@ Unit tests (`fontaine-core`):
 Unit tests (`fontaine-tools`, `fontaine-tui`):
 
 - The `GuardedSink` count follows a `list_changed` refresh. Extend the existing
-  `mcp_registration.rs` refresh test.
+  `a_list_changed_refresh_registers_the_new_tools_wrapped_and_drops_the_old` integration test in
+  `fontaine-tools/tests/mcp_registration.rs`; `Shared` is `pub(crate)`, so the test reads the count
+  through `Connected::tool_count()`.
 - The `/mcp` listing renders `connected · 2 tools` and `1 tool`.
 
 Integration (`rust/fontaine/tests/mcp_cmd.rs`, driving the binary against temp config/data dirs
@@ -375,9 +386,16 @@ and the `repo_mcp_server` example):
   automated test.
 - A `fontaine-core` runtime test (harness in `fontaine-core/tests/common/runtime.rs`, as
   `mcp_reconnect.rs` uses) asserts that a `.mcp.json` server with a credential reference yields an
-  `McpOutcome.error` naming the variable.
+  `McpOutcome.error` naming the variable. The test sets `scrub_env`, a builder option it adds to
+  the harness, which hardcodes `scrub_env: Vec::new()` today.
+- A `fontaine-tui/tests/agents.rs` test, beside
+  `mcp_reports_a_declined_project_server_as_left_off`, writes a `.mcp.json` server, approves it
+  at the project-server prompt through the real TUI loop, and waits for `connected · N tools`.
 
 ## Manual Verification
+
+A final look in a real terminal (tmux, 80x24) at the approval prompt and the `/mcp` line; the
+`agents.rs` test covers the flow.
 
 1. From `rust/`, run `cargo build -p fontaine --examples`. In a scratch git repo, run
    `<abs>/rust/target/debug/fontaine mcp add -s project demo -- <abs>/rust/target/debug/examples/repo_mcp_server`,
