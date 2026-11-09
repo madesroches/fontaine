@@ -67,12 +67,6 @@ fn with_altgr<R>(on: bool, f: impl FnOnce() -> R) -> R
 - `altgr_is_ctrl_alt` and the modifiers contain both CONTROL and ALT and `c` is not an ASCII
   letter and not a control character.
 
-The ASCII-letter exclusion keeps real Ctrl+Alt+letter chords (which Windows also reports as
-`Char(letter)` with CONTROL | ALT) as shortcuts or no-ops — no mainstream layout puts a plain
-ASCII letter on AltGr, while the characters the issue is about (`@ € { } [ ] ~ \ |`, `ą ł ß` …) are
-all outside it. The Windows gate means Unix terminals, which deliver AltGr as a plain char and a
-real Ctrl+Alt+x as `ESC` + Ctrl+x, keep today's behaviour exactly.
-
 Uses:
 
 - `emacs_key`: a first arm `KeyCode::Char(_) if let Some(c) = typed_char(&key) =>
@@ -91,10 +85,6 @@ Uses:
   so an AltGr char blurs the list and is then typed into the prompt.
 - `paste_burst::burst_text`: the `Char` arm becomes `typed_char_on(key, true)` — the burst reader
   is Windows-only, so it always reads Ctrl+Alt as AltGr. Its existing comment moves to the call.
-
-Keymap precedence is unchanged: `App::handle_key` consults the keymap first, so a user binding
-on a Ctrl+Alt chord still wins over insertion, including while the agent list has focus (the
-`mapped.is_none()` term in the gate above).
 
 ## Implementation Steps
 
@@ -143,8 +133,8 @@ This is a bug seen in the wild; it is pinned at the unit tier, which reproduces 
 
 - `input.rs` tests:
   - `typed_char_on` table: plain/shifted char → Some; Ctrl+char, Alt+char → None; Ctrl+Alt `@`,
-    `€`, `{`, `ł` with the flag → Some, without → None; Ctrl+Alt `a`/`A` → None; control char →
-    None; non-`Char` → None.
+    `€`, `{`, `ł` with the flag → Some, without → None; Ctrl+Alt `a`/`A` → None; Ctrl+Alt control char (flag on) →
+    None; unmodified control char → Some (as today); non-`Char` → None.
   - Regression for #556: an `InputBuffer` in Emacs mode given `Char('@')` with `CONTROL | ALT`
     gets `@` inserted, run under `with_altgr(true, || ...)` so it holds on every CI OS.
   - Emacs Ctrl+Alt+`a` still moves home (with the flag on); vim Insert inserts an AltGr `{`; vim
