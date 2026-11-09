@@ -34,11 +34,8 @@ convention) and make `fontaine update` find the binary under the layout the new 
 2. **Receipt parsing honors the layout.** `parse()` reads `install_layout`:
    `"flat"` → `<install_prefix>/<file>`; anything else, or absent (cargo-home and hierarchical
    receipts written by installs made before this change) → `<install_prefix>/bin/<file>`.
-   Existing installs therefore keep updating in place. The "unknown means `bin/`" default is the
-   backward-compatible one; it is not a guess for new receipts: dist 0.32 records
-   `install_layout = "flat"` and `install_prefix = <install dir>` for a plain directory
-   `install-path` (same in the PowerShell installer), while the default CargoHome kind records
-   `cargo-home` and `$CARGO_HOME`.
+   Existing installs therefore keep updating in place; dist 0.32 records `flat` for a plain
+   directory `install-path`.
 3. **Fixtures match reality.** Test fixtures use a flat tree (binary directly in the prefix) for
    `flat` and keep a `bin/` tree for the legacy layout.
 4. **Migration.** No automatic migration: an existing install in `$CARGO_HOME/bin` updates itself
@@ -62,7 +59,9 @@ convention) and make `fontaine update` find the binary under the layout the new 
    change (it is allow-dirty and hand-adapted) and that `dev-installer.sh`/`windows-installer.sh`
    still apply cleanly to the new installer text.
 3. `rust/fontaine/src/update/receipt.rs`: layout-aware binary path; update the doc comment.
-4. Update receipt unit tests and `update_cmd.rs` fixtures; add tests listed below.
+4. Update receipt unit tests and `update_cmd.rs` fixtures; rename `exe_suffix_is_not_doubled_and_layout_is_ignored`
+   (receipt.rs) to e.g. `exe_suffix_is_not_doubled_under_either_layout` and cover both layouts in it;
+   add tests listed below.
 5. Docs: `README.md`, `docs/installing.md` (install, overwrite and uninstall sections, both
    platforms; the uninstall `Path` text becomes "remove `~/.fontaine/bin` from your `Path`" with
    no rustup caveat; rewrite its "writes" and "uninstall" lists from the step 2 output, including the `env` and
@@ -85,8 +84,7 @@ convention) and make `fontaine update` find the binary under the layout the new 
 
 ## Documentation
 
-`README.md`, `docs/installing.md`, `CHANGELOG.md` as listed above. No plan Decisions-section entry
-in the master plan is needed: Claude Code's own installer also uses a directory of its own.
+`README.md`, `docs/installing.md`, `CHANGELOG.md` as listed above.
 
 ## Testing Strategy
 
