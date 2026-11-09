@@ -443,6 +443,9 @@ const VERDICTS_FILE: &str = "claude-cache-verdicts.json";
 pub(super) struct Verdicts {
     path: PathBuf,
     warn: Warn,
+    // The load happens during model resolution, before the session's warning sink exists, so the
+    // warning waits for the first request.
+    load_warning: Mutex<Option<String>>,
     // Only chooses a cache layout, so a poisoned lock is recovered; the file is the durable record.
     broken: Mutex<BTreeSet<(u32, u32, u32)>>,
 }
@@ -471,6 +474,14 @@ fn parse(text: &str) -> Result<BTreeSet<(u32, u32, u32)>, serde_json::Error> {
         .collect())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Mark {
+    /// The version was already in the set.
+    Known,
+    Saved,
+    Unsaved,
+}
+
 impl Verdicts {
     /// The one store for `data_dir`'s verdicts file, shared by every `Cli` over that directory
     /// so a verdict found through one account is seen, and warned about, once for all.
@@ -484,9 +495,10 @@ impl Verdicts {
     }
 
     fn load(path: PathBuf, warn: Warn) -> Verdicts {
+        let mut load_warning = None;
         let broken = match file_lock::read_shared(&path) {
             Ok(text) => parse(&text).unwrap_or_else(|e| {
-                warn.emit(&format!(
+                load_warning = Some(format!(
                     "the Claude CLI cache verdicts in {} could not be parsed and are ignored: {}",
                     path.display(),
                     chain(&e)
@@ -495,7 +507,7 @@ impl Verdicts {
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
             Err(e) => {
-                warn.emit(&format!(
+                load_warning = Some(format!(
                     "the Claude CLI cache verdicts in {} could not be read and are ignored: {}",
                     path.display(),
                     chain(&e)
@@ -506,28 +518,38 @@ impl Verdicts {
         Verdicts {
             path,
             warn,
+            load_warning: Mutex::new(load_warning),
             broken: Mutex::new(broken),
         }
     }
 
+    /// Every request's layout choice reads this, so it carries the held load warning out.
     pub(super) fn contains(&self, version: (u32, u32, u32)) -> bool {
+        // Held only to take a string; a poisoned lock costs at most a warning.
+        let held = lock_recovering(&self.load_warning).take();
+        if let Some(message) = held {
+            self.warn.emit(&message);
+        }
         lock_recovering(&self.broken).contains(&version)
     }
 
-    /// Adds a version to the broken set and persists it; true only on its first insertion. A
-    /// failed write is warned about and leaves the in-memory verdict in place.
-    pub(super) fn mark(&self, version: (u32, u32, u32)) -> bool {
+    /// Adds a version to the broken set and persists it. A failed write is warned about and
+    /// leaves the in-memory verdict in place.
+    pub(super) fn mark(&self, version: (u32, u32, u32)) -> Mark {
         if !lock_recovering(&self.broken).insert(version) {
-            return false;
+            return Mark::Known;
         }
-        if let Err(e) = self.persist(version) {
-            self.warn.emit(&format!(
-                "the Claude CLI cache verdict could not be saved to {}: {}",
-                self.path.display(),
-                chain(&e)
-            ));
+        match self.persist(version) {
+            Ok(()) => Mark::Saved,
+            Err(e) => {
+                self.warn.emit(&format!(
+                    "the Claude CLI cache verdict could not be saved to {}: {}",
+                    self.path.display(),
+                    chain(&e)
+                ));
+                Mark::Unsaved
+            }
         }
-        true
     }
 
     fn persist(&self, version: (u32, u32, u32)) -> std::io::Result<()> {
@@ -550,13 +572,14 @@ impl Verdicts {
 }
 
 /// Records a finished request and runs the self-check against the conversation's previous one.
-/// Returns the version when this request is the first to show its replay broken.
+/// Returns the version, and whether its verdict was saved, when this request is the first to show
+/// its replay broken.
 pub(super) fn finished(
     sent: Sent,
     usage: Option<CacheUsage>,
     at: Instant,
     verdicts: &Verdicts,
-) -> Option<(u32, u32, u32)> {
+) -> Option<((u32, u32, u32), bool)> {
     let mut records = lock_recovering(&RECORDS);
     let (Layout::Native, Some(version), Some(usage)) = (sent.layout, sent.version, usage) else {
         records.take(&sent.session_id);
@@ -575,7 +598,14 @@ pub(super) fn finished(
     let broken = previous.is_some_and(|prev| check(&prev, &now));
     records.put(sent.session_id, now);
     drop(records);
-    (broken && verdicts.mark(version)).then_some(version)
+    if !broken {
+        return None;
+    }
+    match verdicts.mark(version) {
+        Mark::Known => None,
+        Mark::Saved => Some((version, true)),
+        Mark::Unsaved => Some((version, false)),
+    }
 }
 
 #[cfg(test)]

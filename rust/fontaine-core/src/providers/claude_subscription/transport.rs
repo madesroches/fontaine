@@ -478,18 +478,22 @@ fn stream(
                         _ => None,
                     };
                     if let Some(sent) = running.sent.take()
-                        && let Some(version) = context::finished(
+                        && let Some((version, saved)) = context::finished(
                             sent,
                             cache_usage,
                             std::time::Instant::now(),
                             &running.verdicts,
                         )
                     {
+                        let remembered = if saved {
+                            " and the verdict is remembered across restarts"
+                        } else {
+                            ""
+                        };
                         running.warn.emit(&format!(
                             "the Claude CLI's replayed context was not read back from the \
                              prompt cache; the cache optimization is off for CLI version \
-                             {}.{}.{} and the verdict is remembered across restarts (`cache-bench` \
-                             measures it)",
+                             {}.{}.{}{remembered} (`cache-bench` measures it)",
                             version.0, version.1, version.2
                         ));
                     }

@@ -146,7 +146,7 @@ fn the_layout_follows_version_and_email() {
         layout(&ctx(Some(broken), Some("a@b.c")), &v),
         Layout::Native
     );
-    assert!(v.mark(broken));
+    assert_eq!(v.mark(broken), Mark::Saved);
     assert_eq!(
         layout(&ctx(Some(broken), Some("a@b.c")), &v),
         Layout::Legacy
@@ -157,15 +157,15 @@ fn the_layout_follows_version_and_email() {
 fn a_version_is_marked_broken_once() {
     let (_dir, v, _) = store();
     let version = (2, 9, 101);
-    assert!(v.mark(version));
-    assert!(!v.mark(version));
+    assert_eq!(v.mark(version), Mark::Saved);
+    assert_eq!(v.mark(version), Mark::Known);
 }
 
 #[test]
 fn a_marked_version_survives_a_restart() {
     let (dir, v, warnings) = store();
     let version = (2, 9, 110);
-    assert!(v.mark(version));
+    assert_eq!(v.mark(version), Mark::Saved);
     let (restarted, restart_warnings) = reload(dir.path());
     assert!(restarted.contains(version));
     assert_eq!(
@@ -195,7 +195,7 @@ fn an_entry_of_another_template_revision_is_ignored_and_dropped_on_the_next_writ
     assert!(!v.contains((2, 9, 111)));
     assert!(v.contains((2, 9, 112)));
     assert!(warnings.lock().unwrap().is_empty());
-    assert!(v.mark((2, 9, 113)));
+    assert_eq!(v.mark((2, 9, 113)), Mark::Saved);
     let written = std::fs::read_to_string(&path).unwrap();
     assert!(!written.contains("2.9.111"));
     assert!(written.contains("2.9.112") && written.contains("2.9.113"));
@@ -206,8 +206,8 @@ fn a_mark_merges_a_verdict_another_store_wrote_in_between() {
     let dir = tempfile::tempdir().unwrap();
     let (first, _) = reload(dir.path());
     let (second, _) = reload(dir.path());
-    assert!(first.mark((2, 9, 120)));
-    assert!(second.mark((2, 9, 121)));
+    assert_eq!(first.mark((2, 9, 120)), Mark::Saved);
+    assert_eq!(second.mark((2, 9, 121)), Mark::Saved);
     let (merged, _) = reload(dir.path());
     assert!(merged.contains((2, 9, 120)));
     assert!(merged.contains((2, 9, 121)));
@@ -225,7 +225,7 @@ fn a_missing_file_loads_empty_and_a_corrupt_one_warns_once_and_is_repaired() {
     let (v, warnings) = reload(dir.path());
     assert!(!v.contains((2, 9, 130)));
     assert_eq!(warnings.lock().unwrap().len(), 1);
-    assert!(v.mark((2, 9, 130)));
+    assert_eq!(v.mark((2, 9, 130)), Mark::Saved);
     assert_eq!(warnings.lock().unwrap().len(), 1);
     let (repaired, repaired_warnings) = reload(dir.path());
     assert!(repaired.contains((2, 9, 130)));
@@ -239,10 +239,11 @@ fn a_failed_write_still_marks_in_memory_and_warns_once() {
     std::fs::write(&blocker, "").unwrap();
     let (v, warnings) = store_in(&blocker);
     // Unix warns at load (ENOTDIR) and Windows does not, so count only what the mark adds.
+    v.contains((2, 9, 140));
     let before = warnings.lock().unwrap().len();
-    assert!(v.mark((2, 9, 140)));
+    assert_eq!(v.mark((2, 9, 140)), Mark::Unsaved);
     assert!(v.contains((2, 9, 140)));
-    assert!(!v.mark((2, 9, 140)));
+    assert_eq!(v.mark((2, 9, 140)), Mark::Known);
     assert_eq!(warnings.lock().unwrap().len(), before + 1);
 }
 
@@ -251,9 +252,9 @@ fn a_data_dir_has_one_shared_store_and_another_dir_has_its_own() {
     let (dir, first, _) = store();
     let (same, _) = store_in(dir.path());
     assert!(Arc::ptr_eq(&first, &same));
-    assert!(first.mark((2, 9, 150)));
+    assert_eq!(first.mark((2, 9, 150)), Mark::Saved);
     assert!(same.contains((2, 9, 150)));
-    assert!(!same.mark((2, 9, 150)));
+    assert_eq!(same.mark((2, 9, 150)), Mark::Known);
 
     let (_other_dir, other, _) = store();
     assert!(!Arc::ptr_eq(&first, &other));
@@ -389,7 +390,7 @@ fn a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check
             at + Duration::from_secs(5),
             &v,
         ),
-        Some(version)
+        Some((version, true))
     );
     assert_eq!(
         layout(&ctx(Some(version), Some("a@b.c")), &v),
