@@ -14,7 +14,7 @@ working unchanged.
 ## Current State
 
 - The provider registry is one `Provider` impl per module plus one line in `PROVIDERS`
-  (`rust/fontaine-core/src/providers/mod.rs:65-76`); `accounts::kinds()`
+  (`rust/fontaine-core/src/providers/mod.rs:367-376`); `accounts::kinds()`
   (`rust/fontaine-core/src/accounts.rs:370`) and the settings schema derive from it, so a new
   kind is picked up by the provider dialog, `/login`, model resolution and the settings JSON
   schema automatically.
@@ -37,9 +37,9 @@ working unchanged.
 - `Billing::Unpriced` (`rust/fontaine-core/src/providers/mod.rs:78-81`) drops any cost a
   response carries; today only `claude-subscription` and `opencode-go` (the flat-rate kinds)
   set it. `openai-compatible` stays `Billing::Catalog`.
-- The status bar segment label is the quota source's name (`"kimi"`,
-  `rust/fontaine-tui/src/statusbar.rs:565`) and renders identically for any account whose
-  client returns a `KimiQuota`.
+- The status bar segment label is the quota source's name (`AccountUsage::label`,
+  documented as `QuotaSource::name` at `rust/fontaine-core/src/quota.rs:73-75`) and renders
+  identically for any account whose client returns a `KimiQuota`.
 
 ## Design
 
@@ -120,10 +120,13 @@ error list pick it up from `providers::names()`, and the generic registry tests
      `providers::names()` and must stay green.
 5. `docs/configuration.md`: add a `kimi` row to the provider table (Chat Completions,
    `https://api.kimi.com/coding/v1`, optional key); replace the `[accounts.kimi]` example with
-   `kind = "kimi"` + `api_key_env = "KIMI_API_KEY"` and no `base_url`/`quota`; reword the
+   `kind = "kimi"` + `api_key_env = "KIMI_API_KEY"` and no `base_url`/`quota`; update the
+   `kind` row's kind list in the `[accounts.<name>]` key table to include `kimi`; reword the
    flat-rate paragraph so the quota display is built in for `kimi` accounts and remains a
-   `quota = "kimi"` opt-in for `openai-compatible`; state that the moonshot.ai
-   pay-as-you-go API stays `openai-compatible`. Add `kimi` to the "Where a credential comes
+   `quota = "kimi"` opt-in for `openai-compatible`; reword the `quota` key-table row and its
+   parenthetical so a `kimi` account also shows the subscription quota with no `quota` key;
+   state that the moonshot.ai pay-as-you-go API stays `openai-compatible`. Add `kimi` to the
+   "Where a credential comes
    from" sentence that names the kinds sending no `Authorization` header without a key.
    Check `docs/tui.md` status-bar prose for the same rewording need.
 6. `CHANGELOG.md`: entry under `[Unreleased]` → `Added`.
@@ -155,8 +158,9 @@ error list pick it up from `providers::names()`, and the generic registry tests
 
 ## Documentation
 
-- `docs/configuration.md`: provider table, the `[accounts.kimi]` example, the flat-rate/quota
-  paragraph, and a note that moonshot.ai pay-as-you-go remains `openai-compatible`.
+- `docs/configuration.md`: provider table, the `[accounts.kimi]` example, the `kind` and
+  `quota` rows of the `[accounts.<name>]` key table, the flat-rate/quota paragraph, and a
+  note that moonshot.ai pay-as-you-go remains `openai-compatible`.
 - `docs/tui.md`: status-bar subscription-quota prose if it describes the `quota = "kimi"`
   opt-in as the only way to get the segment.
 - `CHANGELOG.md` under `[Unreleased]` → `Added`.
@@ -184,8 +188,4 @@ not a gate.
 
 ## Open Questions
 
-- None blocking. The issue's open questions settle as: `base_url` defaults to
-  `https://api.kimi.com/coding/v1` (Fixed, overridable in settings); no implicit
-  `api_key_env` (docs recommend `KIMI_API_KEY`); the quota display is built in, no `quota`
-  key; model discovery is unchanged (the `/models` listing, asked once when the account has
-  no `models` list).
+None.
