@@ -65,7 +65,7 @@ fn with_altgr<R>(on: bool, f: impl FnOnce() -> R) -> R
 
 - the modifiers intersect neither CONTROL nor ALT, or
 - `altgr_is_ctrl_alt` and the modifiers contain both CONTROL and ALT and `c` is not an ASCII
-  letter and not a control character.
+  letter or digit and not a control character.
 
 Uses:
 
@@ -120,6 +120,7 @@ Uses:
 - 2026-11-09: AltGr-as-Ctrl+Alt is recognised only on Windows (a `const` gate), as only that console reports it so.
 - 2026-11-09: Ctrl+Alt+ASCII-letter is never treated as AltGr text, so those readline chords keep working.
 - 2026-11-09: The predicate lives in `input.rs`, not a new `keys.rs` module.
+- 2026-11-09: AFK: Ctrl+Alt+ASCII-digit is also never AltGr text (crossterm reports a non-AltGr Ctrl+Alt+2 as `Char('2')` with CONTROL|ALT, and no mainstream layout's AltGr composes a digit); a non-AltGr Ctrl+Alt+punctuation chord on Windows now types its base character, accepted because crossterm cannot tell it from AltGr `@ { } [ ] \ | ~`.
 
 ## Documentation
 
@@ -133,7 +134,7 @@ This is a bug seen in the wild; it is pinned at the unit tier, which reproduces 
 
 - `input.rs` tests:
   - `typed_char_on` table: plain/shifted char → Some; Ctrl+char, Alt+char → None; Ctrl+Alt `@`,
-    `€`, `{`, `ł` with the flag → Some, without → None; Ctrl+Alt `a`/`A` → None; Ctrl+Alt control char (flag on) →
+    `€`, `{`, `ł` with the flag → Some, without → None; Ctrl+Alt `a`/`A`/`2` → None; Ctrl+Alt control char (flag on) →
     None; unmodified control char → Some (as today); non-`Char` → None.
   - Regression for #556: an `InputBuffer` in Emacs mode given `Char('@')` with `CONTROL | ALT`
     gets `@` inserted, run under `with_altgr(true, || ...)` so it holds on every CI OS.
