@@ -108,7 +108,9 @@ of naming fields. Adding an event later then touches one `match`. `HookEvent` va
   violation is a startup error, like other config errors (`gates()` already returns `Result`).
 
 Each handler has an id/label: `{event}:{command}`, `{event}:{url}`, `{event}:prompt:<first 40 chars>`.
-Plugin `expand_vars` also applies to `url` and header values. Readers of `.command` to update:
+For `url` and header values, plugin load expands only `${CLAUDE_PLUGIN_ROOT}` and
+`${CLAUDE_PROJECT_DIR}`; every other `${VAR}` is left literal for the request-time
+`allowed_env_vars` interpolation, so a plugin cannot send an unlisted host variable off-machine. Readers of `.command` to update:
 `fontaine-tui/src/reports.rs:292`, `fontaine/src/plugin.rs:1026`, `tests/plugins.rs:443-468` and
 `:729-730`.
 
@@ -203,7 +205,7 @@ The common input stays as today (`session_id`, `cwd`, `hook_event_name`, `agent_
 | `stop_failure` | A root turn ended with `TurnOutcome::Failed` | the error kind (`rate_limit`, `overloaded`, `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `billing_error`, `invalid_request`, `model_not_found`, `server_error`, `max_output_tokens`, `cloud_credential_error`, `unknown`) | `error`, `error_details`, `last_assistant_message` | nothing | command, http | loads |
 | `subagent_start` | Before a spawned child's first run | agent type | `agent_type` | `additionalContext` → harness note ahead of the child's first prompt | command, http | loads |
 | `subagent_stop` | In `continue_agent` for a child whose run ended `Done`, after mail and before `teammate_idle` | agent type | `stop_hook_active`, `agent_type`, `last_assistant_message` | block or `additionalContext` → the child is resumed with the reason; prompt `impossible: true` lets it stop | command, http, prompt | **ignored with warning** (forces spend) |
-| `pre_compact` | Before `Session::compact` asks the model | `manual` (Asked), `auto` (Threshold only; nothing constructs Overflow) | `trigger`, `custom_instructions` (the `/compact` focus or null) | block: an Asked or Threshold compaction is skipped with the reason as a warning. Plain stdout on exit 0 is appended to the summary focus | command, http | loads |
+| `pre_compact` | Before `Session::compact` asks the model, only once `plan_summary` returned a plan (a skipped or under-threshold check fires nothing) | `manual` (Asked), `auto` (Threshold only; nothing constructs Overflow) | `trigger`, `custom_instructions` (the `/compact` focus or null) | block: an Asked or Threshold compaction is skipped with the reason as a warning. Plain stdout on exit 0 (capped) is appended to the summary request as `Additional focus: …`, for both triggers | command, http | loads |
 | `post_compact` | After a compaction saved its summary | `manual`, `auto` | `trigger`, `compact_summary` (added to `CompactResult::Compacted`) | nothing | command, http | loads |
 | `post_tool_use_failure` | In the result pipeline when the outcome is `Err` (`post_tool_use` now fires only on `Ok`, as in Claude Code) | tool rule | `error` | `additionalContext` → appended to the error the agent reads; block → its reason appended | command, http, prompt | loads |
 | `notification` | The TUI notifier sees a new pending prompt of kind `PromptKind::Approval` or `PromptKind::Question`, whatever `[tui] notify` is set to; run in the background, never awaited by the UI | `permission_prompt` (an approval), `elicitation_dialog` (an `ask_user_question` or other question prompt) | `message`, `title`, `notification_type` | nothing | command, http | loads |
@@ -278,6 +280,8 @@ load error in TOML and is ignored for plugins, as today.
   - `type: "agent"` / `"mcp_tool"` skip the entry with one warning per plugin (no longer a load
     error, so a plugin that also ships them still loads its command hooks).
   - A `model` key on a prompt hook is ignored with a warning.
+  - A hook carrying `if`, or `shell: "powershell"`, is skipped with one warning per plugin, like
+    `args` (`shell: "bash"` loads, as the default shell).
   - An event Fontaine does not build is skipped with one warning per plugin and event, instead of
     silently.
 
@@ -325,7 +329,7 @@ load error in TOML and is ignored for plugins, as today.
    set `ui/mod.rs:1075`, `/init` `ui/mod.rs:1106`, first `/loop` iteration `ui/schedule.rs:194`,
    `headless.rs:970`, and the headless `/goal` set (`headless.rs:1019`, `GoalArg::Set`). Other
    `Record::UserMessage` writes (`steering.rs:277`, `child_runner.rs:452`, `questions.rs:36`) are not
-   in scope. The context is prefixed to the run's model prompt as a
+   in scope (Decisions). The context is prefixed to the run's model prompt as a
    harness note.
 4. `stop`: the core `AgentRuntime` method called on every root turn end, before the goal pieces;
    the continuation cap (streak reset by the tool-call counter, Design §4 Loop bounds; a human prompt resets it in `prompt_submit`); one call site in `Ui::turn` (`ui/turn.rs`, before `goal_after_turn`) and one in
@@ -345,8 +349,11 @@ load error in TOML and is ignored for plugins, as today.
    (`headless.rs:1158-1161`, reason `other`). Queue pending context on `SessionState`; the queue is
    root-only, drained only by root-turn prompt assembly (TUI `Ui::turn`, headless `handle_message`),
    and cleared on `/clear` and rewind. Threshold auto-compaction (`compact_if_needed`, `ui/turn.rs:858`; headless via `guarded_turn`, `headless.rs:848`) runs after prompt assembly, so drain the queue again right after it, just before `run_turn` (TUI run future and headless `run_one`), and prepend the drained notes to the run's prompt (rewriting the run-start record via `rewrite_run_start` if needed).
-7. `pre_compact` and `post_compact` in `Session::compact`. Pass the hooks in through the runtime
-   (`agent/goal.rs` `compact_with`), not into `Session`, which stays hook-free. Add the summary text
+7. `pre_compact` and `post_compact` in `Session::compact`. `Session::compact`/`compact_logged` take
+   an optional hook-free pre-summary callback, run after `plan_summary` returns `Some(plan)` and
+   before `model.call`; it can veto (→ `Skipped` with the reason as a warning) or return text that
+   is appended to the request's summarizing instruction as `\n\nAdditional focus: …`. The runtime
+   (`agent/goal.rs` `compact_with`) supplies the hook-running callback, so `Session` stays hook-free. Add the summary text
    to `CompactResult::Compacted { usage, before, after }` (`session.rs:99-111`), which lacks it, for
    `compact_summary`.
 8. `subagent_start` and `subagent_stop`: `LifecycleGate` in `fontaine-agents/src/spawn.rs`. Call
@@ -430,8 +437,8 @@ load error in TOML and is ignored for plugins, as today.
   MCP tool outside the per-call gate, which the floor-gates-every-call invariant forbids. An
   `agent` hook is a tool-using model run, experimental in Claude Code. Command-handler `args`,
   `async`, `asyncRewake`, `shell`, `onFailure`, `if`, `statusMessage` and `once` are not built
-  either. Today only `args` is skipped with a warning; the others are silently ignored and the
-  hook loads, and this plan keeps that.
+  either. `args`, `if` and `shell: "powershell"` skip the hook with a warning; the others are
+  silently ignored and the hook loads.
 - 2026-11-08: `http` and `prompt` hooks from project scope are ignored with a warning, as are
   project `stop` and `subagent_stop` hooks. Reason: they send session data off the machine or
   force model spend, and a repository may only tighten (extends the 2026-11-02 `teammate_idle`
@@ -469,6 +476,13 @@ load error in TOML and is ignored for plugins, as today.
 - 2026-11-08: `notification` maps an approval to `permission_prompt` and any question prompt to
   `elicitation_dialog`. Fontaine's other notification kinds (auth, quota, agent completion) have
   no notifier edge today.
+- 2026-11-08 AFK: A plugin hook carrying `if` or `shell: "powershell"` is skipped with a warning (like `args`), not loaded with the field ignored; `if` is not mapped to `matcher`. Reason: ignoring `if` runs the hook, including a user-trusted `allow`, on more calls than intended, and a PowerShell script under `sh` misbehaves; Claude Code honours both.
+- 2026-11-08 AFK: `pre_compact` fires from a hook-free pre-summary callback that `Session::compact` runs only after `plan_summary` returns a plan and before the model call. Reason: `compact_with` runs before every turn, so a hook there would fire on every turn even when nothing is summarized.
+- 2026-11-08 AFK: `pre_compact` stdout is appended to the summary request as `Additional focus: …` for both `manual` and `auto`. Reason: `Threshold` carries no focus, and dropping an auto hook's output silently would be a quiet failure.
+- 2026-11-08 AFK: `user_prompt_submit` does not fire for mid-turn steering. Reason: the text rides into a tool result the TUI has already shown as delivered, so a block cannot honour "prompt not sent" without silently dropping text the user saw go out.
+- 2026-11-08 AFK: `user_prompt_submit` does not fire for human prompts typed to a child agent. Reason: Claude Code has no human prompt into a subagent; the event covers the main session's prompt.
+- 2026-11-08 AFK: `user_prompt_submit` does not fire for the free-text "Other" answer to `ask_user_question`. Reason: in Claude Code that answer is a tool result, seen by `post_tool_use`, not a submitted prompt.
+- 2026-11-08 AFK: Plugin `url` and header values expand only `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PROJECT_DIR}` at load; any other `${VAR}` waits for request-time `allowed_env_vars` interpolation. Reason: load-time expansion reads the unfiltered host env and would send secrets off-machine past `allowed_env_vars` and the scrub check.
 
 ## Documentation
 
@@ -495,7 +509,7 @@ Unit tests (`user_hooks.rs`, `config.rs`, `plugins.rs`):
 - `build()` trust: project http/prompt dropped with a warning count; project `stop` and
   `subagent_stop` dropped; untrusted drops all; plugin http/prompt kept.
 - The 10,000-character cap. `systemMessage` routing (shown except on the five discard events).
-- Plugin mapping: new events, http/prompt load, agent/mcp_tool/`model`/unbuilt events skipped
+- Plugin mapping: new events, http/prompt load, agent/mcp_tool/`model`/`if`/`shell: "powershell"`/unbuilt events skipped
   with one warning each, matcher pass-through and rejection.
 - `reports::hooks` lists types, scopes and ignore markers.
 
@@ -514,7 +528,9 @@ assertions (`user_prompt_submit` block exit code/subtype/result, `session_start`
 - `stop_failure` fires on a failed provider call, in the core test using rig's mock `failing_turn(status)` (as `fontaine-core/tests/audit_telemetry.rs:367`, used with 400 at `:383`), not `wiremock`; a 500 case lives in `rust/fontaine/tests/lifecycle_hooks_headless.rs` using `Turn::Fail(500)` from `tests/common` (as `headless_smoke.rs:253` does).
 - `session_start` context reaches the first model request; `source` is right for a fresh,
   `--continue` and `--fork-session` run. `session_end` fires at headless end.
-- `pre_compact` blocks a `/compact`, and its stdout lands in the summary request's focus.
+- `pre_compact` blocks a `/compact`, and its stdout lands in the summary request's focus. It does
+  not fire on a threshold check that does not compact. A plugin `url`/header `${VAR}` other than
+  the two plugin variables is not expanded at load.
   `post_compact` receives the summary.
 - `post_tool_use` no longer fires on a failed call. `post_tool_use_failure` does, and its
   context is in the error the model reads.
