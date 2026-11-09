@@ -528,15 +528,16 @@ fn plugin_lifecycle_events_http_and_prompt_hooks_load_with_their_matchers() {
     assert_eq!(stop.prompt.as_deref(), Some("done? $ARGUMENTS"));
     let end = &config.hooks.get(HookEvent::SessionEnd)[0];
     assert_eq!(end.kind, HandlerKind::Http);
+    let url = end.url.as_deref().unwrap();
+    let expanded = url
+        .strip_prefix("https://example.test/")
+        .and_then(|rest| rest.strip_suffix("/h"))
+        .unwrap_or_else(|| panic!("{url:?}"));
+    // The root is a platform path (`/...` on Unix, a drive or verbatim prefix on Windows).
     assert!(
-        end.url
-            .as_deref()
-            .unwrap()
-            .starts_with("https://example.test//"),
-        "{:?}",
-        end.url
+        expanded.contains("installed") && !expanded.contains("CLAUDE_PLUGIN_ROOT"),
+        "{url:?}"
     );
-    assert!(!end.url.as_deref().unwrap().contains("CLAUDE_PLUGIN_ROOT"));
     let headers = end.headers.as_ref().unwrap();
     assert_eq!(headers["Authorization"], "Bearer $TOKEN");
     assert_eq!(
