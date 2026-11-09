@@ -284,6 +284,34 @@ async fn an_mcp_name_collision_on_reload_keeps_the_current_set_running() {
 }
 
 #[tokio::test]
+async fn servers_stopped_for_a_reload_that_fails_to_load_are_running_again() {
+    let w = World::new();
+    marketplace(&w.config);
+    common::write(
+        &marketplace_dir(&w.config, "team").join("plugins/review/.mcp.json"),
+        r#"{"mcpServers": {"srv": {"command": "fontaine-no-such-binary"}}}"#,
+    );
+    install(&w.config);
+    let mut runtime = runtime(&w, Arc::new(Capture::default()));
+    runtime.reload_extensions(&[]).await;
+    assert_eq!(runtime.mcp_states().len(), 1);
+
+    // The caller stops the plugin's servers, then the load fails.
+    runtime.stop_plugin_servers("review").await;
+    assert!(
+        runtime.mcp_states().is_empty(),
+        "{:?}",
+        runtime.mcp_states()
+    );
+    std::fs::write(w.config.join("plugins.toml"), "this is = not [valid").unwrap();
+    let report = runtime.reload_extensions(&["review".to_string()]).await;
+    assert!(report.failed, "{report:?}");
+    let states = runtime.mcp_states();
+    assert_eq!(states.len(), 1, "{states:?}");
+    assert_eq!(states[0].0, "plugin_review_srv");
+}
+
+#[tokio::test]
 async fn a_plugins_mcp_server_starts_and_stops_with_the_plugin() {
     let w = World::new();
     marketplace(&w.config);

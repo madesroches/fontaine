@@ -982,7 +982,6 @@ impl App {
                     || self.afk_review_prompt.is_some()
                     || self.skill_trust_prompt.is_some()
                     || self.plugin_prompt.is_some()
-                    || self.plugin_prompt.is_some()
                     || self.setup_review.is_some()
                     || self.setup_composition.is_some()
                     || self.models.is_some()

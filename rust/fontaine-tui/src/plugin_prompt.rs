@@ -12,7 +12,15 @@ const SHOWN_ROWS: usize = 24;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Change {
     Install,
-    Update,
+    Update(Why),
+}
+
+/// Why an update needs approval.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Why {
+    Differs,
+    NoRecordedApproval,
+    NoFingerprint,
 }
 
 /// `summary` is the plugin's executable surface and `fingerprint` the hash the approval records.
@@ -25,10 +33,13 @@ pub fn new(
 ) -> ConfirmPrompt {
     let heading = match change {
         Change::Install => format!("Install plugin `{plugin}` and let it run what is listed?"),
-        Change::Update => {
-            format!(
-                "Update plugin `{plugin}`? Its executable surface differs from what you approved."
-            )
+        Change::Update(why) => {
+            let reason = match why {
+                Why::Differs => "Its executable surface differs from what you approved.",
+                Why::NoRecordedApproval => "No previous approval is recorded for it.",
+                Why::NoFingerprint => "Its executable surface could not be compared.",
+            };
+            format!("Update plugin `{plugin}`? {reason}")
         }
     };
     let mut blocks: Vec<Block> = summary.iter().cloned().map(Block::Text).collect();
@@ -72,11 +83,20 @@ mod tests {
     }
 
     #[test]
-    fn an_update_says_the_surface_differs_and_a_missing_fingerprint_says_so() {
-        let body = text(&new(Change::Update, "demo", &[], None));
+    fn an_update_says_why_it_asks_and_a_missing_fingerprint_says_so() {
+        let body = text(&new(Change::Update(Why::Differs), "demo", &[], None));
         assert!(body.contains("Update plugin `demo`"), "{body}");
         assert!(body.contains("differs from what you approved"), "{body}");
         assert!(body.contains("will not auto-update"), "{body}");
+        let body = text(&new(
+            Change::Update(Why::NoRecordedApproval),
+            "demo",
+            &[],
+            Some("f"),
+        ));
+        assert!(body.contains("No previous approval is recorded"), "{body}");
+        let body = text(&new(Change::Update(Why::NoFingerprint), "demo", &[], None));
+        assert!(body.contains("could not be compared"), "{body}");
     }
 
     #[test]

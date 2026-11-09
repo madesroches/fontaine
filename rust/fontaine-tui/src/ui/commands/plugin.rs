@@ -10,7 +10,7 @@ use fontaine_core::plugin_ops::{
 use fontaine_core::plugins;
 use fontaine_tools::error_chain::chain;
 
-use crate::plugin_prompt::{self, Change};
+use crate::plugin_prompt::{self, Change, Why};
 use crate::{Action, Ui};
 
 const USAGE: &str = "usage: /plugin, or /plugin install <name>@<marketplace>, uninstall <name>, update [<name>|all], enable <name>, disable <name>";
@@ -285,10 +285,17 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             if prepared.needs_confirmation() {
                 let fingerprint = prepared.fingerprint.clone();
                 let summary = prepared.summary.clone();
+                let why = if fingerprint.is_none() {
+                    Why::NoFingerprint
+                } else if prepared.recorded.is_none() {
+                    Why::NoRecordedApproval
+                } else {
+                    Why::Differs
+                };
                 match self
                     .confirm_plugin(
                         runtime,
-                        Change::Update,
+                        Change::Update(why),
                         &name,
                         &summary,
                         fingerprint.as_deref(),

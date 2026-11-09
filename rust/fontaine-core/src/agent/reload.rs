@@ -26,6 +26,9 @@ use crate::user_hooks::{self, HookLayer};
 const STALE_NOTE: &str =
     "skill content or tool results from these earlier in this conversation may be stale";
 
+/// Marks a held-revision entry among the messages already shown.
+const HELD_PREFIX: &str = "held\0";
+
 /// What one plugin contributes, as far as a reload can tell whether it changed: the content of
 /// its component files and the definitions of everything it runs or enforces.
 #[derive(Clone, Debug, PartialEq)]
@@ -185,13 +188,19 @@ pub(super) struct PluginState {
     pub(super) sigs: BTreeMap<String, PluginSig>,
     /// The fingerprint of the extension files at the last load.
     pub(super) stamp: String,
+    /// The load warnings and held-revision notices already shown, so a reload repeats none.
+    shown: BTreeSet<String>,
 }
 
 impl PluginState {
     pub(super) fn at_start(setup: &AgentSetup) -> PluginState {
         let sigs = sigs_of(&setup.plugins);
         let stamp = disk_stamp(&setup.config_dir, &setup.config.workspace, &sigs);
-        PluginState { sigs, stamp }
+        PluginState {
+            sigs,
+            stamp,
+            shown: setup.plugins.warnings.iter().cloned().collect(),
+        }
     }
 }
 
@@ -385,17 +394,37 @@ impl AgentRuntime {
             Ok(loaded) => loaded,
             Err(why) => {
                 self.refuse_reload(&mut report, why);
-                self.restart_servers(&stopped).await;
+                // The caller stopped `changed`'s servers too, and nothing reloads them now.
+                let mut down = stopped;
+                down.extend(changed.iter().cloned());
+                self.restart_servers(&down).await;
                 return report;
             }
         };
         for warning in &loaded.warnings {
-            self.approver.warn(warning);
+            if !self.plugin_state.shown.contains(warning) {
+                self.approver.warn(warning);
+            }
         }
+        // A warning that went away may come back, and then is news again.
+        self.plugin_state
+            .shown
+            .retain(|m| m.starts_with(HELD_PREFIX));
+        self.plugin_state
+            .shown
+            .extend(loaded.warnings.iter().cloned());
         let diff = PluginDiff::between(&self.plugin_state.sigs, &loaded.sigs, &forced);
         let old_extensions = self.extensions.get();
         self.apply_loaded(loaded, &diff).await;
         let skills = skill_changes(&old_extensions, &self.extensions.get());
+        if let Some(style) = self.output_style.clone()
+            && self.extensions.get().output_style(&style).is_none()
+        {
+            self.output_style = None;
+            report
+                .lines
+                .push(format!("output style `{style}` is gone; it is turned off"));
+        }
 
         report.lines.extend(diff.lines());
         report.lines.extend(skills.lines());
@@ -453,11 +482,26 @@ impl AgentRuntime {
                         .lines
                         .push(format!("applied the staged update of `{name}`"));
                 }
+                let held: BTreeSet<String> = applied
+                    .held
+                    .iter()
+                    .map(|name| format!("{HELD_PREFIX}{name}"))
+                    .collect();
                 for name in &applied.held {
-                    self.approver.notice(&format!(
-                        "plugin `{name}` has a newer revision held for review: run /plugin update {name}"
-                    ));
+                    if !self
+                        .plugin_state
+                        .shown
+                        .contains(&format!("{HELD_PREFIX}{name}"))
+                    {
+                        self.approver.notice(&format!(
+                            "plugin `{name}` has a newer revision held for review: run /plugin update {name}"
+                        ));
+                    }
                 }
+                self.plugin_state
+                    .shown
+                    .retain(|m| !m.starts_with(HELD_PREFIX));
+                self.plugin_state.shown.extend(held);
             }
             Err(e) => self.approver.warn(&format!(
                 "staged plugin updates were not applied: {}",
