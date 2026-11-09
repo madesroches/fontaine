@@ -144,14 +144,14 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
   `non_exhaustive` enums get a wildcard arm that defaults to `Permanent`:
   - `Transient`: `StreamableHttpError::Client(e)` for every request error (a reset after TCP connect
     is neither `is_connect()` nor `is_timeout()`), `Io`, `Sse`, `UnexpectedEndOfStream`,
-    `SessionRecoveryTimeout`; `ClientInitializeError::ConnectionClosed` and `TransportChannelClosed`;
-    `McpClientError::Timeout`; `McpClientError::Request(ServiceError)` recursed by inner error
-    (`TransportSend` is classified by its inner `DynamicTransportError`; `Timeout` and
+    `SessionRecoveryTimeout`, `TransportChannelClosed`, `ControlRequestTimeout`;
+    `ClientInitializeError::ConnectionClosed`; `McpClientError::Timeout`; `McpClientError::Request(ServiceError)` recursed by inner error
+    (`TransportSend` is classified by its inner `DynamicTransportError`; `Timeout { .. }` and
     `TransportClosed` are Transient; `McpError` and `UnexpectedResponse` are Permanent); and expiry
     of the connect timeout below.
   - `Permanent`: `AuthRequired` / `InsufficientScope`, `SessionExpired`, `ReinitializationFailed`,
     `ClientInitializeError::JsonRpcError` (a non-2xx answer with a JSON-RPC error body), other
-    protocol and deserialize errors, a spawn failure, and `UnexpectedServerResponse(String)`. rmcp
+    protocol and deserialize errors, a spawn failure, and `UnexpectedServerResponse(Cow<'static, str>)`. rmcp
     turns every other non-2xx response (5xx, 429 included) into that variant with no status, so they
     cannot be told apart. A 404 at initialize is also `UnexpectedServerResponse`, since
     `SessionExpired` needs a session id, and so is a 401/403 without `WWW-Authenticate`.
@@ -199,8 +199,9 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
     Each attempt goes through `connect_server`, so it emits the existing `mcp_server_connection`
     event with `connected` or `failed`.
 
-  The watcher holds `Arc`s (approver, tool server handle, agent state, options, `network:
-  Arc<LoadedNetwork>`, `env: EnvLookup`), never
+  The watcher holds `Arc`s (approver, tool server handle, agent state, `agent_types:
+  Arc<AgentTypes>`, options, `network: Arc<LoadedNetwork>`, `env: EnvLookup`, the slot's own
+  `Arc<ServerSlot>`), never
   `&mut AgentRuntime`. A connection Fontaine closed itself (a manual reconnect, or teardown) must
   not trigger a reconnect: the slot carries a `closing: AtomicBool` that is set before `close()`.
 - **Manual reconnect.** `AgentRuntime::reconnect_mcp(&self, target: ReconnectTarget) -> Vec<McpOutcome>`,
@@ -208,7 +209,9 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
   connection (with `closing` set), connects again with no backoff, and installs a new watcher. Only
   servers that have a slot can be reconnected, that is, servers attempted this session, including
   ones that failed at startup. A left-off or untrusted server is never attempted, has no slot and
-  gets an error naming why, so `/mcp reconnect` can never bypass workspace trust or server
+  gets an error naming why, derived from core data: a name in `config.mcp_servers` that is missing
+  from `mcp_plan()` is untrusted; a planned server with `needs_approval` and no slot was left off;
+  any other name without a slot is unknown. So `/mcp reconnect` can never bypass workspace trust or server
   approval.
 - **Status for frontends.** `AgentRuntime::mcp_states() -> Vec<(String, McpServerState)>`.
 - **Choke point.** Every tool registered again after a reconnect goes through the same
@@ -292,8 +295,9 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 
 **fontaine-tui (`elicitation.rs`, new dialog, modelled on `question.rs`).**
 - The header reads `MCP server `<name>` asks for input`, followed by the server's message, cleaned
-  of control characters with the same `clean` helper as `question.rs` (made `pub(crate)`;
-  newlines in the message are kept, other control characters stripped). Then comes one row per
+  of control characters with a new newline-preserving `pub(crate)` variant next to `clean` in
+  `question.rs` (`clean` maps `\n`/`\t` to spaces and is unchanged; the variant keeps newlines and
+  strips other control characters). Then comes one row per
   schema property, in `property_order` (by key when it is `None`): its `title` (or the key) with `description`, and a required
   marker.
   - A string, number or integer row is an `InputBuffer` field, pre-filled from the property's
@@ -303,7 +307,7 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
     legacy `enumNames` show their titles.
 - Keys: Tab/Shift-Tab and Up/Down move between fields, Enter submits (blocked with an inline error
   while validation fails), Esc cancels (`Cancel`), and Ctrl-D declines (`Decline`).
-  `ANSWER_GRACE` applies as it does in the other dialogs.
+  `ANSWER_GRACE` (`confirm_prompt.rs`) applies as it does in the other dialogs.
 - A footer line reads "This goes to the server, not to the model. Don't enter secrets you wouldn't
   give this server."
 - `ChannelApprover::elicit` queues the dialog the same way `ask_user` does through a new `Prompt`
@@ -312,8 +316,12 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
   with `Cancel`, and `App::prune_closed` drops closed-reply ones. The dialog is drawn in `view.rs`
   beside the question panel. `linear.rs` renders the dialog in screen-reader mode.
 - `fontaine_tools::mcp` re-exports the rmcp elicitation schema types the dialog matches on
-  (`ElicitationSchema`, `PrimitiveSchema` and the enum schema types), since fontaine-tui has no
-  rmcp dependency.
+  (`ElicitationSchema`, `PrimitiveSchemaDefinition`, `StringSchema`, `NumberSchema`,
+  `IntegerSchema`, `BooleanSchema`, `StringFormat` and the enum schema types), since fontaine-tui
+  has no rmcp dependency. `ElicitRequestParams`, `ElicitationAction`, `PrimitiveSchemaDefinition`,
+  `ElicitResult`, `ClientCapabilities` and `FormElicitationCapability` are `#[non_exhaustive]`:
+  matches need `_` arms and values are built with constructors or setters (a mutable
+  `ClientCapabilities::default()` gets `ElicitationCapability::new().with_form(FormElicitationCapability::new())`).
 
 ## Implementation Steps
 
@@ -330,7 +338,7 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
    `ApproverElicitor`, and `OutputLimits` from `MAX_MCP_OUTPUT_TOKENS` + scratch.
    `connect_mcp` builds and passes `McpOptions` internally; its signature is unchanged.
    `probe_server` builds its `McpOptions` internally too (with
-   `CancelAll` and no spill), so `doctor_cmd.rs` is unchanged. Add audit and telemetry for
+   `CancelAll` and no spill). Add audit and telemetry for
    elicitation.
 5. **Supervisor (core).** Add `agent/mcp_supervisor.rs` with `McpServers`, `ServerSlot` (one per
    attempted server, holding its `spec`), `McpServerState`, the startup retry, the watcher with
@@ -338,11 +346,15 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
    case (drop the connection, `connect_transport` again over a new duplex pipe).
 6. **TUI.** Add `McpState::Pending`, live `/mcp` and `/status` rendering from `mcp_states()`,
    `/mcp reconnect <name|all>` (command split and parse in `commands.rs`, dispatched through
-   `dispatch_inner`), the `elicitation.rs` dialog (rendered in `view.rs`), the `Prompt` variant,
+   `dispatch_inner`; the "no arguments … not supported yet" error in
+   `ui/commands/reports.rs` is rewritten, as `/status` and `/mcp` render there), the `elicitation.rs` dialog (rendered in `view.rs`), the `Prompt` variant,
    `ChannelApprover::elicit`, and the `App::answer_for_afk` / `App::prune_closed` handling.
    Plumb the new prompt through every place that enumerates prompts: `notify.rs` `PromptKind` and
-   `App::pending_prompt` (bell and desktop notification); `spinner.rs` pause; in `app.rs`, key
-   routing in `handle_key`, the open-prompt checks, and `deny_pending` (Esc interrupt sends
+   `App::pending_prompt` (bell and desktop notification); the `spinner.rs` visibility condition
+   (:66-68); `Overlay::needs_answer` (`view.rs`, drives the screen-reader bell in `linear.rs`); the
+   input-visibility check (`view.rs`); in `app.rs`, key routing in `handle_key`, paste routing in
+   `dispatch_input` (pastes go to the form's focused field, never the message box), `covered()`,
+   the transcript-toggle guard, the open-prompt checks, and `deny_pending` (Esc interrupt sends
    `Cancel`); in `ui/mod.rs`, the exhaustive `Prompt` matches in `on_prompt`, `drain_prompts` and
    `answer_unattended` (answers `Cancel`).
 7. **Integration tests** (see Testing Strategy).
@@ -375,7 +387,7 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 - `rust/fontaine-tui/src/elicitation.rs` (new), `rust/fontaine-tui/src/lib.rs`,
   `rust/fontaine-tui/src/app.rs` (`answer_for_afk`, `prune_closed`), `rust/fontaine-tui/src/view.rs`,
   `rust/fontaine-tui/src/reports.rs`, `rust/fontaine-tui/src/notify.rs`,
-  `rust/fontaine-tui/src/spinner.rs`,
+  `rust/fontaine-tui/src/spinner.rs`, `rust/fontaine-tui/src/ui/commands/reports.rs`,
   `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/ui/mod.rs` (`dispatch_inner`), `rust/fontaine-tui/src/ui/commands/*` (`/mcp reconnect`, `/status`),
   `rust/fontaine-tui/src/question.rs` (`clean`), `rust/fontaine-tui/src/linear.rs`
 - `rust/fontaine-tui/src/commands.rs` — `runs_mid_turn`, hint, split, parse tests
@@ -383,6 +395,7 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
   `rmcp` dev-dependency
 - `rust/fontaine-tools/tests/mcp_common/server.rs` — an eliciting tool (used by
   `rust/fontaine/examples/repo_mcp_server.rs`)
+- `rust/fontaine/tests/doctor_cmd.rs` — tool count ("connected (3 tools)" at :137)
 - `rust/fontaine-core/tests/` — HTTP reconnect test with a wiremock JSON-RPC responder
 - `docs/mcp.md`, `docs/tui.md`, `docs/headless.md`, `docs/afk.md`, `docs/telemetry.md`,
   `docs/doctor.md`, `docs/configuration.md`
@@ -437,7 +450,7 @@ line, which goes at the end of `### TUI`:
 - `docs/mcp.md`: new sections "Requests for input" (elicitation: form mode, what headless/AFK do,
   that answers go only to the server), "Reconnecting" (backoff schedule, stdio behavior,
   `/mcp reconnect`), and "Large outputs" (limits, `MAX_MCP_OUTPUT_TOKENS`, `maxResultSizeChars`,
-  where files go), and a `## Telemetry` section for the `mcp_elicitation` event. Add to the line
+  where files go). Extend the existing `## Telemetry` section with the `mcp_elicitation` event. Add to the line
   at `docs/mcp.md:61` (keep its existing text) for elicitation, and update `docs/mcp.md:63-64` for
   the startup retry.
 - `docs/tui.md`: the `/mcp reconnect` argument, the pending state, and the elicitation dialog keys.
