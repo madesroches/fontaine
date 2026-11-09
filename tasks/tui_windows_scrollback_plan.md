@@ -120,10 +120,14 @@ fast-typing user's message is committed that way once the screen is full.
   in the suite); a silent regression there is visible immediately in use, so it stays manual.
 
 ## Manual Verification
-On Windows Terminal (80x12 and a full-size window), `cargo run -p fontaine`, no provider needed
-for the `live_area` example:
-1. Run `target\debug\examples\live_area.exe`; scroll the terminal's scrollback up. Expected: every
-   `note N` / user line appears once, none missing. (Not automated: needs a real ConPTY.)
+On Windows Terminal (80x12 and a full-size window):
+1. `cargo build -p fontaine-tui --example live_area`, then run `target\debug\examples\live_area.exe`
+   and, separately, `live_area.exe user`; scroll the terminal's scrollback up. Expected: with the
+   default scenario every `note N` / `wordN` appears once; with `user` every `question N` appears
+   once, in order, followed by a blank row. (Not automated: needs a real ConPTY.)
+
+Steps 2-3 use `cargo run -p fontaine` with a configured provider.
+
 2. In a real session send several messages until the first scrolls off, scroll back. Expected: all
    user messages visible.
 3. Spawn a subagent, switch to it and back (agents panel), scroll back. Expected: the full

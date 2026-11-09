@@ -39,6 +39,8 @@ fn main() {
     }
     if std::env::args().nth(1).as_deref() == Some("user") {
         user_and_reprint(&mut app, &mut screen, &draw);
+        app.flush = true;
+        screen.commit_all(&mut app).expect("final commit");
         disable_raw_mode().expect("restore the terminal");
         println!("\nDONE");
         return;
@@ -234,7 +236,5 @@ where
     }
     std::thread::sleep(Duration::from_secs(2));
     app.reprint = true;
-    draw(app, screen);
-    app.flush = true;
     draw(app, screen);
 }
