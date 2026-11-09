@@ -231,13 +231,22 @@ fn classify_http(error: &StreamableHttpError<reqwest::Error>) -> McpErrorKind {
         | StreamableHttpError::SessionRecoveryTimeout
         | StreamableHttpError::TransportChannelClosed
         | StreamableHttpError::ControlRequestTimeout => McpErrorKind::Transient,
+        StreamableHttpError::HttpStatus(error) => classify_status(error.status),
         StreamableHttpError::UnexpectedServerResponse(text) => classify_status_text(text),
         _ => McpErrorKind::Permanent,
     }
 }
 
-/// rmcp formats a non-2xx answer as `HTTP {status}: {body}` and keeps no typed status, so the
-/// status is read back from the text. Only a 5xx or a 429 is worth another try.
+fn classify_status(status: u16) -> McpErrorKind {
+    if status == 429 || (500..=599).contains(&status) {
+        McpErrorKind::Transient
+    } else {
+        McpErrorKind::Permanent
+    }
+}
+
+/// Text-form HTTP errors keep no typed status, so the status is read back from the text. Only a
+/// 5xx or a 429 is worth another try.
 fn classify_status_text(text: &str) -> McpErrorKind {
     if text.starts_with("HTTP 5") || text.starts_with("HTTP 429") {
         McpErrorKind::Transient
@@ -509,7 +518,7 @@ mod tests {
     use futures::future::BoxFuture;
     use rig_agent::tool::server::ToolServer;
     use rig_core::tool::ToolExecutionError;
-    use rmcp::transport::streamable_http_client::AuthRequiredError;
+    use rmcp::transport::streamable_http_client::{AuthRequiredError, HttpStatusError};
     use serde_json::json;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -760,6 +769,7 @@ mod tests {
             StreamableHttpError::TransportChannelClosed,
             StreamableHttpError::ControlRequestTimeout,
             StreamableHttpError::Io(std::io::Error::other("reset")),
+            StreamableHttpError::HttpStatus(HttpStatusError::new(503, None)),
         ] {
             assert_eq!(
                 classify_http(&transient),
@@ -769,6 +779,7 @@ mod tests {
         }
         for permanent in [
             StreamableHttpError::<reqwest::Error>::SessionExpired,
+            StreamableHttpError::HttpStatus(HttpStatusError::new(400, None)),
             StreamableHttpError::MissingSessionIdInResponse,
             StreamableHttpError::ReinitializationFailed(rmcp::model::ErrorData::new(
                 rmcp::model::ErrorCode(-1),
