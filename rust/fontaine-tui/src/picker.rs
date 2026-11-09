@@ -1,7 +1,9 @@
 //! The list navigation the filterable overlay pickers share. The rows and what Enter picks
 //! differ too much for a common widget, so these are plain functions.
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+use crate::input::typed_char;
 
 /// The most rows a picker body shows at once.
 pub(crate) const MAX_ROWS: usize = 14;
@@ -24,12 +26,8 @@ pub(crate) fn edit_query(query: &mut String, selected: &mut usize, key: &KeyEven
         KeyCode::Backspace => {
             query.pop();
         }
-        KeyCode::Char(c)
-            if !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-        {
-            query.push(c);
+        KeyCode::Char(_) if typed_char(key).is_some() => {
+            query.push(typed_char(key).expect("guarded by is_some"));
         }
         _ => return,
     }
@@ -48,6 +46,7 @@ pub(crate) fn window_start(selected_row: usize, total: usize, window: usize) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
 
     #[test]
     fn stepping_wraps_and_an_empty_list_stays_put() {
@@ -95,5 +94,22 @@ mod tests {
             &key(KeyCode::Backspace, KeyModifiers::NONE),
         );
         assert_eq!((query.as_str(), selected), ("", 0));
+    }
+
+    #[test]
+    fn an_altgr_character_reaches_the_query() {
+        crate::input::with_altgr(true, || {
+            let mut query = String::new();
+            let mut selected = 3;
+            edit_query(
+                &mut query,
+                &mut selected,
+                &KeyEvent::new(
+                    KeyCode::Char('@'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ),
+            );
+            assert_eq!((query.as_str(), selected), ("@", 0));
+        });
     }
 }

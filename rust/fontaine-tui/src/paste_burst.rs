@@ -7,9 +7,10 @@
 use std::io;
 use std::time::Duration;
 
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::Input;
+use crate::input::typed_char_on;
 
 /// The longest pause between two events of one burst.
 pub(crate) const BURST_GAP: Duration = Duration::from_millis(15);
@@ -24,14 +25,9 @@ fn burst_text(key: &KeyEvent) -> Option<char> {
         return None;
     }
     let mods = key.modifiers;
-    // Windows reports AltGr as CONTROL|ALT.
-    let altgr = mods.contains(KeyModifiers::CONTROL | KeyModifiers::ALT);
     match key.code {
-        KeyCode::Char(c)
-            if altgr || !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-        {
-            Some(c)
-        }
+        // Windows reports AltGr as CONTROL|ALT, and this reader only runs on Windows.
+        KeyCode::Char(_) => typed_char_on(key, true),
         KeyCode::Enter if mods.is_empty() => Some('\n'),
         KeyCode::Tab if mods.is_empty() => Some('\t'),
         _ => None,
@@ -91,6 +87,7 @@ pub(crate) fn coalesce(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyModifiers;
     use std::collections::VecDeque;
 
     fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {

@@ -13,7 +13,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::agents_panel::{SpendView, row_label, spend_text, writing_text};
-use crate::input::wrap;
+use crate::input::{typed_char, wrap};
 
 /// How long an agent that failed, was killed or ran out of budget stays listed.
 pub const ENDED_LISTED: Duration = Duration::from_secs(30);
@@ -345,7 +345,7 @@ impl AgentList {
                     }
                 }
             }
-            KeyCode::Char(_) if plain => {
+            KeyCode::Char(_) if typed_char(&key).is_some() => {
                 self.focused = false;
                 return ListKey::Blur { typed: true };
             }
@@ -1087,5 +1087,21 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(dimmed, "(agent-3)");
+    }
+
+    #[test]
+    fn an_altgr_character_blurs_the_list_as_typed_text() {
+        crate::input::with_altgr(true, || {
+            let mut list = focused(vec![]);
+            let result = list.handle_key(
+                KeyEvent::new(
+                    KeyCode::Char('@'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ),
+                None,
+            );
+            assert_eq!(result, ListKey::Blur { typed: true });
+            assert!(!list.focused);
+        });
     }
 }

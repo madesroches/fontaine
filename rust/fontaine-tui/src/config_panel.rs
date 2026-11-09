@@ -9,11 +9,12 @@ use fontaine_core::config::{Config, Slot};
 use fontaine_core::config_catalog::{
     Applies, Edit, KEYS, KeyRow, ModelSlot, Running, winning_slot,
 };
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use toml_edit::Value;
 
+use crate::input::typed_char;
 use crate::theme::Theme;
 
 /// The widest a value column grows before it is cut short.
@@ -191,12 +192,9 @@ impl ConfigPanel {
                     self.selected = 0;
                 }
             }
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                self.filter.push(c);
+            KeyCode::Char(_) if typed_char(&key).is_some() => {
+                self.filter
+                    .push(typed_char(&key).expect("guarded by is_some"));
                 self.selected = 0;
             }
             _ => {}
@@ -268,13 +266,8 @@ impl ConfigPanel {
             KeyCode::Backspace => {
                 typed.pop();
             }
-            KeyCode::Char(c)
-                if c.is_ascii_digit()
-                    && !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                typed.push(c);
+            KeyCode::Char(_) if typed_char(&key).is_some_and(|c| c.is_ascii_digit()) => {
+                typed.push(typed_char(&key).expect("guarded by is_some_and"));
             }
             KeyCode::Enter => {
                 if typed.is_empty() {
@@ -494,6 +487,7 @@ fn clip(text: &str, width: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::crossterm::event::KeyModifiers;
     use std::path::PathBuf;
 
     use fontaine_core::config::{LoadParams, load};
@@ -847,5 +841,17 @@ mod tests {
         assert_eq!(lines.len(), 6);
         let shown = &p.rows[p.visible()[p.selected]].key.path;
         assert!(lines.iter().any(|l| l.contains(shown)));
+    }
+
+    #[test]
+    fn an_altgr_character_reaches_the_filter() {
+        crate::input::with_altgr(true, || {
+            let mut p = panel();
+            p.handle_key(KeyEvent::new(
+                KeyCode::Char('@'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ));
+            assert_eq!(p.filter, "@");
+        });
     }
 }

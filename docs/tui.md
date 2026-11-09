@@ -252,6 +252,10 @@ last, that holds a line break as a paste, so a multi-line paste is inserted ther
 paste is replayed as the keys it arrived as, which is why a dropped file path is not attached as a
 PDF on Windows. Pressing Enter by hand still submits.
 
+On Windows, characters composed with AltGr (such as `@`, `€`, `{` or `~` on a French Canadian
+layout) type normally in the input and the filter boxes. The console reports AltGr as Ctrl+Alt, so a
+Ctrl+Alt chord bound in the keymap still takes precedence over the character.
+
 ### Remapping the keys
 
 The global actions above live in a `[keybindings]` table of the settings: each entry maps one
