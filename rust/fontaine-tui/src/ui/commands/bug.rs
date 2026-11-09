@@ -287,8 +287,13 @@ fn render(facts: &Facts, level: Level, redactor: &Redactor) -> Rendered {
 /// Where the running binary lives, as a hint for the maintainers: not a path.
 fn install_method() -> String {
     let exe = std::env::current_exe().unwrap_or_default();
-    let text = exe.to_string_lossy();
-    if text.contains("/.cargo/") || text.contains("\\.cargo\\") {
+    classify_install(&exe.to_string_lossy()).to_string()
+}
+
+fn classify_install(text: &str) -> &'static str {
+    if text.contains("/.fontaine/bin/") || text.contains("\\.fontaine\\bin\\") {
+        "installer"
+    } else if text.contains("/.cargo/") || text.contains("\\.cargo\\") {
         "cargo install"
     } else if text.contains("/target/") || text.contains("\\target\\") {
         "built from source"
@@ -297,5 +302,25 @@ fn install_method() -> String {
     } else {
         "unknown"
     }
-    .to_string()
+}
+
+#[cfg(test)]
+mod install_tests {
+    use super::classify_install;
+
+    #[test]
+    fn installer_dir_is_recognised_on_both_separators() {
+        assert_eq!(
+            classify_install("/home/u/.fontaine/bin/fontaine"),
+            "installer"
+        );
+        assert_eq!(
+            classify_install("C:\\Users\\u\\.fontaine\\bin\\fontaine.exe"),
+            "installer"
+        );
+        assert_eq!(
+            classify_install("/home/u/.cargo/bin/fontaine"),
+            "cargo install"
+        );
+    }
 }

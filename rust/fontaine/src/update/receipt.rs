@@ -113,8 +113,14 @@ fn parse(json: &str) -> Result<Parsed, ReceiptError> {
     if cfg!(windows) && !file.ends_with(".exe") {
         file.push_str(".exe");
     }
+    // A custom `install-path` records `flat`, with the prefix being the directory the binary sits
+    // in. Cargo-home and hierarchical receipts, and those predating the field, keep `bin/`.
+    let dir = match text("install_layout") {
+        Some("flat") => PathBuf::from(prefix),
+        _ => Path::new(prefix).join("bin"),
+    };
     Ok(Parsed {
-        binary: Path::new(prefix).join("bin").join(file),
+        binary: dir.join(file),
         version: version.to_string(),
     })
 }
@@ -198,16 +204,32 @@ impl std::error::Error for WriteError {
 mod tests {
     use super::*;
 
-    fn receipt(prefix: &str, binaries: &str, version: &str) -> String {
+    fn receipt(prefix: &str, binaries: &str, version: &str, layout: Option<&str>) -> String {
+        let layout = layout
+            .map(|l| format!(r#""install_layout":"{l}","#))
+            .unwrap_or_default();
         format!(
-            r#"{{"binaries":[{binaries}],"install_prefix":"{prefix}","install_layout":"flat","version":"{version}","provider":{{"source":"cargo-dist","version":"0.32.0"}}}}"#
+            r#"{{"binaries":[{binaries}],"install_prefix":"{prefix}",{layout}"version":"{version}","provider":{{"source":"cargo-dist","version":"0.32.0"}}}}"#
         )
     }
 
-    /// An install tree whose receipt names `bin/fontaine`; returns (root, receipt, binary).
+    /// A flat install tree: the binary sits directly in the receipt's prefix; returns (root,
+    /// receipt, binary).
     fn tree(version: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+        layout_tree(version, Some("flat"), false)
+    }
+
+    fn layout_tree(
+        version: &str,
+        layout: Option<&str>,
+        under_bin: bool,
+    ) -> (tempfile::TempDir, PathBuf, PathBuf) {
         let root = tempfile::tempdir().unwrap();
-        let bin = root.path().join("bin");
+        let bin = if under_bin {
+            root.path().join("bin")
+        } else {
+            root.path().to_path_buf()
+        };
         std::fs::create_dir_all(&bin).unwrap();
         let name = if cfg!(windows) {
             "fontaine.exe"
@@ -218,7 +240,11 @@ mod tests {
         std::fs::write(&binary, b"old").unwrap();
         let receipt_file = root.path().join(RECEIPT_FILE);
         let prefix = root.path().to_str().unwrap().replace('\\', "\\\\");
-        std::fs::write(&receipt_file, receipt(&prefix, "\"fontaine\"", version)).unwrap();
+        std::fs::write(
+            &receipt_file,
+            receipt(&prefix, "\"fontaine\"", version, layout),
+        )
+        .unwrap();
         (root, receipt_file, binary)
     }
 
@@ -268,14 +294,32 @@ mod tests {
     }
 
     #[test]
-    fn exe_suffix_is_not_doubled_and_layout_is_ignored() {
+    fn flat_receipt_resolves_inside_the_prefix() {
+        let (root, receipt, binary) = layout_tree("1.0.0", Some("flat"), false);
+        assert_eq!(binary.parent().unwrap(), root.path());
+        assert_eq!(locate(&receipt, &binary).unwrap().channel, Channel::Release);
+    }
+
+    #[test]
+    fn other_layouts_and_no_layout_resolve_under_bin() {
+        for layout in [Some("cargo-home"), Some("hierarchical"), None] {
+            let (_root, receipt, binary) = layout_tree("1.0.0", layout, true);
+            assert!(locate(&receipt, &binary).is_ok(), "{layout:?}");
+        }
+    }
+
+    #[test]
+    fn exe_suffix_is_not_doubled_under_either_layout() {
         let prefix = if cfg!(windows) { r"C:\opt\x" } else { "/opt/x" };
-        let json = format!(
-            r#"{{"install_prefix":"{}","install_layout":"hierarchical","binaries":["fontaine.exe"],"version":"1.0.0"}}"#,
-            prefix.replace('\\', "\\\\")
-        );
-        let binary = parse(&json).unwrap().binary;
-        assert_eq!(binary.file_name().unwrap(), "fontaine.exe");
+        for (layout, parent) in [("flat", ""), ("cargo-home", "bin")] {
+            let json = format!(
+                r#"{{"install_prefix":"{}","install_layout":"{layout}","binaries":["fontaine.exe"],"version":"1.0.0"}}"#,
+                prefix.replace('\\', "\\\\")
+            );
+            let binary = parse(&json).unwrap().binary;
+            assert_eq!(binary.file_name().unwrap(), "fontaine.exe");
+            assert_eq!(binary.parent().unwrap(), Path::new(prefix).join(parent));
+        }
     }
 
     #[test]

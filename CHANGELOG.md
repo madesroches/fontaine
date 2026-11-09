@@ -6,6 +6,14 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The shell and PowerShell installers install to `~/.fontaine/bin` (`%USERPROFILE%\.fontaine\bin`)
+  instead of `$CARGO_HOME/bin`, so a machine without a Rust toolchain no longer gets a `.cargo`
+  directory. `fontaine update` reads the receipt's layout, so an earlier install in
+  `$CARGO_HOME/bin` keeps updating in place. To move, run the installer again and delete the old
+  `$CARGO_HOME/bin/fontaine`; see `docs/installing.md` (#527).
+
 ### Added
 
 - `claude-subscription` accounts offer the provider's native web search, as `anthropic` accounts
@@ -37,14 +45,14 @@ All notable changes are recorded here. The format follows
   model call's token usage, which the bench reads. The mean covers the steady-state steps (3
   to N-1), so a run needs at least 4 files (#497).
 - A one-line shell installer for Linux and macOS, `fontaine-installer.sh`, is attached to each
-  release. It installs to `$CARGO_HOME/bin`, checks the archive's sha256 when `sha256sum` is
+  release. It installs to `~/.fontaine/bin`, checks the archive's sha256 when `sha256sum` is
   present, and writes an install receipt for the updater. It ignores the `[network]` settings and
   does not check its own signature; see `docs/installing.md` (#477). Its minisign signature,
   `fontaine-installer.sh.minisig`, is attached beside it and checked before the release is
   published (#487).
 - A one-line PowerShell installer for Windows x86_64, `fontaine-installer.ps1`, is attached to each
   release and, rewritten for the build, to the stable `dev` release. It installs to
-  `%CARGO_HOME%\bin`, adds that to the user `Path`, writes the install receipt for the updater, and
+  `%USERPROFILE%\.fontaine\bin`, adds that directory to the user `Path`, writes the install receipt for the updater, and
   checks the archive's sha256 before unpacking; dist's stock script has no such check, so CI patches
   it in before signing. Its minisign signature is published beside it on both channels. It ignores
   the `[network]` settings and does not check its own signature; see `docs/installing.md` (#478).

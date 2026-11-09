@@ -458,6 +458,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-08 (#509): `fontaine update` updates only on a matching install receipt and derives the channel from the receipt version (not config: no new user-scope key, and project config cannot flip it); it never switches channels. Windows swaps via rename-aside (`fontaine.exe` to `fontaine.exe.old`, deleted by the next update) rather than #175's separate updater process; narrower than #175, which keeps the background check, staged swap and TUI notice.
 - 2026-11-08 (#509, AFK): Archive extraction uses pure-Rust `tar` + `lzma-rs` (xz) and `zip` =8.6.0 (already in `Cargo.lock`, `deflate-flate2-zlib-rs`), in-process only and exact-pinned; the most conservative choice because it needs no C toolchain and passes the deny license list.
 - 2026-11-08 (#509, AFK): Update failures exit with distinct codes `EXIT_UPDATE_NOT_SELF_UPDATABLE` = 3, `EXIT_UPDATE_NETWORK` = 4, `EXIT_UPDATE_VERIFY` = 5 (config errors keep `EXIT_CONFIG` = 2); each is a kind scripts dispatch on.
+- 2026-11-08 (#527): The installers use `install-path = "~/.fontaine/bin"`, not Claude Code's `~/.local/bin` or cargo-dist's `$CARGO_HOME/bin`; reason: the directory is Fontaine's alone, shared with no other tool, and trivial to remove. No automatic migration of older `$CARGO_HOME/bin` installs.
 
 ### Config
 
