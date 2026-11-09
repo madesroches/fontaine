@@ -225,6 +225,11 @@ fn trust_summary(config: &Config) -> fontaine_tui::trust_prompt::Summary {
         .filter(|(event, _)| event.project_scope() == fontaine_core::config::ProjectScope::Loads)
         .flat_map(|(_, hooks)| hooks)
         .filter(|hook| hook.origin.is_project())
+        // `build()` drops http and prompt hooks from the shared project file.
+        .filter(|hook| {
+            hook.kind == fontaine_core::config::HandlerKind::Command
+                || hook.origin.slot != fontaine_core::config::Slot::Project
+        })
         .count();
     let servers = config
         .mcp_servers

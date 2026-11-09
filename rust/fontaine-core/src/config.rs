@@ -2025,7 +2025,7 @@ fn check_websearch_values(w: &WebsearchSection) -> Result<(), (String, String)> 
 }
 
 /// A hook has exactly the fields its handler type uses.
-fn check_handler_fields(hook: &Hook) -> Result<(), String> {
+pub(crate) fn check_handler_fields(hook: &Hook) -> Result<(), String> {
     let (needs, takes): (&str, &[&str]) = match hook.kind {
         HandlerKind::Command => ("command", &["command"]),
         HandlerKind::Http => ("url", &["url", "headers", "allowed_env_vars"]),

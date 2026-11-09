@@ -246,3 +246,37 @@ async fn escape_during_the_evaluation_pauses_the_goal_without_a_goal_turn() {
     })
     .await;
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_a_prompt_hook_blocks_does_not_resume_a_paused_goal() {
+    let w = World::new(vec![
+        text_turn("pass 1"),
+        text_turn("pass 2"),
+        text_turn("pass 3"),
+        text_turn("pass 4"),
+    ]);
+    let flag = w.work.join("block.flag");
+    let w = w
+        .with_config(&format!(
+            "[goal]\nmax_turns = 2\n\n[[hooks.user_prompt_submit]]\ncommand = '''\nif [ -e '{}' ]; then echo 'no prompts today' >&2; exit 2; fi\n'''\n",
+            flag.display()
+        ))
+        .with_guardian(vec![judged("not_met", "still not there")]);
+    w.run(|ui| async move {
+        ui.send("/goal be done");
+        ui.wait_for("Goal paused: 2 goal turns ran without it being met")
+            .await;
+        idle(&ui).await;
+        std::fs::write(&flag, "").unwrap();
+        ui.send("keep going");
+        ui.wait_for("no prompts today").await;
+        idle(&ui).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let screen = ui.screen();
+        assert!(screen.contains("◎ goal paused"), "{screen}");
+        assert!(!screen.contains("pass 4"), "{screen}");
+    })
+    .await;
+    assert_eq!(w.requests().len(), 3);
+}

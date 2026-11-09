@@ -1239,8 +1239,16 @@ impl LifecycleGate for SubagentGate {
                 }
                 if answer.blocked.is_some() {
                     reasons.push(cap_context(&hook.block_text(&answer)));
-                } else if let Ok(Some(context)) = answer.context(HookEvent::SubagentStop) {
-                    reasons.push(context);
+                } else {
+                    match answer.context(HookEvent::SubagentStop) {
+                        Ok(Some(context)) => reasons.push(context),
+                        Ok(None) => {}
+                        Err(e) => self.approver.warn(&format!(
+                            "the subagent_stop hook `{}` answered unreadably: {}; it adds nothing",
+                            hook.label(),
+                            chain(&e)
+                        )),
+                    }
                 }
             }
             if reasons.is_empty() {
@@ -1650,7 +1658,12 @@ pub fn build(
                 continue;
             }
             for name in hook.allowed_env_vars.iter().flatten() {
-                if deps.process.scrub_env.iter().any(|s| s == name.as_str()) {
+                if deps
+                    .process
+                    .scrub_env
+                    .iter()
+                    .any(|s| s.eq_ignore_ascii_case(name))
+                {
                     return Err(HookConfigError {
                         event,
                         hook: hook.target().to_string(),

@@ -1588,6 +1588,15 @@ fn parse_hooks_file(
                         }
                     }
                 }
+                if let Err(message) = crate::config::check_handler_fields(&template) {
+                    warn_once(
+                        warnings,
+                        format!(
+                            "plugin `{plugin}` has a bad `{event_name}` hook: {message}; its hook is skipped"
+                        ),
+                    );
+                    continue;
+                }
                 let matchers: Vec<Option<String>> = match (event.matcher_kind(), matcher.as_deref())
                 {
                     (_, None) => vec![None],

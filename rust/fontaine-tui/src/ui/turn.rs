@@ -583,8 +583,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let end = match submission {
                 Submission::Message(text) => {
                     self.app.transcript.user(text.clone());
-                    // A prompt from the user resumes a paused goal.
-                    runtime.goal_user_prompt();
                     match self.refresh_before_turn(runtime) {
                         Some(end) => end,
                         None => {
@@ -592,6 +590,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             if let Some(end) = self.refuse_by_hook(runtime, &text).await {
                                 end
                             } else {
+                                // A prompt from the user resumes a paused goal.
+                                runtime.goal_user_prompt();
                                 runtime.begin_turn(&text, false);
                                 self.turn(runtime, text.clone(), Some(&text), Vec::new())
                                     .await
@@ -617,8 +617,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             Err(why) => self.app.transcript.error(why),
                         }
                     }
-                    // A prompt from the user resumes a paused goal.
-                    runtime.goal_user_prompt();
                     match self.refresh_before_turn(runtime) {
                         Some(end) => end,
                         None => {
@@ -626,6 +624,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             if let Some(end) = self.refuse_by_hook(runtime, &text).await {
                                 end
                             } else {
+                                // A prompt from the user resumes a paused goal.
+                                runtime.goal_user_prompt();
                                 runtime.begin_turn(&text, false);
                                 self.turn(runtime, text.clone(), Some(&text), files).await
                             }
@@ -1174,6 +1174,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         prompt: &str,
     ) -> Result<bool, TurnEnd> {
         if !runtime.has_hook(HookEvent::UserPromptSubmit) {
+            // Still resets the `stop` streak, which every human prompt does.
+            runtime.prompt_submit(prompt).await;
             return Ok(true);
         }
         self.app.set_running(true);

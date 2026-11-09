@@ -89,3 +89,58 @@ async fn a_notification_hook_for_a_question_does_not_fire_for_an_approval() {
     })
     .await;
 }
+
+fn hook_marker() -> String {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
+    let name = if cfg!(windows) {
+        "hook_marker.exe"
+    } else {
+        "hook_marker"
+    };
+    let path = dir.join(name);
+    assert!(path.exists(), "{} is not built", path.display());
+    path.to_string_lossy().into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_human_prompt_restarts_the_stop_hook_streak_without_a_prompt_hook() {
+    let w = World::new(
+        (0..20)
+            .map(|n| common::text_turn(&format!("answer {n}")))
+            .collect(),
+    );
+    let log = w.work.join("stops.jsonl");
+    let w = w.with_config(&format!(
+        "[[hooks.stop]]\ncommand = '''\n'{}' --append --exit 2 --stderr 'keep going' '{}'\n'''\n",
+        hook_marker(),
+        log.display()
+    ));
+    let seen = log.clone();
+    w.run(|ui| async move {
+        ui.wait_until("an idle prompt", |s| {
+            s.contains("shift+tab mode · /add-dir")
+        })
+        .await;
+        ui.send("first");
+        ui.wait_for("answer 8").await;
+        ui.wait_until("an idle prompt", |s| {
+            s.contains("shift+tab mode · /add-dir")
+        })
+        .await;
+        let after_first = lines(&seen).len();
+        assert_eq!(after_first, 8, "the streak caps at eight");
+        ui.send("second");
+        ui.wait_for("answer 17").await;
+        ui.wait_until("an idle prompt", |s| {
+            s.contains("shift+tab mode · /add-dir")
+        })
+        .await;
+        assert_eq!(
+            lines(&seen).len(),
+            16,
+            "the second prompt starts a new streak"
+        );
+    })
+    .await;
+}
