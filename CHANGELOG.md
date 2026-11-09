@@ -37,6 +37,13 @@ All notable changes are recorded here. The format follows
   failed call fires `post_tool_use_failure`. A plugin's `hooks.json` loads the new events and the
   `http` and `prompt` types, and skips `agent` and `mcp_tool` hooks and events Fontaine does not
   build with a warning instead of failing the plugin (#29).
+- An `advisor` tool the main model can call to consult a second model, as Claude Code's advisor
+  does. It exists only when you define an `advisor` role under `[models.roles]` (user settings or
+  `--settings`), so nothing changes without one. The advisor sees the conversation so far and the
+  model's question, has no tools and answers with text, which comes back as a tool result and
+  never as your intent for the guardian. It is an `arbitrary` tool judged like any other (allow it
+  with `allow = ["advisor"]`), root only, billed to the session and shown as `advisor` in `/cost`.
+  Closes #44.
 - `claude-subscription` accounts offer the provider's native web search, as `anthropic` accounts
   do, under the same `[websearch] native` and permission conditions. The Claude CLI adapter
   accepts that one server tool (request entry, call, result and replayed history); every other
@@ -44,8 +51,8 @@ All notable changes are recorded here. The format follows
   these accounts (#522).
 - `[models.roles]` names ordered lists of models, and a bare role name works wherever a model is
   accepted: `--model`, `[model] model`, `[agents.types.<name>] model`, an agent file's `model`, the
-  `agent` tool's `model` and `/model`. Fontaine reads four roles itself: `main`, `critique`,
-  `setup` and `compaction`; the rest are yours, so Claude Code's `sonnet` and `opus` port once you
+  `agent` tool's `model` and `/model`. Fontaine reads five roles itself: `main`, `critique`,
+  `setup`, `compaction` and `advisor`; the rest are yours, so Claude Code's `sonnet` and `opus` port once you
   define them. `[model] model` and `[agents.types.<name>] model` also take a list. When the serving
   entry fails with a 402, 429 or 529 (or a `claude-subscription` plan limit) after the same-model
   retries, the caller moves to the next entry and stays there; the move is warned about and

@@ -741,8 +741,8 @@ By model
   anthropic/claude-haiku-5-5               31   22.0k    1.4k        9.8k          0      $0.0150
 ```
 
-The sources are `main`, `guardian`, `subagents`, `goal` (the goal evaluator), `compaction` and
-`side questions` (`/btw`), in that order. `calls` counts model requests, with a guardian
+The sources are `main`, `guardian`, `subagents`, `goal` (the goal evaluator), `compaction`,
+`side questions` (`/btw`) and `advisor`, in that order. `calls` counts model requests, with a guardian
 adjudication counting once however many requests it took to get a verdict; a guardian answer served
 from its verdict cache is not a call, but one inside a guardian composition cannot be told apart
 and does count. The `cache read` and `cache write` columns are left out when the provider reported

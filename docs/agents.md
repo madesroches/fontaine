@@ -86,7 +86,7 @@ Three types are built in:
 |---|---|---|
 | `explore` | `$main` | `ls`, `read`, `glob`, `grep`, `lsp`, `send_message` |
 | `worker` | `$main` | `ls`, `read`, `glob`, `grep`, `lsp`, `edit`, `write`, `notebook_edit`, `shell`, `send_message` |
-| `fork` | the session model | every tool the main conversation has, except `ask_user_question` |
+| `fork` | the session model | every tool the main conversation has, except `ask_user_question` and `advisor` |
 
 On Windows without Git Bash the main conversation has no `shell`, and `worker` gets `powershell` in
 its place; a type of your own that lists `shell` does too, and one that disallows `shell` gets no

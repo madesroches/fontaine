@@ -2537,6 +2537,7 @@ pub fn summarize(tool: &str, args: &Value) -> String {
             None => pattern.to_string(),
         }),
         "ls" => Some(text("path").unwrap_or(".").to_string()),
+        "advisor" => text("question").map(str::to_string),
         "ask_user_question" => {
             let headers: Vec<&str> = args
                 .get("questions")

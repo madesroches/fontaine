@@ -213,11 +213,13 @@ async fn open_input(options: &mut Options) -> Result<Input, String> {
     }
 }
 
-/// What the main model has cost, with the summarizer that keeps its context in bounds.
+/// What the main model has cost, with the summarizer that keeps its context in bounds and the
+/// advisor it consults.
 fn main_usage(runtime: &AgentRuntime) -> Bucket {
     let ledger = runtime.state.usage_ledger();
     let mut main = ledger.bucket(UsageSource::Main);
     main.merge(&ledger.bucket(UsageSource::Compaction));
+    main.merge(&ledger.bucket(UsageSource::Advisor));
     main
 }
 

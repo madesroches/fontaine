@@ -7,18 +7,98 @@ use fontaine_tools::gate::ROOT_AGENT;
 use rig_memory::load_async;
 
 use super::AgentRuntime;
+use super::models::announce_fall_through;
+use crate::gate::SessionState;
 use crate::goal::{
     Applied, Cleared, Continue, Evaluation, GoalCaps, GoalError, GoalEvaluator, PauseReason,
     Pending, REASON_CHARS, Step, cut, goal_prompt_text, transcript_of,
 };
 use crate::ledger::{GoalEvent, Record};
 use crate::model_roles::{COMPACTION_ROLE, ModelChain};
-use crate::models::Switcher;
+use crate::models::{ModelError, ModelHandle, ModelRef, Switcher};
+use crate::permissions::Approver;
 use crate::session::{CONVERSATION_LOG, CompactReason, CompactResult, PreSummary, SummaryGate};
 use crate::side_question::{Answer, SideQuestion, SideQuestionError};
 use crate::turn::TurnOutcome;
 use crate::usage_ledger::{Served, UsageSource};
 use crate::user_hooks::CompactGate;
+
+/// What a one-shot job on a role's list needs besides the job itself.
+pub(super) struct ChainJob<'a> {
+    pub(super) switcher: &'a Switcher,
+    pub(super) chain: &'a ModelChain,
+    pub(super) explicit_budget_cap: bool,
+    pub(super) state: &'a SessionState,
+    pub(super) approver: &'a dyn Approver,
+}
+
+impl ChainJob<'_> {
+    /// Runs `call` on the list's active entry and, while it fails with a quota-class error
+    /// (`falls_through`), on the others, telling the human about an entry that was skipped and
+    /// about a move to another entry. `unresolved` makes the job's error out of an entry that
+    /// could not be built; the active entry failing that way ends the job without walking the
+    /// list.
+    pub(super) async fn run<T, E, Cf>(
+        &self,
+        subject: &str,
+        call: impl FnMut(ModelHandle) -> Cf,
+        falls_through: impl Fn(&E) -> bool,
+        unresolved: impl Fn(&ModelRef, ModelError) -> E,
+    ) -> Result<T, E>
+    where
+        Cf: std::future::Future<Output = Result<T, E>>,
+    {
+        let start = self.chain.active_ref().clone();
+        let start_unresolved = std::sync::atomic::AtomicBool::new(false);
+        let through = self
+            .switcher
+            .run_through(
+                self.chain,
+                true,
+                self.explicit_budget_cap,
+                call,
+                falls_through,
+                |reference, why| {
+                    let verb = if *reference == start {
+                        start_unresolved.store(true, std::sync::atomic::Ordering::Relaxed);
+                        "skipped"
+                    } else {
+                        "skipping"
+                    };
+                    self.approver
+                        .warn(&format!("{subject}: {verb} {reference}: {}", chain(&why)));
+                    unresolved(reference, why)
+                },
+            )
+            .await;
+        match through {
+            Ok(done) => {
+                if let Some(from) = done.from {
+                    announce_fall_through(
+                        self.state,
+                        self.approver,
+                        ROOT_AGENT,
+                        subject,
+                        self.chain,
+                        &self.chain.entries[from],
+                        &self.chain.entries[done.index],
+                        "quota",
+                    );
+                }
+                Ok(done.value)
+            }
+            Err(last) => {
+                if !start_unresolved.load(std::sync::atomic::Ordering::Relaxed) {
+                    self.approver.warn(&format!(
+                        "{subject} skipped: every model in {} failed",
+                        self.chain.label()
+                    ));
+                }
+                Err(last)
+            }
+        }
+    }
+}
 
 impl AgentRuntime {
     /// What the session has spent so far: the root's spend, which holds the main model, the
@@ -122,13 +202,16 @@ impl AgentRuntime {
     ) -> CompactResult {
         let main = &self.models.main;
         let role = chain.role.clone();
-        let start = chain.active_ref().clone();
-        let start_unresolved = std::cell::Cell::new(false);
-        let through = switcher
-            .run_through(
-                chain,
-                true,
-                self.setup.explicit_budget_cap,
+        let job = ChainJob {
+            switcher,
+            chain,
+            explicit_budget_cap: self.setup.explicit_budget_cap,
+            state: &self.state,
+            approver: self.approver(),
+        };
+        let through = job
+            .run(
+                COMPACTION_ROLE,
                 |handle| {
                     let reason = reason.clone();
                     let served = Served::new(role.as_deref(), &handle.reference);
@@ -155,48 +238,14 @@ impl AgentRuntime {
                     }
                 },
                 |_| true,
-                |reference, why| {
-                    // The active entry failing to resolve ends the job without walking the list.
-                    let verb = if *reference == start {
-                        start_unresolved.set(true);
-                        "skipped"
-                    } else {
-                        "skipping"
-                    };
-                    self.approver().warn(&format!(
-                        "compaction: {verb} {reference}: {}",
-                        fontaine_tools::error_chain::chain(&why)
-                    ));
-                    CompactResult::Failed {
-                        usage: None,
-                        falls_through: true,
-                    }
+                |_, _| CompactResult::Failed {
+                    usage: None,
+                    falls_through: true,
                 },
             )
             .await;
         match through {
-            Ok(done) => {
-                if let Some(from) = done.from {
-                    self.announce_fall_through(
-                        ROOT_AGENT,
-                        COMPACTION_ROLE,
-                        chain,
-                        &chain.entries[from],
-                        &chain.entries[done.index],
-                        "quota",
-                    );
-                }
-                done.value
-            }
-            Err(last) => {
-                if !start_unresolved.get() {
-                    self.approver().warn(&format!(
-                        "compaction skipped: every model in {} failed",
-                        chain.label()
-                    ));
-                }
-                last
-            }
+            Ok(done) | Err(done) => done,
         }
     }
 
