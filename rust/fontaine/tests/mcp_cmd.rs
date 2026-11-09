@@ -270,3 +270,17 @@ async fn a_malformed_mcp_json_warns_and_does_not_stop_the_command() {
         out.stderr
     );
 }
+
+#[tokio::test]
+async fn a_malformed_mcp_json_does_not_stop_add_or_remove_in_another_scope() {
+    let s = sandbox();
+    s.add_file(".mcp.json", "{nope");
+    let server = example("repo_mcp_server");
+    let out = s
+        .run(&["mcp", "add", "-s", "local", "srv", "--", &server])
+        .await;
+    assert_eq!(out.code, Some(0), "{}\n{}", out.stdout, out.stderr);
+    assert!(out.stderr.contains("warning: ignoring"), "{}", out.stderr);
+    let out = s.run(&["mcp", "remove", "-s", "local", "srv"]).await;
+    assert_eq!(out.code, Some(0), "{}\n{}", out.stdout, out.stderr);
+}

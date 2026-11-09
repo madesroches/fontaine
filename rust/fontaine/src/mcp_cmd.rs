@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use fontaine_core::config::{self, Config, McpServer, Slot};
+use fontaine_core::config::{self, Config, Slot};
 use fontaine_core::dirs::Dirs;
 use fontaine_core::doctor_report::{McpGate, McpState};
 use fontaine_core::mcp_config::{self, Scope};
@@ -113,21 +113,6 @@ fn load_config(
     Ok(config)
 }
 
-fn describe(server: &McpServer) -> String {
-    match (&server.command, &server.url) {
-        (Some(command), _) => {
-            let mut line = command.clone();
-            for arg in server.args.iter().flatten() {
-                line.push(' ');
-                line.push_str(arg);
-            }
-            line
-        }
-        (None, Some(url)) => url.clone(),
-        (None, None) => String::new(),
-    }
-}
-
 fn scope_label(scope: Scope) -> String {
     format!("{} config", scope.label())
 }
@@ -166,8 +151,10 @@ fn add(args: &McpAddArgs, dirs: &Dirs, root: &Path) -> Result<(), Failure> {
     };
     mcp_config::validate(&args.name, &server).map_err(Failure::usage)?;
 
-    let found = mcp_config::find(&args.name, &dirs.config, root)
-        .map_err(|e| Failure::io("cannot read the MCP server files", &e))?;
+    let (found, warnings) = mcp_config::find(&args.name, &dirs.config, root);
+    for warning in warnings {
+        eprintln!("fontaine: warning: {warning}");
+    }
     if found.iter().any(|(found_scope, _)| *found_scope == scope) {
         return Err(Failure::failed(format!(
             "MCP server `{}` already exists in {}",
@@ -184,7 +171,7 @@ fn add(args: &McpAddArgs, dirs: &Dirs, root: &Path) -> Result<(), Failure> {
     println!(
         "Added {kind} MCP server `{}` ({}) to {}",
         args.name,
-        describe(&server),
+        server.command_line(),
         scope_label(scope)
     );
     println!("File modified: {}", path.display());
@@ -202,8 +189,10 @@ fn remove(
     root: &Path,
 ) -> Result<(), Failure> {
     let name = &args.name;
-    let found = mcp_config::find(name, &dirs.config, root)
-        .map_err(|e| Failure::io("cannot read the MCP server files", &e))?;
+    let (found, warnings) = mcp_config::find(name, &dirs.config, root);
+    for warning in warnings {
+        eprintln!("fontaine: warning: {warning}");
+    }
     let scope = match args.scope {
         Some(arg) => {
             let scope: Scope = arg.into();
@@ -344,7 +333,7 @@ async fn list(
         println!(
             "{}: {} - {}",
             server.name,
-            describe(&config.mcp_servers[&server.name]),
+            config.mcp_servers[&server.name].command_line(),
             status(&server)
         );
     }
@@ -388,16 +377,8 @@ async fn get(
     };
     let (scope_text, hint) = match writable {
         Some(scope) => {
-            let found = match mcp_config::find(name, &dirs.config, root) {
-                Ok(found) => found,
-                Err(e) => {
-                    eprintln!(
-                        "fontaine: warning: cannot read the MCP server files: {}",
-                        chain(&e)
-                    );
-                    Vec::new()
-                }
-            };
+            // The load above already warned about any file that cannot be read.
+            let (found, _) = mcp_config::find(name, &dirs.config, root);
             // `.fontaine/settings.toml` is listed after `.mcp.json` and wins a collision.
             let file = found
                 .iter()

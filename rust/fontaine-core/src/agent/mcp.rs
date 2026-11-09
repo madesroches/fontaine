@@ -54,7 +54,7 @@ pub struct McpOutcome {
 }
 
 pub fn server_digest(name: &str, server: &McpServer) -> String {
-    let canonical = json!({
+    let mut canonical = json!({
         "name": name,
         "command": server.command,
         "args": server.args,
@@ -62,6 +62,11 @@ pub fn server_digest(name: &str, server: &McpServer) -> String {
         "env": server.env,
         "url": server.url,
     });
+    // Only when set, so digests of definitions that never expand stay as approved; an expanding
+    // definition needs its own approval because `${VAR}` values reach the server.
+    if server.expand {
+        canonical["expand"] = json!(true);
+    }
     let bytes =
         serde_jcs::to_vec(&canonical).unwrap_or_else(|_| canonical.to_string().into_bytes());
     Sha256::digest(bytes)
@@ -106,24 +111,14 @@ fn server_description(server: &McpServer) -> String {
             .chain(server.url.iter());
         for text in texts {
             for name in crate::mcp_json::references(text) {
-                if !variables.contains(&name) {
+                // Taken from the session root, never read from the environment.
+                if name != "CLAUDE_PROJECT_DIR" && !variables.contains(&name) {
                     variables.push(name);
                 }
             }
         }
     }
-    let mut line = match (&server.command, &server.url) {
-        (Some(command), _) => {
-            let mut line = command.clone();
-            for arg in server.args.iter().flatten() {
-                line.push(' ');
-                line.push_str(arg);
-            }
-            line
-        }
-        (None, Some(url)) => url.clone(),
-        (None, None) => String::new(),
-    };
+    let mut line = server.command_line();
     if !variables.is_empty() && !line.is_empty() {
         line.push_str(&format!("\nenvironment: {}", variables.join(", ")));
     }
@@ -577,7 +572,7 @@ impl AgentRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::{McpServerPlan, env_key_matches, not_attempted, output_limits};
+    use super::{McpServerPlan, env_key_matches, not_attempted, output_limits, server_digest};
     use std::cell::RefCell;
     use std::ffi::OsString;
     use std::path::Path;
@@ -599,6 +594,29 @@ mod tests {
             Path::new("/scratch/mcp-results")
         );
         (limits.max_tokens, warnings.into_inner())
+    }
+
+    #[test]
+    fn expansion_changes_the_digest_and_its_absence_leaves_the_old_shape() {
+        let mut server = crate::mcp_config::stdio(
+            "echo",
+            &["${TOKEN}".to_string()],
+            Default::default(),
+            Vec::new(),
+        );
+        let plain = server_digest("srv", &server);
+        server.expand = true;
+        assert_ne!(plain, server_digest("srv", &server));
+        let shape = serde_json::json!({
+            "name": "srv", "command": "echo", "args": ["${TOKEN}"],
+            "env_vars": null, "env": null, "url": null,
+        });
+        use sha2::Digest;
+        let old: String = sha2::Sha256::digest(serde_jcs::to_vec(&shape).unwrap())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(plain, old);
     }
 
     #[test]

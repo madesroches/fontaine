@@ -67,6 +67,8 @@ pub struct LocalRead {
     pub file_present: bool,
     /// The file has a `projects."<root>"` table for this workspace.
     pub applies: bool,
+    /// The file was read and parsed.
+    pub loaded: bool,
     pub servers: Vec<(String, McpServer)>,
     pub warnings: Vec<String>,
 }
@@ -100,6 +102,7 @@ pub fn read_local(path: &Path, root: &Path) -> LocalRead {
             return out;
         }
     };
+    out.loaded = true;
     let Some(project) = table
         .get("projects")
         .and_then(toml::Value::as_table)
@@ -150,10 +153,33 @@ pub fn check_local_file(path: &Path) -> Result<bool, config::ConfigError> {
     Ok(true)
 }
 
+/// Whether `.mcp.json` parses at all, for the layer listing.
+pub fn check_json_file(path: &Path) -> Result<bool, config::ConfigError> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => {
+            return Err(config::ConfigError::Read {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    mcp_json::parse(&text, mcp_json::Expansion::AtStart).map_err(|message| {
+        config::ConfigError::Parse {
+            path: path.to_path_buf(),
+            message,
+        }
+    })?;
+    Ok(true)
+}
+
 /// What a repository's `.mcp.json` holds.
 #[derive(Debug, Default)]
 pub struct JsonRead {
     pub file_present: bool,
+    /// The file was read and parsed.
+    pub loaded: bool,
     pub servers: Vec<(String, McpServer)>,
     pub warnings: Vec<String>,
 }
@@ -184,6 +210,7 @@ pub fn read_project_json(path: &Path) -> JsonRead {
             return out;
         }
     };
+    out.loaded = true;
     out.warnings.extend(
         parsed
             .problems
@@ -522,55 +549,67 @@ pub fn remove_server(scope: Scope, config_dir: &Path, root: &Path, name: &str) -
             name,
         ),
         Scope::Project => {
-            let from_json = json_remove(&json_path(root), name)?;
+            // Both files are tried so a malformed one does not keep the other's entry.
+            let from_json = json_remove(&json_path(root), name);
             let from_settings = toml_remove(
                 Store::Repository,
                 &project_settings_path(root),
                 &["mcp", "servers"],
                 name,
-            )?;
-            Ok(from_json || from_settings)
+            );
+            match (from_json, from_settings) {
+                (Ok(a), Ok(b)) => Ok(a || b),
+                (Ok(true), Err(_)) | (Err(_), Ok(true)) => Ok(true),
+                (Err(e), _) | (_, Err(e)) => Err(e),
+            }
         }
     }
 }
 
-/// Every scope and file that defines `name`, in scope order. Reads only.
-pub fn find(name: &str, config_dir: &Path, root: &Path) -> io::Result<Vec<(Scope, PathBuf)>> {
+/// Every scope and file that defines `name`, in scope order, and a warning for each file that
+/// could not be read and so was skipped. Reads only.
+pub fn find(name: &str, config_dir: &Path, root: &Path) -> (Vec<(Scope, PathBuf)>, Vec<String>) {
     let mut found = Vec::new();
+    let mut warnings = Vec::new();
+    let mut probe = |scope: Scope, path: PathBuf, has: io::Result<bool>| match has {
+        Ok(true) => found.push((scope, path)),
+        Ok(false) => {}
+        Err(e) => warnings.push(format!(
+            "ignoring {}: {}",
+            path.display(),
+            fontaine_tools::error_chain::chain(&e)
+        )),
+    };
     let local = local_path(config_dir);
     let key = root_key(root);
-    if toml_has(
+    let has = toml_has(
         crate::file_lock::read_shared,
         &local,
         &["projects", &key, "servers"],
         name,
-    )? {
-        found.push((Scope::Local, local));
-    }
+    );
+    probe(Scope::Local, local, has);
     let json = json_path(root);
-    if json_has(&json, name)? {
-        found.push((Scope::Project, json));
-    }
+    let has = json_has(&json, name);
+    probe(Scope::Project, json, has);
     let settings = project_settings_path(root);
-    if toml_has(
+    let has = toml_has(
         |p| std::fs::read_to_string(p),
         &settings,
         &["mcp", "servers"],
         name,
-    )? {
-        found.push((Scope::Project, settings));
-    }
+    );
+    probe(Scope::Project, settings, has);
     let user = user_path(config_dir);
-    if toml_has(
+    let has = toml_has(
         crate::file_lock::read_shared,
         &user,
         &["mcp", "servers"],
         name,
-    )? {
-        found.push((Scope::User, user));
-    }
+    );
+    probe(Scope::User, user, has);
     found.sort_by_key(|(scope, _)| *scope);
-    Ok(found)
+    (found, warnings)
 }
 
 /// The scopes in `found`, once each.
@@ -736,15 +775,15 @@ mod tests {
         add_server(Scope::Project, &w.config, &w.root, "foo", &echo()).unwrap();
         add_server(Scope::Local, &w.config, &w.root, "foo", &echo()).unwrap();
         add_server(Scope::User, &w.config, &w.root, "foo", &echo()).unwrap();
-        let found = find("foo", &w.config, &w.root).unwrap();
+        let found = find("foo", &w.config, &w.root).0;
         assert_eq!(
             found.iter().map(|(s, _)| *s).collect::<Vec<_>>(),
             [Scope::Local, Scope::Project, Scope::Project, Scope::User]
         );
         assert_eq!(scopes(&found), [Scope::Local, Scope::Project, Scope::User]);
-        assert!(find("bar", &w.config, &w.root).unwrap().is_empty());
+        assert!(find("bar", &w.config, &w.root).0.is_empty());
         assert!(remove_server(Scope::Project, &w.config, &w.root, "foo").unwrap());
-        let found = find("foo", &w.config, &w.root).unwrap();
+        let found = find("foo", &w.config, &w.root).0;
         assert_eq!(scopes(&found), [Scope::Local, Scope::User]);
     }
 

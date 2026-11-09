@@ -985,6 +985,24 @@ pub struct McpServer {
     pub expand: bool,
 }
 
+impl McpServer {
+    /// The command line or URL, as a person would read it.
+    pub fn command_line(&self) -> String {
+        match (&self.command, &self.url) {
+            (Some(command), _) => {
+                let mut line = command.clone();
+                for arg in self.args.iter().flatten() {
+                    line.push(' ');
+                    line.push_str(arg);
+                }
+                line
+            }
+            (None, Some(url)) => url.clone(),
+            (None, None) => String::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpSection {
@@ -1672,9 +1690,7 @@ pub(crate) fn check_mcp_server(name: &str, server: &McpServer) -> Result<(), Str
         _ => return Err("set exactly one of `command` (stdio) or `url`".to_string()),
     }
     if !crate::mcp_json::valid_server_name(name) {
-        return Err(
-            "server names are non-empty, contain no `__`, neither start nor end with `_`, and use only letters, digits, `_` and `-`".to_string(),
-        );
+        return Err(format!("server names: {}", crate::mcp_json::NAME_RULE));
     }
     Ok(())
 }
@@ -3478,6 +3494,20 @@ pub fn diagnose(params: &LoadParams<'_>) -> Vec<LayerDiagnosis> {
                 demotion,
                 hint.as_deref(),
             ));
+            let json_path = crate::mcp_config::json_path(&files.workspace);
+            match crate::mcp_config::check_json_file(&json_path) {
+                Ok(false) => {}
+                outcome => out.push(LayerDiagnosis {
+                    slot: Slot::Project,
+                    column: Some(Column::Project),
+                    path: Some(json_path),
+                    demotion: None,
+                    outcome: match outcome {
+                        Ok(_) => LayerOutcome::Loaded,
+                        Err(e) => LayerOutcome::Failed(e),
+                    },
+                }),
+            }
         }
         Err(_) => {
             for (slot, column) in [
@@ -3692,7 +3722,7 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
                 slot: Slot::Local,
                 column: Some(Column::User),
                 path: Some(local_path.clone()),
-                loaded: local_servers.applies,
+                loaded: local_servers.loaded,
             });
         }
         config.scopes.push(ScopeEntry {
@@ -3706,7 +3736,7 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
                 slot: Slot::Project,
                 column: Some(Column::Project),
                 path: Some(json_path.clone()),
-                loaded: true,
+                loaded: json_servers.loaded,
             });
         }
     }
