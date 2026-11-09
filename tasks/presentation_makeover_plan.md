@@ -122,8 +122,7 @@ docs/                          (the book root and source: src = ".")
   two lists do not duplicate content. `docs-site.sh` checks that they agree.
 - **Out-of-tree links**: rewrite every `](../...)` link in `docs/` to an absolute
   `https://github.com/madesroches/fontaine/blob/main/...` URL (`tree/main/...` for directories).
-  Rewriting the source keeps the build free of link-rewriting magic and the links work in both
-  places. `docs-site.sh` fails if any `](../` link remains. `docs.rs` `every_relative_link_resolves`
+  `docs-site.sh` fails if any `](../` link remains. `docs.rs` `every_relative_link_resolves`
   skips `://` targets and lychee runs offline, so the test is extended to map
   `https://github.com/madesroches/fontaine/(blob|tree)/main/<path>` targets to a repo path that
   must exist (a file for `blob`, a directory for `tree`).
@@ -146,12 +145,14 @@ docs/                          (the book root and source: src = ".")
     `.github/scripts/docs-site.sh` and `.github/workflows/docs.yml`, plus `workflow_dispatch`.
     `permissions: contents: read` at the top.
   - Job `build` (ubuntu-latest): checkout, install mdbook and lychee, run `docs-site.sh _site`,
-    run `lychee --offline --include-fragments --no-progress '_site/**/*.html'` to check internal
-    links and anchors (offline, so CI never depends on external hosts), then upload with
+    run `lychee --offline --include-fragments --no-progress --exclude-path _site/404.html '_site/**/*.html'` to check internal
+    links and anchors (offline, so CI never depends on external hosts; `404.html` is excluded because
+    mdBook renders it with `<base href="/fontaine/">`, whose root-relative links offline lychee
+    cannot resolve, so it goes unchecked), then upload with
     `actions/upload-pages-artifact@v5` (path `_site`). Checkout is `actions/checkout@v6`.
-  - Job `deploy`: `needs: build`, runs only on a push to `main` and only when
-    `vars.FONTAINE_DOCS_SITE == 'enabled'` (the same pattern as `dev.yml`, so `main` stays green
-    until Pages is switched on). It uses `environment: github-pages`,
+  - Job `deploy`: `needs: build`, runs only on a push to `main` or a
+    `workflow_dispatch` with `github.ref == 'refs/heads/main'`, and only when
+    `vars.FONTAINE_DOCS_SITE == 'enabled'`. It uses `environment: github-pages`,
     `permissions: pages: write, id-token: write`, `actions/deploy-pages@v5`, and
     `concurrency: { group: pages, cancel-in-progress: false }`.
 - **Site URL**: `https://madesroches.github.io/fontaine/`.
@@ -162,7 +163,7 @@ The PR body lists these as exact commands:
 
 - Pages: Settings → Pages → Source "GitHub Actions" (or
   `gh api -X POST repos/madesroches/fontaine/pages -f build_type=workflow`), then
-  `gh variable set FONTAINE_DOCS_SITE --body enabled` and re-run the `Docs` workflow.
+  `gh variable set FONTAINE_DOCS_SITE --body enabled` and `gh workflow run docs.yml --ref main`.
 - `gh repo edit madesroches/fontaine --description "<the issue's description>" --homepage https://madesroches.github.io/fontaine/ --add-topic ...`
   with the topics from the issue plus `autonomous-agents`.
 
@@ -274,8 +275,8 @@ The only Rust change is the extension to the `docs.rs` link test. The checks are
 - `docs-site.sh` runs on every PR that touches `docs/`. It fails on a page missing from
   SUMMARY.md or index.md, a dangling SUMMARY entry (`create-missing = false`), or a remaining
   `](../` link.
-- `lychee --offline --include-fragments` over the built HTML catches every broken internal link
-  and anchor. This is the check that would otherwise fail silently as docs evolve.
+- `lychee --offline --include-fragments --exclude-path _site/404.html` over the built HTML catches
+  every broken internal link and anchor (404.html goes unchecked). This is the check that would otherwise fail silently as docs evolve.
 - The implementer runs the script and lychee locally before committing (step 3), and also makes
   sure the existing CI still passes: Rust jobs are unaffected, and `README.md` is still included
   by `dist plan`.
