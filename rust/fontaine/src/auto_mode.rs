@@ -565,10 +565,10 @@ async fn scan_step(
     if let Err(why) = gate {
         return ScanStep::without(ScanStatus::Skipped(why));
     }
-    let sample = sample::gather(&found.repo_root, &found.settings);
     // The `setup` role's list takes the scan when the user defined one; otherwise the guardian's
     // model does.
     if let Some((switcher, list)) = job_chain(config, dirs, host, SETUP_ROLE) {
+        let sample = sample::gather(&found.repo_root, &found.settings);
         eprintln!(
             "fontaine: {}",
             project_env::scan_notice(&list.active_ref().to_string())
@@ -609,6 +609,7 @@ async fn scan_step(
         Ok(handle) => handle,
         Err(status) => return ScanStep::without(status),
     };
+    let sample = sample::gather(&found.repo_root, &found.settings);
     let label = handle.reference.to_string();
     eprintln!("fontaine: {}", project_env::scan_notice(&label));
     let settings = project_env::scan_settings(handle, config.guardian.timeout_secs);

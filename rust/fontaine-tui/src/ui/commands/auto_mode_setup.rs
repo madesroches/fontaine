@@ -10,6 +10,7 @@ use fontaine_core::project_env::discover::{self, SystemGh};
 use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep, sample};
 use fontaine_core::trust;
 use fontaine_tools::error_chain::chain;
+use fontaine_tools::gate::ROOT_AGENT;
 use tokio::task::JoinHandle;
 
 /// How a background step ended.
@@ -219,6 +220,13 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             Waited::Quit => return Err(ControlFlow::Break(())),
         };
         if let Some(from) = &run.fell_from {
+            runtime.state.record_model_fall_through(
+                ROOT_AGENT,
+                Some(SETUP_ROLE),
+                &from.to_string(),
+                &run.served.to_string(),
+                "quota",
+            );
             self.app
                 .transcript
                 .notice(fall_through_notice("setup", from, &run.served, "quota"));

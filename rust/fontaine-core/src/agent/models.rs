@@ -24,6 +24,30 @@ use crate::scanner_stage::llm_backend;
 use crate::usage_ledger::Served;
 use crate::user_config;
 
+/// Whether role `name` is `main` or lists, through other roles, `main` (or `$main`): saving
+/// its name as `[model] model` would fold into `main` and make it list itself.
+fn reaches_main(roles: &std::collections::BTreeMap<String, Vec<String>>, name: &str) -> bool {
+    let mut seen = vec![name];
+    let mut pending = vec![name];
+    while let Some(role) = pending.pop() {
+        if role == crate::model_roles::MAIN_ROLE {
+            return true;
+        }
+        for entry in roles.get(role).into_iter().flatten() {
+            let target = if entry == "$main" {
+                crate::model_roles::MAIN_ROLE
+            } else {
+                entry.as_str()
+            };
+            if !entry.contains('/') && !seen.contains(&target) {
+                seen.push(target);
+                pending.push(target);
+            }
+        }
+    }
+    false
+}
+
 /// A guardian account's name and the source of its subscription quota.
 pub type GuardianQuota = (String, Arc<dyn QuotaSource>);
 
@@ -164,13 +188,25 @@ impl AgentRuntime {
     /// document, and a second `main` key beside it would stop the next start.
     fn main_choice_persistence(&self, text: &str) -> Result<Option<String>, RuntimeError> {
         use fontaine_agents::registry::ModelSpec;
-        if !matches!(
-            ModelSpec::parse(text),
-            Ok(ModelSpec::Model(_) | ModelSpec::Named(_))
-        ) {
-            return Ok(Some(
-                "a list is not saved; set `[model] model` to it in your settings".to_string(),
-            ));
+        match ModelSpec::parse(text) {
+            Ok(ModelSpec::Model(_)) => {}
+            Ok(ModelSpec::Named(name)) => {
+                if reaches_main(&self.config.roles, &name) {
+                    return Ok(Some(format!(
+                        "`{name}` reaches `main`, so saving it as `[model] model` would make the roles loop; edit your settings to change it for later sessions"
+                    )));
+                }
+            }
+            Ok(ModelSpec::Main) => {
+                return Ok(Some(
+                    "`$main` is already the configured main model".to_string(),
+                ));
+            }
+            _ => {
+                return Ok(Some(
+                    "a list is not saved; set `[model] model` to it in your settings".to_string(),
+                ));
+            }
         }
         let held = match self.config.main_source {
             MainSource::Role => Some("`main` under `[models.roles]`"),
@@ -583,5 +619,27 @@ impl AgentRuntime {
                 )
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod reaches_main_tests {
+    use super::reaches_main;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn a_role_listing_main_would_loop_when_saved_as_the_main_model() {
+        let roles = BTreeMap::from([
+            (
+                "thinking".to_string(),
+                vec!["$main".to_string(), "b/y".to_string()],
+            ),
+            ("plain".to_string(), vec!["b/y".to_string()]),
+            ("outer".to_string(), vec!["thinking".to_string()]),
+        ]);
+        assert!(reaches_main(&roles, "main"));
+        assert!(reaches_main(&roles, "thinking"));
+        assert!(reaches_main(&roles, "outer"));
+        assert!(!reaches_main(&roles, "plain"));
     }
 }

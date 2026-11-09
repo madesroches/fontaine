@@ -91,6 +91,8 @@ impl AgentRuntime {
     ) -> CompactResult {
         let main = &self.models.main;
         let role = chain.role.clone();
+        let start = chain.active_ref().clone();
+        let start_unresolved = std::cell::Cell::new(false);
         let through = switcher
             .run_through(
                 chain,
@@ -122,8 +124,15 @@ impl AgentRuntime {
                 },
                 |_| true,
                 |reference, why| {
+                    // The active entry failing to resolve ends the job without walking the list.
+                    let verb = if *reference == start {
+                        start_unresolved.set(true);
+                        "skipped"
+                    } else {
+                        "skipping"
+                    };
                     self.approver().warn(&format!(
-                        "compaction: skipping {reference}: {}",
+                        "compaction: {verb} {reference}: {}",
                         chain_text(&why)
                     ));
                     CompactResult::Failed {
@@ -148,10 +157,12 @@ impl AgentRuntime {
                 done.value
             }
             Err(last) => {
-                self.approver().warn(&format!(
-                    "compaction skipped: every model in {} failed",
-                    chain.label()
-                ));
+                if !start_unresolved.get() {
+                    self.approver().warn(&format!(
+                        "compaction skipped: every model in {} failed",
+                        chain.label()
+                    ));
+                }
                 last
             }
         }
