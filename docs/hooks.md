@@ -341,7 +341,7 @@ workspace-trust gate: install approved them, `http` and `prompt` hooks included.
 tighten, like a repository's hooks: their `allow` and `retry` never count, while `deny`, `ask`,
 `updatedInput`, `guardian_context` and `additionalContext` work as usual. Claude Code's matchers
 over tool names map to Fontaine rules where they can; an un-mappable matcher skips its hook entry
-with a warning. [Plugins](plugins.md#hooks) lists what loads and what is skipped.
+with a warning. [Plugins](plugins.md#component-mapping) lists what loads and what is skipped.
 
 ## What is not built
 
