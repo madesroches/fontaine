@@ -46,8 +46,10 @@ session; `Extensions`, hooks and rules are built once and frozen behind `Arc`s.
 New module `fontaine-core/src/plugin_ops.rs` (name may follow neighbors) holding the registry
 mutations as library functions that return structured results and never print:
 `materialize`, `fetch_plugin`, `would_pin`, `summary_lines`, `approval_of`, `install`,
-`uninstall`, `update`, `update_plugin`, `set_enabled`, each taking the config dir and a `GitMode`
-(`Interactive` | `Unattended`, mapping to `INTERACTIVE_GIT`/`UNATTENDED_GIT`). The CLI in
+`uninstall`, `update`, `update_plugin`, `set_enabled`, each taking the config dir, an `EnvLookup` (for `${VAR}` expansion; install/update need it via
+`host_fetch`) and a `GitMode` (`Interactive` | `Unattended`, mapping to `INTERACTIVE_GIT`/
+`UNATTENDED_GIT`), or the moved `Fetch` that bundles them. The TUI passes `runtime.env()` and
+`runtime.config_dir()`. The CLI in
 `fontaine/src/plugin.rs` becomes a thin printer over them, so CLI and TUI share one code path
 (DRY) and the CLI's observable behavior is unchanged. Blocking git/IO is called from the TUI via
 `spawn_blocking`; the TUI uses `Unattended` so git can never grab the terminal (a credential
@@ -99,16 +101,28 @@ otherwise. The CLI keeps printing its summary after commit.
 
 `reload_extensions(&mut self, approver)` (between turns only) does, in order:
 
-1. `apply_staged` for the plugins whose staged copy is present, after stopping their MCP servers
-   (the pass that today runs only at startup; fixes "auto-updated plugin silently waits"). It and
-   its bin-only helpers, including the staged marketplace swap, move into core;
+1. `apply_staged` (the pass that today runs only at startup; fixes "auto-updated plugin silently
+   waits"). It and its bin-only helpers, including the staged marketplace swap, move into core;
    `/reload-plugins` keeps the `plugins.auto_update` gate and also swaps staged marketplaces.
-   Plugins to stop first are found by reading each registry entry's `staged_pin` before the call.
-   Held (fingerprint-changed) stages stay held and are reported.
-2. Re-run `plugins::load_installed` + `config.apply_plugins` and `extensions::load`.
+   Which servers to stop is not pre-read from `staged_pin` (that would stop plugins the pass
+   skips for `auto_update == Some(false)` and race the background pass staging under the lock):
+   core `apply_staged` calls back for exactly the entries it is about to swap, after its
+   auto-update and lock checks, and the callback stops that plugin's MCP servers. A plugin whose
+   swap then fails (`Swap::Failed`, old checkout kept) was stopped but not swapped and goes in the
+   Reload set. Held (fingerprint-changed) stages stay held and are reported.
+2. Run `plugins::load_installed` + `apply_plugins` + `extensions::load` on a clone of the config and
+   swap the result in only on success. `apply_plugins` strips every plugin entry before it can
+   fail on a server-name collision, so an error (also at startup, where it aborts) must leave the
+   current set running: report it via `Approver::notice` and keep the old config and
+   extensions. Also rebuild `AgentTypes` with `build_agent_types(&config, &extensions, &roles)`
+   from the new config, extensions and the session's roles, and install it into the `Live` cell.
+   Write the new config back into `runtime.config` (`/hooks` and `/plugins` read it).
 3. Diff old vs new contributions per plugin (by name and definition equality) into
-   `Load`/`Reload`/`Unload` sets. An unchanged plugin is untouched (its MCP processes keep
-   running).
+   `Load`/`Reload`/`Unload` sets. Every plugin whose checkout was swapped or whose pin changed in
+   this pass (staged apply or `/plugin update`) is classified Reload whatever the definitions say:
+   the checkout path and server names do not depend on the revision, so a script-only change yields
+   an identical definition while its servers were already stopped. A plugin otherwise unchanged
+   is untouched (its MCP processes keep running).
 4. Apply the swaps (sections 3a–3d).
 5. Compare the joined rendered system prompt (`prompt_pieces`) and the full tool definitions
    (name, description, schema) to the previous ones; call `rebuild()` only if they differ, so a
@@ -128,13 +142,18 @@ skill trust, so a trust change takes effect here.
 
 3b. **Plugin layer for hooks and rules.** Only plugin-sourced items change at runtime.
 - Deny/ask rules are already tagged `RuleSource::Plugin` in `SessionState`'s lock-guarded
-  `Inner{deny,ask}`; a swap is "retain non-Plugin, push new", as `set_scope` does. They are not
-  part of the layer.
+  `Inner{deny,ask}`; a swap is a new `SessionState` setter that retains non-`RuleSource::Plugin`
+  entries in `Inner.deny`/`ask` and pushes the new ones, modelled on `Config::apply_plugins`
+  (`plugins.rs:1900-1905`). They are not part of the layer.
 - Hooks are one merged list split only by event. A `PluginLayer` held in a `Live<PluginLayer>`
   covers every hook event plugins can contribute (pre/post, `denied`, `post_failure`,
   `task_completed`/`task_created`/`teammate_idle` on Teams, `subagent_start`/`subagent_stop` via
   `tree.set_lifecycle`, and lifecycle), split by `origin.slot == Slot::Plugin`, and is consulted
-  alongside the frozen user/project hooks. `LifecycleHooks` (`user_hooks.rs`) is cloned by
+  alongside the frozen user/project hooks. Startup builds some pieces only when non-empty, so the
+  layer must always exist: always install the post-hook stage and the subagent lifecycle gate
+  (empty is fine), and build the HTTP client always or on first use (a later plugin `http` hook
+  would otherwise fail "no HTTP client is available"). The runtime keeps `HookDeps` so plugin
+  `UserHooks` can be rebuilt on reload. `LifecycleHooks` (`user_hooks.rs`) is cloned by
   `goal.rs`, so its live state sits inside its shared `LifecycleInner`.
 - The floor order (`deny → ask → critical-path → protected-path`) is unchanged. User and project
   hooks stay frozen. Plugin hooks keep `user_trust:false`, so their allow/retry never counts.
@@ -142,19 +161,20 @@ skill trust, so a trust change takes effect here.
   fire at the next session.
 - Guardian prose (`hard_deny`/`soft_deny`) applies live: `SessionState.auto` becomes
   `RwLock<AutoContext>` with a setter mirroring `guardian: RwLock<Arc<Guardian>>`/`set_guardian`,
-  and the three reads (including `adjudication.rs`'s per-request `state.auto.rules` clone) go
+  and the one read site in `adjudication.rs` (the per-request `state.auto.rules` clone) goes
   through it. The guardian renders its prompt from the per-request rules and the verdict cache key
   already digests them.
 
 3c. **MCP.** `McpServers` (`fontaine-core/src/agent/mcp_supervisor.rs`) gains `remove`, which
 retires the slot and closes the connection (today `retire()` is private and the connection closes
-only when the last `Arc<ServerSlot>` drops). `Connected` exposes an accessor for its in-flight
-`CallTracker` (`fontaine-tools/src/mcp/elicitation.rs`) so unload can drain it. A slot's spec is
+only when the last `Arc<ServerSlot>` drops). `Connected` (`fontaine-tools/src/mcp/servers.rs`) gains a `tracker: CallTracker` field, filled in
+`serve` from `wiring.shared.tracker` (which is dropped there today), with an accessor, so unload
+can drain it. A slot's spec is
 frozen, so a changed definition replaces its slot via `insert` (reuse model: `reconnect_mcp`,
 `agent/mcp.rs`). Add `AgentRuntime::start_mcp_server(name)` and `stop_mcp_server(name)` over
 `Supervisor::start` and `McpServers`. Plugin servers never need approval (`origin.slot == Plugin`),
 so start goes straight through `mcp_plan` rules. Unload: mute the server's `list_changed` sink
-(a refresh during drain would re-register the removed tool via rig's `reconcile_managed`), remove
+(a refresh during drain would re-register the removed tool via rig's `reconcile_managed_tools`), remove
 its tools from the toolset (no new calls), drain in-flight calls for a bounded window (a named
 `MCP_DRAIN_BOUND` constant, 10 s; closest existing is `KILL_GRACE`, `fontaine-tools/src/kills.rs`)
 rather than cancel, since cancelling may leave a tool's side effect half done, then close the
@@ -181,8 +201,10 @@ plugin unloaded and reports it (conservative: a half-updated plugin never runs).
 ### 5. External changes
 
 No file watcher and no new dependency. At the existing turn boundary (`refresh_before_turn`,
-`agent.rs:427`), a cheap fingerprint (path + mtime + len of the skill directories, plugin
-checkouts' manifests, and `plugins.toml`) is compared with the one taken at the last load; on a
+`agent.rs:427`), a cheap fingerprint (path + mtime + len of every file `extensions::load` reads: skills, agents and
+output styles in user and project scopes, and every plugin component file and manifest; plus
+`plugins.toml` and `skill-trust.toml`; file-level, since an in-place edit changes the file's mtime
+but not its directory's) is compared with the one taken at the last load; on a
 difference it emits one notice, "skills/plugins changed on disk — run /reload-plugins", and stores
 the new fingerprint so it does not repeat.
 
@@ -211,18 +233,19 @@ the new fingerprint so it does not repeat.
    `agent.rs`, `gate.rs`, `fontaine-agents/src/spawn.rs`, `setup.rs`, `agent/mcp.rs`).
 3. **Plugin layer.** Add `PluginLayer` + `Live` for every plugin-fed hook set (`permissions.rs`,
    `PostHookStage`, `LifecycleInner` in `user_hooks.rs`, Teams and subagent lifecycle in
-   `setup.rs`); build it in `setup::permission_pipeline` from `contributions`. In `gate.rs`, swap
-   plugin deny/ask in place by `RuleSource::Plugin` and make `SessionState.auto` an
+   `setup.rs`); build it in `setup::permission_pipeline` from `contributions`, keep `HookDeps` on the runtime, and
+   install the post-hook stage, subagent lifecycle gate and HTTP client unconditionally. In `gate.rs`, swap
+   plugin deny/ask in place by `RuleSource::Plugin` (the new retaining setter) and make `SessionState.auto` an
    `RwLock<AutoContext>` with a setter.
 4. **MCP per-server API.** `start_mcp_server`/`stop_mcp_server`, `McpServers::remove`, the
-   `Connected` tracker accessor, list_changed muting and bounded drain (`agent/mcp.rs`,
-   `mcp_supervisor.rs`, `fontaine-tools/src/mcp/elicitation.rs`), plus the live-types refresh.
+   `Connected` tracker field and accessor, list_changed muting and bounded drain (`agent/mcp.rs`,
+   `mcp_supervisor.rs`, `fontaine-tools/src/mcp/servers.rs`), plus the live-types refresh.
 5. **`reload_extensions`.** Implement the diff/apply sequence in `agent.rs`/a new `agent/reload.rs`,
    including `apply_staged` (moved into core) for staged plugins, conditional `rebuild()`, the stale-history
    reminder, and the disk fingerprint check in `refresh_before_turn`.
 6. **Records.** `Record::PluginChange` in the ledger, `gate.rs` `record_plugin_change`.
 7. **TUI.** `Command::Plugin`/`Command::ReloadPlugins` (`commands.rs`, table tests),
-   `ui/commands/plugin.rs`, `fontaine-tui/src/plugin_prompt.rs` (+ `pub mod` in `lib.rs`), `Action::PluginApprove`, view/app wiring, the `Action::SkillTrust` name matches in `ui/turn.rs` and `ui/providers.rs`,
+   `ui/commands/plugin.rs`, `fontaine-tui/src/plugin_prompt.rs` (+ `pub mod` in `lib.rs`), `Action::PluginApprove`, view/app wiring (each `plugin_ops` call gets `runtime.config_dir()`/`runtime.env()`), the `Action::SkillTrust` name matches in `ui/turn.rs` and `ui/providers.rs`,
    `ui/commands/mod.rs`, host wiring so `fontaine-tui` calls `plugin_ops` via core. Update the slash-menu hint text and
    `/help` output.
 8. **Docs and master plan.** See Documentation. Amend the two Decisions entries.
@@ -234,7 +257,7 @@ the new fingerprint so it does not repeat.
   `agent.rs`, `agent/reload.rs` (new), `agent/mcp.rs`, `agent/setup.rs`, `skills.rs`,
   `ledger.rs`, `user_hooks.rs`, `mcp_supervisor.rs`
 - `rust/fontaine-agents/src/spawn.rs`
-- `rust/fontaine-tools/src/` (`Live<T>`, `mcp/elicitation.rs`)
+- `rust/fontaine-tools/src/` (`Live<T>`, `mcp/servers.rs`)
 - `rust/fontaine/src/plugin.rs`, `lib.rs`, `plugin_auto_update.rs`
 - `rust/fontaine-tui/src/commands.rs`, `lib.rs`, `ui/mod.rs`, `ui/turn.rs`, `ui/providers.rs`,
   `ui/commands/mod.rs`, `ui/commands/plugin.rs` (new), `plugin_prompt.rs` (new), `app.rs`,
@@ -288,7 +311,8 @@ Unit tests (constructed inputs, no network, no live APIs):
 - `plugin_ops`: prepare/commit install, rollback on failure, update with unchanged vs changed
   fingerprint, uninstall, enable/disable against a temp config dir and local-path marketplaces;
   the CLI tests keep passing through the printer.
-- Diff logic: load/reload/unload classification, unchanged plugin untouched, MCP name collision.
+- Diff logic: load/reload/unload classification, unchanged plugin untouched, swapped-but-identical
+  definition classified Reload, MCP name collision on reload keeps the current set running.
 - `PluginLayer`: a removed plugin's hooks stop firing for every hook event; swapped plugin
   deny/ask rules take effect at the same floor stage and leave user/project rules alone;
   user/project hooks unaffected; plugin hooks still `user_trust:false`; a guardian prose swap
@@ -301,7 +325,7 @@ Unit tests (constructed inputs, no network, no live APIs):
 - MCP start/stop with the existing test double server: tools appear/leave the toolset; drain
   waits for an in-flight call and times out after the bound; the in-flight-call-on-closing
   behavior the research left unverified is pinned here, as is rig tolerating a managed tool
-  removal.
+  removal (`reconcile_managed_tools`).
 - Choke-point test stays green (no new tool).
 - `Record::PluginChange` reaches ledger and audit (modeled on `tests/guardian_off.rs`).
 - TUI integration test: edit a skill file, see the notice, `/reload-plugins`, `/skills` shows the
