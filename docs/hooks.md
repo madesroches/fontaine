@@ -343,6 +343,13 @@ tighten, like a repository's hooks: their `allow` and `retry` never count, while
 over tool names map to Fontaine rules where they can; an un-mappable matcher skips its hook entry
 with a warning. [Plugins](plugins.md#component-mapping) lists what loads and what is skipped.
 
+A plugin's hooks are a layer of their own: `/plugin install`, `/plugin update`, `/plugin
+enable` and `/reload-plugins` in a running session load, replace or remove them for every event,
+without a restart, while your own and your project's hooks stay as they were at startup. The
+floor order is unchanged, and a plugin hook's `allow` and `retry` still never count. A plugin
+loaded this way does not run its `session_start` hooks, since that event already happened in this
+session; they run at the next session. See [Plugins](plugins.md#in-the-terminal-ui).
+
 ## What is not built
 
 - **Events:** `PermissionRequest` (an `allow` there would answer the human prompt, a second way to

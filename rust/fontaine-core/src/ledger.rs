@@ -78,6 +78,14 @@ pub enum Record {
         name: String,
         digest: String,
     },
+    /// The human installed, updated, removed, enabled or disabled a plugin, or reloaded the
+    /// plugins, in the TUI. `op` is `install`, `update`, `uninstall`, `enable`, `disable` or
+    /// `reload`; `plugin` and `fingerprint` are empty when the operation names none.
+    PluginChange {
+        op: String,
+        plugin: String,
+        fingerprint: String,
+    },
     /// The human submitted a bug report with `/bug`. `url` is the issue URL or the prefilled-issue
     /// URL.
     BugReport {
@@ -631,6 +639,7 @@ impl LedgerView {
             Record::ModeChange { .. }
             | Record::GuardianOff { .. }
             | Record::SkillTrust { .. }
+            | Record::PluginChange { .. }
             | Record::BugReport { .. }
             | Record::Approval { .. }
             | Record::Grant { .. }

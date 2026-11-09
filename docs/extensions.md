@@ -105,6 +105,21 @@ skill](#commands-in-a-skill)), and `allowed-tools` rules lent by a user-scope sk
 them. A personal skill outranks a repository skill of the same name. In the terminal UI, `/skills`
 lists every loaded skill with its scope.
 
+### Reloading
+
+Skills, agent files and output styles load when a session starts. To pick up added, edited and
+removed ones in your user and project directories and in installed plugins without restarting,
+run `/reload-plugins` between turns: the skill index in the system prompt, the `/` menu, the
+`skill` tool and the agent types follow, the conversation stays, and a trust you recorded with
+`/skills trust` takes effect. At each turn boundary Fontaine also checks the modification times
+of these files (and of plugin manifests, `plugins.toml` and `skill-trust.toml`) and, when
+something changed since the last load, says once: "skills/plugins changed on disk — run
+/reload-plugins". It never applies a change by itself, so a stray edit cannot alter the toolset
+or cost a prompt-cache miss unexpectedly. The system prompt is rebuilt only when what the model
+sees changed; skill text it read earlier in the conversation is not rewritten, and the next turn
+says which skills changed or went away so the model treats that text as possibly stale. See
+[Plugins](plugins.md#in-the-terminal-ui) for the plugin side.
+
 ### Slash commands and arguments
 
 A skill with `user-invocable` not `false` is the command `/name`. Typing `/` lists the commands
@@ -167,7 +182,8 @@ fontaine plugin untrust dev-skills:pr
 `trust` prints each skill's digest, its `allowed-tools` split as below, and the `!` commands it
 runs, then asks for confirmation. Without a terminal it refuses unless you pass `--yes`, which
 skips only the question. In the terminal UI, `/skills trust <name>` shows the same and asks. A
-trust or untrust applies from the next session start. The record is
+trust or untrust applies from `/reload-plugins` in a running session, or from the next session
+start. The record is
 `<config dir>/skill-trust.toml`, [described here](configuration.md#skill-trust).
 
 While the record matches the skill file, for the agent that runs the skill and until the end of
@@ -187,7 +203,7 @@ trusting it adds the note for the guardian.
 The record pins the skill file by digest. When the file changes (an edit, or a plugin
 [update](plugins.md#auto-update)), the trust is suspended: a plugin skill's `allowed-tools` are
 off, a skill of yours falls back to the behaviour above without the guardian note, and a notice at
-the next start says so. Run `/skills trust <name>` to see what changed and trust the new version.
+the next start or reload says so. Run `/skills trust <name>` to see what changed and trust the new version.
 `/skills` marks each skill `(trusted)` or `(changed (re-trust))`. A headless run never asks: a
 changed or untrusted plugin skill that declares `allowed-tools` lends nothing and warns once.
 

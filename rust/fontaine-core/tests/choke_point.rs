@@ -146,7 +146,7 @@ fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
     ExtensionTools(vec![
         ExtensionTool::new(AgentTool {
             tree: tree.clone(),
-            types: Arc::new(AgentTypes::builtin()),
+            types: Arc::new(fontaine_tools::live::Live::new(AgentTypes::builtin())),
             runner: Arc::new(NoRunner),
             ledger: Arc::new(NoLedger),
             roles: String::new(),

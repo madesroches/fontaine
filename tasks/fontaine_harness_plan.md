@@ -530,6 +530,9 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   read-only `/plugins`. No interactive marketplace browser in v1. Amended 2026-10-31 (#283): the
   one exception is the background auto-update pass below, which stages revisions the user already
   approved the executables of; installs, approvals and marketplace registration stay CLI-only.
+  Superseded 2026-11-09 (#554): the TUI installs, updates, uninstalls, enables and disables
+  plugins and applies them live; only marketplace registration stays CLI-only (see the 2026-11-09
+  lines at the end of this section).
 - 2026-10-28: LSP server components were unsupported (ignored with a warning); superseded
   2026-10-30 below. Mods stay skipped (parity doc).
 - 2026-10-28: Plugins may add `deny`/`ask` rules and `hard_deny`/`soft_deny` guardian entries via
@@ -631,7 +634,9 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   suspend broad rules, so reusing it would allow `git push --force origin main` unguarded; the global
   classifier is left unchanged.
 - 2026-11-03 AFK (#379): A skill trust or untrust takes effect at the next session start, and the
-  `/skills trust` dialog says so; reason: `Extensions` is immutable behind an `Arc`.
+  `/skills trust` dialog says so; reason: `Extensions` is immutable behind an `Arc`. Superseded
+  2026-11-09 (#554): a trust or untrust also takes effect at `/reload-plugins`, which re-reads the
+  trust record with the skills; the dialog says so.
 - 2026-11-03 AFK (#379): Confirming `/skills trust` appends a `Record::SkillTrust` ledger and audit
   entry, while the CLI `trust`/`untrust` is unaudited like plugin install; reason: an interactive
   grant of tool permissions belongs in the record, as `Record::Approval` and `Record::GuardianOff` are.
@@ -669,6 +674,45 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-08 AFK (#29): A plugin hook carrying `if` or `shell: "powershell"` is skipped with a warning (like `args`), not loaded with the field ignored; `if` is not mapped to `matcher`. Reason: ignoring `if` runs the hook, including a user-trusted `allow`, on more calls than intended, and a PowerShell script under `sh` misbehaves; Claude Code honours both.
 - 2026-11-08 AFK (#29): `pre_compact` fires from a hook-free pre-summary callback that `Session::compact` runs only after `plan_summary` returns a plan and before the model call. Reason: `compact_with` runs before every turn, so a hook there would fire on every turn even when nothing is summarized. Its plain stdout is appended to the summary request as `Additional focus: …` for both `manual` and `auto`, because `Threshold` carries no focus and dropping an auto hook's output silently would be a quiet failure.
 - 2026-11-08 AFK (#29): Plugin `url` and header values expand only `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PROJECT_DIR}` at load; any other `${VAR}` waits for request-time `allowed_env_vars` interpolation. Reason: load-time expansion reads the unfiltered host env and would send secrets off-machine past `allowed_env_vars` and the scrub check. `allowed_env_vars` may not name a variable the `shell` tool's scrub removes (a startup error).
+
+- 2026-11-09 (#554): The TUI gains `/plugin install|uninstall|update|enable|disable` and
+  `/reload-plugins`, and a change applies to the running session without losing the conversation:
+  plugin skills, agents, styles, hooks, deny/ask rules, guardian additions and MCP servers are
+  loaded, reloaded or unloaded, and an unchanged plugin is left running. This supersedes the
+  2026-10-28 "CLI-only" rule and the 2026-11-03 "trust applies next session" rule (trust applies at
+  `/reload-plugins`). Marketplace registration, update and removal stay CLI-only per the
+  2026-10-28 rule. Reason: iterating on a plugin or skill should not need a restart.
+- 2026-11-09 (#554): Plugin-sourced hooks live in a swappable plugin layer (`PluginLayer` in a
+  `Live` cell) consulted after the frozen user and project hooks for every hook event plugins can
+  define, and plugin deny/ask rules are swapped in place by `RuleSource::Plugin`; user and
+  project items never change at runtime, so the floor order and the frozen path are untouched.
+  A plugin hook keeps `user_trust: false`. A newly loaded plugin's `session_start` hooks do not
+  fire (the event already happened). Guardian prose from plugins applies live. Reason: small
+  blast radius; making every hook and rule swappable was rejected.
+- 2026-11-09 (#554): Unloading or reloading a plugin's MCP server removes its tools first (no new
+  calls), mutes its `list_changed` refresh, waits up to 10 s for in-flight calls and then closes the
+  connection; a call still running ends with the transport error. Reason: cancelling can leave a
+  tool's side effect half done. A changed plugin language-server set applies from the next session
+  (running servers are stopped and restart on need); a plugin's servers are stopped before its
+  checkout is replaced or removed, and a failed removal or rename is warned about.
+- 2026-11-09 (#554): Skill and plugin files edited on disk are noticed, not watched: at the turn
+  boundary a cheap path+mtime+length fingerprint is compared with the last load and one notice
+  says to run `/reload-plugins`. No `notify` dependency and no auto-apply, so a stray edit cannot
+  change the toolset or cost a cache read unexpectedly.
+- 2026-11-09 (#554): `/plugin install` always confirms in the TUI, with the full executable
+  surface and fingerprint (the CLI treats the typed command as consent), and `/plugin update`
+  confirms when the recorded approval is absent or differs from the new fingerprint, mirroring
+  the auto-update hold rule. The TUI uses unattended git, so a credential prompt is an error in
+  the transcript. The change commands wait for the turn to end and are refused while subagents
+  are live (the `/clear` guard), and nothing gives the model an install tool; each change is
+  recorded as `Record::PluginChange` in the ledger and the audit log.
+- 2026-11-09 (#554): `/reload-plugins` also reloads the standalone user and project skills,
+  agents and output styles (and applies staged plugin updates, held ones stay held), and rebuilds
+  the system prompt only when it or the tool definitions changed. Conversation history is never
+  edited; the next turn carries a note naming the unloaded or changed plugins and skills as
+  possibly stale.
+- 2026-11-09 (#554): A bare `/plugin` lists the installed plugins like `/plugins`; Claude Code's
+  `/plugin` is an interactive manager, which is not built.
 
 ### Guardian
 
@@ -904,7 +948,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-21: An `openai-compatible` account with no credential source sends no `Authorization` header (the gateway dialect uses optional bearer auth), so local servers that reject a bare `Bearer` header work.
 - 2026-10-25: `[network]` is config keys only, with no equivalent of Claude Code's `NODE_EXTRA_CA_CERTS`, `CLAUDE_CODE_CLIENT_CERT` or `CLAUDE_CODE_CLIENT_KEY` variables, because one place to set it keeps the project-scope tightening rules and the per-account override in force (#6).
 - 2026-10-25: A passphrase-protected `client_key` is refused at config load, where Claude Code accepts one via `CLAUDE_CODE_CLIENT_KEY_PASSPHRASE`, because rustls cannot decrypt a key and a passphrase in config or env would be a secret to store (#6).
-- 2026-10-25: Anything before the latest message is append-only within a session; front edits (system prompt, tool set) happen only at explicit boundaries (`/add-dir`, `/output-style`, model switch, MCP connect or refresh, `/clear`, compaction), each accepted as one lost cache read (#13).
+- 2026-10-25: Anything before the latest message is append-only within a session; front edits (system prompt, tool set) happen only at explicit boundaries (`/add-dir`, `/output-style`, model switch, MCP connect or refresh, plugin/skill reload, `/clear`, compaction), each accepted as one lost cache read (#13).
 - 2026-10-25: `prompt_caching` has a per-kind provider default (true for `anthropic`, false for `opencode-go` until its Messages route is measured live), is user-scope only and is accepted only by kinds where `accepts_prompt_caching()` is true; `cache_ttl = "1h"` is opt-in because extended TTL costs more per write (#13).
 - 2026-10-25: The guardian handle marks only its static prefix (tools and system prompt), never the per-call final message, so it pays no write premium on a tail that is never reused; its prefix is near provider minimum lengths, so savings are model-dependent (#13).
 - 2026-10-25: Headless `usage.main` gains cache read and write tokens; `guardian` and `subagents` (`GuardianUsage`) carry no cache fields and are not extended (#13).

@@ -4,7 +4,8 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tokio::sync::Notify;
 
@@ -14,6 +15,7 @@ use super::output::{OutputLimits, cap};
 use super::servers::signals_transport_failure;
 use crate::gate::{AgentId, ROOT_AGENT};
 use crate::guarded::{Guard, guard_callback};
+use crate::lock::lock_recovering;
 use crate::risk::RiskClass;
 use rig_core::message::ToolName;
 use rig_core::serve::adapters::ToolCallback;
@@ -60,6 +62,8 @@ pub struct GuardedSink<S> {
     tracker: CallTracker,
     transport_failed: Arc<Notify>,
     tool_count: Arc<AtomicUsize>,
+    tool_names: Arc<Mutex<Vec<String>>>,
+    muted: Arc<AtomicBool>,
 }
 
 /// What a connection's [`GuardedSink`] shares with the rest of the connection.
@@ -69,6 +73,11 @@ pub(crate) struct Shared {
     pub(crate) transport_failed: Arc<Notify>,
     /// How many tools the sink's last `add`/`reconcile` committed.
     pub(crate) tool_count: Arc<AtomicUsize>,
+    /// The registered names of the tools the sink last committed, for removing them by name.
+    pub(crate) tool_names: Arc<Mutex<Vec<String>>>,
+    /// Set when the server is being unloaded: a later `list_changed` refresh must not register
+    /// the tools again.
+    pub(crate) muted: Arc<AtomicBool>,
 }
 
 impl<S> GuardedSink<S> {
@@ -89,7 +98,19 @@ impl<S> GuardedSink<S> {
             tracker: shared.tracker.clone(),
             transport_failed: shared.transport_failed.clone(),
             tool_count: shared.tool_count.clone(),
+            tool_names: shared.tool_names.clone(),
+            muted: shared.muted.clone(),
         }
+    }
+
+    fn record(&self, wrapped: &[DynamicTool]) {
+        self.tool_count.store(wrapped.len(), Ordering::Relaxed);
+        // The names are not decided on, only used to remove the tools; a poisoned list still
+        // holds the last names written.
+        *lock_recovering(&self.tool_names) = wrapped
+            .iter()
+            .map(|tool| tool.definition().name.to_string())
+            .collect();
     }
 
     fn wrap(&self, tool: DynamicTool) -> Option<DynamicTool> {
@@ -179,7 +200,7 @@ impl<S> GuardedSink<S> {
 impl<S: ManagedToolSink> ManagedToolSink for GuardedSink<S> {
     fn add_managed_tools(&self, tools: Vec<DynamicTool>) -> HashMap<String, ManagedToolToken> {
         let wrapped = self.wrap_all(tools);
-        self.tool_count.store(wrapped.len(), Ordering::Relaxed);
+        self.record(&wrapped);
         self.inner.add_managed_tools(wrapped)
     }
 
@@ -188,8 +209,11 @@ impl<S: ManagedToolSink> ManagedToolSink for GuardedSink<S> {
         expected: HashMap<String, ManagedToolToken>,
         tools: Vec<DynamicTool>,
     ) -> HashMap<String, ManagedToolToken> {
+        if self.muted.load(Ordering::SeqCst) {
+            return expected;
+        }
         let wrapped = self.wrap_all(tools);
-        self.tool_count.store(wrapped.len(), Ordering::Relaxed);
+        self.record(&wrapped);
         self.inner.reconcile_managed_tools(expected, wrapped)
     }
 }

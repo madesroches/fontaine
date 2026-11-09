@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
+use fontaine_tools::live::Live;
 use rig_core::tool::{Tool, ToolContext, ToolExecutionError, ToolOutput};
 use serde::Deserialize;
 use serde_json::json;
@@ -78,7 +79,7 @@ pub struct AgentArgs {
 #[derive(Clone)]
 pub struct AgentTool {
     pub tree: Arc<AgentTree>,
-    pub types: Arc<AgentTypes>,
+    pub types: Arc<Live<AgentTypes>>,
     pub runner: Arc<dyn ChildRunner>,
     pub ledger: Arc<dyn RootLedger>,
     /// The session's model roles, one `- \`name\`: models` line each, which the `model`
@@ -1049,7 +1050,7 @@ impl Tool for AgentTool {
              for them before it ends. A subagent has a subset of your tools and never more \
              authority than you, and every call it makes passes the same permission checks. \
              Agent types:\n{}",
-            self.types.describe()
+            self.types.get().describe()
         )
     }
 
@@ -1064,7 +1065,7 @@ impl Tool for AgentTool {
             "properties": {
                 "agent_type": {
                     "type": "string",
-                    "enum": self.types.names(),
+                    "enum": self.types.get().names(),
                     "description": "Which kind of subagent to start.",
                 },
                 "prompt": { "type": "string", "description": "The task. A subagent cannot see this conversation, so give it all the context it needs; a `fork` already has the conversation and needs only a short task." },
@@ -1088,11 +1089,12 @@ impl Tool for AgentTool {
         args: AgentArgs,
     ) -> Result<ToolOutput, ToolExecutionError> {
         let caller = caller_of(context)?;
-        let Some(agent_type) = self.types.get(&args.agent_type) else {
+        let types = self.types.get();
+        let Some(agent_type) = types.get(&args.agent_type) else {
             return Err(ToolExecutionError::invalid_args(format!(
                 "no agent type `{}`; available:\n{}",
                 args.agent_type,
-                self.types.describe()
+                types.describe()
             )));
         };
         if agent_type.inherits_context {

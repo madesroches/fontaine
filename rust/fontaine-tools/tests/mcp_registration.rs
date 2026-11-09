@@ -8,7 +8,8 @@ use std::time::Duration;
 use fontaine_tools::mcp::{ServerSpec, Transport, connect, connect_transport};
 use fontaine_tools::risk::RiskClass;
 use mcp_common::server::{
-    Double, echo_tool, grant_access_tool, lookup_tool, marked, unmarked_grant_access_tool,
+    Double, echo_tool, grant_access_tool, lookup_tool, marked, slow_tool,
+    unmarked_grant_access_tool,
 };
 use mcp_common::{Gate, call, names, options, tool_server};
 use rmcp::ServiceExt;
@@ -664,4 +665,103 @@ async fn a_long_error_result_keeps_its_head_and_tail() {
         out.len()
     );
     connection.close().await;
+}
+
+/// The names the connection registered, removed from the tool server the way an unload does.
+fn unload_tools(
+    connected: &fontaine_tools::mcp::Connected,
+    handle: &rig_agent::tool::server::ToolServerHandle,
+) {
+    connected.mute();
+    for name in connected.tool_names() {
+        handle.remove_tool(&name);
+    }
+}
+
+#[tokio::test]
+async fn an_unloaded_servers_tools_leave_the_toolset_and_a_refresh_does_not_bring_them_back() {
+    let gate = Gate::new(true);
+    let handle = tool_server();
+    let double = Double::with_tools(vec![echo_tool()]);
+    let (connected, _task) = serve_connected(
+        "double",
+        double.clone(),
+        handle.clone(),
+        &options(gate.clone()),
+    )
+    .await;
+    assert_eq!(connected.tool_names(), ["mcp__double__echo"]);
+    assert_eq!(names(&handle), ["mcp__double__echo"]);
+
+    unload_tools(&connected, &handle);
+    assert!(names(&handle).is_empty());
+    assert!(call(&handle, "mcp__double__echo", "{}").await.is_err());
+
+    // A list change during the drain would re-register the tool through rig's reconcile.
+    double.replace_tools(vec![echo_tool(), lookup_tool()]).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(names(&handle).is_empty(), "{:?}", names(&handle));
+
+    // Closing a connection whose tools were already removed is fine.
+    connected.connection.close().await;
+    assert!(names(&handle).is_empty());
+}
+
+#[tokio::test]
+async fn a_drain_waits_for_an_in_flight_call_and_gives_up_after_the_bound() {
+    let gate = Gate::new(true);
+    let handle = tool_server();
+    let double = Double::with_tools(vec![slow_tool()]);
+    let (started, finish) = (double.started.clone(), double.finish.clone());
+    let (connected, _task) =
+        serve_connected("double", double, handle.clone(), &options(gate)).await;
+    assert!(
+        connected.drain(Duration::from_millis(50)).await,
+        "idle at first"
+    );
+
+    let caller = {
+        let handle = handle.clone();
+        tokio::spawn(async move { call(&handle, "mcp__double__slow", "{}").await })
+    };
+    started.notified().await;
+    unload_tools(&connected, &handle);
+    assert!(
+        !connected.drain(Duration::from_millis(100)).await,
+        "the call is still running when the bound passes"
+    );
+
+    let drained = {
+        let wait = connected.drain(Duration::from_secs(10));
+        tokio::pin!(wait);
+        // Released while the drain waits: it ends as soon as the call does.
+        finish.notify_one();
+        wait.await
+    };
+    assert!(drained);
+    let out = caller.await.unwrap().expect("the call ran to its end");
+    assert!(out.contains("slow: done"), "{out}");
+    connected.connection.close().await;
+}
+
+#[tokio::test]
+async fn a_call_still_running_when_the_connection_closes_ends_with_an_error() {
+    let gate = Gate::new(true);
+    let handle = tool_server();
+    let double = Double::with_tools(vec![slow_tool()]);
+    let started = double.started.clone();
+    let (connected, _task) =
+        serve_connected("double", double, handle.clone(), &options(gate)).await;
+    let caller = {
+        let handle = handle.clone();
+        tokio::spawn(async move { call(&handle, "mcp__double__slow", "{}").await })
+    };
+    started.notified().await;
+    unload_tools(&connected, &handle);
+    connected.connection.close().await;
+    let result = tokio::time::timeout(Duration::from_secs(10), caller)
+        .await
+        .expect("the call ends once the connection is closed")
+        .unwrap();
+    assert!(result.is_err(), "{result:?}");
 }

@@ -77,7 +77,7 @@ pub fn describe(skill: &Skill, previous: Option<&TrustRecord>) -> Vec<String> {
     out.push(format!("digest: {}", current.digest));
     out.push(String::new());
     out.push(
-        "The trust applies from the next session start; this session keeps its current grants."
+        "The trust applies after /reload-plugins or at the next session start; until then this session keeps its current grants."
             .to_string(),
     );
     out

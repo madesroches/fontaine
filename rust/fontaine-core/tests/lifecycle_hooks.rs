@@ -980,6 +980,37 @@ fn build_keeps_user_and_plugin_http_and_prompt_hooks() {
 }
 
 #[test]
+fn the_frozen_and_plugin_layers_split_the_hooks_by_origin() {
+    let w = common::World::new();
+    let mut config = config_with(&w, &format!("{HTTP}{STOP}"), "");
+    let mut plugin = fontaine_core::plugins::PluginContributions::default();
+    plugin.hooks.list_mut(HookEvent::Stop).push(Hook {
+        kind: HandlerKind::Prompt,
+        command: None,
+        prompt: Some("plugin check".into()),
+        origin: Origin {
+            slot: Slot::Plugin,
+            user_trust: false,
+        },
+        plugin: Some("p".into()),
+        ..Hook::default()
+    });
+    config.apply_plugins(&plugin).unwrap();
+    let deps = HookDeps::new(process());
+    let frozen =
+        user_hooks::build_layer(&config, true, &deps, user_hooks::HookLayer::Frozen).unwrap();
+    let layer =
+        user_hooks::build_layer(&config, true, &deps, user_hooks::HookLayer::Plugin).unwrap();
+    assert_eq!(frozen.lifecycle[&HookEvent::Stop].len(), 1);
+    assert_eq!(layer.lifecycle[&HookEvent::Stop].len(), 1);
+    assert!(
+        !layer.lifecycle.contains_key(&HookEvent::SessionEnd),
+        "the user's hooks are not in the plugin layer"
+    );
+    assert!(frozen.lifecycle.contains_key(&HookEvent::SessionEnd));
+}
+
+#[test]
 fn an_allowed_env_var_the_shell_scrub_removes_is_a_startup_error() {
     let w = common::World::new();
     let config = config_with(
@@ -1231,4 +1262,66 @@ async fn impossible_does_not_cancel_a_block_outside_stop_events() {
         lifecycle.prompt_submit("go").await,
         PromptGate::Blocked(_)
     ));
+}
+
+// ---- the plugin layer: what a plugin reload swaps ----
+
+fn live_layer(
+    event: HookEvent,
+    hook: &Hook,
+    deps: &HookDeps,
+) -> Arc<fontaine_tools::live::Live<fontaine_core::user_hooks::PluginLayer>> {
+    let mut layer = fontaine_core::user_hooks::PluginLayer::default();
+    let user = user_hook(event, hook, deps);
+    match event {
+        HookEvent::SubagentStart => layer.subagent_start.push(user),
+        other => layer.lifecycle.entry(other).or_default().push(user),
+    }
+    Arc::new(fontaine_tools::live::Live::new(layer))
+}
+
+#[tokio::test]
+async fn plugin_lifecycle_hooks_run_until_the_layer_is_emptied() {
+    let dir = tempfile::tempdir().unwrap();
+    let seen = path_arg(&dir, "seen.jsonl");
+    let f = Fixture::new();
+    let deps = deps(&f.warnings);
+    let live = live_layer(HookEvent::SessionEnd, &hook(&["--append", &seen]), &deps);
+    let lifecycle = f.lifecycle(Vec::new()).with_plugins(live.clone());
+    assert!(lifecycle.has(HookEvent::SessionEnd));
+    lifecycle.session_end("exit").await;
+    assert_eq!(recorded(&seen).len(), 1);
+
+    live.set(Arc::default());
+    assert!(!lifecycle.has(HookEvent::SessionEnd));
+    lifecycle.session_end("exit").await;
+    assert_eq!(
+        recorded(&seen).len(),
+        1,
+        "an unloaded plugin's hook is silent"
+    );
+}
+
+#[tokio::test]
+async fn plugin_subagent_hooks_follow_the_layer_and_the_gate_exists_without_hooks() {
+    let f = Fixture::new();
+    let deps = deps(&f.warnings);
+    let hook = hook(&[
+        "--reply",
+        &reply("SubagentStart", "additionalContext", "from the plugin"),
+    ]);
+    let live = live_layer(HookEvent::SubagentStart, &hook, &deps);
+    let gate = SubagentGate::new(
+        Vec::new(),
+        Vec::new(),
+        f.rig.state.clone(),
+        f.warnings.clone(),
+    )
+    .with_plugins(live.clone());
+    assert_eq!(
+        gate.subagent_start("agent-1", "explore").await,
+        ["[Hook context from subagent_start, not the user's words: from the plugin]"]
+    );
+    live.set(Arc::default());
+    assert!(gate.subagent_start("agent-1", "explore").await.is_empty());
 }

@@ -360,6 +360,7 @@ pub(crate) fn transcript_has_keys(app: &App) -> bool {
         && app.bug_prompt.is_none()
         && app.afk_review_prompt.is_none()
         && app.skill_trust_prompt.is_none()
+        && app.plugin_prompt.is_none()
         && app.setup_review.is_none()
         && app.setup_composition.is_none()
         && app.models.is_none()
@@ -421,6 +422,12 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
         return Overlay {
             instance: Some(prompt.id),
             ..Overlay::new("skills", prompt.body(width, theme), prompt.footer())
+        };
+    }
+    if let Some(prompt) = &app.plugin_prompt {
+        return Overlay {
+            instance: Some(prompt.id),
+            ..Overlay::new("plugins", prompt.body(width, theme), prompt.footer())
         };
     }
     if let Some(prompt) = &app.setup_review {

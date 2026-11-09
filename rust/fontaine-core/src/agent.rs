@@ -60,6 +60,7 @@ use crate::trust;
 use crate::turn_recovery::{self, Fallback, Unsettled};
 use crate::user_hooks;
 use crate::workspace::{self, RootSource};
+use fontaine_tools::live::Live;
 
 mod advisor;
 mod afk;
@@ -72,6 +73,7 @@ mod mcp_supervisor;
 mod messaging;
 mod model_source;
 mod models;
+mod reload;
 mod rewind;
 mod setup;
 
@@ -153,6 +155,8 @@ pub struct AgentSetup {
     pub switcher: Option<Switcher>,
     /// The skills, agent files and output styles that were loaded.
     pub extensions: Extensions,
+    /// What the installed plugins contributed at startup, which a reload is compared with.
+    pub plugins: crate::plugins::PluginContributions,
     /// Whether project-defined executables (hooks, MCP servers, skill commands) may start. False
     /// when the user declined to trust the workspace.
     pub project_executables: bool,
@@ -208,12 +212,15 @@ pub struct AgentRuntime {
     /// because `models.guardian` goes stale after a retry or a switch.
     guardian_quota: Arc<RwLock<Option<GuardianQuota>>>,
     skills: Arc<SkillRuntime>,
-    agent_types: Arc<AgentTypes>,
-    extensions: Arc<Extensions>,
+    agent_types: Arc<Live<AgentTypes>>,
+    extensions: Arc<Live<Extensions>>,
     main: Arc<RwLock<MainModel>>,
     runner: Arc<CoreChildRunner>,
     output_style: Option<String>,
     mcp: mcp_supervisor::McpServers,
+    /// What each loaded plugin contributes and the extension files' fingerprint at the last load,
+    /// which a reload and the on-disk change notice are compared with.
+    plugin_state: reload::PluginState,
     /// What `model_listings` has fetched this session.
     listings: Vec<AccountListing>,
     /// Whether the agent was built with the provider's search tool.
@@ -278,6 +285,10 @@ pub(crate) struct Setup {
     store: DirStore,
     /// The user's hooks for the events the runtime fires itself.
     pub(crate) lifecycle: user_hooks::LifecycleHooks,
+    /// What a hook handler needs, kept so a reload can build the plugin hooks again.
+    pub(crate) hook_deps: user_hooks::HookDeps,
+    /// The hooks plugins bring, which a reload swaps.
+    pub(crate) plugin_hooks: user_hooks::LivePlugins,
 }
 
 /// One line when the main model has no way to search: no provider search for its account, no
@@ -297,10 +308,10 @@ fn warn_if_no_search(setup: &AgentSetup) {
 impl AgentRuntime {
     pub fn new(mut setup: AgentSetup) -> Result<AgentRuntime, RuntimeError> {
         setup::prepare(&mut setup);
+        let plugin_state = reload::PluginState::at_start(&setup);
         let tree = setup::agent_tree(&setup);
         let agent_types = setup::session_agent_types(&mut setup)?;
         let state = setup::session_state(&setup, &tree, &agent_types);
-        setup::configure_state(&mut setup, &state);
         let setup::Gates {
             pipeline,
             retained,
@@ -310,14 +321,13 @@ impl AgentRuntime {
         } = setup::gates(&mut setup, &tree, &state)?;
         let (extensions, skills) =
             setup::extension_runtimes(setup.extensions, &state, setup.project_executables);
-        let steering = Steering::default();
+        let (steering, seen) = (Steering::default(), Seen::default());
         let (main, tool_server, runner, kills) = setup::subagent_support(
             &setup::ChildDeps::new(&retained, &state, &setup.approver, &steering, &results),
             &tree,
             &setup.models,
             &setup.config,
         );
-        let seen = Seen::default();
         let (agent, pieces, loaded, native) = build_agent(&Parts {
             setup: &retained,
             roots: state.scope().roots(),
@@ -338,7 +348,7 @@ impl AgentRuntime {
             instructions: &instruction_stage,
             kills: &kills,
         })?;
-        setup::rebuild_agents(&state, &setup.session, &tree, &agent_types);
+        setup::rebuild_agents(&state, &setup.session, &tree, &agent_types.get());
         Ok(AgentRuntime {
             agent,
             prompt_pieces: pieces,
@@ -373,17 +383,17 @@ impl AgentRuntime {
             runner,
             output_style: None,
             mcp: Default::default(),
+            plugin_state,
             listings: Vec::new(),
             native_search: native,
         })
     }
 
-    /// Rebuilds the registry and the agent for the current scope. The conversation lives in the
-    /// session store, so a new agent continues it.
-    fn rebuild(&mut self) -> Result<(), RuntimeError> {
+    /// Builds the registry and the agent for the current scope, registering the tools. The
+    /// conversation lives in the session store, so a new agent continues it.
+    fn build_candidate(&self) -> Result<(Agent, prompt::PromptPieces, Loaded, bool), RuntimeError> {
         let scope = self.state.scope();
-        let prompt_afk = self.state.afk_on();
-        let (agent, prompt_pieces, launch_instructions, native_search) = build_agent(&Parts {
+        build_agent(&Parts {
             setup: &self.setup,
             roots: scope.roots(),
             pipeline: &self.pipeline,
@@ -402,13 +412,36 @@ impl AgentRuntime {
             steering: &self.steering,
             instructions: &self.instruction_stage,
             kills: &self.kills,
-        })?;
+        })
+    }
+
+    /// Rebuilds the registry and the agent for the current scope.
+    fn rebuild(&mut self) -> Result<(), RuntimeError> {
+        let prompt_afk = self.state.afk_on();
+        let (agent, prompt_pieces, launch_instructions, native_search) = self.build_candidate()?;
+        self.install_agent(
+            agent,
+            prompt_pieces,
+            launch_instructions,
+            native_search,
+            prompt_afk,
+        );
+        Ok(())
+    }
+
+    fn install_agent(
+        &mut self,
+        agent: Agent,
+        prompt_pieces: prompt::PromptPieces,
+        launch_instructions: Loaded,
+        native_search: bool,
+        prompt_afk: bool,
+    ) {
         self.native_search = native_search;
         self.prompt_afk = prompt_afk;
         self.agent = agent;
         self.prompt_pieces = prompt_pieces;
         self.launch_instructions = launch_instructions;
-        Ok(())
     }
 
     fn native_search_entry(&self) -> Option<serde_json::Value> {
@@ -425,6 +458,7 @@ impl AgentRuntime {
     /// and the turn runs without it, and a stale AFK wording is warned about (the pipeline
     /// enforces the mode either way).
     pub fn refresh_before_turn(&mut self) -> Result<(), RuntimeError> {
+        self.notice_disk_changes();
         let offered = self.native_search_entry().is_some();
         let afk = self.state.afk_on();
         if offered == self.native_search && afk == self.prompt_afk {
@@ -450,7 +484,7 @@ impl AgentRuntime {
 
     fn output_style_text(&self) -> Option<(String, String)> {
         let name = self.output_style.as_deref()?;
-        let style = self.extensions.output_style(name)?;
+        let style = self.extensions.get().output_style(name)?.clone();
         Some((style.name.clone(), style.body.clone()))
     }
 
@@ -490,8 +524,9 @@ impl AgentRuntime {
         &self.tool_server
     }
 
-    pub fn extensions(&self) -> &Arc<Extensions> {
-        &self.extensions
+    /// The skills, agent files and output styles as loaded now; `reload_extensions` swaps them.
+    pub fn extensions(&self) -> Arc<Extensions> {
+        self.extensions.get()
     }
 
     /// The user config directory, for reports that read the plugin registry.
@@ -499,8 +534,8 @@ impl AgentRuntime {
         &self.setup.config_dir
     }
 
-    pub fn agent_types(&self) -> &Arc<AgentTypes> {
-        &self.agent_types
+    pub fn agent_types(&self) -> Arc<AgentTypes> {
+        self.agent_types.get()
     }
 
     pub fn skills(&self) -> &Arc<SkillRuntime> {
@@ -516,10 +551,10 @@ impl AgentRuntime {
     /// changes the agent's prompt; the guardian's request is the same with or without it.
     pub fn set_output_style(&mut self, name: Option<&str>) -> Result<(), RuntimeError> {
         if let Some(name) = name
-            && self.extensions.output_style(name).is_none()
+            && self.extensions.get().output_style(name).is_none()
         {
-            let known: Vec<&str> = self
-                .extensions
+            let extensions = self.extensions.get();
+            let known: Vec<&str> = extensions
                 .output_styles
                 .iter()
                 .map(|s| s.name.as_str())
@@ -544,6 +579,7 @@ impl AgentRuntime {
     /// The skills a user can run as `/name`: name, argument hint and description.
     pub fn slash_skills(&self) -> Vec<(String, Option<String>, String)> {
         self.extensions
+            .get()
             .skills
             .iter()
             .filter(|skill| skill.user_invocable)
@@ -1020,15 +1056,35 @@ impl AgentRuntime {
     /// Idle agents are retired: nothing woke them could be judged against the intent the clear
     /// drops. Wakes are held from before the guard through the pruning, so a killed child's
     /// watcher cannot resume an agent into the conversation being emptied.
-    pub async fn clear_conversation(&self) -> Result<(), ClearError> {
+    /// Holds back subagent wakes while `why`, and fails when a subagent is running or has
+    /// something to deliver, so nothing the caller is about to change can race one. The wakes
+    /// resume when the guard drops.
+    fn hold_idle_subagents(
+        &self,
+        why: &str,
+    ) -> Result<fontaine_agents::tree::WakeHold<'_>, ClearError> {
         let agents = self.state.agents();
-        let wakes = agents.hold_wakes("the conversation is being cleared");
+        let wakes = agents.hold_wakes(why);
         if agents.any_running() || agents.has_agent_notifications() || agents.has_subagent_mail() {
             // The hold must precede the check, so a wake deferred meanwhile gets its retry here.
             drop(wakes);
             spawn::slot_freed(agents, &self.ledger_window(), None);
             return Err(ClearError::SubagentsRunning);
         }
+        Ok(wakes)
+    }
+
+    /// Whether the session is idle enough for a plugin change: no subagent is running or has
+    /// anything to deliver, since a background subagent outlives the root turn and would run
+    /// on a toolset that changes under it.
+    pub fn subagents_idle(&self) -> bool {
+        self.hold_idle_subagents("plugins are being changed")
+            .is_ok()
+    }
+
+    pub async fn clear_conversation(&self) -> Result<(), ClearError> {
+        let agents = self.state.agents();
+        let _wakes = self.hold_idle_subagents("the conversation is being cleared")?;
         self.setup.lifecycle.session_end("clear").await;
         self.session.clear().await?;
         // Context queued for the conversation that just ended has nothing to attach to.

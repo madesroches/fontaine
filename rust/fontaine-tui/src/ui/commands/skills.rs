@@ -9,8 +9,8 @@ use crate::{Action, Ui};
 
 impl<R: FnMut(&mut crate::App)> Ui<R> {
     /// `/skills trust <name>`: after a confirmation that shows what the file declares, records the
-    /// user's trust in it. Interactive-only. The running session's grants do not change: the
-    /// record is read at the next session start.
+    /// user's trust in it. Interactive-only. The running session's grants do not change until
+    /// `/reload-plugins` or the next session start reads the record.
     pub(crate) async fn skills_command(
         &mut self,
         runtime: &mut AgentRuntime,
@@ -23,7 +23,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .error("usage: /skills, or /skills trust <name>");
             return ControlFlow::Continue(());
         };
-        let extensions = runtime.extensions().clone();
+        let extensions = runtime.extensions();
         let Some(skill) = extensions.skill(name) else {
             self.app
                 .transcript
@@ -61,7 +61,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                         Ok(()) => {
                             runtime.state.record_skill_trust(&skill.name, &skill.digest);
                             self.app.transcript.notice(format!(
-                                "`{name}` trusted: its allowed-tools count from the next session start"
+                                "`{name}` trusted: its allowed-tools count after /reload-plugins or from the next session start"
                             ));
                         }
                         Err(e) => self.app.transcript.error(format!(

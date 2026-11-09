@@ -104,7 +104,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let text = match fontaine_core::plugins::read_registry(runtime.config_dir()) {
             Ok(registry) => reports::plugins(
                 &registry,
-                runtime.extensions(),
+                &runtime.extensions(),
                 &runtime.config.hooks,
                 &runtime.config.mcp_servers,
                 &runtime.config.mcp_origins,

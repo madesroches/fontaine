@@ -26,6 +26,7 @@ use fontaine_guardian::prompt_builder::neutralize;
 use fontaine_tools::command_shell::CommandShell;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, ROOT_AGENT};
+use fontaine_tools::live::Live;
 use fontaine_tools::lock::{lock, read, write};
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note, text_view};
 use futures::future::BoxFuture;
@@ -37,7 +38,7 @@ use tokio::io::AsyncWriteExt;
 use tracing::Instrument;
 
 use crate::agent::EnvLookup;
-use crate::config::{Config, HandlerKind, Hook, HookEvent};
+use crate::config::{Config, HandlerKind, Hook, HookEvent, Slot};
 use crate::gate::SessionState;
 use crate::goal::{JudgeFailure, judge};
 use crate::models::GuardianModel;
@@ -878,6 +879,7 @@ impl PermissionDeniedHook for UserHook {
 pub struct PostHookStage {
     hooks: Vec<UserHook>,
     failure_hooks: Vec<UserHook>,
+    plugins: Option<LivePlugins>,
     state: Arc<SessionState>,
 }
 
@@ -886,8 +888,15 @@ impl PostHookStage {
         PostHookStage {
             hooks,
             failure_hooks: Vec::new(),
+            plugins: None,
             state,
         }
+    }
+
+    /// Adds the hooks plugins bring, read at each call so a reload swaps them.
+    pub fn with_plugins(mut self, plugins: LivePlugins) -> PostHookStage {
+        self.plugins = Some(plugins);
+        self
     }
 
     /// Adds the `post_tool_use_failure` hooks, which run for a call that failed.
@@ -896,8 +905,10 @@ impl PostHookStage {
         self
     }
 
+    /// Whether the stage can never run a hook. A stage with a plugin layer is never empty, since
+    /// a reload may fill the layer later.
     pub fn is_empty(&self) -> bool {
-        self.hooks.is_empty() && self.failure_hooks.is_empty()
+        self.plugins.is_none() && self.hooks.is_empty() && self.failure_hooks.is_empty()
     }
 
     async fn run_one(
@@ -989,12 +1000,14 @@ impl ResultStage for PostHookStage {
     ) -> BoxFuture<'a, ToolOutcome> {
         Box::pin(async move {
             let hooks = if outcome.is_ok() {
-                &self.hooks
+                layered(&self.hooks, &self.plugins, |layer| &layer.post)
             } else {
-                &self.failure_hooks
+                layered(&self.failure_hooks, &self.plugins, |layer| {
+                    &layer.post_failure
+                })
             };
             let mut notes = Vec::new();
-            for hook in hooks {
+            for hook in &hooks {
                 if let Some(note) = self.run_one(hook, &call, &outcome).await {
                     notes.push(note);
                 }
@@ -1018,6 +1031,7 @@ pub struct TeamGate {
     task_completed: Vec<UserHook>,
     task_created: Vec<UserHook>,
     teammate_idle: Vec<UserHook>,
+    plugins: Option<LivePlugins>,
     state: Arc<SessionState>,
     approver: Arc<dyn Approver>,
 }
@@ -1033,9 +1047,16 @@ impl TeamGate {
             task_completed,
             task_created: Vec::new(),
             teammate_idle,
+            plugins: None,
             state,
             approver,
         }
+    }
+
+    /// Adds the hooks plugins bring, read at each call so a reload swaps them.
+    pub fn with_plugins(mut self, plugins: LivePlugins) -> TeamGate {
+        self.plugins = Some(plugins);
+        self
     }
 
     /// Adds the `task_created` hooks.
@@ -1098,30 +1119,42 @@ impl QualityGate for TeamGate {
         agent: &'a str,
         task: &'a Task,
     ) -> BoxFuture<'a, Option<String>> {
-        Box::pin(self.run(
-            &self.task_completed,
-            HookEvent::TaskCompleted.wire_name(),
-            agent,
-            TeamEvent::TaskCompleted(task),
-        ))
+        Box::pin(async move {
+            let hooks = layered(&self.task_completed, &self.plugins, |l| &l.task_completed);
+            self.run(
+                &hooks,
+                HookEvent::TaskCompleted.wire_name(),
+                agent,
+                TeamEvent::TaskCompleted(task),
+            )
+            .await
+        })
     }
 
     fn teammate_idle<'a>(&'a self, agent: &'a str, name: &'a str) -> BoxFuture<'a, Option<String>> {
-        Box::pin(self.run(
-            &self.teammate_idle,
-            HookEvent::TeammateIdle.wire_name(),
-            agent,
-            TeamEvent::TeammateIdle(name),
-        ))
+        Box::pin(async move {
+            let hooks = layered(&self.teammate_idle, &self.plugins, |l| &l.teammate_idle);
+            self.run(
+                &hooks,
+                HookEvent::TeammateIdle.wire_name(),
+                agent,
+                TeamEvent::TeammateIdle(name),
+            )
+            .await
+        })
     }
 
     fn task_created<'a>(&'a self, agent: &'a str, task: &'a Task) -> BoxFuture<'a, Option<String>> {
-        Box::pin(self.run(
-            &self.task_created,
-            HookEvent::TaskCreated.wire_name(),
-            agent,
-            TeamEvent::TaskCreated(task),
-        ))
+        Box::pin(async move {
+            let hooks = layered(&self.task_created, &self.plugins, |l| &l.task_created);
+            self.run(
+                &hooks,
+                HookEvent::TaskCreated.wire_name(),
+                agent,
+                TeamEvent::TaskCreated(task),
+            )
+            .await
+        })
     }
 }
 
@@ -1150,6 +1183,7 @@ impl Streak {
 pub struct SubagentGate {
     start: Vec<UserHook>,
     stop: Vec<UserHook>,
+    plugins: Option<LivePlugins>,
     state: Arc<SessionState>,
     approver: Arc<dyn Approver>,
     streaks: Mutex<HashMap<String, Streak>>,
@@ -1165,14 +1199,21 @@ impl SubagentGate {
         SubagentGate {
             start,
             stop,
+            plugins: None,
             state,
             approver,
             streaks: Mutex::new(HashMap::new()),
         }
     }
 
+    /// Adds the hooks plugins bring, read at each call so a reload swaps them.
+    pub fn with_plugins(mut self, plugins: LivePlugins) -> SubagentGate {
+        self.plugins = Some(plugins);
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.start.is_empty() && self.stop.is_empty()
+        self.plugins.is_none() && self.start.is_empty() && self.stop.is_empty()
     }
 }
 
@@ -1184,7 +1225,8 @@ impl LifecycleGate for SubagentGate {
     ) -> BoxFuture<'a, Vec<String>> {
         Box::pin(async move {
             let mut notes = Vec::new();
-            for hook in self.start.iter().filter(|h| h.matches_value(agent_type)) {
+            let start = layered(&self.start, &self.plugins, |l| &l.subagent_start);
+            for hook in start.iter().filter(|h| h.matches_value(agent_type)) {
                 let mut input = session_event(&self.state, HookEvent::SubagentStart, id);
                 input.insert("agent_type".into(), json!(agent_type));
                 let Some(answer) = hook.run_told(Value::Object(input)).await else {
@@ -1211,7 +1253,8 @@ impl LifecycleGate for SubagentGate {
         last: &'a str,
     ) -> BoxFuture<'a, Option<String>> {
         Box::pin(async move {
-            if self.stop.is_empty() {
+            let stop = layered(&self.stop, &self.plugins, |l| &l.subagent_stop);
+            if stop.is_empty() {
                 return None;
             }
             let calls = self.state.tool_calls_of(id);
@@ -1231,7 +1274,7 @@ impl LifecycleGate for SubagentGate {
                 streak.count > 0
             };
             let mut reasons = Vec::new();
-            for hook in self.stop.iter().filter(|h| h.matches_value(agent_type)) {
+            for hook in stop.iter().filter(|h| h.matches_value(agent_type)) {
                 let mut input = session_event(&self.state, HookEvent::SubagentStop, id);
                 input.insert("agent_type".into(), json!(agent_type));
                 input.insert("stop_hook_active".into(), json!(active));
@@ -1299,6 +1342,8 @@ pub struct LifecycleHooks {
 
 struct LifecycleInner {
     hooks: BTreeMap<HookEvent, Vec<UserHook>>,
+    /// The hooks plugins bring, which a reload swaps.
+    plugins: Option<LivePlugins>,
     /// The slot the prompt hooks read the guardian's model from.
     guardian: Option<GuardianSlot>,
     state: Arc<SessionState>,
@@ -1315,12 +1360,39 @@ impl LifecycleHooks {
         LifecycleHooks {
             inner: Arc::new(LifecycleInner {
                 hooks,
+                plugins: None,
                 guardian: None,
                 state,
                 approver,
                 stop: Mutex::new(Streak::default()),
             }),
         }
+    }
+
+    /// Adds the hooks plugins bring. The layer lives inside the shared state, so every clone of
+    /// these hooks (the goal judge keeps one) sees a reload.
+    pub fn with_plugins(mut self, plugins: LivePlugins) -> LifecycleHooks {
+        Arc::get_mut(&mut self.inner)
+            .expect("the hooks are not shared before they are installed")
+            .plugins = Some(plugins);
+        self
+    }
+
+    /// The hooks of `event`: the frozen ones, then the plugins'.
+    fn hooks_of(&self, event: HookEvent) -> Vec<UserHook> {
+        let mut all = self.inner.hooks.get(&event).cloned().unwrap_or_default();
+        if let Some(plugins) = &self.inner.plugins {
+            all.extend(
+                plugins
+                    .get()
+                    .lifecycle
+                    .get(&event)
+                    .into_iter()
+                    .flatten()
+                    .cloned(),
+            );
+        }
+        all
     }
 
     /// Keeps `slot` current with the guardian's model, for [`set_guardian`](Self::set_guardian).
@@ -1339,7 +1411,7 @@ impl LifecycleHooks {
     }
 
     pub fn has(&self, event: HookEvent) -> bool {
-        self.inner.hooks.get(&event).is_some_and(|h| !h.is_empty())
+        !self.hooks_of(event).is_empty()
     }
 
     /// Runs every hook of `event` that selects `value`, one after another, and returns what they
@@ -1351,14 +1423,14 @@ impl LifecycleHooks {
         extra: Map<String, Value>,
     ) -> Vec<(UserHook, Answer)> {
         let mut out = Vec::new();
-        for hook in self.inner.hooks.get(&event).into_iter().flatten() {
+        for hook in self.hooks_of(event) {
             if value.is_some_and(|v| !hook.matches_value(v)) {
                 continue;
             }
             let mut input = session_event(&self.inner.state, event, ROOT_AGENT);
             input.extend(extra.clone());
             if let Some(answer) = hook.run_told(Value::Object(input)).await {
-                out.push((hook.clone(), answer));
+                out.push((hook, answer));
             }
         }
         out
@@ -1583,6 +1655,46 @@ impl std::fmt::Display for HookConfigError {
 
 impl std::error::Error for HookConfigError {}
 
+/// The hooks of the frozen layers (user and project config) followed by the plugins' hooks for
+/// the same event.
+fn layered(
+    frozen: &[UserHook],
+    plugins: &Option<LivePlugins>,
+    pick: impl Fn(&PluginLayer) -> &Vec<UserHook>,
+) -> Vec<UserHook> {
+    let mut all = frozen.to_vec();
+    if let Some(plugins) = plugins {
+        all.extend(pick(&plugins.get()).iter().cloned());
+    }
+    all
+}
+
+/// The hooks plugins bring, as one swappable layer. User and project hooks stay in the frozen
+/// lists; a plugin reload replaces only this.
+pub type PluginLayer = BuiltHooks;
+
+pub type LivePlugins = Arc<Live<PluginLayer>>;
+
+/// Which hooks `build_layer` keeps.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HookLayer {
+    All,
+    /// Everything but plugin hooks.
+    Frozen,
+    /// Only plugin hooks.
+    Plugin,
+}
+
+impl HookLayer {
+    fn includes(self, hook: &Hook) -> bool {
+        match self {
+            HookLayer::All => true,
+            HookLayer::Frozen => hook.origin.slot != Slot::Plugin,
+            HookLayer::Plugin => hook.origin.slot == Slot::Plugin,
+        }
+    }
+}
+
 /// The hook lists a session runs.
 #[derive(Default)]
 pub struct BuiltHooks {
@@ -1641,10 +1753,20 @@ pub fn build(
     project_executables: bool,
     deps: &HookDeps,
 ) -> Result<BuiltHooks, HookConfigError> {
+    build_layer(config, project_executables, deps, HookLayer::All)
+}
+
+/// [`build`] for one layer of the hooks.
+pub fn build_layer(
+    config: &Config,
+    project_executables: bool,
+    deps: &HookDeps,
+    layer: HookLayer,
+) -> Result<BuiltHooks, HookConfigError> {
     let mut built = BuiltHooks::default();
     for (event, hooks) in config.hooks.iter() {
         let mut ignored = 0;
-        for hook in hooks {
+        for hook in hooks.iter().filter(|hook| layer.includes(hook)) {
             let project = hook.origin.is_project();
             if project && !project_executables {
                 continue;

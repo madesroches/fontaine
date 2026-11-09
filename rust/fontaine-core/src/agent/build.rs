@@ -13,6 +13,7 @@ use fontaine_tools::bug_draft::DraftBugReportTool;
 use fontaine_tools::builtins::Seen;
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::kills::KillSwitches;
+use fontaine_tools::live::Live;
 use fontaine_tools::lsp::LspTool;
 use fontaine_tools::models_tool::ModelsTool;
 use fontaine_tools::result_pipeline::ResultPipeline;
@@ -107,7 +108,7 @@ pub(super) struct Parts<'a> {
     pub(super) results: &'a Arc<ResultPipeline>,
     pub(super) skills: &'a Arc<SkillRuntime>,
     pub(super) approver: &'a Arc<dyn Approver>,
-    pub(super) types: &'a Arc<AgentTypes>,
+    pub(super) types: &'a Arc<Live<AgentTypes>>,
     pub(super) runner: &'a Arc<CoreChildRunner>,
     pub(super) output_style: Option<(String, String)>,
     pub(super) steering: &'a Steering,
@@ -190,7 +191,7 @@ fn scheduling(p: &Parts<'_>) -> bool {
 fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
     let sources = Sources::for_state(p.state, &p.setup.config_dir, p.setup.home.as_deref());
     let loaded = instructions::load(&sources);
-    let skill_index = skills::index(p.skills.extensions());
+    let skill_index = skills::index(&p.skills.extensions());
     let memory = p.state.memory_root.as_deref().map(|dir| {
         let notes = memory::load(dir);
         p.instructions.warn_once(&notes.warnings);

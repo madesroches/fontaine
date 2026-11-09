@@ -872,3 +872,168 @@ async fn the_first_blocking_gate_hook_wins_and_later_ones_do_not_run() {
     );
     assert!(!second.exists());
 }
+
+// ---- the plugin layer: what a plugin reload swaps ----
+
+fn plugin() -> Origin {
+    Origin {
+        slot: Slot::Plugin,
+        user_trust: false,
+    }
+}
+
+fn plugin_layer(
+    hooks: &[Hook],
+) -> Arc<fontaine_tools::live::Live<fontaine_core::user_hooks::PluginLayer>> {
+    let layer = fontaine_core::user_hooks::PluginLayer {
+        pre: hooks.iter().map(pre).collect(),
+        ..Default::default()
+    };
+    Arc::new(fontaine_tools::live::Live::new(layer))
+}
+
+#[tokio::test]
+async fn a_swapped_plugin_layer_changes_plugin_hooks_and_leaves_user_hooks_alone() {
+    let live = plugin_layer(&[hook(
+        Some("read"),
+        command(&["--reply", &reply("deny")]),
+        plugin(),
+    )]);
+    let mut options = Options::new(Manual);
+    options.plugin_hooks = live.clone();
+    options.hooks = vec![pre(&hook(
+        Some("shell"),
+        command(&["--reply", &reply("deny")]),
+        user(),
+    ))];
+    let rig = Rig::with(options);
+    std::fs::write(rig.work().join("a.txt"), "a").unwrap();
+
+    assert!(!allowed(&rig.check("read", json!({"path": "a.txt"})).await));
+    assert_eq!(last(&rig).tier, Tier::Hook);
+    assert!(!allowed(&rig.check("shell", shell("cargo test")).await));
+
+    // Unloading the plugin empties the layer.
+    live.set(plugin_layer(&[]).get());
+    assert!(allowed(&rig.check("read", json!({"path": "a.txt"})).await));
+    assert!(
+        !allowed(&rig.check("shell", shell("cargo test")).await),
+        "the user's hook still denies"
+    );
+}
+
+#[tokio::test]
+async fn a_plugin_hooks_allow_never_counts() {
+    let live = plugin_layer(&[hook(None, command(&["--reply", &reply("allow")]), plugin())]);
+    let mut options = Options::new(Manual);
+    options.plugin_hooks = live;
+    let rig = Rig::with(options);
+    rig.approver
+        .answer(fontaine_core::permissions::Answer::AllowOnce);
+    assert!(allowed(&rig.check("shell", shell("cargo test")).await));
+    assert_eq!(
+        rig.approver.asked(),
+        1,
+        "the plugin's allow decided nothing"
+    );
+}
+
+#[tokio::test]
+async fn swapped_plugin_rules_act_at_the_floor_and_leave_other_rules_alone() {
+    use fontaine_core::permission_rules::{RuleSource, SourcedRule, parse_rule};
+    let rig = Rig::with(Options::new(Manual).settings("[permissions]\ndeny = [\"shell(rm *)\"]\n"));
+    let rule = |text: &str| SourcedRule::new(parse_rule(text).unwrap(), RuleSource::Plugin);
+
+    rig.state
+        .set_plugin_rules(vec![rule("shell(git push *)")], Vec::new());
+    let denied = rig.check("shell", shell("git push origin")).await;
+    assert!(!allowed(&denied));
+    assert_eq!(last(&rig).tier, Tier::DenyRule);
+
+    rig.state.set_plugin_rules(Vec::new(), Vec::new());
+    rig.approver
+        .answer(fontaine_core::permissions::Answer::AllowOnce);
+    assert!(allowed(&rig.check("shell", shell("git push origin")).await));
+    assert!(
+        !allowed(&rig.check("shell", shell("rm -rf x")).await),
+        "the user's own deny rule is not part of the layer"
+    );
+}
+
+#[tokio::test]
+async fn swapped_guardian_prose_reaches_the_next_adjudication() {
+    let fake = fake_guardian(allow_verdict());
+    let rig = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));
+    assert!(allowed(&rig.check("shell", shell("python one.py")).await));
+    let mut auto = rig.state.auto_context();
+    auto.rules
+        .hard_deny
+        .push("never touch the moon base".into());
+    rig.state.set_auto_context(auto);
+    assert!(allowed(&rig.check("shell", shell("python two.py")).await));
+    let requests = fake.mock.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(!format!("{:?}", requests[0]).contains("moon base"));
+    assert!(format!("{:?}", requests[1]).contains("never touch the moon base"));
+}
+
+#[tokio::test]
+async fn plugin_post_and_team_hooks_follow_the_layer() {
+    let rig = Rig::new(Manual);
+    let context = |text: &str| {
+        json!({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}})
+            .to_string()
+    };
+    let h = hook(
+        None,
+        command(&["--reply", &context("from the plugin")]),
+        plugin(),
+    );
+    let live = Arc::new(fontaine_tools::live::Live::new(
+        fontaine_core::user_hooks::PluginLayer {
+            post: vec![command_hook("post_tool_use", &h, process(Vec::new()))],
+            ..Default::default()
+        },
+    ));
+    let stage = PostHookStage::new(Vec::new(), rig.state.clone()).with_plugins(live.clone());
+    let pipeline = ResultPipeline::new().with_stage(StageKind::PostToolUse, Arc::new(stage));
+    assert_eq!(
+        through(&pipeline, "read", Ok(ToolOutput::text("body"))).await,
+        "body\n\nfrom the plugin"
+    );
+    live.set(Arc::default());
+    assert_eq!(
+        through(&pipeline, "read", Ok(ToolOutput::text("body"))).await,
+        "body"
+    );
+
+    let blocking = hook(
+        None,
+        command(&["--stderr", "tests first", "--exit", "2"]),
+        plugin(),
+    );
+    let live = Arc::new(fontaine_tools::live::Live::new(
+        fontaine_core::user_hooks::PluginLayer {
+            task_completed: vec![command_hook(
+                "task_completed",
+                &blocking,
+                process(Vec::new()),
+            )],
+            ..Default::default()
+        },
+    ));
+    let gate = TeamGate::new(
+        Vec::new(),
+        Vec::new(),
+        rig.state.clone(),
+        rig.approver.clone(),
+    )
+    .with_plugins(live.clone());
+    let task = task();
+    assert_eq!(
+        gate.task_completed(ROOT_AGENT, &task).await.as_deref(),
+        Some("tests first")
+    );
+    live.set(Arc::default());
+    assert_eq!(gate.task_completed(ROOT_AGENT, &task).await, None);
+}

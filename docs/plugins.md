@@ -98,7 +98,8 @@ approved = "9f2c..."    # fingerprint of the executables you approved; see Auto-
 ```
 
 `approved` is written by `install` and by every `plugin update`. Auto-update also records
-`staged_pin` (a validated revision waiting for the next start) and `held_pin` (a newer revision it
+`staged_pin` (a validated revision waiting for the next start, or for `/reload-plugins` in a
+running session) and `held_pin` (a newer revision it
 refused to apply), and `fontaine plugin auto-update` / `marketplace auto-update` write
 `auto_update = false` on an entry; none of these is meant to be edited by hand.
 
@@ -108,8 +109,11 @@ names are unique. A path-source plugin lives inside its marketplace repository a
 
 ## Commands
 
-Installs, manual updates and marketplace changes are CLI commands, run outside any session. The
-only change made from inside a running Fontaine is the staged [auto-update](#auto-update) pass.
+Plugins are managed from the command line, outside any session, or from inside the terminal UI
+with [`/plugin`](#in-the-terminal-ui), which also loads, reloads and unloads the result in the
+running session. Registering, updating and removing a marketplace stays on the command line. The
+staged [auto-update](#auto-update) pass is the only change a session makes on its own, and it
+applies only when you run `/reload-plugins` or start the next session.
 
 | Command | Effect |
 |---|---|
@@ -125,13 +129,55 @@ only change made from inside a running Fontaine is the staged [auto-update](#aut
 | `fontaine plugin enable / disable <name>` | Flip the registry flag; a disabled plugin stays on disk and contributes nothing. |
 | `fontaine plugin list [--format json]` | Name, marketplace, pinned short sha, enabled, component counts; `held <sha>` marks a plugin with a newer revision auto-update refused to apply, and `auto-update off` an opt-out. The JSON adds `held_pin` and `auto_update` (plugins and marketplaces). |
 
-Install and update print what the plugin brings: counts of skills, agents, styles, hooks, servers,
+Install and update print what the plugin brings (the terminal UI shows the same list in a
+confirmation, see [`/plugin`](#in-the-terminal-ui)): counts of skills, agents, styles, hooks, servers,
 its deny/ask and guardian additions, every hook command, every MCP server definition and language
 server command, the `!` command lines of its skills and commands, the environment variables it
 reads (names only, never values) and every warning the load collected, so the approval is an
 informed one. `${CLAUDE_PLUGIN_ROOT}` and `${VAR}` references are shown as written. The summary
 lists the revision's whole executable surface, not a difference from what you approved before,
 because the registry keeps only a hash of it.
+
+### In the terminal UI
+
+`/plugin` manages plugins from inside a session and applies the result to it at once, without
+losing the conversation. `/plugin` alone lists them, as `/plugins` does.
+
+| Command | Effect |
+|---|---|
+| `/plugin install <name>@<marketplace>` | Fetches and validates the plugin, then asks you to approve the executable surface (every hook command, MCP and LSP server, skill `!` line and referenced `${VAR}` name, with the fingerprint that is recorded). Nothing is recorded until you answer `y`; `n` leaves nothing behind. Install always asks here, where the command line treats typing it as consent. |
+| `/plugin update [<name>\|all]` | Re-fetches and validates. It asks only when the executable surface differs from what you approved before, or none was recorded; an update that changes nothing executable applies without a question. The plugin's MCP and language servers stop before its checkout is replaced, so nothing runs from files that change under it. |
+| `/plugin uninstall <name>` | Stops the plugin's servers, then removes the checkout and the entry. |
+| `/plugin enable <name>`, `/plugin disable <name>` | Flip the registry flag and load or unload the plugin. |
+| `/reload-plugins` | Applies what changed on disk: staged auto-updates, and added, edited or removed skills, agents and output styles in your user and project directories and in plugins. |
+
+Every successful change then runs the same live apply as `/reload-plugins`: the plugin's skills,
+agents, hooks, deny/ask rules, guardian additions and MCP servers are loaded, reloaded or
+unloaded as they differ, and a plugin that did not change is left running. A plugin that fails
+to load (a bad manifest, an MCP server name that collides with another) leaves the current set
+running and says why. Because a reload changes the skill index in the system prompt, it costs
+one prompt-cache miss when something the model sees changed, and none when nothing did.
+
+What a live apply does and does not do:
+
+- A plugin's MCP servers start and stop with it. On unload, new calls stop first and calls
+  already running get up to ten seconds to finish before the connection closes.
+- Plugin hooks and rules take effect for the next call; your own and your project's hooks are not
+  touched. A newly loaded plugin's `session_start` hooks do not fire (that event already
+  happened); they fire at the next session.
+- A changed language-server set applies from the next session. Language servers of a plugin that
+  is changing are stopped and start again on next need.
+- The conversation is never edited. When a plugin or skill goes away or changes, the next turn
+  carries a note that skill content or tool results from it earlier in the conversation may be
+  stale.
+- The commands wait for the turn to end and are refused while subagents are running, since a
+  background subagent would run on a toolset that changes under it. Only you can run them: there
+  is no tool for installing or removing plugins, and a headless `-p` run never fetches or swaps.
+- Each change is recorded in the session ledger and the audit log.
+
+Git never prompts on the terminal here; a remote that needs credentials fails and is reported.
+Skill files you edit by hand are noticed at the next turn boundary ("skills/plugins changed on
+disk — run /reload-plugins"); nothing is applied until you run the command.
 
 ## Pinning
 
@@ -173,16 +219,18 @@ content edits flow through.
 
 **Held revisions.** A revision whose fingerprint differs is held: the old checkout stays live,
 `held_pin` records the revision (shown as `held` in `plugin list`), and a notice, shown once in
-the open session when the background pass finishes, tells you to run `fontaine plugin update <name>`, which prints the approval
-summary and records the new approval. A held revision is not fetched or announced again until the
+the open session when the background pass finishes, tells you to run `/plugin update <name>` (or
+`fontaine plugin update <name>`), which shows the approval summary and records the new approval. A held revision is not fetched or announced again until the
 upstream moves on.
 
 **When it runs.** At the start of an interactive session, in the background, at most once every 24
 hours (`plugin-update.stamp` in the data dir; written even when a fetch failed, so an offline
 machine does not retry at every start). It never delays startup and never changes the running
-session: a validated revision is staged beside the live checkout (`.staged-<name>`), and the next
-interactive start swaps it in before plugins load. A swap that cannot rename a checkout (a running
-server on Windows) is retried at the next start. `fontaine -p` runs never fetch, stage or swap, so
+session by itself: a validated revision is staged beside the live checkout (`.staged-<name>`), and
+the next interactive start swaps it in before plugins load, or `/reload-plugins` swaps it into the
+running session (stopping that plugin's servers first and reloading it after). A revision held
+for review stays held. A swap that cannot rename a checkout (a running server on Windows) is
+retried at the next start or reload, and reported. `fontaine -p` runs never fetch, stage or swap, so
 scripted runs see a fixed set of plugins. Git never prompts on the terminal during the pass; a
 remote that needs credentials fails and is reported.
 
@@ -191,8 +239,9 @@ restored, and backup, scratch and staged leftovers older than a day are removed.
 
 **Outcomes.** Each moved, held or failed update is appended as one JSON line to
 `plugin-updates.jsonl` in the data dir (timestamp, kind, name, old and new short pin, outcome and
-the reason) and shown once as a [notice](tui.md#notices): `plugin review updated to d4e5f6; active
-next session`, the held notice above, or the failure.
+the reason) and shown once as a [notice](tui.md#notices): `plugin review updated to d4e5f6; run
+/reload-plugins to apply it now, or it applies next session`, the held notice above, or the
+failure.
 
 **Opting out.** `[plugins] auto_update = false` in the
 [user config](configuration.md#plugins) turns it off everywhere (a project file or `--settings`
@@ -212,7 +261,8 @@ Installed plugin content is third-party, so it loads under tighten-only rules:
   or the guardian;
 - its hooks answer `deny`/`ask` but their `allow`/`retry` never counts;
 - its hooks, MCP servers and skill `!` commands run without the workspace-trust gate, because
-  install approved them, in the terminal UI and headless runs alike;
+  install approved them, in the terminal UI and headless runs alike. In the terminal UI the
+  approval is a confirmation that lists them, shown before anything is recorded;
 - an [automatic update](#auto-update) keeps that approval: it never applies a revision that adds or
   changes a hook command, server, skill `!` command, referenced variable or script.
 
@@ -291,4 +341,5 @@ above for the supported hook-matcher subset and source types; what Fontaine refu
 naming the entry, and what it cannot map is skipped with a warning. See
 [Extensions](extensions.md) for how the individual component files are read.
 
-The terminal UI lists installed plugins with `/plugins`; see [the TUI](tui.md).
+The terminal UI lists installed plugins with `/plugins`, manages them with
+[`/plugin`](#in-the-terminal-ui) and applies changes with `/reload-plugins`; see [the TUI](tui.md).

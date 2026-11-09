@@ -2395,7 +2395,7 @@ async fn skills_trust_asks_first_and_records_the_digest_in_the_file_and_the_ledg
         assert!(live.contains("next session start"), "{live}");
         assert!(live.contains("already allowed too"), "{live}");
         ui.press(KeyCode::Char('y'));
-        ui.wait_for("count from the next session start").await;
+        ui.wait_for("count after /reload-plugins").await;
 
         // The running session's view does not change.
         ui.send("/skills");

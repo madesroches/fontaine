@@ -592,6 +592,13 @@ impl CallTracker {
     fn subscribe(&self) -> watch::Receiver<InFlight> {
         self.0.subscribe()
     }
+
+    /// Waits until no call is in flight. The caller bounds the wait.
+    pub(crate) async fn idle(&self) {
+        let mut flight = self.subscribe();
+        // The sender lives as long as this tracker, so the wait only ends on idle.
+        let _ = flight.wait_for(|flight| flight.total() == 0).await;
+    }
 }
 
 /// Counts one call in flight until dropped.

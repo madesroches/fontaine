@@ -12,7 +12,8 @@ use tempfile::TempDir;
 use super::*;
 use crate::Host;
 use crate::cli::MarketplaceAddArgs;
-use crate::plugin::{self, Fetch, INTERACTIVE_GIT};
+use crate::plugin::{self, INTERACTIVE_GIT};
+use fontaine_core::plugin_ops::Fetch;
 
 fn write(path: &Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -115,7 +116,7 @@ impl Fixture {
         let mut found = Vec::new();
         for parent in [
             plugin::marketplaces_parent(&self.dirs.config),
-            plugin::installed_parent(&self.dirs.config, "team"),
+            fontaine_core::plugin_ops::installed_parent(&self.dirs.config, "team"),
         ] {
             for entry in std::fs::read_dir(parent).unwrap().flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
@@ -353,7 +354,7 @@ fn stale_leftovers_are_removed_and_young_or_recorded_ones_are_kept() {
     let f = Fixture::new();
     f.source_file("skills/review/SKILL.md", &skill("New body."));
     f.pass();
-    let installed = plugin::installed_parent(&f.dirs.config, "team");
+    let installed = fontaine_core::plugin_ops::installed_parent(&f.dirs.config, "team");
     for name in [".review.bak-1", ".auto-2", ".staged-orphan"] {
         std::fs::create_dir_all(installed.join(name)).unwrap();
     }
@@ -446,11 +447,11 @@ fn every_outcome_is_logged_as_one_json_line_and_noticed() {
 
     assert_eq!(
         updates[0].notice().to_string(),
-        "marketplace `team` updated to bbbbbbb; active next session"
+        "marketplace `team` updated to bbbbbbb; run /reload-plugins to apply it now, or it applies next session"
     );
     let held = updates[1].notice().to_string();
     assert!(
-        held.contains("`review`") && held.contains("run `fontaine plugin update review`"),
+        held.contains("`review`") && held.contains("run `/plugin update review`"),
         "{held}"
     );
     assert!(updates[2].notice().to_string().contains("offline"));

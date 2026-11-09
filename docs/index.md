@@ -42,10 +42,11 @@ describe what the current build does; each page covers one topic.
 - [Skills, agent files and output styles](extensions.md): the extension files, their
   frontmatter, slash commands and porting from `.claude/`.
 - [Plugins and marketplaces](plugins.md): Claude Code's plugin bundles installed from
-  git-hosted catalogs, the tighten-only rules they load under, and the `fontaine plugin` CLI.
+  git-hosted catalogs, the tighten-only rules they load under, the `fontaine plugin` CLI and
+  `/plugin` and `/reload-plugins` for managing them from a running session.
 - [The terminal UI](tui.md): keys, the status bar, approval prompts, the guardian's denials,
   `/denied`, `/login`, `/model`, `/effort`, `/guardian-model`, `/guardian-disable`, `/guardian-enable`, `/auto-mode-setup`, `/add-dir`, `/output-style`, `/help`,
-  `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/plan`, `/copy`, `/expand`, `/memory`, `/init`,
+  `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/plugin`, `/reload-plugins`, `/plan`, `/copy`, `/expand`, `/memory`, `/init`,
   `/clear`, `/compact`, `/btw` (side questions), `/recap` (session report),
   `/cost` and `/usage` (token usage and spend by source and by model), `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,
   `/rename`, `/export` and `/rewind`, `/afk report`, the agents panel and the workspace trust prompt.

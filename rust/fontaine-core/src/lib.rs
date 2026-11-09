@@ -44,6 +44,7 @@ pub mod notice;
 pub mod owner_only;
 pub mod permission_rules;
 pub mod permissions;
+pub mod plugin_ops;
 pub mod plugins;
 pub mod preview;
 pub mod project_env;

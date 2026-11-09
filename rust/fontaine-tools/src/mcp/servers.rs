@@ -5,11 +5,13 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::error_chain::chain;
 use crate::guarded::Guard;
+use crate::lock::lock_recovering;
 use crate::result_pipeline::ToolOutcome;
 use crate::tls::{LoadedNetwork, build_client};
 use rig_core::tool::ManagedToolSink;
@@ -291,9 +293,30 @@ pub struct Connected {
     /// ending the connection.
     pub transport_failed: Arc<Notify>,
     tool_count: Arc<AtomicUsize>,
+    tool_names: Arc<Mutex<Vec<String>>>,
+    muted: Arc<AtomicBool>,
+    tracker: CallTracker,
 }
 
 impl Connected {
+    /// The registered names of the tools the server has now.
+    pub fn tool_names(&self) -> Vec<String> {
+        // Only read to remove the tools; a poisoned list still holds the last names written.
+        lock_recovering(&self.tool_names).clone()
+    }
+
+    /// Stops a later `list_changed` refresh from registering the server's tools again. Call it
+    /// before removing the tools of a server that is going away.
+    pub fn mute(&self) {
+        self.muted.store(true, Ordering::SeqCst);
+    }
+
+    /// Waits for the calls in flight to finish, up to `bound`. Returns whether they did.
+    pub async fn drain(&self, bound: Duration) -> bool {
+        tokio::time::timeout(bound, self.tracker.idle())
+            .await
+            .is_ok()
+    }
     /// How many tools the server has registered now: the count follows every `list_changed`
     /// refresh.
     pub fn tool_count(&self) -> usize {
@@ -399,6 +422,8 @@ impl Wiring {
                 tracker: CallTracker::new(),
                 transport_failed: Arc::new(Notify::new()),
                 tool_count: Arc::new(AtomicUsize::new(0)),
+                tool_names: Arc::default(),
+                muted: Arc::new(AtomicBool::new(false)),
             },
         }
     }
@@ -438,6 +463,9 @@ where
         kind,
         transport_failed: wiring.shared.transport_failed,
         tool_count: wiring.shared.tool_count,
+        tool_names: wiring.shared.tool_names,
+        muted: wiring.shared.muted,
+        tracker: wiring.shared.tracker,
     })
 }
 

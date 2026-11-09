@@ -668,6 +668,7 @@ pub struct SessionPrep {
     pub powershell: Option<PowerShellSettings>,
     pub home: Option<PathBuf>,
     pub extensions: Extensions,
+    pub plugins: plugins::PluginContributions,
     pub origin: SessionOrigin,
     /// Whether repository-defined executables may start.
     pub project_executables: bool,
@@ -911,6 +912,7 @@ fn prepare_session(
         powershell,
         home,
         extensions,
+        plugins: contributions,
         origin,
         project_executables,
         start_type,
@@ -1095,6 +1097,7 @@ fn agent_setup(
         scanner,
         switcher: Some(switcher),
         extensions: prep.extensions,
+        plugins: prep.plugins,
         project_executables: prep.project_executables,
         confirm_project_servers: !headless,
         scheduling: !headless,

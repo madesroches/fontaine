@@ -154,6 +154,8 @@ pub struct Options {
     pub home: Option<PathBuf>,
     pub hooks: Vec<Arc<dyn PreToolUseHook>>,
     pub denied_hooks: Vec<Arc<dyn PermissionDeniedHook>>,
+    /// The hooks plugins bring, which a test can swap through the rig.
+    pub plugin_hooks: fontaine_core::user_hooks::LivePlugins,
     pub always_allow_file: bool,
     pub guardian: Option<Arc<Guardian>>,
     /// Replaces the scripted approver the pipeline and session state are built with.
@@ -177,6 +179,7 @@ impl Options {
             home: None,
             hooks: Vec::new(),
             denied_hooks: Vec::new(),
+            plugin_hooks: Arc::default(),
             always_allow_file: true,
             guardian: None,
             approver: None,
@@ -283,12 +286,12 @@ impl Rig {
                 .unwrap_or_else(fontaine_core::gate::no_guardian),
             auto: AutoContext::default(),
             agents: agents.clone(),
-            agent_types: Arc::new(
+            agent_types: Arc::new(fontaine_tools::live::Live::new(
                 options
                     .agent_types
                     .clone()
                     .unwrap_or_else(fontaine_agents::registry::AgentTypes::builtin),
-            ),
+            )),
             reveal_mcp_names: false,
             effort: None,
             auto_edits: fontaine_core::gate::AutoEdits {
@@ -303,6 +306,7 @@ impl Rig {
             headless: options.headless,
             hooks: options.hooks,
             denied_hooks: options.denied_hooks,
+            plugin_hooks: options.plugin_hooks,
             allow_extra: options.allow_extra,
             user_config: options.always_allow_file.then(|| user_config.clone()),
         }));

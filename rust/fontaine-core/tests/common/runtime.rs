@@ -482,6 +482,7 @@ fn build_with_origin(
         scanner,
         switcher,
         extensions: loaded,
+        plugins: Default::default(),
         project_executables,
         confirm_project_servers: false,
         origin,

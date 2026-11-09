@@ -33,7 +33,7 @@ pub const MCP_FILE: &str = ".mcp.json";
 pub const LSP_FILE: &str = ".lsp.json";
 
 /// A plugin directory ready for the extension loader, with its components resolved to files.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PluginDir {
     pub name: String,
     pub root: PathBuf,
@@ -155,6 +155,8 @@ pub struct PluginSummary {
 #[derive(Clone, Debug, Default)]
 pub struct PluginContributions {
     pub dirs: Vec<PluginDir>,
+    /// Each plugin's own build, in install order, for telling what a reload changed per plugin.
+    pub builds: Vec<PluginBuild>,
     pub hooks: PluginHooks,
     pub servers: BTreeMap<String, McpServer>,
     /// Language servers in install order.
@@ -462,6 +464,7 @@ pub fn load_installed(
                 ));
             }
         }
+        out.builds.push(build.clone());
         out.dirs.push(build.dir);
         out.hooks.extend(build.hooks);
         out.servers.extend(build.servers);

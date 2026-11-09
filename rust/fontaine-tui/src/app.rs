@@ -122,6 +122,8 @@ pub enum Action {
     AfkReview(bool),
     /// The human answered the `/skills trust` confirmation.
     SkillTrust(bool),
+    /// The answer to the `/plugin install` or `/plugin update` confirmation.
+    PluginApprove(bool),
     /// The human answered the `/auto-mode-setup` review of the scan's proposals.
     SetupReview(bool),
     /// The human answered the `/auto-mode-setup` offer of the guardian composition; `None`
@@ -231,6 +233,8 @@ pub struct App {
     /// The `/afk review` confirmation while it is open.
     pub afk_review_prompt: Option<ConfirmPrompt>,
     pub skill_trust_prompt: Option<ConfirmPrompt>,
+    /// The `/plugin install` or `/plugin update` confirmation while it is open.
+    pub plugin_prompt: Option<ConfirmPrompt>,
     /// The `/auto-mode-setup` review of the repository scan's proposals while it is open.
     pub setup_review: Option<ConfirmPrompt>,
     /// The `/auto-mode-setup` offer of the guardian composition while it is open.
@@ -315,6 +319,7 @@ pub struct App {
     bug_opened: u64,
     afk_review_opened: u64,
     skill_trust_opened: u64,
+    plugin_opened: u64,
     setup_review_opened: u64,
     setup_composition_opened: u64,
     questions_opened: u64,
@@ -409,6 +414,7 @@ impl App {
             bug_drafts: None,
             afk_review_prompt: None,
             skill_trust_prompt: None,
+            plugin_prompt: None,
             setup_review: None,
             setup_composition: None,
             usage: Vec::new(),
@@ -454,6 +460,7 @@ impl App {
             bug_opened: 0,
             afk_review_opened: 0,
             skill_trust_opened: 0,
+            plugin_opened: 0,
             setup_review_opened: 0,
             setup_composition_opened: 0,
             questions_opened: 0,
@@ -806,6 +813,12 @@ impl App {
         self.skill_trust_prompt = Some(prompt);
     }
 
+    pub fn begin_plugin_prompt(&mut self, mut prompt: ConfirmPrompt) {
+        self.plugin_opened += 1;
+        prompt.id = self.plugin_opened;
+        self.plugin_prompt = Some(prompt);
+    }
+
     pub fn begin_setup_review(&mut self, mut prompt: ConfirmPrompt) {
         self.setup_review_opened += 1;
         prompt.id = self.setup_review_opened;
@@ -845,6 +858,9 @@ impl App {
         }
         if let Some(p) = &self.skill_trust_prompt {
             return Some((PromptKind::Skills, p.id));
+        }
+        if let Some(p) = &self.plugin_prompt {
+            return Some((PromptKind::Plugin, p.id));
         }
         if let Some(p) = &self.setup_review {
             return Some((PromptKind::SetupReview, p.id));
@@ -965,6 +981,8 @@ impl App {
                     || self.bug_prompt.is_some()
                     || self.afk_review_prompt.is_some()
                     || self.skill_trust_prompt.is_some()
+                    || self.plugin_prompt.is_some()
+                    || self.plugin_prompt.is_some()
                     || self.setup_review.is_some()
                     || self.setup_composition.is_some()
                     || self.models.is_some()
@@ -1170,6 +1188,15 @@ impl App {
                 Some(answer) => {
                     self.skill_trust_prompt = None;
                     Action::SkillTrust(answer)
+                }
+                None => Action::None,
+            };
+        }
+        if let Some(prompt) = &mut self.plugin_prompt {
+            return match prompt.handle_key(key) {
+                Some(answer) => {
+                    self.plugin_prompt = None;
+                    Action::PluginApprove(answer)
                 }
                 None => Action::None,
             };

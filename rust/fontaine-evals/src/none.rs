@@ -147,7 +147,9 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         guardian: guardian.unwrap_or_else(no_guardian),
         auto: auto_context(case),
         agents,
-        agent_types: Arc::new(fontaine_agents::registry::AgentTypes::builtin()),
+        agent_types: Arc::new(fontaine_tools::live::Live::new(
+            fontaine_agents::registry::AgentTypes::builtin(),
+        )),
         reveal_mcp_names: false,
         auto_edits: fontaine_core::gate::AutoEdits::default(),
         effort: None,
@@ -158,6 +160,7 @@ pub async fn decide(case: &Case, guardian: Option<Arc<Guardian>>) -> Result<Outc
         headless: false,
         hooks: Vec::new(),
         denied_hooks: Vec::new(),
+        plugin_hooks: Default::default(),
         allow_extra: permissions.allow_extra,
         user_config: None,
     });

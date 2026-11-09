@@ -110,7 +110,9 @@ mod tests {
             guardian: no_guardian(),
             auto: AutoContext::default(),
             agents: agents.clone(),
-            agent_types: Arc::new(fontaine_agents::registry::AgentTypes::builtin()),
+            agent_types: Arc::new(fontaine_tools::live::Live::new(
+                fontaine_agents::registry::AgentTypes::builtin(),
+            )),
             reveal_mcp_names: false,
             auto_edits: crate::gate::AutoEdits::default(),
             effort: None,

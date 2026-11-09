@@ -13,6 +13,7 @@ pub mod git_bash;
 pub mod guarded;
 pub mod jobs;
 pub mod kills;
+pub mod live;
 pub mod lock;
 pub mod lsp;
 pub mod mcp;

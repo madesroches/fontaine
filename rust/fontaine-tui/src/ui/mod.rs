@@ -778,6 +778,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 | Action::Bug(_)
                 | Action::AfkReview(_)
                 | Action::SkillTrust(_)
+                | Action::PluginApprove(_)
                 | Action::SetupReview(_)
                 | Action::SetupComposition(_) => {}
             }
@@ -1031,6 +1032,16 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     Continue(()) => Continue(CommandOutcome::Done),
                 }
             }
+            Command::Plugin(argument) if !argument.is_empty() => {
+                match self.plugin_command(runtime, &argument).await {
+                    Break(()) => Break(()),
+                    Continue(()) => Continue(CommandOutcome::Done),
+                }
+            }
+            Command::ReloadPlugins => {
+                self.reload_plugins(runtime).await;
+                Continue(CommandOutcome::Done)
+            }
             Command::AutoModeSetup => match self.auto_mode_setup(runtime).await {
                 Break(()) => Break(()),
                 Continue(()) => Continue(CommandOutcome::Done),
@@ -1280,9 +1291,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Command::Skills(_) => {
                 self.app
                     .transcript
-                    .notice(reports::skills(runtime.extensions()));
+                    .notice(reports::skills(&runtime.extensions()));
             }
-            Command::Plugins => self.plugins(runtime),
+            Command::Plugins | Command::Plugin(_) => self.plugins(runtime),
             // Only the bare `/mcp` runs here; `reconnect` waits on the servers and is dispatched
             // where the runtime can be borrowed mutably.
             Command::Mcp(_) => self.mcp(runtime),
