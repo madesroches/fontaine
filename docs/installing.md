@@ -78,12 +78,14 @@ Keep them if rustup or cargo is installed.
 
 Remove:
 
-- `~/.fontaine`, which holds the binary and the `env` and `env.fish` scripts;
+- `~/.fontaine/bin`, which holds the binary and the `env` and `env.fish` scripts;
 - the receipt, `${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`;
 - `~/.config/fish/conf.d/fontaine.env.fish`;
 - the lines in your shell's rc files that source `~/.fontaine/bin/env`.
 
-Do not delete `~/.config/fontaine` as a whole; it is also Fontaine's configuration directory. An
+Do not delete `~/.config/fontaine` as a whole; it is also Fontaine's configuration directory. Do not
+delete `~/.fontaine` as a whole either; it may also hold home-level configuration and instructions
+(`settings.toml`, `FONTAINE.md`, `rules/`, `skills/`, `agents/`). An
 install made by an earlier installer is in `$CARGO_HOME/bin`; see
 [Moving from an earlier installer](#moving-from-an-earlier-installer).
 
@@ -151,13 +153,14 @@ directory.
 
 Remove:
 
-- `%USERPROFILE%\.fontaine`, which holds `fontaine.exe` and, while a session still runs from the
+- `%USERPROFILE%\.fontaine\bin`, which holds `fontaine.exe` and, while a session still runs from the
   old binary after `fontaine update`, `fontaine.exe.old` and any `fontaine.exe.old-*`;
 - the receipt, `%LOCALAPPDATA%\fontaine\fontaine-receipt.json` (or the `%XDG_CONFIG_HOME%\fontaine`
   one).
 
 Do not delete the `fontaine` directory as a whole; it is also Fontaine's configuration directory.
-Remove `%USERPROFILE%\.fontaine\bin` from your user `Path` (Settings, System, About, Advanced
+Likewise keep `%USERPROFILE%\.fontaine` itself; it may also hold home-level configuration and
+instructions. Remove `%USERPROFILE%\.fontaine\bin` from your user `Path` (Settings, System, About, Advanced
 system settings, Environment Variables).
 
 ## Updating
