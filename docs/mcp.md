@@ -219,9 +219,9 @@ character limit for its own results by setting `_meta["anthropic/maxResultSizeCh
 integer in its `tools/list` entry, up to 500,000; the token limit still applies. Anything else is
 ignored.
 
-If the file cannot be written, or the session has no scratch directory, the result keeps its first
-and last halves of the limit with a `[… N chars cut …]` marker between them, and Fontaine warns
-once. A result a server flags as an error (`isError`) longer than 11,000 characters keeps its
+If the session has no scratch directory, or the file cannot be written, the result keeps its first
+and last halves of the limit with a `[… N chars cut …]` marker between them; Fontaine warns once
+when a save fails. A result a server flags as an error (`isError`) longer than 11,000 characters keeps its
 first and last 5,000 characters with the same marker. A result that carries an image is passed
 through unchanged. `MAX_MCP_OUTPUT_TOKENS` is described under
 [environment variables](configuration.md#command-line-and-environment).

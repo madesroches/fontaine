@@ -984,7 +984,6 @@ impl App {
                     if self.approval.is_none()
                         && self.questions.is_empty()
                         && self.agents.is_none()
-                        && !crate::view::transcript_has_keys(self)
                         && let Some(panel) = self.elicitations.front_mut()
                     {
                         panel.handle_paste(&text);

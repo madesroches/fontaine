@@ -68,6 +68,21 @@ fn tail(text: &str, count: usize) -> &str {
     }
 }
 
+/// How many of `chars` fit in `max_chars` characters and `max_bytes` UTF-8 bytes, so a cut end
+/// honors the byte-based token estimate for multi-byte text.
+fn chars_within(chars: impl Iterator<Item = char>, max_chars: usize, max_bytes: usize) -> usize {
+    let mut bytes = 0;
+    let mut count = 0;
+    for c in chars.take(max_chars) {
+        bytes += c.len_utf8();
+        if bytes > max_bytes {
+            break;
+        }
+        count += 1;
+    }
+    count
+}
+
 /// `text` with its middle replaced by a marker, keeping `head` and `tail_len` characters.
 fn cut_middle(text: &str, head: usize, tail_len: usize) -> String {
     let total = text.chars().count();
@@ -134,9 +149,10 @@ pub(crate) fn cap(
                     Err(e) => {
                         if !limits.write_failed.swap(true, Ordering::Relaxed) {
                             warn(&format!(
-                                "could not save an oversized MCP result under {}: {e}; \
+                                "could not save an oversized MCP result under {}: {}; \
                                  keeping its beginning and end instead",
-                                spill.0.display()
+                                spill.0.display(),
+                                crate::error_chain::chain(&e)
                             ));
                         }
                     }
@@ -144,7 +160,10 @@ pub(crate) fn cap(
             }
             // The token limit is the tighter bound when it is the one that tripped.
             let keep = char_limit.min(limits.max_tokens.saturating_mul(4)) / 2;
-            Ok(ToolOutput::text(cut_middle(&text, keep, keep)))
+            let bytes = limits.max_tokens.saturating_mul(4) / 2;
+            let head = chars_within(text.chars(), keep, bytes);
+            let tail_len = chars_within(text.chars().rev(), keep, bytes);
+            Ok(ToolOutput::text(cut_middle(&text, head, tail_len)))
         }
         // Only a result the server flagged `isError` is capped: it carries no source, unlike a
         // transport failure or a timeout, which says its own short message.
@@ -185,6 +204,24 @@ mod tests {
 
     fn run(outcome: ToolOutcome, char_limit: usize, limits: &OutputLimits) -> ToolOutcome {
         cap(outcome, "mcp__srv__big", char_limit, limits, &|_| {})
+    }
+
+    #[test]
+    fn the_fallback_cut_bounds_multi_byte_text_by_bytes() {
+        // 40,000 CJK chars are 120,000 bytes, ~30,000 tokens, over the 25,000 limit.
+        let text = "漢".repeat(40_000);
+        let out = text_of(run(
+            Ok(ToolOutput::text(text)),
+            DEFAULT_CHAR_LIMIT,
+            &limits(None),
+        ));
+        assert!(out.contains("chars cut"), "{}", out.len());
+        // The marker line adds a few bytes beyond the two bounded ends.
+        assert!(
+            estimate_tokens(&out) <= DEFAULT_MAX_TOKENS + 20,
+            "{}",
+            out.len()
+        );
     }
 
     #[test]
