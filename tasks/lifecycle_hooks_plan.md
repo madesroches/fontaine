@@ -88,7 +88,7 @@ ones. Each variant answers these questions in one place:
 `HooksSection` and `Hooks` become a `BTreeMap<HookEvent, Vec<Hook>>`. An unknown key is still a
 load error, because the enum rejects unknown variants. The merge, the overlay key list, the
 plugin `event_lists`, `/hooks`, the plugin show and the doctor count all iterate the enum instead
-of naming fields. Adding an event later then touches one `match`.
+of naming fields. Adding an event later then touches one `match`. `HookEvent` variants carry no doc comments or schemars attributes (document the methods instead), so the map schema lists each event as a property and the per-event rows match schema nodes.
 
 ### 2. Handler types
 
@@ -193,7 +193,7 @@ The common input stays as today (`session_id`, `cwd`, `hook_event_name`, `agent_
 
 | Event (config key) | Fires | Matcher | Extra input | What a hook can do | Handlers | Project scope |
 |---|---|---|---|---|---|---|
-| `session_start` | After `record_session_start` and after `/clear` and a completed compaction | `startup`, `resume`, `fork`, `clear`, `compact` | `source`, `model` | `additionalContext` or plain stdout → context before the next model request | command | loads |
+| `session_start` | After `record_session_start` and after `/clear` and a completed compaction | `startup`, `resume`, `fork`, `clear`, `compact` | `source`, `model` | `additionalContext` or plain stdout → context before the next model request; for `compact`, drained again after threshold auto-compaction and prepended to the triggering request | command | loads |
 | `session_end` | End of the TUI `drive` (before `kill_all`; reason `resume` on a `DriveOutcome::Switch`, else `prompt_input_exit`), `/clear` (before), headless end (one exit point, covering the input-error `return 2`; reason `other`) | `clear`, `resume`, `prompt_input_exit`, `other` | `reason` | nothing (notification only) | command, http | loads |
 | `user_prompt_submit` | A human-typed prompt (TUI), the headless `-p` prompt, the headless `/goal` set, the first `/loop` iteration, before the ledger user-message write at each of the sites listed in C2 | none | `prompt` | block (prompt not sent, reason shown to the user, nothing recorded); `additionalContext` or plain stdout → context with the prompt | command, http, prompt | loads |
 | `stop` | A root turn ended with `TurnOutcome::Answer` (not Stopped, Failed, MaxTurns) | none | `stop_hook_active`, `last_assistant_message` | block or `additionalContext` → another run with the reason as harness note; prompt `impossible: true` lets it stop | command, http, prompt | **ignored with warning** (forces spend) |
@@ -281,7 +281,7 @@ load error in TOML and is ignored for plugins, as today.
 1. `config.rs`: add `HookEvent` and its methods. Replace `HooksSection`/`Hooks` fields with the
    map. Update the merge and the overlay keys. Rewrite the hook rows in `config_scope.rs` `RULES` and
    `config_catalog.rs` as one row per `HookEvent`, so `every_settings_leaf_has_a_row` and
-   `every_row_matches_a_settings_node` stay green.
+   `every_row_matches_a_settings_node` stay green. Add a `[[hooks.<event>]]` snippet to `config_scope.rs` `SNIPPETS` for each new row, using a handler type the event accepts (`every_row_has_a_snippet_and_no_snippet_lacks_a_row`).
 2. Update every user of the five fields: `user_hooks::build`, `agent/setup.rs`,
    `plugins.rs::event_lists`, `fontaine/src/plugin.rs`, `fontaine-tui/src/reports.rs:381-388` and its
    `/hooks` caller and test helpers, `doctor_report.rs`, `config_scope.rs` `RULES`,
@@ -336,7 +336,7 @@ load error in TOML and is ignored for plugins, as today.
    `prompt_input_exit`) and one headless exit point covering the input-error `return 2`
    (`headless.rs:1158-1161`, reason `other`). Queue pending context on `SessionState`; the queue is
    root-only, drained only by root-turn prompt assembly (TUI `Ui::turn`, headless `handle_message`),
-   and cleared on `/clear` and rewind. The runtime keeps the lifecycle hook set (a `LifecycleHooks`
+   and cleared on `/clear` and rewind. Threshold auto-compaction (`compact_if_needed`, `ui/turn.rs:858`; headless via `guarded_turn`, `headless.rs:848`) runs after prompt assembly, so drain the queue again right after it, just before `run_turn` (TUI run future and headless `run_one`), and prepend the drained notes to the run's prompt (rewriting the run-start record via `rewrite_run_start` if needed). The runtime keeps the lifecycle hook set (a `LifecycleHooks`
    field on `AgentRuntime`, taken out of `BuiltHooks` in setup).
 6. `pre_compact` and `post_compact` in `Session::compact`. Pass the hooks in through the runtime
    (`agent/goal.rs` `compact_with`), not into `Session`, which stays hook-free. Add the summary text
@@ -394,7 +394,7 @@ load error in TOML and is ignored for plugins, as today.
 - `rust/fontaine/src/headless.rs`, `headless/goal.rs`, `plugin.rs`, `doctor_cmd.rs`, `lib.rs`
 - `rust/fontaine-tui/src/ui/turn.rs`, `ui/mod.rs`, `ui/schedule.rs`, `reports.rs`, `screen.rs`, `notify.rs`, `ui/tests.rs`
 - tests: `rust/fontaine-core/tests/{user_hooks,config,plugins,project_origins,teams,native_search,turn_recovery,goal,audit_telemetry,billing}.rs`, new
-  `rust/fontaine-core/tests/lifecycle_hooks.rs`, `rust/fontaine-tui/tests/` (notification)
+  `rust/fontaine-core/tests/lifecycle_hooks.rs`, `rust/fontaine/tests/lifecycle_hooks_headless.rs`, `rust/fontaine-core/examples/hook_double.rs` (append mode), `rust/fontaine-tui/tests/` (notification)
 - `docs/hooks.md`, `docs/configuration.md`, `docs/plugins.md`, `docs/agents.md`, `docs/tui.md`, `docs/telemetry.md`, `docs/index.md`, `docs/tools.md`, `docs/doctor.md`
 - `tasks/design/permissions.md`, `tasks/design/config.md`, `tasks/design/observability.md`, `tasks/fontaine_harness_plan.md`,
   `research/research-claude-code-parity.md`
@@ -491,9 +491,13 @@ Unit tests (`user_hooks.rs`, `config.rs`, `plugins.rs`):
   with one warning each, matcher pass-through and rejection.
 - `reports::hooks` lists types, scopes and ignore markers.
 
-Integration tests (`rust/fontaine-core/tests/lifecycle_hooks.rs`, driving `fontaine -p` and
-the runtime with `rig_core::test_utils` deterministic models and shell-script hook doubles, as
-`tests/user_hooks.rs` does):
+Integration tests (`rust/fontaine-core/tests/lifecycle_hooks.rs`, driving the runtime with
+`rig_core::test_utils` deterministic models and the `hook_double` example program
+(`rust/fontaine-core/examples/hook_double.rs`, given an append mode so tests can count
+invocations; `--record` currently overwrites), as `tests/user_hooks.rs` does). The headless-only
+assertions (`user_prompt_submit` block exit code/subtype/result, `session_start` `source` for
+`--continue`/`--fork-session`, `session_end` at headless end) live in
+`rust/fontaine/tests/lifecycle_hooks_headless.rs` using `tests/common`:
 - `user_prompt_submit` block: no model request, nothing in the ledger, the headless exit 0, subtype
   `success` and block-message result. Context reaches the model prompt.
 - `stop`: a blocking hook resumes the turn with its reason. `stop_hook_active` flips to `true`.
