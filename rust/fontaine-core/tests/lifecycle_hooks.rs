@@ -1194,3 +1194,26 @@ async fn clear_ends_the_session_for_the_hooks_and_starts_it_again() {
         "context queued for the cleared conversation is gone"
     );
 }
+
+#[tokio::test]
+async fn impossible_does_not_cancel_a_block_outside_stop_events() {
+    let f = Fixture::new();
+    let mock = MockCompletionModel::from_turns(vec![verdict(false, "not allowed", true)]);
+    let deps = prompt_deps(&f.warnings, &mock, Arc::new(Mutex::new(0)));
+    let lifecycle = LifecycleHooks::new(
+        BTreeMap::from([(
+            HookEvent::UserPromptSubmit,
+            vec![user_hook(
+                HookEvent::UserPromptSubmit,
+                &prompt_hook("ok?"),
+                &deps,
+            )],
+        )]),
+        f.rig.state.clone(),
+        f.warnings.clone(),
+    );
+    assert!(matches!(
+        lifecycle.prompt_submit("go").await,
+        PromptGate::Blocked(_)
+    ));
+}

@@ -463,6 +463,8 @@ pub struct HookCount {
     pub scope: &'static str,
     pub project: bool,
     pub count: usize,
+    /// Of `count`, the repository `http` and `prompt` hooks that never run without user trust.
+    pub never_run: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -526,7 +528,15 @@ pub fn extensions_section(facts: &ExtensionFacts) -> Section {
                 event.config_key()
             )
         } else if hook.project {
-            format!("{} ({}); {project_state}", hook.count, hook.scope)
+            let mut detail = format!("{} ({}); {project_state}", hook.count, hook.scope);
+            if hook.never_run > 0 {
+                let _ = write!(
+                    detail,
+                    "; {} of them never run (a repository may not define http or prompt hooks)",
+                    hook.never_run
+                );
+            }
+            detail
         } else {
             format!("{} ({})", hook.count, hook.scope)
         };
@@ -928,18 +938,21 @@ mod tests {
                     scope: "project",
                     project: true,
                     count: 1,
+                    never_run: 0,
                 },
                 HookCount {
                     event: "teammate_idle",
                     scope: "project",
                     project: true,
                     count: 1,
+                    never_run: 0,
                 },
                 HookCount {
                     event: "pre_tool_use",
                     scope: "user",
                     project: false,
                     count: 2,
+                    never_run: 0,
                 },
             ],
             workspace_trusted: false,

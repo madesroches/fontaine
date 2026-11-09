@@ -848,6 +848,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app
                         .transcript
                         .notice("a stop hook asked the agent to keep working");
+                    // The mode or rules may have changed during the turn, as for any other turn.
+                    if let Some(end) = self.refresh_before_turn(runtime) {
+                        return end;
+                    }
                     return Box::pin(self.turn(runtime, note, None, Vec::new())).await;
                 }
                 Ok(None) => {}

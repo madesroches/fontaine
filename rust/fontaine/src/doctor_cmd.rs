@@ -370,6 +370,15 @@ fn hook_counts(config: &Config) -> Vec<HookCount> {
                     scope: slot.label(),
                     project: matches!(slot, Slot::Project | Slot::ProjectLocal),
                     count,
+                    never_run: list
+                        .iter()
+                        .filter(|h| {
+                            h.origin.slot == slot
+                                && h.origin.is_project()
+                                && h.kind != config::HandlerKind::Command
+                                && !h.origin.user_trust
+                        })
+                        .count(),
                 });
             }
         }

@@ -139,7 +139,6 @@ object's `hookSpecificOutput` holds the answer; `hookEventName`, when present, m
 | Event | Fields |
 |---|---|
 | `pre_tool_use` | `permissionDecision` (`allow`, `deny` or `ask`), `permissionDecisionReason`, `updatedInput` (an object that replaces the call's arguments), `guardian_context` (a note for the guardian). |
-| `post_tool_use` | `additionalContext`, a string added after the tool's result. |
 | `post_tool_use`, `post_tool_use_failure` | `additionalContext`, a string added after the tool's result or error. |
 | `permission_denied` | `retry`, a boolean. A `command` or `http` hook only; a `prompt` hook's answer is discarded. |
 | the other events | See [Lifecycle events](#lifecycle-events). |
@@ -308,8 +307,8 @@ On a turn's end the `stop` hooks run first; only when none blocks does a goal ev
 
 A hook that cannot start, exits with a code other than 0 or 2, runs past its timeout, or writes
 anything but the JSON above decides nothing. It cannot make a call run that would not have. The
-failure of a `pre_tool_use`, `post_tool_use` or `permission_denied` hook is only logged to the
-debug file; the failure of any other event's hook warns you once. Hooks are your own processes, so the pipeline does
+failure of a `pre_tool_use`, `post_tool_use`, `post_tool_use_failure` or `permission_denied` hook is only logged to the
+debug file; the failure of any other event's hook warns you. Hooks are your own processes, so the pipeline does
 not gate them, and they are not tool calls.
 
 ## Hooks a repository defines

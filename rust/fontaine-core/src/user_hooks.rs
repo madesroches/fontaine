@@ -1072,7 +1072,7 @@ impl TeamGate {
             }
             match hook.answer_within(input).await {
                 Ok(answer) => {
-                    if answer.blocked.is_some() && !answer.impossible {
+                    if answer.blocked.is_some() {
                         return Some(hook.block_text(&answer));
                     }
                 }
@@ -1419,7 +1419,7 @@ impl LifecycleHooks {
         extra.insert("prompt".into(), json!(prompt));
         let answers = self.run(HookEvent::UserPromptSubmit, None, extra).await;
         for (hook, answer) in &answers {
-            if answer.blocked.is_some() && !answer.impossible {
+            if answer.blocked.is_some() {
                 return PromptGate::Blocked(format!(
                     "UserPromptSubmit operation blocked by hook:\n[{}]: {}",
                     hook.label(),
@@ -1509,7 +1509,7 @@ impl LifecycleHooks {
         let answers = self.run(HookEvent::PreCompact, Some(trigger), extra).await;
         let mut extras = Vec::new();
         for (hook, answer) in &answers {
-            if answer.blocked.is_some() && !answer.impossible {
+            if answer.blocked.is_some() {
                 return CompactGate::Blocked(hook.block_text(answer));
             }
             if let Some(plain) = answer
