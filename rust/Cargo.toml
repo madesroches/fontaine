@@ -55,7 +55,7 @@ rig-memory = { version = "=0.46.0", features = ["fs"] }
 rig-tools = "=0.46.0"
 rig-rmcp = "=0.46.0"
 webpki-root-certs = "=1.0.10"
-rmcp = { version = "=3.6.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
+rmcp = { version = "=3.9.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 rig-cassette = { version = "=0.46.0", features = ["http", "agent"] }
 micromegas-tracing = "=0.33.0"
 micromegas-telemetry-sink = "=0.33.0"
