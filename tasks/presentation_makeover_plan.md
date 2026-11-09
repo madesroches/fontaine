@@ -13,14 +13,14 @@ settings and post-release outreach; this branch prepares them but does not chang
 
 ## Current State
 
-- `README.md` is 157 lines. Lines 15–64 are install caveats already covered by
+- `README.md` is 157 lines. Lines 16–63 are install caveats already covered by
   `docs/installing.md` (receipt paths, sha256, proxies, SmartScreen, `--force`, `pg2`, crates.io).
-  Lines 66–77 ("Build from source") repeat `CONTRIBUTING.md`. The mode table (lines 108–118) omits
-  `afk` and repeats `docs/permissions.md#modes`. The auto-mode section (lines 120–137) repeats
+  Lines 65–75 ("Build from source") repeat `CONTRIBUTING.md`. The mode table (lines 108–118) omits
+  `afk` and repeats `docs/permissions.md#modes`. The auto-mode section (lines 122–137) repeats
   `docs/guardian.md`. The quickstart runs `cargo run -p fontaine -- -p ...` from `rust/`. The
   "Documentation" list (lines 139–150) is a stale subset of `docs/index.md`, and AFK mode is not
   mentioned anywhere in the README.
-- `docs/` holds 25 topic pages plus `docs/schemas/headless-v1.schema.json`. `docs/index.md` is
+- `docs/` holds 23 topic pages plus `docs/schemas/headless-v1.schema.json`. `docs/index.md` is
   the hand-written landing page that lists every page with a description. There is no site
   tooling. `tasks/design/documentation.md` says "no site tooling ships in v1" and defines the
   README as "pitch, install, quickstart, mode table, auto-mode explainer".
@@ -238,8 +238,8 @@ after 0.1.0.
 - **Hand-written SUMMARY.md vs generating it from index.md.** Generating it would need parsing
   rules for index.md's prose. A checked pair is simpler and keeps index.md free to stay a
   descriptive landing page.
-- **Relative README links vs site links.** Relative links work today, on every branch. Site links
-  would be dead until the maintainer enables Pages.
+- **Relative README links vs site links.** Site links would be dead until the maintainer enables
+  Pages.
 - **Gating deploy on a repository variable vs deploying unconditionally.** Deploying would fail
   every `main` push until Pages is enabled. The variable follows the `dev.yml` precedent.
 
@@ -275,8 +275,8 @@ The only Rust change is the extension to the `docs.rs` link test. The checks are
 - `docs-site.sh` runs on every PR that touches `docs/`. It fails on a page missing from
   SUMMARY.md or index.md, a dangling SUMMARY entry (`create-missing = false`), or a remaining
   `](../` link.
-- `lychee --offline --include-fragments --exclude-path _site/404.html` over the built HTML catches
-  every broken internal link and anchor (404.html goes unchecked). This is the check that would otherwise fail silently as docs evolve.
+- The lychee step in `docs.yml` over the built HTML catches
+  every broken internal link and anchor. This is the check that would otherwise fail silently as docs evolve.
 - The implementer runs the script and lychee locally before committing (step 3), and also makes
   sure the existing CI still passes: Rust jobs are unaffected, and `README.md` is still included
   by `dist plan`.
