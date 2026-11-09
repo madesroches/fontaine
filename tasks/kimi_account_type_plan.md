@@ -68,10 +68,16 @@ A keyless account sends no `Authorization` header to either the completions or t
 endpoint, exactly as `KimiQuota` already supports. `Billing::Unpriced` makes the flat-rate
 account's token cost reporting consistent with the other subscription kinds.
 
-**Sharing with `openai-compatible`.** `GATEWAY`, `ModelsFetcher` and `parse_served` move out
+**Sharing with `openai-compatible`.** `GATEWAY = Dialect::gateway("openai-compatible", "", "")`,
+`ModelsFetcher` and `parse_served` move out
 of `openai_compatible.rs` into a new `pub(crate)` module `rust/fontaine-core/src/providers/gateway.rs`,
-which both kinds use; the quota wiring (`KimiQuota`, `REQUEST_TIMEOUT`) stays in
-`kimi_quota.rs` as today. `openai-compatible` keeps its current behavior exactly — optional
+which both kinds use. `GATEWAY` stays solely for `openai-compatible`; the `kimi` kind gets its
+own kind-named dialect const in `gateway.rs` — `KIMI_DIALECT = Dialect::gateway("kimi", "", "")`,
+matching the kind-named-dialect convention (e.g. `opencode-go`'s `GO_DIALECT`) — because the
+dialect name flows into the provider fields of `api_request`/`api_error`, OTLP
+`gen_ai.provider.name` and metric labels, so reusing `GATEWAY` would make a `kimi` account
+indistinguishable from a real `openai-compatible` one in observability output. The quota
+wiring (`KimiQuota`, `REQUEST_TIMEOUT`) stays in `kimi_quota.rs` as today. `openai-compatible` keeps its current behavior exactly — optional
 key, required `base_url`, `quota = "kimi"` opt-in, `Billing::Catalog` — so existing
 configurations, including generic Chat Completions gateways and the moonshot.ai
 pay-as-you-go API, are untouched.
@@ -99,13 +105,15 @@ error list pick it up from `providers::names()`, and the generic registry tests
    existing tests move with the code they cover.
 2. Add `rust/fontaine-core/src/providers/kimi.rs` (`pub mod kimi;` in `providers/mod.rs`):
    the `Provider` impl above and a `Connected` whose `completion`/`list`/`served_model`
-   mirror `openai-compatible`'s, with `quota_source` always returning the `KimiQuota` built
-   on the resolved endpoint.
+   mirror `openai-compatible`'s but build on `gateway::KIMI_DIALECT`, with `quota_source`
+   always returning the `KimiQuota` built on the resolved endpoint.
 3. Register `&kimi::Kimi` in `PROVIDERS` (`providers/mod.rs`).
 4. Tests:
    - `rust/fontaine-core/tests/providers.rs`: `kind = "kimi"` parses and round-trips
      (also covered generically); a `quota` key on a `kimi` account is rejected naming
-     `accounts.<name>.quota`; `prompt_caching`/`cache_ttl`/`wires` remain refused.
+     `accounts.<name>.quota`; `prompt_caching`/`cache_ttl`/`wires` remain refused; add
+     `("kimi", false)` to the `prompt_caching_defaults_per_kind` table (`kimi` stays
+     outside the `accepts_prompt_caching` match set).
    - `kimi.rs` unit tests with wiremock: a connected keyless account lists models and fetches
      quota from `{endpoint}/usages` with no `Authorization` header; the key is sent when
      present; `served_model` parses a wrapped and a bare-array `/models` reply (reuse the
@@ -135,6 +143,16 @@ error list pick it up from `providers::names()`, and the generic registry tests
    In `docs/headless.md:247`, reword the `account_usage` row so its condition also covers a
    `kind = "kimi"` account: a built-in quota source (the kind itself, like
    `claude-subscription`), not only a `quota` key.
+   In `docs/telemetry.md`, add a `kimi` account to the enumeration of accounts for which
+   `fontaine.cost.usage` is always absent (the no-`fontaine.cost.usage` list at
+   `docs/telemetry.md:132-136` — `kimi` sets `Billing::Unpriced`, joining
+   `openai-compatible`, `opencode-go` and `claude-subscription`).
+   In `docs/guardian.md`, add `kimi` to the no-catalog-match enumeration at
+   `docs/guardian.md:699-701` (accounts where only a model set explicitly in
+   `guardian.model` is used), and extend the thinking-model guardian sentence at
+   `docs/guardian.md:674-677` so the limitation covers a `kimi` account too (its `Connected`
+   mirrors `openai-compatible`'s, so a model thinking by default cannot be the guardian on a
+   `kimi` account either).
 6. `CHANGELOG.md`: entry under `[Unreleased]` → `Added`.
 
 ## Files to Modify
@@ -172,6 +190,9 @@ error list pick it up from `providers::names()`, and the generic registry tests
 - `docs/headless.md`: the `account_usage` row of the output contract — the emitted-when
   condition must name a `kimi` account's built-in quota source, not just a `quota` key or a
   `claude-subscription` account.
+- `docs/telemetry.md`: the no-`fontaine.cost.usage` account list — add `kimi`.
+- `docs/guardian.md`: the no-catalog-match account list, and the thinking-model guardian
+  limitation — extend both to `kimi` accounts.
 - `CHANGELOG.md` under `[Unreleased]` → `Added`.
 
 ## Testing Strategy
