@@ -147,16 +147,29 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
     `SessionRecoveryTimeout`, `TransportChannelClosed`, `ControlRequestTimeout`;
     `ClientInitializeError::ConnectionClosed`; `McpClientError::Timeout`; `McpClientError::Request(ServiceError)` recursed by inner error
     (`TransportSend` is classified by its inner `DynamicTransportError`; `Timeout { .. }` and
-    `TransportClosed` are Transient; `McpError` and `UnexpectedResponse` are Permanent); and expiry
-    of the connect timeout below.
+    `TransportClosed` are Transient; `McpError` and `UnexpectedResponse` are Permanent); expiry
+    of the connect timeout below; and an `UnexpectedServerResponse` whose text starts with
+    `HTTP 5` or `HTTP 429` (rmcp's non-2xx branch formats it `HTTP {status}: {body}`,
+    `common/reqwest/streamable_http_client.rs:303`), so 5xx and 429 are retried as Claude Code
+    retries them.
   - `Permanent`: `AuthRequired` / `InsufficientScope`, `SessionExpired`, `ReinitializationFailed`,
     `ClientInitializeError::JsonRpcError` (a non-2xx answer with a JSON-RPC error body), other
-    protocol and deserialize errors, a spawn failure, and `UnexpectedServerResponse(Cow<'static, str>)`. rmcp
-    turns every other non-2xx response (5xx, 429 included) into that variant with no status, so they
-    cannot be told apart. A 404 at initialize is also `UnexpectedServerResponse`, since
-    `SessionExpired` needs a session id, and so is a 401/403 without `WWW-Authenticate`.
-- Every connect attempt (startup retries and reconnects) is wrapped in `tokio::time::timeout`
-  (30 s), because `build_client` sets none.
+    protocol and deserialize errors, a spawn failure, and every other `UnexpectedServerResponse`
+    (any other status, or text with no `HTTP <code>` prefix). A 404 at initialize is also
+    `UnexpectedServerResponse`, since `SessionExpired` needs a session id, and so is a 401/403
+    without `WWW-Authenticate`; both stay Permanent.
+- Each reconnect attempt is wrapped in `tokio::time::timeout` (30 s), because `build_client` sets
+  none. The startup attempts of one server share a single 30 s deadline: each attempt's timeout is
+  the time left, and a retry whose backoff would end past the deadline is not started.
+- **HTTP disconnect signal.** For streamable HTTP, `McpConnection::closed()` does not resolve when
+  the server dies: rmcp's worker fails the single POST, retries its GET stream and re-initializes
+  an expired session by itself, and exits only on cancel or a fatal init error. So `Connected`
+  gains `transport_failed: Arc<tokio::sync::Notify>`, created per connection and handed to its
+  `GuardedSink`. After `original.run_with`, the callback looks down the `Err`'s source chain for an
+  `rmcp::ServiceError`; a `TransportSend(..)` whose inner error classifies `Transient`, or a
+  `TransportClosed`, calls `notify_one()` (which stores a permit if the watcher is not waiting
+  yet). `Timeout { .. }` does not signal, since a slow tool is not a dead server. The result
+  itself is returned unchanged.
 
 **fontaine-core (`agent/mcp.rs`, new `agent/mcp_supervisor.rs`).**
 - Replace `AgentRuntime::mcp: Vec<Connected>` with `mcp: McpServers`:
@@ -180,19 +193,36 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
 
   `Drop for McpServers` aborts every watcher. Teardown sets `closing` and calls `close()` on each
   connection.
+- **Test seam.** `McpServers` connects through `connector: Arc<dyn McpConnector>`:
+
+  ```rust
+  pub(crate) trait McpConnector: Send + Sync {
+      fn connect<'a>(&'a self, spec: &'a ServerSpec) -> BoxFuture<'a, Result<Connected, McpError>>;
+  }
+  ```
+
+  The production `ServerConnector` holds the `McpOptions`, tool server handle, network and env, and
+  calls `connect_server`. Supervisor unit tests script one with a queue of outcomes: an `McpError`
+  of a chosen kind, or a `Connected` built with `connect_transport` over a `tokio::io::duplex` pipe
+  to an in-process rmcp server whose task the test aborts to close the connection, or whose
+  `transport_failed` it notifies.
 - **Startup (`connect_mcp`).** Every server it attempts gets a slot, so a server that fails at
   startup has a slot in state `Failed(..)` with no connection. For an HTTP server whose first
-  attempt fails with `Transient`, retry up to 3 more times after 1 s, 2 s and 4 s. Stdio servers
+  attempt fails with `Transient`, retry up to 3 more times after 1 s, 2 s and 4 s, within the
+  server's 30 s startup deadline, so a refused server delays startup by about 7 s and an
+  unresponsive one by at most 30 s. Startup still blocks on these attempts, as it does today. Stdio servers
   and `Permanent` errors are not retried. The planned servers connect concurrently
   (`futures::future::join_all` over the plans, outcomes pushed in plan order), so one slow server
   does not delay the others. `McpOutcome` is unchanged. `probe_server` (doctor) does
   not retry.
 - **Watcher.** After each successful connect, spawn a task that waits on
-  `connection.closed().await` and then:
+  `connection.closed()` and, for HTTP, also on `transport_failed.notified()` (`select!`). When the
+  signal wins, the watcher closes the connection itself (`close().await`, without setting
+  `closing`, so the old tools retire) and continues as for a close. Then:
   - stdio: sets `Failed("the server exited")` and calls
     `approver.warn("MCP server `<name>` disconnected · run /mcp reconnect <name>")`.
   - HTTP: for attempt 1..=5, sets `Reconnecting{attempt}`, sleeps `1 s << (attempt-1)`, then
-    tries `connect_server` (under the connect timeout) with the same `McpOptions` and tool server. On success it stores the new
+    tries `connector.connect` (under the connect timeout) with the same `McpOptions` and tool server. On success it stores the new
     `Connected`, sets `Connected`, sends `approver.notice("MCP server `<name>` reconnected")`, calls
     `state.agents().refresh_rebuilt_toolsets(&agent_types)` as `connect_mcp` does, and starts a
     new watcher. On a `Permanent` error, or after 5 failures, it sets `Failed` and warns as above.
@@ -216,9 +246,11 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
 - **Status for frontends.** `AgentRuntime::mcp_states() -> Vec<(String, McpServerState)>`.
 - **Choke point.** Every tool registered again after a reconnect goes through the same
   `connect_server`, which wraps it in a fresh `GuardedSink`. Add a case to
-  `fontaine-core/tests/choke_point.rs`: drop the `McpConnection`, call `connect_transport` again
-  over a new duplex pipe, and assert that every re-registered tool still has a risk class and
-  reaches the gate. `reconnect_mcp` itself is covered by the HTTP end-to-end test.
+  `fontaine-core/tests/choke_point.rs`: `close().await` the first `McpConnection`, call
+  `connect_transport` again over a new duplex pipe into the same tool server handle, and assert
+  that every re-registered tool still has a risk class, reaches the gate, and that an allowed call
+  reaches the second server (not the closed first one). `reconnect_mcp` itself is covered by the
+  HTTP end-to-end test.
 
 **fontaine-tui.**
 - `McpState` adds `Pending { attempt: u32 }`, rendered as `pending (reconnecting, attempt 2 of 5)`.
@@ -255,6 +287,13 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 - **Capability.** `client_config()` declares
   `elicitation: ElicitationCapability::new().with_form(FormElicitationCapability ..)`, which is form
   mode only.
+- **Protocol version.** `client_config()` offers `ProtocolVersion::LATEST_WITH_INITIALIZE`
+  (2025-11-25) via `with_protocol_version`, not the `LATEST` (2026-07-28) that `ClientConfig::new`
+  defaults to. At 2026-07-28 elicitation arrives as an MRTR `InputRequiredResult` inside the
+  `tools/call` result, which rig-rmcp maps to `UnexpectedResponse`, so the tap never sees it.
+  rig-rmcp always connects with the `initialize` handshake. A server that supports both versions
+  now negotiates 2025-11-25. One that answers `initialize` only with 2026-07-28 still connects,
+  because rmcp accepts the answered version, but its elicitations are not served (follow-up issue).
 - **Interception.** Add an `ElicitationTap<T>` transport wrapper, composed around
   `InteractionTap` (or merged into one `ServerTap` if that reads cleaner). It intercepts in
   `receive()`:
@@ -266,6 +305,19 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
   - A `notifications/cancelled` for a pending elicitation id aborts that task; nothing is sent
     back. The notification is still forwarded to rmcp.
   - Everything else passes through unchanged.
+
+  **Calls in flight.** An elicitation request names no calling agent, so each connection has a
+  `CallTracker` (a `tokio::sync::watch` of `{ main: usize, sub: usize }`) shared by its
+  `GuardedSink` and its tap. The `GuardedSink` callback reads `AgentId` from the `ToolContext` and
+  holds an RAII guard for the length of `original.run_with`: a call from `ROOT_AGENT` counts in
+  `main`, any other agent (or a missing `AgentId`) in `sub`.
+  - A form request that arrives while `sub > 0` is answered `Cancel` at once and never reaches
+    the elicitor, so a subagent cannot put a dialog in front of the user, as `ask_user_question`
+    cannot.
+  - `receive()` also `select!`s on the tracker. When the count of calls in flight drops to zero,
+    every pending elicitation that arrived while a call was in flight is answered `Cancel` and its
+    task aborted, which closes its dialog. rig-rmcp's 300 s `tools/call` timeout is left as it is,
+    so a human who takes longer loses the call, and the dialog closes with it.
 
   Pending elicit tasks are held in a `JoinSet` (or as `AbortHandle`s) that is aborted when the tap
   drops, so a dead connection leaves no dialog task behind. Answers (`ElicitResult` with an
@@ -287,11 +339,15 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
   `DenyAll` (headless) cancels. `AfkApprover` answers `Cancel` while AFK is on and forwards
   otherwise.
 - `ApproverElicitor(Arc<dyn Approver>)` implements `Elicitor` and is the one `connect_mcp` passes
-  in `McpOptions`.
-- Each elicitation writes an audit record and a telemetry event `mcp_elicitation` that carries
-  `action` (accept/decline/cancel) and the server (`third-party` unless `log_tool_details`). It
-  never carries the message or the answer. Answers never enter the transcript or the model's
-  context.
+  in `McpOptions`. The approver is the only field it needs: the telemetry event is emitted by the
+  tap, which has `reveal_names` from `McpOptions`, and the agent check happens in the tap before
+  the elicitor is called.
+- Each elicitation answer the tap sends (including the URL-mode, subagent, call-ended and
+  backstop answers) emits a telemetry event `mcp_elicitation` that carries `action`
+  (accept/decline/cancel) and the server (`third-party` unless `log_tool_details`). It never
+  carries the message or the answer. No audit record is written: the audit log holds gate
+  decisions (`DecisionRecord`), and an elicitation decides nothing. Answers never enter the
+  transcript or the model's context.
 
 **fontaine-tui (`elicitation.rs`, new dialog, modelled on `question.rs`).**
 - The header reads `MCP server `<name>` asks for input`, followed by the server's message, cleaned
@@ -329,21 +385,23 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
    char-limit map. Add `mcp/output.rs` with `cap`. Add `McpOptions`. Wire the cap into
    `GuardedSink::wrap`. Write unit tests.
 2. **Error kind (tools).** Add `McpErrorKind` and the boxed `source` to `McpError`, classify at the
-   error sites in `servers.rs`, and wrap each connect attempt in the 30 s timeout. Write unit tests.
-3. **Elicitation tap (tools).** Add `mcp/elicitation.rs`: the types, `Elicitor`, `CancelAll` and
-   `ElicitationTap`. Declare the form capability in `client_config()`. Add the rmcp `elicitation`
+   error sites in `servers.rs`, and wrap each connect attempt in the 30 s timeout. Add
+   `Connected::transport_failed` and its signal in the `GuardedSink` callback. Write unit tests.
+3. **Elicitation tap (tools).** Add `mcp/elicitation.rs`: the types, `Elicitor`, `CancelAll`,
+   `CallTracker` and `ElicitationTap`, which emits the `mcp_elicitation` event. Declare the form
+   capability and pin the protocol version in `client_config()`. Add the rmcp `elicitation`
    feature to the dev-deps. Add an eliciting tool to `tests/mcp_common/server.rs`. Write unit tests
    with the `Script` transport pattern from `interaction.rs`.
 4. **Core wiring.** Add `Approver::elicit` (default `Cancel`), the `AfkApprover` override,
    `ApproverElicitor`, and `OutputLimits` from `MAX_MCP_OUTPUT_TOKENS` + scratch.
    `connect_mcp` builds and passes `McpOptions` internally; its signature is unchanged.
    `probe_server` builds its `McpOptions` internally too (with
-   `CancelAll` and no spill). Add audit and telemetry for
-   elicitation.
+   `CancelAll` and no spill).
 5. **Supervisor (core).** Add `agent/mcp_supervisor.rs` with `McpServers`, `ServerSlot` (one per
-   attempted server, holding its `spec`), `McpServerState`, the startup retry, the watcher with
-   backoff, `reconnect_mcp` and `mcp_states`. Replace `AgentRuntime::mcp`. Add the choke-point
-   case (drop the connection, `connect_transport` again over a new duplex pipe).
+   attempted server, holding its `spec`), `McpServerState`, `McpConnector` and `ServerConnector`,
+   the startup retry under its deadline, the watcher with backoff, `reconnect_mcp` and
+   `mcp_states`. Replace `AgentRuntime::mcp`. Add the choke-point case (`close().await` the
+   connection, `connect_transport` again over a new duplex pipe, a call reaches the new server).
 6. **TUI.** Add `McpState::Pending`, live `/mcp` and `/status` rendering from `mcp_states()`,
    `/mcp reconnect <name|all>` (command split and parse in `commands.rs`, dispatched through
    `dispatch_inner`; the "no arguments … not supported yet" error in
@@ -365,8 +423,10 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 10. **Follow-up issues.** File issues labelled `area:mcp`, linked from #486, for: URL-mode
     elicitation; the `Elicitation` hook event; restarting stdio servers on the next call in
     headless runs, plus the background retry for transient failures; the 10,000-token warning;
-    an upstream rig-rmcp `create_elicitation` hook, which would let the tap be retired; and an
-    upstream rmcp request for a typed HTTP status on connect errors, so 5xx/429 can be retried.
+    an upstream rig-rmcp `create_elicitation` hook, which would let the tap be retired; an
+    upstream rmcp request for a typed HTTP status on connect errors, so the `HTTP <code>` text
+    parse can be retired; and serving MRTR elicitation (2026-07-28 `InputRequiredResult`), so the
+    protocol-version pin can be lifted.
 
 ## Files to Modify
 
@@ -375,15 +435,15 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 - `rust/fontaine-tools/src/mcp/interaction.rs` → `rust/fontaine-tools/src/mcp/meta.rs`
 - `rust/fontaine-tools/src/mcp/output.rs` (new)
 - `rust/fontaine-tools/src/mcp/elicitation.rs` (new)
-- `rust/fontaine-tools/src/mcp/register.rs` — cap in the callback, `ToolMeta`, `McpOptions`
+- `rust/fontaine-tools/src/mcp/register.rs` — cap in the callback, `ToolMeta`, `McpOptions`,
+  `CallTracker` guard, `transport_failed` signal
 - `rust/fontaine-tools/src/mcp/servers.rs` — `McpOptions`, `McpErrorKind`, `McpError.source`,
   connect timeout, capability, tap composition
 - `rust/fontaine-tools/tests/mcp_registration.rs` — updated signatures, new cases
 - `rust/fontaine-core/src/permissions.rs` — `Approver::elicit`, `AfkApprover`
 - `rust/fontaine-core/src/agent/mcp.rs`, `rust/fontaine-core/src/agent/mcp_supervisor.rs` (new),
   `rust/fontaine-core/src/agent.rs`
-- `rust/fontaine-core/src/audit.rs` — elicitation record
-- `rust/fontaine-core/tests/choke_point.rs` — reconnect case
+- `rust/fontaine-core/tests/choke_point.rs` — reconnect case (close, re-serve, call reaches the new server)
 - `rust/fontaine-tui/src/elicitation.rs` (new), `rust/fontaine-tui/src/lib.rs`,
   `rust/fontaine-tui/src/app.rs` (`answer_for_afk`, `prune_closed`), `rust/fontaine-tui/src/view.rs`,
   `rust/fontaine-tui/src/reports.rs`, `rust/fontaine-tui/src/notify.rs`,
@@ -433,9 +493,15 @@ line, which goes at the end of `### TUI`:
   named.
 - The reconnect watcher stops early on a `Permanent` error rather than spending all 5 attempts,
   because retrying an auth or protocol failure cannot succeed.
-- 5xx and 429 responses at connect are not retried, unlike Claude Code, because rmcp keeps no status
-  on `UnexpectedServerResponse` and they are counted `Permanent` (follow-up issue asks rmcp for a
-  typed status).
+- AFK: HTTP disconnects are detected from a Transient `ServiceError::TransportSend` or `TransportClosed` on a tool call (not a ping, not rmcp's own recovery), because rmcp's streamable-HTTP worker never closes on a dead server and so `closed()` alone would never reconnect or retire its tools.
+- AFK: 5xx and 429 at connect are Transient, read from the `HTTP <code>` prefix rmcp puts in `UnexpectedServerResponse`, so they are retried as Claude Code retries them; any other text stays Permanent (follow-up issue asks rmcp for a typed status).
+- AFK: The supervisor connects through an injectable `McpConnector` trait (production `ServerConnector` calls `connect_server`), so `tokio::time::pause` unit tests can script connects, failures and closes.
+- AFK: Elicitation writes no audit record, only the `mcp_elicitation` telemetry event emitted by the tap, because the audit log holds gate decisions and its strict reader feeds `/bug`; `ApproverElicitor` keeps only the approver.
+- AFK: An elicitation that arrives while a subagent's call is in flight on that connection is answered `cancel` without a dialog, so a subagent can never put a dialog in front of the user, as with `ask_user_question`.
+- AFK: `client_config()` offers protocol version 2025-11-25 (`LATEST_WITH_INITIALIZE`), not rmcp's 2026-07-28 default, because at 2026-07-28 elicitation arrives as an MRTR result rig-rmcp cannot surface; servers that answer only 2026-07-28 still connect but their elicitations are not served (follow-up issue).
+- AFK: Startup still blocks on MCP connects, and a server's startup retries share one 30 s deadline instead of 30 s per attempt, unlike Claude Code's per-attempt retries, so an unresponsive server delays startup by at most 30 s rather than about 127 s.
+- AFK: rig-rmcp's 300 s tool-call timeout is left unchanged although it covers the human's answer time, and pending elicitations are answered `cancel` (dialog closed) once no call is in flight on their connection, so no dialog outlives the call that caused it.
+- AFK: The choke-point reconnect case is kept, with `close().await` on the first connection and an assertion that a call reaches the new server, because the floor's choke-point coverage is a security invariant and a duplicated check costs little.
 
 ## Security
 
@@ -443,7 +509,7 @@ line, which goes at the end of `### TUI`:
   characters. The answer goes only to that server, never to the model, transcript, audit or
   telemetry.
 - Elicitation never changes a permission decision. No dialog is reachable in headless runs, in AFK,
-  or in the doctor probe.
+  in the doctor probe, or while a subagent's call is in flight on the connection.
 
 ## Documentation
 
@@ -482,19 +548,31 @@ Unit tests (`cargo test`):
   - Dropping the tap aborts a pending elicitation.
   - Other messages pass through untouched.
   - The schema backstop declines an invalid `Accept`.
+  - A form request while a subagent call (or a call with no `AgentId`) is in flight is answered
+    `cancel` and never reaches the elicitor.
+  - When the last call in flight ends, a pending elicitation is answered `cancel` and its task is
+    aborted; one that arrived with no call in flight is left open.
+  - Each answer emits `mcp_elicitation` with the right `action`.
 - `servers.rs`: `McpErrorKind` classification for refused connections, a connection reset after TCP
   connect (a raw `tokio::net::TcpListener` that accepts and drops the socket, since wiremock cannot
   drop a connection), an end of stream during initialize, a `tools/list` timeout, a `ServiceError`
   `McpError` (Permanent) and `TransportSend` wrapping `AuthRequired` (Permanent), and expiry of the connect timeout (`Transient`);
-  401 with and without `WWW-Authenticate`, 5xx, 404 at initialize, a non-2xx JSON-RPC error body,
-  and spawn failures (wiremock where an HTTP server is needed; `Permanent`).
-- Supervisor (`tokio::time::pause`):
+  500, 503 and 429 (`Transient`); 401 with and without `WWW-Authenticate`, 404 at initialize, a
+  non-2xx JSON-RPC error body, an `UnexpectedServerResponse` with no `HTTP <code>` prefix, and spawn
+  failures (wiremock where an HTTP server is needed; `Permanent`).
+  - `client_config()` offers `ProtocolVersion::LATEST_WITH_INITIALIZE` and the form capability.
+  - The `GuardedSink` callback notifies `transport_failed` on a Transient `TransportSend` and on
+    `TransportClosed`, and not on `Timeout` or a Permanent `TransportSend`.
+- Supervisor (`tokio::time::pause`, scripted `McpConnector`):
   - The backoff schedule is 1, 2, 4, 8, 16 s.
+  - A `transport_failed` notification on an HTTP connection closes it and starts the backoff.
   - The server is marked failed after 5 attempts and after a `Permanent` error.
   - A stdio exit marks the server failed with no retry.
   - A `closing` connection does not trigger a reconnect.
   - `reconnect_mcp` refuses unknown, left-off and untrusted names.
   - Startup retries happen 3 times on `Transient` only.
+  - Startup gives up at the 30 s deadline: an attempt that times out is not retried, and the
+    server is `Failed` by 30 s.
 - `permissions.rs`: `DenyAll`/default `elicit` cancels, and `AfkApprover` cancels while AFK is on.
 - TUI (`TestBackend`):
   - Elicitation dialog navigation, validation blocking submit, and Esc/Ctrl-D mapping.
@@ -504,15 +582,21 @@ Unit tests (`cargo test`):
 Integration:
 - `fontaine-tools/tests/mcp_registration.rs`:
   - An in-process rmcp server whose tool calls `elicit` gets `cancel` through `CancelAll`, and an
-    `Accept` payload through a scripted elicitor.
+    `Accept` payload through a scripted elicitor (the call carries `AgentId(ROOT_AGENT)`, since
+    a call with no agent counts as a subagent's and is cancelled).
   - A tool returning 60,000 chars yields the spill message, and the file exists.
-- `fontaine-core/tests/choke_point.rs`: drop the `McpConnection`, call `connect_transport` again
-  over a new duplex pipe, and assert every re-registered tool still has a risk class and reaches
-  the gate. A silent break here would let an unwrapped tool through, so this is automated.
+- `fontaine-core/tests/choke_point.rs`: `close().await` the first `McpConnection`, call
+  `connect_transport` again over a new duplex pipe into the same tool server handle, and assert
+  every re-registered tool still has a risk class and reaches the gate, and that an allowed call
+  is answered by the second server. A silent break here would let an unwrapped tool through, so
+  this is automated.
 - HTTP reconnect end to end (`fontaine-core/tests`): a wiremock streamable-HTTP JSON-RPC responder
-  (copied from `fontaine-tools/tests/mcp_registration.rs`, or moved somewhere both crates can use) is
-  stopped and restarted on the same port. Assert that the state goes
-  `Reconnecting → Connected` and that the tool works again. This is a concurrency path a scripted
+  (copied from `fontaine-tools/tests/mcp_registration.rs`, or moved somewhere both crates can use).
+  Both servers are built with `MockServer::builder().listener(..)` on a `std::net::TcpListener`
+  bound to the same port (`MockServer::start()` takes a pooled server on a random port). Connect,
+  drop the first server, call the tool while it is down (the failed POST fires
+  `transport_failed`), start the second server on the port, and assert that the state goes
+  `Reconnecting → Connected` and that a call afterwards succeeds. This is a concurrency path a scripted
   transport cannot reproduce, because it exercises rmcp's real HTTP session teardown and
   re-initialize.
 - Headless (`fontaine -p` with a fake stdio server, following existing headless MCP tests): a tool
