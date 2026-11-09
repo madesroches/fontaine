@@ -49,7 +49,9 @@ struct Verdicts { path: PathBuf, broken: Mutex<BTreeSet<(u32,u32,u32)>> }
   version, `owner_only::write_atomic`. A persist failure is reported through `Warn` and does not
   undo the in-memory verdict, so the process still falls back.
 - `layout(context, &Verdicts)` and `finished(sent, usage, at, &Verdicts)` take the store instead of
-  reading the static; `transport.rs` passes `self.cli.verdicts()`. `RECORDS` stays a static.
+  reading the static; `transport.rs` passes `self.cli.verdicts()` in `prepare` for `layout`; `finished` runs in the
+  'static stream closure, which holds only `Running`, so `Running` carries a shared `Arc<Verdicts>`
+  handle. `RECORDS` stays a static.
 - The warning text drops "until restart" and says the verdict is remembered (names the file's
   location only through the docs, not the message).
 
@@ -62,9 +64,12 @@ absent from the set.
    `serde_json`), remove `BROKEN`/`mark_broken`; thread `&Verdicts` through `layout`/`finished`.
 2. `cli.rs`: construct `Verdicts` in `Cli::new` from `data_dir` and `warn`; add `verdicts()`
    accessor.
-3. `transport.rs`: pass `self.cli.verdicts()` at the two call sites; update the warning text.
+3. `transport.rs`: `layout` takes `self.cli.verdicts()` in `prepare`; add an `Arc<Verdicts>` field to
+   `Running`, set where it is built (`self.cli.verdicts().clone()`), and `finished` takes the store
+   from `running`; update the warning text.
 4. `context/tests.rs`: port existing tests to the store; add the tests below.
-5. `docs/claude-subscription.md`: update the verdict-lifetime paragraph.
+5. `docs/claude-subscription.md`: update the verdict-lifetime paragraph. `docs/configuration.md`: add
+   the verdicts file and its lock file to the file table.
 6. `CHANGELOG.md`: add an entry.
 
 ## Files to Modify
@@ -74,6 +79,7 @@ absent from the set.
 - `rust/fontaine-core/src/providers/claude_subscription/cli.rs`
 - `rust/fontaine-core/src/providers/claude_subscription/transport.rs`
 - `docs/claude-subscription.md`
+- `docs/configuration.md`
 - `CHANGELOG.md`
 
 ## Trade-offs
@@ -87,12 +93,13 @@ absent from the set.
   harmless whitespace edits, and placement-logic changes (not in the string) would not invalidate
   at all; the constant is explicit.
 
-## Decisions
-
 ## Documentation
 
 `docs/claude-subscription.md`: the verdict now persists across restarts in the data dir and is
 retired when the adapter's template changes; the warning no longer says "until restart".
+
+`docs/configuration.md` file table: a row for `<data dir>/claude-cache-verdicts.json` (owner-only), and
+`<data dir>/claude-cache-verdicts.lock` added to the lock-file row.
 
 ## Testing Strategy
 
