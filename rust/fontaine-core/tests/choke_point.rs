@@ -27,7 +27,7 @@ use fontaine_tools::bug_draft::{DraftArgs, DraftBugReportTool, DraftSink};
 use fontaine_tools::descriptor::{TOOLS, find};
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::guarded::Guard;
-use fontaine_tools::mcp::connect_transport;
+use fontaine_tools::mcp::{McpOptions, connect_transport};
 use fontaine_tools::models_tool::{ModelSource, ModelsTool};
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, registered_risk};
@@ -422,9 +422,15 @@ async fn serve(
         pre_images: None,
         kills: None,
     };
-    connect_transport("double", (cfs, c2s), handle.clone(), guard, false)
-        .await
-        .expect("connect")
+    connect_transport(
+        "double",
+        (cfs, c2s),
+        handle.clone(),
+        &McpOptions::new(guard, false),
+    )
+    .await
+    .expect("connect")
+    .connection
 }
 
 async fn call(
@@ -503,6 +509,56 @@ async fn tools_added_or_replaced_by_a_refresh_are_wrapped_and_none_is_reachable_
             "{record:?}"
         );
     }
+}
+
+#[tokio::test]
+async fn a_server_served_again_after_its_connection_closed_is_wrapped_and_answers_from_the_new_server()
+ {
+    let rig = Rig::new(Manual);
+    let handle = ToolServer::new().run();
+    let first = Double::with_tools(vec![echo_tool(), lookup_tool()]);
+    let first_calls = first.calls.clone();
+    let connection = serve(first, &rig, &handle).await;
+    connection.close().await;
+
+    // What a reconnect does: the same tool server, a new connection, a new wrapping.
+    let second = Double::with_tools(vec![echo_tool(), lookup_tool()]);
+    let second_calls = second.calls.clone();
+    let _again = serve(second, &rig, &handle).await;
+    let mut names: Vec<String> = Vec::new();
+    for _ in 0..200 {
+        names = handle.toolset().names().map(str::to_owned).collect();
+        if names.len() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    names.sort();
+    assert_eq!(names, ["mcp__double__echo", "mcp__double__lookup"]);
+
+    // Each re-registered tool reaches the gate, which asks and is denied, so nothing is raw.
+    for name in &names {
+        assert!(call(&handle, name).await.is_err(), "{name}");
+    }
+    assert_eq!(rig.approver.asked(), 2);
+    for record in rig.audit().iter().filter(|r| r.tool.starts_with("mcp__")) {
+        assert!(
+            matches!(record.tier, Tier::Mode | Tier::Human),
+            "{record:?}"
+        );
+    }
+    assert!(first_calls.lock().unwrap().is_empty());
+    assert!(second_calls.lock().unwrap().is_empty());
+
+    rig.approver
+        .answer(fontaine_core::permissions::Answer::AllowOnce);
+    assert!(call(&handle, "mcp__double__lookup").await.is_ok());
+    assert_eq!(
+        second_calls.lock().unwrap().len(),
+        1,
+        "the new server answered"
+    );
+    assert!(first_calls.lock().unwrap().is_empty(), "not the closed one");
 }
 
 fn as_root() -> ToolContext {

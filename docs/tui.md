@@ -627,7 +627,7 @@ error: an export never overwrites.
 | `/init` | Has the agent write the project instruction file, or improve the one that exists. See [Instruction files](instructions.md#init). Takes no argument. |
 | `/login [<account>]` | Opens the [provider dialog](#managing-providers) to add an account, log in, log out or remove one. With an account name it opens straight on that account's log-in: a hidden key prompt, the device sign-in for `opencode-go`, or, for a `claude-subscription` account, the check of the external Claude CLI. Only between turns. |
 | `/loop [<interval>] <prompt>`, `/loop list`, `/loop stop [<id>]` | Runs a prompt again and again while the session is idle; see [Scheduled prompts](#scheduled-prompts). |
-| `/mcp` | Lists each [MCP server](mcp.md) as `connected`, `failed` with the error, `left off` (you declined it) or `not loaded` (the workspace is not trusted), each with the scope that contributed it — a plugin's servers read `[plugin]`. It takes no arguments. |
+| `/mcp [reconnect <name\|all>]` | Lists each [MCP server](mcp.md) as `connected`, `pending (reconnecting, attempt N of 5)` while a dropped remote server is being retried, `failed` with the error, `left off` (you declined it) or `not loaded` (the workspace is not trusted), each with the scope that contributed it — a plugin's servers read `[plugin]`. `/mcp reconnect <name>` restarts one server and `/mcp reconnect all` every failed one, with no waiting; only servers tried this session can be restarted, never one you left off or that is not loaded. It runs between turns only. Any other argument shows the usage line. |
 | `/memory [<n>]` | Lists the instruction files, numbered, with where each came from and the `FONTAINE.md` files that do not exist yet. With a number it opens that file in `$VISUAL` or `$EDITOR`, creating it first when needed. See [Instruction files](instructions.md#memory). |
 | `/model [<account>/<model>\|<role>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, which may also be a [role](configuration.md#modelsroles) name or a comma-separated list, switches the live session to that model (the role's first entry) and makes the list the session's, rebuilds the agent on it with the conversation kept, and saves what you typed as `[model] model` in your user settings file; when a higher scope sets `[model] model`, the notice adds that the scope wins from the next launch. The switch is for this session only, and the notice names the key to edit, when you type a list, `$main`, or a role that reaches `main`, and when `main` under `[models.roles]` or a list in `[model] model` is set in any settings scope. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. The session's [`/effort`](#commands) level is kept and checked against the new model; one it cannot take is dropped with a warning. |
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
@@ -957,6 +957,28 @@ and pick, and the session starts as soon as one works. A picked model is saved a
 and replaces `--model` for that start. Esc leaves the screen and exits with the original error and
 exit code. A credentials file that cannot be parsed still exits at once, and headless runs never
 show the dialog.
+
+## Requests for input from an MCP server
+
+An [MCP server](mcp.md#requests-for-input) can ask you for input while a tool runs. A dialog shows
+"MCP server `<name>` asks for input", the server's message and one row per field: its title (or
+name) and description, a mark when it is required, and a text field, a checkbox or a list of
+choices. Text, number and whole-number fields start with the server's default.
+
+| Key | Action |
+|---|---|
+| Tab, Shift+Tab, Up, Down | Move between fields. |
+| Left, Right | Move among the choices of a list. |
+| Space | Toggle a checkbox, pick the highlighted choice of a single-choice list (again to clear an optional one), or toggle it in a several-choice list. |
+| Enter | Submit the answer. While a field is invalid the dialog shows the reason inline and nothing is sent. |
+| Esc | Cancel: the server is told you stopped it. |
+| Ctrl-D | Decline: the server is told you chose not to answer, and carries on. |
+
+The footer reads "This goes to the server, not to the model. Don't enter secrets you wouldn't give
+this server." Pasted text goes into the focused field. The grace period of the other dialogs applies,
+so keys typed ahead cannot answer. Turning on [AFK mode](afk.md) or interrupting the turn cancels an
+open dialog, and so does the end of the call that caused it. A request from a
+subagent's call never shows a dialog.
 
 ## MCP server approvals
 

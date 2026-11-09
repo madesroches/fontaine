@@ -425,6 +425,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Prompt::Ask(_, reply) if reply.is_closed() => {}
             Prompt::Unavailable(_, reply) if reply.is_closed() => {}
             Prompt::Question(_, _, reply) if reply.is_closed() => {}
+            Prompt::Elicit(_, reply) if reply.is_closed() => {}
+            Prompt::Elicit(form, reply) => self.app.begin_elicitation(*form, reply),
             Prompt::Question(agent, questions, reply) => {
                 self.app.begin_question(agent, questions, reply);
             }
@@ -476,7 +478,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 {
                     self.app.begin_approval(*request, reply);
                 }
-                Prompt::Ask(..) | Prompt::Unavailable(..) | Prompt::Question(..) => {}
+                // Asked while no call was in flight, so the request is still open.
+                Prompt::Elicit(form, reply) if !reply.is_closed() => {
+                    self.app.begin_elicitation(*form, reply);
+                }
+                Prompt::Ask(..)
+                | Prompt::Unavailable(..)
+                | Prompt::Question(..)
+                | Prompt::Elicit(..) => {}
             }
         }
     }
@@ -1012,6 +1021,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Break(()) => Break(()),
                 Continue(()) => Continue(CommandOutcome::Done),
             },
+            Command::Mcp(argument) => {
+                self.mcp_command(runtime, &argument).await;
+                Continue(CommandOutcome::Done)
+            }
             Command::Skills(argument) if !argument.is_empty() => {
                 match self.skills_command(runtime, &argument).await {
                     Break(()) => Break(()),
@@ -1270,7 +1283,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     .notice(reports::skills(runtime.extensions()));
             }
             Command::Plugins => self.plugins(runtime),
-            Command::Mcp(argument) => self.mcp(runtime, argument),
+            // Only the bare `/mcp` runs here; `reconnect` waits on the servers and is dispatched
+            // where the runtime can be borrowed mutably.
+            Command::Mcp(_) => self.mcp(runtime),
             Command::Expand(argument) => self.expand(argument),
             Command::Config => self.open_config(runtime),
             Command::Recap => self.recap(runtime),
@@ -1408,6 +1423,9 @@ fn answer_unattended(prompt: Prompt) -> Result<(), Prompt> {
         }
         Prompt::Question(_, _, reply) => {
             let _ = reply.send(fontaine_tools::ask_user::QuestionReply::Unavailable);
+        }
+        Prompt::Elicit(_, reply) => {
+            let _ = reply.send(fontaine_tools::mcp::ElicitReply::Cancel);
         }
         other @ Prompt::Notice(..) => return Err(other),
     }

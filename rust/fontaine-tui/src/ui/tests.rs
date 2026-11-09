@@ -671,6 +671,34 @@ fn subagent_ask() -> (Prompt, oneshot::Receiver<Answer>) {
     (Prompt::Ask(request, reply), answer)
 }
 
+use fontaine_tools::mcp::{ElicitForm, ElicitReply};
+
+fn elicit_form() -> ElicitForm {
+    ElicitForm {
+        server: "srv".into(),
+        message: "Who?".into(),
+        schema: fontaine_tools::mcp::elicitation::ElicitationSchema::builder()
+            .required_string("name")
+            .build()
+            .unwrap(),
+    }
+}
+
+#[test]
+fn an_elicitation_whose_call_ended_while_it_queued_is_dropped_and_a_live_one_opens() {
+    let (_tx, rx) = unbounded_channel();
+    let mut ui = ui(rx);
+    let (reply, gone) = oneshot::channel();
+    drop(gone);
+    ui.on_prompt(None, Prompt::Elicit(Box::new(elicit_form()), reply));
+    assert!(ui.app.elicitations.is_empty());
+
+    let (reply, mut waiting) = oneshot::channel();
+    ui.on_prompt(None, Prompt::Elicit(Box::new(elicit_form()), reply));
+    assert_eq!(ui.app.elicitations.len(), 1);
+    assert!(waiting.try_recv().is_err());
+}
+
 #[test]
 fn prompts_that_arrive_during_afk_mode_are_answered_without_an_overlay() {
     use fontaine_core::permissions::{GuardianUnavailable, UnavailableChoice};
@@ -690,6 +718,11 @@ fn prompts_that_arrive_during_afk_mode_are_answered_without_an_overlay() {
         question.try_recv(),
         Ok(QuestionReply::Unavailable)
     ));
+
+    let (reply, mut elicit) = oneshot::channel();
+    ui.on_prompt(None, Prompt::Elicit(Box::new(elicit_form()), reply));
+    assert_eq!(elicit.try_recv(), Ok(ElicitReply::Cancel));
+    assert!(ui.app.elicitations.is_empty());
 
     let (reply, mut choice) = oneshot::channel();
     let info = GuardianUnavailable {
@@ -729,9 +762,13 @@ fn entering_afk_mode_closes_every_open_and_queued_prompt() {
         tool: "shell".into(),
     };
     ui.on_prompt(None, Prompt::Unavailable(Box::new(info), reply));
+    let (reply, mut elicit) = oneshot::channel();
+    ui.on_prompt(None, Prompt::Elicit(Box::new(elicit_form()), reply));
     assert!(ui.app.approval.is_some() && ui.app.unavailable.is_some());
+    assert_eq!(ui.app.elicitations.len(), 1);
 
-    assert_eq!(ui.app.answer_for_afk(), 4);
+    assert_eq!(ui.app.answer_for_afk(), 5);
+    assert_eq!(elicit.try_recv(), Ok(ElicitReply::Cancel));
     assert_eq!(first.try_recv(), Ok(Answer::Deny { feedback: None }));
     assert_eq!(second.try_recv(), Ok(Answer::Deny { feedback: None }));
     assert!(matches!(

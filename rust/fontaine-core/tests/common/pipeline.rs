@@ -39,6 +39,8 @@ pub struct Scripted {
     pub unavailable_asked: Mutex<Vec<GuardianUnavailable>>,
     replies: Mutex<VecDeque<QuestionReply>>,
     pub questions: Mutex<Vec<Vec<Question>>>,
+    elicit_replies: Mutex<VecDeque<fontaine_tools::mcp::ElicitReply>>,
+    pub elicited: Mutex<Vec<fontaine_tools::mcp::ElicitForm>>,
     /// While set, a prompt records its request and is never answered.
     pub hang: AtomicBool,
 }
@@ -51,6 +53,11 @@ impl Scripted {
     /// The next reply to the model's questions; an empty queue reports nobody can answer.
     pub fn reply(&self, reply: QuestionReply) {
         self.replies.lock().unwrap().push_back(reply);
+    }
+
+    /// The next reply to an MCP server's request for input; an empty queue cancels.
+    pub fn elicit_reply(&self, reply: fontaine_tools::mcp::ElicitReply) {
+        self.elicit_replies.lock().unwrap().push_back(reply);
     }
 
     pub fn asked(&self) -> usize {
@@ -99,6 +106,20 @@ impl Approver for Scripted {
                 .unwrap()
                 .pop_front()
                 .unwrap_or(QuestionReply::Unavailable)
+        })
+    }
+
+    fn elicit<'a>(
+        &'a self,
+        form: fontaine_tools::mcp::ElicitForm,
+    ) -> BoxFuture<'a, fontaine_tools::mcp::ElicitReply> {
+        Box::pin(async move {
+            self.elicited.lock().unwrap().push(form);
+            self.elicit_replies
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(fontaine_tools::mcp::ElicitReply::Cancel)
         })
     }
 

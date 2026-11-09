@@ -47,7 +47,7 @@ windows-sys.workspace = true
 [dev-dependencies]
 insta.workspace = true
 lsp-types.workspace = true
-rmcp = { workspace = true, features = ["server"] }
+rmcp = { workspace = true, features = ["server", "elicitation"] }
 tempfile.workspace = true
 rig-core = { workspace = true, features = ["test-utils"] }
 rig-agent = { workspace = true, features = ["test-utils"] }

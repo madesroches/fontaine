@@ -8,6 +8,7 @@ use fontaine_core::config::NotifyMethod;
 pub(crate) enum PromptKind {
     Approval,
     Question,
+    Elicitation,
     Server,
     GuardianOff,
     Bug,
@@ -35,6 +36,7 @@ impl PromptKind {
         match self {
             PromptKind::Approval => "Fontaine needs your approval",
             PromptKind::Question => "Fontaine has a question",
+            PromptKind::Elicitation => "An MCP server asks for input",
             PromptKind::Server => "Fontaine needs an MCP server decision",
             PromptKind::GuardianOff | PromptKind::AfkReview | PromptKind::Bug => {
                 "Fontaine needs your confirmation"

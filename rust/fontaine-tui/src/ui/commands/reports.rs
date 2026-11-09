@@ -9,7 +9,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
     pub(crate) fn status(&mut self, runtime: &AgentRuntime) {
         let guardian = runtime.state.guardian();
         let mcp_connected = self
-            .mcp_status
+            .mcp_listing(runtime)
             .iter()
             .filter(|(_, state)| *state == McpState::Connected)
             .count();
@@ -92,15 +92,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.transcript.notice(text);
     }
 
-    pub(crate) fn mcp(&mut self, runtime: &AgentRuntime, argument: &str) {
-        if !argument.is_empty() {
-            self.app.transcript.error(format!(
-                "/mcp takes no arguments (`{argument}`): it only lists the servers; reconnecting, enabling and disabling are not supported yet"
-            ));
-            return;
-        }
+    /// `/mcp` with no argument: the servers and their state as of now.
+    pub(crate) fn mcp(&mut self, runtime: &AgentRuntime) {
         self.app.transcript.notice(reports::mcp_with_origins(
-            &self.mcp_status,
+            &self.mcp_listing(runtime),
             &runtime.config.mcp_origins,
         ));
     }

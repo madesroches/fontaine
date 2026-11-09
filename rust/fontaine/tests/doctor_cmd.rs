@@ -134,7 +134,7 @@ async fn a_user_mcp_server_is_started_and_its_tools_counted() {
         row["detail"]
             .as_str()
             .unwrap()
-            .contains("connected (3 tools)"),
+            .contains("connected (4 tools)"),
         "{row}"
     );
 

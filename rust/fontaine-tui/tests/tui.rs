@@ -1593,7 +1593,11 @@ async fn status_and_help_report_without_a_turn() {
         ui.send("/mcp");
         ui.wait_for("no MCP servers configured").await;
         ui.send("/mcp reconnect");
-        ui.wait_for("/mcp takes no arguments").await;
+        ui.wait_for("reconnect <name|all>").await;
+        ui.send("/mcp reconnect nope");
+        ui.wait_for("no MCP server named `nope`").await;
+        ui.send("/mcp reconnect all");
+        ui.wait_for("no MCP server has failed").await;
     })
     .await;
     assert!(w.requests().is_empty());

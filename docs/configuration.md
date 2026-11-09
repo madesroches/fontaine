@@ -1419,6 +1419,7 @@ for any reason other than not existing, is a configuration error naming the path
 | `--afk-temperature-ceiling <n>` | Sets `[afk] temperature_ceiling` for the session (CLI scope). |
 | `--ax-screen-reader` | Prints the interface as plain labelled lines for a screen reader instead of drawing it, and prints `[Screen Reader Mode: on via flag]` first. A headless run ignores it. |
 | `FONTAINE_AX_SCREEN_READER` | `1` turns screen-reader mode on and `0` keeps it off even when `[tui] screen_reader` is `true`; the flag still turns it on. Any other value is ignored, with a warning in the conversation (or on stderr when the UI cannot start). |
+| `MAX_MCP_OUTPUT_TOKENS` | The token limit of one successful [MCP tool result](mcp.md#large-outputs); a larger one is saved to a file in the session's scratch directory. A positive whole number; anything else is warned about once at startup and the default (`25000`) is used. |
 | `FONTAINE_LOG` | An `EnvFilter` directive that replaces the default `debug` filter of the debug file. On its own it creates no file and prints nothing. |
 | `FONTAINE_CONFIG_DIR`, `FONTAINE_DATA_DIR` | Directory overrides, described above. |
 

@@ -42,6 +42,6 @@ rcgen.workspace = true
 rustls.workspace = true
 tokio-rustls.workspace = true
 rig-agent = { workspace = true, features = ["test-utils"] }
-rmcp = { workspace = true, features = ["server", "transport-io"] }
+rmcp = { workspace = true, features = ["server", "transport-io", "elicitation"] }
 rig-core = { workspace = true, features = ["test-utils"] }
 tokio = { workspace = true, features = ["test-util"] }

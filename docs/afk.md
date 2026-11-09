@@ -10,7 +10,8 @@ person would have been asked: nobody is asked.
 - Each denial tells the model what to do next: finish the independent work that is still allowed,
   reduce the request to a useful allowed subset, or stop and report. It never says to ask, and
   never to find another way to the same effect.
-- `ask_user_question` takes its usual no-answer path.
+- `ask_user_question` takes its usual no-answer path, and an MCP server's request for input
+  (elicitation) is answered `cancel`.
 - A tripped [denial breaker](guardian.md#denial-limits) ends the run as *blocked* instead of waiting
   for you.
 

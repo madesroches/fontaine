@@ -5,8 +5,9 @@ server runs as a child process (stdio) or is reached over streamable HTTP, and e
 becomes a tool the model can call. MCP tools go through the same permission pipeline as every other
 tool; nothing a server says about itself changes how they are judged.
 
-In the terminal UI, `/mcp` lists the servers and whether each is connected, failed, left off or not
-loaded.
+In the terminal UI, `/mcp` lists the servers and whether each is connected, pending (being
+reconnected), failed, left off or not loaded, and `/mcp reconnect` restarts them; see
+[Reconnecting](#reconnecting).
 
 ## Declaring servers
 
@@ -58,10 +59,18 @@ A tool `create_issue` of the server `github` is registered as `mcp__github__crea
 name [permission rules](permissions.md#rules) use. A character in a tool name that the
 rule grammar cannot name becomes `_`. When a server announces that its tool list changed, Fontaine
 fetches the list again and registers the new tools the same way; tools that went away are removed.
-Only tools are used; resources and prompts are not.
+Only tools are used; resources and prompts are not. A server may also ask you for input while a
+tool runs, as [described below](#requests-for-input).
 
 A server that cannot be started, or that never answers the handshake, is reported (a notice in the
 terminal UI, a line on stderr in a headless run) and left out; the session goes on without it.
+Starting a remote server is retried first when the failure looks temporary: a refused or reset
+connection, a timeout, a 5xx or a 429. Fontaine tries up to three more times, after 1, 2 and 4
+seconds, and all the attempts of one server share a 30 second deadline, so a refused server delays
+startup by about 7 seconds and an unresponsive one by at most 30. Authentication, not-found and
+protocol errors, and a stdio server that fails, are not retried. The servers start at once, so a
+slow one does not delay the others. A server that failed to start can still be restarted by hand
+with [`/mcp reconnect`](#reconnecting).
 
 ## The trust model
 
@@ -145,8 +154,83 @@ name = "github"
 digest = "9f2c1c8e1a7d4b1f"
 ```
 
+## Requests for input
+
+A server can ask you for input while a tool runs (MCP elicitation). Fontaine supports the form mode:
+the terminal UI shows a dialog with the server's message and one row per field the server asked for
+(text, number, whole number, yes/no, a choice, or several choices), checks what you type against
+what the server required, and sends your answer back to that server. You can fill the form in,
+decline it (the server carries on without the input) or cancel it (the server stops what it was
+doing). The keys are in [the terminal UI](tui.md#requests-for-input-from-an-mcp-server). A server's
+request to open a link (URL mode) is always declined: Fontaine never opens a browser on a server's
+say-so.
+
+- **Only the terminal UI shows a dialog.** A [headless run](headless.md#questions), [AFK mode](afk.md),
+  the [doctor](doctor.md) probe and a call made by a subagent answer `cancel` without showing
+  anything. The dialog closes, and is answered `cancel`, when the call that caused it ends.
+- **Your answer goes to the server and nowhere else.** It never reaches the model, the transcript,
+  the audit log or telemetry, and the dialog says so. Don't enter secrets you wouldn't give that
+  server. The server's message is cleaned of control characters before it is shown.
+- **It decides nothing.** Answering never changes a permission decision; the call that led to the
+  request was already approved like any other.
+
+Fontaine offers the MCP protocol version 2025-11-25, which delivers a request for input as a
+request to the client. A server that only speaks a newer version still connects, but its requests
+for input are not served.
+
+## Reconnecting
+
+A remote (streamable HTTP) server that drops mid-session is reconnected. Fontaine notices when a
+tool call fails because the transport is dead, or when the connection ends, closes it and retries up
+to five times, waiting 1, 2, 4, 8 and 16 seconds before the attempts. Each attempt has a 30 second
+limit. While it retries, `/mcp` shows the server as `pending (reconnecting, attempt N of 5)` and its
+tools are withdrawn; a success registers them again and says so in the terminal UI. An
+authentication or protocol error stops the retries at once, since waiting cannot fix it. After the
+last attempt the server is marked failed:
+
+```
+MCP server `docs` disconnected · run /mcp reconnect docs
+```
+
+A stdio server that exits is marked failed straight away and its process is not started again, in a
+headless run as well; there is no automatic retry for it.
+
+`/mcp reconnect <name>` restarts one server, connected or not, at once and without waiting;
+`/mcp reconnect all` restarts every failed server. Only servers Fontaine tried to start this
+session can be restarted, including ones that failed at startup. A server you left off, or that
+the workspace not being trusted keeps from loading, is never started this way, so the command cannot
+get around workspace trust or your approval. It is not available while a turn runs.
+
+## Large outputs
+
+A successful tool result that is too large is saved to a file instead of entering the model's
+context. The limit is 50,000 characters or `MAX_MCP_OUTPUT_TOKENS` tokens (default 25,000, counted
+as the result's bytes divided by 4), whichever is hit first. The result is written in full to
+`<scratch>/mcp-results/<tool>-<n>.txt`, in the session's scratch directory, and the model gets this
+instead:
+
+```
+Output too large (60000 chars, ~15000 tokens), saved to <path>. Use read or grep on that file to see it.
+```
+
+The model reads the file with `read` or `grep` like any file in the workspace, and the content is
+screened then like any other `read`. The file is removed with the session. A tool can raise the
+character limit for its own results by setting `_meta["anthropic/maxResultSizeChars"]` to a positive
+integer in its `tools/list` entry, up to 500,000; the token limit still applies. Anything else is
+ignored.
+
+If the session has no scratch directory, or the file cannot be written, the result keeps its first
+and last halves of the limit with a `[… N chars cut …]` marker between them; Fontaine warns once
+when a save fails. A result a server flags as an error (`isError`) longer than 11,000 characters keeps its
+first and last 5,000 characters with the same marker. A result that carries an image is passed
+through unchanged. `MAX_MCP_OUTPUT_TOKENS` is described under
+[environment variables](configuration.md#command-line-and-environment).
+
 ## Telemetry
 
-Starting a server emits an `mcp_server_connection` event and each call a `fontaine.mcp.call` span.
+Starting a server emits an `mcp_server_connection` event, and so does each reconnect attempt, and
+each call a `fontaine.mcp.call` span. Answering a request for input emits an `mcp_elicitation`
+event with the action (`accept`, `decline` or `cancel`) and the server, never the message or the
+answer.
 Server and tool names appear in them, and in every other tool field, only when
 `log_tool_details = true`; otherwise they read `third-party`. See [Telemetry](telemetry.md).

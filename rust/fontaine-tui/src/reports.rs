@@ -30,10 +30,14 @@ use crate::statusbar::mode_label;
 use crate::transcript::truncate;
 use fontaine_core::keybindings::TuiAction;
 
-/// What became of an MCP server at start-up.
+/// What became of an MCP server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum McpState {
     Connected,
+    /// Lost, and being reconnected: `attempt` is the one under way.
+    Pending {
+        attempt: u32,
+    },
     /// The error text, which names the server.
     Failed(String),
     /// The human declined to start it.
@@ -253,6 +257,10 @@ pub fn mcp_with_origins(
         .map(|(name, state)| {
             let state = match state {
                 McpState::Connected => "connected".to_string(),
+                McpState::Pending { attempt } => format!(
+                    "pending (reconnecting, attempt {attempt} of {})",
+                    fontaine_core::agent::MCP_RECONNECT_ATTEMPTS
+                ),
                 McpState::Failed(error) => format!("failed: {error}"),
                 McpState::LeftOff => "left off".to_string(),
                 McpState::NotTrusted => "not loaded (workspace not trusted)".to_string(),
@@ -1257,13 +1265,14 @@ mod tests {
                     McpState::Failed("MCP server `b` failed: boom".into()),
                 ),
                 ("c".into(), McpState::LeftOff),
+                ("d".into(), McpState::Pending { attempt: 2 }),
                 ("plugin_p_srv".into(), McpState::NotTrusted),
             ],
             &origins,
         );
         assert_eq!(
             text,
-            "a: connected [user]\nb: failed: MCP server `b` failed: boom [configured]\nc: left off [configured]\nplugin_p_srv: not loaded (workspace not trusted) [plugin]"
+            "a: connected [user]\nb: failed: MCP server `b` failed: boom [configured]\nc: left off [configured]\nd: pending (reconnecting, attempt 2 of 5) [configured]\nplugin_p_srv: not loaded (workspace not trusted) [plugin]"
         );
     }
 

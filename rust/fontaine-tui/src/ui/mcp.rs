@@ -1,9 +1,60 @@
+use crate::commands::{McpRequest, parse_mcp};
 use crate::reports::McpState;
 use crate::server_prompt;
 use crate::{Action, App, Ui};
-use fontaine_core::agent::AgentRuntime;
+use fontaine_core::agent::{AgentRuntime, McpServerState, ReconnectTarget};
 
 impl<R: FnMut(&mut App)> Ui<R> {
+    /// The servers `/mcp` lists, by name: the ones that were never started (left off, or
+    /// withheld by workspace trust) and the state of each one the session attempted, which
+    /// changes as servers drop and come back.
+    pub(crate) fn mcp_listing(&self, runtime: &AgentRuntime) -> Vec<(String, McpState)> {
+        let mut servers = self.mcp_status.clone();
+        servers.extend(runtime.mcp_states().into_iter().map(|(name, state)| {
+            let state = match state {
+                McpServerState::Connected => McpState::Connected,
+                McpServerState::Reconnecting { attempt } => McpState::Pending { attempt },
+                McpServerState::Failed(error) => McpState::Failed(error),
+            };
+            (name, state)
+        }));
+        servers.sort_by(|a, b| a.0.cmp(&b.0));
+        servers
+    }
+
+    /// `/mcp reconnect <name|all>`: restarts servers by hand and says how each one came out.
+    pub(crate) async fn mcp_command(&mut self, runtime: &mut AgentRuntime, argument: &str) {
+        let target = match parse_mcp(argument) {
+            Ok(McpRequest::List) => {
+                self.mcp(runtime);
+                return;
+            }
+            Ok(McpRequest::Reconnect(target)) => target,
+            Err(usage) => {
+                self.app.transcript.error(usage);
+                return;
+            }
+        };
+        self.app.transcript.notice(match &target {
+            ReconnectTarget::One(name) => format!("reconnecting `{name}`"),
+            ReconnectTarget::AllFailed => "reconnecting the failed MCP servers".to_string(),
+        });
+        self.draw(runtime);
+        let outcomes = runtime.reconnect_mcp(target.clone()).await;
+        if outcomes.is_empty() {
+            self.app.transcript.notice("no MCP server has failed");
+        }
+        for outcome in outcomes {
+            match outcome.error {
+                None => self
+                    .app
+                    .transcript
+                    .notice(format!("MCP server `{}` is connected", outcome.server)),
+                Some(e) => self.app.transcript.error(e),
+            }
+        }
+    }
+
     /// Starts the MCP servers: the ones in the user's own settings at once, a repository's only
     /// after the human approves each. Returns false when the input closed meanwhile.
     pub(crate) async fn start_mcp(&mut self, runtime: &mut AgentRuntime) -> bool {
@@ -62,17 +113,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         for outcome in runtime.connect_mcp(&approved).await {
             match outcome.error {
                 None => {
-                    self.mcp_status
-                        .push((outcome.server.clone(), McpState::Connected));
                     self.app
                         .transcript
                         .notice(format!("MCP server `{}` is connected", outcome.server));
                 }
-                Some(e) => {
-                    self.mcp_status
-                        .push((outcome.server, McpState::Failed(e.clone())));
-                    self.app.transcript.error(e);
-                }
+                Some(e) => self.app.transcript.error(e),
             }
         }
         true
