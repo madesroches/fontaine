@@ -366,14 +366,17 @@ impl AgentRuntime {
                 Ok(resolved) => resolved,
                 Err(e) => {
                     self.approver.warn(&format!("skipping {to}: {}", chain(&e)));
+                    tried.note(index);
                     continue;
                 }
             };
             if self.setup.explicit_budget_cap && !handle.priced() {
+                tried.note(index);
                 continue;
             }
             if let Err(e) = self.install_handle(handle, listing, None) {
                 self.approver.warn(&format!("skipping {to}: {}", chain(&e)));
+                tried.note(index);
                 continue;
             }
             list.settle(index);

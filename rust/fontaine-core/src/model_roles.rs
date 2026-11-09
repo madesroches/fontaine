@@ -110,6 +110,9 @@ impl Roles {
     }
 
     fn unknown(&self, name: &str) -> String {
+        if name == MAIN_ROLE {
+            return MAIN_UNDEFINED.to_string();
+        }
         if self.is_empty() {
             format!("`{name}` is not a defined model role; define roles under `[models.roles]`")
         } else {
@@ -159,6 +162,8 @@ fn join(entries: &[ModelRef]) -> String {
         .join(", ")
 }
 
+const MAIN_UNDEFINED: &str = "`$main` (or `main`) needs `[model] model` or `[models.roles] main` in your settings; `--model` does not define it";
+
 fn flatten_role(
     name: &str,
     raw: &BTreeMap<String, Vec<String>>,
@@ -193,6 +198,9 @@ fn flatten_role(
                 entry.as_str()
             };
             if !raw.contains_key(target) {
+                if target == MAIN_ROLE {
+                    return Err(bad(MAIN_UNDEFINED.to_string()));
+                }
                 return Err(bad(format!(
                     "`{entry}` is neither `<account>/<model>` nor a defined role"
                 )));
@@ -454,6 +462,20 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    #[test]
+    fn main_in_a_list_without_a_configured_main_says_where_to_define_it() {
+        for entry in ["main", "$main"] {
+            let err = Roles::from_config(&config(&[("fast", &[entry, "a/s4"])])).unwrap_err();
+            assert!(err.to_string().contains("needs `[model] model`"), "{err}");
+        }
+        let roles = Roles::from_config(&config(&[])).unwrap();
+        assert!(
+            roles
+                .unknown("main")
+                .contains("`--model` does not define it")
+        );
     }
 
     #[test]

@@ -100,7 +100,7 @@ thinking   = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"]
   `[models.roles] main`, as it overrides a user-file `[model] model` today. `--model` is a string: an `<account>/<model>`
   or a role name, and it overrides both for the session's chain. `[model] model` is folded into
   `roles["main"]` before validation and flattening, so `main` and `$main` in a role list are
-  always defined. `--model` does not re-point `roles["main"]`. `main` or `$main` inside a role
+  defined when the settings configure a main (otherwise load fails with a message saying so). `--model` does not re-point `roles["main"]`. `main` or `$main` inside a role
   list is a static splice of the configured `main`, not the live session chain.
 - **`[agents.types.<name>] model` also accepts a string or a list.** Each entry may be
   `<account>/<model>`, a role name, `$main` or (alone) `$guardian_default`.

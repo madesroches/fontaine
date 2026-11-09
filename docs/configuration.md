@@ -590,7 +590,7 @@ one `<account>/<model>`, and a pinned guardian is never substituted.
 Rules, all checked when the configuration loads (exit code 2):
 
 - A role name uses letters, digits, `_` and `-`. `inherit` is reserved, and a name never starts with `$`.
-- A list is not empty. Each entry is an `<account>/<model>` of a configured account or a defined role. `$main` is a synonym for `main`.
+- A list is not empty. Each entry is an `<account>/<model>` of a configured account or a defined role. `$main` is a synonym for `main`, and naming it needs `[model] model` or `[models.roles] main` in your settings: `--model` does not define it, so a list naming `main` without one fails to load.
 - A role never reaches itself through other roles; the error names the cycle.
 - Every role is checked, whether or not anything uses it.
 - The section is read from your user file and `--settings` only, like `[accounts]`, because an entry names an endpoint. A later scope replaces a whole role.

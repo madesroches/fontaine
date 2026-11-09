@@ -1111,10 +1111,12 @@ async fn fall_through_child(
                 shared
                     .approver
                     .warn(&format!("{}: skipping {reference}: {why}", shared.id));
+                tried.note(index);
                 continue;
             }
         };
         if context.explicit_budget_cap && !handle.priced() {
+            tried.note(index);
             continue;
         }
         if list.settles {
