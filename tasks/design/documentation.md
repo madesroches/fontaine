@@ -5,12 +5,14 @@ Part of the Fontaine design; the master plan `tasks/fontaine_harness_plan.md` ho
 ## Documentation
 
 All product documentation lives under `docs/` — a standalone directory, one topic per page,
-relative cross-links, current behavior only (no plan/phase citations in the docs themselves).
-The tree is kept **website-ready**: lifting `docs/` into a static site is a likely future step,
-explicitly **not urgent** — no site tooling ships in v1, and the only forward constraint is the
-file layout above. Root `README.md` is the thin front door (pitch, install, quickstart, mode
-table, auto-mode explainer) that links into `docs/`, not a second copy of it; its quickstart leads
-with the local setup — an Ollama agent model plus an Ollama guardian, no cloud key. Each page is
+relative cross-links (links that leave `docs/` are absolute `https://github.com/madesroches/fontaine/blob/main/...` URLs, `tree/main/...` for directories), current behavior only (no plan/phase citations in the docs themselves).
+`docs/` is published as an mdBook site on GitHub Pages (`docs/book.toml`, `docs/SUMMARY.md`,
+`.github/scripts/docs-site.sh`, `.github/workflows/docs.yml`) with `llms.txt` and `llms-full.txt`
+for coding agents; every page is listed in both `SUMMARY.md` and `index.md`, and the script fails
+otherwise. Root `README.md` is the thin front door (pitch with auto and AFK mode, install,
+quickstart with the installed binary, why-list, links) that links into `docs/`, not a second copy of
+it; its quickstart leads with the local setup — an Ollama agent model run with the installed
+binary, no cloud key. Each page is
 delivered (or extended) by the docs step of the phase named with it — see the phase plans.
 
 - `docs/index.md`: landing page / TOC (Phase 0).
@@ -59,5 +61,5 @@ delivered (or extended) by the docs step of the phase named with it — see the 
 - `CHANGELOG.md`: release notes in Keep a Changelog format — created in Phase 0 with an `## [Unreleased]`
   section; every phase appends an entry there in its docs step (plan/phase citations belong here, not
   in the docs pages); at release, `[Unreleased]` moves under the new version heading.
-- README install section: prebuilt binaries from GitHub Releases (Linux, macOS, Windows) or
-  `cargo install --git https://github.com/madesroches/fontaine fontaine` (Phase 4).
+- README install section: the two one-line installers; archives and `cargo install --git` are in
+  `docs/installing.md` (Phase 4).

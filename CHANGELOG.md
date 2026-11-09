@@ -91,6 +91,10 @@ All notable changes are recorded here. The format follows
   commit after it (#508).
 - CI builds the rustdoc for the workspace, and for the `pg2` feature on Linux, with warnings
   denied, so a broken doc link fails the build (#197).
+- `docs/` is published as a searchable mdBook site on GitHub Pages, with `llms.txt` and
+  `llms-full.txt` for coding agents, built and link-checked by the new `docs.yml` workflow and
+  `.github/scripts/docs-site.sh`. The README is now a short front door that pitches auto mode and
+  AFK mode and links to the docs (#530).
 
 #### Core
 

@@ -317,7 +317,7 @@ credential loading as `fontaine -p`, routes `guardian` cases to the guardian and
 the pipeline under the case's mode, records each case's latency, and writes the models that clear
 the inclusion bar to the shipped model list; see [the scorecard](evals.md). The
 `baseline capture` and `baseline diff` subcommands compare the pipeline with Claude Code. The case
-format and the runner flags are documented in [evals/README.md](../evals/README.md).
+format and the runner flags are documented in [evals/README.md](https://github.com/madesroches/fontaine/blob/main/evals/README.md).
 
 ## Platforms
 

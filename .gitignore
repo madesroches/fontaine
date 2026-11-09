@@ -23,3 +23,7 @@ TAGS
 
 # Python
 __pycache__/
+
+# Documentation site output
+/_site/
+/docs/book/

@@ -1,82 +1,42 @@
 # Fontaine
 
-Fontaine is a terminal AI coding agent, written in Rust, that works with any model you configure:
-Anthropic, OpenAI, Gemini, OpenRouter (with prompt caching), or any OpenAI-compatible endpoint such
-as Ollama, LM Studio, vLLM and LiteLLM.
+A terminal AI coding agent for any model, with a guardian that judges risky tool calls, and an AFK
+mode that runs unattended without YOLO.
 
-Its signature feature is an auto mode in which a separate guardian agent reviews each tool call that
-is not provably safe, using your task and a short written policy, and answers allow, deny or ask
-the human. A deterministic floor of deny rules, ask rules, critical paths and protected paths sits
-beneath every mode and cannot be argued with.
+[![CI](https://github.com/madesroches/fontaine/actions/workflows/ci.yml/badge.svg)](https://github.com/madesroches/fontaine/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/madesroches/fontaine?include_prereleases)](https://github.com/madesroches/fontaine/releases)
+[![License](https://img.shields.io/github/license/madesroches/fontaine)](LICENSE)
 
-This repository is under construction. The documentation describes what the current build does.
+**Auto mode.** A separate guardian model reviews each tool call that is not provably safe, using
+your task and a short written policy. A deterministic floor of deny and ask rules, critical paths
+and protected paths sits beneath every mode and cannot be argued with. If the guardian cannot
+answer, the call is denied.
+
+**AFK mode.** Not YOLO, and not an `auto` session that stalls waiting for you. It decides exactly as
+`auto` does, but every would-prompt outcome becomes a denial with recovery guidance. When you
+return, a report shows everything the agents tried, and a session temperature stops the agent tree
+when denials pile up.
 
 ## Install
 
-On Linux (x86_64) and macOS (Apple silicon and Intel), one command installs the latest dev build of `main`:
+There is no tagged release yet: the installers deliver the latest dev build of `main` (see [installing](docs/installing.md)).
+
+On Linux (x86_64) and macOS (Apple silicon and Intel):
 
 ```
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.sh | sh
 ```
 
-It needs `curl` or `wget` and `tar`. It installs `fontaine` to `~/.fontaine/bin`, adds that
-directory to your shell profile if needed, and writes an install receipt at
-`${XDG_CONFIG_HOME:-~/.config}/fontaine/fontaine-receipt.json`. It checks the archive's sha256 when `sha256sum` is
-present and otherwise skips the check with a notice that `--quiet` suppresses; it does not verify
-the minisign signature. The installer ignores Fontaine's `[network]` proxy, CA and mTLS settings:
-behind a proxy, set `https_proxy` / `SSL_CERT_FILE` for `curl`, or download the archive manually.
-See [Installing Fontaine](docs/installing.md).
-
-On Windows (x86_64), run this in PowerShell or a Command Prompt:
+On Windows (x86_64), in PowerShell or a Command Prompt:
 
 ```
 powershell -ExecutionPolicy Bypass -c "irm https://github.com/madesroches/fontaine/releases/download/dev/fontaine-installer.ps1 | iex"
 ```
 
-It installs `fontaine.exe` to `%USERPROFILE%\.fontaine\bin`, adds that
-directory to your user `Path`, writes an install receipt at
-`%LOCALAPPDATA%\fontaine\fontaine-receipt.json`, and checks the archive's sha256 before unpacking it;
-it does not verify the minisign signature. Git for Windows is recommended but not required: without it Fontaine runs commands in PowerShell. The installer ignores Fontaine's `[network]` proxy, CA and mTLS settings: behind a proxy set
-`HTTPS_PROXY`, for a private CA install it in the Windows certificate store, or download the archive
-manually. A manually downloaded archive can trigger SmartScreen warnings, since the archives carry a
-minisign signature but no Authenticode one; verify it as in
-[Verifying releases](docs/verifying-releases.md).
+Archives, source builds, signature verification, proxies and updating are in
+[Installing Fontaine](docs/installing.md).
 
-Any platform without an installer uses the archive of a `dev-<n>`
-[prerelease](https://github.com/madesroches/fontaine/releases); no tagged release exists yet, and
-the `dev` release holds only the installers. Unpack the archive for your
-platform and put `fontaine` on your `PATH`; the archive also holds the license, readme and
-changelog. Each archive has a detached signature; see
-[Verifying releases](docs/verifying-releases.md). With the Rust toolchain you can instead install from
-source:
-
-```
-cargo install --git https://github.com/madesroches/fontaine fontaine
-```
-
-The installers install to `~/.fontaine/bin` and `cargo install --git` to `$CARGO_HOME/bin`. With both,
-whichever directory is first on your `PATH` runs, and only the installer's copy can `fontaine update`.
-If you installed with an earlier installer, which used `$CARGO_HOME/bin`, see
-[Installing Fontaine](docs/installing.md#moving-from-an-earlier-installer).
-
-Fontaine is not published to crates.io. Release binaries include the PromptGuard 2 tool-result
-scanner; a source build has it only with `--features pg2` (`cargo install --features pg2 ...`).
-Its weights are a gated download under the Llama 4 Community License, and the scanner is off by
-default: see [Scanning tool results](docs/guardian.md#scanning-tool-results).
-
-## Build from source
-
-You need the Rust toolchain; `rust/rust-toolchain.toml` pins the version and `rustup` installs it
-on first use.
-
-```
-cd rust
-cargo build
-cargo test
-cargo run -p fontaine
-```
-
-## Quickstart: a local agent with Ollama
+## Quickstart
 
 With [Ollama](https://ollama.com) running and a model pulled (`ollama pull qwen3:4b`), create
 `~/.config/fontaine/config.toml`:
@@ -90,66 +50,21 @@ base_url = "http://localhost:11434"
 model = "local/qwen3:4b"
 ```
 
-Fontaine asks Ollama for a 16384-token context window on every call; the
-[`context_tokens`](docs/configuration.md#accountsname) key changes it.
+Then run `fontaine` for the terminal UI, or `fontaine -p "explain what a Cargo workspace is"` for a
+headless run. Other providers and accounts are in [Configuration](docs/configuration.md).
 
-Then run a task from `rust/`:
+## Why Fontaine
 
-```
-cargo run -p fontaine -- -p "explain what a Cargo workspace is"
-```
-
-The answer goes to stdout and the exit code is 0 when the run completed. Add `--output-format
-stream-json` for one JSON event per line. Other providers, several accounts, credentials and
-OpenRouter and OpenAI-compatible endpoints such as LM Studio, vLLM and LiteLLM are in
-[Configuration](docs/configuration.md); the flags and the output format are in
-[Headless runs](docs/headless.md).
-
-## Permission modes
-
-Every tool call is adjudicated before it runs; the mode decides what happens to a call that nothing
-pre-approved. A deterministic floor (deny and ask rules, critical paths, protected paths) applies
-in every mode.
-
-| Mode | Behavior |
-|---|---|
-| `manual` | Asks you. The headless default. |
-| `acceptEdits` | Runs edits inside the workspace; asks for the rest. |
-| `plan` | Never edits; the guardian judges other consequential calls. |
-| `dontAsk` | Denies anything not pre-approved. |
-| `auto` | The guardian decides. The terminal UI's default. |
-
-Run `fontaine` for the terminal UI (Shift+Tab cycles the mode) or `fontaine -p` for a headless run.
-
-## Auto mode
-
-In `auto` a call is judged by the guardian only after everything that can be decided without a
-model has been: your deny and ask rules, the critical and protected paths, the read-only fast path
-inside your workspace (secret files such as `.env` excluded), a spawn of a subagent (read-only or not; each call the child makes is judged on its own), messages between agents and updates to the task boards, a small set of read-only shell commands, and file-tool edits to tracked,
-new or session-created files and to the scratch directory never reach it. For the rest,
-the guardian is a separate model with no tools. It reads what you asked for (your own messages,
-taken from a record the agent cannot edit), the call and a short written policy, and answers
-**allow**, **deny** with a reason the agent sees, or **escalate** to ask you.
-
-If it cannot answer, the call is denied: no credential, a provider error, a timeout, a malformed
-verdict, or an allow it is not confident about on a destructive call. Repeated denials hand the
-session back to you, and `/denied` lets you approve one refused call yourself. By default the
-guardian is the best benchmark-validated model your accounts offer; `/guardian-model` changes it.
-The [guardian page](docs/guardian.md) has the threat model and the details, and the
-[scorecard](docs/evals.md) has the numbers.
+- [AFK mode](docs/afk.md) lets you leave a session running and read what the agents tried when you return.
+- [The guardian and auto mode](docs/guardian.md) fail closed, and the [scorecard](docs/evals.md) measures catch and false-deny rates per guardian model.
+- [Permission modes and the floor](docs/permissions.md): six modes (`manual`, `acceptEdits`, `plan`, `dontAsk`, `auto`, `afk`) over one deterministic floor.
+- [Subagents and task boards](docs/agents.md) run asynchronously, and a child is never looser than its parent.
+- Claude Code compatibility: `CLAUDE.md` and `AGENTS.md` are read directly ([instructions](docs/instructions.md)). Skills, agent files, [plugins](docs/plugins.md) and hooks use Claude Code's formats, and `.claude/` files port by copying ([extensions](docs/extensions.md)).
+- Any provider: Anthropic, OpenAI, Gemini, OpenRouter, Ollama and OpenAI-compatible endpoints, plus a Claude subscription ([configuration](docs/configuration.md)).
 
 ## Documentation
 
-- [Documentation index](docs/index.md)
-- [Configuration](docs/configuration.md)
-- [Permissions](docs/permissions.md)
-- [The guardian](docs/guardian.md)
-- [Guardian scorecard](docs/evals.md)
-- [The terminal UI](docs/tui.md)
-- [Headless runs](docs/headless.md)
-- [Telemetry](docs/telemetry.md)
-- [Architecture](docs/architecture.md)
-- [Golden dataset and eval runner](evals/README.md)
+Read the docs at <https://madesroches.github.io/fontaine/>, or start from [docs/index.md](docs/index.md) in the repository.
 
 ## Project
 
@@ -157,3 +72,5 @@ The [guardian page](docs/guardian.md) has the threat model and the details, and 
 - [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
 - [License](LICENSE): Apache-2.0
+
+This repository is under construction. The documentation describes what the current build does.

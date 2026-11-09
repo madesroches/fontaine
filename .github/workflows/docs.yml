@@ -1,0 +1,50 @@
+# The documentation site: docs/ built with mdBook, link-checked offline, and deployed to GitHub
+# Pages on `main`. The deploy job is gated by the repository variable FONTAINE_DOCS_SITE so `main`
+# stays green before Pages is enabled.
+name: Docs
+permissions:
+  contents: read
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/scripts/docs-site.sh"
+      - ".github/workflows/docs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/scripts/docs-site.sh"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@0.5.4,lychee@0.24.2
+      - run: .github/scripts/docs-site.sh _site
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    if: ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && vars.FONTAINE_DOCS_SITE == 'enabled' }}
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
