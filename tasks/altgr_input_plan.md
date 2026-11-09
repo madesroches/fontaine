@@ -85,14 +85,16 @@ Uses:
 - `app.rs` `search_key`, `picker::edit_query`, `config_panel.rs` (both sites),
   `provider_dialog::is_text` (body becomes `typed_char(key)`; keep or inline the wrapper,
   implementer's call), `question.rs`: replace the hand-written guard with `typed_char`.
-- `app.rs` list-focus gate (line ~1360): `!control` becomes `(!control || typed_char(&key).is_some())`,
-  and `agent_list.rs`'s blur arm (line ~348) becomes `KeyCode::Char(_) if typed_char(&key).is_some()`,
+- `app.rs` list-focus gate (line ~1360): `!control` becomes
+  `(!control || (typed_char(&key).is_some() && mapped.is_none()))` (the gate runs before the
+  bound-action checks, so a bound Ctrl+Alt chord must not be diverted to the list), and `agent_list.rs`'s blur arm (line ~348) becomes `KeyCode::Char(_) if typed_char(&key).is_some()`,
   so an AltGr char blurs the list and is then typed into the prompt.
 - `paste_burst::burst_text`: the `Char` arm becomes `typed_char_on(key, true)` — the burst reader
   is Windows-only, so it always reads Ctrl+Alt as AltGr. Its existing comment moves to the call.
 
 Keymap precedence is unchanged: `App::handle_key` consults the keymap first, so a user binding
-on a Ctrl+Alt chord still wins over insertion.
+on a Ctrl+Alt chord still wins over insertion, including while the agent list has focus (the
+`mapped.is_none()` term in the gate above).
 
 ## Implementation Steps
 
@@ -123,17 +125,6 @@ on a Ctrl+Alt chord still wins over insertion.
 - `docs/configuration.md`
 - `CHANGELOG.md`
 
-## Trade-offs
-
-- **Gate on Windows vs. accept Ctrl+Alt everywhere.** Only the Windows console reports AltGr as
-  Ctrl+Alt; on Unix a Ctrl+Alt char is a real chord, and inserting it would be a new surprise.
-  The gate is a `const`, with `typed_char_on` taking the flag so the logic is tested on every OS.
-- **ASCII-letter exclusion vs. inserting every Ctrl+Alt char (Codex's `is_altgr`).** Inserting
-  letters would make Windows Ctrl+Alt+A/E/K… type the letter instead of the readline shortcut it
-  hits today; excluding them costs no real AltGr character.
-- **A new `keys.rs` module vs. `input.rs`.** The predicate is the editor's definition of typed
-  text; the filter boxes already depend on the editor crate-internally, so no new module.
-
 ## Decisions
 
 - 2026-11-09: AltGr-as-Ctrl+Alt is recognised only on Windows (a `const` gate), as only that console reports it so.
@@ -159,7 +150,8 @@ This is a bug seen in the wild; it is pinned at the unit tier, which reproduces 
   - Emacs Ctrl+Alt+`a` still moves home (with the flag on); vim Insert inserts an AltGr `{`; vim
     Normal `r` then AltGr `@` replaces the char.
 - `agent_list.rs`/`app.rs`: with the list focused, an AltGr char (flag on) blurs the list and is
-  typed into the prompt.
+  typed into the prompt; a bound Ctrl+Alt+`@` chord (flag on) still fires its action while the
+  list is focused.
 - `picker.rs`, `provider_dialog.rs`, `config_panel.rs`, `question.rs`: one test each that an
   AltGr char (flag on) reaches the query/field.
 - `paste_burst.rs`: existing CONTROL|ALT test stays green.
