@@ -152,10 +152,14 @@ async fn a_dropped_http_server_is_reconnected_when_it_comes_back_and_a_call_then
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_server_that_failed_at_startup_keeps_a_slot_and_reconnects_by_hand() {
-    // Nothing listens on the port at first, so startup fails after its retries.
-    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = probe.local_addr().unwrap().port();
-    drop(probe);
+    // The endpoint refuses the handshake outright, which is not retried.
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let port = server.address().port();
 
     let world = World::new();
     world.user_file(&format!(
@@ -166,7 +170,12 @@ async fn a_server_that_failed_at_startup_keeps_a_slot_and_reconnects_by_hand() {
     assert!(outcomes[0].error.is_some());
     assert!(matches!(state(&runtime), McpServerState::Failed(_)));
 
-    let server = serve_on(rebind(port).await).await;
+    server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(JsonRpc)
+        .mount(&server)
+        .await;
     let outcomes = runtime.reconnect_mcp(ReconnectTarget::AllFailed).await;
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].error, None);

@@ -4,7 +4,7 @@
 //! starting its process again is a decision for the person.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -94,6 +94,9 @@ pub struct ServerSlot {
     watcher: Mutex<Option<JoinHandle<()>>>,
     /// Set before Fontaine closes a connection itself, so the close is not taken for a loss.
     closing: AtomicBool,
+    /// Bumped by every manual reconnect, so a connection made for an older generation is
+    /// discarded instead of installed next to the new one.
+    generation: AtomicU64,
 }
 
 impl ServerSlot {
@@ -104,6 +107,7 @@ impl ServerSlot {
             connection: Mutex::new(None),
             watcher: Mutex::new(None),
             closing: AtomicBool::new(false),
+            generation: AtomicU64::new(0),
         }
     }
 
@@ -127,6 +131,17 @@ impl ServerSlot {
         if let Some(handle) = lock(&self.watcher, "MCP watcher").take() {
             handle.abort();
         }
+    }
+
+    /// Stops the watcher and starts a new generation, returning it. The bump happens under the
+    /// watcher lock, which `install` checks it against.
+    fn supersede(&self) -> u64 {
+        let mut watcher = lock(&self.watcher, "MCP watcher");
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(handle) = watcher.take() {
+            handle.abort();
+        }
+        generation
     }
 }
 
@@ -241,7 +256,9 @@ impl Supervisor {
         match result {
             Ok(connected) => {
                 let slot = Arc::new(ServerSlot::new(spec, McpServerState::Connected));
-                self.install(&slot, connected);
+                if self.install(&slot, connected, 0).is_err() {
+                    unreachable!("a new slot is still on its first generation");
+                }
                 (slot, Ok(()))
             }
             Err(error) => {
@@ -251,16 +268,32 @@ impl Supervisor {
         }
     }
 
-    /// Takes a new connection into `slot` and starts watching it.
-    fn install(self: &Arc<Self>, slot: &Arc<ServerSlot>, connected: Connected) {
+    /// Takes a new connection into `slot` and starts watching it. A connection made for a
+    /// generation a manual reconnect has since replaced is handed back, to be closed.
+    fn install(
+        self: &Arc<Self>,
+        slot: &Arc<ServerSlot>,
+        connected: Connected,
+        generation: u64,
+    ) -> Result<(), Connected> {
+        let mut watcher = lock(&slot.watcher, "MCP watcher");
+        if slot.generation.load(Ordering::SeqCst) != generation {
+            return Err(connected);
+        }
         let connection = connected.connection.clone();
         let failed = connected.transport_failed.clone();
         *lock(&slot.connection, "MCP connection") = Some(connected);
         slot.closing.store(false, Ordering::SeqCst);
         slot.set_state(McpServerState::Connected);
-        let watcher = tokio::spawn(self.clone().watch(slot.clone(), connection, failed));
-        // The handle this replaces is a finished watcher, or the one that is calling us.
-        drop(lock(&slot.watcher, "MCP watcher").replace(watcher));
+        let new = tokio::spawn(self.clone().watch(slot.clone(), connection, failed));
+        // A replaced watcher is aborted, unless it is the task that is calling us, which ends
+        // by itself.
+        if let Some(old) = watcher.replace(new)
+            && tokio::task::try_id() != Some(old.id())
+        {
+            old.abort();
+        }
+        Ok(())
     }
 
     async fn watch(
@@ -295,12 +328,16 @@ impl Supervisor {
 
     async fn reconnect_with_backoff(self: &Arc<Self>, slot: &Arc<ServerSlot>) {
         let mut last = None;
+        let generation = slot.generation.load(Ordering::SeqCst);
         for attempt in 1..=RECONNECT_ATTEMPTS {
             slot.set_state(McpServerState::Reconnecting { attempt });
             tokio::time::sleep(RECONNECT_BASE * (1 << (attempt - 1))).await;
             match self.attempt(&slot.spec, CONNECT_TIMEOUT).await {
                 Ok(connected) => {
-                    self.install(slot, connected);
+                    if let Err(stale) = self.install(slot, connected, generation) {
+                        stale.connection.close().await;
+                        return;
+                    }
                     self.approver
                         .notice(&format!("MCP server `{}` reconnected", slot.name()));
                     (self.refresh)();
@@ -324,7 +361,7 @@ impl Supervisor {
         self: &Arc<Self>,
         slot: &Arc<ServerSlot>,
     ) -> Result<(), McpError> {
-        slot.stop_watcher();
+        let generation = slot.supersede();
         slot.closing.store(true, Ordering::SeqCst);
         let old = lock(&slot.connection, "MCP connection").take();
         if let Some(old) = old {
@@ -332,8 +369,10 @@ impl Supervisor {
         }
         match self.attempt(&slot.spec, CONNECT_TIMEOUT).await {
             Ok(connected) => {
-                self.install(slot, connected);
-                (self.refresh)();
+                match self.install(slot, connected, generation) {
+                    Ok(()) => (self.refresh)(),
+                    Err(stale) => stale.connection.close().await,
+                }
                 Ok(())
             }
             Err(error) => {

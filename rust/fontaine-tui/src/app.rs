@@ -958,10 +958,7 @@ impl App {
             Input::Paste(text) => {
                 // A pasted key lands in the dialog's masked field, never in the message box.
                 // Overlays that take keys before the dialog also own the paste.
-                let above_dialog = self.approval.is_some()
-                    || !self.questions.is_empty()
-                    || !self.elicitations.is_empty()
-                    || self.denied.is_some()
+                let above_dialog = self.denied.is_some()
                     || self.unavailable.is_some()
                     || self.server.is_some()
                     || self.guardian_off_prompt.is_some()
@@ -974,17 +971,24 @@ impl App {
                     || self.resume.is_some()
                     || self.rewind.is_some()
                     || self.config.is_some();
-                if above_dialog {
-                    // Only the MCP form takes a paste, into its focused field; it is the dialog
-                    // on top when no approval or question is open.
+                if !above_dialog && let Some(dialog) = &mut self.providers {
+                    dialog.handle_paste(&text);
+                } else if above_dialog {
+                    // An overlay above the dialog owns the keys; nothing takes the paste.
+                } else if self.approval.is_some()
+                    || !self.questions.is_empty()
+                    || !self.elicitations.is_empty()
+                {
+                    // Only the MCP form takes a paste, into its focused field, and only when
+                    // it is the overlay `handle_key` would hand keys to.
                     if self.approval.is_none()
                         && self.questions.is_empty()
+                        && self.agents.is_none()
+                        && !crate::view::transcript_has_keys(self)
                         && let Some(panel) = self.elicitations.front_mut()
                     {
                         panel.handle_paste(&text);
                     }
-                } else if let Some(dialog) = &mut self.providers {
-                    dialog.handle_paste(&text);
                 } else if !self.covered() {
                     if let Some(search) = &mut self.search {
                         search.query.push_str(&text.replace(['\r', '\n'], " "));
@@ -2631,6 +2635,25 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(app.elicitations.is_empty());
+    }
+
+    #[test]
+    fn a_paste_goes_to_the_provider_dialog_not_a_queued_elicitation() {
+        let mut app = app();
+        let mut rx = open_elicitation(&mut app);
+        app.providers = Some(dialog_on_key_screen());
+        app.handle_input(Input::Paste("sk-abc".into()));
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            Action::Providers(DialogKey::StoreKey {
+                account: "work".into(),
+                key: crate::provider_dialog::Secret::new("sk-abc"),
+            })
+        );
+        app.providers = None;
+        // The required field is still empty, so the form does not accept.
+        press(&mut app, KeyCode::Enter);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
