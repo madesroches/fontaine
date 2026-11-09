@@ -4,7 +4,7 @@
 
 mod common;
 
-#[path = "../../fontaine-mcp/tests/common/server.rs"]
+#[path = "../../fontaine-tools/tests/mcp_common/server.rs"]
 mod server;
 
 use std::collections::BTreeSet;
@@ -22,12 +22,12 @@ use fontaine_core::config::PermissionMode::{self, Manual};
 use fontaine_core::questions::HumanQuestions;
 use fontaine_core::tier::Tier;
 use fontaine_core::tools::{ExtensionTool, ExtensionTools, RegistryParams, registry};
-use fontaine_mcp::connect_transport;
 use fontaine_tools::ask_user::{AskUserTool, Question, QuestionReply, QuestionSource};
 use fontaine_tools::bug_draft::{DraftArgs, DraftBugReportTool, DraftSink};
 use fontaine_tools::descriptor::{TOOLS, find};
 use fontaine_tools::gate::{AgentId, ROOT_AGENT};
 use fontaine_tools::guarded::Guard;
+use fontaine_tools::mcp::connect_transport;
 use fontaine_tools::models_tool::{ModelSource, ModelsTool};
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, registered_risk};
@@ -407,7 +407,7 @@ async fn serve(
     double: Double,
     rig: &Rig,
     handle: &rig_agent::tool::server::ToolServerHandle,
-) -> fontaine_mcp::McpConnectionHandle {
+) -> fontaine_tools::mcp::McpConnectionHandle {
     let (c2s, sfc) = tokio::io::duplex(8192);
     let (s2c, cfs) = tokio::io::duplex(8192);
     tokio::spawn(async move {

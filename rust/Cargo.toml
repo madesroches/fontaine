@@ -24,7 +24,6 @@ fontaine-core = { path = "fontaine-core" }
 fontaine-tools = { path = "fontaine-tools" }
 fontaine-guardian = { path = "fontaine-guardian" }
 fontaine-agents = { path = "fontaine-agents" }
-fontaine-mcp = { path = "fontaine-mcp" }
 fontaine-tui = { path = "fontaine-tui" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }

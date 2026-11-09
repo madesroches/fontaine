@@ -1697,7 +1697,6 @@ dependencies = [
  "crossterm",
  "fontaine-agents",
  "fontaine-guardian",
- "fontaine-mcp",
  "fontaine-tools",
  "futures",
  "gix",
@@ -1776,24 +1775,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fontaine-mcp"
-version = "0.1.0"
-dependencies = [
- "fontaine-tools",
- "futures",
- "reqwest",
- "rig-agent",
- "rig-core",
- "rig-rmcp",
- "rmcp",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "wiremock",
-]
-
-[[package]]
 name = "fontaine-tools"
 version = "0.1.0"
 dependencies = [
@@ -1809,8 +1790,11 @@ dependencies = [
  "rcgen",
  "regex",
  "reqwest",
+ "rig-agent",
  "rig-core",
+ "rig-rmcp",
  "rig-tools",
+ "rmcp",
  "rustls",
  "schemars",
  "serde",
