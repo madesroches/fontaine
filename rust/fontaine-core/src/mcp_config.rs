@@ -529,41 +529,60 @@ pub fn add_server(
     }
 }
 
-/// Removes `name` from every file `scope` keeps (for project, `.mcp.json` and
-/// `.fontaine/settings.toml`). `false` means it was in none of them.
-pub fn remove_server(scope: Scope, config_dir: &Path, root: &Path, name: &str) -> io::Result<bool> {
-    match scope {
-        Scope::Local => {
-            let root = root_key(root);
-            toml_remove(
-                Store::Private,
-                &local_path(config_dir),
-                &["projects", &root, "servers"],
-                name,
-            )
-        }
-        Scope::User => toml_remove(
-            Store::UserDocument,
-            &user_path(config_dir),
-            &["mcp", "servers"],
-            name,
-        ),
-        Scope::Project => {
-            // Both files are tried so a malformed one does not keep the other's entry.
-            let from_json = json_remove(&json_path(root), name);
-            let from_settings = toml_remove(
-                Store::Repository,
-                &project_settings_path(root),
-                &["mcp", "servers"],
-                name,
-            );
-            match (from_json, from_settings) {
-                (Ok(a), Ok(b)) => Ok(a || b),
-                (Ok(true), Err(_)) | (Err(_), Ok(true)) => Ok(true),
-                (Err(e), _) | (_, Err(e)) => Err(e),
+/// What `remove_server` did: the files it rewrote, and the first error it hit.
+#[derive(Debug, Default)]
+pub struct Removal {
+    pub rewritten: Vec<PathBuf>,
+    pub error: Option<io::Error>,
+}
+
+impl Removal {
+    fn record(&mut self, path: PathBuf, result: io::Result<bool>) {
+        match result {
+            Ok(true) => self.rewritten.push(path),
+            Ok(false) => {}
+            Err(e) => {
+                self.error.get_or_insert(e);
             }
         }
     }
+
+    /// `Ok(false)` means the server was in none of the files.
+    pub fn into_result(self) -> io::Result<bool> {
+        match self.error {
+            Some(e) => Err(e),
+            None => Ok(!self.rewritten.is_empty()),
+        }
+    }
+}
+
+/// Removes `name` from every file `scope` keeps (for project, `.mcp.json` and
+/// `.fontaine/settings.toml`). Every file is tried, so a failing one neither keeps the other's
+/// entry nor hides what was already rewritten.
+pub fn remove_server(scope: Scope, config_dir: &Path, root: &Path, name: &str) -> Removal {
+    let mut removal = Removal::default();
+    match scope {
+        Scope::Local => {
+            let path = local_path(config_dir);
+            let key = root_key(root);
+            let result = toml_remove(Store::Private, &path, &["projects", &key, "servers"], name);
+            removal.record(path, result);
+        }
+        Scope::User => {
+            let path = user_path(config_dir);
+            let result = toml_remove(Store::UserDocument, &path, &["mcp", "servers"], name);
+            removal.record(path, result);
+        }
+        Scope::Project => {
+            let json = json_path(root);
+            let result = json_remove(&json, name);
+            removal.record(json, result);
+            let settings = project_settings_path(root);
+            let result = toml_remove(Store::Repository, &settings, &["mcp", "servers"], name);
+            removal.record(settings, result);
+        }
+    }
+    removal
 }
 
 /// Every scope and file that defines `name`, in scope order, and a warning for each file that
@@ -704,8 +723,16 @@ mod tests {
         assert_eq!(read.servers[0].1.args, Some(vec!["hi".to_string()]));
         assert!(!read_local(&path, Path::new("/nowhere")).applies);
 
-        assert!(remove_server(Scope::Local, &w.config, &w.root, "foo").unwrap());
-        assert!(!remove_server(Scope::Local, &w.config, &w.root, "foo").unwrap());
+        assert!(
+            remove_server(Scope::Local, &w.config, &w.root, "foo")
+                .into_result()
+                .unwrap()
+        );
+        assert!(
+            !remove_server(Scope::Local, &w.config, &w.root, "foo")
+                .into_result()
+                .unwrap()
+        );
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("keep") && !text.contains("foo"), "{text}");
     }
@@ -722,7 +749,11 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("[mcp.servers.foo]"), "{text}");
-        assert!(remove_server(Scope::User, &w.config, &w.root, "foo").unwrap());
+        assert!(
+            remove_server(Scope::User, &w.config, &w.root, "foo")
+                .into_result()
+                .unwrap()
+        );
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text, "# top\n[tui]\ntheme = \"dark\" # inline\n");
     }
@@ -758,8 +789,16 @@ mod tests {
         let read = read_project_json(&path);
         assert!(read.warnings.is_empty(), "{:?}", read.warnings);
         assert_eq!(read.servers.len(), 2);
-        assert!(remove_server(Scope::Project, &w.config, &w.root, "foo").unwrap());
-        assert!(!remove_server(Scope::Project, &w.config, &w.root, "foo").unwrap());
+        assert!(
+            remove_server(Scope::Project, &w.config, &w.root, "foo")
+                .into_result()
+                .unwrap()
+        );
+        assert!(
+            !remove_server(Scope::Project, &w.config, &w.root, "foo")
+                .into_result()
+                .unwrap()
+        );
         assert_eq!(read_project_json(&path).servers.len(), 1);
     }
 
@@ -782,7 +821,11 @@ mod tests {
         );
         assert_eq!(scopes(&found), [Scope::Local, Scope::Project, Scope::User]);
         assert!(find("bar", &w.config, &w.root).0.is_empty());
-        assert!(remove_server(Scope::Project, &w.config, &w.root, "foo").unwrap());
+        assert!(
+            remove_server(Scope::Project, &w.config, &w.root, "foo")
+                .into_result()
+                .unwrap()
+        );
         let found = find("foo", &w.config, &w.root).0;
         assert_eq!(scopes(&found), [Scope::Local, Scope::User]);
     }

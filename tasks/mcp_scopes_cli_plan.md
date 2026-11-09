@@ -320,7 +320,7 @@ errors. This differs from `fontaine plugin` and `models`, which exit 2 for such 
   (`Connected`), `rust/fontaine-tools/tests/mcp_registration.rs`
 - `rust/fontaine/src/cli.rs`, `rust/fontaine/src/lib.rs`, `rust/fontaine/src/mcp_cmd.rs` (new),
   `rust/fontaine/src/mcp_probe.rs` (new), `rust/fontaine/src/doctor_cmd.rs`,
-  `rust/fontaine/examples/touch_marker.rs` (new)
+  `rust/fontaine/examples/mcp_touch_marker.rs` (new)
 - `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/reports.rs`,
   `rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/tests/agents.rs`
 - `docs/mcp.md`, `docs/plugins.md`, `docs/configuration.md`, `docs/doctor.md`, `docs/tui.md`,
@@ -367,7 +367,7 @@ Plan-local decisions taken while the user was away (not for the master plan):
 - AFK: Load warnings travel in a new `Config::warnings: Vec<String>` filled by `config::load`, routed into `prep.warnings` (headless stderr, TUI startup notices), doctor's warnings list and `fontaine mcp`'s stderr.
 - AFK: A server whose spec fails to build is warned through `approver.warn`, listed by `/mcp` as failed (pushed into the TUI's `mcp_status`), and `not_attempted` re-runs `server_spec` to report the build error on `/mcp reconnect`; no supervisor slot is created for it.
 - AFK: `${CLAUDE_PROJECT_DIR}` in a project `.mcp.json` expands to the session workspace root, never from the process environment, as the plugin expander and Claude Code do; a `server_spec` test covers an inherited conflicting value.
-- AFK: The never-started integration test uses a copy of `touch_marker` in `fontaine/examples/` (it writes its marker at once; `hook_marker` blocks reading stdin, so the old test could not fail) and also asserts the status reads `pending approval`.
+- AFK: The never-started integration test uses a copy of `touch_marker` (as `mcp_touch_marker`) in `fontaine/examples/` (it writes its marker at once; `hook_marker` blocks reading stdin, so the old test could not fail) and also asserts the status reads `pending approval`.
 
 ## Documentation
 

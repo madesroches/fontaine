@@ -221,7 +221,7 @@ async fn list_shows_an_unapproved_repository_server_as_pending_and_never_starts_
         ".mcp.json",
         &serde_json::json!({"mcpServers": {"repo": {
             "type": "stdio",
-            "command": example("touch_marker"),
+            "command": example("mcp_touch_marker"),
             "args": [marker.to_string_lossy()],
         }}})
         .to_string(),
@@ -283,4 +283,26 @@ async fn a_malformed_mcp_json_does_not_stop_add_or_remove_in_another_scope() {
     assert!(out.stderr.contains("warning: ignoring"), "{}", out.stderr);
     let out = s.run(&["mcp", "remove", "-s", "local", "srv"]).await;
     assert_eq!(out.code, Some(0), "{}\n{}", out.stdout, out.stderr);
+}
+
+#[tokio::test]
+async fn a_remove_that_fails_in_one_project_file_exits_1_and_reports_only_the_rewritten_one() {
+    let s = sandbox();
+    s.add_file(
+        ".mcp.json",
+        r#"{"mcpServers":{"srv":{"type":"stdio","command":"echo"}}}"#,
+    );
+    // A directory where the settings file belongs cannot be read or rewritten.
+    std::fs::create_dir_all(s.work.join(".fontaine/settings.toml")).unwrap();
+    let out = s.run(&["mcp", "remove", "-s", "project", "srv"]).await;
+    assert_eq!(out.code, Some(1), "{}\n{}", out.stdout, out.stderr);
+    assert!(out.stdout.contains(".mcp.json"), "{}", out.stdout);
+    assert!(!out.stdout.contains("settings.toml"), "{}", out.stdout);
+    assert!(
+        out.stderr.contains("cannot remove the MCP server"),
+        "{}",
+        out.stderr
+    );
+    let json = std::fs::read_to_string(s.work.join(".mcp.json")).unwrap();
+    assert!(!json.contains("srv"), "{json}");
 }

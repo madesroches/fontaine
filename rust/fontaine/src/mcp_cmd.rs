@@ -224,24 +224,23 @@ fn remove(
             }
         }
     };
-    let files: Vec<PathBuf> = found
-        .iter()
-        .filter(|(s, _)| *s == scope)
-        .map(|(_, path)| path.clone())
-        .collect();
-    let removed = mcp_config::remove_server(scope, &dirs.config, root, name)
-        .map_err(|e| Failure::io("cannot remove the MCP server", &e))?;
-    if !removed {
+    let removal = mcp_config::remove_server(scope, &dirs.config, root, name);
+    if removal.rewritten.is_empty() && removal.error.is_none() {
         return Err(Failure::failed(format!(
             "no MCP server named `{name}` in {}",
             scope_label(scope)
         )));
     }
-    println!("Removed MCP server `{name}` from {}", scope_label(scope));
-    for file in files {
-        println!("File modified: {}", file.display());
+    if !removal.rewritten.is_empty() {
+        println!("Removed MCP server `{name}` from {}", scope_label(scope));
+        for file in &removal.rewritten {
+            println!("File modified: {}", file.display());
+        }
     }
-    Ok(())
+    match removal.error {
+        Some(e) => Err(Failure::io("cannot remove the MCP server", &e)),
+        None => Ok(()),
+    }
 }
 
 /// What to say when `name` is in no scope `remove` can edit: it may be one it cannot.
