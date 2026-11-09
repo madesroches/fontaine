@@ -32,7 +32,7 @@ working unchanged.
 - Kinds that refuse an account key (`anthropic`, `openai`, `gemini`, `openrouter`) fail at
   startup; `openai-compatible` and `ollama` send no `Authorization` header when the account
   has no key (`docs/configuration.md:220-229`). `check_account`
-  (`rust/fontaine-core/src/config.rs:1555`) already rejects keys a kind does not accept via
+  (`rust/fontaine-core/src/config.rs:1546`) already rejects keys a kind does not accept via
   the `Provider` flags, including `quota` on kinds with `accepts_quota() == false`.
 - `Billing::Unpriced` (`rust/fontaine-core/src/providers/mod.rs:78-81`) drops any cost a
   response carries; today only `claude-subscription` and `opencode-go` (the flat-rate kinds)
@@ -128,7 +128,13 @@ error list pick it up from `providers::names()`, and the generic registry tests
    state that the moonshot.ai pay-as-you-go API stays `openai-compatible`. Add `kimi` to the
    "Where a credential comes
    from" sentence that names the kinds sending no `Authorization` header without a key.
-   Check `docs/tui.md` status-bar prose for the same rewording need.
+   In `docs/tui.md`, reword the status-bar subscription-quota prose, and extend the
+   account-list state sentence (`docs/tui.md:895`) so `no key needed` names `kimi` among the
+   kinds that can show it (a keyless `kimi` account uses `CredentialPolicy::Optional`, same as
+   `ollama`/`openai-compatible`).
+   In `docs/headless.md:247`, reword the `account_usage` row so its condition also covers a
+   `kind = "kimi"` account: a built-in quota source (the kind itself, like
+   `claude-subscription`), not only a `quota` key.
 6. `CHANGELOG.md`: entry under `[Unreleased]` → `Added`.
 
 ## Files to Modify
@@ -161,8 +167,11 @@ error list pick it up from `providers::names()`, and the generic registry tests
 - `docs/configuration.md`: provider table, the `[accounts.kimi]` example, the `kind` and
   `quota` rows of the `[accounts.<name>]` key table, the flat-rate/quota paragraph, and a
   note that moonshot.ai pay-as-you-go remains `openai-compatible`.
-- `docs/tui.md`: status-bar subscription-quota prose if it describes the `quota = "kimi"`
-  opt-in as the only way to get the segment.
+- `docs/tui.md`: status-bar subscription-quota prose, and the account-list state sentence
+  (which kinds can show `no key needed`).
+- `docs/headless.md`: the `account_usage` row of the output contract — the emitted-when
+  condition must name a `kimi` account's built-in quota source, not just a `quota` key or a
+  `claude-subscription` account.
 - `CHANGELOG.md` under `[Unreleased]` → `Added`.
 
 ## Testing Strategy
