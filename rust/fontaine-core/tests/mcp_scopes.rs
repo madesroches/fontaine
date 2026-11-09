@@ -8,10 +8,10 @@ use fontaine_core::agent::mcp_plan;
 use fontaine_core::config::Slot;
 
 fn local_file(w: &World, body: &str) {
-    let root = w.work.to_string_lossy();
+    let root = toml::Value::String(w.work.to_string_lossy().into_owned()).to_string();
     w.config_file(
         "mcp-local.toml",
-        &format!("[projects.\"{root}\".servers.{body}"),
+        &format!("[projects.{root}.servers.{body}"),
     );
 }
 
@@ -115,11 +115,11 @@ fn local_beats_project_and_user_by_name_and_the_cli_layer_beats_local() {
 fn malformed_files_and_entries_warn_and_are_skipped() {
     let w = World::new();
     w.mcp_json(r#"{"mcpServers":{"good":{"command":"x"},"bad__name":{"command":"x"},"web":{"type":"sse","url":"https://h"}}}"#);
-    let root = w.work.to_string_lossy();
+    let root = toml::Value::String(w.work.to_string_lossy().into_owned()).to_string();
     w.config_file(
         "mcp-local.toml",
         &format!(
-            "[projects.\"{root}\".servers.ok]\ncommand = \"x\"\n[projects.\"{root}\".servers.both]\ncommand = \"x\"\nurl = \"u\"\n"
+            "[projects.{root}.servers.ok]\ncommand = \"x\"\n[projects.{root}.servers.both]\ncommand = \"x\"\nurl = \"u\"\n"
         ),
     );
     let config = w.load().unwrap();

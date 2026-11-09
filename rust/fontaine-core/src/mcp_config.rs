@@ -837,10 +837,10 @@ mod tests {
         let read = read_project_json(&json_path(&w.root));
         assert!(read.servers.is_empty() && read.warnings.len() == 1);
         let path = local_path(&w.config);
-        let key = root_key(&w.root);
+        let key = toml::Value::String(root_key(&w.root)).to_string();
         std::fs::write(
             &path,
-            format!("[projects.\"{key}\".servers.bad]\ncommand = \"x\"\nurl = \"u\"\n[projects.\"{key}\".servers.ok]\ncommand = \"x\"\n"),
+            format!("[projects.{key}.servers.bad]\ncommand = \"x\"\nurl = \"u\"\n[projects.{key}.servers.ok]\ncommand = \"x\"\n"),
         )
         .unwrap();
         let read = read_local(&path, &w.root);
