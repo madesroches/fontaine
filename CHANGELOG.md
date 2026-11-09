@@ -20,6 +20,13 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- A `kimi` account kind for Kimi for Coding (the Kimi Code subscription): `kind = "kimi"`
+  instead of `kind = "openai-compatible"` plus `base_url` plus `quota = "kimi"`. The endpoint
+  is fixed at `https://api.kimi.com/coding/v1`, the key is optional, the subscription quota shows
+  in the status bar and headless `account_usage` with no `quota` key, and token cost reporting is
+  dropped like the other flat-rate kinds. The `openai-compatible` + `quota = "kimi"`
+  configuration keeps working, and the moonshot.ai pay-as-you-go API stays on
+  `openai-compatible` (#548).
 - Lifecycle hooks: `[[hooks.<event>]]` now takes `session_start`, `session_end`,
   `user_prompt_submit`, `stop`, `stop_failure`, `subagent_start`, `subagent_stop`, `pre_compact`,
   `post_compact`, `post_tool_use_failure`, `notification` and `task_created` beside the five tool

@@ -26,7 +26,9 @@ mod cache_wire;
 pub mod claude_subscription;
 pub mod derived_facts;
 pub mod device_flow;
+pub(crate) mod gateway;
 pub mod gemini;
+pub mod kimi;
 pub mod kimi_quota;
 pub mod ollama;
 pub mod openai;
@@ -369,6 +371,7 @@ const PROVIDERS: &[&dyn Provider] = &[
     &openai::OpenAi,
     &gemini::Gemini,
     &openai_compatible::OpenAiCompatible,
+    &kimi::Kimi,
     &ollama::Ollama,
     &opencode_go::OpencodeGo,
     &openrouter::OpenRouter,

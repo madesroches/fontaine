@@ -672,9 +672,9 @@ With no `[guardian] model`, the guardian is the highest-ranked validated model t
 accounts offers. If none is, the main model judges and Fontaine tells you once at startup.
 The guardian's and the scanner's calls force a structured answer, which a model that thinks by
 default refuses. Fontaine turns thinking off for those calls on `opencode-go` Chat models and
-non-Claude Messages models. On an `openai-compatible` account, a model that thinks by default
-cannot be the guardian: every call is denied as `GuardianUnavailable`. Pick a model without
-default thinking.
+non-Claude Messages models. On an `openai-compatible` or `kimi` account, a model that thinks by
+default cannot be the guardian: every call is denied as `GuardianUnavailable`. Pick a model
+without default thinking.
 
 A guardian on a `claude-subscription` account takes the same structured-answer path: the verdict
 arrives as the model's typed output or a forced call of an aliased tool of the inert tool
@@ -696,8 +696,8 @@ model = "work/claude-haiku-5-5"
   terminal UI a prompt offers to retry it, to pick another validated guardian for the session, or
   to switch to `manual`. In a headless run every adjudication is denied with `GuardianUnavailable`,
   and the `init` event and stderr say so.
-- For endpoints with no catalog match (a custom `openai-compatible` endpoint, Ollama, an
-  `opencode-go` account), only a model set explicitly in `guardian.model` is used, except for the
+- For endpoints with no catalog match (a custom `openai-compatible` endpoint, a `kimi` account,
+  Ollama, an `opencode-go` account), only a model set explicitly in `guardian.model` is used, except for the
   validated list's own `opencode-go` entry (`claude-haiku-5-5`), which an `opencode-go` account
   that serves it picks up as its default guardian. A small local
   model can be both the agent and the guardian; judge it by its own scorecard run. The guardian

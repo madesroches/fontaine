@@ -165,7 +165,7 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 
 | Key | Meaning | Default |
 |---|---|---|
-| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `ollama`, `opencode-go`, `openrouter` or `claude-subscription` (experimental). Required. | none |
+| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `kimi`, `ollama`, `opencode-go`, `openrouter` or `claude-subscription` (experimental). Required. | none |
 | `api_key_env` | The name of the environment variable that holds the key. Omit it to use the stored credential. Raw keys are never accepted inline. Refused for `opencode-go`, which signs in instead. | unset |
 | `base_url` | Endpoint override. Required for `openai-compatible`. | the provider's public endpoint |
 | `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
@@ -174,7 +174,7 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `prompt_caching` | `anthropic`, `openrouter` and `opencode-go` only: whether requests carry cache breakpoints, so the provider reuses the unchanged prefix at a fraction of the input price. On `anthropic` they sit on the tools, the system prompt and the latest message. On `openrouter` the conversation carries one top-level marker for every model except the self-caching `openai/`, `deepseek/`, `x-ai/` and `groq/` upstreams, which are sent none, and the guardian marks its system prompt. On `opencode-go` it affects only models served on the Messages wire; the other wires cache by prefix on their own. User scope only, because it changes spend and what the provider stores. | `true` for `anthropic` and `openrouter`, `false` for `opencode-go` |
 | `cache_ttl` | `anthropic`, `openrouter` and `opencode-go` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
 | `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. An explicit [`effort`](#model) wins over it, and `effort = "off"` equals `think = false` for the main agent. | unset |
-| `quota` | `openai-compatible` only (a `claude-subscription` account shows its plan usage with no key): `"kimi"` shows the account's subscription quota in the [status bar](tui.md#status-bar) and in headless `result.account_usage`, read from Kimi for Coding's `GET <base_url>/usages`. User scope only, because it sends the account's key in extra requests. | unset |
+| `quota` | `openai-compatible` only (a `kimi` account shows its subscription quota with no `quota` key, like `claude-subscription`): `"kimi"` shows the account's subscription quota in the [status bar](tui.md#status-bar) and in headless `result.account_usage`, read from Kimi for Coding's `GET <base_url>/usages`. User scope only, because it sends the account's key in extra requests. | unset |
 | `cli_path` | `claude-subscription` only: the absolute path of the official `claude` executable. | `claude` on `PATH` |
 | `claude_config_dir` | `claude-subscription` only: the absolute path of the CLI's own config directory, handed to it as `CLAUDE_CONFIG_DIR` for this account only, so two accounts can keep separate logins. | unset |
 | `https_proxy`, `http_proxy`, `no_proxy`, `ca_bundle`, `client_cert`, `client_key` | Override the same key of [`[network]`](#network) for this account only. | the `[network]` value |
@@ -193,28 +193,30 @@ What each kind talks to:
 | `gemini` | `generateContent` | `https://generativelanguage.googleapis.com` | required |
 | `ollama` | Ollama's native `/api/chat` | `http://localhost:11434` | optional |
 | `openai-compatible` | Chat Completions | none; `base_url` is required | optional |
+| `kimi` | Chat Completions | `https://api.kimi.com/coding/v1` | optional |
 | `opencode-go` | Chat Completions, Responses, Messages and `generateContent`, per model | `https://opencode.ai/inference/go` | sign-in |
 | `openrouter` | Chat Completions, with prompt caching | `https://openrouter.ai/api/v1` | required |
 | `claude-subscription` | Messages API, through the installed Claude Code CLI | none | the CLI's own login |
 
 An `openai-compatible` endpoint speaks Chat Completions, not the Responses API, and its models are
-unpriced, so `--max-budget-usd` does not apply to them.
+unpriced, so `--max-budget-usd` does not apply to them. The same holds for a `kimi` account, whose
+subscription is flat-rate; the moonshot.ai pay-as-you-go API is a different product and stays on
+`openai-compatible`.
 
-A flat-rate account has no token price worth estimating; its own quota is the budget signal. With
-`quota = "kimi"` Fontaine asks `<base_url>/usages` for the account's usage windows when the
-account's model is in use, then every minute, with the account's key as the bearer token (no
-`Authorization` header when the account has none) and a 10 second timeout. No credential other than
-the account's own is sent, and only to the account's own `base_url`. It is display only:
-it never affects permissions or the guardian, and a failure is reported once and hides the segment. The
-same applies to the account the guardian runs on, and a headless run asks once per `result` line
-instead of every minute.
+A flat-rate account has no token price worth estimating; its own quota is the budget signal. A
+`kimi` account reads it built in, from `https://api.kimi.com/coding/v1/usages`, with no `quota`
+key; for an `openai-compatible` account it is the `quota = "kimi"` opt-in instead. Fontaine asks
+for the account's usage windows when the account's model is in use, then every minute, with the
+account's key as the bearer token (no `Authorization` header when the account has none) and a 10
+second timeout. No credential other than the account's own is sent, and only to the account's own
+endpoint. It is display only: it never affects permissions or the guardian, and a failure is
+reported once and hides the segment. The same applies to the account the guardian runs on, and a
+headless run asks once per `result` line instead of every minute.
 
 ```toml
 [accounts.kimi]
-kind = "openai-compatible"
-base_url = "https://api.kimi.com/coding/v1"
+kind = "kimi"
 api_key_env = "KIMI_API_KEY"
-quota = "kimi"
 ```
 
 #### Where a credential comes from
@@ -224,9 +226,9 @@ quota = "kimi"
    kind; the stored credential is not consulted as a fallback.
 2. Otherwise the key is the account's entry in `credentials.toml`, written by `/login` in the
    terminal UI.
-3. With neither, an `ollama` or `openai-compatible` account sends no `Authorization` header. An
-   `anthropic`, `openai`, `gemini` or `openrouter` account with no key is a configuration error (exit code 2)
-   when the main model uses it.
+3. With neither, an `ollama`, `openai-compatible` or `kimi` account sends no `Authorization`
+   header. An `anthropic`, `openai`, `gemini` or `openrouter` account with no key is a
+   configuration error (exit code 2) when the main model uses it.
 
 An `opencode-go` account has no key. Its credential is the sign-in that
 `/login <account>` stores, and an account that has not signed in is a configuration error (exit

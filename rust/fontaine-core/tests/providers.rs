@@ -65,6 +65,7 @@ fn wires_belong_to_opencode_go_only() {
         "openai",
         "gemini",
         "openai-compatible",
+        "kimi",
         "ollama",
         "openrouter",
     ] {
@@ -96,7 +97,7 @@ fn prompt_caching_keys_belong_to_the_kinds_that_accept_them() {
             Some(fontaine_core::config::CacheTtl::OneHour)
         );
     }
-    for kind in ["openai", "gemini", "openai-compatible", "ollama"] {
+    for kind in ["openai", "gemini", "openai-compatible", "kimi", "ollama"] {
         for key in ["prompt_caching = false", "cache_ttl = \"5m\""] {
             let err = parse(&format!(
                 "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\n{key}\n"
@@ -118,6 +119,7 @@ fn prompt_caching_defaults_per_kind() {
         ("openai", false),
         ("gemini", false),
         ("openai-compatible", false),
+        ("kimi", false),
         ("ollama", false),
     ] {
         let provider = providers::find(kind).unwrap();
@@ -146,6 +148,29 @@ fn project_scope_cannot_set_prompt_caching() {
 fn openai_compatible_still_needs_a_base_url() {
     let err = parse("[accounts.x]\nkind = \"openai-compatible\"\n").unwrap_err();
     assert!(err.contains("accounts.x.base_url"), "{err}");
+}
+
+#[test]
+fn kimi_needs_no_base_url_and_always_carries_its_quota() {
+    let w = World::new();
+    w.user_file("[accounts.k]\nkind = \"kimi\"\n");
+    let config = w.load().unwrap();
+    let network = config.loaded_network(Some("k")).unwrap();
+    let client = providers::find("kimi")
+        .unwrap()
+        .connect(ConnectContext {
+            account_name: "k",
+            account: &config.accounts["k"],
+            credential: None,
+            data_dir: &w.data,
+            session_id: None,
+            network: &network,
+            env: std::sync::Arc::new(|_| None),
+            warn: providers::warn::Warn::process(),
+        })
+        .expect("the kind connects");
+    assert!(config.accounts["k"].base_url.is_none());
+    assert!(client.quota_source().is_some());
 }
 
 #[test]
@@ -180,6 +205,7 @@ fn model_options_belong_to_ollama_only() {
             "openai",
             "gemini",
             "openai-compatible",
+            "kimi",
             "opencode-go",
             "openrouter",
         ] {
@@ -208,6 +234,7 @@ fn quota_belongs_to_openai_compatible_only() {
         "anthropic",
         "openai",
         "gemini",
+        "kimi",
         "ollama",
         "opencode-go",
         "openrouter",
@@ -275,6 +302,7 @@ fn every_kind_but_the_arbitrary_gateway_names_a_catalog_vendor() {
         "opencode-go" => Some("opencode-go"),
         "openrouter" => Some("openrouter"),
         "openai-compatible" => None,
+        "kimi" => None,
         other => panic!("say which catalog vendor `{other}` looks its ids up under"),
     };
     for name in providers::names() {

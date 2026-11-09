@@ -120,7 +120,8 @@ the guardian-off chip.
 ### Subscription quota
 
 An account with [`quota = "kimi"`](configuration.md#accountsname) adds the provider's own quota to
-the bar, such as `kimi · 5h 60% (15:00) · 7d 30% (Sun) · code 5% · month 51% (Dec 1)`: every window
+the bar, such as `kimi · 5h 60% (15:00) · 7d 30% (Sun) · code 5% · month 51% (Dec 1)`. A `kimi`
+account needs no `quota` key: the subscription quota is built in and shows the same way: every window
 the provider reports, always, shortest first, each with its used share rounded to the nearest
 percent (`100%` from the limit up) and, in parentheses, when it resets in local time: the clock
 time (24-hour) when that is today, `tomorrow`, the weekday within the next six days, and the date
@@ -892,7 +893,7 @@ authenticates with:
 
 The state column is `key stored`, `key from $VAR` or `$VAR is not set` for an account with
 `api_key_env`, `signed in (<email>)`, `not signed in` for an account that needs a key or sign-in
-and has none, `no key needed` for an `ollama` or `openai-compatible` account without one, and `login owned by the external CLI (experimental)` for a `claude-subscription` account. It
+and has none, `no key needed` for an `ollama`, `openai-compatible` or `kimi` account without one, and `login owned by the external CLI (experimental)` for a `claude-subscription` account. It
 is what resolving the account would do, so a key left behind by a changed `kind` counts as not
 signed in.
 
