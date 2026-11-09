@@ -27,6 +27,7 @@ Files in these directories:
 | File | Purpose |
 |---|---|
 | `<config dir>/config.toml` | The user settings file. |
+| `<config dir>/mcp-local.toml` | The [local-scope MCP servers](mcp.md#scopes), keyed by workspace root, written by `fontaine mcp add`. Readable by the current user only; the agent's file tools cannot write it unprompted. It is not a settings file. |
 | `<config dir>/plugins.toml` | The [plugin and marketplace](plugins.md) registry, written by the `fontaine plugin` CLI and by the [plugin auto-update](plugins.md#auto-update) pass. It is not a settings file. |
 | `<config dir>/skill-trust.toml` | The skills whose `allowed-tools` you trusted, each pinned to a digest of the skill file (see [Skill trust](#skill-trust)). Written by `fontaine plugin trust` and `/skills trust`; not a settings file, and not the workspace `trust.toml`. |
 | `<data dir>/trust.toml` | Workspace trust record (see [Workspace trust](#workspace-trust)). |
@@ -44,7 +45,8 @@ Files that hold secrets or trust decisions are created readable by the current u
 
 ## The settings scope stack
 
-Settings come from up to five scopes. Higher scopes win, listed here highest first:
+Settings come from up to five scopes. Higher scopes win, listed here highest first. MCP servers
+have two more sources, covered below the list:
 
 1. **managed**: a reserved slot. It is empty and no file is read for it.
 2. **CLI**: the file named by `--settings <file>`. It applies to one session and has user trust.
@@ -54,6 +56,12 @@ Settings come from up to five scopes. Higher scopes win, listed here highest fir
 4. **project**: `<workspace>/.fontaine/settings.toml`. It is shared with the repository and may only
    tighten.
 5. **user**: `<config dir>/config.toml`. It may set every key.
+
+[MCP servers](mcp.md#scopes) also come from `<config dir>/mcp-local.toml` (local scope: the
+entries for this workspace, with user trust, between the CLI and project-local scopes) and from the
+repository's `.mcp.json` (project scope, under `.fontaine/settings.toml`, which wins a name
+collision with a warning). Neither holds any other setting. The scope stack that `fontaine doctor`
+and the debug file list shows them as `local` and a second `project` entry when the files exist.
 
 The workspace is the project directory (the launch directory, or `--cd`), after symlinks are resolved. Project
 files are read only from it: there is no search through parent directories and no nested settings
@@ -890,6 +898,8 @@ UI, and their `allow` is ignored. A repository's `http` and `prompt` hooks, and 
 through; values never appear in configuration, and the rest of Fontaine's environment is not passed.
 Tools register as `mcp__<server>__<tool>`, always as `arbitrary` tools. A server a repository
 defines starts only after workspace trust and your approval of that server in the terminal UI.
+The same servers can be declared in local scope (`mcp-local.toml`) or a repository's `.mcp.json`,
+and `fontaine mcp add` writes any of them; see [Scopes](mcp.md#scopes).
 
 ```toml
 [mcp.servers.github]

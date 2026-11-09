@@ -12,7 +12,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mut servers = self.mcp_status.clone();
         servers.extend(runtime.mcp_states().into_iter().map(|(name, state)| {
             let state = match state {
-                McpServerState::Connected => McpState::Connected,
+                McpServerState::Connected { tools } => McpState::Connected { tools },
                 McpServerState::Reconnecting { attempt } => McpState::Pending { attempt },
                 McpServerState::Failed(error) => McpState::Failed(error),
             };
@@ -117,7 +117,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         .transcript
                         .notice(format!("MCP server `{}` is connected", outcome.server));
                 }
-                Some(e) => self.app.transcript.error(e),
+                Some(e) => {
+                    // A server whose definition could not be built has no slot, so `/mcp`
+                    // lists it from here.
+                    if !runtime
+                        .mcp_states()
+                        .iter()
+                        .any(|(n, _)| *n == outcome.server)
+                    {
+                        self.mcp_status
+                            .push((outcome.server.clone(), McpState::Failed(e.clone())));
+                    }
+                    self.app.transcript.error(e);
+                }
             }
         }
         true

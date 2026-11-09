@@ -15,6 +15,8 @@ use tempfile::TempDir;
 pub struct World {
     /// Makes runtimes built in this world run as if `--max-budget-usd` were given.
     pub explicit_budget_cap: std::sync::atomic::AtomicBool,
+    /// The credential variables runtimes built in this world withhold from tool subprocesses.
+    pub scrub_env: std::sync::Mutex<Vec<OsString>>,
     _tmp: TempDir,
     pub root: PathBuf,
     pub work: PathBuf,
@@ -34,6 +36,7 @@ impl World {
         }
         World {
             explicit_budget_cap: Default::default(),
+            scrub_env: Default::default(),
             _tmp: tmp,
             root,
             work,
@@ -94,6 +97,11 @@ impl World {
     /// A file next to the user's settings, such as a composition script.
     pub fn config_file(&self, name: &str, text: &str) {
         write(&self.config.join(name), text);
+    }
+
+    /// A `.mcp.json` in the launch directory.
+    pub fn mcp_json(&self, text: &str) {
+        write(&self.work.join(".mcp.json"), text);
     }
 
     pub fn project_file(&self, text: &str) {

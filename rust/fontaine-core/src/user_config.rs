@@ -15,7 +15,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 }
 
 // toml_edit's `Display` quotes the offending source line, which could echo an `[env]` value.
-fn parse_document(text: &str, path: &Path) -> io::Result<DocumentMut> {
+pub(crate) fn parse_document(text: &str, path: &Path) -> io::Result<DocumentMut> {
     text.parse().map_err(|e: toml_edit::TomlError| {
         invalid(format!(
             "{} is not valid TOML: {}",

@@ -28,8 +28,9 @@ describe what the current build does; each page covers one topic.
 - [User hooks](hooks.md): the tool, prompt, turn, subagent, compaction, session and notification
   events, the `command`, `http` and `prompt` handlers, their JSON input and output, and what a
   hook can and cannot decide.
-- [MCP servers](mcp.md): declaring stdio and streamable-HTTP servers, workspace trust and
-  per-server approval, and how MCP tools are gated.
+- [MCP servers](mcp.md): declaring stdio and streamable-HTTP servers in local, project
+  (`.mcp.json`) and user scope, the `fontaine mcp` command, workspace trust and per-server
+  approval, and how MCP tools are gated.
 - [Instruction files](instructions.md): `FONTAINE.md`, `CLAUDE.md` and `AGENTS.md` from your
   config, every parent directory and nested directories, `@path` imports, rules scoped by path,
   what the guardian reads, `/memory` and `/init`.

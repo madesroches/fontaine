@@ -2,6 +2,8 @@ mod auto_mode;
 pub mod cli;
 mod doctor_cmd;
 pub mod headless;
+mod mcp_cmd;
+mod mcp_probe;
 mod models_cmd;
 mod plugin;
 mod plugin_auto_update;
@@ -344,6 +346,12 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             return ExitCode::from(EXIT_CONFIG);
         }
     };
+
+    // `mcp` edits files that may be the very ones that fail to load, so it loads the settings
+    // itself, where a command needs them.
+    if let Some(cli::Command::Mcp(args)) = &cli.command {
+        return mcp_cmd::run(&cli, args, &host, sink.as_ref());
+    }
 
     // Doctor loads the settings itself, so that a failure to load is part of what it reports.
     if let Some(cli::Command::Doctor(args)) = &cli.command {
@@ -851,6 +859,12 @@ fn prepare_session(
         eprintln!("fontaine: {e}");
         e.exit_code()
     })?;
+    warnings.extend(
+        config
+            .warnings
+            .iter()
+            .map(|warning| Notice::warning(warning.clone(), None)),
+    );
     warnings.extend(
         contributions
             .warnings

@@ -5,14 +5,16 @@ server runs as a child process (stdio) or is reached over streamable HTTP, and e
 becomes a tool the model can call. MCP tools go through the same permission pipeline as every other
 tool; nothing a server says about itself changes how they are judged.
 
-In the terminal UI, `/mcp` lists the servers and whether each is connected, pending (being
-reconnected), failed, left off or not loaded, and `/mcp reconnect` restarts them; see
-[Reconnecting](#reconnecting).
+In the terminal UI, `/mcp` lists the servers and whether each is connected (with how many tools it
+registered), pending (being reconnected), failed, left off or not loaded, and `/mcp reconnect`
+restarts them; see [Reconnecting](#reconnecting). `fontaine mcp` adds, lists, shows and removes
+servers from the command line; see [The `fontaine mcp` command](#the-fontaine-mcp-command).
 
 ## Declaring servers
 
-Servers are declared under `[mcp.servers.<name>]`. Set exactly one of `command` (stdio) or `url`
-(streamable HTTP).
+Servers are declared under `[mcp.servers.<name>]` in a settings file, or with
+[`fontaine mcp add`](#the-fontaine-mcp-command). Set exactly one of `command` (stdio) or `url`
+(streamable HTTP). [Scopes](#scopes) says which files may declare them.
 
 ```toml
 [mcp.servers.github]
@@ -46,12 +48,35 @@ contrast, are expanded at load, and the variables a plugin references are named 
 summary. The server's standard error is not shown in the terminal UI; it goes to
 the debug file (`--debug-file`).
 
-**Where they are declared.** The user file, `--settings` and an untracked `settings.local.toml` of
-a trusted root declare servers that start at once. A server declared in a repository's shared
-`.fontaine/settings.toml` is [asked about](#servers-a-repository-defines) first. Extra workspace
-roots (`--add-dir`) never contribute servers. A [plugin's](plugins.md) `.mcp.json` servers start
-without the workspace-trust gate: install approved them, in the terminal UI and headless runs
-alike.
+## Scopes
+
+A server is declared in one of three scopes, as in Claude Code.
+
+| Scope | Where | Trust |
+|---|---|---|
+| `local` | `mcp-local.toml` in the [config directory](configuration.md#where-files-live), under `[projects."<root>".servers.<name>]`; private to you, in one workspace | Yours: starts at once, no workspace trust or approval |
+| `project` | `.mcp.json` in the repository root, and `[mcp.servers]` in `.fontaine/settings.toml`; shared through the repository | The repository's: [workspace trust, then your approval](#servers-a-repository-defines) |
+| `user` | `[mcp.servers]` in the user file (`config.toml`); every workspace | Yours |
+
+`<root>` is the canonical launch directory, the one the project files are read from. A local file
+entry is read only for its own workspace. The file lives in your config directory, which the
+[floor](permissions.md#the-pipeline) protects, so a repository cannot write it.
+
+These sources load too, and `fontaine mcp list` and `get` show them under their own labels:
+`project-local` (an untracked `.fontaine/settings.local.toml` of a trusted root, which starts at
+once), `cli` (the `--settings` file) and `plugin` (a [plugin's](plugins.md) `.mcp.json`, which
+starts without the workspace-trust gate: install approved it, in the terminal UI and headless runs
+alike). Extra workspace roots (`--add-dir`) never contribute servers.
+
+**Precedence by name: `--settings` > local > project-local > project > user.** This is Claude
+Code's local > project > user, with Fontaine's project-local and `--settings` layers kept in their
+places. Within project, `.fontaine/settings.toml` wins over `.mcp.json`, and the collision warns
+once at startup. A plugin's server whose name collides with a configured server is an error that
+names the plugin.
+
+A malformed `mcp-local.toml` or `.mcp.json`, or an entry in one that cannot be used, is a warning
+(at startup, in `fontaine doctor` and in `fontaine mcp`) and is skipped, so `fontaine mcp` can still
+run to repair it.
 
 ## Tool names
 
@@ -126,8 +151,9 @@ when Fontaine refreshes the list.
 
 ## Servers a repository defines
 
-A server in a repository's `.fontaine/settings.toml` is an executable the repository chose. In the
-terminal UI:
+A server in a repository's `.fontaine/settings.toml` or in its `.mcp.json` is an executable the
+repository chose. A repository written for Claude Code works as it is: Fontaine reads its root
+`.mcp.json` (`mcpServers`) as project scope. In the terminal UI:
 
 1. Before anything it defines can start, an untrusted workspace root gets the [trust
    prompt](tui.md#workspace-trust). If you decline, the session runs without the repository's
@@ -144,6 +170,32 @@ as [requiring your approval](#requiring-approval-for-a-tool): a repository can a
 cannot make a call of that server run without the same approval any call needs, and it can only
 make that approval stricter.
 
+### `.mcp.json`
+
+Each entry takes `type` (`stdio` or `http`; absent means `stdio` for a `command` entry and `http`
+for a `url` entry), `command`, `args`, `env` and `url`. An entry with `type` `sse` or `ws` is
+skipped with a warning, since those transports are not supported yet. `headers` is not supported
+yet either: the server is kept, connects without them, and a warning says so.
+
+`${VAR}` and `${VAR:-default}` in `command`, `args`, `env` values and `url` are expanded **when the
+server starts**, from Fontaine's environment. `${CLAUDE_PROJECT_DIR}` is the session's workspace
+root, never a value inherited from a parent process. Because the text stays as written, the
+approval prompt shows `${GITHUB_TOKEN}` and never the value, lists the variables the definition
+references next to its environment names, and the approval survives a rotated token but not a
+changed reference.
+
+- **A credential variable is never expanded.** A repository's definition may not reference a
+  variable that holds a credential Fontaine knows of: the keys of your model accounts and the
+  telemetry credentials, the scanner's Hugging Face token, `MICROMEGAS_*` and OTLP header
+  variables (the set tool subprocesses are [scrubbed](#declaring-servers) of), the web-search key
+  and the well-known provider variables such as `ANTHROPIC_API_KEY`. Such a reference fails that
+  server's start with an error naming the variable. In a headless run a repository's server starts
+  without asking, and `url = "https://host/${ANTHROPIC_API_KEY}"` would otherwise hand a model key
+  to a host the repository chose. (Claude Code expands any variable.)
+- **An unset variable with no default fails only that server.** The error names the variable, and
+  the other servers start. (Claude Code fails the whole config parse.)
+- Definitions in the TOML files are not expanded.
+
 ```toml trust.toml
 [[trusted]]
 root = '/home/me/code/myrepo'
@@ -153,6 +205,45 @@ root = '/home/me/code/myrepo'
 name = "github"
 digest = "9f2c1c8e1a7d4b1f"
 ```
+
+## The `fontaine mcp` command
+
+`fontaine mcp` manages servers outside any session. You typed the command, so it needs no
+permission; nothing it does starts a server the terminal UI would ask about first.
+
+```
+fontaine mcp add [-s local|project|user] [-t stdio|http] [-e KEY=value]... [--env-var NAME]... <name> <command-or-url> [args...]
+fontaine mcp list [--connect=no]
+fontaine mcp get <name> [--connect=no]
+fontaine mcp remove <name> [-s local|project|user]
+```
+
+- **`add`** writes the server to the scope's file (`local` by default; `project` writes
+  `.mcp.json` in Claude Code's shape) and prints the confirmation and `File modified: <path>`. A
+  stdio server needs `--` before its own flags: `fontaine mcp add github -- github-mcp-server
+  stdio`. `-e` sets a literal variable on the server (`env`). `--env-var NAME` passes a variable
+  of Fontaine's environment through by name (`env_vars`), since Fontaine otherwise [scrubs](#declaring-servers)
+  it; in `.mcp.json` it is written as `"NAME": "${NAME}"`. `-e` and `--env-var` are for stdio
+  only. Adding a project server records no approval: the next terminal session asks. A name
+  already in that scope is an error. `-H`/`--header`, `-t sse` and the OAuth flags are not
+  supported yet (they are refused with a message naming the issue), and there is no `add-json`.
+- **`list`** prints one line per server, `<name>: <command or URL> - <status>`, in name order.
+  The status is `connected (N tools)`, `failed: <reason>`, `pending approval (run fontaine to
+  approve)` for a repository's server you have not approved, or `not started: workspace not
+  trusted`. It starts exactly the servers [`fontaine doctor`](doctor.md) would and no others, so a
+  repository's server is never started by the command. `--connect=no` skips the probes and the
+  status reads `not checked`.
+- **`get`** shows one server: its scope and file, status, type, command, arguments, the names of
+  the variables passed through, the `env` keys (values are shown as `***`), and the URL. It ends
+  with the command that removes it (for a plugin's server, `fontaine plugin uninstall`).
+- **`remove`** removes the server from the one writable scope that declares it. If several do, it
+  exits 1 and lists the `-s` command for each. `-s project` removes it from `.mcp.json` and from
+  `.fontaine/settings.toml`. Plugin, `--settings` and `settings.local.toml` servers are not
+  writable scopes; the error names the file to edit or the plugin to uninstall. An approval left
+  in `trust.toml` is inert.
+
+Exit status: 0 on success; 1 for an unknown name, a duplicate, an ambiguous `remove` or an I/O
+error; 2 for a usage or configuration error.
 
 ## Requests for input
 

@@ -8,6 +8,11 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- A repository's root `.mcp.json` is now read as project-scope MCP servers, alongside
+  `.fontaine/settings.toml`, with `${VAR}` and `${VAR:-default}` expanded when the server starts
+  (never into a credential variable). It goes through workspace trust and per-server approval like
+  any repository-defined server. A plugin's `.mcp.json` gains `${VAR:-default}` and warns on
+  `headers` and on `sse`/`ws` entries (#31).
 - A `claude-subscription` account's cache self-check now keeps its broken-CLI-version verdict in
   `claude-cache-verdicts.json` in the data dir, so a restart no longer pays one full-history cache
   rewrite to rediscover it. Verdicts are keyed by CLI version and reminder-template revision, so an
@@ -27,6 +32,11 @@ All notable changes are recorded here. The format follows
   dropped like the other flat-rate kinds. The `openai-compatible` + `quota = "kimi"`
   configuration keeps working, and the moonshot.ai pay-as-you-go API stays on
   `openai-compatible` (#548).
+- MCP local scope: `mcp-local.toml` in the config directory holds servers private to one
+  workspace, which start at once without workspace trust or approval (#31).
+- `fontaine mcp add`, `list`, `get` and `remove` manage MCP servers in the local, project
+  (`.mcp.json`) and user scopes without starting a session (#31).
+- `/mcp` shows how many tools each connected server registered (#31).
 - Lifecycle hooks: `[[hooks.<event>]]` now takes `session_start`, `session_end`,
   `user_prompt_submit`, `stop`, `stop_failure`, `subagent_start`, `subagent_stop`, `pre_compact`,
   `post_compact`, `post_tool_use_failure`, `notification` and `task_created` beside the five tool

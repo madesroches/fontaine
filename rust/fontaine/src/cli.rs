@@ -153,8 +153,140 @@ pub enum Command {
     Models(ModelsArgs),
     /// Check the setup: config layers, trust, models, MCP servers and memory
     Doctor(DoctorArgs),
+    /// Add, list, show and remove MCP servers
+    Mcp(McpArgs),
     /// Update this installation to the newest build on the channel it was installed from
     Update,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct McpArgs {
+    #[command(subcommand)]
+    pub action: McpAction,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum McpAction {
+    /// Add an MCP server. A stdio server's own flags go after `--`:
+    /// `fontaine mcp add foo -- npx -y some-server --flag`
+    Add(McpAddArgs),
+    /// List the configured servers and whether each connects
+    List(McpListArgs),
+    /// Show one server's definition, where it is declared and whether it connects
+    Get(McpGetArgs),
+    /// Remove a server from the scope that declares it
+    Remove(McpRemoveArgs),
+}
+
+/// Where a server is declared.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum McpScopeArg {
+    /// Private to you, in this workspace (`mcp-local.toml` in the config directory)
+    Local,
+    /// Shared with the repository (`.mcp.json`)
+    Project,
+    /// Every workspace (`[mcp.servers]` in `config.toml`)
+    User,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum McpTransportArg {
+    Stdio,
+    Http,
+}
+
+fn parse_transport(text: &str) -> Result<McpTransportArg, String> {
+    match text {
+        "stdio" => Ok(McpTransportArg::Stdio),
+        "http" => Ok(McpTransportArg::Http),
+        "sse" | "ws" => Err(format!(
+            "the `{text}` transport is not supported yet (see issue #36); use stdio or http"
+        )),
+        other => Err(format!("`{other}` is not a transport; use stdio or http")),
+    }
+}
+
+fn parse_env_pair(text: &str) -> Result<(String, String), String> {
+    match text.split_once('=') {
+        Some((key, value)) if !key.is_empty() => Ok((key.to_string(), value.to_string())),
+        _ => Err("expected KEY=value".to_string()),
+    }
+}
+
+fn parse_env_name(text: &str) -> Result<String, String> {
+    if text.is_empty() || text.contains('=') || text.contains('\0') {
+        Err("expected a variable name".to_string())
+    } else {
+        Ok(text.to_string())
+    }
+}
+
+fn reject_header(_: &str) -> Result<String, String> {
+    Err("headers are not supported yet (see issue #32)".to_string())
+}
+
+fn reject_oauth(_: &str) -> Result<String, String> {
+    Err("OAuth is not supported yet (see issue #32)".to_string())
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct McpAddArgs {
+    /// Where to declare the server
+    #[arg(short = 's', long, value_enum, default_value_t = McpScopeArg::Local, value_name = "SCOPE")]
+    pub scope: McpScopeArg,
+    /// The transport: stdio (a command) or http (a URL)
+    #[arg(short = 't', long, value_parser = parse_transport, default_value = "stdio", value_name = "TRANSPORT")]
+    pub transport: McpTransportArg,
+    /// A variable set on the server process, as KEY=value. Repeatable; stdio only
+    #[arg(short = 'e', long = "env", value_parser = parse_env_pair, value_name = "KEY=value")]
+    pub env: Vec<(String, String)>,
+    /// A variable passed through from Fontaine's environment by name, which Fontaine otherwise
+    /// scrubs. Repeatable; stdio only
+    #[arg(long = "env-var", value_parser = parse_env_name, value_name = "NAME")]
+    pub env_var: Vec<String>,
+    #[arg(short = 'H', long = "header", value_parser = reject_header, hide = true)]
+    pub header: Vec<String>,
+    #[arg(long = "client-id", value_parser = reject_oauth, hide = true)]
+    pub client_id: Option<String>,
+    #[arg(long = "client-secret", value_parser = reject_oauth, hide = true)]
+    pub client_secret: Option<String>,
+    #[arg(long = "callback-port", value_parser = reject_oauth, hide = true)]
+    pub callback_port: Option<String>,
+    /// The server's name, as it appears in tool names
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// The command to run, or the URL with `-t http`
+    #[arg(value_name = "COMMAND_OR_URL")]
+    pub command_or_url: String,
+    /// The command's arguments
+    #[arg(value_name = "ARGS", trailing_var_arg = true)]
+    pub args: Vec<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct McpListArgs {
+    /// Start each server the session would start and count its tools; `--connect=no` skips
+    /// the probe
+    #[arg(long, value_enum, default_value_t = Toggle::Yes, value_name = "yes|no")]
+    pub connect: Toggle,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct McpGetArgs {
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// Start the server and count its tools; `--connect=no` skips the probe
+    #[arg(long, value_enum, default_value_t = Toggle::Yes, value_name = "yes|no")]
+    pub connect: Toggle,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct McpRemoveArgs {
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// The scope to remove it from; needed only when several declare the name
+    #[arg(short = 's', long, value_enum, value_name = "SCOPE")]
+    pub scope: Option<McpScopeArg>,
 }
 
 #[derive(Args, Debug, Clone)]

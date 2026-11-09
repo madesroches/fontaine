@@ -36,6 +36,16 @@ async fn serve_with(
     fontaine_tools::mcp::McpConnectionHandle,
     tokio::task::JoinHandle<()>,
 ) {
+    let (connected, task) = serve_connected(name, double, handle, options).await;
+    (connected.connection, task)
+}
+
+async fn serve_connected(
+    name: &str,
+    double: Double,
+    handle: rig_agent::tool::server::ToolServerHandle,
+    options: &fontaine_tools::mcp::McpOptions,
+) -> (fontaine_tools::mcp::Connected, tokio::task::JoinHandle<()>) {
     let (c2s, sfc) = tokio::io::duplex(8192);
     let (s2c, cfs) = tokio::io::duplex(8192);
     let task = tokio::spawn(async move {
@@ -45,7 +55,7 @@ async fn serve_with(
     let connected = connect_transport(name, (cfs, c2s), handle, options)
         .await
         .expect("connect");
-    (connected.connection, task)
+    (connected, task)
 }
 
 #[tokio::test]
@@ -141,9 +151,25 @@ async fn a_list_changed_refresh_registers_the_new_tools_wrapped_and_drops_the_ol
     let gate = Gate::new(true);
     let handle = tool_server();
     let double = Double::with_tools(vec![echo_tool()]);
-    let (connection, _task) = serve("double", double.clone(), gate.clone(), handle.clone()).await;
+    let (connected, _task) = serve_connected(
+        "double",
+        double.clone(),
+        handle.clone(),
+        &options(gate.clone()),
+    )
+    .await;
+    let connection = connected.connection.clone();
     assert_eq!(names(&handle), ["mcp__double__echo"]);
+    assert_eq!(connected.tool_count(), 1);
 
+    double.replace_tools(vec![lookup_tool(), echo_tool()]).await;
+    for _ in 0..200 {
+        if connected.tool_count() == 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(connected.tool_count(), 2);
     double.replace_tools(vec![lookup_tool()]).await;
     for _ in 0..200 {
         if names(&handle) == ["mcp__double__lookup"] {
@@ -152,6 +178,7 @@ async fn a_list_changed_refresh_registers_the_new_tools_wrapped_and_drops_the_ol
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert_eq!(names(&handle), ["mcp__double__lookup"]);
+    assert_eq!(connected.tool_count(), 1);
 
     call(&handle, "mcp__double__lookup", "{}").await.unwrap();
     let seen = gate.calls();

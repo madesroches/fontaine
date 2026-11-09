@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::config::{
     HandlerKind, Hook, HookEvent, LspServer, MatcherKind, McpServer, Origin, Slot,
 };
+use crate::mcp_json::{self, expand_vars};
 use crate::permission_rules::{RuleSource, SourcedRule, parse_rule};
 
 pub const REGISTRY_FILE: &str = "plugins.toml";
@@ -944,166 +945,20 @@ fn parse_mcp_file(
             ));
         }
     };
-    let value: Value = serde_json::from_str(&text).map_err(|e| {
-        PluginError::in_plugin(plugin, path.to_path_buf(), format!("not JSON: {e}"))
-    })?;
-    let Some(servers) = value.get("mcpServers").and_then(Value::as_object) else {
-        return Ok(load);
-    };
-    for (name, spec) in servers {
-        if name.is_empty()
-            || name.contains("__")
-            || name.starts_with('_')
-            || name.ends_with('_')
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
-            return Err(PluginError::in_plugin(
-                plugin,
-                path.to_path_buf(),
-                format!(
-                    "`{name}` is not an MCP server name: it must be non-empty, contain no `__`, neither start nor end with `_`, and use only letters, digits, `_` and `-`"
-                ),
-            ));
-        }
-        let object = spec.as_object().ok_or_else(|| {
-            PluginError::in_plugin(
-                plugin,
-                path.to_path_buf(),
-                format!("the `.mcp.json` entry `{name}` is not an object"),
-            )
-        })?;
-        let env = match object.get("env") {
-            None => None,
-            Some(value) => {
-                let map = value.as_object().ok_or_else(|| {
-                    PluginError::in_plugin(
-                        plugin,
-                        path.to_path_buf(),
-                        format!(
-                            "the `.mcp.json` entry `{name}` has an `env` that is not an object"
-                        ),
-                    )
-                })?;
-                let mut out = BTreeMap::new();
-                for (var, spec) in map {
-                    let text = spec.as_str().ok_or_else(|| {
-                        PluginError::in_plugin(
-                            plugin,
-                            path.to_path_buf(),
-                            format!(
-                                "the `.mcp.json` entry `{name}` has a non-string `env` value for `{var}`"
-                            ),
-                        )
-                    })?;
-                    out.insert(
-                        var.clone(),
-                        expand_vars(text, plugin, root, ctx, warnings, env_vars),
-                    );
-                }
-                Some(out)
-            }
-        };
-        let url = match object.get("url") {
-            None => None,
-            Some(value) => {
-                let text = value.as_str().ok_or_else(|| {
-                    PluginError::in_plugin(
-                        plugin,
-                        path.to_path_buf(),
-                        format!("the `.mcp.json` entry `{name}` has a non-string `url`"),
-                    )
-                })?;
-                Some(expand_vars(text, plugin, root, ctx, warnings, env_vars))
-            }
-        };
-        let command = match object.get("command") {
-            None => None,
-            Some(value) => {
-                let text = value.as_str().ok_or_else(|| {
-                    PluginError::in_plugin(
-                        plugin,
-                        path.to_path_buf(),
-                        format!("the `.mcp.json` entry `{name}` has a non-string `command`"),
-                    )
-                })?;
-                Some(expand_vars(text, plugin, root, ctx, warnings, env_vars))
-            }
-        };
-        let args = if command.is_some() {
-            match object.get("args") {
-                None => None,
-                Some(value) => {
-                    let items = value.as_array().ok_or_else(|| {
-                        PluginError::in_plugin(
-                            plugin,
-                            path.to_path_buf(),
-                            format!(
-                                "the `.mcp.json` entry `{name}` has an `args` that is not a list"
-                            ),
-                        )
-                    })?;
-                    let mut out = Vec::new();
-                    for item in items {
-                        let text = item.as_str().ok_or_else(|| {
-                            PluginError::in_plugin(
-                                plugin,
-                                path.to_path_buf(),
-                                format!("a `.mcp.json` `args` entry of `{name}` is not a string"),
-                            )
-                        })?;
-                        out.push(expand_vars(text, plugin, root, ctx, warnings, env_vars));
-                    }
-                    Some(out)
-                }
-            }
-        } else {
-            None
-        };
-        let server = match (command, url) {
-            (Some(command), None) => McpServer {
-                command: Some(command),
-                args,
-                env_vars: None,
-                url: None,
-                env,
-            },
-            (None, Some(_)) if env.is_some() || object.contains_key("args") => {
-                return Err(PluginError::in_plugin(
-                    plugin,
-                    path.to_path_buf(),
-                    format!(
-                        "the `.mcp.json` entry `{name}` sets `args` or `env`, which apply to stdio servers only"
-                    ),
-                ));
-            }
-            (None, Some(url)) => McpServer {
-                command: None,
-                args: None,
-                env_vars: None,
-                url: Some(url),
-                env: None,
-            },
-            (Some(_), Some(_)) => {
-                return Err(PluginError::in_plugin(
-                    plugin,
-                    path.to_path_buf(),
-                    format!(
-                        "the `.mcp.json` entry `{name}` has both `command` and `url`; set exactly one"
-                    ),
-                ));
-            }
-            (None, None) => {
-                return Err(PluginError::in_plugin(
-                    plugin,
-                    path.to_path_buf(),
-                    format!("the `.mcp.json` entry `{name}` has neither `command` nor `url`"),
-                ));
-            }
-        };
+    let parsed = {
+        let mut expand = |text: &str| expand_vars(text, plugin, root, ctx, warnings, env_vars);
+        mcp_json::parse(&text, mcp_json::Expansion::Now(&mut expand))
+    }
+    .map_err(|message| PluginError::in_plugin(plugin, path.to_path_buf(), message))?;
+    if let Some(problem) = parsed.problems.into_iter().next() {
+        return Err(PluginError::in_plugin(plugin, path.to_path_buf(), problem));
+    }
+    for warning in parsed.warnings {
+        warn_once(warnings, format!("plugin `{plugin}`: {warning}"));
+    }
+    for (name, server) in parsed.servers {
         let composed = format!("plugin_{plugin}_{name}");
-        load.composed.insert(name.clone(), composed.clone());
+        load.composed.insert(name, composed.clone());
         load.servers.insert(composed, server);
     }
     Ok(load)
@@ -1848,52 +1703,6 @@ fn parse_permissions(
         }
     }
     Ok(out)
-}
-
-/// Expands `${CLAUDE_PLUGIN_ROOT}`, `${CLAUDE_PROJECT_DIR}` and `${VAR}` from the environment;
-/// any other `${...}` reference stays literal and warns once.
-pub(crate) fn expand_vars(
-    text: &str,
-    plugin: &str,
-    plugin_root: &Path,
-    ctx: &PluginContext<'_>,
-    warnings: &mut Vec<String>,
-    env_vars: &mut BTreeSet<String>,
-) -> String {
-    let root = plugin_root.display().to_string();
-    let project = ctx.project_root.display().to_string();
-    let mut out = String::new();
-    let mut at = 0;
-    while at < text.len() {
-        if text[at..].starts_with("${")
-            && let Some(end) = text[at + 2..].find('}')
-        {
-            let name = &text[at + 2..at + 2 + end];
-            match name {
-                "CLAUDE_PLUGIN_ROOT" => out.push_str(&root),
-                "CLAUDE_PROJECT_DIR" => out.push_str(&project),
-                _ => {
-                    env_vars.insert(name.to_string());
-                    match (ctx.env)(name) {
-                        Some(value) => out.push_str(&value.to_string_lossy()),
-                        None => {
-                            out.push_str(&text[at..at + 2 + end + 1]);
-                            warn_once(
-                                warnings,
-                                format!("plugin `{plugin}` leaves `${{{name}}}` unexpanded"),
-                            );
-                        }
-                    }
-                }
-            }
-            at += 2 + end + 1;
-            continue;
-        }
-        let ch = text[at..].chars().next().expect("at is a char boundary");
-        out.push(ch);
-        at += ch.len_utf8();
-    }
-    out
 }
 
 fn warn_once(warnings: &mut Vec<String>, message: String) {

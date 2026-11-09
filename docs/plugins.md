@@ -257,15 +257,18 @@ plugin.
     `${CLAUDE_PROJECT_DIR}` expand when the plugin loads. Any other `${VAR}` is left as written
     and expands at request time only if the hook lists it in `allowedEnvVars`, so a plugin cannot
     send a host variable off the machine without naming it.
-- `.mcp.json` maps onto the MCP server settings. `env` values support `${VAR}` expansion, and
+- `.mcp.json` maps onto the MCP server settings. `env` values support `${VAR}` and `${VAR:-default}` expansion, and
   server names are composed as `plugin_<plugin>_<name>`, so a ported plugin's
   `mcp__plugin_<plugin>_<name>__<tool>` references resolve unchanged. A server name follows the
   [MCP server name alphabet](mcp.md): letters, digits, `_` and `-`, with no `__` and no leading
   or trailing `_`. A bare `mcp__<name>__*` reference in a plugin file is rewritten to the
-  composed name.
+  composed name. An entry's `type` may be `stdio` or `http` (or absent); an `sse` or `ws` entry is
+  skipped with a warning, and `headers` is not supported yet, so a server that sets it connects
+  without them and a warning says so.
 - `${CLAUDE_PLUGIN_ROOT}` expands to the installed checkout and `${CLAUDE_PROJECT_DIR}` to the
   session's primary root, in hook commands and `.mcp.json` values. `${VAR}` reads any other
-  variable from the process environment — its *value* lands in the hook command or server
+  variable from the process environment (`${VAR:-default}` falls back to the default when it is
+  unset) — its *value* lands in the hook command or server
   env/URL, so a plugin can move an environment variable (including a credential) into its own
   server. Install and update name every referenced variable in the summary they print before
   you approve; a reference to a variable that is not set stays literal and warns.

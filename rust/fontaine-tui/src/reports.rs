@@ -33,11 +33,10 @@ use fontaine_core::keybindings::TuiAction;
 /// What became of an MCP server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum McpState {
-    Connected,
+    /// Running, with `tools` registered.
+    Connected { tools: usize },
     /// Lost, and being reconnected: `attempt` is the one under way.
-    Pending {
-        attempt: u32,
-    },
+    Pending { attempt: u32 },
     /// The error text, which names the server.
     Failed(String),
     /// The human declined to start it.
@@ -256,7 +255,8 @@ pub fn mcp_with_origins(
         .iter()
         .map(|(name, state)| {
             let state = match state {
-                McpState::Connected => "connected".to_string(),
+                McpState::Connected { tools: 1 } => "connected · 1 tool".to_string(),
+                McpState::Connected { tools } => format!("connected · {tools} tools"),
                 McpState::Pending { attempt } => format!(
                     "pending (reconnecting, attempt {attempt} of {})",
                     fontaine_core::agent::MCP_RECONNECT_ATTEMPTS
@@ -1259,7 +1259,8 @@ mod tests {
         assert_eq!(mcp_with_origins(&[], &origins), "no MCP servers configured");
         let text = mcp_with_origins(
             &[
-                ("a".into(), McpState::Connected),
+                ("a".into(), McpState::Connected { tools: 2 }),
+                ("e".into(), McpState::Connected { tools: 1 }),
                 (
                     "b".into(),
                     McpState::Failed("MCP server `b` failed: boom".into()),
@@ -1272,7 +1273,7 @@ mod tests {
         );
         assert_eq!(
             text,
-            "a: connected [user]\nb: failed: MCP server `b` failed: boom [configured]\nc: left off [configured]\nd: pending (reconnecting, attempt 2 of 5) [configured]\nplugin_p_srv: not loaded (workspace not trusted) [plugin]"
+            "a: connected · 2 tools [user]\ne: connected · 1 tool [configured]\nb: failed: MCP server `b` failed: boom [configured]\nc: left off [configured]\nd: pending (reconnecting, attempt 2 of 5) [configured]\nplugin_p_srv: not loaded (workspace not trusted) [plugin]"
         );
     }
 
@@ -1304,6 +1305,7 @@ mod tests {
                 env_vars: None,
                 env: None,
                 url: None,
+                expand: false,
             },
         )]);
         let origins = BTreeMap::from([(

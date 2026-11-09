@@ -115,7 +115,7 @@ async fn a_dropped_http_server_is_reconnected_when_it_comes_back_and_a_call_then
     let outcomes = runtime.connect_mcp(&[]).await;
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].error, None);
-    assert_eq!(state(&runtime), McpServerState::Connected);
+    assert_eq!(state(&runtime), McpServerState::Connected { tools: 1 });
     assert_eq!(call(&runtime).await.unwrap(), "pong");
 
     drop(first);
@@ -125,7 +125,7 @@ async fn a_dropped_http_server_is_reconnected_when_it_comes_back_and_a_call_then
     wait_for(&runtime, McpServerState::Reconnecting { attempt: 1 }).await;
 
     let second = serve_on(rebind(port).await).await;
-    wait_for(&runtime, McpServerState::Connected).await;
+    wait_for(&runtime, McpServerState::Connected { tools: 1 }).await;
     assert_eq!(call(&runtime).await.unwrap(), "pong");
 
     // A manual reconnect restarts a live server, and refuses a name that has no slot.
@@ -134,7 +134,7 @@ async fn a_dropped_http_server_is_reconnected_when_it_comes_back_and_a_call_then
         .await;
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].error, None);
-    assert_eq!(state(&runtime), McpServerState::Connected);
+    assert_eq!(state(&runtime), McpServerState::Connected { tools: 1 });
     assert_eq!(call(&runtime).await.unwrap(), "pong");
 
     let outcomes = runtime
@@ -179,7 +179,42 @@ async fn a_server_that_failed_at_startup_keeps_a_slot_and_reconnects_by_hand() {
     let outcomes = runtime.reconnect_mcp(ReconnectTarget::AllFailed).await;
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].error, None);
-    assert_eq!(state(&runtime), McpServerState::Connected);
+    assert_eq!(state(&runtime), McpServerState::Connected { tools: 1 });
     assert_eq!(call(&runtime).await.unwrap(), "pong");
     drop(server);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repository_server_that_references_a_credential_fails_to_start_and_reconnect_says_why() {
+    let world = World::new();
+    world.mcp_json(
+        r#"{"mcpServers":{
+            "provider":{"type":"http","url":"https://example.invalid/${ANTHROPIC_API_KEY}"},
+            "scrubbed":{"command":"srv","env":{"K":"${MY_ACCOUNT_KEY:-fallback}"}}
+        }}"#,
+    );
+    *world.scrub_env.lock().unwrap() = vec!["MY_ACCOUNT_KEY".into()];
+    let mut runtime = build(&world, PermissionMode::Manual, vec![], true).runtime;
+    let outcomes = runtime.connect_mcp(&[]).await;
+    assert_eq!(outcomes.len(), 2);
+    for (server, variable) in [
+        ("provider", "ANTHROPIC_API_KEY"),
+        ("scrubbed", "MY_ACCOUNT_KEY"),
+    ] {
+        let error = outcomes
+            .iter()
+            .find(|o| o.server == server)
+            .and_then(|o| o.error.as_deref())
+            .unwrap_or_else(|| panic!("{server} should have failed"));
+        assert!(error.contains(variable), "{error}");
+    }
+    // A server whose spec did not build has no slot.
+    assert!(runtime.mcp_states().is_empty());
+
+    let outcomes = runtime
+        .reconnect_mcp(ReconnectTarget::One("provider".to_string()))
+        .await;
+    let error = outcomes[0].error.as_deref().unwrap();
+    assert!(error.contains("ANTHROPIC_API_KEY"), "{error}");
+    assert!(!error.contains("no MCP server named"), "{error}");
 }

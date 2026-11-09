@@ -41,11 +41,10 @@ const STARTUP_RETRY_DELAYS: [Duration; 3] = [
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum McpServerState {
-    Connected,
+    /// Running, with `tools` registered now.
+    Connected { tools: usize },
     /// Lost, and being started again; `attempt` runs from 1 to 5.
-    Reconnecting {
-        attempt: u32,
-    },
+    Reconnecting { attempt: u32 },
     /// Not running, with the reason as a rendered error chain.
     Failed(String),
 }
@@ -115,8 +114,18 @@ impl ServerSlot {
         &self.spec.name
     }
 
+    /// The server's state; a connected server's tool count is read from the connection the slot
+    /// holds, so it follows a `list_changed` refresh and a reconnect.
     pub fn state(&self) -> McpServerState {
-        read_recovering(&self.state).clone()
+        let state = read_recovering(&self.state).clone();
+        match state {
+            McpServerState::Connected { .. } => McpServerState::Connected {
+                tools: lock(&self.connection, "MCP connection")
+                    .as_ref()
+                    .map_or(0, Connected::tool_count),
+            },
+            other => other,
+        }
     }
 
     fn set_state(&self, state: McpServerState) {
@@ -255,7 +264,10 @@ impl Supervisor {
         };
         match result {
             Ok(connected) => {
-                let slot = Arc::new(ServerSlot::new(spec, McpServerState::Connected));
+                let slot = Arc::new(ServerSlot::new(
+                    spec,
+                    McpServerState::Connected { tools: 0 },
+                ));
                 if self.install(&slot, connected, 0).is_err() {
                     unreachable!("a new slot is still on its first generation");
                 }
@@ -284,7 +296,7 @@ impl Supervisor {
         let failed = connected.transport_failed.clone();
         *lock(&slot.connection, "MCP connection") = Some(connected);
         slot.closing.store(false, Ordering::SeqCst);
-        slot.set_state(McpServerState::Connected);
+        slot.set_state(McpServerState::Connected { tools: 0 });
         let new = tokio::spawn(self.clone().watch(slot.clone(), connection, failed));
         // A replaced watcher is aborted, unless it is the task that is calling us, which ends
         // by itself.
@@ -657,7 +669,7 @@ mod tests {
         assert_eq!(rig.refreshed.load(Ordering::SeqCst), 0);
         rig.script.servers.lock().unwrap().remove(0).abort();
         wait_for(&slot, McpServerState::Reconnecting { attempt: 2 }).await;
-        wait_for(&slot, McpServerState::Connected).await;
+        wait_for(&slot, McpServerState::Connected { tools: 0 }).await;
         assert_eq!(rig.script.attempts(), 3);
         assert_eq!(rig.refreshed.load(Ordering::SeqCst), 1);
         let notices = rig.said.notices.lock().unwrap().clone();
@@ -722,7 +734,7 @@ mod tests {
         settle().await;
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(rig.script.attempts(), 1);
-        assert_eq!(slot.state(), McpServerState::Connected);
+        assert_eq!(slot.state(), McpServerState::Connected { tools: 0 });
     }
 
     #[tokio::test(start_paused = true)]
@@ -740,7 +752,7 @@ mod tests {
         let rig = rig(vec![transient(), Ok(live("srv", "http").await)]);
         let (slot, result) = rig.supervisor.start(spec("http")).await;
         assert!(result.is_ok());
-        assert_eq!(slot.state(), McpServerState::Connected);
+        assert_eq!(slot.state(), McpServerState::Connected { tools: 0 });
         assert_eq!(rig.script.attempts(), 2);
     }
 
@@ -818,7 +830,7 @@ mod tests {
         rig.supervisor.reconnect(&slot).await.expect("reconnects");
         assert_eq!(Instant::now(), before, "no backoff");
         assert!(first_connection.is_closed());
-        assert_eq!(slot.state(), McpServerState::Connected);
+        assert_eq!(slot.state(), McpServerState::Connected { tools: 0 });
         assert_eq!(rig.script.attempts(), 2);
         assert_eq!(rig.refreshed.load(Ordering::SeqCst), 1);
         // Closing the old connection ourselves started no reconnect of its own.
@@ -837,7 +849,7 @@ mod tests {
         let (slot, _) = rig.supervisor.start(spec("stdio")).await;
         assert!(matches!(slot.state(), McpServerState::Failed(_)));
         rig.supervisor.reconnect(&slot).await.expect("it comes up");
-        assert_eq!(slot.state(), McpServerState::Connected);
+        assert_eq!(slot.state(), McpServerState::Connected { tools: 0 });
         let error = rig.supervisor.reconnect(&slot).await.unwrap_err();
         assert_eq!(error.kind, McpErrorKind::Permanent);
         assert!(matches!(slot.state(), McpServerState::Failed(_)));
@@ -851,7 +863,7 @@ mod tests {
         servers.insert(slot.clone());
         assert_eq!(
             servers.states(),
-            [("srv".to_string(), McpServerState::Connected)]
+            [("srv".to_string(), McpServerState::Connected { tools: 0 })]
         );
         drop(servers);
         settle().await;

@@ -240,6 +240,44 @@ async fn mcp_reports_a_declined_project_server_as_left_off() {
     .await;
 }
 
+/// The MCP server example of the `fontaine` crate; built by a workspace `cargo test`, or
+/// `cargo build -p fontaine --examples`.
+fn repo_mcp_server() -> String {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
+    let name = if cfg!(windows) {
+        "repo_mcp_server.exe"
+    } else {
+        "repo_mcp_server"
+    };
+    let path = dir.join(name);
+    assert!(
+        path.exists(),
+        "{} is not built; run `cargo build -p fontaine --examples`",
+        path.display()
+    );
+    path.to_string_lossy().into_owned()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repository_mcp_json_server_is_approved_at_the_prompt_and_listed_with_its_tool_count() {
+    let w = World::new(vec![]);
+    std::fs::write(
+        w.work.join(".mcp.json"),
+        json!({"mcpServers": {"repo": {"type": "stdio", "command": repo_mcp_server(), "args": []}}})
+            .to_string(),
+    )
+    .unwrap();
+    w.run(|ui| async move {
+        ui.wait_for_prompt("Start the MCP server `repo`?").await;
+        ui.press(KeyCode::Char('y'));
+        idle(&ui).await;
+        ui.send("/mcp");
+        ui.wait_for("repo: connected · 4 tools").await;
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_reports_a_project_server_of_an_untrusted_workspace() {
     let w = World::new(vec![]).untrusted();
