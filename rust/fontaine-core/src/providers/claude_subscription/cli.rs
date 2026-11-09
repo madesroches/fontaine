@@ -16,6 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::OnceCell;
 
+use super::context::Verdicts;
 use super::protocol::{Event, Failure, Reader};
 use super::transport::{next, rejected};
 use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error};
@@ -249,6 +250,7 @@ pub struct Cli {
     pub timeouts: Timeouts,
     version_ok: OnceCell<()>,
     warn: Warn,
+    verdicts: Arc<Verdicts>,
 }
 
 impl Cli {
@@ -260,6 +262,7 @@ impl Cli {
         timeouts: Timeouts,
         warn: Warn,
     ) -> Self {
+        let verdicts = Verdicts::shared(data_dir, &warn);
         Cli {
             program: cli_path.unwrap_or_else(|| PathBuf::from("claude")),
             config_dir,
@@ -269,7 +272,12 @@ impl Cli {
             timeouts,
             version_ok: OnceCell::new(),
             warn,
+            verdicts,
         }
+    }
+
+    pub(super) fn verdicts(&self) -> &Arc<Verdicts> {
+        &self.verdicts
     }
 
     pub(crate) fn warn(&self) -> &Warn {

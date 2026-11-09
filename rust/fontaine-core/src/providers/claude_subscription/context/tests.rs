@@ -8,6 +8,27 @@ fn ctx(version: Option<(u32, u32, u32)>, email: Option<&str>) -> CliContext {
     }
 }
 
+/// A store over a fresh temp data dir, and the warnings it emitted.
+fn store() -> (tempfile::TempDir, Arc<Verdicts>, Arc<Mutex<Vec<String>>>) {
+    let dir = tempfile::tempdir().unwrap();
+    let (verdicts, warnings) = store_in(dir.path());
+    (dir, verdicts, warnings)
+}
+
+fn store_in(dir: &Path) -> (Arc<Verdicts>, Arc<Mutex<Vec<String>>>) {
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+    let sink = warnings.clone();
+    let warn = Warn::to(move |message| sink.lock().unwrap().push(message.to_string()));
+    (Verdicts::shared(dir, &warn), warnings)
+}
+
+fn reload(dir: &Path) -> (Verdicts, Arc<Mutex<Vec<String>>>) {
+    let warnings = Arc::new(Mutex::new(Vec::new()));
+    let sink = warnings.clone();
+    let warn = Warn::to(move |message| sink.lock().unwrap().push(message.to_string()));
+    (Verdicts::load(dir.join(VERDICTS_FILE), warn), warnings)
+}
+
 fn native_ctx() -> CliContext {
     ctx(Some((2, 1, 319)), Some("user@example.com"))
 }
@@ -105,28 +126,137 @@ fn the_reminder_template_has_the_measured_shape() {
 
 #[test]
 fn the_layout_follows_version_and_email() {
+    let (_dir, v, _) = store();
     assert_eq!(
-        layout(&ctx(Some((2, 1, 318)), Some("a@b.c"))),
+        layout(&ctx(Some((2, 1, 318)), Some("a@b.c")), &v),
         Layout::Legacy
     );
     assert_eq!(
-        layout(&ctx(Some((2, 1, 319)), Some("a@b.c"))),
+        layout(&ctx(Some((2, 1, 319)), Some("a@b.c")), &v),
         Layout::Native
     );
-    assert_eq!(layout(&ctx(Some((2, 2, 0)), Some("a@b.c"))), Layout::Native);
-    assert_eq!(layout(&ctx(Some((2, 1, 319)), None)), Layout::Legacy);
-    assert_eq!(layout(&ctx(None, Some("a@b.c"))), Layout::Legacy);
+    assert_eq!(
+        layout(&ctx(Some((2, 2, 0)), Some("a@b.c")), &v),
+        Layout::Native
+    );
+    assert_eq!(layout(&ctx(Some((2, 1, 319)), None), &v), Layout::Legacy);
+    assert_eq!(layout(&ctx(None, Some("a@b.c")), &v), Layout::Legacy);
     let broken = (2, 9, 100);
-    assert_eq!(layout(&ctx(Some(broken), Some("a@b.c"))), Layout::Native);
-    assert!(mark_broken(broken));
-    assert_eq!(layout(&ctx(Some(broken), Some("a@b.c"))), Layout::Legacy);
+    assert_eq!(
+        layout(&ctx(Some(broken), Some("a@b.c")), &v),
+        Layout::Native
+    );
+    assert!(v.mark(broken));
+    assert_eq!(
+        layout(&ctx(Some(broken), Some("a@b.c")), &v),
+        Layout::Legacy
+    );
 }
 
 #[test]
 fn a_version_is_marked_broken_once() {
+    let (_dir, v, _) = store();
     let version = (2, 9, 101);
-    assert!(mark_broken(version));
-    assert!(!mark_broken(version));
+    assert!(v.mark(version));
+    assert!(!v.mark(version));
+}
+
+#[test]
+fn a_marked_version_survives_a_restart() {
+    let (dir, v, warnings) = store();
+    let version = (2, 9, 110);
+    assert!(v.mark(version));
+    let (restarted, restart_warnings) = reload(dir.path());
+    assert!(restarted.contains(version));
+    assert_eq!(
+        layout(&ctx(Some(version), Some("a@b.c")), &restarted),
+        Layout::Legacy
+    );
+    assert!(warnings.lock().unwrap().is_empty());
+    assert!(restart_warnings.lock().unwrap().is_empty());
+}
+
+#[test]
+fn an_entry_of_another_template_revision_is_ignored_and_dropped_on_the_next_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(VERDICTS_FILE);
+    let stale = TEMPLATE_REVISION + 1;
+    std::fs::write(
+        &path,
+        json!({"broken": [
+            {"cli": "2.9.111", "template": stale},
+            {"cli": "2.9.112", "template": TEMPLATE_REVISION},
+            {"cli": "not.a.version", "template": TEMPLATE_REVISION},
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let (v, warnings) = reload(dir.path());
+    assert!(!v.contains((2, 9, 111)));
+    assert!(v.contains((2, 9, 112)));
+    assert!(warnings.lock().unwrap().is_empty());
+    assert!(v.mark((2, 9, 113)));
+    let written = std::fs::read_to_string(&path).unwrap();
+    assert!(!written.contains("2.9.111"));
+    assert!(written.contains("2.9.112") && written.contains("2.9.113"));
+}
+
+#[test]
+fn a_mark_merges_a_verdict_another_store_wrote_in_between() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, _) = reload(dir.path());
+    let (second, _) = reload(dir.path());
+    assert!(first.mark((2, 9, 120)));
+    assert!(second.mark((2, 9, 121)));
+    let (merged, _) = reload(dir.path());
+    assert!(merged.contains((2, 9, 120)));
+    assert!(merged.contains((2, 9, 121)));
+}
+
+#[test]
+fn a_missing_file_loads_empty_and_a_corrupt_one_warns_once_and_is_repaired() {
+    let dir = tempfile::tempdir().unwrap();
+    let (v, warnings) = reload(dir.path());
+    assert!(!v.contains((2, 9, 130)));
+    assert!(warnings.lock().unwrap().is_empty());
+
+    let path = dir.path().join(VERDICTS_FILE);
+    std::fs::write(&path, "{not json").unwrap();
+    let (v, warnings) = reload(dir.path());
+    assert!(!v.contains((2, 9, 130)));
+    assert_eq!(warnings.lock().unwrap().len(), 1);
+    assert!(v.mark((2, 9, 130)));
+    assert_eq!(warnings.lock().unwrap().len(), 1);
+    let (repaired, repaired_warnings) = reload(dir.path());
+    assert!(repaired.contains((2, 9, 130)));
+    assert!(repaired_warnings.lock().unwrap().is_empty());
+}
+
+#[test]
+fn a_failed_write_still_marks_in_memory_and_warns_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("not-a-dir");
+    std::fs::write(&blocker, "").unwrap();
+    let (v, warnings) = store_in(&blocker);
+    assert!(warnings.lock().unwrap().is_empty());
+    assert!(v.mark((2, 9, 140)));
+    assert!(v.contains((2, 9, 140)));
+    assert!(!v.mark((2, 9, 140)));
+    assert_eq!(warnings.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_data_dir_has_one_shared_store_and_another_dir_has_its_own() {
+    let (dir, first, _) = store();
+    let (same, _) = store_in(dir.path());
+    assert!(Arc::ptr_eq(&first, &same));
+    assert!(first.mark((2, 9, 150)));
+    assert!(same.contains((2, 9, 150)));
+    assert!(!same.mark((2, 9, 150)));
+
+    let (_other_dir, other, _) = store();
+    assert!(!Arc::ptr_eq(&first, &other));
+    assert!(!other.contains((2, 9, 150)));
 }
 
 fn record(frames: usize, blocks: usize, read: u64, write_1h: u64, at: Instant) -> Record {
@@ -229,6 +359,7 @@ fn conversation(users: usize) -> Vec<Frame> {
 
 #[test]
 fn a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check() {
+    let (_dir, v, _) = store();
     let version = (2, 9, 102);
     let at = Instant::now();
     let short = Some(CacheUsage {
@@ -242,27 +373,31 @@ fn a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check
 
     // The first request has nothing to compare with.
     assert_eq!(
-        finished(sent("a", version, &conversation(2)), short, at),
+        finished(sent("a", version, &conversation(2)), short, at, &v),
         None
     );
     // The second reads nothing though the first wrote nothing at 1 h: not short.
     assert_eq!(
-        finished(sent("b", version, &conversation(2)), wrote, at),
+        finished(sent("b", version, &conversation(2)), wrote, at, &v),
         None
     );
     assert_eq!(
         finished(
             sent("b", version, &conversation(3)),
             short,
-            at + Duration::from_secs(5)
+            at + Duration::from_secs(5),
+            &v,
         ),
         Some(version)
     );
-    assert_eq!(layout(&ctx(Some(version), Some("a@b.c"))), Layout::Legacy);
+    assert_eq!(
+        layout(&ctx(Some(version), Some("a@b.c")), &v),
+        Layout::Legacy
+    );
 
     // A later passing check does not clear the verdict, and the warning is not repeated.
     assert_eq!(
-        finished(sent("c", version, &conversation(2)), wrote, at),
+        finished(sent("c", version, &conversation(2)), wrote, at, &v),
         None
     );
     assert_eq!(
@@ -272,22 +407,27 @@ fn a_broken_verdict_needs_a_previous_native_request_and_survives_a_passing_check
                 read: 900,
                 write_1h: 0
             }),
-            at
+            at,
+            &v,
         ),
         None
     );
-    assert_eq!(layout(&ctx(Some(version), Some("a@b.c"))), Layout::Legacy);
+    assert_eq!(
+        layout(&ctx(Some(version), Some("a@b.c")), &v),
+        Layout::Legacy
+    );
 }
 
 #[test]
 fn a_legacy_request_or_a_missing_usage_drops_the_conversations_record() {
+    let (_dir, v, _) = store();
     let version = (2, 9, 103);
     let at = Instant::now();
     let wrote = Some(CacheUsage {
         read: 100,
         write_1h: 400,
     });
-    finished(sent("d", version, &conversation(2)), wrote, at);
+    finished(sent("d", version, &conversation(2)), wrote, at, &v);
     let frames = conversation(3);
     let legacy = Sent::new(
         "d",
@@ -296,23 +436,23 @@ fn a_legacy_request_or_a_missing_usage_drops_the_conversations_record() {
         fingerprints(&frames),
         &frames,
     );
-    assert_eq!(finished(legacy, wrote, at), None);
+    assert_eq!(finished(legacy, wrote, at, &v), None);
     let short = Some(CacheUsage {
         read: 0,
         write_1h: 0,
     });
     assert_eq!(
-        finished(sent("d", version, &conversation(4)), short, at),
+        finished(sent("d", version, &conversation(4)), short, at, &v),
         None
     );
 
-    finished(sent("e", version, &conversation(2)), wrote, at);
+    finished(sent("e", version, &conversation(2)), wrote, at, &v);
     assert_eq!(
-        finished(sent("e", version, &conversation(3)), None, at),
+        finished(sent("e", version, &conversation(3)), None, at, &v),
         None
     );
     assert_eq!(
-        finished(sent("e", version, &conversation(4)), short, at),
+        finished(sent("e", version, &conversation(4)), short, at, &v),
         None
     );
 }

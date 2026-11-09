@@ -11,17 +11,26 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::sync::{LazyLock, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use fontaine_tools::lock::lock_recovering;
+use fontaine_tools::error_chain::chain;
+use fontaine_tools::lock::{lock, lock_recovering};
 use serde_json::{Value, json};
 
 use super::cli::CliContext;
 use super::protocol::Frame;
+use crate::file_lock;
+use crate::owner_only;
+use crate::providers::warn::Warn;
 
 /// The CLI version the reminder template was taken from.
 const TEMPLATE_SINCE: (u32, u32, u32) = (2, 1, 319);
+
+/// Identifies the template and where `apply` places it. Any edit to either bumps it, so a
+/// verdict recorded against the old one stops applying.
+const TEMPLATE_REVISION: u32 = 1;
 
 const REMINDER_TEMPLATE: &str = "<system-reminder>\n\
 As you answer the user's questions, you can use the following context:\n\
@@ -53,11 +62,11 @@ pub(super) enum Layout {
 }
 
 /// The layout for a request whose process reported `context`.
-pub(super) fn layout(context: &CliContext) -> Layout {
+pub(super) fn layout(context: &CliContext, verdicts: &Verdicts) -> Layout {
     let native = context.email.is_some()
-        && context.version.is_some_and(|version| {
-            version >= TEMPLATE_SINCE && !lock_recovering(&BROKEN).contains(&version)
-        });
+        && context
+            .version
+            .is_some_and(|version| version >= TEMPLATE_SINCE && !verdicts.contains(version));
     if native {
         Layout::Native
     } else {
@@ -401,10 +410,6 @@ fn check(prev: &Record, now: &Record) -> bool {
     now.usage.read + READ_SLACK < expected
 }
 
-// Advisory state that only chooses a cache layout, so a poisoned lock is recovered.
-static BROKEN: LazyLock<Mutex<BTreeSet<(u32, u32, u32)>>> =
-    LazyLock::new(|| Mutex::new(BTreeSet::new()));
-
 #[derive(Default)]
 struct Records {
     by_session: HashMap<String, Record>,
@@ -431,9 +436,117 @@ impl Records {
 
 static RECORDS: LazyLock<Mutex<Records>> = LazyLock::new(|| Mutex::new(Records::default()));
 
-/// Adds a version to the broken set; true only on its first insertion.
-pub(super) fn mark_broken(version: (u32, u32, u32)) -> bool {
-    lock_recovering(&BROKEN).insert(version)
+const VERDICTS_FILE: &str = "claude-cache-verdicts.json";
+
+/// The CLI versions whose replay the self-check saw miss the cache, kept in the data dir so a
+/// restart keeps the fallback instead of paying a full-history rewrite to rediscover it.
+pub(super) struct Verdicts {
+    path: PathBuf,
+    warn: Warn,
+    // Only chooses a cache layout, so a poisoned lock is recovered; the file is the durable record.
+    broken: Mutex<BTreeSet<(u32, u32, u32)>>,
+}
+
+static STORES: LazyLock<Mutex<HashMap<PathBuf, Arc<Verdicts>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn parse_version(text: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = text.split('.').map(|part| part.parse::<u32>().ok());
+    let version = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(version)
+}
+
+/// The broken versions a verdicts file holds for the current template revision.
+fn parse(text: &str) -> Result<BTreeSet<(u32, u32, u32)>, serde_json::Error> {
+    let value: Value = serde_json::from_str(text)?;
+    Ok(value
+        .get("broken")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|entry| {
+            entry.get("template").and_then(Value::as_u64) == Some(TEMPLATE_REVISION.into())
+        })
+        .filter_map(|entry| parse_version(entry.get("cli")?.as_str()?))
+        .collect())
+}
+
+impl Verdicts {
+    /// The one store for `data_dir`'s verdicts file, shared by every `Cli` over that directory
+    /// so a verdict found through one account is seen, and warned about, once for all.
+    pub(super) fn shared(data_dir: &Path, warn: &Warn) -> Arc<Verdicts> {
+        let path = data_dir.join(VERDICTS_FILE);
+        let mut stores = lock(&STORES, "claude cache verdict stores");
+        stores
+            .entry(path.clone())
+            .or_insert_with(|| Arc::new(Verdicts::load(path, warn.clone())))
+            .clone()
+    }
+
+    fn load(path: PathBuf, warn: Warn) -> Verdicts {
+        let broken = match file_lock::read_shared(&path) {
+            Ok(text) => parse(&text).unwrap_or_else(|e| {
+                warn.emit(&format!(
+                    "the Claude CLI cache verdicts in {} could not be parsed and are ignored: {}",
+                    path.display(),
+                    chain(&e)
+                ));
+                BTreeSet::new()
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeSet::new(),
+            Err(e) => {
+                warn.emit(&format!(
+                    "the Claude CLI cache verdicts in {} could not be read and are ignored: {}",
+                    path.display(),
+                    chain(&e)
+                ));
+                BTreeSet::new()
+            }
+        };
+        Verdicts {
+            path,
+            warn,
+            broken: Mutex::new(broken),
+        }
+    }
+
+    pub(super) fn contains(&self, version: (u32, u32, u32)) -> bool {
+        lock_recovering(&self.broken).contains(&version)
+    }
+
+    /// Adds a version to the broken set and persists it; true only on its first insertion. A
+    /// failed write is warned about and leaves the in-memory verdict in place.
+    pub(super) fn mark(&self, version: (u32, u32, u32)) -> bool {
+        if !lock_recovering(&self.broken).insert(version) {
+            return false;
+        }
+        if let Err(e) = self.persist(version) {
+            self.warn.emit(&format!(
+                "the Claude CLI cache verdict could not be saved to {}: {}",
+                self.path.display(),
+                chain(&e)
+            ));
+        }
+        true
+    }
+
+    fn persist(&self, version: (u32, u32, u32)) -> std::io::Result<()> {
+        let _guard = file_lock::lock(&self.path)?;
+        // Merge what another process wrote since the load. A plain read: `read_shared` would wait
+        // on the lock held here. An unreadable file is replaced by the write below.
+        let mut broken = std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|text| parse(&text).ok())
+            .unwrap_or_default();
+        broken.insert(version);
+        let entries: Vec<Value> = broken
+            .iter()
+            .map(|(a, b, c)| json!({"cli": format!("{a}.{b}.{c}"), "template": TEMPLATE_REVISION}))
+            .collect();
+        let text = serde_json::to_string_pretty(&json!({"broken": entries}))
+            .expect("a JSON value serializes");
+        owner_only::write_atomic(&self.path, text.as_bytes())
+    }
 }
 
 /// Records a finished request and runs the self-check against the conversation's previous one.
@@ -442,6 +555,7 @@ pub(super) fn finished(
     sent: Sent,
     usage: Option<CacheUsage>,
     at: Instant,
+    verdicts: &Verdicts,
 ) -> Option<(u32, u32, u32)> {
     let mut records = lock_recovering(&RECORDS);
     let (Layout::Native, Some(version), Some(usage)) = (sent.layout, sent.version, usage) else {
@@ -461,7 +575,7 @@ pub(super) fn finished(
     let broken = previous.is_some_and(|prev| check(&prev, &now));
     records.put(sent.session_id, now);
     drop(records);
-    (broken && mark_broken(version)).then_some(version)
+    (broken && verdicts.mark(version)).then_some(version)
 }
 
 #[cfg(test)]
