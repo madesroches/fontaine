@@ -388,6 +388,7 @@ async fn a_failed_main_model_call_emits_an_api_error_without_the_message() {
     let built = build(&w, Manual, failing_turn(400), true);
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hi".to_string(),
@@ -429,6 +430,7 @@ async fn a_failed_subagent_call_reports_the_subagent_as_its_source() {
     let built = build(&w, Manual, failing_turn(400), true);
     let outcome = drive(
         Drive {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             agent_id: "child-1",
@@ -473,6 +475,7 @@ async fn reaching_the_turn_limit_is_not_an_api_error() {
     let built = build(&w, Manual, vec![call], true);
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hi".to_string(),

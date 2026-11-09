@@ -10,6 +10,7 @@ use rig_agent::completion::PromptError;
 use rig_agent::prelude::*;
 use rig_core::catalog::Modalities;
 use rig_core::completion::{GenerationOptions, Usage};
+use rig_core::error::{ErrorReport, ProviderError};
 use rig_core::message::{
     AssistantContent, DocumentMediaType, Message, ToolResultContent, UserContent,
 };
@@ -22,7 +23,7 @@ use crate::audit::DecisionRecord;
 use crate::gate::{DecisionFeed, Published, SessionState};
 use crate::ledger::Record;
 use crate::preview::DiffPreview;
-use crate::usage_ledger::UsageSource;
+use crate::usage_ledger::{Served, UsageSource};
 
 /// The retries a transient transport failure earns, on top of the first attempt.
 const MAX_RETRIES: usize = 2;
@@ -34,7 +35,7 @@ const BACKOFF: std::time::Duration = std::time::Duration::from_millis(250);
 /// A retry's prompt. The failed attempt's committed messages are already saved by the
 /// recovery hook, so the run only needs to be told to go on. Model context, never a ledger
 /// user message.
-const RETRY_NOTE: &str = "[Harness note, not the user's words: the previous model call failed \
+pub const RETRY_NOTE: &str = "[Harness note, not the user's words: the previous model call failed \
 before it finished; continue the task.]";
 
 #[derive(Clone, Debug)]
@@ -83,7 +84,46 @@ pub enum TurnOutcome {
     MaxTurns(String),
     /// The consumer stopped the run.
     Stopped,
-    Failed(String),
+    Failed(TurnFailure),
+}
+
+/// Why a turn failed, with whether the failure is the account's quota running out, which a model
+/// list answers by moving to its next entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TurnFailure {
+    pub message: String,
+    pub falls_through: bool,
+    /// The stable error class of the failed request, as the `api_error` event carries it.
+    pub class: Option<&'static str>,
+}
+
+impl TurnFailure {
+    /// A failure that is not a quota failure.
+    pub fn new(message: impl Into<String>) -> TurnFailure {
+        TurnFailure {
+            message: message.into(),
+            falls_through: false,
+            class: None,
+        }
+    }
+}
+
+impl From<String> for TurnFailure {
+    fn from(message: String) -> Self {
+        TurnFailure::new(message)
+    }
+}
+
+impl From<&str> for TurnFailure {
+    fn from(message: &str) -> Self {
+        TurnFailure::new(message)
+    }
+}
+
+impl std::fmt::Display for TurnFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 pub struct TurnParams<'a> {
@@ -108,6 +148,8 @@ pub struct TurnParams<'a> {
     /// The turn's reasoning effort, from `ModelHandle::generation_options` on the current model;
     /// `None` sends nothing.
     pub generation_options: Option<GenerationOptions>,
+    /// The role and model the turn's calls are recorded against in the usage ledger.
+    pub served: Served,
 }
 
 /// What an inline attachment is.
@@ -204,6 +246,7 @@ pub async fn run_turn(
             provider: params.provider,
             native_search: params.native_search,
             generation_options: params.generation_options,
+            served: params.served,
             span: interaction,
         },
         Some(&mut feed),
@@ -318,6 +361,8 @@ pub struct Drive<'a> {
     /// The reasoning effort this run's model calls send, already checked against the model;
     /// `None` sends nothing.
     pub generation_options: Option<GenerationOptions>,
+    /// The role and model this run's calls are recorded against in the usage ledger.
+    pub served: Served,
     /// The run adopts this span as its own agent span.
     pub span: tracing::Span,
 }
@@ -381,6 +426,86 @@ fn retryable(error: &PromptError) -> bool {
     }
 }
 
+/// Names a provider's rate-limit, quota and overload replies that carry only a machine code,
+/// because rig delivers mid-stream errors without a status. The numeric envelope codes are
+/// decimal strings.
+const QUOTA_CODES: &[&str] = &[
+    "402",
+    "429",
+    "529",
+    "rate_limit_exceeded",
+    "too_many_requests",
+    "resource_exhausted",
+    "ThrottlingException",
+    "quota_exceeded",
+    "billing_hard_limit_reached",
+    "overloaded_error",
+    "rate_limit_error",
+    "insufficient_quota",
+];
+
+/// Whether a reply with this status and machine code is the account's quota running out or the
+/// endpoint overloaded: what a model list answers by moving to its next entry. A 400 or a 500 is
+/// a bug or an outage that another model would hide.
+fn quota_reply(status: Option<u16>, code: Option<&str>) -> bool {
+    matches!(status, Some(402 | 429 | 529)) || code.is_some_and(|code| QUOTA_CODES.contains(&code))
+}
+
+/// [`falls_through`] for a provider error, which is also what a one-shot completion returns.
+pub fn provider_falls_through(error: &ProviderError) -> bool {
+    use crate::providers::claude_subscription::{ErrorKind, claude_error};
+    let status = error.provider_response_status().map(|s| s.as_u16());
+    let code = error.provider_response().and_then(|r| r.machine_code());
+    quota_reply(status, code.as_deref())
+        || claude_error(error).is_some_and(|e| e.kind == ErrorKind::Limit)
+}
+
+/// [`falls_through`] for a relayed report. A plan limit that only a report's text describes is
+/// not recognised: nothing matches on text.
+pub fn report_falls_through(report: &ErrorReport) -> bool {
+    let code = report.code.clone().or_else(|| {
+        report
+            .provider_response
+            .as_ref()
+            .and_then(|r| r.machine_code())
+    });
+    let status = report.http_status.or_else(|| {
+        report
+            .provider_response
+            .as_ref()
+            .and_then(|r| r.status)
+            .map(|s| s.as_u16())
+    });
+    quota_reply(status, code.as_deref())
+}
+
+/// Whether a failed run is a quota-class failure of its model: a 402, 429 or 529, a code that
+/// names one, or a `claude-subscription` plan limit. Fontaine's own token and cost budgets are
+/// the user's limit, not the account's, and never come through here.
+pub fn falls_through(error: &PromptError) -> bool {
+    match error {
+        PromptError::Provider(e) => provider_falls_through(e),
+        PromptError::Report(report) => report_falls_through(report),
+        _ => false,
+    }
+}
+
+/// [`falls_through`] for a one-shot job's error: whichever provider or run error is in its
+/// `source()` chain. The guardian crate wraps rig's error without naming the core's types.
+pub fn error_falls_through(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(e) = current {
+        if let Some(run) = e.downcast_ref::<PromptError>() {
+            return falls_through(run);
+        }
+        if let Some(provider) = e.downcast_ref::<ProviderError>() {
+            return provider_falls_through(provider);
+        }
+        current = e.source();
+    }
+    false
+}
+
 /// How a single attempt ended: a settled turn, or a model failure the caller may retry.
 enum DriveEnd {
     Outcome(TurnOutcome),
@@ -419,6 +544,7 @@ pub async fn drive(
                 provider: params.provider.clone(),
                 native_search: params.native_search,
                 generation_options: params.generation_options.clone(),
+                served: params.served.clone(),
                 span: params.span.clone(),
             },
             feed.as_deref_mut(),
@@ -438,7 +564,11 @@ pub async fn drive(
                     message: message.chars().take(FAILURE_RECORD_CHARS).collect(),
                 });
             }
-            return TurnOutcome::Failed(message);
+            return TurnOutcome::Failed(TurnFailure {
+                message,
+                falls_through: falls_through(&error),
+                class: error_class(&error),
+            });
         }
         tokio::time::sleep(BACKOFF * (1 << attempt)).await;
         params.prompt = RETRY_NOTE.to_string();
@@ -578,7 +708,7 @@ async fn drive_once(
                 };
                 params
                     .state
-                    .record_usage(source, params.agent_id, &usage, true);
+                    .record_usage(source, params.agent_id, &usage, true, &params.served);
                 let flow = on_event(SessionEvent::Usage {
                     usage,
                     calls_tool: turn_calls_tool,
@@ -648,9 +778,9 @@ async fn drive_once(
     } else if let Some(response) = final_response {
         DriveEnd::Outcome(TurnOutcome::Answer(response.output()))
     } else {
-        DriveEnd::Outcome(TurnOutcome::Failed(
-            "the run ended without an answer".to_string(),
-        ))
+        DriveEnd::Outcome(TurnOutcome::Failed(TurnFailure::new(
+            "the run ended without an answer",
+        )))
     }
 }
 
@@ -792,6 +922,116 @@ mod tests {
             "boom",
         ));
         assert!(retryable(&PromptError::Report(ErrorReport::from(&error))));
+    }
+
+    #[test]
+    fn quota_statuses_fall_through_and_other_failures_do_not() {
+        for status in [402, 429, 529] {
+            let status = StatusCode::from_u16(status).unwrap();
+            assert!(falls_through(&provider_error(status)), "{status}");
+        }
+        for status in [400, 401, 500, 503] {
+            let status = StatusCode::from_u16(status).unwrap();
+            assert!(!falls_through(&provider_error(status)), "{status}");
+        }
+    }
+
+    #[test]
+    fn a_stream_error_with_only_a_code_falls_through_for_each_quota_code() {
+        let by_code = |code: &str| {
+            PromptError::Provider(ProviderError::ProviderResponse(
+                ProviderResponseError::without_status("stream error")
+                    .with_code(Some(code.to_string())),
+            ))
+        };
+        for code in QUOTA_CODES {
+            assert!(falls_through(&by_code(code)), "{code}");
+        }
+        assert!(!falls_through(&by_code("invalid_request_error")));
+        assert!(!falls_through(&by_code("server_error")));
+        // The code the body's envelope names counts too, numeric or named.
+        let body = |text: &str| {
+            PromptError::Provider(ProviderError::ProviderResponse(
+                ProviderResponseError::without_status(text),
+            ))
+        };
+        assert!(falls_through(&body(
+            r#"{"error":{"code":429,"message":"slow down"}}"#
+        )));
+        assert!(falls_through(&body(
+            r#"{"error":{"type":"insufficient_quota","message":"out"}}"#
+        )));
+        assert!(!falls_through(&body(
+            r#"{"error":{"code":400,"message":"bad"}}"#
+        )));
+    }
+
+    #[test]
+    fn a_relayed_report_falls_through_on_its_status_or_code_only() {
+        let report = |status: Option<u16>, code: Option<&str>, message: &str| {
+            let mut report = ErrorReport::new(rig_core::error::ErrorKind::Provider, message);
+            report.http_status = status;
+            report.code = code.map(str::to_string);
+            PromptError::Report(report)
+        };
+        assert!(falls_through(&report(Some(429), None, "x")));
+        assert!(falls_through(&report(None, Some("rate_limit_error"), "x")));
+        assert!(!falls_through(&report(Some(500), None, "x")));
+        // A plan limit that only the text describes is not recognised: nothing matches on text.
+        assert!(!falls_through(&report(
+            None,
+            None,
+            "you have hit your usage limit"
+        )));
+    }
+
+    #[test]
+    fn a_claude_subscription_plan_limit_falls_through_in_the_provider_form() {
+        use crate::providers::claude_subscription::{ClaudeError, ErrorKind};
+        let limit = |kind| {
+            PromptError::Provider(ProviderError::Request(std::sync::Arc::new(
+                ClaudeError::new(kind, "the plan's limit was reached"),
+            )))
+        };
+        assert!(falls_through(&limit(ErrorKind::Limit)));
+        assert!(!falls_through(&limit(ErrorKind::Auth)));
+    }
+
+    #[test]
+    fn a_cancel_and_the_run_s_own_limits_do_not_fall_through() {
+        let cancelled = PromptError::Cancelled {
+            chat_history: Vec::new(),
+            reason: "test".to_string(),
+        };
+        assert!(!falls_through(&cancelled));
+        let max = PromptError::MaxTurns {
+            max_turns: 1,
+            chat_history: Vec::new(),
+            prompt: Message::user("x"),
+        };
+        assert!(!falls_through(&max));
+    }
+
+    #[test]
+    fn a_job_error_falls_through_by_the_run_error_in_its_source_chain() {
+        #[derive(Debug)]
+        struct Wrapper(Box<dyn std::error::Error + Send + Sync>);
+        impl std::fmt::Display for Wrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("the model call failed")
+            }
+        }
+        impl std::error::Error for Wrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self.0.as_ref())
+            }
+        }
+        let quota = Wrapper(Box::new(provider_error(StatusCode::TOO_MANY_REQUESTS)));
+        assert!(error_falls_through(&quota));
+        let bad = Wrapper(Box::new(provider_error(StatusCode::BAD_REQUEST)));
+        assert!(!error_falls_through(&bad));
+        let io = Wrapper(Box::new(std::io::Error::other("disk")));
+        assert!(!error_falls_through(&io));
     }
 
     #[test]

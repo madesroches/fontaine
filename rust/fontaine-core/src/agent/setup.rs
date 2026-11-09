@@ -31,7 +31,9 @@ use crate::gate::{
     AutoContext, AutoEdits, CompositionStage, SessionState, StateParams, no_guardian,
 };
 use crate::instructions::{self, InstructionStage, Sources};
+use crate::model_roles::{RoleChains, Roles};
 use crate::models::{GuardianModel, ModelHandle, Models};
+use crate::notice::Notice;
 use crate::permissions::{AfkApprover, Approver, PermissionPipeline, PipelineParams};
 use crate::prompt::{self, PromptParts};
 use crate::providers::PromptCaching;
@@ -283,8 +285,17 @@ pub fn build_composition(
 /// Every agent type a session has: the built-in ones, user agent files, `[agents.types]`
 /// entries, and a repository's agent files last. Later definitions of a name replace earlier
 /// ones, and a repository's can only have narrowed.
-pub fn build_agent_types(config: &Config, extensions: &Extensions) -> AgentTypes {
+///
+/// A role a type names must be one the user defined. In a user file or `[agents.types]` an
+/// undefined one is an error; in a repository's or a plugin's file it is a warning, and the type
+/// runs on the session model, since a role names no endpoint and the repository cannot define it.
+pub fn build_agent_types(
+    config: &Config,
+    extensions: &Extensions,
+    roles: &Roles,
+) -> Result<(AgentTypes, Vec<Notice>), RuntimeError> {
     let mut types = AgentTypes::builtin();
+    let mut warnings = Vec::new();
     if config.agents.teams {
         types.enable_teams();
     }
@@ -293,16 +304,23 @@ pub fn build_agent_types(config: &Config, extensions: &Extensions) -> AgentTypes
         .iter()
         .filter(|t| matches!(t.origin, TypeOrigin::UserFile(_)))
     {
+        check_type_roles(agent, roles)?;
         types.insert(agent.clone());
     }
     for (name, ty) in &config.agents.types {
-        types.insert(AgentType {
+        let model = match &ty.model {
+            Some(model) => Some(ModelSpec::from_entries(model.entries()).map_err(|why| {
+                RuntimeError::new(format!("[agents.types.{name}] `model`: {why}"))
+            })?),
+            None => None,
+        };
+        let agent = AgentType {
             name: name.clone(),
             description: format!("{name} (configured)"),
             prompt: None,
             tools: ty.tools.clone(),
             disallowed: Vec::new(),
-            model: ty.model.as_deref().and_then(|m| ModelSpec::parse(m).ok()),
+            model,
             mode: match ty.mode {
                 None | Some(AgentMode::Inherit) => ModeSetting::Inherit,
                 Some(AgentMode::Manual) => ModeSetting::Manual,
@@ -311,7 +329,9 @@ pub fn build_agent_types(config: &Config, extensions: &Extensions) -> AgentTypes
             effort: ty.effort,
             origin: TypeOrigin::Config,
             inherits_context: false,
-        });
+        };
+        check_type_roles(&agent, roles)?;
+        types.insert(agent);
     }
     for agent in extensions.agent_types.iter().filter(|t| {
         matches!(
@@ -319,9 +339,46 @@ pub fn build_agent_types(config: &Config, extensions: &Extensions) -> AgentTypes
             TypeOrigin::ProjectFile(_) | TypeOrigin::PluginFile(_)
         )
     }) {
-        types.insert(agent.clone());
+        let mut agent = agent.clone();
+        if let Err(why) = check_type_roles(&agent, roles) {
+            let file = match &agent.origin {
+                TypeOrigin::ProjectFile(path) | TypeOrigin::PluginFile(path) => {
+                    path.display().to_string()
+                }
+                _ => agent.name.clone(),
+            };
+            warnings.push(Notice::warning(
+                format!("Agent file {file} names a model role you have not defined"),
+                Some(format!(
+                    "{why}; the agent runs on the session model until you define it"
+                )),
+            ));
+            agent.model = None;
+        }
+        types.insert(agent);
     }
-    types
+    Ok((types, warnings))
+}
+
+/// The session's agent types, built against its model roles. The warnings about a repository's
+/// agent files join the startup warnings.
+pub(super) fn session_agent_types(setup: &mut AgentSetup) -> Result<Arc<AgentTypes>, RuntimeError> {
+    let roles = Roles::from_config(&setup.config)
+        .map_err(|e| RuntimeError::caused("invalid model roles", e))?;
+    let (types, warnings) = build_agent_types(&setup.config, &setup.extensions, &roles)?;
+    setup.startup_warnings.extend(warnings);
+    Ok(Arc::new(types))
+}
+
+/// Whether the role or list a type's `model` names resolves against the user's roles.
+fn check_type_roles(agent: &AgentType, roles: &Roles) -> Result<(), RuntimeError> {
+    match &agent.model {
+        Some(spec @ (ModelSpec::Named(_) | ModelSpec::List(_))) => roles
+            .entries_of(spec)
+            .map(|_| ())
+            .map_err(|why| RuntimeError::new(format!("agent type `{}`: {why}", agent.name))),
+        _ => Ok(()),
+    }
 }
 
 pub(super) fn agent_limits(config: &Config) -> Limits {
@@ -705,8 +762,21 @@ pub(super) fn retained(
         .loaded_network(None)
         .map(Arc::new)
         .map_err(|e| RuntimeError::caused("invalid [network] settings", e))?;
+    let (roles, role_chains) = match &setup.switcher {
+        Some(switcher) => (switcher.shared_roles(), switcher.role_chains().clone()),
+        None => (
+            Arc::new(
+                Roles::from_config(&setup.config)
+                    .map_err(|e| RuntimeError::caused("invalid model roles", e))?,
+            ),
+            Arc::new(RoleChains::default()),
+        ),
+    };
     Ok(Setup {
         network,
+        roles,
+        role_chains,
+        explicit_budget_cap: setup.explicit_budget_cap,
         config_dir: setup.config_dir.clone(),
         home: setup.home.clone(),
         data_dir: setup.data_dir.clone(),
@@ -777,6 +847,7 @@ pub(super) fn subagent_support(
 ) {
     let main = Arc::new(RwLock::new(MainModel {
         handle: models.main.clone(),
+        chain: models.main_chain.clone(),
         listing: models.main_listing.clone(),
     }));
     let tool_server = ToolServer::new().run();
@@ -820,6 +891,9 @@ fn child_runner(
             tool_server: tool_server.clone(),
             main: main.clone(),
             switcher: retained.switcher.clone(),
+            roles: retained.roles.clone(),
+            chains: retained.role_chains.clone(),
+            explicit_budget_cap: retained.explicit_budget_cap,
             preamble: Arc::new(move |agent_type: &AgentType| {
                 let roots: Vec<PathBuf> = preamble_state.scope().roots().to_vec();
                 let sources = Sources::for_state(

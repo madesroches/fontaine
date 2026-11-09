@@ -9,7 +9,7 @@ use fontaine_core::agent::AgentRuntime;
 use fontaine_core::config::{AccountKind, PermissionMode};
 use fontaine_core::models::{GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models};
 use fontaine_core::permission_rules::{RuleSource, parse_rule};
-use fontaine_core::turn::{Flow, TurnOutcome, TurnParams, run_turn};
+use fontaine_core::turn::{Flow, TurnFailure, TurnOutcome, TurnParams, run_turn};
 use http::StatusCode;
 use rig_core::ProviderResponseError;
 use rig_core::completion::Usage;
@@ -46,6 +46,9 @@ fn build(w: &World, mode: PermissionMode, kind: &str, turns: Vec<Vec<MockStreamE
         main.clone().into(),
     );
     let models = Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(
+            handle.clone().reference.clone(),
+        ),
         main: handle.clone(),
         main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),
@@ -59,6 +62,7 @@ fn build(w: &World, mode: PermissionMode, kind: &str, turns: Vec<Vec<MockStreamE
 async fn turn(built: &Built) -> TurnOutcome {
     run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hello".to_string(),
@@ -349,7 +353,7 @@ async fn a_400_naming_web_search_gets_the_hint_and_is_not_retried() {
             r#"{"error":{"message":"tools.0: web_search_20250305 is not supported"}}"#,
         ),
     );
-    let TurnOutcome::Failed(text) = turn(&built).await else {
+    let TurnOutcome::Failed(TurnFailure { message: text, .. }) = turn(&built).await else {
         panic!("expected a failure");
     };
     assert!(text.contains("native = \"off\""), "{text}");
@@ -365,7 +369,7 @@ async fn a_400_naming_web_search_gets_no_hint_when_it_was_not_offered() {
         "anthropic",
         rejected(400, "messages.2: web_search_tool_result is not supported"),
     );
-    let TurnOutcome::Failed(text) = turn(&built).await else {
+    let TurnOutcome::Failed(TurnFailure { message: text, .. }) = turn(&built).await else {
         panic!("expected a failure");
     };
     assert!(!text.contains("native"), "{text}");
@@ -384,7 +388,7 @@ async fn other_failures_keep_their_text() {
             "anthropic",
             rejected(status, body),
         );
-        let TurnOutcome::Failed(text) = turn(&built).await else {
+        let TurnOutcome::Failed(TurnFailure { message: text, .. }) = turn(&built).await else {
             panic!("expected a failure");
         };
         assert!(!text.contains("native"), "{status}: {text}");

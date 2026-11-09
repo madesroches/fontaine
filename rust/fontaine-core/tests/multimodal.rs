@@ -59,6 +59,9 @@ fn build(world: &World, spec: ModelSpec) -> (AgentRuntime, MockCompletionModel) 
         main.clone().into(),
     );
     let models = Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(
+            handle.clone().reference.clone(),
+        ),
         main: handle.clone(),
         main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),
@@ -78,6 +81,7 @@ async fn run(
 ) -> CompletionRequest {
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &runtime.agent,
             state: &runtime.state,
             prompt: "look at this".to_string(),

@@ -43,6 +43,7 @@ use crate::gate::SessionState;
 use crate::instructions::{self, InstructionStage, Loaded, MemoryEntry};
 use crate::ledger::{FILE_INDEX_CAP, FileIndex, Record, git_remotes_of};
 use crate::memory;
+use crate::model_roles::{RoleChains, Roles};
 use crate::models::{AccountListing, Models, SharedSwitcher, Switcher};
 use crate::native_search;
 use crate::notice::Notice;
@@ -157,6 +158,9 @@ pub struct AgentSetup {
     /// Whether to say that web search is unavailable. A `/resume` or `/branch` builds another
     /// runtime in the same process, so the launcher turns this off after the first.
     pub warn_no_search: bool,
+    /// Whether the run has an explicit `--max-budget-usd`: it must stay measurable, so a model
+    /// list skips the unpriced entries it falls through to.
+    pub explicit_budget_cap: bool,
 }
 
 pub struct AgentRuntime {
@@ -242,6 +246,10 @@ pub(crate) struct Setup {
     json_schema: Option<Schema>,
     user_config: Option<PathBuf>,
     switcher: Option<SharedSwitcher>,
+    /// The session's model roles and their shared chains. The switcher's own when there is one.
+    pub(crate) roles: Arc<Roles>,
+    pub(crate) role_chains: Arc<RoleChains>,
+    pub(crate) explicit_budget_cap: bool,
     project_executables: bool,
     confirm_project_servers: bool,
     scheduling: bool,
@@ -281,7 +289,7 @@ impl AgentRuntime {
     pub fn new(mut setup: AgentSetup) -> Result<AgentRuntime, RuntimeError> {
         setup::prepare(&mut setup);
         let tree = setup::agent_tree(&setup);
-        let agent_types = Arc::new(build_agent_types(&setup.config, &setup.extensions));
+        let agent_types = setup::session_agent_types(&mut setup)?;
         let state = setup::session_state(&setup, &tree, &agent_types);
         setup::configure_state(&mut setup, &state);
         let setup::Gates {

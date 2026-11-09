@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use fontaine_core::accounts::{self, AccountsError};
 use fontaine_core::agent::EnvLookup;
-use fontaine_core::config::Config;
+use fontaine_core::config::{Config, MainSource, OneOrMany};
 use fontaine_core::dirs::Dirs;
 use fontaine_core::models::{self, Models, ResolveParams, Switcher};
 use fontaine_core::notice::Notice;
@@ -435,15 +435,48 @@ impl Setup {
         })
     }
 
+    /// Whether a picked model may be saved as `[model] model`: not when the settings give the main
+    /// model as a role or a list, since a second `main` key beside it would stop the next start.
+    fn may_save_pick(&mut self) -> bool {
+        use fontaine_core::user_config::MainShape;
+        if !matches!(
+            self.config.main_source,
+            MainSource::Unset | MainSource::ModelKeyString
+        ) {
+            return false;
+        }
+        match user_config::main_model_shape(&self.user_file) {
+            Ok(shape) => shape == MainShape::Other,
+            Err(e) => {
+                self.warnings.push(format!(
+                    "could not read {}: {}",
+                    self.user_file.display(),
+                    chain(&e)
+                ));
+                false
+            }
+        }
+    }
+
     async fn pick<S: Surface>(&mut self, io: &mut Io<S>, reference: String) -> io::Result<Step> {
-        if let Err(e) = user_config::set_model(&self.user_file, &reference) {
+        if self.may_save_pick() {
+            match user_config::set_model(&self.user_file, &reference) {
+                Ok(()) => {
+                    self.config.model = Some(OneOrMany::One(reference.clone()));
+                    self.config.main_source = MainSource::ModelKeyString;
+                }
+                Err(e) => self.warnings.push(format!(
+                    "could not save {reference} as your model in {}: {}",
+                    self.user_file.display(),
+                    chain(&e)
+                )),
+            }
+        } else {
             self.warnings.push(format!(
-                "could not save {reference} as your model in {}: {}",
-                self.user_file.display(),
-                chain(&e)
+                "{reference} is kept for this session only: your settings give the main model as a role or a list; edit it in {}",
+                self.user_file.display()
             ));
         }
-        self.config.model = Some(reference.clone());
         self.model_override = Some(reference);
         Ok(match self.retry(io).await? {
             Some(started) => Step::Start(started),

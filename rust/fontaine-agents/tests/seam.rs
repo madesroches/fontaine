@@ -292,6 +292,7 @@ fn rig_with(limits: Limits, types: AgentTypes, root_mode: RootMode) -> Rig {
             types: Arc::new(types),
             runner: runner.clone(),
             ledger: ledger.clone(),
+            roles: String::new(),
         },
         send: SendMessageTool {
             tree: tree.clone(),
@@ -507,6 +508,45 @@ async fn the_models_precedence_is_the_call_then_the_type_then_the_session() {
 }
 
 #[tokio::test]
+async fn a_role_name_or_a_list_is_forwarded_for_the_session_to_resolve() {
+    let rig = rig();
+    *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
+    let mut named = args("explore", "x");
+    named.model = Some("coding".into());
+    spawn(&rig, named).await.unwrap();
+    assert_eq!(
+        rig.runner.spawned()[0].model,
+        ModelSpec::Named("coding".into())
+    );
+    let mut list = args("explore", "x");
+    list.model = Some("work/a, coding".into());
+    spawn(&rig, list).await.unwrap();
+    assert_eq!(
+        rig.runner.spawned()[1].model,
+        ModelSpec::List(vec!["work/a".into(), "coding".into()])
+    );
+}
+
+#[test]
+fn the_model_parameter_lists_the_session_roles() {
+    let mut rig = rig();
+    let plain = rig.agent.parameters()["properties"]["model"]["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        plain.contains("a role name") && !plain.contains("Roles:"),
+        "{plain}"
+    );
+    rig.agent.roles = "- `coding`: a/x, b/y".into();
+    let listed = rig.agent.parameters()["properties"]["model"]["description"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(listed.ends_with("Roles:\n- `coding`: a/x, b/y"), "{listed}");
+}
+
+#[tokio::test]
 async fn an_invalid_model_and_a_model_on_a_project_type_are_error_results() {
     let mut types = AgentTypes::builtin();
     types.insert(AgentType {
@@ -525,12 +565,12 @@ async fn an_invalid_model_and_a_model_on_a_project_type_are_error_results() {
     *rig.runner.answer.lock().unwrap() = Some((ChildStatus::Done, "ok".into()));
 
     let mut bad = args("explore", "x");
-    bad.model = Some("sonnet".into());
+    bad.model = Some("two words".into());
     let error = spawn(&rig, bad).await.unwrap_err();
     assert!(error.contains("not a model"), "{error}");
 
     let mut on_project = args("repo-reviewer", "x");
-    on_project.model = Some("work/claude".into());
+    on_project.model = Some("coding".into());
     let error = spawn(&rig, on_project).await.unwrap_err();
     assert!(error.contains("session model"), "{error}");
 

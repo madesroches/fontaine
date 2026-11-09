@@ -65,6 +65,7 @@ async fn root_turn(built: &Built, prompt: &str) {
     built.runtime.begin_turn(prompt, false);
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: prompt.to_string(),

@@ -214,7 +214,7 @@ fn a_plugin_agent_file_follows_the_project_rules() {
     manifest(&root, "p", "");
     write(
         &root.join("agents/with-model.md"),
-        "---\nmodel: $main\n---\nBody",
+        "---\nmodel: acct/x\n---\nBody",
     );
     let build = build_plugin(&root, "p", &context(&w.work)).unwrap();
     let mut warnings = Vec::new();
@@ -230,6 +230,27 @@ fn a_plugin_agent_file_follows_the_project_rules() {
         err.to_string()
             .contains("plugin agent file cannot choose a model")
     );
+
+    // A role names no endpoint, so a plugin's file may name one, or `$main`.
+    for model in ["coding", "$main"] {
+        write(
+            &root.join("agents/with-model.md"),
+            &format!("---\nmodel: {model}\n---\nBody"),
+        );
+        let build = build_plugin(&root, "p", &context(&w.work)).unwrap();
+        let loaded = extensions::load(&mut extensions::LoadParams {
+            config_dir: &w.config,
+            project_root: &w.work,
+            servers: &[],
+            plugins: std::slice::from_ref(&build.dir),
+            warnings: &mut Vec::new(),
+        })
+        .unwrap();
+        assert!(
+            loaded.agent_types.iter().any(|t| t.model.is_some()),
+            "{model}"
+        );
+    }
 
     write(
         &root.join("agents/inherit.md"),

@@ -106,6 +106,7 @@ fn runtime_on(
     approver: Arc<Warnings>,
 ) -> fontaine_core::agent::AgentRuntime {
     let models = Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(handle.reference.clone()),
         main: handle,
         main_listing: fontaine_core::models::Listing::default(),
         guardian: None,
@@ -206,6 +207,7 @@ async fn root_turn(built: &Built) {
     built.runtime.begin_turn("go", false);
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "go".to_string(),

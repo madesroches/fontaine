@@ -1,5 +1,7 @@
 //! What the session's model calls have cost, by the part of Fontaine that made them.
 
+use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Mutex;
 
 use fontaine_tools::lock::lock;
@@ -82,15 +84,60 @@ impl Bucket {
     }
 }
 
-/// Every model call the session has made, one bucket per source.
+/// Which model served a call and under which role it was asked for.
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Served {
+    /// The role whose list the call was served from; `None` for a model named directly.
+    pub role: Option<String>,
+    /// `<account>/<model>`.
+    pub model: String,
+}
+
+impl Served {
+    pub fn new(role: Option<&str>, model: impl fmt::Display) -> Served {
+        Served {
+            role: role.map(str::to_string),
+            model: model.to_string(),
+        }
+    }
+
+    /// A model named directly, with no role.
+    pub fn direct(model: impl fmt::Display) -> Served {
+        Served::new(None, model)
+    }
+}
+
+impl fmt::Display for Served {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.role {
+            Some(role) => write!(f, "{role} · {}", self.model),
+            None => f.write_str(&self.model),
+        }
+    }
+}
+
+/// Every model call the session has made, one bucket per source and one per role and model.
 #[derive(Default)]
 pub struct UsageLedger {
     by_source: Mutex<[Bucket; 6]>,
+    by_model: Mutex<BTreeMap<Served, Bucket>>,
 }
 
 impl UsageLedger {
-    pub fn record(&self, source: UsageSource, usage: &Usage, sent_request: bool) {
+    pub fn record(&self, source: UsageSource, usage: &Usage, sent_request: bool, served: &Served) {
         lock(&self.by_source, "usage ledger")[source.index()].add(usage, sent_request);
+        lock(&self.by_model, "usage ledger by model")
+            .entry(served.clone())
+            .or_default()
+            .add(usage, sent_request);
+    }
+
+    /// One bucket per role and model that served a call, in name order.
+    pub fn by_model(&self) -> Vec<(Served, Bucket)> {
+        lock(&self.by_model, "usage ledger by model")
+            .iter()
+            .map(|(served, bucket)| (served.clone(), *bucket))
+            .collect()
     }
 
     pub fn bucket(&self, source: UsageSource) -> Bucket {
@@ -175,9 +222,15 @@ mod tests {
     #[test]
     fn record_lands_in_its_source_and_total_propagates_partial() {
         let ledger = UsageLedger::default();
-        ledger.record(UsageSource::Main, &usage(100, 10, Some(0.5)), true);
-        ledger.record(UsageSource::Subagent, &usage(40, 5, None), true);
-        ledger.record(UsageSource::Guardian, &usage(7, 1, Some(0.25)), true);
+        let served = Served::direct("a/m");
+        ledger.record(UsageSource::Main, &usage(100, 10, Some(0.5)), true, &served);
+        ledger.record(UsageSource::Subagent, &usage(40, 5, None), true, &served);
+        ledger.record(
+            UsageSource::Guardian,
+            &usage(7, 1, Some(0.25)),
+            true,
+            &served,
+        );
 
         assert_eq!(ledger.bucket(UsageSource::Main).input_tokens, 100);
         assert_eq!(ledger.bucket(UsageSource::Subagent).unpriced_tokens, 45);
@@ -193,7 +246,51 @@ mod tests {
     #[test]
     fn total_has_no_cost_when_nothing_was_priced() {
         let ledger = UsageLedger::default();
-        ledger.record(UsageSource::Main, &usage(1, 1, None), true);
+        ledger.record(
+            UsageSource::Main,
+            &usage(1, 1, None),
+            true,
+            &Served::default(),
+        );
         assert_eq!(ledger.total().cost_usd, None);
+    }
+
+    #[test]
+    fn calls_are_also_bucketed_by_role_and_model() {
+        let ledger = UsageLedger::default();
+        let coding = Served::new(Some("coding"), "a/sonnet");
+        let fallback = Served::new(Some("coding"), "b/kimi");
+        let direct = Served::direct("a/sonnet");
+        ledger.record(
+            UsageSource::Subagent,
+            &usage(10, 1, Some(0.5)),
+            true,
+            &coding,
+        );
+        ledger.record(
+            UsageSource::Subagent,
+            &usage(20, 2, Some(0.25)),
+            true,
+            &coding,
+        );
+        ledger.record(UsageSource::Subagent, &usage(5, 1, None), true, &fallback);
+        ledger.record(
+            UsageSource::Guardian,
+            &usage(7, 1, Some(0.1)),
+            true,
+            &direct,
+        );
+
+        let rows = ledger.by_model();
+        assert_eq!(rows.len(), 3);
+        let find = |served: &Served| rows.iter().find(|(s, _)| s == served).unwrap().1;
+        assert_eq!(find(&coding).calls, 2);
+        assert_eq!(find(&coding).cost_usd, Some(0.75));
+        assert_eq!(find(&fallback).unpriced_tokens, 6);
+        assert_eq!(find(&direct).input_tokens, 7);
+        assert_eq!(coding.to_string(), "coding · a/sonnet");
+        assert_eq!(direct.to_string(), "a/sonnet");
+        // The per-source view is unchanged by the breakdown.
+        assert_eq!(ledger.bucket(UsageSource::Subagent).calls, 3);
     }
 }

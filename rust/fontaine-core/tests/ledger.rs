@@ -210,7 +210,7 @@ async fn an_empty_summary_leaves_the_context_unchanged() {
     let usage = session.compact_if_needed(&dynamic, true, &DenyAll).await;
     assert_eq!(mock.request_count(), 1);
     assert!(
-        matches!(usage, CompactResult::Failed { usage: Some(_) }),
+        matches!(usage, CompactResult::Failed { usage: Some(_), .. }),
         "a call that answered is still paid for: {usage:?}"
     );
     assert_eq!(saved_texts(&session), before);
@@ -224,7 +224,10 @@ async fn a_failed_summarizer_call_leaves_the_context_unchanged_and_does_not_fail
     let before = saved_texts(&session);
     assert_eq!(
         session.compact_if_needed(&dynamic, true, &DenyAll).await,
-        CompactResult::Failed { usage: None }
+        CompactResult::Failed {
+            usage: None,
+            falls_through: false
+        }
     );
     assert_eq!(mock.request_count(), 1);
     assert_eq!(saved_texts(&session), before);
@@ -594,7 +597,13 @@ async fn asking_an_unlisted_model_to_summarize_warns_and_fails() {
             &approver,
         )
         .await;
-    assert_eq!(result, CompactResult::Failed { usage: None });
+    assert_eq!(
+        result,
+        CompactResult::Failed {
+            usage: None,
+            falls_through: false
+        }
+    );
     assert_eq!(mock.request_count(), 0);
     assert!(approver.0.lock().unwrap()[0].contains("catalog entry is unknown"));
 }
@@ -640,6 +649,89 @@ impl Transport<MockScript> for NestedFailure {
     }
 }
 
+#[derive(Clone)]
+struct QuotaFailure;
+
+impl Transport<MockScript> for QuotaFailure {
+    fn send(
+        &self,
+        _payload: <MockScript as Wire>::Payload,
+        _exchange: Exchange,
+    ) -> Opening<<MockScript as Wire>::Frame> {
+        Opening::failed(ProviderError::ProviderResponse(
+            rig_core::ProviderResponseError::new(http::StatusCode::TOO_MANY_REQUESTS, "slow down"),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_summarizer_that_ran_out_of_quota_fails_for_the_caller_to_move_on_without_a_warning() {
+    let w = World::new();
+    let (session, _) = session_with_history(&w, 8);
+    let (_, main) = model(
+        Some(small_window_spec(1_000)),
+        vec![MockTurn::text("unused")],
+    );
+    let script = MockScript::new("failing").priced_as(small_window_spec(1_000));
+    let failing: DynModel<Completion> = Model::new(script, QuotaFailure).into();
+    let approver = Collect(Default::default());
+    let result = session
+        .compact_logged_via(
+            &main,
+            Some(&failing),
+            true,
+            CompactReason::Asked {
+                focus: String::new(),
+            },
+            &approver,
+        )
+        .await;
+    assert_eq!(
+        result,
+        CompactResult::Failed {
+            usage: None,
+            falls_through: true
+        }
+    );
+    assert!(approver.0.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn the_summary_request_goes_to_the_summarizer_while_the_main_model_sets_the_window() {
+    let w = World::new();
+    let (session, _) = session_with_history(&w, 8);
+    let (main_mock, main) = model(
+        Some(small_window_spec(100_000)),
+        vec![MockTurn::text("MAIN-SUMMARY")],
+    );
+    let (summarizer_mock, summarizer) = model(
+        Some(small_window_spec(100_000)),
+        vec![MockTurn::text("ROLE-SUMMARY")],
+    );
+    let result = session
+        .compact_logged_via(
+            &main,
+            Some(&summarizer),
+            true,
+            CompactReason::Asked {
+                focus: String::new(),
+            },
+            &DenyAll,
+        )
+        .await;
+    assert!(
+        matches!(result, CompactResult::Compacted { .. }),
+        "{result:?}"
+    );
+    assert_eq!(main_mock.request_count(), 0);
+    assert_eq!(summarizer_mock.request_count(), 1);
+    assert!(
+        saved_texts(&session)
+            .iter()
+            .any(|m| m.contains("ROLE-SUMMARY"))
+    );
+}
+
 #[tokio::test]
 async fn a_summarizer_failure_warns_with_its_whole_cause_chain() {
     let w = World::new();
@@ -657,7 +749,13 @@ async fn a_summarizer_failure_warns_with_its_whole_cause_chain() {
             &approver,
         )
         .await;
-    assert_eq!(result, CompactResult::Failed { usage: None });
+    assert_eq!(
+        result,
+        CompactResult::Failed {
+            usage: None,
+            falls_through: false
+        }
+    );
     let warnings = approver.0.lock().unwrap();
     assert!(
         warnings[0].contains("tls handshake rejected the certificate"),
@@ -803,6 +901,7 @@ async fn a_corrupt_trust_store_is_reported_once_at_session_start() {
         .into(),
     );
     let models = fontaine_core::models::Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(handle.reference.clone()),
         main: handle,
         main_listing: fontaine_core::models::Listing::default(),
         guardian: None,

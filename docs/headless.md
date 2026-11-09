@@ -29,7 +29,7 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--in-container` | States that the process runs inside a container; with `[guardian] profile = "minimal"` it lets the minimal guardian load when a runtime probe agrees. See [The guardian](guardian.md#the-minimal-profile). |
 | `--afk` | Runs in [AFK mode](afk.md), which decides as `auto` does (the `init` event reports `afk`) and is shorthand for `--permission-mode afk`: the same would-prompt denials, with guidance to finish the allowed work or stop and report, the temperature stop, and an `afk` object in `result`. |
 | `--afk-temperature-ceiling <n>` | The temperature at which an AFK run stops, a finite number above zero; overrides `[afk] temperature_ceiling`. A project file can only lower it. |
-| `--model <account>/<model>` | Overrides `[model] model`. See [Configuration](configuration.md#accountsname). |
+| `--model <account>/<model>` | Overrides `[model] model`. A [role](configuration.md#modelsroles) name or a comma-separated list is accepted too, and becomes the run's preference list. See [Configuration](configuration.md#accountsname). |
 | `--effort <level>` | The main agent's reasoning effort, `off`, `low`, `medium`, `high` or `max`, overriding `[model] effort`. See [Configuration](configuration.md#model). |
 | `--output-format text\|json\|stream-json` | `text` prints the final answer, `json` one `result` object, `stream-json` one JSON object per line. |
 | `--input-format text\|stream-json` | `stream-json` reads user messages as JSON lines on stdin. A prompt argument together with `stream-json` input is a usage error. |
@@ -51,10 +51,16 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--settings <file>` | A settings file layered over the others (CLI scope). |
 | `--debug-file <path>` | Writes diagnostics to a local, owner-only file. |
 
+When the main model's [list](configuration.md#falling-through-to-the-next-entry) runs out of quota on an entry, the run
+continues on the next one and prints a warning on stderr, such as
+`fontaine: warning: main: anthropic/x is out of quota (rate_limit); continuing on kimi/y`. If every
+entry fails, the `result` is an `error_during_execution` whose `error` ends with
+`every model in main failed`. With `--max-budget-usd`, entries with no known price are skipped.
+
 A headless run on a `claude-subscription` account needs the Claude CLI signed in beforehand
 (`claude auth login`, outside Fontaine). A missing or old CLI, a login that is not a Max or Ultra
 subscription, or a conflicting environment variable exits 1 before any turn, and a credit-billed model at
-startup exits 2, with the corrective text on stderr; a plan limit is reported without a retry, and a stream cut
+startup exits 2, with the corrective text on stderr; a plan limit is reported without a retry (unless the account sits in a [model list](configuration.md#falling-through-to-the-next-entry) with a next entry, which the run continues on), and a stream cut
 short or a CLI silent for 180 seconds is retried twice. Ending the run stops the CLI and its
 descendants. Usage lines carry token counts and no cost, and `--max-budget-usd` is a usage error
 (exit code 2). See [Claude subscription](claude-subscription.md).

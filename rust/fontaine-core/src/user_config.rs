@@ -64,6 +64,40 @@ pub fn set_model(path: &Path, reference: &str) -> io::Result<()> {
     set_value(path, &["model", "model"], Some(reference.into())).map(|_| ())
 }
 
+/// How the settings file at `path` gives the main model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MainShape {
+    /// `[models.roles] main`.
+    Role,
+    /// `[model] model` as a list.
+    List,
+    /// Neither: unset, or `[model] model` as one string.
+    Other,
+}
+
+/// Whether the file at `path` sets the main model as a role or as a list, which a `/model` choice
+/// must not overwrite. A missing file sets neither.
+pub fn main_model_shape(path: &Path) -> io::Result<MainShape> {
+    let doc = read_document(path, crate::file_lock::read_shared)?;
+    if doc
+        .get("models")
+        .and_then(|t| t.get("roles"))
+        .and_then(|t| t.get("main"))
+        .is_some()
+    {
+        return Ok(MainShape::Role);
+    }
+    let listed = doc
+        .get("model")
+        .and_then(|t| t.get("model"))
+        .is_some_and(Item::is_array);
+    Ok(if listed {
+        MainShape::List
+    } else {
+        MainShape::Other
+    })
+}
+
 /// Sets `[guardian] model` in the settings file at `path` to `reference` (`<account>/<model>`).
 pub fn set_guardian_model(path: &Path, reference: &str) -> io::Result<()> {
     set_value(path, &["guardian", "model"], Some(reference.into())).map(|_| ())
@@ -210,40 +244,69 @@ pub fn remove_account(path: &Path, name: &str) -> io::Result<bool> {
 
 /// The settings key in the file at `path` whose model reference names account `name`, if any.
 /// `None` when the file does not define the account, since there is nothing to remove from it.
-pub fn model_key_naming(path: &Path, name: &str) -> io::Result<Option<&'static str>> {
+/// A role or an agent type's `model` may be a list; any entry on the account counts.
+pub fn model_key_naming(path: &Path, name: &str) -> io::Result<Option<String>> {
     let doc = read_document(path, crate::file_lock::read_shared)?;
     if doc.get("accounts").and_then(|a| a.get(name)).is_none() {
         return Ok(None);
     }
-    let names = |item: Option<&Item>| {
-        item.and_then(Item::as_str)
-            .and_then(crate::models::ModelRef::parse)
-            .is_some_and(|r| r.account == name)
+    let on_account = |text: &str| {
+        crate::models::ModelRef::parse(text).is_some_and(|reference| reference.account == name)
+    };
+    let names = |item: Option<&Item>| match item {
+        Some(item) => match item.as_array() {
+            Some(list) => list.iter().filter_map(Value::as_str).any(on_account),
+            None => item.as_str().is_some_and(on_account),
+        },
+        None => false,
     };
     let composition = doc.get("guardian").and_then(|t| t.get("composition"));
-    let mut keys: Vec<(&'static str, Option<&Item>)> = vec![
+    let mut keys: Vec<(String, Option<&Item>)> = vec![
         (
-            "[model] model",
+            "[model] model".to_string(),
             doc.get("model").and_then(|t| t.get("model")),
         ),
         (
-            "[guardian] model",
+            "[guardian] model".to_string(),
             doc.get("guardian").and_then(|t| t.get("model")),
         ),
         (
-            "[guardian.composition] model",
+            "[guardian.composition] model".to_string(),
             composition.and_then(|t| t.get("model")),
         ),
     ];
+    if let Some(roles) = doc
+        .get("models")
+        .and_then(|t| t.get("roles"))
+        .and_then(Item::as_table_like)
+    {
+        keys.extend(
+            roles
+                .iter()
+                .map(|(role, list)| (format!("[models.roles] {role}"), Some(list))),
+        );
+    }
+    if let Some(types) = doc
+        .get("agents")
+        .and_then(|t| t.get("types"))
+        .and_then(Item::as_table_like)
+    {
+        keys.extend(
+            types
+                .iter()
+                .map(|(ty, entry)| (format!("[agents.types.{ty}] model"), entry.get("model"))),
+        );
+    }
     if let Some(reads) = composition
         .and_then(|t| t.get("reads"))
         .and_then(Item::as_table_like)
     {
-        keys.extend(
-            reads
-                .iter()
-                .map(|(_, read)| ("[guardian.composition.reads] model", read.get("model"))),
-        );
+        keys.extend(reads.iter().map(|(_, read)| {
+            (
+                "[guardian.composition.reads] model".to_string(),
+                read.get("model"),
+            )
+        }));
     }
     Ok(keys
         .into_iter()

@@ -83,6 +83,11 @@ pub enum AccountsError {
     InUse {
         by: &'static str,
     },
+    /// A model setting in the user settings file, such as `[models.roles] coding`, names the
+    /// account.
+    InSettings {
+        key: String,
+    },
     /// The account is defined in another settings file than the user's own.
     NotInUserFile,
     Invalid(String),
@@ -101,6 +106,7 @@ impl fmt::Display for AccountsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AccountsError::InUse { by } => write!(f, "the account is in use by {by}"),
+            AccountsError::InSettings { key } => write!(f, "the account is in use by `{key}`"),
             AccountsError::NotInUserFile => {
                 f.write_str("the account is defined in another settings file than your own")
             }
@@ -327,7 +333,7 @@ pub fn remove(user_file: &Path, data_dir: &Path, name: &str) -> Result<(), Accou
     let key = user_config::model_key_naming(user_file, name)
         .map_err(|e| io_error(format!("could not read {}", user_file.display()), e))?;
     if let Some(key) = key {
-        return Err(AccountsError::InUse { by: key });
+        return Err(AccountsError::InSettings { key });
     }
     let removed = user_config::remove_account(user_file, name).map_err(|e| {
         io_error(

@@ -2,6 +2,7 @@
 //! this is what starts a child there: its own model, its own context, a tool set cut from the
 //! parent's, and every call it makes through the same permission pipeline as everyone's.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use fontaine_agents::budget::Spend;
@@ -39,12 +40,14 @@ use crate::agent::apply_common;
 use crate::fork_context::{FORK_NOTE, ParentContext};
 use crate::gate::{AgentViewEvent, ChildRestrictions, SessionState, spend_of};
 use crate::ledger::Record;
+use crate::model_roles::{ModelChain, RoleChains, Roles, Tried, fall_through_notice};
 use crate::models::{Listing, ModelHandle, ModelRef, SharedSwitcher};
 use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
 use crate::steering::{Steering, SteeringHook};
-use crate::turn::{Drive, Flow, SessionEvent, TurnOutcome, drive};
+use crate::turn::{Drive, Flow, RETRY_NOTE, SessionEvent, TurnFailure, TurnOutcome, drive};
 use crate::turn_recovery::{InflightHook, RecoveryHook};
+use crate::usage_ledger::Served;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -101,6 +104,9 @@ impl AgentHook for KillHook {
 #[derive(Clone)]
 pub struct MainModel {
     pub handle: ModelHandle,
+    /// The preference list `handle` is the active entry of. Only the root moves its active
+    /// entry; a child on `$main` falls through for itself.
+    pub chain: Arc<ModelChain>,
     pub listing: Listing,
 }
 
@@ -299,6 +305,11 @@ pub struct ChildContext {
     pub tool_server: ToolServerHandle,
     pub main: Arc<RwLock<MainModel>>,
     pub switcher: Option<SharedSwitcher>,
+    /// The session's model roles, and the chains every child on a role shares.
+    pub roles: Arc<Roles>,
+    pub chains: Arc<RoleChains>,
+    /// Whether the run has an explicit cost cap, which skips unpriced fall-through entries.
+    pub explicit_budget_cap: bool,
     pub preamble: Preamble,
     pub approver: Arc<dyn Approver>,
     pub record_content: bool,
@@ -366,18 +377,51 @@ pub(crate) fn restrictions(agent_type: &AgentType) -> ChildRestrictions {
     }
 }
 
+/// A child's model with the list it is served from, when it has one.
+struct Resolved {
+    handle: ModelHandle,
+    list: Option<ChildList>,
+}
+
+/// The preference list a child runs on and the entry it is on. A role's or an inline list's
+/// chain is shared with every other child on it, so a settled entry is the next call's start; the
+/// session's main chain is not moved by a child.
+struct ChildList {
+    chain: Arc<ModelChain>,
+    index: AtomicUsize,
+    /// Whether a fall-through moves the chain's active entry.
+    settles: bool,
+}
+
 impl ChildContext {
+    fn switcher(&self) -> Option<crate::models::Switcher> {
+        // Cloned out of the lock: resolving a model awaits.
+        self.switcher
+            .as_ref()
+            .map(|s| read(s, "model switcher").clone())
+    }
+
     /// The model a child runs on. Each child gets its own completion for its id, so a kind that
     /// derives per-caller state (a CLI session) never shares it between two subagents.
-    async fn model_for(&self, spec: &ModelSpec, id: &str) -> Result<ModelHandle, String> {
+    async fn model_for(&self, spec: &ModelSpec, id: &str) -> Result<Resolved, String> {
         let main = read(&self.main, "main model").clone();
-        // Cloned out of the lock: resolving a model awaits.
-        let switcher = self
-            .switcher
-            .as_ref()
-            .map(|s| read(s, "model switcher").clone());
+        let switcher = self.switcher();
+        let mut list = None;
         let handle = match spec {
-            ModelSpec::Main => main.handle,
+            ModelSpec::Main => {
+                let at = main
+                    .chain
+                    .entries
+                    .iter()
+                    .position(|entry| *entry == main.handle.reference)
+                    .unwrap_or_else(|| main.chain.active());
+                list = Some(ChildList {
+                    chain: main.chain.clone(),
+                    index: AtomicUsize::new(at),
+                    settles: false,
+                });
+                main.handle
+            }
             ModelSpec::GuardianDefault => match switcher {
                 Some(switcher) => switcher
                     .guardian_default(&main.handle.reference, &main.listing.models)
@@ -393,7 +437,39 @@ impl ChildContext {
                 let (handle, _) = switcher.main(text).await.map_err(|e| e.to_string())?;
                 handle
             }
+            ModelSpec::Named(_) | ModelSpec::List(_) => {
+                let Some(switcher) = switcher else {
+                    return Err("models cannot be resolved in this session".to_string());
+                };
+                let chain = self.chains.chain_for(&self.roles, spec)?;
+                let at = chain.active();
+                let (handle, _) = switcher
+                    .main(&chain.entries[at].to_string())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                list = Some(ChildList {
+                    chain,
+                    index: AtomicUsize::new(at),
+                    settles: true,
+                });
+                handle
+            }
         };
+        Ok(Resolved {
+            handle: handle.for_agent(id),
+            list,
+        })
+    }
+
+    /// The handle for one entry of a list, for a child that is moving to it.
+    async fn entry_for(&self, reference: &ModelRef, id: &str) -> Result<ModelHandle, String> {
+        let Some(switcher) = self.switcher() else {
+            return Err("models cannot be resolved in this session".to_string());
+        };
+        let (handle, _) = switcher
+            .main(&reference.to_string())
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(handle.for_agent(id))
     }
 
@@ -438,13 +514,30 @@ struct RunShared {
     steering: Steering,
     results: Arc<ResultPipeline>,
     approver: Arc<dyn Approver>,
-    agent: Agent,
-    model: ChildModel,
-    agent_type: String,
+    /// Swapped when a quota failure moves the child to the next entry of its list; each drive
+    /// clones the current one.
+    agent: Mutex<Arc<Agent>>,
+    model: Mutex<ChildModel>,
+    agent_type: AgentType,
+    /// What a rebuild on another entry needs again.
+    context: Arc<ChildContext>,
+    tools: ToolServerHandle,
+    budget: fontaine_agents::budget::Budget,
+    list: Option<ChildList>,
     kill: watch::Sender<bool>,
     status: Mutex<ChildStatus>,
     /// The ordinal of the latest run, and its report once it has ended.
     reports: watch::Sender<(u64, Option<ChildReport>)>,
+}
+
+impl RunShared {
+    fn model(&self) -> ChildModel {
+        lock(&self.model, "child model").clone()
+    }
+
+    fn agent(&self) -> Arc<Agent> {
+        lock(&self.agent, "child agent").clone()
+    }
 }
 
 /// Records what the human said to a child and shows it in the child's view.
@@ -503,8 +596,8 @@ impl ChildRun {
             target: TARGET,
             "fontaine.subagent",
             agent.id = shared.id.as_str(),
-            agent.type = shared.agent_type.as_str(),
-            model.priced = shared.model.priced,
+            agent.type = shared.agent_type.name.as_str(),
+            model.priced = shared.model().priced,
             resumed = true,
         );
         launch(shared.clone(), text, span);
@@ -578,6 +671,92 @@ struct Assembled {
     span: tracing::Span,
 }
 
+/// What the tree, the budgets and the child's turns need to know about the model it runs on, and
+/// the tree's record of it.
+fn child_model(
+    context: &ChildContext,
+    id: &str,
+    agent_type: &AgentType,
+    model: &ModelHandle,
+    served: Served,
+    budget: &fontaine_agents::budget::Budget,
+) -> ChildModel {
+    context
+        .state
+        .agents()
+        .set_model(id, model.reference.to_string());
+    if budget.cost_usd.is_some() && !model.priced() && context.state.agents().first_unpriced_cap() {
+        let token_note = if budget.tokens.is_some() {
+            "; the token budget still applies"
+        } else {
+            ""
+        };
+        context.approver.notice(&format!(
+            "the cost budget for subagents is inactive on {}, which has no known price{token_note}",
+            model.reference
+        ));
+    }
+    // A type's own level, else the session's. Effort is not a permission, so a child
+    // may run above or below its parent.
+    let effort = agent_type.effort.or(context.state.effort());
+    context.state.agents().set_effort(id, effort);
+    let WireIds {
+        provider,
+        model: model_id,
+    } = model.wire_ids();
+    ChildModel {
+        priced: model.catalog_billed(),
+        model: model_id,
+        provider,
+        generation_options: model.generation_options_warned(&context.state, effort),
+        modalities: model
+            .completion
+            .spec()
+            .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input),
+        served,
+    }
+}
+
+/// The agent of child `id` on `model`, over the child's own log. `kill` is the receiver the kill
+/// hook watches; the choke point's registry holds a receiver of the same channel.
+fn build_child_agent(
+    context: &ChildContext,
+    id: &str,
+    agent_type: &AgentType,
+    tools: &ToolServerHandle,
+    model: &ModelHandle,
+    kill: watch::Receiver<bool>,
+) -> Agent {
+    let state = &context.state;
+    let store = context.store.clone();
+    let builder = AgentBuilder::new(model.completion.clone())
+        .preamble((context.preamble)(agent_type))
+        .memory(store.clone())
+        .conversation(id.to_string());
+    apply_common(builder, state, context.record_content)
+        .add_hook(SteeringHook::new(context.steering.clone(), state.clone()))
+        .add_hook(KillHook { kill })
+        .add_hook(RecoveryHook::new(
+            store.clone(),
+            id.to_string(),
+            context.approver.clone(),
+        ))
+        .add_hook(InflightHook::new(
+            store,
+            id.to_string(),
+            context.approver.clone(),
+        ))
+        .tool_server_handle(tools.clone())
+        .build()
+}
+
+fn served_of(list: Option<&ChildList>, model: &ModelHandle) -> Served {
+    Served::new(
+        list.and_then(|list| list.chain.role.as_deref()),
+        &model.reference,
+    )
+}
+
 impl CoreChildRunner {
     /// Builds the agent of child `id` over its own log: its model, its tool set and its hooks.
     /// `seed_fork` copies the parent's conversation in first, for a type that inherits context.
@@ -591,7 +770,10 @@ impl CoreChildRunner {
         seed_fork: bool,
     ) -> Result<Assembled, String> {
         let context = &self.context;
-        let model = context.model_for(model_spec, id).await?;
+        let Resolved {
+            handle: model,
+            list,
+        } = context.model_for(model_spec, id).await?;
         context.warn_derived(&model);
         let store = context.store.clone();
         if seed_fork {
@@ -601,60 +783,18 @@ impl CoreChildRunner {
                 .await
                 .map_err(|e| format!("could not fork the conversation: {}", chain(&e)))?;
         }
-        context
-            .state
-            .agents()
-            .set_model(id, model.reference.to_string());
-        if budget.cost_usd.is_some()
-            && !model.priced()
-            && context.state.agents().first_unpriced_cap()
-        {
-            let token_note = if budget.tokens.is_some() {
-                "; the token budget still applies"
-            } else {
-                ""
-            };
-            context.approver.notice(&format!(
-                "the cost budget for subagents is inactive on {}, which has no known price{token_note}",
-                model.reference
-            ));
-        }
-        let priced = model.catalog_billed();
-        // A type's own level, else the session's. Effort is not a permission, so a child
-        // may run above or below its parent.
-        let effort = agent_type.effort.or(context.state.effort());
-        context.state.agents().set_effort(id, effort);
-        let generation_options = model.generation_options_warned(&context.state, effort);
-        let WireIds {
-            provider,
-            model: model_id,
-        } = model.wire_ids();
-        let state = context.state.clone();
+        let served = served_of(list.as_ref(), &model);
+        let child = child_model(context, id, agent_type, &model, served, &budget);
+        let priced = child.priced;
         let tools = fork_tools(&context.tool_server, tools);
         // The channel lives above the agent build so the hook can subscribe; the choke
         // point's registry takes the same receiver.
         let (kill, kill_rx) = watch::channel(false);
         context.kills.register(id, kill_rx.clone());
-        let builder = AgentBuilder::new(model.completion.clone())
-            .preamble((context.preamble)(agent_type))
-            .memory(store.clone())
-            .conversation(id.to_string());
-        let agent = apply_common(builder, &state, context.record_content)
-            .add_hook(SteeringHook::new(context.steering.clone(), state.clone()))
-            .add_hook(KillHook { kill: kill_rx })
-            .add_hook(RecoveryHook::new(
-                store.clone(),
-                id.to_string(),
-                context.approver.clone(),
-            ))
-            .add_hook(InflightHook::new(
-                store,
-                id.to_string(),
-                context.approver.clone(),
-            ))
-            .tool_server_handle(tools)
-            .build();
-        state.set_child_restrictions(id, restrictions(agent_type));
+        let agent = build_child_agent(context, id, agent_type, &tools, &model, kill_rx);
+        context
+            .state
+            .set_child_restrictions(id, restrictions(agent_type));
 
         let span = tracing::info_span!(
             target: TARGET,
@@ -666,22 +806,17 @@ impl CoreChildRunner {
         let (reports, _) = watch::channel((0, None));
         let shared = Arc::new(RunShared {
             id: id.to_string(),
-            state: state.clone(),
+            state: context.state.clone(),
             steering: context.steering.clone(),
             results: context.results.clone(),
             approver: context.approver.clone(),
-            agent,
-            model: ChildModel {
-                priced,
-                model: model_id,
-                provider,
-                generation_options,
-                modalities: model
-                    .completion
-                    .spec()
-                    .map_or_else(rig_core::catalog::Modalities::default, |spec| spec.input),
-            },
-            agent_type: agent_type.name.clone(),
+            agent: Mutex::new(Arc::new(agent)),
+            model: Mutex::new(child),
+            agent_type: agent_type.clone(),
+            context: context.clone(),
+            tools,
+            budget,
+            list,
             kill,
             status: Mutex::new(ChildStatus::Running),
             reports,
@@ -784,6 +919,8 @@ struct ChildModel {
     generation_options: Option<rig_core::completion::GenerationOptions>,
     /// What the child's model accepts, for the read tool's multimodal dispatch.
     modalities: rig_core::catalog::Modalities,
+    /// The role and model its calls are recorded against.
+    served: Served,
 }
 
 /// How a child's wait for its own subagents ended.
@@ -851,6 +988,8 @@ async fn run_child(
     let tree = state.agents().clone();
     let last_text = Arc::new(Mutex::new(String::new()));
     let mut prompt = prompt;
+    // The entries of its list the child's current request has failed on.
+    let mut tried = Tried::default();
     let outcome = loop {
         let seen = last_text.clone();
         let view_state = state.clone();
@@ -870,27 +1009,30 @@ async fn run_child(
                 Flow::Continue
             }
         };
+        let model = shared.model();
+        let agent = shared.agent();
         let run = drive(
             Drive {
-                agent: &shared.agent,
+                agent: &agent,
                 state,
                 agent_id: id,
                 prompt,
                 attachments: Vec::new(),
-                modalities: shared.model.modalities,
+                modalities: model.modalities,
                 max_turns: None,
-                priced: shared.model.priced,
-                model: shared.model.model.clone(),
-                provider: shared.model.provider.clone(),
+                priced: model.priced,
+                model: model.model.clone(),
+                provider: model.provider.clone(),
                 native_search: false,
-                generation_options: shared.model.generation_options.clone(),
+                generation_options: model.generation_options.clone(),
+                served: model.served.clone(),
                 span: tracing::Span::current(),
             },
             None,
             &mut on_event,
         );
         tokio::pin!(run);
-        let outcome = tokio::select! {
+        let mut outcome = tokio::select! {
             biased;
             // `map` keeps the flag wait's borrowed value out of the arm, so the grace wait
             // holds no watch guard across its await.
@@ -905,9 +1047,28 @@ async fn run_child(
             }
             outcome = &mut run => outcome,
         };
+        if let TurnOutcome::Failed(failure) = &outcome
+            && failure.falls_through
+            && !*kill.borrow()
+        {
+            match fall_through_child(shared, failure, &mut tried).await {
+                Ok(()) => {
+                    prompt = RETRY_NOTE.to_string();
+                    continue;
+                }
+                Err(spent) if !spent.is_empty() => {
+                    outcome = TurnOutcome::Failed(TurnFailure {
+                        message: format!("{}\n{spent}", failure.message),
+                        ..failure.clone()
+                    });
+                }
+                Err(_) => {}
+            }
+        }
         let TurnOutcome::Answer(_) = outcome else {
             break Some(outcome);
         };
+        tried = Tried::default();
         // Finishing would kill the child's running subagents, so it ends only once they report.
         let joined = tokio::select! {
             biased;
@@ -925,6 +1086,79 @@ async fn run_child(
     // surface's stop handler kills the tree; the stop is the kill either way.
     let killed = *kill.borrow() || state.afk().stopped.is_some();
     child_report(&tree, id, outcome, partial, killed)
+}
+
+/// Moves a child whose model ran out of quota to the next entry of its list that can serve,
+/// rebuilds its agent on it and says so. On a role's or an inline list's chain the entry is
+/// settled for every other child on it; a child on `$main` moves for itself. `Err` is what to
+/// add to the failure when nothing could serve, empty when the child has no list to move on.
+async fn fall_through_child(
+    shared: &RunShared,
+    failure: &TurnFailure,
+    tried: &mut Tried,
+) -> Result<(), String> {
+    let Some(list) = &shared.list else {
+        return Err(String::new());
+    };
+    let context = &shared.context;
+    let failed = list.index.load(Ordering::Acquire);
+    let from = list.chain.entries[failed].clone();
+    for index in tried.order(&list.chain, failed) {
+        let reference = &list.chain.entries[index];
+        let handle = match context.entry_for(reference, &shared.id).await {
+            Ok(handle) => handle,
+            Err(why) => {
+                shared
+                    .approver
+                    .warn(&format!("{}: skipping {reference}: {why}", shared.id));
+                continue;
+            }
+        };
+        if context.explicit_budget_cap && !handle.priced() {
+            continue;
+        }
+        if list.settles {
+            list.chain.settle(index);
+        }
+        list.index.store(index, Ordering::Release);
+        tried.note(index);
+        let served = served_of(Some(list), &handle);
+        let model = child_model(
+            context,
+            &shared.id,
+            &shared.agent_type,
+            &handle,
+            served,
+            &shared.budget,
+        );
+        let agent = build_child_agent(
+            context,
+            &shared.id,
+            &shared.agent_type,
+            &shared.tools,
+            &handle,
+            shared.kill.subscribe(),
+        );
+        *lock(&shared.agent, "child agent") = Arc::new(agent);
+        *lock(&shared.model, "child model") = model;
+        let class = failure.class.unwrap_or("quota");
+        context.state.record_model_fall_through(
+            &shared.id,
+            list.chain.role.as_deref(),
+            &from.to_string(),
+            &reference.to_string(),
+            class,
+        );
+        context
+            .approver
+            .warn(&fall_through_notice(&shared.id, &from, reference, class));
+        return Ok(());
+    }
+    Err(if list.chain.entries.len() > 1 {
+        format!("every model in {} failed", list.chain.label())
+    } else {
+        String::new()
+    })
 }
 
 /// How a child's run reads once it has settled. A kill that fired first settles the report as
@@ -960,10 +1194,10 @@ fn child_report(
             text: partial,
             reason: Some("it reached the limit on model calls".into()),
         },
-        TurnOutcome::Failed(message) => ChildReport {
+        TurnOutcome::Failed(failure) => ChildReport {
             status: ChildStatus::Failed,
             text: partial,
-            reason: Some(message),
+            reason: Some(failure.message),
         },
     }
 }

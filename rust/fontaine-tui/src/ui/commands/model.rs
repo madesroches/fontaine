@@ -8,8 +8,8 @@ use fontaine_core::models::GuardianModel;
 use fontaine_core::permissions::UnavailableChoice;
 
 impl<R: FnMut(&mut App)> Ui<R> {
-    /// `/model`: opens the picker, or switches the live session to the model named and saves
-    /// the choice.
+    /// `/model`: opens the picker, or switches the live session to the model or role named and
+    /// saves the choice, unless the settings give the main model as a role or a list.
     pub(crate) async fn model(&mut self, runtime: &mut AgentRuntime, reference: &str) {
         if reference.is_empty() {
             self.open_model_picker(runtime, None).await;
@@ -22,11 +22,17 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     message.push_str("; the guardian runs on it too");
                 }
                 self.remember_model(PickerPurpose::Main, &switched.reference);
-                self.finish_switch(
-                    message,
-                    switched.persist_error,
-                    overriding_scope(&runtime.config, "model.model"),
-                );
+                match switched.session_only {
+                    Some(why) => self
+                        .app
+                        .transcript
+                        .notice(format!("{message} for this session only: {why}")),
+                    None => self.finish_switch(
+                        message,
+                        switched.persist_error,
+                        overriding_scope(&runtime.config, "model.model"),
+                    ),
+                }
                 if let Some(notice) = runtime.models.main.facts_notice.clone() {
                     self.app.transcript.warning(notice, None);
                 }

@@ -100,8 +100,13 @@ pub enum CompactResult {
     /// Nothing was asked of the model: no window on a threshold call, under the threshold, or
     /// nothing new to summarize.
     Skipped,
-    /// The conversation is as it was. The cause was already warned through the `Approver`.
-    Failed { usage: Option<Usage> },
+    /// The conversation is as it was. The cause was already warned through the `Approver`,
+    /// except when `falls_through`: the summary request ran out of quota, which a model list
+    /// answers by trying its next entry, so the warning is left to whoever gives up.
+    Failed {
+        usage: Option<Usage>,
+        falls_through: bool,
+    },
     /// The summary is saved. `before` and `after` are `estimate_tokens` of the conversation.
     Compacted {
         usage: Option<Usage>,
@@ -115,14 +120,16 @@ impl CompactResult {
     pub fn usage(&self) -> Option<&Usage> {
         match self {
             CompactResult::Skipped => None,
-            CompactResult::Failed { usage } | CompactResult::Compacted { usage, .. } => {
+            CompactResult::Failed { usage, .. } | CompactResult::Compacted { usage, .. } => {
                 usage.as_ref()
             }
         }
     }
 
     fn without_cost(mut self) -> Self {
-        if let CompactResult::Failed { usage: Some(usage) }
+        if let CompactResult::Failed {
+            usage: Some(usage), ..
+        }
         | CompactResult::Compacted {
             usage: Some(usage), ..
         } = &mut self
@@ -511,6 +518,21 @@ impl Session {
         reason: CompactReason,
         approver: &dyn Approver,
     ) -> CompactResult {
+        self.compact_logged_via(model, None, priced, reason, approver)
+            .await
+    }
+
+    /// [`compact_logged`](Self::compact_logged) where `main` sets the threshold and the window
+    /// and `summarizer`, when given, takes the summary request in its place; `priced` is the
+    /// summarizer's.
+    pub async fn compact_logged_via(
+        &self,
+        main: &DynModel<Completion>,
+        summarizer: Option<&DynModel<Completion>>,
+        priced: bool,
+        reason: CompactReason,
+        approver: &dyn Approver,
+    ) -> CompactResult {
         let why = match reason {
             CompactReason::Asked { .. } => "asked",
             CompactReason::Threshold => "threshold",
@@ -522,8 +544,11 @@ impl Session {
             model.priced = priced,
             compaction.reason = why,
         );
-        let result =
-            tracing::Instrument::instrument(self.compact(model, reason, approver), span).await;
+        let result = tracing::Instrument::instrument(
+            self.compact_via(main, summarizer, reason, approver),
+            span,
+        )
+        .await;
         if priced {
             result
         } else {
@@ -540,8 +565,27 @@ impl Session {
         reason: CompactReason,
         approver: &dyn Approver,
     ) -> CompactResult {
+        self.compact_via(model, None, reason, approver).await
+    }
+
+    /// [`compact`](Self::compact) where `main` is the conversation's model, whose window sets the
+    /// threshold and the size of the summary, and `summarizer`, when given, takes the request in
+    /// its place. A summarizer that cannot take the conversation fails the compaction as an
+    /// overflow does. The request leaves out the prompt-cache hints, which name the main model's
+    /// prefix and which another provider may refuse.
+    pub async fn compact_via(
+        &self,
+        main: &DynModel<Completion>,
+        summarizer: Option<&DynModel<Completion>>,
+        reason: CompactReason,
+        approver: &dyn Approver,
+    ) -> CompactResult {
+        let model = main;
         let warn = |message: &str| warn(approver, message);
-        let failed = |usage| CompactResult::Failed { usage };
+        let failed = |usage| CompactResult::Failed {
+            usage,
+            falls_through: false,
+        };
         let Some(spec) = model.spec() else {
             if matches!(reason, CompactReason::Asked { .. }) {
                 warn("the model's catalog entry is unknown, so it cannot be asked to summarize");
@@ -582,8 +626,24 @@ impl Session {
                 return failed(None);
             }
         };
-        let response = match model.call(plan.request.clone()).await {
+        let mut request = plan.request.clone();
+        let summarizer = match summarizer {
+            Some(summarizer) => {
+                request.options.cache = None;
+                request.options.cache_key = None;
+                request.cache_points.clear();
+                summarizer
+            }
+            None => main,
+        };
+        let response = match summarizer.call(request).await {
             Ok(response) => response,
+            Err(e) if crate::turn::provider_falls_through(&e) => {
+                return CompactResult::Failed {
+                    usage: None,
+                    falls_through: true,
+                };
+            }
             Err(e) => {
                 warn(&format!("the summarizing call failed: {}", chain(&e)));
                 return failed(None);

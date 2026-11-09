@@ -45,7 +45,7 @@ describe what the current build does; each page covers one topic.
   `/denied`, `/login`, `/model`, `/effort`, `/guardian-model`, `/guardian-disable`, `/guardian-enable`, `/auto-mode-setup`, `/add-dir`, `/output-style`, `/help`,
   `/status`, `/permissions`, `/mcp`, `/hooks`, `/skills`, `/plugins`, `/plan`, `/copy`, `/expand`, `/memory`, `/init`,
   `/clear`, `/compact`, `/btw` (side questions), `/recap` (session report),
-  `/cost` and `/usage` (token usage and spend by source), `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,
+  `/cost` and `/usage` (token usage and spend by source and by model), `/context`, `/config`, `/theme`, `/loop` and scheduled prompts, `/goal`, `/resume`, `/branch`,
   `/rename`, `/export` and `/rewind`, `/afk report`, the agents panel and the workspace trust prompt.
 - [Verifying releases](verifying-releases.md): what is signed on the `release` and `dev` channels,
   the public keys, and how to verify an archive with `minisign` and `sha256sum`.

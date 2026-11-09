@@ -116,6 +116,7 @@ mod tests {
             .into(),
         );
         let models = Models {
+            main_chain: crate::model_roles::ModelChain::single(handle.reference.clone()),
             main: handle,
             main_listing: crate::models::Listing::default(),
             guardian: None,

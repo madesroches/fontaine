@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use crate::effort::Effort;
 use crate::mode::ModeSetting;
 
-/// The model an agent runs on.
+/// The model an agent runs on. `fontaine-agents` knows no roles, so a role name or a list stays
+/// text here and the session resolves it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ModelSpec {
     /// The session's model.
@@ -16,23 +17,76 @@ pub enum ModelSpec {
     /// The top-ranked validated guardian model the accounts offer, or the session's model when
     /// none is.
     GuardianDefault,
-    /// `<account>/<model>`.
+    /// A lone `<account>/<model>`.
     Model(String),
+    /// A role name from `[models.roles]`.
+    Named(String),
+    /// Several references, each `<account>/<model>`, a role name or `$main`, in preference order.
+    List(Vec<String>),
+}
+
+/// Whether `name` can be a role: letters, digits, `_` and `-`, and not the agent-file sentinel
+/// `inherit`.
+pub fn valid_role_name(name: &str) -> Result<(), String> {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "`{name}` is not a role name: use letters, digits, `_` and `-`"
+        ));
+    }
+    if name == "inherit" {
+        return Err("`inherit` is reserved and cannot be a role name".to_string());
+    }
+    Ok(())
+}
+
+/// Whether `entry` is something a model list may hold: `<account>/<model>`, a role name or
+/// `$main`.
+fn list_entry_ok(entry: &str) -> bool {
+    entry == "$main"
+        || match entry.split_once('/') {
+            Some((account, model)) => !account.is_empty() && !model.is_empty(),
+            None => valid_role_name(entry).is_ok(),
+        }
 }
 
 impl ModelSpec {
+    /// A spec from one text: `$main`, `$guardian_default`, `<account>/<model>`, a role name, or
+    /// several of the last three separated by commas.
     pub fn parse(text: &str) -> Result<ModelSpec, String> {
-        match text {
+        if text.contains(',') {
+            let entries: Vec<String> = text.split(',').map(|e| e.trim().to_string()).collect();
+            return ModelSpec::from_entries(&entries);
+        }
+        match text.trim() {
             "$main" => Ok(ModelSpec::Main),
             "$guardian_default" => Ok(ModelSpec::GuardianDefault),
             other => match other.split_once('/') {
                 Some((account, model)) if !account.is_empty() && !model.is_empty() => {
                     Ok(ModelSpec::Model(other.to_string()))
                 }
-                _ => Err(format!(
-                    "`{other}` is not a model: use `$main`, `$guardian_default` or `<account>/<model>`"
-                )),
+                Some(_) => Err(not_a_model(other)),
+                None if valid_role_name(other).is_ok() => Ok(ModelSpec::Named(other.to_string())),
+                None => Err(not_a_model(other)),
             },
+        }
+    }
+
+    /// A spec from the entries of a configured `model`: one entry is [`ModelSpec::parse`]d, a
+    /// list keeps its order. `$guardian_default` is only a spec of its own.
+    pub fn from_entries(entries: &[String]) -> Result<ModelSpec, String> {
+        match entries {
+            [] => Err("a model list names at least one model".to_string()),
+            [one] => ModelSpec::parse(one),
+            many => {
+                if let Some(bad) = many.iter().find(|e| !list_entry_ok(e)) {
+                    return Err(not_a_model(bad));
+                }
+                Ok(ModelSpec::List(many.to_vec()))
+            }
         }
     }
 
@@ -40,9 +94,16 @@ impl ModelSpec {
         match self {
             ModelSpec::Main => "$main".to_string(),
             ModelSpec::GuardianDefault => "$guardian_default".to_string(),
-            ModelSpec::Model(text) => text.clone(),
+            ModelSpec::Model(text) | ModelSpec::Named(text) => text.clone(),
+            ModelSpec::List(entries) => entries.join(","),
         }
     }
+}
+
+fn not_a_model(text: &str) -> String {
+    format!(
+        "`{text}` is not a model: use a role name, `$main`, `$guardian_default` or `<account>/<model>`"
+    )
 }
 
 /// Where a type was defined.
@@ -499,14 +560,44 @@ mod tests {
             ModelSpec::parse("work/claude"),
             Ok(ModelSpec::Model("work/claude".into()))
         );
-        assert!(ModelSpec::parse("sonnet").is_err());
+        assert_eq!(
+            ModelSpec::parse("sonnet"),
+            Ok(ModelSpec::Named("sonnet".into()))
+        );
+        assert!(ModelSpec::parse("inherit").is_err());
         assert!(ModelSpec::parse("/x").is_err());
+        assert!(ModelSpec::parse("$other").is_err());
         let mut ty = AgentTypes::builtin().get("explore").unwrap().clone();
         assert!(ty.accepts_model_override());
         ty.origin = TypeOrigin::ProjectFile("x.md".into());
         assert!(!ty.accepts_model_override());
         ty.origin = TypeOrigin::PluginFile("x.md".into());
         assert!(!ty.accepts_model_override());
+    }
+
+    #[test]
+    fn specs_round_trip_through_their_text() {
+        for text in [
+            "coding",
+            "work/claude",
+            "a/b,coding,$main",
+            "$main",
+            "$guardian_default",
+        ] {
+            let spec = ModelSpec::parse(text).unwrap();
+            assert_eq!(spec.as_text(), text);
+            assert_eq!(ModelSpec::parse(&spec.as_text()), Ok(spec));
+        }
+        assert_eq!(
+            ModelSpec::parse("a/b, coding"),
+            Ok(ModelSpec::List(vec!["a/b".into(), "coding".into()]))
+        );
+        assert_eq!(
+            ModelSpec::from_entries(&["coding".to_string()]),
+            Ok(ModelSpec::Named("coding".into()))
+        );
+        assert!(ModelSpec::from_entries(&["a/b".into(), "$guardian_default".into()]).is_err());
+        assert!(ModelSpec::from_entries(&[]).is_err());
     }
 
     #[test]

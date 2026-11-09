@@ -57,6 +57,9 @@ pub fn build_with_scanner(
         main.clone().into(),
     );
     let models = Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(
+            handle.clone().reference.clone(),
+        ),
         main: handle.clone(),
         main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),
@@ -145,6 +148,9 @@ pub fn build_keyed_with(
         keyed.into(),
     );
     let models = Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(
+            handle.clone().reference.clone(),
+        ),
         main: handle.clone(),
         main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),
@@ -264,6 +270,9 @@ pub fn build_over_session(
         main.clone().into(),
     );
     let models = Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(
+            handle.clone().reference.clone(),
+        ),
         main: handle.clone(),
         main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),
@@ -478,6 +487,9 @@ fn build_with_origin(
         origin,
         env,
         warn_no_search: true,
+        explicit_budget_cap: world
+            .explicit_budget_cap
+            .load(std::sync::atomic::Ordering::Relaxed),
     };
     AgentRuntime::new(setup).unwrap()
 }

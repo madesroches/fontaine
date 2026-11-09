@@ -48,6 +48,7 @@ async fn say(built: &Built, prompt: &str) {
     });
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: prompt.to_string(),

@@ -834,7 +834,8 @@ the repository defines and, except for `setup`'s optional
   are shown as escapes. Under `[guardian] profile = "minimal"` (when the container check holds) a
   note says that only `environment` reaches the guardian. It makes no request.
 - `fontaine auto-mode critique` sends your custom entries, the entries not equal to a shipped one,
-  to the guardian's model and prints its review for ambiguity, overbreadth, redundancy and
+  to the guardian's model (or to the [`critique` role](configuration.md#modelsroles), when you
+  defined one, falling through its list when an account runs out of quota) and prints its review for ambiguity, overbreadth, redundancy and
   contradiction with the hard-deny classes, followed by the model and its token count (and cost,
   for a priced model). With no custom entries it prints `nothing to critique` and exits 0 without
   resolving a model or making a request. The model is chosen as a session chooses it, so it needs
@@ -846,7 +847,8 @@ the repository defines and, except for `setup`'s optional
   are not sent.
 
 - `fontaine auto-mode setup [--no-model] [--no-composition] [--format text|json]` collects the
-  project's [environment](#project-environment) and stores it, then offers the
+  project's [environment](#project-environment) (its model scan runs on the guardian's model, or on the
+  [`setup` role](configuration.md#modelsroles) when you defined one) and stores it, then offers the
   [guardian composition](#setting-up-the-composition). It starts no session and exits 0 even when
   steps fall back to unknown; it exits 1 only when the record cannot be written. The JSON report
   gains a `composition` object with a `status` (`skipped`, `offered_unanswered`, `declined`,

@@ -21,6 +21,17 @@ All notable changes are recorded here. The format follows
   accepts that one server tool (request entry, call, result and replayed history); every other
   hosted tool stays refused, and the startup warning about missing web search no longer shows for
   these accounts (#522).
+- `[models.roles]` names ordered lists of models, and a bare role name works wherever a model is
+  accepted: `--model`, `[model] model`, `[agents.types.<name>] model`, an agent file's `model`, the
+  `agent` tool's `model` and `/model`. Fontaine reads four roles itself: `main`, `critique`,
+  `setup` and `compaction`; the rest are yours, so Claude Code's `sonnet` and `opus` port once you
+  define them. `[model] model` and `[agents.types.<name>] model` also take a list. When the serving
+  entry fails with a 402, 429 or 529 (or a `claude-subscription` plan limit) after the same-model
+  retries, the caller moves to the next entry and stays there; the move is warned about and
+  recorded as `model_fell_through` in the session and audit logs. `/cost` adds a by-model table,
+  `/model` leaves a `main` role or a list in your settings alone, and a repository's or a plugin's
+  agent file may name a role or `$main`. The guardian never takes a role. Closes #289 and #54
+  (#324).
 - `fontaine update` replaces the installed binary with the newest build on the channel it was
   installed from (read from the install receipt), reports the result and exits. It verifies the
   archive's minisign signature against the channel's compiled-in key and its signed channel, file

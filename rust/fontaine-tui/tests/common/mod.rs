@@ -371,6 +371,7 @@ impl World {
             config_dir: self.config_dir.clone(),
             data_dir: self.data.clone(),
             models: resolved.unwrap_or(Models {
+                main_chain: fontaine_core::model_roles::ModelChain::single(model.reference.clone()),
                 main: model,
                 main_listing: fontaine_core::models::Listing::default(),
                 guardian,
@@ -413,6 +414,7 @@ impl World {
             origin: fontaine_core::agent::SessionOrigin::Fresh,
             env,
             warn_no_search: true,
+            explicit_budget_cap: false,
         }
     }
 

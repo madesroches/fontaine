@@ -142,6 +142,7 @@ mod default_backend {
             MockCompletionModel::from_stream_turns(Vec::<Vec<MockStreamEvent>>::new()).into(),
         );
         let models = Models {
+            main_chain: fontaine_core::model_roles::ModelChain::single(handle.reference.clone()),
             main: handle,
             main_listing: fontaine_core::models::Listing::default(),
             guardian: None,

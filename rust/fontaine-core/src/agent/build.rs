@@ -269,6 +269,7 @@ fn extension_tools(
             types: p.types.clone(),
             runner: p.runner.clone(),
             ledger: ledger_window.clone(),
+            roles: p.setup.roles.describe(),
         }),
         ExtensionTool::new(SkillTool {
             source: p.skills.clone(),
@@ -288,6 +289,7 @@ fn extension_tools(
         }),
         ExtensionTool::new(ModelsTool {
             source: Arc::new(SessionModels {
+                roles: p.setup.roles.describe(),
                 switcher: p.setup.switcher.clone(),
                 main: p.runner.context.main.clone(),
                 guardian: {

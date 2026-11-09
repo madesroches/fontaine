@@ -871,6 +871,9 @@ fn runtime_with_evaluator(
         )
     };
     let models = Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(
+            handle("test/main", &main).reference.clone(),
+        ),
         main: handle("test/main", &main),
         main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle("test/cheap", &evaluator))),
@@ -1036,12 +1039,14 @@ async fn an_unavailable_evaluator_model_pauses_the_goal_and_is_recorded() {
     use fontaine_core::models::{GuardianChoice, Models};
     let world = World::new();
     let main = MockCompletionModel::from_stream_turns(Vec::<Vec<_>>::new());
+    let main_handle = ModelHandle::new(
+        ModelRef::parse("test/main").unwrap(),
+        AccountKind::named("openai-compatible"),
+        main.into(),
+    );
     let models = Models {
-        main: ModelHandle::new(
-            ModelRef::parse("test/main").unwrap(),
-            AccountKind::named("openai-compatible"),
-            main.into(),
-        ),
+        main_chain: fontaine_core::model_roles::ModelChain::single(main_handle.reference.clone()),
+        main: main_handle,
         main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Unavailable {
             reference: ModelRef::parse("test/gone").unwrap(),
@@ -1160,12 +1165,14 @@ async fn a_compaction_is_debited_to_the_root_so_a_goal_counts_it() {
     usage.output_tokens = Some(30);
     let main = MockCompletionModel::from_turns(vec![MockTurn::text("SUMMARY").with_usage(usage)])
         .priced_as(spec);
+    let main_handle = ModelHandle::new(
+        ModelRef::parse("test/main").unwrap(),
+        AccountKind::named("openai-compatible"),
+        main.clone().into(),
+    );
     let models = Models {
-        main: ModelHandle::new(
-            ModelRef::parse("test/main").unwrap(),
-            AccountKind::named("openai-compatible"),
-            main.clone().into(),
-        ),
+        main_chain: fontaine_core::model_roles::ModelChain::single(main_handle.reference.clone()),
+        main: main_handle,
         main_listing: fontaine_core::models::Listing::default(),
         guardian: None,
         guardian_choice: GuardianChoice::Pinned,

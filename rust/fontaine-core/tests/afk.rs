@@ -579,6 +579,7 @@ async fn the_rebuild_before_a_turn_follows_afk_in_both_directions() {
         built.runtime.refresh_before_turn().unwrap();
         let outcome = run_turn(
             TurnParams {
+                served: Default::default(),
                 agent: &built.runtime.agent,
                 state: &built.runtime.state,
                 prompt: "hello".to_string(),

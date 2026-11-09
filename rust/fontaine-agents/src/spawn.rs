@@ -48,6 +48,9 @@ pub struct AgentTool {
     pub types: Arc<AgentTypes>,
     pub runner: Arc<dyn ChildRunner>,
     pub ledger: Arc<dyn RootLedger>,
+    /// The session's model roles, one `- \`name\`: models` line each, which the `model`
+    /// parameter lists. Fixed for the session, so the tool definition stays cache-stable.
+    pub roles: String,
 }
 
 /// Gives back a reservation if the call is dropped (the turn was interrupted) before the child
@@ -1000,6 +1003,11 @@ impl Tool for AgentTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        let mut model = "Optional model for this agent: a role name, `$main`, `$guardian_default` or `<account>/<model>`. Defaults to the agent type's model.".to_string();
+        if !self.roles.is_empty() {
+            model.push_str(" Roles:\n");
+            model.push_str(&self.roles);
+        }
         json!({
             "type": "object",
             "properties": {
@@ -1011,7 +1019,7 @@ impl Tool for AgentTool {
                 "prompt": { "type": "string", "description": "The task. A subagent cannot see this conversation, so give it all the context it needs; a `fork` already has the conversation and needs only a short task." },
                 "model": {
                     "type": "string",
-                    "description": "Optional model for this agent: `$main`, `$guardian_default` or `<account>/<model>`. Defaults to the agent type's model.",
+                    "description": model,
                 },
                 "name": {
                     "type": "string",

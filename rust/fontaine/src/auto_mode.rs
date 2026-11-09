@@ -10,6 +10,7 @@ use fontaine_core::composition_offer::{self, Candidate, Offer, Posture};
 use fontaine_core::config::{Config, Slot};
 use fontaine_core::containment;
 use fontaine_core::dirs::Dirs;
+use fontaine_core::model_roles::{CRITIQUE_ROLE, ModelChain, SETUP_ROLE, fall_through_notice};
 use fontaine_core::models::{self, GuardianModel, ResolveParams, Switcher};
 use fontaine_core::project_env::discover::{self, SystemGh};
 use fontaine_core::project_env::sample;
@@ -265,6 +266,81 @@ fn critique_run(
     ))
 }
 
+/// A switcher over the config and the chain of the role `role`, when the user defined it.
+fn job_chain(
+    config: &Config,
+    dirs: &Dirs,
+    host: &Host,
+    role: &str,
+) -> Option<(Switcher, std::sync::Arc<ModelChain>)> {
+    let switcher = Switcher::new(
+        config.clone(),
+        dirs.data.clone(),
+        crate::shared_env(host),
+        None,
+    );
+    let chain = switcher.role_chain(role)?;
+    Some((switcher, chain))
+}
+
+/// The critique on the `critique` role's list: the active entry, then the others while the
+/// account's quota runs out.
+async fn critique_on_chain(
+    config: &Config,
+    format: ReportFormat,
+    (environment, rules): (&EnvironmentConfig, &RuleConfig),
+    (switcher, list): (&Switcher, &ModelChain),
+) -> ExitCode {
+    eprintln!(
+        "fontaine: sending your custom auto_mode entries to {} for review (the account's provider receives them)",
+        list.active_ref()
+    );
+    let timeout = std::time::Duration::from_secs(config.guardian.timeout_secs);
+    let through = switcher
+        .run_through(
+            list,
+            true,
+            false,
+            |handle| async move {
+                let handle = handle.guardian_scoped();
+                let settings = critique::Settings {
+                    timeout,
+                    additional_params: handle.thinking_off.clone(),
+                };
+                let (text, usage) =
+                    critique::review(&handle.completion, &settings, environment, rules).await?;
+                Ok((
+                    text,
+                    usage,
+                    handle.reference.to_string(),
+                    handle.catalog_billed(),
+                ))
+            },
+            |e: &CritiqueError| fontaine_core::turn::error_falls_through(e),
+            |_, e| CritiqueError::Model(Box::new(e)),
+        )
+        .await;
+    match through {
+        Ok(done) => {
+            if let Some(from) = done.from {
+                eprintln!(
+                    "fontaine: {}",
+                    fall_through_notice(
+                        "critique",
+                        &list.entries[from],
+                        &list.entries[done.index],
+                        "quota"
+                    )
+                );
+            }
+            let (text, usage, label, billed) = done.value;
+            emit(&critique_report(&label, &text, &usage, billed, format))
+        }
+        Err(e @ CritiqueError::Timeout(_)) => fail(chain(&e), 1),
+        Err(e) => fail(format!("the critique failed: {}", chain(&e)), 1),
+    }
+}
+
 async fn critique_models(
     cli: &Cli,
     config: &Config,
@@ -273,6 +349,9 @@ async fn critique_models(
     format: ReportFormat,
     (environment, rules): (&EnvironmentConfig, &RuleConfig),
 ) -> ExitCode {
+    if let Some((switcher, list)) = job_chain(config, dirs, host, CRITIQUE_ROLE) {
+        return critique_on_chain(config, format, (environment, rules), (&switcher, &list)).await;
+    }
     let resolved = models::resolve(&ResolveParams {
         config,
         data_dir: &dirs.data,
@@ -486,6 +565,33 @@ async fn scan_step(
     if let Err(why) = gate {
         return ScanStep::without(ScanStatus::Skipped(why));
     }
+    let sample = sample::gather(&found.repo_root, &found.settings);
+    // The `setup` role's list takes the scan when the user defined one; otherwise the guardian's
+    // model does.
+    if let Some((switcher, list)) = job_chain(config, dirs, host, SETUP_ROLE) {
+        eprintln!(
+            "fontaine: {}",
+            project_env::scan_notice(&list.active_ref().to_string())
+        );
+        let run = match project_env::propose_on_chain(
+            &switcher,
+            &list,
+            config.guardian.timeout_secs,
+            &sample,
+        )
+        .await
+        {
+            Ok(run) => run,
+            Err(e) => return ScanStep::without(ScanStatus::Failed(chain(&e))),
+        };
+        if let Some(from) = &run.fell_from {
+            eprintln!(
+                "fontaine: {}",
+                fall_through_notice("setup", from, &run.served, "quota")
+            );
+        }
+        return review_proposals(run.proposals, &run.served.to_string(), run.billed);
+    }
     let resolved = models::resolve(&ResolveParams {
         config,
         data_dir: &dirs.data,
@@ -504,7 +610,6 @@ async fn scan_step(
         Err(status) => return ScanStep::without(status),
     };
     let label = handle.reference.to_string();
-    let sample = sample::gather(&found.repo_root, &found.settings);
     eprintln!("fontaine: {}", project_env::scan_notice(&label));
     let settings = project_env::scan_settings(handle, config.guardian.timeout_secs);
     let proposals = match project_env::propose(&handle.completion, &label, &settings, &sample).await
@@ -512,7 +617,12 @@ async fn scan_step(
         Ok(proposals) => proposals,
         Err(e) => return ScanStep::without(ScanStatus::Failed(chain(&e))),
     };
-    let (mut step, review) = ScanStep::proposed(proposals, &label, handle.catalog_billed());
+    review_proposals(proposals, &label, handle.catalog_billed())
+}
+
+/// Shows what a scan proposed and asks whether to keep it.
+fn review_proposals(proposals: project_env::Proposals, label: &str, billed: bool) -> ScanStep {
+    let (mut step, review) = ScanStep::proposed(proposals, label, billed);
     if let Some((scan, count)) = review {
         eprintln!("\n{}\n", sample::review_text(&scan));
         let accepted = confirm(&format!("Save these {count} proposals?"));

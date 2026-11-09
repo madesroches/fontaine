@@ -1042,6 +1042,7 @@ fn agent_setup(
     let afk = requested_mode(cli, config) == PermissionMode::Afk;
     let mut config = config.clone();
     config.effort = cli.effort.or(config.effort);
+    let explicit_budget_cap = headless && cli.max_budget_usd.is_some();
     if headless && let Some(cap) = cli.max_budget_usd {
         // The tree's session ceiling counts root, guardian and child spend alike, so a running
         // child is stopped at the headless cap instead of finishing its own budget first.
@@ -1081,6 +1082,7 @@ fn agent_setup(
         origin: prep.origin,
         env: lookup,
         warn_no_search: !NO_SEARCH_WARNED.swap(true, Ordering::Relaxed),
+        explicit_budget_cap,
     }
 }
 

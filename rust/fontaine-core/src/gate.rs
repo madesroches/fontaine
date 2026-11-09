@@ -33,7 +33,7 @@ use crate::preview::DiffPreview;
 use crate::project_env::{self, ProjectEnvironment};
 use crate::tier::Tier;
 use crate::turn::SessionEvent;
-use crate::usage_ledger::{Bucket, UsageLedger, UsageSource};
+use crate::usage_ledger::{Bucket, Served, UsageLedger, UsageSource};
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -816,6 +816,32 @@ impl SessionState {
         );
     }
 
+    /// A model list moved `agent` from `from` to `to` after the serving entry ran out of quota:
+    /// recorded in the ledger and the audit log, so a resumed session and the log show the switch.
+    pub fn record_model_fall_through(
+        &self,
+        agent: &str,
+        role: Option<&str>,
+        from: &str,
+        to: &str,
+        class: &str,
+    ) {
+        self.append(Record::ModelFellThrough {
+            agent: agent.to_string(),
+            role: role.map(str::to_string),
+            from: from.to_string(),
+            to: to.to_string(),
+            class: class.to_string(),
+        });
+        self.record_session_event(
+            "model_fall_through",
+            serde_json::json!({ "agent": agent, "role": role, "from": from, "to": to, "class": class }),
+            Tier::Mode,
+            "model_fall_through",
+            &format!("{agent} moved from {from} to {to} after {class}"),
+        );
+    }
+
     /// An audit entry for something the human did to the session rather than a tool call.
     fn record_session_event(
         &self,
@@ -950,14 +976,16 @@ impl SessionState {
 
     /// Records one model call: in the session's usage ledger under `source` and against
     /// `agent`'s budget. `sent_request` is false for a record that stands for no request.
+    /// `served` names the model that made the call and the role it was asked for under.
     pub fn record_usage(
         &self,
         source: UsageSource,
         agent: &str,
         usage: &Usage,
         sent_request: bool,
+        served: &Served,
     ) {
-        self.usage.record(source, usage, sent_request);
+        self.usage.record(source, usage, sent_request, served);
         self.agents.debit(agent, &spend_of(usage));
     }
 
@@ -967,8 +995,14 @@ impl SessionState {
     }
 
     /// Counts a guardian call made for `agent`.
-    pub fn add_guardian_usage(&self, agent: &str, usage: &Usage, sent_request: bool) {
-        self.record_usage(UsageSource::Guardian, agent, usage, sent_request);
+    pub fn add_guardian_usage(
+        &self,
+        agent: &str,
+        usage: &Usage,
+        sent_request: bool,
+        served: &Served,
+    ) {
+        self.record_usage(UsageSource::Guardian, agent, usage, sent_request, served);
     }
 
     /// What the guardian has cost across the whole tree.
@@ -978,8 +1012,8 @@ impl SessionState {
 
     /// Counts a goal evaluation's model calls against the root, so the spend a goal's cost cap
     /// reads includes them.
-    pub fn add_goal_usage(&self, usage: &Usage) {
-        self.record_usage(UsageSource::Goal, ROOT_AGENT, usage, true);
+    pub fn add_goal_usage(&self, usage: &Usage, served: &Served) {
+        self.record_usage(UsageSource::Goal, ROOT_AGENT, usage, true, served);
     }
 
     /// What goal evaluations have cost this session, which outlives the goal.

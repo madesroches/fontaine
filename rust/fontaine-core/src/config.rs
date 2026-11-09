@@ -474,11 +474,50 @@ impl Account {
     }
 }
 
+/// A model setting that takes one entry or an ordered list of them.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum OneOrMany {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl OneOrMany {
+    pub fn entries(&self) -> &[String] {
+        match self {
+            OneOrMany::One(one) => std::slice::from_ref(one),
+            OneOrMany::Many(many) => many,
+        }
+    }
+
+    pub fn is_list(&self) -> bool {
+        matches!(self, OneOrMany::Many(_))
+    }
+
+    /// The text when this is one string.
+    pub fn single(&self) -> Option<&str> {
+        match self {
+            OneOrMany::One(one) => Some(one),
+            OneOrMany::Many(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSection {
-    pub model: Option<String>,
+    /// `<account>/<model>`, a role name, or an ordered list of them: shorthand for the `main`
+    /// role.
+    pub model: Option<OneOrMany>,
     pub effort: Option<Effort>,
+}
+
+/// `[models]`: the user's model roles.
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ModelsSection {
+    /// Role name to an ordered list of `<account>/<model>` or other role names.
+    pub roles: Option<BTreeMap<String, Vec<String>>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -721,7 +760,7 @@ pub struct AutoModeSection {
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AgentType {
-    pub model: Option<String>,
+    pub model: Option<OneOrMany>,
     pub tools: Option<Vec<String>>,
     pub mode: Option<AgentMode>,
     pub effort: Option<Effort>,
@@ -1060,6 +1099,7 @@ pub struct Settings {
     pub accounts: Option<BTreeMap<String, Account>>,
     pub network: Option<NetworkSection>,
     pub model: Option<ModelSection>,
+    pub models: Option<ModelsSection>,
     pub guardian: Option<GuardianSection>,
     pub permissions: Option<PermissionsSection>,
     pub hooks: Option<HooksSection>,
@@ -1147,6 +1187,35 @@ fn line_col(text: &str, offset: usize) -> (usize, usize) {
             .map_or(0, |i| i + 1)
         + 1;
     (line, column)
+}
+
+/// The shape of the entries of one model list: `<account>/<model>`, a role name or `$main`, and
+/// `$guardian_default` alone where `allow_guardian_default` says it means something. Whether a
+/// role or an account exists is checked against the merged config.
+fn check_model_entries(entries: &[String], allow_guardian_default: bool) -> Result<(), String> {
+    if entries.is_empty() {
+        return Err("a model list names at least one model".to_string());
+    }
+    for entry in entries {
+        if entry == "$main" || model_ref_ok(entry) {
+            continue;
+        }
+        if entry == "$guardian_default" {
+            if allow_guardian_default && entries.len() == 1 {
+                continue;
+            }
+            return Err("`$guardian_default` stands alone in an agent type's `model`".to_string());
+        }
+        if entry.contains('/') {
+            return Err(format!("`{entry}`: expected `<account>/<model>`"));
+        }
+        if let Err(message) = fontaine_agents::registry::valid_role_name(entry) {
+            return Err(format!(
+                "`{entry}` is neither `<account>/<model>` nor a role name ({message})"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn model_ref_ok(value: &str) -> bool {
@@ -1308,10 +1377,19 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     {
         return bad(&format!("network.{key}"), &message);
     }
-    if let Some(model) = s.model.as_ref().and_then(|m| m.model.as_deref())
-        && !model_ref_ok(model)
+    if let Some(model) = s.model.as_ref().and_then(|m| m.model.as_ref())
+        && let Err(message) = check_model_entries(model.entries(), false)
     {
-        return bad("model.model", "expected `<account>/<model>`");
+        return bad("model.model", &message);
+    }
+    for (name, list) in s.models.iter().flat_map(|m| m.roles.iter().flatten()) {
+        let key = format!("models.roles.{name}");
+        if let Err(message) = fontaine_agents::registry::valid_role_name(name) {
+            return bad(&key, &message);
+        }
+        if let Err(message) = check_model_entries(list, false) {
+            return bad(&key, &message);
+        }
     }
     if let Some(g) = &s.guardian {
         if let Some(model) = g.model.as_deref()
@@ -1490,14 +1568,10 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         }
         for (name, ty) in a.types.iter().flatten() {
             let key = format!("agents.types.{name}");
-            if let Some(model) = ty.model.as_deref()
-                && !matches!(model, "$main" | "$guardian_default")
-                && !model_ref_ok(model)
+            if let Some(model) = &ty.model
+                && let Err(message) = check_model_entries(model.entries(), true)
             {
-                return bad(
-                    &key,
-                    "`model` is `$main`, `$guardian_default` or `<account>/<model>`",
-                );
+                return bad(&format!("{key}.model"), &message);
             }
             if let Some(tool) = ty
                 .tools
@@ -2123,6 +2197,19 @@ pub struct Tui {
     pub notify: NotifyMethod,
 }
 
+/// Where the session's main model list comes from, once the layers are merged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MainSource {
+    /// Neither `[model] model` nor `[models.roles] main` is set.
+    Unset,
+    /// `[model] model` as one string.
+    ModelKeyString,
+    /// `[model] model` as a list.
+    ModelKeyList,
+    /// `[models.roles] main`.
+    Role,
+}
+
 /// The merged, validated configuration.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
@@ -2138,7 +2225,12 @@ pub struct Config {
     pub shadowed_accounts: std::collections::BTreeSet<String>,
     /// The `[network]` section; an account's own keys are laid over it by [`Config::network_for`].
     pub network: NetworkSettings,
-    pub model: Option<String>,
+    /// `[model] model`, as written: shorthand for the `main` role.
+    pub model: Option<OneOrMany>,
+    /// `[models.roles]`, each role replaced whole by the highest-precedence layer that sets it.
+    pub roles: BTreeMap<String, Vec<String>>,
+    /// Which of `[model] model` and `[models.roles] main` names the session's main models.
+    pub main_source: MainSource,
     /// `[model] effort`; unset sends no reasoning parameter.
     pub effort: Option<Effort>,
     pub guardian: Guardian,
@@ -2241,6 +2333,8 @@ impl Config {
             shadowed_accounts: Default::default(),
             network: NetworkSettings::default(),
             model: None,
+            roles: BTreeMap::new(),
+            main_source: MainSource::Unset,
             effort: None,
             guardian: Guardian {
                 model: None,
@@ -2378,6 +2472,9 @@ impl Config {
         }
         if let Some(model) = s.model.as_ref().and_then(|m| m.model.clone()) {
             self.model = Some(model);
+        }
+        for (name, list) in s.models.iter().flat_map(|m| m.roles.iter().flatten()) {
+            self.roles.insert(name.clone(), list.clone());
         }
         if let Some(effort) = s.model.as_ref().and_then(|m| m.effort) {
             self.effort = Some(effort);
@@ -3199,14 +3296,53 @@ pub fn load(params: &LoadParams<'_>) -> Result<Config, ConfigError> {
             .filter_map(|l| l.table.as_ref().map(|t| (l.slot, t))),
     );
 
+    config.main_source = main_source(&config, &layers)?;
     check_network(&config)?;
     check_scanner(&config.guardian, &user_path)?;
     check_composition(&mut config, &user_path, params.config_dir)?;
+    crate::model_roles::Roles::from_config(&config)?;
     check_composition_credentials(&config, &user_path, params)?;
     resolve_telemetry(&config.telemetry, params)?;
     check_websearch(&config.websearch)?;
     config.websearch_config(params.env, params.data_dir)?;
     Ok(config)
+}
+
+/// Whether `[model] model` or `[models.roles] main` names the main models. Both are the one
+/// scalar, so a layer setting both is refused and across layers the higher precedence wins.
+fn main_source(config: &Config, layers: &[Layer]) -> Result<MainSource, ConfigError> {
+    let slots = |key: &str| {
+        config
+            .sources
+            .get(key)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    };
+    let (model, role) = (slots("model.model"), slots("models.roles.main"));
+    if let Some(slot) = model.iter().find(|slot| role.contains(slot)) {
+        let path = layers
+            .iter()
+            .find(|layer| layer.slot == *slot)
+            .map(|layer| layer.path.clone())
+            .unwrap_or_default();
+        return Err(ConfigError::invalid(
+            &path,
+            "model.model",
+            "set together with `models.roles.main` in the same file; `[model] model` is shorthand \
+             for the `main` role, so set one",
+        ));
+    }
+    let model_wins = match (model.first(), role.first()) {
+        (None, None) => return Ok(MainSource::Unset),
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (Some(m), Some(r)) => crate::config_catalog::rank(*m) < crate::config_catalog::rank(*r),
+    };
+    Ok(match (&config.model, model_wins) {
+        (_, false) => MainSource::Role,
+        (Some(OneOrMany::Many(_)), true) => MainSource::ModelKeyList,
+        (_, true) => MainSource::ModelKeyString,
+    })
 }
 
 /// Loads the network settings of `[network]` and of every account that overrides them, so a bad

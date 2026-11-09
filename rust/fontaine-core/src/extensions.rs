@@ -176,14 +176,15 @@ fn map_tool_list(doc: &Document, key: &str) -> Result<Option<Vec<String>>, Strin
         .map(Some)
 }
 
-/// `model: inherit` is no model; anything else is a model reference or a splice marker.
+/// `model: inherit` is no model; anything else is a model reference, a role name or a splice
+/// marker. Whether a role exists is for the session to check: the loader knows none.
 fn model_of(doc: &Document) -> Result<Option<ModelSpec>, String> {
     match doc.text("model").as_deref().map(str::trim) {
         None | Some("inherit") | Some("") => Ok(None),
-        Some(text) => ModelSpec::parse(text).map(Some).map_err(|e| {
-            // The parse error is a message with no source.
-            format!("`model`: {e} (Claude Code model aliases such as `sonnet` are not models here)")
-        }),
+        // The parse error is a message with no source.
+        Some(text) => ModelSpec::parse(text)
+            .map(Some)
+            .map_err(|e| format!("`model`: {e}")),
     }
 }
 
@@ -351,9 +352,15 @@ fn agent_from(
         )));
     }
     let model = model_of(&doc).map_err(fail)?;
-    if scope.is_tightened() && model.is_some() {
+    // A role names no endpoint, because the user defines every role; an `<account>/<model>` or a
+    // list would let the repository pick one.
+    if scope.is_tightened()
+        && model
+            .as_ref()
+            .is_some_and(|spec| !matches!(spec, ModelSpec::Named(_) | ModelSpec::Main))
+    {
         return Err(fail(format!(
-            "{} cannot choose a model: it runs on the session model (leave `model` out or write `inherit`)",
+            "{} cannot choose a model endpoint: it may name a model role or `$main`, or run on the session model (leave `model` out or write `inherit`)",
             tightened_label(scope)
         )));
     }

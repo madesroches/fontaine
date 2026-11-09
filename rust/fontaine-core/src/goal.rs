@@ -559,7 +559,7 @@ impl SessionGoal {
                 PauseReason::TurnFailed("it reached its turn limit".into())
             }
             Some(TurnOutcome::Stopped) => PauseReason::TurnFailed("it was stopped".into()),
-            Some(TurnOutcome::Failed(why)) => PauseReason::TurnFailed(why.clone()),
+            Some(TurnOutcome::Failed(why)) => PauseReason::TurnFailed(why.message.clone()),
         };
         goal.pending = false;
         goal.paused = Some(reason.clone());
