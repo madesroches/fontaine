@@ -75,6 +75,14 @@ Within project, `.fontaine/settings.toml` wins over `.mcp.json`, and the collisi
 through the load warnings. A plugin server that collides is still an error (`apply_plugins`),
 unchanged.
 
+**Load warnings.** `Config` gains `warnings: Vec<String>`, which `config::load` fills with the
+non-fatal problems this plan adds (a malformed `mcp-local.toml` or `.mcp.json`, an invalid entry,
+the TOML-vs-`.mcp.json` collision, the `type` and `headers` warnings). `prepare_session`
+(`fontaine/src/lib.rs`) adds them to `prep.warnings` as `Notice::warning`, so headless prints them
+through `print_warnings` and the TUI shows them as startup notices; `doctor_cmd` adds them to its
+warnings list, as it does `lsp_table().warnings`; `fontaine mcp` prints them to stderr as
+`fontaine: warning: …`.
+
 **New slot.** Add `Slot::Local` (label `local`). Its origin is
 `Origin { slot: Local, user_trust: true }`, and `is_project()` stays false: the file lives in
 the user's config directory, which the floor protects, so a repository cannot write it. Apply it
@@ -119,13 +127,21 @@ Claude Code's `~/.claude.json` `projects` map, in Fontaine's settings format.
   `expand` is set, through the session's `EnvLookup`.
   - It supports `${VAR}` and `${VAR:-default}`, as Claude Code does. Add `:-default` to the
     shared expander, so plugins get it too.
+  - `${CLAUDE_PROJECT_DIR}` expands to the session's workspace root (the `root` `server_spec`
+    already takes; `Config::workspace` in the doctor probe), never from the process environment,
+    as the plugin expander does and as Claude Code does for a project `.mcp.json`. A value
+    inherited from a parent Claude Code is ignored.
   - A reference to an unset variable with no default fails that server's start with an error
     naming the variable. Claude Code fails to parse the config in that case.
 - **Credential variables are never expanded.** A repository-defined definition never expands a
-  variable that holds a credential Fontaine itself uses: the set that `tools::scrubbed_env` withholds
+  variable that holds a credential Fontaine knows of: the set that `tools::scrubbed_env` withholds
   from tool subprocesses (account and telemetry `api_key_env`, `guardian.scanner_hf_token_env`,
-  `MICROMEGAS_*`, `OTEL_EXPORTER_OTLP_*HEADERS`). Such a reference fails the server's start with an
-  error.
+  `MICROMEGAS_*`, `OTEL_EXPORTER_OTLP_*HEADERS`), plus `websearch.api_key_env` and the well-known
+  provider variables in `claude_subscription::cli::CONFLICTING_ENV` (`ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`, the AWS keys, …). The provider list is needed
+  because an account names its variable only when `api_key_env` is set; by default it uses a stored
+  credential, so `scrubbed_env` alone misses `ANTHROPIC_API_KEY`. `scrubbed_env` itself is
+  unchanged. Such a reference fails the server's start with an error.
   - Reason: in a headless run a project server starts without asking, and
     `url = "https://x/${ANTHROPIC_API_KEY}"` would hand a model key to a repository-chosen host.
     This is the same boundary as the tool-subprocess scrub.
@@ -135,8 +151,12 @@ Claude Code's `~/.claude.json` `projects` map, in Fontaine's settings format.
 ### `fontaine mcp` subcommands
 
 These live in `rust/fontaine/src/mcp_cmd.rs`. The file edits go in a new
-`rust/fontaine-core/src/mcp_config.rs` (TOML through `toml_edit`, under `file_lock` with an
-`owner_only` atomic write; `.mcp.json` through `serde_json` with key order preserved).
+`rust/fontaine-core/src/mcp_config.rs`. The user-directory files (`mcp-local.toml`,
+`config.toml`) go through `toml_edit` under `file_lock` with an `owner_only` atomic write, as
+`user_config.rs` does. The repository files (`.mcp.json` through `serde_json` with key order
+preserved, `.fontaine/settings.toml` through `toml_edit`) take no cross-process lock, since
+`file_lock::lock` would leave a `.mcp.lock` or `settings.lock` in the work tree; they get the
+atomic write only.
 
 - **`fontaine mcp add [-s local|project|user] [-t stdio|http] [-e KEY=value]... [--env-var NAME]... <name> <command-or-url> [args...]`**
   - `-t` defaults to `stdio`. A stdio server needs `--` before its own flags, as in Claude Code.
@@ -175,19 +195,26 @@ These live in `rust/fontaine/src/mcp_cmd.rs`. The file edits go in a new
   - Shows scope (label and file), status (one probe as in `list`), type, command, args, the
     `env_vars` names, the `env` keys with values shown as `***`, and URL.
   - Ends with the remove hint ``To remove this server, run: fontaine mcp remove <name> -s <scope>``.
-    A plugin server instead names its plugin and `fontaine plugin uninstall`.
+    A plugin server instead names its plugin and `fontaine plugin uninstall`. Its origin carries
+    no plugin name, so the name comes from the `plugin_<dir>_` prefix, matched against the
+    installed plugin directories as `apply_plugins` does (`plugins.rs:2100`).
+  - The definition and origin shown are the winning ones from `Config`; the file comes from
+    `mcp_config::find` for a writable scope, and from the origin for `project-local`, `cli` and
+    `plugin`.
   - An unknown name exits 1.
 - **`fontaine mcp remove <name> [-s scope]`**
-  - Without `-s`: removes it from the one writable scope that holds it. If several do, it exits 1
-    and lists each scope with the `-s` command to run, as Claude Code does.
+  - Without `-s`: removes it from the one writable scope that holds it, as `mcp_config::find`
+    reports before anything is written. If several do, it exits 1 and lists each scope with the
+    `-s` command to run, as Claude Code does.
   - `-s project` removes the server from `.mcp.json` and from `.fontaine/settings.toml`,
     wherever it is.
   - Plugin, `--settings` and `settings.local.toml` servers are not writable scopes. The error
     names the file to edit or the plugin to uninstall.
   - An approval in `trust.toml` is left in place. It is keyed by digest, so it is inert.
 
-Exit codes: 0 on success; 1 for unknown name, duplicate, ambiguous remove or I/O error; 2 for
-usage and config errors, as `doctor` and `models` do.
+Exit codes: 0 on success; 1 for unknown name, duplicate, ambiguous remove or I/O error, as
+`claude mcp get`/`remove` exit 1 for an unknown name; 2 (`EXIT_CONFIG`) for usage and config
+errors. This differs from `fontaine plugin` and `models`, which exit 2 for such errors.
 
 ### `/mcp` tool counts
 
@@ -215,6 +242,8 @@ usage and config errors, as `doctor` and `models` do.
      from gaining `:-default`.
    - The project root uses `AtStart` and the skip-with-warning behavior for a malformed file.
 2. **Config.**
+   - Add `Config::warnings` and route it as in "Load warnings" (`fontaine/src/lib.rs`,
+     `doctor_cmd.rs`, `mcp_cmd.rs`).
    - Add `Slot::Local` and `McpServer::expand`. Handle the new slot in both exhaustive `Slot`
      matches, `config_catalog::rank` and `diagnosis_order` (`config.rs:3389`). Split the reverse
      layer loop (`config.rs:3663`) so local entries go in between project-local and cli.
@@ -236,16 +265,28 @@ usage and config errors, as `doctor` and `models` do.
      `Result<Option<ServerSpec>, String>`, because a missing or credential variable is an error.
      Its callers are session connect (`agent/mcp.rs`) and the doctor probe. Session connect today
      drops a `None` silently through `filter_map`; for a spec that fails to build it pushes an
-     `McpOutcome { error }`, reported through the existing warn path. The doctor probe reports a
-     failed server. Reconnect reuses the stored spec.
+     `McpOutcome { error }` and passes the error to `approver.warn`, as for a failed start. The
+     doctor probe reports a failed server. Reconnect reuses the stored spec.
+   - A server whose spec fails to build has no supervisor slot. The TUI's `start_mcp`
+     (`fontaine-tui/src/ui/mcp.rs`) pushes `(name, McpState::Failed(error))` into `mcp_status`
+     for an outcome with an error and no slot, so `/mcp` lists it as failed. `not_attempted`
+     re-runs `server_spec` for a configured, planned server and returns its build error, so
+     `/mcp reconnect <name>` names the variable instead of saying it was never started.
    - The credential-variable set comes from `tools::scrubbed_env(config, process_env_names)`.
      Session connect passes `setup.env` and `setup.scrub_env`; the shared probe computes
      `scrubbed_env(config, host.env_names)`.
    - `server_description` lists the referenced variable names.
-4. **Edit helpers.** `mcp_config.rs` gets `add_server(scope, root, name, &McpServer)` and
-   `remove_server(scope, root, name) -> bool` over the three file formats, all under a lock with
-   an atomic write. A newly created `.mcp.json` gets normal file permissions, not the owner-only
-   mode (`owner_only::write_atomic_keeping_mode` would leave a new target at the tempfile's 0600).
+4. **Edit helpers.** `mcp_config.rs` gets `add_server(scope, root, name, &McpServer)`,
+   `remove_server(scope, root, name) -> bool` and a read-only
+   `find(name, root) -> Vec<(Scope, PathBuf)>` that reads each writable file (`mcp-local.toml`
+   for this root, `.mcp.json`, `.fontaine/settings.toml`, `config.toml`) and returns every scope
+   and file that defines `name`. `add` uses it for the duplicate check, `remove` without `-s`
+   for the ambiguity check before any write, and `get` for the file it names. The user-directory
+   files are written under `file_lock` with `owner_only::write_atomic`; the repository files
+   with an atomic write and no lock. Add `owner_only::write_atomic_default_mode`: like
+   `write_atomic_keeping_mode`, but a new target gets the mode `File::create` would give it
+   (0666 less the umask on Unix, the inherited ACL on Windows) rather than the tempfile's 0600,
+   so a newly created `.mcp.json` or `settings.toml` has normal permissions.
 5. **CLI.**
    - Add `Command::Mcp(McpArgs)` with `Add`, `List`, `Get` and `Remove` to `cli.rs`.
    - Implement them in `mcp_cmd.rs`, with the shared probe in `mcp_probe.rs`, which
@@ -271,14 +312,15 @@ usage and config errors, as `doctor` and `models` do.
 - `rust/fontaine-core/src/config.rs`, `rust/fontaine-core/src/lib.rs`
 - `rust/fontaine-core/src/agent/mcp.rs`, `rust/fontaine-core/src/agent/mcp_supervisor.rs`,
   `rust/fontaine-core/src/doctor_report.rs`
-- `rust/fontaine-core/src/mcp_config.rs` (new)
+- `rust/fontaine-core/src/mcp_config.rs` (new), `rust/fontaine-core/src/owner_only.rs`
 - `rust/fontaine-core/src/config_catalog.rs`
 - `rust/fontaine-core/tests/mcp_reconnect.rs`, `rust/fontaine-core/tests/common/runtime.rs`,
   `rust/fontaine-core/tests/plugins.rs`, `rust/fontaine-core/src/redact.rs`
 - `rust/fontaine-tools/src/mcp/register.rs`, `rust/fontaine-tools/src/mcp/servers.rs`
   (`Connected`), `rust/fontaine-tools/tests/mcp_registration.rs`
 - `rust/fontaine/src/cli.rs`, `rust/fontaine/src/lib.rs`, `rust/fontaine/src/mcp_cmd.rs` (new),
-  `rust/fontaine/src/mcp_probe.rs` (new), `rust/fontaine/src/doctor_cmd.rs`
+  `rust/fontaine/src/mcp_probe.rs` (new), `rust/fontaine/src/doctor_cmd.rs`,
+  `rust/fontaine/examples/touch_marker.rs` (new)
 - `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/reports.rs`,
   `rust/fontaine-tui/src/ui/commands/reports.rs`, `rust/fontaine-tui/tests/agents.rs`
 - `docs/mcp.md`, `docs/plugins.md`, `docs/configuration.md`, `docs/doctor.md`, `docs/tui.md`,
@@ -303,8 +345,9 @@ Lines to add under the master plan's `### MCP`:
 - (#31) The repository's `.mcp.json` is read as project scope alongside
   `.fontaine/settings.toml` `[mcp.servers]`, and the TOML wins a name collision with a warning.
 - (#31) Project `.mcp.json` `${VAR}` references are expanded when the server starts, never into a
-  credential variable Fontaine uses (the set `tools::scrubbed_env` withholds: account and
-  telemetry keys, the scanner HF token, `MICROMEGAS_*`, OTLP headers); such a reference fails that server. Claude Code expands any variable. Reason: a
+  credential variable (the set `tools::scrubbed_env` withholds: account and telemetry keys, the
+  scanner HF token, `MICROMEGAS_*`, OTLP headers; plus the web-search key and the well-known
+  provider variables); such a reference fails that server. Claude Code expands any variable. Reason: a
   headless run starts project servers without asking.
 - (#31) An unset `${VAR}` with no default fails only that server's start (Claude Code fails the
   config parse).
@@ -314,6 +357,17 @@ Lines to add under the master plan's `### MCP`:
   lands in terminals and logs.
 - (#31) `fontaine mcp list` and `get` probe only what `fontaine doctor` would, so an unapproved
   repository server shows as pending and is never started by the CLI.
+
+Plan-local decisions taken while the user was away (not for the master plan):
+
+- AFK: Per-scope lookup: `mcp_config.rs` gets a read-only `find(name, root) -> Vec<(Scope, PathBuf)>` used by `add` (duplicate check), `remove` (ambiguity check before writing) and `get` (file name); a plugin server's plugin name is derived from its `plugin_<dir>_` prefix, as `apply_plugins` does.
+- AFK: Exit codes: unknown name, duplicate, ambiguous remove and I/O errors exit 1, as `claude mcp get`/`remove` do (observed), not 2 as `fontaine plugin`/`models` do; usage and config errors exit 2.
+- AFK: Repository files (`.mcp.json`, `.fontaine/settings.toml`) take no cross-process lock, only an atomic write, so no `.lock` file lands in the work tree; the user-directory files keep `file_lock`. A new `owner_only::write_atomic_default_mode` gives a newly created file the normal mode instead of 0600.
+- AFK: The credential deny-set for `.mcp.json` expansion is widened to `tools::scrubbed_env` plus `websearch.api_key_env` plus `claude_subscription::cli::CONFLICTING_ENV`, so `ANTHROPIC_API_KEY` is refused under default config; `scrubbed_env` itself is unchanged.
+- AFK: Load warnings travel in a new `Config::warnings: Vec<String>` filled by `config::load`, routed into `prep.warnings` (headless stderr, TUI startup notices), doctor's warnings list and `fontaine mcp`'s stderr.
+- AFK: A server whose spec fails to build is warned through `approver.warn`, listed by `/mcp` as failed (pushed into the TUI's `mcp_status`), and `not_attempted` re-runs `server_spec` to report the build error on `/mcp reconnect`; no supervisor slot is created for it.
+- AFK: `${CLAUDE_PROJECT_DIR}` in a project `.mcp.json` expands to the session workspace root, never from the process environment, as the plugin expander and Claude Code do; a `server_spec` test covers an inherited conflicting value.
+- AFK: The never-started integration test uses a copy of `touch_marker` in `fontaine/examples/` (it writes its marker at once; `hook_marker` blocks reading stdin, so the old test could not fail) and also asserts the status reads `pending approval`.
 
 ## Documentation
 
@@ -356,13 +410,19 @@ Unit tests (`fontaine-core`):
   - expands `${VAR}` into command, args, env and url;
   - fails on an unset variable without a default;
   - fails on a credential variable from `tools::scrubbed_env` (account `api_key_env`, telemetry
-    `api_key_env`, `guardian.scanner_hf_token_env`, `MICROMEGAS_*`, OTLP headers);
+    `api_key_env`, `guardian.scanner_hf_token_env`, `MICROMEGAS_*`, OTLP headers), on
+    `websearch.api_key_env`, and on `ANTHROPIC_API_KEY` under a config with no `api_key_env`;
+  - expands `${CLAUDE_PROJECT_DIR}` to the given root even when the process environment sets
+    `CLAUDE_PROJECT_DIR` to something else;
   - leaves TOML definitions unexpanded.
 - `mcp_config` add/remove round trips for each scope:
   - comments and order kept in TOML;
   - `.mcp.json` written in Claude Code's shape;
   - duplicate add is an error;
-  - remove of a missing name returns false.
+  - remove of a missing name returns false;
+  - `find` returns every scope and file that defines a name;
+  - a newly created `.mcp.json` is not owner-only (Unix), and no `.lock` file appears beside the
+    repository files.
 - `server_description` lists the referenced variable names.
 
 Unit tests (`fontaine-tools`, `fontaine-tui`):
@@ -378,15 +438,17 @@ and the `repo_mcp_server` example):
 
 - `add` then `list` then `get` then `remove` for each scope.
 - `remove` with the same name in two scopes exits 1 and names both `-s` commands.
-- `list` shows an unapproved project server as pending and does not start it. Use the `hook_marker`
-  example (`project_executables.rs` uses it from line 157), or another binary that writes a marker
-  on start, as the `.mcp.json` server command, and assert the marker file is absent after
-  `fontaine mcp list`. This is the
+- `list` shows an unapproved project server as pending and does not start it. Copy
+  `fontaine-tui/examples/touch_marker.rs` into `fontaine/examples/` (it writes its marker as soon
+  as it starts, unlike `hook_marker`, which reads stdin to EOF first and so would block as a stdio
+  server), use it as the `.mcp.json` server command, and assert both that the server's line reads
+  `pending approval` and that the marker file is absent after `fontaine mcp list`. This is the
   silent failure that matters, a repository's code running from a CLI listing, so it is an
   automated test.
 - A `fontaine-core` runtime test (harness in `fontaine-core/tests/common/runtime.rs`, as
   `mcp_reconnect.rs` uses) asserts that a `.mcp.json` server with a credential reference yields an
-  `McpOutcome.error` naming the variable. The test sets `scrub_env`, a builder option it adds to
+  `McpOutcome.error` naming the variable, and that `reconnect_mcp` for that name returns the
+  same error rather than "never started". The test sets `scrub_env`, a builder option it adds to
   the harness, which hardcodes `scrub_env: Vec::new()` today.
 - A `fontaine-tui/tests/agents.rs` test, beside
   `mcp_reports_a_declined_project_server_as_left_off`, writes a `.mcp.json` server, approves it
