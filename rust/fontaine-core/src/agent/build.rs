@@ -7,6 +7,7 @@ use std::sync::Arc;
 use fontaine_agents::registry::AgentTypes;
 use fontaine_agents::spawn::{AgentTool, SendMessageTool};
 use fontaine_agents::tools::{BoardShowTool, BoardUpdateTool};
+use fontaine_tools::advisor_tool::AdvisorTool;
 use fontaine_tools::ask_user::AskUserTool;
 use fontaine_tools::bug_draft::DraftBugReportTool;
 use fontaine_tools::builtins::Seen;
@@ -25,7 +26,7 @@ use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
 use rig_core::{ErrorKind, ErrorReport};
 
-use super::{SessionModels, Setup};
+use super::{ReportedAdvisor, SessionModels, Setup};
 use crate::bug_drafts::FileDrafts;
 use crate::checkpoint::StoreCapture;
 use crate::child_runner::{CoreChildRunner, CoreWake, LedgerWindow};
@@ -34,6 +35,7 @@ use crate::fork_context::ParentContextHook;
 use crate::gate::{AFK_STOPPED_MESSAGE, SessionState};
 use crate::instructions::{self, InstructionStage, Loaded, Sources};
 use crate::memory;
+use crate::model_roles::ADVISOR_ROLE;
 use crate::models::{ModelRef, Models};
 use crate::native_search;
 use crate::permissions::{Approver, PermissionPipeline};
@@ -160,6 +162,24 @@ fn draft_tool(p: &Parts<'_>) -> ExtensionTool {
             Redactor::new(secrets),
         )),
     })
+}
+
+/// The `advisor` tool, which exists only when the user defined the `advisor` role.
+fn advisor_tool(p: &Parts<'_>) -> Option<ExtensionTool> {
+    let chain = p
+        .setup
+        .role_chains
+        .chain_of_role(&p.setup.roles, ADVISOR_ROLE)?;
+    Some(ExtensionTool::new(AdvisorTool {
+        source: Arc::new(ReportedAdvisor {
+            switcher: p.setup.switcher.clone(),
+            chain,
+            explicit_budget_cap: p.setup.explicit_budget_cap,
+            state: p.state.clone(),
+            approver: p.approver.clone(),
+            context: p.runner.context.parent_context.clone(),
+        }),
+    }))
 }
 
 /// Whether the scheduling tools exist in this session.
@@ -302,6 +322,7 @@ fn extension_tools(
     if drafts_offered(p) {
         tools.push(draft_tool(p));
     }
+    tools.extend(advisor_tool(p));
     if p.config.agents.teams {
         tools.push(ExtensionTool::new(BoardShowTool {
             tree: p.state.agents().clone(),

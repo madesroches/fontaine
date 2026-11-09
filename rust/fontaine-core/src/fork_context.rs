@@ -43,15 +43,21 @@ impl ParentContext {
         *lock(&self.messages, "parent context") = Some(messages);
     }
 
+    /// The parent's latest call as a conversation, for a reader that only renders it.
+    pub fn conversation(&self) -> Result<Conversation, ForkError> {
+        let messages = lock(&self.messages, "parent context")
+            .clone()
+            .ok_or(ForkError::NoContext)?;
+        let conversation = Conversation::from_messages(messages);
+        conversation.validate().map_err(ForkError::Unpaired)?;
+        Ok(conversation)
+    }
+
     /// Saves the parent's conversation into `log` of the session's store, ready for the
     /// fork's task as its next user turn. The log is the child's own, so its runs persist
     /// beside the root transcript.
     pub async fn seed(&self, store: &DirStore, log: &str) -> Result<(), ForkError> {
-        let messages = lock(&self.messages, "parent context")
-            .clone()
-            .ok_or(ForkError::NoContext)?;
-        let mut conversation = Conversation::from_messages(messages);
-        conversation.validate().map_err(ForkError::Unpaired)?;
+        let mut conversation = self.conversation()?;
         conversation.push(Message::assistant(BRIDGE));
         save_async(store, log, &mut conversation)
             .await
@@ -147,6 +153,27 @@ mod tests {
         );
         // The seed is the child's own log, beside the root's in the session store.
         assert!(dir.path().join("logs").join("agent-1.jsonl").is_file());
+    }
+
+    #[test]
+    fn the_conversation_is_the_latest_call_with_its_prompt() {
+        let context = ParentContext::default();
+        let history = vec![user("one"), Arc::new(Message::assistant("two"))];
+        context.record(&history, &Message::user("in flight"));
+        let conversation = context.conversation().ok().unwrap();
+        let texts: Vec<_> = conversation
+            .messages()
+            .iter()
+            .map(|m| format!("{m:?}"))
+            .collect();
+        assert_eq!(texts.len(), 3, "{texts:?}");
+        assert!(texts[2].contains("in flight"));
+    }
+
+    #[test]
+    fn an_empty_slot_has_no_conversation() {
+        let error = ParentContext::default().conversation().err().unwrap();
+        assert!(matches!(error, ForkError::NoContext), "{error}");
     }
 
     #[tokio::test]

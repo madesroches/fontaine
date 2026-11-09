@@ -230,6 +230,16 @@ async fn the_mode_and_risk_class_matrix() {
                 (Deny, Dont),
             ],
         ),
+        (
+            "advisor",
+            json!({"question": "Which approach?"}),
+            [
+                (Prompt, Mode),
+                (Prompt, Mode),
+                (Deny, Guardian),
+                (Deny, Dont),
+            ],
+        ),
     ];
     for (tool, args, expected) in rows {
         for (mode, want) in MODES.into_iter().zip(expected) {
@@ -239,6 +249,48 @@ async fn the_mode_and_risk_class_matrix() {
             assert_eq!(got, want, "{tool} {args} in {mode:?}");
         }
     }
+}
+
+#[tokio::test]
+async fn the_advisor_prompt_shows_the_question_and_offers_an_always_allow_rule() {
+    let rig = Rig::new(Manual);
+    rig.approver.answer(Answer::Deny { feedback: None });
+    rig.check("advisor", json!({"question": "Should I split the module?"}))
+        .await;
+    let request = rig.approver.last_request();
+    assert_eq!(request.summary, "Should I split the module?");
+    assert_eq!(request.proposed_rule.as_deref(), Some("advisor"));
+    assert!(request.offers.always && request.offers.session);
+}
+
+#[tokio::test]
+async fn an_advisor_allow_rule_lets_it_run_but_a_deny_rule_and_headless_manual_do_not() {
+    let args = json!({"question": "q"});
+    let allow = Rig::with(Options::new(Manual).settings(
+        "[permissions]
+allow = [\"advisor\"]
+",
+    ));
+    assert_eq!(
+        first(&allow, "advisor", args.clone()).await.0,
+        Decision::Allow
+    );
+
+    let both = Rig::with(Options::new(Manual).settings(
+        "[permissions]
+allow = [\"advisor\"]
+deny = [\"advisor\"]
+",
+    ));
+    assert_eq!(
+        first(&both, "advisor", args.clone()).await,
+        (Decision::Deny, Tier::DenyRule)
+    );
+
+    let headless = Rig::with(Options::new(Manual).headless());
+    let d = headless.check("advisor", args).await;
+    assert!(denied_message(&d).contains("headless"));
+    assert_eq!(headless.approver.asked(), 0);
 }
 
 #[tokio::test]

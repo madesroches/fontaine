@@ -208,9 +208,9 @@ impl AgentType {
             .collect();
         let mut out: Vec<String> = Vec::new();
         for tool in parent {
-            // Only the user's session drafts reports; `tools: None` types inherit everything
-            // else, so the strip lives here rather than in each type.
-            if tool == fontaine_tools::descriptor::DRAFT_BUG_REPORT {
+            // `tools: None` types inherit everything else, so the strip lives here rather
+            // than in each type.
+            if ROOT_ONLY.contains(&tool.as_str()) {
                 continue;
             }
             let named = wanted
@@ -232,6 +232,10 @@ impl AgentType {
         }
     }
 }
+
+/// Tools only the user's session has: it alone drafts bug reports, and a child consulting the
+/// advisor would multiply its spend and what leaves for the second provider.
+const ROOT_ONLY: &[&str] = &[fontaine_tools::descriptor::DRAFT_BUG_REPORT, "advisor"];
 
 #[derive(Clone, Debug, Default)]
 pub struct AgentTypes {
@@ -426,6 +430,29 @@ mod tests {
             );
         }
         assert!(types.get("fork").is_some());
+    }
+
+    #[test]
+    fn no_subagent_gets_the_advisor_even_when_its_type_lists_it() {
+        let parent = names(&["read", "advisor"]);
+        let mut types = AgentTypes::builtin();
+        let mut open = types.get("worker").unwrap().clone();
+        open.name = "open".into();
+        open.tools = None;
+        types.insert(open);
+        let mut named = types.get("worker").unwrap().clone();
+        named.name = "named".into();
+        named.tools = Some(names(&["read", "advisor"]));
+        types.insert(named);
+        for ty in types.iter() {
+            assert!(
+                !ty.toolset(&parent).contains(&"advisor".to_string()),
+                "{}",
+                ty.name
+            );
+        }
+        assert!(types.get("fork").is_some());
+        assert!(types.get("named").is_some());
     }
 
     #[test]

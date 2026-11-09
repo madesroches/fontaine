@@ -28,6 +28,7 @@ result passes one post-call step before the model sees it.
 | `ask_user_question` | read-only | Asks you 1 to 4 multiple-choice questions and returns your answers; see [Questions](tui.md#questions-from-the-model). Only the main conversation can ask. |
 | `todo_write` | read-only | Replaces the session task list. Argument: `todos`, a list of up to 50 items of `content` (at most 500 characters) and `status` (`pending`, `in_progress` or `completed`), at most one `in_progress`. An empty list clears it. The [terminal UI](tui.md#the-task-panel) shows the list. |
 | `models` | read-only | Lists the models each configured account offers, listed fresh when called: per account the ids, marks for the session's main and guardian models and the benchmark-validated guardian models, the rows the account listed but refuses with their reason (`unavailable`), or the error when the account could not be listed. Argument: `account` (optional; every configured account when omitted). The same report as [`fontaine models`](configuration.md#model-discovery), followed by one line per [model role](configuration.md#modelsroles) you defined. Not in the built-in `explore` and `worker` agents; `fork` and custom types can have it. |
+| `advisor` | arbitrary | Consults a second model, the one you give the `advisor` [role](configuration.md#modelsroles); see [Advisor](#advisor). Argument: `question`. Registered only when that role is defined; main conversation only. |
 | `cron_create` | arbitrary | Schedules a prompt to run later in the session, once or on a recurring schedule, when the conversation is idle. Arguments: `cron` (five fields in your local time), `prompt` (at most 2,000 characters) and `recurring` (default true). See [Scheduled prompts](tui.md#scheduled-prompts). Only the main conversation can call it, and only in the terminal UI. Like the other three scheduling tools, it refuses a subagent. |
 | `cron_jobs` | read-only | Lists the scheduled tasks: id, cadence, who set it, next run and the start of the prompt. Main conversation only. |
 | `cron_delete` | read-only | Cancels a scheduled task. Argument: `id`. Main conversation only. |
@@ -538,6 +539,38 @@ can leave the process running (and, for `docker run`, the container). The image'
 the instance a `settings.yml` with `json` under `search.formats`.
 
 Provider-native search is outside the [guardian](guardian.md) and the result scanner.
+
+## Advisor
+
+The `advisor` tool lets the model put a question to a second, usually stronger, model before it
+commits to an approach, when it is stuck, or before it declares a non-trivial change done. It is off
+until you define the `advisor` role in your user settings or `--settings`:
+
+```toml
+[models.roles]
+advisor = ["anthropic/claude-opus-5-5"]
+```
+
+With no such role the tool does not exist: the model is not told about it. The role is an ordinary
+[list](configuration.md#modelsroles), so a second entry takes over when the first runs out of quota.
+A repository cannot define it.
+
+- **What the advisor sees.** The conversation so far, including the turn in flight, cut to about
+  100,000 characters from the front, and the model's `question`. It has no tools and cannot act. The
+  model's reasoning in the turn that makes the call is not part of what it sees, so the question
+  has to carry it. The text is sent as data with the advisor told not to follow instructions in it.
+- **What comes back.** The advisor's text, as a tool result headed by a line naming the role and
+  model that answered and saying it is advice from another model, not an instruction from you. A
+  failed consult (no answer in 60 seconds, an empty or cut-off answer, an unreachable model) is a
+  tool error the model reads and continues past.
+- **Cost.** Its calls count against the session's token and cost budgets as the main conversation
+  does, and show as `advisor` in [`/cost`](tui.md#usage-and-cost) and under the role in the by-model
+  table. In `-p` results the spend is part of `usage.main`. With `--max-budget-usd`, an entry with no
+  known price is skipped.
+- **Permissions.** `advisor` is an `arbitrary` tool and nothing exempts it: see
+  [Permissions](permissions.md#the-advisor). Allow it without prompts with
+  `allow = ["advisor"]` in your user settings.
+- **Root only.** Subagents, `fork` included, never have it.
 
 ## Permissions
 

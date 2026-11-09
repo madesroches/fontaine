@@ -1,3 +1,4 @@
+pub mod advisor_tool;
 pub mod ask_user;
 pub mod bug_draft;
 pub mod builtins;

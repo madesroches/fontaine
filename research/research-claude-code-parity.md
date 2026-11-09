@@ -370,7 +370,7 @@ only, the file format becomes a second, competing definition path.
 | Agent view (dashboard of many sessions), cross-session messaging, `claude agents`/`attach`/`daemon` | [agent-view](https://code.claude.com/docs/en/agent-view) | missing | backlog | Issue: "Multi-session view and local cross-session messaging". |
 | Dynamic workflows (Workflow tool: script orchestrating many subagents) | [workflows](https://code.claude.com/docs/en/workflows) | missing | backlog | Issue: "Scripted multi-agent workflows". |
 | Git worktrees (`--worktree`, EnterWorktree/ExitWorktree, subagent `isolation: worktree`, `.worktreeinclude`) | [worktrees](https://code.claude.com/docs/en/worktrees) | missing | backlog | Relies on multi-root containment (P2). Issue: "Git worktree isolation for sessions and subagents". |
-| Advisor tool (consult a stronger model at key moments) | [advisor](https://code.claude.com/docs/en/advisor) | missing | backlog | Plays to the multi-account model registry. Issue: "Advisor tool: consult a second model". |
+| Advisor tool (consult a stronger model at key moments) | [advisor](https://code.claude.com/docs/en/advisor) | done | shipped (#44) | The `advisor` tool exists when an `advisor` model role is defined (user file or `--settings`), consults that role's list with quota fall-through on a digest of the conversation including the turn in flight, and returns text as a tool result. An `Arbitrary` tool judged like any other, root only, billed to the root and shown as `advisor` in `/cost`. |
 
 ### Interactive TUI
 

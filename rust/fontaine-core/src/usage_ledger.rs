@@ -16,16 +16,18 @@ pub enum UsageSource {
     Goal,
     Compaction,
     SideQuestion,
+    Advisor,
 }
 
 impl UsageSource {
-    pub const ALL: [UsageSource; 6] = [
+    pub const ALL: [UsageSource; 7] = [
         UsageSource::Main,
         UsageSource::Subagent,
         UsageSource::Guardian,
         UsageSource::Goal,
         UsageSource::Compaction,
         UsageSource::SideQuestion,
+        UsageSource::Advisor,
     ];
 
     pub fn index(self) -> usize {
@@ -119,7 +121,7 @@ impl fmt::Display for Served {
 /// Every model call the session has made, one bucket per source and one per role and model.
 #[derive(Default)]
 pub struct UsageLedger {
-    by_source: Mutex<[Bucket; 6]>,
+    by_source: Mutex<[Bucket; 7]>,
     by_model: Mutex<BTreeMap<Served, Bucket>>,
 }
 
@@ -144,7 +146,7 @@ impl UsageLedger {
         lock(&self.by_source, "usage ledger")[source.index()]
     }
 
-    pub fn snapshot(&self) -> [Bucket; 6] {
+    pub fn snapshot(&self) -> [Bucket; 7] {
         *lock(&self.by_source, "usage ledger")
     }
 

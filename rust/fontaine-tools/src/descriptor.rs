@@ -315,6 +315,15 @@ pub static TOOLS: &[ToolDescriptor] = &[
         Specifier::None,
         &[],
     ),
+    // Arbitrary because the conversation and a model-written question go to a second provider.
+    row(
+        "advisor",
+        RiskClass::Arbitrary,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &[],
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static ToolDescriptor> {
@@ -342,7 +351,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     /// Tools Claude Code has no counterpart for.
-    const FONTAINE_ONLY: &[&str] = &["models", DRAFT_BUG_REPORT];
+    const FONTAINE_ONLY: &[&str] = &["models", DRAFT_BUG_REPORT, "advisor"];
 
     #[test]
     fn names_are_unique_rule_names() {
@@ -378,8 +387,9 @@ mod tests {
                 assert!(!d.path_free, "{} names a path", d.name);
             }
             // `job_cancel` stops only a process or subagent this session started, by id, and
-            // names no path: the one tool that is never destructive yet not read-only.
-            if d.destructive == Destructive::Never && d.name != "job_cancel" {
+            // names no path; `advisor` changes nothing but sends the conversation to a second
+            // model, which is why it is not read-only.
+            if d.destructive == Destructive::Never && !matches!(d.name, "job_cancel" | "advisor") {
                 assert_eq!(d.risk, RiskClass::ReadOnly, "{}", d.name);
             }
         }
@@ -429,7 +439,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 28] = [
+        let expected: [Pinned; 29] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             (
                 "job_output",
@@ -604,6 +614,7 @@ mod tests {
                 S::None,
                 &[],
             ),
+            ("advisor", R::Arbitrary, true, D::Never, S::None, &[]),
         ];
         let actual: Vec<_> = TOOLS
             .iter()

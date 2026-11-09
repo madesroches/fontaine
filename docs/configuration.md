@@ -585,7 +585,7 @@ coding     = ["sonnet", "kimi/kimi-for-coding"]
 thinking   = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"]
 ```
 
-Fontaine reads four role names itself. Every other name is yours, so Claude Code's `sonnet` and
+Fontaine reads five role names itself. Every other name is yours, so Claude Code's `sonnet` and
 `opus` aliases port unchanged once you define them.
 
 | Role | Used for | When it is not defined |
@@ -594,6 +594,7 @@ Fontaine reads four role names itself. Every other name is yours, so Claude Code
 | `critique` | The `fontaine auto-mode critique` review. | The guardian's model |
 | `setup` | The model scan of `/auto-mode-setup` and `fontaine auto-mode setup`. | The guardian's model |
 | `compaction` | The summary request of a [compaction](tui.md#context). The threshold still follows the main model's window. | The main model, at its current entry |
+| `advisor` | The [`advisor` tool](tools.md#advisor): the model the main model consults. | The tool does not exist |
 
 Roles never apply to the guardian: `[guardian] model` and the `[guardian.composition]` models stay
 one `<account>/<model>`, and a pinned guardian is never substituted.
@@ -626,7 +627,7 @@ and not the account's.
   that worked becomes the one later turns start on.
 - A subagent on a role or a list moves for itself, and the role's other subagents start on the entry
   that worked. A subagent on `$main` moves its own agent without changing the main conversation's entry.
-- Compaction, the critique and the setup scan walk their own role's list the same way.
+- Compaction, the advisor, the critique and the setup scan walk their own role's list the same way.
 - Each request tries every entry once. When the whole list is spent the turn fails as it does today,
   with `every model in <role> failed` added.
 - With an explicit `--max-budget-usd`, an entry with no known price is skipped, because a capped run
@@ -803,7 +804,7 @@ refresh_interval_secs = 10
 Rule strings use the `Tool` or `Tool(specifier)` form described in
 [Permissions](permissions.md#rules). At load, Fontaine checks the outer shape, that the tool is one
 of `shell`, `read`, `edit`, `write`, `notebook_edit`, `ls`, `glob`, `grep`, `webfetch`, `websearch`, `agent`, `skill`,
-`monitor`, `lsp`, `powershell`, `job_output`, `job_cancel`, `send_message`, `ask_user_question`, `todo_write`, `models`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
+`monitor`, `lsp`, `powershell`, `job_output`, `job_cancel`, `send_message`, `ask_user_question`, `todo_write`, `models`, `advisor`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup` or an `mcp__<server>[__<tool>|__*]` name, and that the specifier is valid for the
 tool (a `shell` specifier is literal command words, a path specifier a gitignore-style pattern, a
 `webfetch` specifier `domain:<host>` or `domain:*.<host>`). A bad rule is a configuration error.
 `deny` and `ask` rules apply in every mode; `allow` rules act after the floor.

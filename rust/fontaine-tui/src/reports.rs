@@ -718,7 +718,7 @@ pub fn recap(input: &RecapInput) -> String {
 /// What `/cost` reports: the ledger's buckets and the session cost budget.
 pub struct UsageReport {
     /// In `UsageSource::ALL` order.
-    pub by_source: [Bucket; 6],
+    pub by_source: [Bucket; 7],
     /// One bucket per role and model that served a call.
     pub by_model: Vec<(Served, Bucket)>,
     /// The `[agents]` session cost cap and what the session has spent against it.
@@ -735,6 +735,7 @@ pub fn cost(report: &UsageReport) -> String {
         ("goal", UsageSource::Goal),
         ("compaction", UsageSource::Compaction),
         ("side questions", UsageSource::SideQuestion),
+        ("advisor", UsageSource::Advisor),
     ];
     let total = fontaine_core::usage_ledger::total(&report.by_source);
     let cache = total.cache_read_input_tokens > 0 || total.cache_creation_input_tokens > 0;
@@ -1553,7 +1554,7 @@ mod tests {
     }
 
     fn usage_report(rows: &[(UsageSource, Bucket)]) -> UsageReport {
-        let mut by_source = [Bucket::default(); 6];
+        let mut by_source = [Bucket::default(); 7];
         for (source, bucket) in rows {
             by_source[source.index()] = *bucket;
         }
@@ -1588,6 +1589,30 @@ mod tests {
         assert!(lines[2].contains("84.2k"), "{text}");
         assert!(!text.contains("unpriced"), "{text}");
         assert!(!text.contains("budget"), "{text}");
+    }
+
+    #[test]
+    fn cost_lists_the_advisor_after_side_questions_and_totals_it() {
+        let text = cost(&usage_report(&[
+            (UsageSource::Main, spent(12, 84_200, 9_100, Some(0.4), 0)),
+            (
+                UsageSource::SideQuestion,
+                spent(1, 3_000, 200, Some(0.01), 0),
+            ),
+            (UsageSource::Advisor, spent(2, 30_000, 1_500, Some(0.25), 0)),
+        ]));
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[2].starts_with("  main"), "{text}");
+        assert!(lines[3].starts_with("  side questions"), "{text}");
+        assert!(lines[4].starts_with("  advisor"), "{text}");
+        assert!(
+            lines[4].contains("30.0k") && lines[4].ends_with("$0.2500"),
+            "{text}"
+        );
+        assert!(
+            lines[5].starts_with("  total") && lines[5].ends_with("$0.6600"),
+            "{text}"
+        );
     }
 
     #[test]

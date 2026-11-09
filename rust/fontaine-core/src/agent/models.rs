@@ -14,10 +14,12 @@ use crate::accounts::AccountsError;
 use crate::child_runner::MainModel;
 use crate::config::Account;
 use crate::config::MainSource;
+use crate::gate::SessionState;
 use crate::model_roles::{ModelChain, Tried, fall_through_notice};
 use crate::models::{
     AccountListing, GuardianChoice, GuardianModel, Listing, ModelHandle, ModelRef, Switcher,
 };
+use crate::permissions::Approver;
 use crate::quota::QuotaSource;
 use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::llm_backend;
@@ -46,6 +48,28 @@ fn reaches_main(roles: &std::collections::BTreeMap<String, Vec<String>>, name: &
         }
     }
     false
+}
+
+/// Records a one-shot job's move to the next entry of its list, and says so.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn announce_fall_through(
+    state: &SessionState,
+    approver: &dyn Approver,
+    agent: &str,
+    subject: &str,
+    chain: &ModelChain,
+    from: &ModelRef,
+    to: &ModelRef,
+    class: &str,
+) {
+    state.record_model_fall_through(
+        agent,
+        chain.role.as_deref(),
+        &from.to_string(),
+        &to.to_string(),
+        class,
+    );
+    approver.warn(&fall_through_notice(subject, from, to, class));
 }
 
 /// A guardian account's name and the source of its subscription quota.
@@ -268,15 +292,16 @@ impl AgentRuntime {
         to: &ModelRef,
         class: &str,
     ) {
-        self.state.record_model_fall_through(
+        announce_fall_through(
+            &self.state,
+            self.approver(),
             agent,
-            chain.role.as_deref(),
-            &from.to_string(),
-            &to.to_string(),
+            subject,
+            chain,
+            from,
+            to,
             class,
         );
-        self.approver
-            .warn(&fall_through_notice(subject, from, to, class));
     }
 
     /// The reasoning effort the next main turn sends, checked against the current model. A level

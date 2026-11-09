@@ -61,6 +61,7 @@ use crate::turn_recovery::{self, Fallback, Unsettled};
 use crate::user_hooks;
 use crate::workspace::{self, RootSource};
 
+mod advisor;
 mod afk;
 mod build;
 mod goal;
@@ -74,6 +75,7 @@ mod models;
 mod rewind;
 mod setup;
 
+pub use advisor::ReportedAdvisor;
 pub(crate) use build::apply_common;
 use build::{Parts, build_agent};
 pub use mcp::{McpOutcome, McpServerPlan, mcp_plan, probe_server, server_digest, server_spec};

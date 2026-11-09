@@ -212,6 +212,16 @@ without a prompt to you; spend is bounded only by the session and subagent budge
 unset by default. A subagent type holding `board_show` or `board_update` can still take the read-only
 spawn fast path when the rest of its tools are read-only.
 
+## The advisor
+
+The [`advisor` tool](tools.md#advisor) is an `arbitrary` tool with no exemption: it sends the
+conversation and a question the model wrote to a second model, possibly on another account. The
+floor, your rules and hooks run first as for any tool, then the mode's path: in `auto` the guardian
+judges the call, in `manual` you are asked and the prompt shows the question in full, and in
+`dontAsk` it is denied. A headless `-p` run defaults to `manual`, so it needs
+`allow = ["advisor"]` under `[permissions]` or `auto` mode. An allow rule in your user settings is
+the way to use it without prompts. Only the main conversation has the tool.
+
 ## Scheduled prompts
 
 `cron_create` is an `arbitrary` tool, and always a destructive call for the guardian (so a low-confidence allow is denied), even though it touches no file: it plants model-written text
@@ -264,7 +274,7 @@ grammar: `Tool` or `Tool(specifier)`. A bare tool name matches every call of the
 | `mcp__<server>`, `mcp__<server>__<tool>`, `mcp__<server>__*` | none | the registered tool name |
 | `agent`, `skill` | the agent type or skill name | exact name |
 | `monitor` | words, as for `shell` | the parsed command line, as for `shell`; a `shell` deny or ask rule covers `monitor` too, an allow rule does not |
-| `send_message`, `board_update`, `board_show`, `ask_user_question`, `todo_write`, `models`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `job_output`, `job_cancel` | none | the tool name |
+| `send_message`, `board_update`, `board_show`, `ask_user_question`, `todo_write`, `models`, `advisor`, `cron_create`, `cron_jobs`, `cron_delete`, `schedule_wakeup`, `job_output`, `job_cancel` | none | the tool name |
 
 Deny and ask rules fail toward matching; allow rules fail toward not matching:
 

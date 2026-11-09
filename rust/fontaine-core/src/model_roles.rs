@@ -18,6 +18,8 @@ pub const MAIN_ROLE: &str = "main";
 pub const CRITIQUE_ROLE: &str = "critique";
 pub const SETUP_ROLE: &str = "setup";
 pub const COMPACTION_ROLE: &str = "compaction";
+/// The role that switches the `advisor` tool on and names the models that serve it.
+pub const ADVISOR_ROLE: &str = "advisor";
 
 /// The config's roles with each list flattened to concrete references.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

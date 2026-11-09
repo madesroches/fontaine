@@ -1606,7 +1606,7 @@ async fn record_usage_lands_in_its_source_and_debits_the_calling_agent() {
         let bucket = rig.state.usage_ledger().bucket(source);
         assert_eq!((bucket.calls, bucket.input_tokens), (1, 5), "{source:?}");
     }
-    assert_eq!(rig.agents.spend_of(ROOT_AGENT).tokens() - before, 42);
+    assert_eq!(rig.agents.spend_of(ROOT_AGENT).tokens() - before, 49);
 
     rig.state.record_usage(
         UsageSource::Subagent,

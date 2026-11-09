@@ -610,7 +610,7 @@ pub fn propose(call: &CallContext<'_>) -> Option<Rule> {
         _ if is_mcp(call.tool)
             || matches!(
                 call.tool,
-                "send_message" | "board_update" | "ask_user_question"
+                "send_message" | "board_update" | "ask_user_question" | "advisor"
             ) =>
         {
             None

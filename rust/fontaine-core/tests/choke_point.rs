@@ -22,6 +22,7 @@ use fontaine_core::config::PermissionMode::{self, Manual};
 use fontaine_core::questions::HumanQuestions;
 use fontaine_core::tier::Tier;
 use fontaine_core::tools::{ExtensionTool, ExtensionTools, RegistryParams, registry};
+use fontaine_tools::advisor_tool::{AdvisorSource, AdvisorTool};
 use fontaine_tools::ask_user::{AskUserTool, Question, QuestionReply, QuestionSource};
 use fontaine_tools::bug_draft::{DraftArgs, DraftBugReportTool, DraftSink};
 use fontaine_tools::descriptor::{TOOLS, find};
@@ -79,6 +80,14 @@ struct NoModels;
 impl ModelSource for NoModels {
     fn report<'a>(&'a self, _: Option<&'a str>) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async { Err("no models".to_string()) })
+    }
+}
+
+struct NoAdvisor;
+
+impl AdvisorSource for NoAdvisor {
+    fn consult<'a>(&'a self, _: &'a str) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async { Err("no advisor".to_string()) })
     }
 }
 
@@ -161,6 +170,9 @@ fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
         ExtensionTool::new(DraftBugReportTool {
             sink: Arc::new(NoDrafts),
         }),
+        ExtensionTool::new(AdvisorTool {
+            source: Arc::new(NoAdvisor),
+        }),
         ExtensionTool::new(TodoTool {
             store: Arc::new(NoTodos),
         }),
@@ -241,6 +253,7 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "schedule_wakeup",
         "models",
         "draft_bug_report",
+        "advisor",
     ]
     .into_iter()
     .collect();
