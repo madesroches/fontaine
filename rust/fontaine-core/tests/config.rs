@@ -5,8 +5,8 @@ use std::path::Path;
 
 use common::{World, write};
 use fontaine_core::config::{
-    self, AccountKind, Column, Config, ConfigError, GuardianProfile, MainSource, OneOrMany,
-    PermissionMode, ThemeName, parse_settings,
+    self, AccountKind, Column, Config, ConfigError, GuardianProfile, HookEvent, MainSource,
+    OneOrMany, PermissionMode, ThemeName, parse_settings,
 };
 use fontaine_core::model_roles::Roles;
 use fontaine_core::permission_rules::SourcedRule;
@@ -407,8 +407,8 @@ fn hooks_arrays_union() {
         "[[hooks.pre_tool_use]]\nmatcher = \"shell\"\ncommand = \"b.sh\"\n[[hooks.post_tool_use]]\nmatcher = \"read\"\ncommand = \"c.sh\"\n",
     );
     let c = w.load_with_settings(&cli).unwrap();
-    assert_eq!(c.hooks.pre_tool_use.len(), 2);
-    assert_eq!(c.hooks.post_tool_use.len(), 1);
+    assert_eq!(c.hooks.get(HookEvent::PreToolUse).len(), 2);
+    assert_eq!(c.hooks.get(HookEvent::PostToolUse).len(), 1);
 }
 
 #[test]
@@ -852,7 +852,7 @@ command = "srv"
     let c = w.load().unwrap();
     assert_eq!(c.permissions.default_mode, Some(PermissionMode::DontAsk));
     assert_eq!(c.permissions.deny.len(), 1);
-    assert_eq!(c.hooks.pre_tool_use.len(), 1);
+    assert_eq!(c.hooks.get(HookEvent::PreToolUse).len(), 1);
     assert!(c.mcp_servers.contains_key("s"));
 
     w.project_file("[permissions]\ndefault_mode = \"manual\"\n");
@@ -2443,9 +2443,163 @@ fn team_hooks_union_across_scopes_and_a_project_one_may_be_declared() {
         "[[hooks.task_completed]]\ncommand = \"b.sh\"\n[[hooks.teammate_idle]]\ncommand = \"c.sh\"\n",
     );
     let c = w.load().unwrap();
-    assert_eq!(c.hooks.task_completed.len(), 2);
-    assert_eq!(c.hooks.teammate_idle.len(), 1);
-    assert!(c.hooks.teammate_idle[0].origin.is_project());
+    assert_eq!(c.hooks.get(HookEvent::TaskCompleted).len(), 2);
+    assert_eq!(c.hooks.get(HookEvent::TeammateIdle).len(), 1);
+    assert!(c.hooks.get(HookEvent::TeammateIdle)[0].origin.is_project());
+}
+
+#[test]
+fn every_hook_event_has_a_distinct_key_and_wire_name_that_round_trip() {
+    use std::collections::BTreeSet;
+    let keys: BTreeSet<_> = HookEvent::ALL.iter().map(|e| e.config_key()).collect();
+    let names: BTreeSet<_> = HookEvent::ALL.iter().map(|e| e.wire_name()).collect();
+    assert_eq!(keys.len(), HookEvent::ALL.len());
+    assert_eq!(names.len(), HookEvent::ALL.len());
+    for event in HookEvent::ALL {
+        assert_eq!(HookEvent::from_wire_name(event.wire_name()), Some(event));
+        assert!(!event.handlers().is_empty());
+        // The config key is the event's serde name: a table of it loads.
+        let kind = event.handlers()[0].as_str();
+        let body = match kind {
+            "command" => "command = \"true\"",
+            "http" => "type = \"http\"\nurl = \"https://example.test\"",
+            _ => "type = \"prompt\"\nprompt = \"ok?\"",
+        };
+        user_ok(&format!("[[hooks.{}]]\n{body}\n", event.config_key()));
+    }
+    assert_eq!(HookEvent::from_wire_name("Bogus"), None);
+}
+
+mod hook_validation {
+    use super::*;
+
+    fn rejected(text: &str, mention: &str) {
+        let err = parse_settings(text, Path::new("user.toml"), Column::User)
+            .expect_err(&format!("should reject:\n{text}"));
+        assert!(err.to_string().contains(mention), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_event_key_is_a_load_error() {
+        rejected("[[hooks.on_tuesday]]\ncommand = \"true\"\n", "on_tuesday");
+    }
+
+    #[test]
+    fn a_matcher_must_fit_the_events_matcher_kind() {
+        rejected(
+            "[[hooks.session_start]]\nmatcher = \"bogus\"\ncommand = \"true\"\n",
+            "`bogus` is not a value this event matches",
+        );
+        rejected(
+            "[[hooks.stop]]\nmatcher = \"x\"\ncommand = \"true\"\n",
+            "takes no `matcher`",
+        );
+        rejected(
+            "[[hooks.task_created]]\nmatcher = \"x\"\ncommand = \"true\"\n",
+            "takes no `matcher`",
+        );
+        rejected(
+            "[[hooks.pre_tool_use]]\nmatcher = \"shell(\"\ncommand = \"true\"\n",
+            "hooks.pre_tool_use",
+        );
+        user_ok("[[hooks.session_start]]\nmatcher = \"startup|resume\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.session_start]]\nmatcher = \"*\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.subagent_stop]]\nmatcher = \"my-agent|worker\"\ncommand = \"true\"\n");
+        user_ok("[[hooks.notification]]\nmatcher = \"permission_prompt\"\ncommand = \"true\"\n");
+        user_ok(
+            "[[hooks.stop_failure]]\nmatcher = \"rate_limit|server_error\"\ncommand = \"true\"\n",
+        );
+    }
+
+    #[test]
+    fn an_event_takes_only_the_handler_types_it_accepts() {
+        rejected(
+            "[[hooks.session_start]]\ntype = \"http\"\nurl = \"https://example.test\"\n",
+            "takes `command` handlers, not `http`",
+        );
+        rejected(
+            "[[hooks.notification]]\ntype = \"prompt\"\nprompt = \"ok?\"\n",
+            "not `prompt`",
+        );
+        user_ok("[[hooks.stop]]\ntype = \"prompt\"\nprompt = \"ok?\"\n");
+        user_ok("[[hooks.session_end]]\ntype = \"http\"\nurl = \"https://example.test\"\n");
+    }
+
+    #[test]
+    fn a_hook_has_exactly_the_fields_of_its_type() {
+        rejected("[[hooks.stop]]\n", "needs `command`");
+        rejected(
+            "[[hooks.stop]]\ncommand = \"true\"\nurl = \"https://example.test\"\n",
+            "`url` does not apply to a `command` hook",
+        );
+        rejected(
+            "[[hooks.stop]]\ntype = \"http\"\ncommand = \"true\"\nurl = \"https://example.test\"\n",
+            "`command` does not apply to a `http` hook",
+        );
+        rejected("[[hooks.stop]]\ntype = \"http\"\n", "needs `url`");
+        rejected(
+            "[[hooks.stop]]\ntype = \"http\"\nurl = \"ftp://example.test\"\n",
+            "http:// or https://",
+        );
+        rejected(
+            "[[hooks.stop]]\ntype = \"prompt\"\nprompt = \"ok?\"\nheaders = { a = \"b\" }\n",
+            "`headers` does not apply to a `prompt` hook",
+        );
+        rejected(
+            "[[hooks.stop]]\ntype = \"command\"\ncommand = \"true\"\nallowed_env_vars = [\"A\"]\n",
+            "`allowed_env_vars` does not apply",
+        );
+        rejected("[[hooks.stop]]\ncommand = \"\"\n", "must not be empty");
+        rejected(
+            "[[hooks.stop]]\ncommand = \"true\"\ntimeout_secs = 0\n",
+            "greater than zero",
+        );
+        rejected(
+            "[[hooks.stop]]\ntype = \"agent\"\nprompt = \"x\"\n",
+            "agent",
+        );
+    }
+
+    #[test]
+    fn the_defaults_and_scopes_of_each_event_are_stated_in_one_place() {
+        use fontaine_core::config::ProjectScope;
+        let ignored: Vec<_> = HookEvent::ALL
+            .into_iter()
+            .filter(|e| matches!(e.project_scope(), ProjectScope::IgnoredWithWarning(_)))
+            .map(|e| e.config_key())
+            .collect();
+        assert_eq!(ignored, ["teammate_idle", "stop", "subagent_stop"]);
+        assert_eq!(
+            HookEvent::SessionEnd.default_timeout(),
+            std::time::Duration::from_millis(1500)
+        );
+        assert_eq!(
+            HookEvent::Stop.default_timeout(),
+            std::time::Duration::from_secs(30)
+        );
+    }
+}
+
+#[test]
+fn hooks_of_every_scope_merge_per_event_and_http_headers_dedupe() {
+    let w = World::new();
+    w.user_file("[[hooks.session_end]]\ntype = \"http\"\nurl = \"https://example.test\"\nheaders = { a = \"b\" }\n");
+    w.project_file(
+        "[[hooks.session_end]]\ntype = \"http\"\nurl = \"https://example.test\"\nheaders = { a = \"b\" }\n[[hooks.session_end]]\ntype = \"http\"\nurl = \"https://other.test\"\n",
+    );
+    w.trusted_repo();
+    let c = w.load().unwrap();
+    let hooks = c.hooks.get(HookEvent::SessionEnd);
+    assert_eq!(
+        hooks.len(),
+        2,
+        "the same http hook in two scopes is kept once"
+    );
+    assert!(
+        hooks[0].origin.user_trust,
+        "under the scope with more trust"
+    );
+    assert!(!hooks[1].origin.user_trust);
 }
 
 // --- diagnose ---

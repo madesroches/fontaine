@@ -101,7 +101,7 @@ tool call also has a `fontaine.tool` span, with `tool_name`, `risk_class` (`read
 the `fail_closed_reason` when it failed closed; the guardian's own model call sits under it.
 A subagent adds a `fontaine.subagent` span (`agent.id`, `agent.type`, `model.priced`) under the span of the `agent`
 call that started it, and its own interactions, model calls and tool calls nest below it. A user
-hook adds a `fontaine.hook` span (`hook_event`, `success`) under the span of the call it ran for,
+hook adds a `fontaine.hook` span (`hook_event`, `hook_type`: `command`, `http` or `prompt`, and `success`) under the span of the call it ran for; the lifecycle events' hooks have no call, so their spans have no `fontaine.permission` parent,
 and a call to an MCP tool a `fontaine.mcp.call` span (`mcp.server`, `mcp.tool`). A
 compaction, automatic or asked for with `/compact`, adds a `fontaine.compaction` span
 (`compaction.reason`: `threshold` or `asked`) around the summarizer call, and each scan by the

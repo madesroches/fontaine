@@ -22,6 +22,39 @@ use crate::tree::{
 
 const TARGET: &str = "fontaine::telemetry";
 
+/// The lifecycle hooks of subagents, which fire with teams on or off. The default does nothing.
+pub trait LifecycleGate: Send + Sync {
+    /// Runs the `subagent_start` hooks before the child `id` of `agent_type` first runs; the
+    /// answer is the context they add, one entry per hook.
+    fn subagent_start<'a>(
+        &'a self,
+        _id: &'a str,
+        _agent_type: &'a str,
+    ) -> futures::future::BoxFuture<'a, Vec<String>> {
+        Box::pin(async { Vec::new() })
+    }
+
+    /// Runs the `subagent_stop` hooks when the child `id` finished a run with `last` as its
+    /// final message; `Some(reason)` resumes it with the reason. `None` once the streak of
+    /// resumes in a row is at its cap.
+    fn subagent_stop<'a>(
+        &'a self,
+        _id: &'a str,
+        _agent_type: &'a str,
+        _last: &'a str,
+    ) -> futures::future::BoxFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
+
+    /// The child was resumed on a `subagent_stop` reason, which counts toward the streak.
+    fn subagent_resumed(&self, _id: &str) {}
+}
+
+/// The gate for a session with no subagent hooks.
+pub struct NoLifecycle;
+
+impl LifecycleGate for NoLifecycle {}
+
 /// The longest `send_message` body.
 pub const MESSAGE_CAP_CHARS: usize = 50_000;
 
@@ -467,7 +500,17 @@ pub fn watch_report(
         let finished_turn = report.status == ChildStatus::Done && !tree.was_killed(&id);
         // Decided before the node is finished and before the report is queued, so a surface that
         // sees nothing running never misses a resume that was about to happen.
-        if finished_turn && continue_agent(&tree, &ledger, &parent, &id, &type_name, &handle).await
+        if finished_turn
+            && continue_agent(
+                &tree,
+                &ledger,
+                &parent,
+                &id,
+                &type_name,
+                &report.text,
+                &handle,
+            )
+            .await
         {
             return;
         }
@@ -533,6 +576,7 @@ fn finish_run(
 /// What gives an agent whose turn just ended another run.
 enum Reason {
     Mail,
+    SubagentStop(String),
     Hook(String),
     Reminder(Reminder),
 }
@@ -547,14 +591,17 @@ async fn continue_agent(
     parent: &str,
     id: &str,
     type_name: &str,
+    last: &str,
     handle: &Arc<dyn ChildHandle>,
 ) -> bool {
     let name = tree.name_of(id);
     let teams = tree.teams();
-    // A message that arrived while it finished is read at once; the other two reasons to go on
+    // A message that arrived while it finished is read at once; the other reasons to go on
     // are bounded, because nothing else bounds them.
     let reason = if tree.has_notifications(id) {
         Reason::Mail
+    } else if let Some(reason) = tree.lifecycle().subagent_stop(id, type_name, last).await {
+        Reason::SubagentStop(reason)
     } else if let Some(teams) = &teams {
         let hook = if teams.boards.owns_in_progress_on(parent, id) {
             teams.gate.teammate_idle(id, &name).await
@@ -590,6 +637,10 @@ async fn continue_agent(
                 return false;
             }
             render_notes(&notes)
+        }
+        Reason::SubagentStop(reason) => {
+            tree.lifecycle().subagent_resumed(id);
+            format!("[Hook context from subagent_stop, not the user's words: {reason}]")
         }
         Reason::Hook(reason) => {
             let teams = teams.expect("a hook reason comes from teams");

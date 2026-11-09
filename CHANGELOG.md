@@ -20,6 +20,16 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Lifecycle hooks: `[[hooks.<event>]]` now takes `session_start`, `session_end`,
+  `user_prompt_submit`, `stop`, `stop_failure`, `subagent_start`, `subagent_stop`, `pre_compact`,
+  `post_compact`, `post_tool_use_failure`, `notification` and `task_created` beside the five tool
+  and task events, and a hook can be a shell `command`, an `http` endpoint or a `prompt` put to the
+  guardian's model. A hook can add context (as a harness note, never the user's words) or block;
+  it can never widen a permission. A repository's `http`, `prompt`, `stop` and `subagent_stop`
+  hooks are ignored with a warning. `post_tool_use` now fires only for a call that succeeded; a
+  failed call fires `post_tool_use_failure`. A plugin's `hooks.json` loads the new events and the
+  `http` and `prompt` types, and skips `agent` and `mcp_tool` hooks and events Fontaine does not
+  build with a warning instead of failing the plugin (#29).
 - `claude-subscription` accounts offer the provider's native web search, as `anthropic` accounts
   do, under the same `[websearch] native` and permission conditions. The Claude CLI adapter
   accepts that one server tool (request entry, call, result and replayed history); every other

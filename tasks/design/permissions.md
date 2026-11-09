@@ -248,9 +248,23 @@ auto-extends the Tier-0.5 curated set.
 ## User hooks
 
 Distinct from rig `AgentHook`s, which stay bookkeeping-only. User hooks are configured handlers
-(`[[hooks.<event>]]`: a `matcher` in the rule grammar, a `command`, `timeout_secs`) that receive the
-event as JSON on stdin and answer on stdout (exit code 2 = deny, Claude Code's convention); the field names and output shape are pinned in Phase 5 §User hooks. v1
-events: `pre_tool_use`, `post_tool_use`, `permission_denied`. `pre_tool_use` runs at pipeline step
+(`[[hooks.<event>]]`: a `matcher`, a handler, `timeout_secs`) that receive the event as JSON and
+answer in Claude Code's shape (exit code 2 = block); the field names and output shape are pinned in
+Phase 5 §User hooks. Events (one `HookEvent` enum in `config.rs` answers each event's matcher kind,
+accepted handlers, project scope and default timeout): `pre_tool_use`, `post_tool_use`,
+`post_tool_use_failure`, `permission_denied`, `task_created`, `task_completed`, `teammate_idle`,
+`session_start`, `session_end`, `user_prompt_submit`, `stop`, `stop_failure`, `subagent_start`,
+`subagent_stop`, `pre_compact`, `post_compact`, `notification`. Handlers: `command` (shell),
+`http` (POST of the event; headers interpolate only `allowed_env_vars`, which may not name a scrubbed
+variable) and `prompt` (one structured extraction on the guardian's model; `ok: false` blocks, it
+never allows). Every handler normalizes to one `Answer` (blocked, json, plain, impossible) that the
+event interpreters read. Only `pre_tool_use` `allow` and `permission_denied` `retry` loosen, and only
+with user trust; no other event or handler can allow, and a hook's `continue: false` never ends a
+turn. Context a hook adds is a harness note (`[Hook context from <event>, not the user's words: …]`),
+never a ledger user message, so it cannot become guardian intent; it is capped at 10,000 characters.
+`stop` and `subagent_stop` continuations are capped at 8 in a row (the streak resets when the agent
+made tool calls since the previous stop, or on a human prompt) and `stop` runs before a `/goal`
+evaluation. `pre_tool_use` runs at pipeline step
 1a: it may return `deny`, `ask` or `allow`, an `updated_input`, and a `guardian_context` note
 (passed to the guardian inside an untrusted block). Composition across hooks: deny > ask > allow;
 the last `updated_input` in configured order wins and every later step judges it. A hook `allow` is
@@ -264,7 +278,10 @@ and a `pre_tool_use` hook that exits with anything but 0 or 2, cannot start or t
 other events keep the rule above. Hook processes are user-configured, not tool calls, and are not gated by the
 pipeline. Sources follow `config.md` §Config: user and CLI hooks load always; project and project-local hooks are
 executables gated by workspace trust in the TUI, and a project hook's `allow` decision is ignored
-(project scope only tightens). No key in any scope disables hooks from a higher-trust scope. Built in Phase 5.
+(project scope only tightens). A repository's `http` and `prompt` hooks (data leaves the machine, or model
+spend) and its `stop`, `subagent_stop` and `teammate_idle` hooks (forced model calls) are ignored with a
+warning; user config, `--settings`, an untracked `settings.local.toml` of a trusted root and plugins may
+define them. No key in any scope disables hooks from a higher-trust scope. Built in Phase 5.
 
 ## Composite guardian (the guardian tree)
 

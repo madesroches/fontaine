@@ -258,6 +258,8 @@ impl ReaderPause {
 
 struct Ui<R> {
     app: App,
+    /// Sees each prompt that opens, for the `notification` hook, whatever `[tui] notify` is.
+    hook_notifier: notify::Notifier,
     /// Sees each AFK temperature stop, so a stop that lands while a turn runs, or while the
     /// session is idle with a subagent working, is acted on at once.
     afk_stops: tokio::sync::watch::Receiver<u64>,
@@ -400,6 +402,7 @@ pub async fn drive(
         )
     });
     let mut ui = Ui {
+        hook_notifier: notify::Notifier::new(fontaine_core::config::NotifyMethod::Off),
         afk_stops: runtime.state.afk_stop_signal(),
         app: App::new(mode, model),
         input,
@@ -498,6 +501,14 @@ pub async fn drive(
     if ui.start_mcp(&mut runtime).await {
         ui.run(&mut runtime, &launch_dir).await;
     }
+    // The hooks hear of the end before what runs for the session is stopped.
+    runtime
+        .fire_session_end(if ui.switch.is_some() {
+            "resume"
+        } else {
+            "prompt_input_exit"
+        })
+        .await;
     // Whatever is still running is stopped with the session.
     runtime.state.agents().kill_all();
     runtime.state.agents().settled(KILL_SETTLE).await;

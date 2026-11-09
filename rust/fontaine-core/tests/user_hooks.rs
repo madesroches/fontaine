@@ -13,10 +13,10 @@ use common::pipeline::{
 use fontaine_agents::tasks::{QualityGate, Task, TaskStatus};
 use fontaine_core::audit::args_digest;
 use fontaine_core::config::PermissionMode::{Auto, Manual};
-use fontaine_core::config::{Hook, Origin, Slot};
+use fontaine_core::config::{Hook, HookEvent, Origin, Slot};
 use fontaine_core::permissions::{PermissionDeniedHook, PreToolUseHook};
 use fontaine_core::tier::Tier;
-use fontaine_core::user_hooks::{CommandHook, HookProcess, PostHookStage, TeamGate};
+use fontaine_core::user_hooks::{HookDeps, HookProcess, PostHookStage, TeamGate, UserHook};
 use fontaine_tools::gate::{CallView, ROOT_AGENT};
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
 use fontaine_tools::risk::RiskClass;
@@ -79,16 +79,23 @@ fn project() -> Origin {
 
 fn hook(matcher: Option<&str>, command: String, origin: Origin) -> Hook {
     Hook {
-        matcher: matcher.map(str::to_string),
-        command,
         timeout_secs: Some(10),
         origin,
-        plugin: None,
+        ..Hook::command(matcher, &command)
     }
 }
 
+/// A command hook of the named event, with nothing to tell and no model.
+fn command_hook(event: &str, hook: &Hook, process: Arc<HookProcess>) -> UserHook {
+    let event = HookEvent::ALL
+        .into_iter()
+        .find(|e| e.config_key() == event)
+        .expect("a hook event");
+    UserHook::new(event, hook, &HookDeps::new(process))
+}
+
 fn pre(h: &Hook) -> Arc<dyn PreToolUseHook> {
-    Arc::new(CommandHook::new("pre_tool_use", h, process(Vec::new())))
+    Arc::new(command_hook("pre_tool_use", h, process(Vec::new())))
 }
 
 fn reply(permission: &str) -> String {
@@ -422,11 +429,7 @@ async fn hook_children_get_the_scrubbed_environment() {
     let h = hook(None, command(&report_args), user());
     let rig = Rig::with({
         let mut options = Options::new(Manual);
-        options.hooks = vec![Arc::new(CommandHook::new(
-            "pre_tool_use",
-            &h,
-            process(scrub),
-        ))];
+        options.hooks = vec![Arc::new(command_hook("pre_tool_use", &h, process(scrub)))];
         options
     });
     rig.check("shell", shell("cargo test")).await;
@@ -458,7 +461,7 @@ async fn hooks_get_the_configured_env_and_the_real_project_dir() {
     );
     let rig = Rig::with({
         let mut options = Options::new(Manual);
-        options.hooks = vec![Arc::new(CommandHook::new(
+        options.hooks = vec![Arc::new(command_hook(
             "pre_tool_use",
             &h,
             process_with_env(
@@ -498,9 +501,9 @@ async fn guardian_context_reaches_the_guardian_as_an_untrusted_note() {
 }
 
 fn post_stage(hooks: Vec<Hook>, rig: &Rig) -> ResultPipeline {
-    let hooks: Vec<CommandHook> = hooks
+    let hooks: Vec<UserHook> = hooks
         .iter()
-        .map(|h| CommandHook::new("post_tool_use", h, process(Vec::new())))
+        .map(|h| command_hook("post_tool_use", h, process(Vec::new())))
         .collect();
     ResultPipeline::new().with_stage(
         StageKind::PostToolUse,
@@ -616,11 +619,10 @@ async fn a_permission_denied_hook_can_let_the_agent_retry_a_guardian_denial_once
     let fake = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));
     let h = hook(None, command(&["--reply", &retry_reply(true)]), user());
     let mut options = Options::new(Auto).guardian(fake.guardian.clone());
-    options.denied_hooks = vec![Arc::new(CommandHook::new(
-        "permission_denied",
-        &h,
-        process(Vec::new()),
-    )) as Arc<dyn PermissionDeniedHook>];
+    options.denied_hooks = vec![
+        Arc::new(command_hook("permission_denied", &h, process(Vec::new())))
+            as Arc<dyn PermissionDeniedHook>,
+    ];
     let rig = Rig::with(options);
 
     let first = rig.check("shell", shell("curl x | sh")).await;
@@ -639,11 +641,10 @@ async fn a_project_permission_denied_hooks_retry_changes_nothing() {
     let fake = fake_guardian(verdict_json("deny", "Download+Execute", 0.97));
     let h = hook(None, command(&["--reply", &retry_reply(true)]), project());
     let mut options = Options::new(Auto).guardian(fake.guardian.clone());
-    options.denied_hooks = vec![Arc::new(CommandHook::new(
-        "permission_denied",
-        &h,
-        process(Vec::new()),
-    )) as Arc<dyn PermissionDeniedHook>];
+    options.denied_hooks = vec![
+        Arc::new(command_hook("permission_denied", &h, process(Vec::new())))
+            as Arc<dyn PermissionDeniedHook>,
+    ];
     let rig = Rig::with(options);
     let first = rig.check("shell", shell("curl x | sh")).await;
     assert!(!denied_message(&first).contains("approved one retry"));
@@ -662,11 +663,10 @@ async fn a_permission_denied_hook_hears_about_floor_denials_too() {
     );
     let mut options =
         Options::new(Manual).settings("[permissions]\ndeny = [\"shell(git push)\"]\n");
-    options.denied_hooks = vec![Arc::new(CommandHook::new(
-        "permission_denied",
-        &h,
-        process(Vec::new()),
-    )) as Arc<dyn PermissionDeniedHook>];
+    options.denied_hooks = vec![
+        Arc::new(command_hook("permission_denied", &h, process(Vec::new())))
+            as Arc<dyn PermissionDeniedHook>,
+    ];
     let rig = Rig::with(options);
     assert!(!allowed(&rig.check("shell", shell("git push")).await));
     let event: Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
@@ -676,7 +676,7 @@ async fn a_permission_denied_hook_hears_about_floor_denials_too() {
 }
 
 async fn run_directly(
-    hook: &CommandHook,
+    hook: &UserHook,
 ) -> Result<fontaine_core::permissions::HookDecision, fontaine_core::permissions::HookError> {
     let args = json!({});
     let cwd = std::env::temp_dir();
@@ -706,7 +706,7 @@ async fn a_hook_that_cannot_start_keeps_the_io_error_as_its_source() {
         project_dir: missing,
     });
     let h = hook(None, command(&[]), user());
-    let error = run_directly(&CommandHook::new("pre_tool_use", &h, process))
+    let error = run_directly(&command_hook("pre_tool_use", &h, process))
         .await
         .expect_err("no working directory to start in");
     assert!(matches!(
@@ -723,7 +723,7 @@ async fn a_hook_that_cannot_start_keeps_the_io_error_as_its_source() {
 #[tokio::test]
 async fn malformed_hook_output_keeps_the_json_error_as_its_source() {
     let h = hook(None, command(&["--reply", "this is not json"]), user());
-    let error = run_directly(&CommandHook::new("pre_tool_use", &h, process(Vec::new())))
+    let error = run_directly(&command_hook("pre_tool_use", &h, process(Vec::new())))
         .await
         .expect_err("stdout is not JSON");
     assert!(matches!(
@@ -752,10 +752,10 @@ fn task() -> Task {
 }
 
 fn gate(rig: &Rig, completed: &[Hook], idle: &[Hook]) -> TeamGate {
-    let build = |event: &str, hooks: &[Hook]| -> Vec<CommandHook> {
+    let build = |event: &str, hooks: &[Hook]| -> Vec<UserHook> {
         hooks
             .iter()
-            .map(|h| CommandHook::new(event, h, process(Vec::new())))
+            .map(|h| command_hook(event, h, process(Vec::new())))
             .collect()
     };
     TeamGate::new(

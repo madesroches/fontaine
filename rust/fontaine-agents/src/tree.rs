@@ -19,6 +19,7 @@ use crate::mode::{Ladder, Posture, RootMode, own_mode};
 use crate::registry::{AgentType, AgentTypes, ModelSpec};
 use crate::root_ledger::RootLedger;
 use crate::runner::{ChildHandle, ChildReport, ChildRunner, ChildStatus, RevivalRequest};
+use crate::spawn::{LifecycleGate, NoLifecycle};
 use crate::tasks::Teams;
 
 /// Minimum gap between tree wakeups caused by `note_writing`.
@@ -585,6 +586,7 @@ pub struct AgentTree {
     /// Set when the session starts ending, after which no agent is woken.
     shutdown: AtomicBool,
     teams: RwLock<Option<Arc<Teams>>>,
+    lifecycle: RwLock<Arc<dyn LifecycleGate>>,
     warn: RwLock<Option<WarnSink>>,
     runner: RwLock<Option<Weak<dyn ChildRunner>>>,
 }
@@ -639,6 +641,7 @@ impl AgentTree {
             facts_noticed: Mutex::new(HashSet::new()),
             shutdown: AtomicBool::new(false),
             teams: RwLock::new(None),
+            lifecycle: RwLock::new(Arc::new(NoLifecycle)),
             warn: RwLock::new(None),
             runner: RwLock::new(None),
         }
@@ -652,6 +655,15 @@ impl AgentTree {
 
     pub fn teams(&self) -> Option<Arc<Teams>> {
         read(&self.teams, "teams").clone()
+    }
+
+    /// Installs the subagent lifecycle hooks.
+    pub fn set_lifecycle(&self, gate: Arc<dyn LifecycleGate>) {
+        *write(&self.lifecycle, "lifecycle gate") = gate;
+    }
+
+    pub fn lifecycle(&self) -> Arc<dyn LifecycleGate> {
+        read(&self.lifecycle, "lifecycle gate").clone()
     }
 
     /// Where the tree reports what the human should know about an agent that could not be woken

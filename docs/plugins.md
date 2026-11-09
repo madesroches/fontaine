@@ -237,11 +237,26 @@ plugin.
 
 ## Component mapping
 
-- `hooks/hooks.json` uses Claude Code's schema. Supported matchers are a single tool name
-  (`Bash`), an alternation of mappable names (`Write|Edit`), and a trailing `.*` or `*`
-  wildcard. A matcher outside that subset skips its hook entry with a warning. Only shell-form
-  `type: "command"` hooks load; other hook types are load errors and exec-form (`args`) entries
-  skip with a warning. `timeout` seconds map to `timeout_secs`.
+- `hooks/hooks.json` uses Claude Code's schema. For the tool events, supported matchers are a
+  single tool name (`Bash`), an alternation of mappable names (`Write|Edit`), and a trailing `.*`
+  or `*` wildcard; a matcher outside that subset skips its hook entry with a warning. The other
+  events' matchers (a session-start source, an agent type, a compaction trigger, ...) pass through
+  after the same check [User hooks](hooks.md#matchers) applies; one with a value the event does
+  not know skips its entry. `timeout` seconds map to `timeout_secs`.
+  - **Events.** The events Fontaine fires load by their Claude Code names (`PreToolUse`,
+    `PostToolUseFailure`, `SessionStart`, `Stop`, `SubagentStop`, `PreCompact`, `Notification`,
+    `TaskCreated`, ...). An event Fontaine does not build (see
+    [what is not built](hooks.md#what-is-not-built)) is skipped with one warning per plugin and event.
+  - **Types.** `command`, `http` and `prompt` hooks load, on the events that take them. `agent`
+    and `mcp_tool` hooks are skipped with one warning per plugin, so a plugin that also ships them
+    still loads its other hooks. A `model` key on a `prompt` hook is ignored with a warning: it
+    runs on the guardian's model.
+  - **Skipped entries.** A hook with `args` (exec form), `if` or `shell: "powershell"` is skipped
+    with a warning; `shell: "bash"` loads.
+  - **Variables.** In an `http` hook's `url` and `headers` only `${CLAUDE_PLUGIN_ROOT}` and
+    `${CLAUDE_PROJECT_DIR}` expand when the plugin loads. Any other `${VAR}` is left as written
+    and expands at request time only if the hook lists it in `allowedEnvVars`, so a plugin cannot
+    send a host variable off the machine without naming it.
 - `.mcp.json` maps onto the MCP server settings. `env` values support `${VAR}` expansion, and
   server names are composed as `plugin_<plugin>_<name>`, so a ported plugin's
   `mcp__plugin_<plugin>_<name>__<tool>` references resolve unchanged. A server name follows the

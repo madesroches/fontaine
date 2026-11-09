@@ -19,9 +19,19 @@ pub(crate) enum PromptKind {
 }
 
 impl PromptKind {
+    /// The `notification` hook's type for the prompt, for the kinds that fire it: an approval
+    /// is a `permission_prompt`, a question an `elicitation_dialog`.
+    pub(crate) fn hook_type(self) -> Option<&'static str> {
+        match self {
+            PromptKind::Approval => Some("permission_prompt"),
+            PromptKind::Question => Some("elicitation_dialog"),
+            _ => None,
+        }
+    }
+
     /// What the notification says. Fixed text: nothing from the model or a tool reaches the
     /// escape sequence.
-    fn message(self) -> &'static str {
+    pub(crate) fn message(self) -> &'static str {
         match self {
             PromptKind::Approval => "Fontaine needs your approval",
             PromptKind::Question => "Fontaine has a question",
@@ -58,15 +68,28 @@ impl Notifier {
     /// seen yet signals; `None` forgets them all, so the next prompt signals even when it is of
     /// the same kind.
     pub(crate) fn observe(&mut self, pending: Option<(PromptKind, u64)>) -> Option<Vec<u8>> {
+        self.observe_opened(pending).1
+    }
+
+    /// Like [`observe`](Self::observe), and also the prompt that just opened, whatever the
+    /// method: the `notification` hook fires on the opening itself.
+    pub(crate) fn observe_opened(
+        &mut self,
+        pending: Option<(PromptKind, u64)>,
+    ) -> (Option<PromptKind>, Option<Vec<u8>>) {
         let Some(key) = pending else {
             self.seen.clear();
-            return None;
+            return (None, None);
         };
         if self.seen.contains(&key) {
-            return None;
+            return (None, None);
         }
         self.seen.push(key);
         let (kind, _) = key;
+        (Some(kind), self.bytes_for(kind))
+    }
+
+    fn bytes_for(&self, kind: PromptKind) -> Option<Vec<u8>> {
         let text = kind.message();
         match self.method {
             NotifyMethod::Off => None,

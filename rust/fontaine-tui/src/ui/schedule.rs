@@ -1,7 +1,7 @@
 //! `/loop` and the scheduled turns it and the model's scheduling tools lead to.
 
 use std::collections::VecDeque;
-use std::ops::ControlFlow::{self, Continue};
+use std::ops::ControlFlow::{self, Break, Continue};
 use std::path::Path;
 use std::time::Duration;
 
@@ -113,7 +113,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 if self.refuse_if_stopped(runtime, typed) {
                     return Continue(());
                 }
+                // Before anything is scheduled: a refused line starts nothing.
+                match self.prompt_passes(runtime, typed).await {
+                    Break(()) => return Break(()),
+                    Continue(false) => return Continue(()),
+                    Continue(true) => {}
+                }
                 let Some(prompt) = self.start_interval(&scheduler, interval) else {
+                    runtime.clear_prompt_context();
                     return Continue(());
                 };
                 return self
@@ -124,15 +131,23 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 if self.refuse_if_stopped(runtime, typed) {
                     return Continue(());
                 }
+                // Before anything is scheduled: a refused line starts nothing.
+                match self.prompt_passes(runtime, typed).await {
+                    Break(()) => return Break(()),
+                    Continue(false) => return Continue(()),
+                    Continue(true) => {}
+                }
                 match scheduler.begin_loop(&prompt) {
                     Ok(_) => {}
                     Err(ScheduleError::LoopActive) => {
+                        runtime.clear_prompt_context();
                         self.app.transcript.error(
                             "a self-paced loop is already running; /loop stop ends it first",
                         );
                         return Continue(());
                     }
                     Err(e) => {
+                        runtime.clear_prompt_context();
                         self.app.transcript.error(chain(&e));
                         return Continue(());
                     }

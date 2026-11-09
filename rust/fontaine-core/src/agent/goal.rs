@@ -14,10 +14,11 @@ use crate::goal::{
 use crate::ledger::{GoalEvent, Record};
 use crate::model_roles::{COMPACTION_ROLE, ModelChain};
 use crate::models::Switcher;
-use crate::session::{CONVERSATION_LOG, CompactReason, CompactResult};
+use crate::session::{CONVERSATION_LOG, CompactReason, CompactResult, PreSummary, SummaryGate};
 use crate::side_question::{Answer, SideQuestion, SideQuestionError};
 use crate::turn::TurnOutcome;
 use crate::usage_ledger::{Served, UsageSource};
+use crate::user_hooks::CompactGate;
 
 impl AgentRuntime {
     /// What the session has spent so far: the root's spend, which holds the main model, the
@@ -42,33 +43,63 @@ impl AgentRuntime {
     /// like [`compact_if_needed`](Self::compact_if_needed). A role's list falls through to its
     /// next entry when the summary request runs out of quota.
     pub async fn compact_with(&self, reason: CompactReason) -> CompactResult {
+        let trigger = match reason {
+            CompactReason::Asked { .. } => "manual",
+            CompactReason::Threshold | CompactReason::Overflow => "auto",
+        };
+        let focus = match &reason {
+            CompactReason::Asked { focus } if !focus.trim().is_empty() => Some(focus.clone()),
+            _ => None,
+        };
+        let hooks = self.lifecycle().clone();
+        let before = move || -> futures::future::BoxFuture<'static, SummaryGate> {
+            let (hooks, focus) = (hooks.clone(), focus.clone());
+            Box::pin(async move {
+                match hooks.pre_compact(trigger, focus.as_deref()).await {
+                    CompactGate::Blocked(why) => {
+                        SummaryGate::Veto(format!("a pre_compact hook blocked it: {why}"))
+                    }
+                    CompactGate::Proceed { focus } => SummaryGate::Proceed { focus },
+                }
+            })
+        };
         let main = &self.models.main;
-        if let (Some(chain), Ok(switcher)) = (self.role_chain(COMPACTION_ROLE), self.switcher()) {
-            return self.compact_on_chain(reason, &switcher, &chain).await;
-        }
-        let result = self
-            .session
-            .compact_logged_via(
-                &main.completion,
-                None,
-                main.catalog_billed(),
-                reason,
-                self.approver(),
-            )
-            .await;
-        self.record_compaction(
-            &result,
-            &Served::new(self.models.main_chain.role.as_deref(), &main.reference),
-        );
-        if matches!(
-            result,
-            CompactResult::Failed {
-                falls_through: true,
-                ..
+        let result = if let (Some(chain), Ok(switcher)) =
+            (self.role_chain(COMPACTION_ROLE), self.switcher())
+        {
+            self.compact_on_chain(reason, &switcher, &chain, &before)
+                .await
+        } else {
+            let result = self
+                .session
+                .compact_logged_via(
+                    &main.completion,
+                    None,
+                    main.catalog_billed(),
+                    reason,
+                    self.approver(),
+                    Some(&before),
+                )
+                .await;
+            self.record_compaction(
+                &result,
+                &Served::new(self.models.main_chain.role.as_deref(), &main.reference),
+            );
+            if matches!(
+                result,
+                CompactResult::Failed {
+                    falls_through: true,
+                    ..
+                }
+            ) {
+                self.approver()
+                    .warn("compaction skipped: the model ran out of quota");
             }
-        ) {
-            self.approver()
-                .warn("compaction skipped: the model ran out of quota");
+            result
+        };
+        if let CompactResult::Compacted { summary, .. } = &result {
+            self.lifecycle().post_compact(trigger, summary).await;
+            self.fire_session_start("compact").await;
         }
         result
     }
@@ -87,6 +118,7 @@ impl AgentRuntime {
         reason: CompactReason,
         switcher: &Switcher,
         chain: &ModelChain,
+        pre: PreSummary<'_>,
     ) -> CompactResult {
         let main = &self.models.main;
         let role = chain.role.clone();
@@ -109,6 +141,7 @@ impl AgentRuntime {
                                 handle.catalog_billed(),
                                 reason,
                                 self.approver(),
+                                Some(pre),
                             )
                             .await;
                         self.record_compaction(&result, &served);

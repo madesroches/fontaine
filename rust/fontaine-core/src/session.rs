@@ -112,7 +112,39 @@ pub enum CompactResult {
         usage: Option<Usage>,
         before: u64,
         after: u64,
+        /// The summary text that was saved.
+        summary: String,
     },
+}
+
+/// What a caller-supplied check ahead of the summarizing call decided.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SummaryGate {
+    /// Summarize, with extra instruction appended to the request when there is any.
+    Proceed { focus: Option<String> },
+    /// Do not summarize; the reason is warned.
+    Veto(String),
+}
+
+/// Runs after the conversation is found to need a summary and before the model is asked. The
+/// session knows nothing of what it does.
+pub type PreSummary<'a> =
+    &'a (dyn Fn() -> futures::future::BoxFuture<'static, SummaryGate> + Send + Sync);
+
+/// Appends `extra` to the instruction a summary request ends with.
+fn append_to_instruction(request: &mut rig_core::completion::CompletionRequest, extra: &str) {
+    use rig_core::message::{Message, UserContent};
+    let Some(last) = request.chat_history.last_mut() else {
+        return;
+    };
+    let mut message = (**last).clone();
+    if let Message::User { content } = &mut message {
+        match content.last_mut() {
+            Some(UserContent::Text(text)) => text.text.push_str(extra),
+            _ => content.push(UserContent::text(extra)),
+        }
+    }
+    *last = Arc::new(message);
 }
 
 impl CompactResult {
@@ -518,13 +550,13 @@ impl Session {
         reason: CompactReason,
         approver: &dyn Approver,
     ) -> CompactResult {
-        self.compact_logged_via(model, None, priced, reason, approver)
+        self.compact_logged_via(model, None, priced, reason, approver, None)
             .await
     }
 
     /// [`compact_logged`](Self::compact_logged) where `main` sets the threshold and the window
     /// and `summarizer`, when given, takes the summary request in its place; `priced` is the
-    /// summarizer's.
+    /// summarizer's. `pre` is a check run once a summary is due.
     pub async fn compact_logged_via(
         &self,
         main: &DynModel<Completion>,
@@ -532,6 +564,7 @@ impl Session {
         priced: bool,
         reason: CompactReason,
         approver: &dyn Approver,
+        pre: Option<PreSummary<'_>>,
     ) -> CompactResult {
         let why = match reason {
             CompactReason::Asked { .. } => "asked",
@@ -545,7 +578,7 @@ impl Session {
             compaction.reason = why,
         );
         let result = tracing::Instrument::instrument(
-            self.compact_via(main, summarizer, reason, approver),
+            self.compact_via(main, summarizer, reason, approver, pre),
             span,
         )
         .await;
@@ -565,20 +598,23 @@ impl Session {
         reason: CompactReason,
         approver: &dyn Approver,
     ) -> CompactResult {
-        self.compact_via(model, None, reason, approver).await
+        self.compact_via(model, None, reason, approver, None).await
     }
 
     /// [`compact`](Self::compact) where `main` is the conversation's model, whose window sets the
     /// threshold and the size of the summary, and `summarizer`, when given, takes the request in
     /// its place. A summarizer that cannot take the conversation fails the compaction as an
     /// overflow does. The request leaves out the prompt-cache hints, which name the main model's
-    /// prefix and which another provider may refuse.
+    /// prefix and which another provider may refuse. `pre` is a check run once a summary is due:
+    /// after the threshold and the plan say there is something to summarize, before the model is
+    /// asked.
     pub async fn compact_via(
         &self,
         main: &DynModel<Completion>,
         summarizer: Option<&DynModel<Completion>>,
         reason: CompactReason,
         approver: &dyn Approver,
+        pre: Option<PreSummary<'_>>,
     ) -> CompactResult {
         let model = main;
         let warn = |message: &str| warn(approver, message);
@@ -615,7 +651,7 @@ impl Session {
             return CompactResult::Skipped;
         }
         let state = summary_state(&conversation);
-        let plan = match policy.plan_summary(&conversation, &state, &reason, spec) {
+        let mut plan = match policy.plan_summary(&conversation, &state, &reason, spec) {
             Ok(Some(plan)) => plan,
             Ok(None) => return CompactResult::Skipped,
             Err(e) => {
@@ -626,6 +662,21 @@ impl Session {
                 return failed(None);
             }
         };
+        if let Some(pre) = pre {
+            match pre().await {
+                SummaryGate::Veto(why) => {
+                    warn(&why);
+                    return CompactResult::Skipped;
+                }
+                SummaryGate::Proceed { focus: Some(extra) } => {
+                    append_to_instruction(
+                        &mut plan.request,
+                        &format!("\n\nAdditional focus: {extra}"),
+                    );
+                }
+                SummaryGate::Proceed { focus: None } => {}
+            }
+        }
         let mut request = plan.request.clone();
         let summarizer = match summarizer {
             Some(summarizer) => {
@@ -675,6 +726,7 @@ impl Session {
             usage: Some(usage),
             before,
             after,
+            summary: state.summary,
         }
     }
 

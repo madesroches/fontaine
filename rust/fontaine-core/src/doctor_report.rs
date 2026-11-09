@@ -463,6 +463,8 @@ pub struct HookCount {
     pub scope: &'static str,
     pub project: bool,
     pub count: usize,
+    /// Of `count`, the repository `http` and `prompt` hooks that never run without user trust.
+    pub never_run: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -511,13 +513,30 @@ pub fn extensions_section(facts: &ExtensionFacts) -> Section {
         findings.push(Finding::ok("hooks", "none"));
     }
     for hook in &facts.hooks {
-        let detail = if hook.project && hook.event == "teammate_idle" {
+        let ignored = crate::config::HookEvent::ALL
+            .into_iter()
+            .find(|e| e.config_key() == hook.event)
+            .and_then(|e| match e.project_scope() {
+                crate::config::ProjectScope::IgnoredWithWarning(_) => Some(e),
+                crate::config::ProjectScope::Loads => None,
+            });
+        let detail = if let (true, Some(event)) = (hook.project, ignored) {
             format!(
-                "{} ({}); never run (a repository may not define teammate_idle hooks)",
-                hook.count, hook.scope
+                "{} ({}); never run (a repository may not define {} hooks)",
+                hook.count,
+                hook.scope,
+                event.config_key()
             )
         } else if hook.project {
-            format!("{} ({}); {project_state}", hook.count, hook.scope)
+            let mut detail = format!("{} ({}); {project_state}", hook.count, hook.scope);
+            if hook.never_run > 0 {
+                let _ = write!(
+                    detail,
+                    "; {} of them never run (a repository may not define http or prompt hooks)",
+                    hook.never_run
+                );
+            }
+            detail
         } else {
             format!("{} ({})", hook.count, hook.scope)
         };
@@ -919,18 +938,21 @@ mod tests {
                     scope: "project",
                     project: true,
                     count: 1,
+                    never_run: 0,
                 },
                 HookCount {
                     event: "teammate_idle",
                     scope: "project",
                     project: true,
                     count: 1,
+                    never_run: 0,
                 },
                 HookCount {
                     event: "pre_tool_use",
                     scope: "user",
                     project: false,
                     count: 2,
+                    never_run: 0,
                 },
             ],
             workspace_trusted: false,

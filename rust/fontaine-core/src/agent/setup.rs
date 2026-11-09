@@ -45,7 +45,11 @@ use crate::skills::SkillRuntime;
 use crate::steering::Steering;
 use crate::tasks::SessionTasks;
 use crate::tools;
-use crate::user_hooks::{self, CommandHook, HookProcess, PostHookStage, TeamGate};
+use crate::usage_ledger::Served;
+use crate::user_hooks::{
+    self, GuardianSlot, HookDeps, HookProcess, LifecycleHooks, PostHookStage, SubagentGate,
+    TeamGate, UserHook,
+};
 
 /// The guardian a session runs with, from the model that was resolved for it.
 pub fn build_guardian(
@@ -585,8 +589,15 @@ pub(super) fn gates(
     state: &Arc<SessionState>,
 ) -> Result<Gates, RuntimeError> {
     super::warn_if_no_search(setup);
-    let (pipeline, post_hooks) = permission_pipeline(setup, state);
-    let retained = retained(setup, state)?;
+    let mut retained = retained(setup, state)?;
+    let hook_guardian: GuardianSlot = Arc::new(RwLock::new(setup.models.guardian.clone()));
+    let HookStages {
+        pipeline,
+        post,
+        post_failure,
+        lifecycle,
+    } = permission_pipeline(setup, state, &retained.network, &hook_guardian)?;
+    retained.lifecycle = lifecycle;
     retained
         .jobs
         .set_sink(Arc::new(TreeJobs { tree: tree.clone() }));
@@ -596,7 +607,7 @@ pub(super) fn gates(
         &setup.config,
         tree,
         state,
-        post_hooks,
+        PostHookStage::new(post, state.clone()).with_failure_hooks(post_failure),
         &instruction_stage,
         retained.lsp.is_active().then(|| DiagnosticsStage {
             servers: retained.lsp.clone(),
@@ -648,44 +659,97 @@ fn start_teams(
     setup: &AgentSetup,
     state: &Arc<SessionState>,
     revivable: &HashSet<String>,
-    task_completed: Vec<CommandHook>,
-    teammate_idle: Vec<CommandHook>,
+    task_completed: Vec<UserHook>,
+    task_created: Vec<UserHook>,
+    teammate_idle: Vec<UserHook>,
 ) {
     let store = Arc::new(SessionTasks::new(
         &setup.session.dir,
         setup.approver.clone(),
     ));
     let boards = Boards::restore(Some(store.clone()), store.load(), revivable);
-    let gate = Arc::new(TeamGate::new(
-        task_completed,
-        teammate_idle,
-        state.clone(),
-        setup.approver.clone(),
-    ));
+    let gate = Arc::new(
+        TeamGate::new(
+            task_completed,
+            teammate_idle,
+            state.clone(),
+            setup.approver.clone(),
+        )
+        .with_task_created(task_created),
+    );
     state
         .agents()
         .set_teams(Arc::new(Teams::new(boards, gate).headless(setup.headless)));
 }
 
-/// The pre-tool pipeline, and the post-tool hooks the result pipeline runs.
+/// What the user's hooks build: the pre-tool pipeline, the post-tool hooks the result pipeline
+/// runs, and the lifecycle hooks the runtime fires.
+pub(super) struct HookStages {
+    pub(super) pipeline: Arc<PermissionPipeline>,
+    pub(super) post: Vec<UserHook>,
+    pub(super) post_failure: Vec<UserHook>,
+    pub(super) lifecycle: LifecycleHooks,
+}
+
+/// The one client every `http` hook posts with, when any is configured.
+fn hook_client(
+    setup: &AgentSetup,
+    network: &fontaine_tools::tls::LoadedNetwork,
+) -> Option<reqwest::Client> {
+    setup
+        .config
+        .hooks
+        .all()
+        .any(|hook| hook.kind == crate::config::HandlerKind::Http)
+        .then(|| fontaine_tools::tls::build_client(network, reqwest::Client::builder))
+        .and_then(|built| match built {
+            Ok(client) => Some(client),
+            Err(e) => {
+                setup.approver.warn(&format!(
+                    "http hooks cannot run: the HTTP client could not be built: {}",
+                    chain(&e)
+                ));
+                None
+            }
+        })
+}
+
 pub(super) fn permission_pipeline(
     setup: &AgentSetup,
     state: &Arc<SessionState>,
-) -> (Arc<PermissionPipeline>, Vec<CommandHook>) {
+    network: &fontaine_tools::tls::LoadedNetwork,
+    guardian: &GuardianSlot,
+) -> Result<HookStages, RuntimeError> {
     let hook_process = Arc::new(HookProcess {
         scrub_env: setup.scrub_env.clone(),
         set_env: tools::subprocess_env(&setup.config),
         shell: super::command_shell(&setup.git_bash, &setup.powershell),
         project_dir: setup.roots[0].clone(),
     });
-    let mut hooks = user_hooks::build(&setup.config, setup.project_executables, hook_process);
-    if setup.config.agents.teams {
-        if hooks.ignored_project_idle > 0 {
-            setup.approver.warn(&format!(
-                "{} teammate_idle hook(s) from the repository are ignored: they force more model calls, so only your own config and plugins can define them",
-                hooks.ignored_project_idle
-            ));
-        }
+    let http = hook_client(setup, network);
+    let usage_state = state.clone();
+    let deps = HookDeps {
+        process: hook_process,
+        http,
+        env: setup.env.clone(),
+        guardian: guardian.clone(),
+        approver: setup.approver.clone(),
+        usage: Some(Arc::new(move |agent, usage| {
+            usage_state.add_guardian_usage(
+                agent,
+                usage,
+                true,
+                &Served::direct(usage_state.guardian().label()),
+            );
+        })),
+    };
+    let mut hooks = user_hooks::build(&setup.config, setup.project_executables, &deps)
+        .map_err(|e| RuntimeError::caused("invalid [[hooks]] settings", e))?;
+    let teams = setup.config.agents.teams;
+    for warning in hooks.warnings(teams) {
+        setup.approver.warn(&warning);
+    }
+    if teams {
         let revivable = revivable_ids(&rebuild_records(&setup.session), state.agent_types())
             .into_iter()
             .collect();
@@ -694,8 +758,18 @@ pub(super) fn permission_pipeline(
             state,
             &revivable,
             std::mem::take(&mut hooks.task_completed),
+            std::mem::take(&mut hooks.task_created),
             std::mem::take(&mut hooks.teammate_idle),
         );
+    }
+    let subagents = SubagentGate::new(
+        std::mem::take(&mut hooks.subagent_start),
+        std::mem::take(&mut hooks.subagent_stop),
+        state.clone(),
+        setup.approver.clone(),
+    );
+    if !subagents.is_empty() {
+        state.agents().set_lifecycle(Arc::new(subagents));
     }
     let pipeline = Arc::new(PermissionPipeline::new(PipelineParams {
         state: state.clone(),
@@ -706,7 +780,17 @@ pub(super) fn permission_pipeline(
         allow_extra: setup.config.shell_preclassifier_allow_extra.clone(),
         user_config: setup.user_config.clone(),
     }));
-    (pipeline, hooks.post)
+    Ok(HookStages {
+        pipeline,
+        post: hooks.post,
+        post_failure: hooks.post_failure,
+        lifecycle: LifecycleHooks::new(
+            std::mem::take(&mut hooks.lifecycle),
+            state.clone(),
+            setup.approver.clone(),
+        )
+        .with_guardian(guardian.clone()),
+    })
 }
 
 /// The stages every tool result passes through, and the `llm` scanner's slot when that is the
@@ -716,7 +800,7 @@ pub(super) fn result_pipeline(
     config: &Config,
     tree: &Arc<AgentTree>,
     state: &Arc<SessionState>,
-    post_hooks: Vec<CommandHook>,
+    post_hooks: PostHookStage,
     instructions: &Arc<InstructionStage>,
     diagnostics: Option<DiagnosticsStage>,
 ) -> (Arc<ResultPipeline>, Option<Arc<RwLock<Backend>>>) {
@@ -738,10 +822,7 @@ pub(super) fn result_pipeline(
         results = results.with_stage(StageKind::Scanner, Arc::new(stage));
     }
     if !post_hooks.is_empty() {
-        results = results.with_stage(
-            StageKind::PostToolUse,
-            Arc::new(PostHookStage::new(post_hooks, state.clone())),
-        );
+        results = results.with_stage(StageKind::PostToolUse, Arc::new(post_hooks));
     }
     let results = results.with_stage(
         StageKind::Outcome,
@@ -801,6 +882,8 @@ pub(super) fn retained(
         shell_cwd: ShellCwd::default(),
         lsp: super::lsp::build(&setup.config, state, setup.env.clone()),
         store: setup.session.store(),
+        // The hooks replace this once they are built.
+        lifecycle: LifecycleHooks::new(Default::default(), state.clone(), setup.approver.clone()),
     })
 }
 

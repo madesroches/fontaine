@@ -6,7 +6,7 @@ use std::fmt::Display;
 
 use toml_edit::Value;
 
-use crate::config::{Config, Slot, ThemeName};
+use crate::config::{Config, HookEvent, Slot, ThemeName};
 use crate::effort::Effort;
 
 /// Live state that diverges from [`Config`] once a session switches theme or model.
@@ -464,19 +464,55 @@ pub const KEYS: &[KeyRow] = &[
         .auto_scratch_writes
         .to_string()),
     row!("hooks.pre_tool_use", List, |c, _| entries(
-        c.hooks.pre_tool_use.len()
+        c.hooks.get(HookEvent::PreToolUse).len()
     )),
     row!("hooks.post_tool_use", List, |c, _| entries(
-        c.hooks.post_tool_use.len()
+        c.hooks.get(HookEvent::PostToolUse).len()
+    )),
+    row!("hooks.post_tool_use_failure", List, |c, _| entries(
+        c.hooks.get(HookEvent::PostToolUseFailure).len()
     )),
     row!("hooks.permission_denied", List, |c, _| entries(
-        c.hooks.permission_denied.len()
+        c.hooks.get(HookEvent::PermissionDenied).len()
     )),
     row!("hooks.task_completed", List, |c, _| entries(
-        c.hooks.task_completed.len()
+        c.hooks.get(HookEvent::TaskCompleted).len()
+    )),
+    row!("hooks.task_created", List, |c, _| entries(
+        c.hooks.get(HookEvent::TaskCreated).len()
     )),
     row!("hooks.teammate_idle", List, |c, _| entries(
-        c.hooks.teammate_idle.len()
+        c.hooks.get(HookEvent::TeammateIdle).len()
+    )),
+    row!("hooks.session_start", List, |c, _| entries(
+        c.hooks.get(HookEvent::SessionStart).len()
+    )),
+    row!("hooks.session_end", List, |c, _| entries(
+        c.hooks.get(HookEvent::SessionEnd).len()
+    )),
+    row!("hooks.user_prompt_submit", List, |c, _| entries(
+        c.hooks.get(HookEvent::UserPromptSubmit).len()
+    )),
+    row!("hooks.stop", List, |c, _| entries(
+        c.hooks.get(HookEvent::Stop).len()
+    )),
+    row!("hooks.stop_failure", List, |c, _| entries(
+        c.hooks.get(HookEvent::StopFailure).len()
+    )),
+    row!("hooks.subagent_start", List, |c, _| entries(
+        c.hooks.get(HookEvent::SubagentStart).len()
+    )),
+    row!("hooks.subagent_stop", List, |c, _| entries(
+        c.hooks.get(HookEvent::SubagentStop).len()
+    )),
+    row!("hooks.pre_compact", List, |c, _| entries(
+        c.hooks.get(HookEvent::PreCompact).len()
+    )),
+    row!("hooks.post_compact", List, |c, _| entries(
+        c.hooks.get(HookEvent::PostCompact).len()
+    )),
+    row!("hooks.notification", List, |c, _| entries(
+        c.hooks.get(HookEvent::Notification).len()
     )),
     row!("mcp.servers", Map, |c, _| names(c.mcp_servers.keys())),
     row!("lsp.servers", Map, |c, _| names(

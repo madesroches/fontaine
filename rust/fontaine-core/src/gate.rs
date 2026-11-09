@@ -409,6 +409,12 @@ pub struct SessionState {
     skill_warned: Mutex<HashSet<String>>,
     child_restrictions: Mutex<HashMap<String, ChildRestrictions>>,
     current_calls: Mutex<HashMap<String, String>>,
+    /// How many tool calls each agent has made, which resets a hook's continuation streak: an
+    /// agent that keeps working between stops is not looping.
+    tool_calls: Mutex<HashMap<String, u64>>,
+    /// Context hooks added that the next root prompt carries, as harness notes.
+    hook_context: Mutex<Vec<String>>,
+    prompt_context: Mutex<Vec<String>>,
     decisions: UnboundedSender<DecisionRecord>,
     previews: UnboundedSender<(String, DiffPreview)>,
     feed: tokio::sync::Mutex<DecisionFeed>,
@@ -473,6 +479,9 @@ impl SessionState {
             skill_warned: Mutex::default(),
             child_restrictions: Mutex::default(),
             current_calls: Mutex::new(HashMap::new()),
+            tool_calls: Mutex::new(HashMap::new()),
+            hook_context: Mutex::new(Vec::new()),
+            prompt_context: Mutex::new(Vec::new()),
             decisions,
             previews,
             feed: tokio::sync::Mutex::new(DecisionFeed {
@@ -1220,6 +1229,50 @@ impl SessionState {
     /// one at a time, so one slot per agent is enough.
     pub fn set_current_call(&self, agent: &str, call_id: String) {
         lock(&self.current_calls, "current calls").insert(agent.to_string(), call_id);
+        *lock(&self.tool_calls, "tool call counts")
+            .entry(agent.to_string())
+            .or_default() += 1;
+    }
+
+    /// The number of tool calls `agent` has started.
+    pub fn tool_calls_of(&self, agent: &str) -> u64 {
+        lock(&self.tool_calls, "tool call counts")
+            .get(agent)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Queues a harness note for the next root prompt.
+    pub fn queue_hook_context(&self, note: String) {
+        lock(&self.hook_context, "hook context").push(note);
+    }
+
+    /// Sets the note a `user_prompt_submit` hook added to the prompt being gated, replacing any
+    /// left by an earlier gate. Kept apart from the session-start queue so a command that ends
+    /// without a turn can drop it without dropping those.
+    pub fn set_prompt_context(&self, note: Option<String>) {
+        *lock(&self.prompt_context, "prompt context") = note.into_iter().collect();
+    }
+
+    /// Drops the prompt-gate note: the gated command ended without running its turn.
+    pub fn clear_prompt_context(&self) {
+        lock(&self.prompt_context, "prompt context").clear();
+    }
+
+    /// The queued notes, emptying the queue.
+    pub fn take_hook_context(&self) -> Vec<String> {
+        let mut notes = std::mem::take(&mut *lock(&self.hook_context, "hook context"));
+        notes.extend(std::mem::take(&mut *lock(
+            &self.prompt_context,
+            "prompt context",
+        )));
+        notes
+    }
+
+    /// Drops the queued notes: the conversation they were for is gone.
+    pub fn clear_hook_context(&self) {
+        lock(&self.hook_context, "hook context").clear();
+        self.clear_prompt_context();
     }
 
     /// Forgets the call, so work the harness starts on its own is not attributed to the last

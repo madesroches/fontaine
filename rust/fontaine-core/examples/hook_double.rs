@@ -1,7 +1,10 @@
 //! A hook command for tests, portable because it is a program rather than a shell script:
-//! `hook_double [--record FILE] [--report FILE NAME...] [--values FILE NAME...] [--reply JSON] [--stderr TEXT]
-//! [--exit CODE] [--sleep SECS]`. It copies its stdin to `--record`, writes whether each
-//! `--report` variable is set and the value of each `--values` variable, then answers as told.
+//! `hook_double [--record FILE] [--append FILE [--block-first N]] [--report FILE NAME...]
+//! [--values FILE NAME...] [--reply JSON] [--stderr TEXT] [--exit CODE] [--sleep SECS]`. It copies
+//! its stdin to `--record` (overwriting), or as one line to `--append` (so a test can count
+//! invocations), writes whether each `--report` variable is set and the value of each `--values`
+//! variable, then answers as told. With `--block-first N` it exits 2 until `--append` holds more
+//! than N lines.
 
 use std::io::{Read, Write};
 
@@ -14,11 +17,28 @@ fn main() {
     let mut reply: Option<String> = None;
     let mut stderr: Option<String> = None;
     let mut sleep = 0u64;
+    let mut appended: Option<String> = None;
+    let mut block_first = 0usize;
     while at < args.len() {
         let value = args.get(at + 1).cloned().unwrap_or_default();
         match args[at].as_str() {
             "--record" => {
                 std::fs::write(&value, &stdin).expect("record the event");
+                at += 2;
+            }
+            "--append" => {
+                let line: String = stdin.split_whitespace().collect::<Vec<_>>().join(" ");
+                let mut file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&value)
+                    .expect("open the append file");
+                let _ = writeln!(file, "{line}");
+                appended = Some(value);
+                at += 2;
+            }
+            "--block-first" => {
+                block_first = value.parse().unwrap_or(0);
                 at += 2;
             }
             "--report" => {
@@ -62,6 +82,14 @@ fn main() {
                 at += 2;
             }
             other => panic!("unknown argument {other}"),
+        }
+    }
+    if let Some(file) = appended
+        && block_first > 0
+    {
+        let lines = std::fs::read_to_string(file).map_or(0, |text| text.lines().count());
+        if lines <= block_first {
+            exit = 2;
         }
     }
     if sleep > 0 {

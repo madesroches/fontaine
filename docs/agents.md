@@ -338,16 +338,27 @@ A task has an id (`t1`, `t2`, unique across every board in the session and never
 - **Permissions.** `board_show` is read-only, so it takes the read-only fast path; a subagent type
   that holds only read-only tools, `board_show` and the coordination tools still takes the
   read-only spawn fast path. `board_update` writes only the session's own `tasks.json` (for `main`'s
-  board) and runs your `task_completed` hooks, so every mode runs it at the `coordination` tier with
+  board) and runs your `task_created` and `task_completed` hooks, so every mode runs it at the `coordination` tier with
   no guardian verdict and no prompt; a `deny` or `ask` rule on `board_update` applies first. It has
   no fast path. The built-in `worker` type gets both tools and `explore` gets `board_show` when
   boards are on; a type of yours has them only if its `tools` names them (or names none). A type
   that names `agent` can own a board.
 
-A [`teammate_idle` hook](hooks.md#task-boards-task_completed-and-teammate_idle) that blocks can keep
+A [`teammate_idle` hook](hooks.md#task-boards-task_created-task_completed-and-teammate_idle) that blocks can keep
 an agent going when it ends a turn holding a task in progress on its parent's board. It is resumed
 with the hook's reason at most three times in a row without that board changing (a create, claim,
 complete or release resets the count); past that it goes idle and you get one warning.
+
+### Subagent hooks
+
+Two [hook](hooks.md#lifecycle-events) events cover a subagent's own life, with task boards on or
+off. A `subagent_start` hook runs before a subagent's first run, with the agent type as its
+matcher, and the context it adds goes ahead of the task as a harness note. A `subagent_stop` hook
+runs when a run ends, after the agent's mail is read and before `teammate_idle`; a block resumes the
+subagent with the reason, at most 8 times in a row unless it made tool calls in between. The
+subagent's own tool calls are gated as ever. A repository's `subagent_stop` hook is ignored with a
+warning, because forcing more model calls is spend. A `task_created` hook runs before
+`board_update create`; a block refuses the create with the reason.
 
 ### Persistence and resume
 

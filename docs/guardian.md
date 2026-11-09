@@ -777,7 +777,7 @@ The scanner never withholds a result. It adds a note after the result, so the ag
 
 A clean result is passed through unchanged. Empty results are not sent to the scanner. A failed tool
 call is a result too and is scanned. The scan runs after the notifications queued for the agent have
-been added and before `post_tool_use` hooks, so what another agent said is scanned like any other
+been added and before `post_tool_use` and `post_tool_use_failure` hooks, so what another agent said is scanned like any other
 result: a subagent's report is flagged before its parent reads it. The `tool_result` telemetry event
 records the verdict and the latency, never the content.
 

@@ -618,13 +618,288 @@ impl Default for Origin {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, JsonSchema)]
+/// The kind of handler a hook runs.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HandlerKind {
+    /// A shell command that gets the event on stdin.
+    #[default]
+    Command,
+    /// A POST of the event to a URL.
+    Http,
+    /// One question to the guardian's model.
+    Prompt,
+}
+
+impl HandlerKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HandlerKind::Command => "command",
+            HandlerKind::Http => "http",
+            HandlerKind::Prompt => "prompt",
+        }
+    }
+}
+
+/// What a hook's `matcher` selects on, per event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatcherKind {
+    /// A tool-name rule in the permission-rule grammar.
+    Tool,
+    /// One of a fixed set of values, `|`-separated.
+    Values(&'static [&'static str]),
+    /// Any agent type name, `|`-separated.
+    AgentType,
+    /// The event has nothing to select on.
+    None,
+}
+
+/// Whether a repository may define hooks for an event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectScope {
+    Loads,
+    /// The repository's hooks are dropped with a warning, for the given reason.
+    IgnoredWithWarning(&'static str),
+}
+
+/// Every hook event Fontaine fires.
+///
+/// Adding an event is one variant and one arm in each method below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HookEvent {
+    PreToolUse,
+    PostToolUse,
+    PostToolUseFailure,
+    PermissionDenied,
+    TaskCompleted,
+    TaskCreated,
+    TeammateIdle,
+    SessionStart,
+    SessionEnd,
+    UserPromptSubmit,
+    Stop,
+    StopFailure,
+    SubagentStart,
+    SubagentStop,
+    PreCompact,
+    PostCompact,
+    Notification,
+}
+
+/// The values a `stop_failure` matcher names.
+pub const STOP_FAILURE_KINDS: &[&str] = &[
+    "rate_limit",
+    "overloaded",
+    "authentication_failed",
+    "oauth_org_not_allowed",
+    "account_on_hold",
+    "billing_error",
+    "invalid_request",
+    "model_not_found",
+    "server_error",
+    "max_output_tokens",
+    "cloud_credential_error",
+    "unknown",
+];
+
+const COMMAND_ONLY: &[HandlerKind] = &[HandlerKind::Command];
+const COMMAND_HTTP: &[HandlerKind] = &[HandlerKind::Command, HandlerKind::Http];
+const ALL_HANDLERS: &[HandlerKind] =
+    &[HandlerKind::Command, HandlerKind::Http, HandlerKind::Prompt];
+
+impl HookEvent {
+    pub const ALL: [HookEvent; 17] = [
+        HookEvent::PreToolUse,
+        HookEvent::PostToolUse,
+        HookEvent::PostToolUseFailure,
+        HookEvent::PermissionDenied,
+        HookEvent::TaskCompleted,
+        HookEvent::TaskCreated,
+        HookEvent::TeammateIdle,
+        HookEvent::SessionStart,
+        HookEvent::SessionEnd,
+        HookEvent::UserPromptSubmit,
+        HookEvent::Stop,
+        HookEvent::StopFailure,
+        HookEvent::SubagentStart,
+        HookEvent::SubagentStop,
+        HookEvent::PreCompact,
+        HookEvent::PostCompact,
+        HookEvent::Notification,
+    ];
+
+    /// The key in `[[hooks.<key>]]`.
+    pub fn config_key(self) -> &'static str {
+        match self {
+            HookEvent::PreToolUse => "pre_tool_use",
+            HookEvent::PostToolUse => "post_tool_use",
+            HookEvent::PostToolUseFailure => "post_tool_use_failure",
+            HookEvent::PermissionDenied => "permission_denied",
+            HookEvent::TaskCompleted => "task_completed",
+            HookEvent::TaskCreated => "task_created",
+            HookEvent::TeammateIdle => "teammate_idle",
+            HookEvent::SessionStart => "session_start",
+            HookEvent::SessionEnd => "session_end",
+            HookEvent::UserPromptSubmit => "user_prompt_submit",
+            HookEvent::Stop => "stop",
+            HookEvent::StopFailure => "stop_failure",
+            HookEvent::SubagentStart => "subagent_start",
+            HookEvent::SubagentStop => "subagent_stop",
+            HookEvent::PreCompact => "pre_compact",
+            HookEvent::PostCompact => "post_compact",
+            HookEvent::Notification => "notification",
+        }
+    }
+
+    /// The name the event carries on the wire and in Claude Code's `hooks.json`.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            HookEvent::PreToolUse => "PreToolUse",
+            HookEvent::PostToolUse => "PostToolUse",
+            HookEvent::PostToolUseFailure => "PostToolUseFailure",
+            HookEvent::PermissionDenied => "PermissionDenied",
+            HookEvent::TaskCompleted => "TaskCompleted",
+            HookEvent::TaskCreated => "TaskCreated",
+            HookEvent::TeammateIdle => "TeammateIdle",
+            HookEvent::SessionStart => "SessionStart",
+            HookEvent::SessionEnd => "SessionEnd",
+            HookEvent::UserPromptSubmit => "UserPromptSubmit",
+            HookEvent::Stop => "Stop",
+            HookEvent::StopFailure => "StopFailure",
+            HookEvent::SubagentStart => "SubagentStart",
+            HookEvent::SubagentStop => "SubagentStop",
+            HookEvent::PreCompact => "PreCompact",
+            HookEvent::PostCompact => "PostCompact",
+            HookEvent::Notification => "Notification",
+        }
+    }
+
+    pub fn from_wire_name(name: &str) -> Option<HookEvent> {
+        HookEvent::ALL.into_iter().find(|e| e.wire_name() == name)
+    }
+
+    pub fn matcher_kind(self) -> MatcherKind {
+        match self {
+            HookEvent::PreToolUse
+            | HookEvent::PostToolUse
+            | HookEvent::PostToolUseFailure
+            | HookEvent::PermissionDenied => MatcherKind::Tool,
+            HookEvent::SessionStart => {
+                MatcherKind::Values(&["startup", "resume", "fork", "clear", "compact"])
+            }
+            HookEvent::SessionEnd => {
+                MatcherKind::Values(&["clear", "resume", "prompt_input_exit", "other"])
+            }
+            HookEvent::StopFailure => MatcherKind::Values(STOP_FAILURE_KINDS),
+            HookEvent::SubagentStart | HookEvent::SubagentStop => MatcherKind::AgentType,
+            HookEvent::PreCompact | HookEvent::PostCompact => {
+                MatcherKind::Values(&["manual", "auto"])
+            }
+            HookEvent::Notification => {
+                MatcherKind::Values(&["permission_prompt", "elicitation_dialog"])
+            }
+            HookEvent::TaskCompleted
+            | HookEvent::TaskCreated
+            | HookEvent::TeammateIdle
+            | HookEvent::UserPromptSubmit
+            | HookEvent::Stop => MatcherKind::None,
+        }
+    }
+
+    /// The handler types the event accepts.
+    pub fn handlers(self) -> &'static [HandlerKind] {
+        match self {
+            HookEvent::SessionStart => COMMAND_ONLY,
+            HookEvent::SessionEnd
+            | HookEvent::StopFailure
+            | HookEvent::SubagentStart
+            | HookEvent::PreCompact
+            | HookEvent::PostCompact
+            | HookEvent::Notification => COMMAND_HTTP,
+            HookEvent::PreToolUse
+            | HookEvent::PostToolUse
+            | HookEvent::PostToolUseFailure
+            | HookEvent::PermissionDenied
+            | HookEvent::TaskCompleted
+            | HookEvent::TaskCreated
+            | HookEvent::TeammateIdle
+            | HookEvent::UserPromptSubmit
+            | HookEvent::Stop
+            | HookEvent::SubagentStop => ALL_HANDLERS,
+        }
+    }
+
+    /// Whether a repository's hooks for the event load.
+    pub fn project_scope(self) -> ProjectScope {
+        match self {
+            HookEvent::TeammateIdle | HookEvent::Stop | HookEvent::SubagentStop => {
+                ProjectScope::IgnoredWithWarning(
+                    "it forces more model calls, and a repository may only tighten",
+                )
+            }
+            _ => ProjectScope::Loads,
+        }
+    }
+
+    /// How long a hook of the event runs before it is cut off, unless it sets `timeout_secs`.
+    pub fn default_timeout(self) -> std::time::Duration {
+        match self {
+            HookEvent::SessionEnd => std::time::Duration::from_millis(1500),
+            _ => std::time::Duration::from_secs(30),
+        }
+    }
+
+    /// Checks a matcher against the event's matcher kind.
+    pub fn check_matcher(self, matcher: &str) -> Result<(), String> {
+        match self.matcher_kind() {
+            MatcherKind::None => {
+                Err("this event has nothing to select on, so it takes no `matcher`".to_string())
+            }
+            // The rule grammar is checked by the caller, which owns the file path for the error.
+            MatcherKind::Tool => Ok(()),
+            MatcherKind::AgentType | MatcherKind::Values(_)
+                if matcher.contains('|')
+                    && matcher.split('|').any(|name| name.trim().is_empty() || name == "*") =>
+            {
+                Err("a `|` list takes exact, non-empty names; `*` and empty entries only work as the whole matcher".to_string())
+            }
+            MatcherKind::AgentType => Ok(()),
+            MatcherKind::Values(values) => {
+                for name in matcher.split('|') {
+                    if name != "*" && !name.is_empty() && !values.contains(&name) {
+                        return Err(format!(
+                            "`{name}` is not a value this event matches; use one of: {}",
+                            values.join(", ")
+                        ));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Hook {
-    /// In the permission-rule grammar. A hook without one runs for every call and counts as
-    /// broad.
+    /// What the hook runs for; see [`HookEvent::matcher_kind`]. A tool matcher is in the
+    /// permission-rule grammar, and a hook without one runs for every call and counts as broad.
     pub matcher: Option<String>,
-    pub command: String,
+    /// The handler type; `command` when absent.
+    #[serde(rename = "type", default)]
+    pub kind: HandlerKind,
+    /// The shell command of a `command` hook.
+    pub command: Option<String>,
+    /// The endpoint of an `http` hook.
+    pub url: Option<String>,
+    /// Extra request headers of an `http` hook. `$VAR` and `${VAR}` expand only for names in
+    /// `allowed_env_vars`.
+    pub headers: Option<BTreeMap<String, String>>,
+    /// The environment variables an `http` hook's headers may read.
+    pub allowed_env_vars: Option<Vec<String>>,
+    /// The question of a `prompt` hook; `$ARGUMENTS` stands for the event.
+    pub prompt: Option<String>,
     pub timeout_secs: Option<u64>,
     #[serde(skip)]
     pub origin: Origin,
@@ -635,22 +910,63 @@ pub struct Hook {
     pub plugin: Option<String>,
 }
 
+impl Hook {
+    /// A shell-command hook.
+    pub fn command(matcher: Option<&str>, command: &str) -> Hook {
+        Hook {
+            matcher: matcher.map(str::to_string),
+            command: Some(command.to_string()),
+            ..Hook::default()
+        }
+    }
+
+    /// What names the handler in reports and logs: the command, the URL or the prompt.
+    pub fn target(&self) -> &str {
+        match self.kind {
+            HandlerKind::Command => self.command.as_deref(),
+            HandlerKind::Http => self.url.as_deref(),
+            HandlerKind::Prompt => self.prompt.as_deref(),
+        }
+        .unwrap_or("")
+    }
+}
+
 impl PartialEq for Hook {
     fn eq(&self, other: &Self) -> bool {
         self.matcher == other.matcher
+            && self.kind == other.kind
             && self.command == other.command
+            && self.url == other.url
+            && self.headers == other.headers
+            && self.allowed_env_vars == other.allowed_env_vars
+            && self.prompt == other.prompt
             && self.timeout_secs == other.timeout_secs
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct HooksSection {
-    pub pre_tool_use: Option<Vec<Hook>>,
-    pub post_tool_use: Option<Vec<Hook>>,
-    pub permission_denied: Option<Vec<Hook>>,
-    pub task_completed: Option<Vec<Hook>>,
-    pub teammate_idle: Option<Vec<Hook>>,
+/// The `[[hooks.<event>]]` tables of one file.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(transparent)]
+pub struct HooksSection(pub BTreeMap<HookEvent, Vec<Hook>>);
+
+impl JsonSchema for HooksSection {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "HooksSection".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let list = generator.subschema_for::<Vec<Hook>>().to_value();
+        let properties: serde_json::Map<String, serde_json::Value> = HookEvent::ALL
+            .into_iter()
+            .map(|event| (event.config_key().to_string(), list.clone()))
+            .collect();
+        schemars::Schema::try_from(serde_json::json!({
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": false,
+        }))
+        .expect("an object is a schema")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
@@ -1464,27 +1780,31 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         }
     }
     if let Some(h) = &s.hooks {
-        for (event, hooks) in [
-            ("pre_tool_use", &h.pre_tool_use),
-            ("post_tool_use", &h.post_tool_use),
-            ("permission_denied", &h.permission_denied),
-            ("task_completed", &h.task_completed),
-            ("teammate_idle", &h.teammate_idle),
-        ] {
-            for hook in hooks.iter().flatten() {
-                let key = format!("hooks.{event}");
+        for (event, hooks) in &h.0 {
+            for hook in hooks {
+                let key = format!("hooks.{}", event.config_key());
                 if let Some(matcher) = &hook.matcher {
-                    if matches!(event, "task_completed" | "teammate_idle") {
-                        return bad(
-                            &key,
-                            "this event carries no tool name, so it takes no `matcher`",
-                        );
+                    event.check_matcher(matcher).or_else(|m| bad(&key, &m))?;
+                    if event.matcher_kind() == MatcherKind::Tool {
+                        parse_rule(matcher).map_err(|e| rule_error(path, &key, e))?;
                     }
-                    parse_rule(matcher).map_err(|e| rule_error(path, &key, e))?;
                 }
-                if hook.command.is_empty() {
-                    return bad(&key, "`command` must not be empty");
+                if !event.handlers().contains(&hook.kind) {
+                    return bad(
+                        &key,
+                        &format!(
+                            "this event takes {} handlers, not `{}`",
+                            event
+                                .handlers()
+                                .iter()
+                                .map(|k| format!("`{}`", k.as_str()))
+                                .collect::<Vec<_>>()
+                                .join(" or "),
+                            hook.kind.as_str()
+                        ),
+                    );
                 }
+                check_handler_fields(hook).or_else(|m| bad(&key, &m))?;
                 if hook.timeout_secs == Some(0) {
                     return bad(&key, "`timeout_secs` must be greater than zero");
                 }
@@ -1697,6 +2017,42 @@ fn check_websearch_values(w: &WebsearchSection) -> Result<(), (String, String)> 
             "max_results",
             &format!("must be between 1 and {WEBSEARCH_MAX_RESULTS_LIMIT}"),
         );
+    }
+    Ok(())
+}
+
+/// A hook has exactly the fields its handler type uses.
+pub(crate) fn check_handler_fields(hook: &Hook) -> Result<(), String> {
+    let (needs, takes): (&str, &[&str]) = match hook.kind {
+        HandlerKind::Command => ("command", &["command"]),
+        HandlerKind::Http => ("url", &["url", "headers", "allowed_env_vars"]),
+        HandlerKind::Prompt => ("prompt", &["prompt"]),
+    };
+    let present = [
+        ("command", hook.command.is_some()),
+        ("url", hook.url.is_some()),
+        ("headers", hook.headers.is_some()),
+        ("allowed_env_vars", hook.allowed_env_vars.is_some()),
+        ("prompt", hook.prompt.is_some()),
+    ];
+    let kind = hook.kind.as_str();
+    if !present.contains(&(needs, true)) {
+        return Err(format!("a `{kind}` hook needs `{needs}`"));
+    }
+    if let Some((name, _)) = present
+        .iter()
+        .find(|(name, set)| *set && !takes.contains(name))
+    {
+        return Err(format!("`{name}` does not apply to a `{kind}` hook"));
+    }
+    if hook.target().trim().is_empty() {
+        return Err(format!("the {kind} hook's text must not be empty"));
+    }
+    if hook.kind == HandlerKind::Http {
+        let url = hook.target();
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err("`url` must start with http:// or https://".to_string());
+        }
     }
     Ok(())
 }
@@ -1937,13 +2293,55 @@ pub struct Permissions {
     pub auto_scratch_writes: bool,
 }
 
+/// The merged hooks, one list per event.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Hooks {
-    pub pre_tool_use: Vec<Hook>,
-    pub post_tool_use: Vec<Hook>,
-    pub permission_denied: Vec<Hook>,
-    pub task_completed: Vec<Hook>,
-    pub teammate_idle: Vec<Hook>,
+pub struct Hooks(BTreeMap<HookEvent, Vec<Hook>>);
+
+impl Hooks {
+    pub fn get(&self, event: HookEvent) -> &[Hook] {
+        self.0.get(&event).map_or(&[], Vec::as_slice)
+    }
+
+    pub fn list_mut(&mut self, event: HookEvent) -> &mut Vec<Hook> {
+        self.0.entry(event).or_default()
+    }
+
+    /// Every event in declaration order, with its hooks (possibly none).
+    pub fn iter(&self) -> impl Iterator<Item = (HookEvent, &[Hook])> {
+        HookEvent::ALL.into_iter().map(|e| (e, self.get(e)))
+    }
+
+    /// Every hook of every event.
+    pub fn all(&self) -> impl Iterator<Item = &Hook> {
+        self.0.values().flatten()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.values().map(Vec::len).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Appends another set's hooks, event by event.
+    pub fn extend(&mut self, other: Hooks) {
+        for (event, hooks) in other.0 {
+            self.0.entry(event).or_default().extend(hooks);
+        }
+    }
+
+    /// Keeps the hooks `keep` accepts.
+    pub fn retain(&mut self, mut keep: impl FnMut(HookEvent, &Hook) -> bool) {
+        for (event, hooks) in &mut self.0 {
+            hooks.retain(|hook| keep(*event, hook));
+        }
+    }
+
+    /// Visits every hook mutably.
+    pub fn for_each_mut(&mut self, mut f: impl FnMut(&mut Hook)) {
+        self.0.values_mut().flatten().for_each(&mut f);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2581,31 +2979,9 @@ impl Config {
             }
         }
         if let Some(h) = &s.hooks {
-            union_hooks(
-                &mut self.hooks.pre_tool_use,
-                h.pre_tool_use.as_deref(),
-                origin,
-            );
-            union_hooks(
-                &mut self.hooks.post_tool_use,
-                h.post_tool_use.as_deref(),
-                origin,
-            );
-            union_hooks(
-                &mut self.hooks.permission_denied,
-                h.permission_denied.as_deref(),
-                origin,
-            );
-            union_hooks(
-                &mut self.hooks.task_completed,
-                h.task_completed.as_deref(),
-                origin,
-            );
-            union_hooks(
-                &mut self.hooks.teammate_idle,
-                h.teammate_idle.as_deref(),
-                origin,
-            );
+            for (event, hooks) in &h.0 {
+                union_hooks(self.hooks.list_mut(*event), Some(hooks), origin);
+            }
         }
         for (name, server) in s.mcp.iter().flat_map(|m| m.servers.iter().flatten()) {
             self.mcp_servers.insert(name.clone(), server.clone());
@@ -3801,6 +4177,20 @@ fn read_optional(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hook_matcher_wildcards_only_work_as_the_whole_matcher() {
+        let start = crate::config::HookEvent::SessionStart;
+        assert!(start.check_matcher("*").is_ok());
+        assert!(start.check_matcher("startup|resume").is_ok());
+        assert!(start.check_matcher("startup|*").is_err());
+        assert!(start.check_matcher("startup|").is_err());
+        assert!(
+            crate::config::HookEvent::SubagentStart
+                .check_matcher("a|*")
+                .is_err()
+        );
+    }
+
     use super::{Account, AccountKind, AutoMode, case_colliding_env_name, systemone_endpoint};
     use fontaine_guardian::rules::{DEFAULT_ENVIRONMENT, DEFAULT_HARD_DENY};
 

@@ -16,7 +16,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::config::{Hook, LspServer, McpServer, Origin, Slot};
+use crate::config::{
+    HandlerKind, Hook, HookEvent, LspServer, MatcherKind, McpServer, Origin, Slot,
+};
 use crate::permission_rules::{RuleSource, SourcedRule, parse_rule};
 
 pub const REGISTRY_FILE: &str = "plugins.toml";
@@ -111,28 +113,7 @@ impl PluginError {
 
 /// The hooks one plugin (or all plugins together) bring, kept per event so a hook runs only
 /// at the event its entry names.
-#[derive(Clone, Debug, Default)]
-pub struct PluginHooks {
-    pub pre_tool_use: Vec<Hook>,
-    pub post_tool_use: Vec<Hook>,
-    pub permission_denied: Vec<Hook>,
-    pub task_completed: Vec<Hook>,
-    pub teammate_idle: Vec<Hook>,
-}
-
-impl PluginHooks {
-    pub fn len(&self) -> usize {
-        self.pre_tool_use.len()
-            + self.post_tool_use.len()
-            + self.permission_denied.len()
-            + self.task_completed.len()
-            + self.teammate_idle.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
+pub type PluginHooks = crate::config::Hooks;
 
 /// What one installed, validated plugin contributes to a session.
 #[derive(Clone, Debug, Default)]
@@ -481,13 +462,7 @@ pub fn load_installed(
             }
         }
         out.dirs.push(build.dir);
-        out.hooks.pre_tool_use.extend(build.hooks.pre_tool_use);
-        out.hooks.post_tool_use.extend(build.hooks.post_tool_use);
-        out.hooks
-            .permission_denied
-            .extend(build.hooks.permission_denied);
-        out.hooks.task_completed.extend(build.hooks.task_completed);
-        out.hooks.teammate_idle.extend(build.hooks.teammate_idle);
+        out.hooks.extend(build.hooks);
         out.servers.extend(build.servers);
         out.lsp_servers.extend(build.lsp_servers);
         out.deny.extend(build.deny);
@@ -1417,11 +1392,7 @@ fn parse_hooks(
     )?;
     for path in extra {
         let more = parse_hooks_file(path, root, plugin, ctx, mcp_names, warnings, env_vars)?;
-        hooks.pre_tool_use.extend(more.pre_tool_use);
-        hooks.post_tool_use.extend(more.post_tool_use);
-        hooks.permission_denied.extend(more.permission_denied);
-        hooks.task_completed.extend(more.task_completed);
-        hooks.teammate_idle.extend(more.teammate_idle);
+        hooks.extend(more);
     }
     Ok(hooks)
 }
@@ -1455,16 +1426,22 @@ fn parse_hooks_file(
         return Ok(PluginHooks::default());
     };
     let mut hooks = PluginHooks::default();
-    for (event, entries) in events {
-        // Fontaine has exactly these hook events; the rest are ignored.
-        let Some(into) = event_lists(&mut hooks, event) else {
+    for (event_name, entries) in events {
+        let Some(event) = HookEvent::from_wire_name(event_name) else {
+            warn_once(
+                warnings,
+                format!(
+                    "plugin `{plugin}` has a `{event_name}` hook, an event Fontaine does not build; it is skipped"
+                ),
+            );
             continue;
         };
+        let into = hooks.list_mut(event);
         let entries = entries.as_array().ok_or_else(|| {
             PluginError::in_plugin(
                 plugin,
                 path.to_path_buf(),
-                format!("`hooks.{event}` is not an array"),
+                format!("`hooks.{event_name}` is not an array"),
             )
         })?;
         for entry in entries {
@@ -1472,14 +1449,15 @@ fn parse_hooks_file(
                 PluginError::in_plugin(
                     plugin,
                     path.to_path_buf(),
-                    format!("a `hooks.{event}` entry is not an object"),
+                    format!("a `hooks.{event_name}` entry is not an object"),
                 )
             })?;
-            // These events carry no tool name, so a matcher on them means nothing.
+            // An event with nothing to select on takes no matcher, so one there means nothing.
             let matcher = entry_object
                 .get("matcher")
                 .and_then(Value::as_str)
-                .filter(|_| !matches!(event.as_str(), "TaskCompleted" | "TeammateIdle"))
+                .filter(|text| !text.is_empty())
+                .filter(|_| event.matcher_kind() != MatcherKind::None)
                 .map(str::to_string);
             let specs = entry_object
                 .get("hooks")
@@ -1488,7 +1466,7 @@ fn parse_hooks_file(
                     PluginError::in_plugin(
                         plugin,
                         path.to_path_buf(),
-                        format!("a `hooks.{event}` entry has no `hooks` array"),
+                        format!("a `hooks.{event_name}` entry has no `hooks` array"),
                     )
                 })?;
             for spec in specs {
@@ -1496,84 +1474,174 @@ fn parse_hooks_file(
                     PluginError::in_plugin(
                         plugin,
                         path.to_path_buf(),
-                        format!("a `hooks.{event}` hook is not an object"),
+                        format!("a `hooks.{event_name}` hook is not an object"),
                     )
                 })?;
-                let kind = object
+                let in_plugin =
+                    |message: String| PluginError::in_plugin(plugin, path.to_path_buf(), message);
+                let kind = match object
                     .get("type")
                     .and_then(Value::as_str)
-                    .unwrap_or("command");
-                if kind != "command" {
-                    return Err(PluginError::in_plugin(
-                        plugin,
-                        path.to_path_buf(),
-                        format!(
-                            "a `{event}` hook of type `{kind}` is not supported; only shell-form `command` hooks load"
-                        ),
-                    ));
-                }
-                if object.contains_key("args") {
+                    .unwrap_or("command")
+                {
+                    "command" => HandlerKind::Command,
+                    "http" => HandlerKind::Http,
+                    "prompt" => HandlerKind::Prompt,
+                    unbuilt @ ("agent" | "mcp_tool") => {
+                        warn_once(
+                            warnings,
+                            format!(
+                                "plugin `{plugin}` has a `{event_name}` hook of type `{unbuilt}`, which Fontaine does not build; it is skipped"
+                            ),
+                        );
+                        continue;
+                    }
+                    other => {
+                        return Err(in_plugin(format!(
+                            "a `{event_name}` hook has an unknown type `{other}`"
+                        )));
+                    }
+                };
+                if !event.handlers().contains(&kind) {
                     warn_once(
                         warnings,
                         format!(
-                            "plugin `{plugin}` has an exec-form `{event}` hook, which Fontaine does not run; it is skipped"
+                            "plugin `{plugin}` has a `{event_name}` hook of type `{}`, which that event does not take; it is skipped",
+                            kind.as_str()
                         ),
                     );
                     continue;
                 }
-                let command = object
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| {
-                        PluginError::in_plugin(
-                            plugin,
-                            path.to_path_buf(),
-                            format!("a `{event}` hook has no `command`"),
-                        )
-                    })?;
-                let matcher = match matcher.as_deref() {
-                    None => None,
-                    Some(text) => match map_hook_matcher(text, mcp_names) {
-                        Ok(Some(rules)) => {
-                            for rule in rules.iter().skip(1) {
-                                into.push(Hook {
-                                    matcher: Some(rule.clone()),
-                                    command: expand_vars(
-                                        command, plugin, root, ctx, warnings, env_vars,
-                                    ),
-                                    timeout_secs: object.get("timeout").and_then(Value::as_u64),
-                                    origin: plugin_origin(),
-                                    plugin: Some(plugin.to_string()),
-                                });
-                            }
-                            Some(rules[0].clone())
+                let skipped = if object.contains_key("args") {
+                    Some("an exec-form")
+                } else if object.contains_key("if") {
+                    Some("a conditional (`if`)")
+                } else if object.get("shell").and_then(Value::as_str) == Some("powershell") {
+                    Some("a PowerShell")
+                } else {
+                    None
+                };
+                if let Some(what) = skipped {
+                    warn_once(
+                        warnings,
+                        format!(
+                            "plugin `{plugin}` has {what} `{event_name}` hook, which Fontaine does not run; it is skipped"
+                        ),
+                    );
+                    continue;
+                }
+                let text = |key: &str| object.get(key).and_then(Value::as_str);
+                let mut template = Hook {
+                    kind,
+                    timeout_secs: object.get("timeout").and_then(Value::as_u64),
+                    origin: plugin_origin(),
+                    plugin: Some(plugin.to_string()),
+                    ..Hook::default()
+                };
+                match kind {
+                    HandlerKind::Command => {
+                        let command = text("command").ok_or_else(|| {
+                            in_plugin(format!("a `{event_name}` hook has no `command`"))
+                        })?;
+                        template.command =
+                            Some(expand_vars(command, plugin, root, ctx, warnings, env_vars));
+                    }
+                    HandlerKind::Http => {
+                        let url = text("url").ok_or_else(|| {
+                            in_plugin(format!("a `{event_name}` hook has no `url`"))
+                        })?;
+                        template.url = Some(expand_plugin_dirs(url, root, ctx));
+                        if let Some(headers) = object.get("headers").and_then(Value::as_object) {
+                            template.headers = Some(
+                                headers
+                                    .iter()
+                                    .filter_map(|(k, v)| {
+                                        v.as_str()
+                                            .map(|v| (k.clone(), expand_plugin_dirs(v, root, ctx)))
+                                    })
+                                    .collect(),
+                            );
                         }
+                        if let Some(names) = object.get("allowedEnvVars").and_then(Value::as_array)
+                        {
+                            template.allowed_env_vars = Some(
+                                names
+                                    .iter()
+                                    .filter_map(Value::as_str)
+                                    .map(str::to_string)
+                                    .collect(),
+                            );
+                        }
+                    }
+                    HandlerKind::Prompt => {
+                        let prompt = text("prompt").ok_or_else(|| {
+                            in_plugin(format!("a `{event_name}` hook has no `prompt`"))
+                        })?;
+                        template.prompt = Some(prompt.to_string());
+                        if object.contains_key("model") {
+                            warn_once(
+                                warnings,
+                                format!(
+                                    "plugin `{plugin}` has a `{event_name}` prompt hook with a `model`; Fontaine runs it on the guardian's model and ignores the key"
+                                ),
+                            );
+                        }
+                    }
+                }
+                if let Err(message) = crate::config::check_handler_fields(&template) {
+                    warn_once(
+                        warnings,
+                        format!(
+                            "plugin `{plugin}` has a bad `{event_name}` hook: {message}; its hook is skipped"
+                        ),
+                    );
+                    continue;
+                }
+                let matchers: Vec<Option<String>> = match (event.matcher_kind(), matcher.as_deref())
+                {
+                    (_, None) => vec![None],
+                    (MatcherKind::Tool, Some(text)) => match map_hook_matcher(text, mcp_names) {
+                        Ok(Some(rules)) => rules.into_iter().map(Some).collect(),
                         Ok(None) => {
                             warn_once(
                                 warnings,
                                 format!(
-                                    "plugin `{plugin}` has a `{event}` hook matcher `{text}` Fontaine cannot map; its hook is skipped"
+                                    "plugin `{plugin}` has a `{event_name}` hook matcher `{text}` Fontaine cannot map; its hook is skipped"
                                 ),
                             );
                             continue;
                         }
                         Err(message) => {
-                            return Err(PluginError::in_plugin(
-                                plugin,
-                                path.to_path_buf(),
+                            return Err(in_plugin(format!(
+                                "the `{event_name}` hook matcher `{text}` is malformed: {message}"
+                            )));
+                        }
+                    },
+                    (_, Some(text)) => match event.check_matcher(text) {
+                        Ok(()) => vec![Some(text.to_string())],
+                        Err(_) => {
+                            warn_once(
+                                warnings,
                                 format!(
-                                    "the `{event}` hook matcher `{text}` is malformed: {message}"
+                                    "plugin `{plugin}` has a `{event_name}` hook matcher `{text}` Fontaine cannot map; its hook is skipped"
                                 ),
-                            ));
+                            );
+                            continue;
                         }
                     },
                 };
+                // The first rule goes last, as it always has.
+                let mut matchers = matchers.into_iter();
+                let first = matchers.next().flatten();
+                for matcher in matchers {
+                    into.push(Hook {
+                        matcher,
+                        ..template.clone()
+                    });
+                }
                 into.push(Hook {
-                    matcher,
-                    command: expand_vars(command, plugin, root, ctx, warnings, env_vars),
-                    timeout_secs: object.get("timeout").and_then(Value::as_u64),
-                    origin: plugin_origin(),
-                    plugin: Some(plugin.to_string()),
+                    matcher: first,
+                    ..template
                 });
             }
         }
@@ -1581,16 +1649,15 @@ fn parse_hooks_file(
     Ok(hooks)
 }
 
-/// The hook list one Claude Code hook event maps onto; unknown events map to nothing.
-fn event_lists<'a>(hooks: &'a mut PluginHooks, event: &str) -> Option<&'a mut Vec<Hook>> {
-    match event {
-        "PreToolUse" => Some(&mut hooks.pre_tool_use),
-        "PostToolUse" => Some(&mut hooks.post_tool_use),
-        "PermissionDenied" => Some(&mut hooks.permission_denied),
-        "TaskCompleted" => Some(&mut hooks.task_completed),
-        "TeammateIdle" => Some(&mut hooks.teammate_idle),
-        _ => None,
-    }
+/// Expands only `${CLAUDE_PLUGIN_ROOT}` and `${CLAUDE_PROJECT_DIR}`. Any other reference is left
+/// for the request-time `allowed_env_vars` interpolation, so a plugin cannot send an unlisted
+/// host variable off the machine.
+fn expand_plugin_dirs(text: &str, plugin_root: &Path, ctx: &PluginContext<'_>) -> String {
+    text.replace("${CLAUDE_PLUGIN_ROOT}", &plugin_root.display().to_string())
+        .replace(
+            "${CLAUDE_PROJECT_DIR}",
+            &ctx.project_root.display().to_string(),
+        )
 }
 
 /// Maps a Claude Code hook matcher to permission-rule matchers: a single tool name, an
@@ -2007,18 +2074,9 @@ impl crate::config::Config {
         // leave its old hooks, servers or rules behind. A hook the plugin only lent its
         // attribution to (an identical hook of another scope) survives; its attribution is
         // cleared and the re-application below re-derives it.
-        for hooks in [
-            &mut self.hooks.pre_tool_use,
-            &mut self.hooks.post_tool_use,
-            &mut self.hooks.permission_denied,
-            &mut self.hooks.task_completed,
-            &mut self.hooks.teammate_idle,
-        ] {
-            hooks.retain(|hook| hook.origin.slot != Slot::Plugin);
-            for hook in hooks.iter_mut() {
-                hook.plugin = None;
-            }
-        }
+        self.hooks
+            .retain(|_, hook| hook.origin.slot != Slot::Plugin);
+        self.hooks.for_each_mut(|hook| hook.plugin = None);
         let plugin_servers: BTreeSet<&str> = self
             .mcp_origins
             .iter()
@@ -2057,31 +2115,9 @@ impl crate::config::Config {
             }
         }
         let origin = plugin_origin();
-        crate::config::union_hooks(
-            &mut self.hooks.pre_tool_use,
-            Some(&plugins.hooks.pre_tool_use),
-            origin,
-        );
-        crate::config::union_hooks(
-            &mut self.hooks.post_tool_use,
-            Some(&plugins.hooks.post_tool_use),
-            origin,
-        );
-        crate::config::union_hooks(
-            &mut self.hooks.permission_denied,
-            Some(&plugins.hooks.permission_denied),
-            origin,
-        );
-        crate::config::union_hooks(
-            &mut self.hooks.task_completed,
-            Some(&plugins.hooks.task_completed),
-            origin,
-        );
-        crate::config::union_hooks(
-            &mut self.hooks.teammate_idle,
-            Some(&plugins.hooks.teammate_idle),
-            origin,
-        );
+        for (event, hooks) in plugins.hooks.iter() {
+            crate::config::union_hooks(self.hooks.list_mut(event), Some(hooks), origin);
+        }
         for (name, server) in &plugins.servers {
             self.mcp_servers.insert(name.clone(), server.clone());
             self.mcp_origins.insert(name.clone(), origin);

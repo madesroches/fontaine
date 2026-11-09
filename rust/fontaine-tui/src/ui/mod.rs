@@ -115,6 +115,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let files = read_recovering(&runtime.files).clone();
         self.app.set_files(files);
         self.trigger_statusline(StatuslineTrigger::Draw);
+        if let (Some(kind), _) = self.hook_notifier.observe_opened(self.app.pending_prompt())
+            && let Some(hook_type) = kind.hook_type()
+        {
+            runtime.notify_hooks(hook_type, kind.message(), "Fontaine");
+        }
         (self.render)(&mut self.app);
     }
 
@@ -1061,7 +1066,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     if self.refuse_if_stopped(runtime, raw) {
                         return Continue(CommandOutcome::Done);
                     }
+                    match self.prompt_passes(runtime, raw).await {
+                        Break(()) => return Break(()),
+                        Continue(false) => return Continue(CommandOutcome::Done),
+                        Continue(true) => {}
+                    }
                     if let Err(e) = runtime.set_goal(&condition) {
+                        runtime.clear_prompt_context();
                         self.app
                             .transcript
                             .error(fontaine_tools::error_chain::chain(&e));
@@ -1100,6 +1111,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 if self.refuse_if_stopped(runtime, raw) {
                     return Continue(CommandOutcome::Done);
+                }
+                match self.prompt_passes(runtime, raw).await {
+                    Break(()) => return Break(()),
+                    Continue(false) => return Continue(CommandOutcome::Done),
+                    Continue(true) => {}
                 }
                 let (target, existing) = instructions::init_target(&runtime.primary_root());
                 // Recorded before the turn so the guardian judging the write has this intent.
@@ -1243,13 +1259,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
             Command::Permissions => self.permissions(runtime),
             Command::Hooks => {
-                let hooks = &runtime.config.hooks;
                 self.app.transcript.notice(reports::hooks(
-                    &hooks.pre_tool_use,
-                    &hooks.post_tool_use,
-                    &hooks.permission_denied,
-                    &hooks.task_completed,
-                    &hooks.teammate_idle,
+                    &runtime.config.hooks,
                     runtime.project_executables(),
                 ));
             }

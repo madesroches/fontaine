@@ -849,19 +849,26 @@ Roots grant file access, not configuration: settings, hooks, MCP servers and ext
 from the primary root only. A `.fontaine/settings.toml` in an added root is not read. See
 [Tools](tools.md#workspace-roots).
 
-### `[[hooks.pre_tool_use]]`, `[[hooks.post_tool_use]]`, `[[hooks.permission_denied]]`, `[[hooks.task_completed]]`, `[[hooks.teammate_idle]]`
+### `[[hooks.<event>]]`
 
-[User hooks](hooks.md): programs that look at a tool call before it runs, after it ran and when it
-was denied, and, with [task boards](agents.md#task-boards) on, before a task is completed
-(`task_completed`) and when an agent's turn ends with a task in progress on its parent's board
-(`teammate_idle`). The two board events take no
-`matcher`: one that sets it is a config error.
+[User hooks](hooks.md): handlers that look at a tool call, a prompt or a moment in a session. The
+events are `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `permission_denied`,
+`task_created`, `task_completed`, `teammate_idle`, `session_start`, `session_end`,
+`user_prompt_submit`, `stop`, `stop_failure`, `subagent_start`, `subagent_stop`, `pre_compact`,
+`post_compact` and `notification`; any other key under `[hooks]` is a config error. What a
+`matcher` selects on depends on the event, and an event with nothing to select on rejects one (see
+[Matchers](hooks.md#matchers)).
 
 | Key | Meaning | Default |
 |---|---|---|
-| `matcher` | A rule in the `Tool(specifier)` form; the hook runs for the calls it covers. A hook without one runs for every call and counts as broad. | none |
-| `command` | The command line, run by the shell. Required. | none |
-| `timeout_secs` | At least 1. | `30` |
+| `type` | `command`, `http` or `prompt`; the event must take it. | `command` |
+| `matcher` | What the hook runs for. For the tool events, a rule in the `Tool(specifier)` form; a hook without one runs for every call and counts as broad. | none |
+| `command` | The command line, run by the shell. Required for `command`. | none |
+| `url` | The endpoint an `http` hook POSTs the event to. Required for `http`. | none |
+| `headers` | A table of request headers for an `http` hook; `$VAR` expands only for names in `allowed_env_vars`. | none |
+| `allowed_env_vars` | The environment variables `headers` may read. It may not name a variable the `shell` tool's scrub removes. | none |
+| `prompt` | The question a `prompt` hook puts to the guardian's model; `$ARGUMENTS` stands for the event. Required for `prompt`. | none |
+| `timeout_secs` | At least 1. | `30` (`session_end`: 1.5 seconds) |
 
 ```toml
 [[hooks.pre_tool_use]]
@@ -871,7 +878,8 @@ timeout_secs = 10
 ```
 
 Hooks the repository defines start only after [workspace trust](#workspace-trust) in the terminal
-UI, and their `allow` is ignored. A repository's `teammate_idle` hook is never run. See [User hooks](hooks.md#hooks-a-repository-defines).
+UI, and their `allow` is ignored. A repository's `http` and `prompt` hooks, and its `stop`,
+`subagent_stop` and `teammate_idle` hooks, are never run. See [User hooks](hooks.md#hooks-a-repository-defines).
 
 ### `[mcp.servers.<name>]`
 
@@ -970,7 +978,7 @@ hard_deny = ["$defaults", "Never send repo contents to third-party code-review A
 | `subagent_cost_budget_usd` | Opt-in per-subagent spend cap. Inactive, with a one-time notice, on a model with no known price; a token cap, if set, still binds. Unset means uncapped. | unset |
 | `session_token_budget` | A token ceiling that every agent in the tree debits, when set. | unset |
 | `session_cost_budget_usd` | The same in dollars, when set. | unset |
-| `teams` | Turns on the [task boards](agents.md#task-boards): the `board_show` and `board_update` tools, the owner reminders and the `task_completed` and `teammate_idle` hooks. Set to `false`, the board tools are not registered. It does not control idling: a subagent that ends `done` or `failed` goes idle when its turn ends and can be woken, unless it is later killed, runs out of budget or is retired. Like the other `[agents]` keys it cannot be set from the repository's shared settings. | `true` |
+| `teams` | Turns on the [task boards](agents.md#task-boards): the `board_show` and `board_update` tools, the owner reminders and the `task_created`, `task_completed` and `teammate_idle` hooks. Set to `false`, the board tools are not registered. It does not control idling: a subagent that ends `done` or `failed` goes idle when its turn ends and can be woken, unless it is later killed, runs out of budget or is retired. Like the other `[agents]` keys it cannot be set from the repository's shared settings. | `true` |
 
 `[agents.types.<name>]` defines an agent type with `model` (`<account>/<model>`, a
 [role](#modelsroles) name, `$main`, `$guardian_default`, or a list of the first three; a list of

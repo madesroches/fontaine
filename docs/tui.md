@@ -455,7 +455,9 @@ as yours for the [guardian](guardian.md).
 ## Approval prompts
 
 When a call needs approval, a prompt lists the call and why it asked. A bell or desktop
-notification tells you when it opens; see [Notifications](terminal.md#notifications).
+notification tells you when it opens; see [Notifications](terminal.md#notifications). A
+[`notification` hook](hooks.md#lifecycle-events) runs in the background at the same moment, for an
+approval (`permission_prompt`) or a question (`elicitation_dialog`), whatever `[tui] notify` is.
 
 - `y` allow once.
 - `s` allow session, when the prompt offers it.
@@ -621,7 +623,7 @@ error: an export never overwrites.
 | `/guardian-enable` | Turns the guardian and the permission floor back on for this session. |
 | `/guardian-model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model) over a live listing. With one, pins the guardian to that model for the live session and saves it as `[guardian] model`. A model whose account has no credential becomes an unavailable guardian, which the next adjudication reports. When a higher scope (`--settings` or a project-local file) sets `[guardian] model`, the notice adds that the scope wins from the next launch. |
 | `/help` | Lists the built-in commands, your user-invocable skills and the main keys. |
-| `/hooks` | Lists the [hooks](hooks.md) by event with their matcher, command and scope, and marks a repository's hooks that did not load because the workspace is not trusted. |
+| `/hooks` | Lists the [hooks](hooks.md) by event with their matcher, type, command, URL or prompt and scope, marks the ones that do not run (a repository's hooks before workspace trust, or the kinds a repository may not define) and names the events with none. |
 | `/init` | Has the agent write the project instruction file, or improve the one that exists. See [Instruction files](instructions.md#init). Takes no argument. |
 | `/login [<account>]` | Opens the [provider dialog](#managing-providers) to add an account, log in, log out or remove one. With an account name it opens straight on that account's log-in: a hidden key prompt, the device sign-in for `opencode-go`, or, for a `claude-subscription` account, the check of the external Claude CLI. Only between turns. |
 | `/loop [<interval>] <prompt>`, `/loop list`, `/loop stop [<id>]` | Runs a prompt again and again while the session is idle; see [Scheduled prompts](#scheduled-prompts). |

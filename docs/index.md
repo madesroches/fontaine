@@ -25,8 +25,9 @@ describe what the current build does; each page covers one topic.
 - [Subagents](agents.md): the `agent` and `send_message` tools, asynchronous subagents, agent types
   and agent files, the agent lifecycle (idle, wake, retire, resume), task boards (any agent can own
   one, with `board_show` and `board_update`), the permission-mode rules, budgets, and the agents panel.
-- [User hooks](hooks.md): the `pre_tool_use`, `post_tool_use`, `permission_denied`, `task_completed`
-  and `teammate_idle` hooks, their JSON input and output, and what a hook can and cannot decide.
+- [User hooks](hooks.md): the tool, prompt, turn, subagent, compaction, session and notification
+  events, the `command`, `http` and `prompt` handlers, their JSON input and output, and what a
+  hook can and cannot decide.
 - [MCP servers](mcp.md): declaring stdio and streamable-HTTP servers, workspace trust and
   per-server approval, and how MCP tools are gated.
 - [Instruction files](instructions.md): `FONTAINE.md`, `CLAUDE.md` and `AGENTS.md` from your

@@ -684,6 +684,7 @@ async fn a_summarizer_that_ran_out_of_quota_fails_for_the_caller_to_move_on_with
                 focus: String::new(),
             },
             &approver,
+            None,
         )
         .await;
     assert_eq!(
@@ -717,6 +718,7 @@ async fn the_summary_request_goes_to_the_summarizer_while_the_main_model_sets_th
                 focus: String::new(),
             },
             &DenyAll,
+            None,
         )
         .await;
     assert!(

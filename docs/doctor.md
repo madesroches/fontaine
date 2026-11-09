@@ -84,7 +84,7 @@ at most 10 seconds and is closed before doctor exits. Doctor sends no tool call.
 
 **Instructions, hooks, skills.** The instruction files loaded and where each came from, in load
 order; the hook count per event and scope, with project hooks marked by what a headless and an
-interactive run would do; the installed plugins' warnings; and the skill and agent-type counts. A
+interactive run would do (an event a repository may not define is marked never run); the installed plugins' warnings; and the skill and agent-type counts. A
 skill or agent file that fails to load is a failure naming the file.
 
 **Memory.** Compares the project's [auto memory](memory.md) store with its index. The store checked
