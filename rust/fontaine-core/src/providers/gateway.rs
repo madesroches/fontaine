@@ -60,7 +60,7 @@ impl ModelsFetcher {
 }
 
 /// The entry for `model` in a `{"data": [...]}` or bare-array `/models` reply.
-pub(crate) fn parse_served(body: &str, model: &str) -> Option<ServedModel> {
+fn parse_served(body: &str, model: &str) -> Option<ServedModel> {
     let value: serde_json::Value = serde_json::from_str(body).ok()?;
     let entries = value.get("data").unwrap_or(&value).as_array()?;
     let entry = entries
