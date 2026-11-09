@@ -253,6 +253,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             return ControlFlow::Continue(());
         }
         let work = Work::of(runtime);
+        let mut touched: Vec<String> = Vec::new();
         for name in names {
             let owned = name.clone();
             let prepared: PreparedUpdate = match work
@@ -300,7 +301,10 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                     )
                     .await
                 {
-                    None => return ControlFlow::Break(()),
+                    None => {
+                        self.apply_plugin_changes(runtime, &touched).await;
+                        return ControlFlow::Break(());
+                    }
                     Some(false) => {
                         drop(prepared);
                         self.app
@@ -313,6 +317,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             }
             // Nothing may run from the old checkout while it is replaced.
             runtime.stop_plugin_servers(&name).await;
+            touched.push(name.clone());
             let fingerprint = prepared.fingerprint.clone().unwrap_or_default();
             match work.run(move |fx| commit_update(fx, prepared)).await {
                 Ok(updated) => {
@@ -329,16 +334,18 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                     .transcript
                     .error(format!("/plugin update {name}: {}", chain(&e))),
             }
-            // A failed update reloads too: it starts again what was stopped.
-            self.apply_plugin_changes(runtime, std::slice::from_ref(&name))
-                .await;
+        }
+        // One reload after every commit; a failed update is in it too, so what was stopped starts
+        // again.
+        if !touched.is_empty() {
+            self.apply_plugin_changes(runtime, &touched).await;
         }
         ControlFlow::Continue(())
     }
 
     async fn plugin_uninstall(&mut self, runtime: &mut AgentRuntime, name: &str) {
         // Stopped before the checkout goes, so nothing runs from a directory that is deleted.
-        runtime.stop_plugin_servers(name).await;
+        let stopped = runtime.stop_plugin_servers(name).await;
         let config_dir = runtime.config_dir().to_path_buf();
         let owned = name.to_string();
         let removed =
@@ -361,9 +368,14 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 self.app
                     .transcript
                     .error(format!("/plugin uninstall: {}", chain(&e)));
-                // What was stopped starts again.
-                self.apply_plugin_changes(runtime, &[name.to_string()])
-                    .await;
+                // A typo touched nothing: no reload then. A registry entry that is still there may
+                // have lost its checkout, and what was stopped starts again.
+                let still_installed = plugins::read_registry(runtime.config_dir())
+                    .map_or(true, |r| r.plugin.iter().any(|p| p.name == name));
+                if !stopped.is_empty() || still_installed {
+                    self.apply_plugin_changes(runtime, &[name.to_string()])
+                        .await;
+                }
             }
         }
     }
