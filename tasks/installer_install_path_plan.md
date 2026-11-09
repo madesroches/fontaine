@@ -35,7 +35,10 @@ convention) and make `fontaine update` find the binary under the layout the new 
    `"flat"` → `<install_prefix>/<file>`; anything else, or absent (cargo-home and hierarchical
    receipts written by installs made before this change) → `<install_prefix>/bin/<file>`.
    Existing installs therefore keep updating in place. The "unknown means `bin/`" default is the
-   backward-compatible one; it is not a guess for new receipts, which dist writes as `flat`.
+   backward-compatible one; it is not a guess for new receipts: dist 0.32 records
+   `install_layout = "flat"` and `install_prefix = <install dir>` for a plain directory
+   `install-path` (same in the PowerShell installer), while the default CargoHome kind records
+   `cargo-home` and `$CARGO_HOME`.
 3. **Fixtures match reality.** Test fixtures use a flat tree (binary directly in the prefix) for
    `flat` and keep a `bin/` tree for the legacy layout.
 4. **Migration.** No automatic migration: an existing install in `$CARGO_HOME/bin` updates itself
@@ -55,15 +58,15 @@ convention) and make `fontaine update` find the binary under the layout the new 
    (or `dist generate`) if available and inspect the produced `fontaine-installer.sh`/`.ps1` and the
    receipt template for the recorded `install_prefix`/`install_layout`, and the shell setup and
    `Path` edits dist writes for a custom path (env scripts, rc lines, fish `conf.d`, Windows `Path`
-   entry, `FONTAINE_NO_MODIFY_PATH`). Adjust step 3 if dist
-   records something other than `flat` for a plain directory path. Confirm `release.yml` needs no
+   entry, `FONTAINE_NO_MODIFY_PATH`). Confirm `release.yml` needs no
    change (it is allow-dirty and hand-adapted) and that `dev-installer.sh`/`windows-installer.sh`
    still apply cleanly to the new installer text.
 3. `rust/fontaine/src/update/receipt.rs`: layout-aware binary path; update the doc comment.
 4. Update receipt unit tests and `update_cmd.rs` fixtures; add tests listed below.
 5. Docs: `README.md`, `docs/installing.md` (install, overwrite and uninstall sections, both
    platforms; the uninstall `Path` text becomes "remove `~/.fontaine/bin` from your `Path`" with
-   no rustup caveat; rewrite its "writes" and "uninstall" lists from the step 2 output), and `CHANGELOG.md` entry noting the default location change and the
+   no rustup caveat; rewrite its "writes" and "uninstall" lists from the step 2 output, including the `env` and
+   `env.fish` files the shell installer writes into `~/.fontaine/bin`), and `CHANGELOG.md` entry noting the default location change and the
    migration step.
 
 ## Files to Modify
@@ -101,9 +104,3 @@ covered by the receipt unit tests.
 1. Run the generated installer against a scratch `HOME`: `HOME=$(mktemp -d) sh fontaine-installer.sh`
    (from a built `dist` artifact) and check the binary is at `$HOME/.fontaine/bin/fontaine` and the
    receipt has `install_layout` `flat`. Not automated because it needs a published release archive.
-
-## Open Questions
-
-- Does dist 0.32 record `install_layout = "flat"` and `install_prefix = <the directory>` for
-  `install-path = "~/.fontaine/bin"`? Step 2 of Implementation settles it from the generated
-  installer before the parser change is finalized.
