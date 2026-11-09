@@ -3,7 +3,8 @@
 //! inside tmux to see what the live area does to the terminal's scrollback (see
 //! `tasks/design/testing.md`, "Reproducing terminal layout bugs"). `live_area popup` holds the `/`
 //! menu open mid-turn so a tmux resize can be tried. `live_area spinner` runs the working
-//! indicator through one long tool call, so a resize can be tried while it animates.
+//! indicator through one long tool call, so a resize can be tried while it animates. `live_area user`
+//! commits user messages at the top of the screen and then reprints, as an agent switch does.
 
 use fontaine_core::config::PermissionMode;
 use fontaine_core::preview::{DiffKind, DiffLine, DiffPreview};
@@ -34,6 +35,12 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some("popup") {
         popup(&mut app, &mut screen, &draw);
         disable_raw_mode().expect("restore the terminal");
+        return;
+    }
+    if std::env::args().nth(1).as_deref() == Some("user") {
+        user_and_reprint(&mut app, &mut screen, &draw);
+        disable_raw_mode().expect("restore the terminal");
+        println!("\nDONE");
         return;
     }
     if std::env::args().nth(1).as_deref() == Some("spinner") {
@@ -209,5 +216,25 @@ where
         text: "SPIN_DONE\n[exit code 0]".into(),
     });
     app.set_running(false);
+    draw(app, screen);
+}
+
+/// Issue 543: user messages committed with the viewport at the top of the screen, then the
+/// transcript reprinted the way an agent switch does. Every `question N` must be in the
+/// terminal's scrollback exactly once, in order, both before and after the reprint.
+fn user_and_reprint<S, D>(app: &mut App, screen: &mut S, draw: &D)
+where
+    D: Fn(&mut App, &mut S),
+{
+    for i in 0..12 {
+        app.transcript.user(format!("question {i}"));
+        draw(app, screen);
+        app.transcript.notice(format!("answer {i}"));
+        draw(app, screen);
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    app.reprint = true;
+    draw(app, screen);
+    app.flush = true;
     draw(app, screen);
 }

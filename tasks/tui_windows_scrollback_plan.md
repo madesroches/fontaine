@@ -87,7 +87,23 @@ fast-typing user's message is committed that way once the screen is full.
 
 ## Decisions
 - AFK: conhost: validate the fix on both Windows Terminal and legacy conhost when both are reachable; otherwise validate on Windows Terminal and note conhost as unverified.
-- (Diagnosis findings are added below by step 1.)
+- 2026-11-09 byte-level findings (no real ConPTY reachable, so no Windows result; no fix applied):
+  captured through the vt100 harness's `writes_of` at 30x8 with the viewport at the top.
+  - Reprint frame: `ESC[?2026h ESC[2J ESC[3J ESC[1;1H ESC[1;1H` + 7 `LF` (rebuilt viewport), then for
+    each settled row: `ESC[1;1H <styled text> ESC[8m <spaces> ESC[39m..ESC[0m ESC[1;1r ESC[1S ESC[r`,
+    then the live rows repainted and `ESC[?2026l`. Purge order is `2J` then `3J` as designed, and
+    both precede every inserted row in the same synchronized update.
+  - User-message commit at the top: identical per-row form. `> text` is one such row and its
+    trailing blank is a second row made only of `ESC[8m` plus spaces, so nothing in the bytes
+    distinguishes it from other rows except the all-HIDDEN blank row adjacent to it.
+  - Every settled row reaches history through `CSI 1 S` (SU) under an invalid `CSI 1;1 r`, never
+    through a line feed. In the harness (vt100) and tmux these rows land in scrollback once and in
+    order (new test `a_user_message_committed_at_the_top_of_the_screen_keeps_its_row_and_blank`,
+    and the extended agent-switch test asserts every user row exactly once, in order).
+  - Hypotheses 1 and 2 are not refuted or confirmed by the bytes; the unusual form (SU with a
+    degenerate margin, SGR 8 spaces) is the candidate to bisect on Windows. No defect in the
+    bytes themselves justified a change, so none was made. Bisecting steps remain for a run on
+    Windows Terminal / conhost (see `tasks/design/testing.md`, `live_area user`).
 
 ## Documentation
 `tasks/design/testing.md` gains a Windows repro section; no `docs/` page describes this behavior.

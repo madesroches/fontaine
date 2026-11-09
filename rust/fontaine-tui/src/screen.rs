@@ -2212,6 +2212,9 @@ mod tests {
         let mut harness = emulated::Harness::new(40, 12);
         let mut app = app();
         for i in 0..20 {
+            if i % 4 == 0 {
+                app.transcript.user(format!("question {i}"));
+            }
             app.transcript.notice(format!("main {i}"));
             harness.render(&mut app, "filling");
         }
@@ -2259,8 +2262,48 @@ mod tests {
             let count = seen.iter().filter(|r| r.trim_end() == text).count();
             assert_eq!(count, 1, "{text}: {seen:?}");
         }
+        let questions: Vec<&str> = seen
+            .iter()
+            .map(|r| r.trim_end())
+            .filter(|r| r.starts_with("> question"))
+            .collect();
+        assert_eq!(
+            questions,
+            [
+                "> question 0",
+                "> question 4",
+                "> question 8",
+                "> question 12",
+                "> question 16"
+            ],
+            "{seen:?}"
+        );
         assert!(seen.iter().any(|r| r.contains("arrived while hidden")));
         assert!(!seen.iter().any(|r| r.contains("agent ")), "{seen:?}");
+    }
+
+    #[test]
+    fn a_user_message_committed_at_the_top_of_the_screen_keeps_its_row_and_blank() {
+        let mut harness = emulated::Harness::new(30, 8);
+        let mut app = app();
+        for i in 0..14 {
+            app.transcript.notice(format!("n{i}"));
+            harness.render(&mut app, "filling");
+        }
+        app.transcript.user("hello there".into());
+        harness.render(&mut app, "user");
+        for i in 0..6 {
+            app.transcript.notice(format!("after {i}"));
+            harness.render(&mut app, "after");
+        }
+        let seen = harness.scrollback();
+        let at = seen
+            .iter()
+            .position(|r| r == "> hello there")
+            .unwrap_or_else(|| panic!("{seen:?}"));
+        assert_eq!(seen[at + 1], "", "{seen:?}");
+        assert_eq!(seen[at + 2], "· after 0", "{seen:?}");
+        assert_eq!(seen.iter().filter(|r| r.contains("hello there")).count(), 1);
     }
 
     #[test]
