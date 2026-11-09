@@ -164,8 +164,8 @@ struct Answer {
 Every event's interpreter reads only `Answer`. This keeps "block" handled the same way across
 handlers, and the per-event code stays the same size. `pre_tool_use` maps `blocked` to `Deny` and
 reads `hookSpecificOutput` from `json` as today. `permission_denied` reads `retry` only from a
-command or http `json`. It accepts prompt (and http) hooks, whose answer is discarded: a prompt hook
-can never `retry`.
+command or http `json`. It accepts prompt hooks, whose answer is discarded: a prompt hook
+can never `retry`; http hooks can `retry` like command hooks.
 
 Common output fields:
 - `systemMessage` (string) is shown to the user through `Approver::warn`, on every event except
@@ -202,7 +202,7 @@ The common input stays as today (`session_id`, `cwd`, `hook_event_name`, `agent_
 | `stop` | A root turn ended with `TurnOutcome::Answer` (not Stopped, Failed, MaxTurns) | none | `stop_hook_active`, `last_assistant_message` | block or `additionalContext` → another run with the reason as harness note; prompt `impossible: true` lets it stop | command, http, prompt | **ignored with warning** (forces spend) |
 | `stop_failure` | A root turn ended with `TurnOutcome::Failed` | the error kind (`rate_limit`, `overloaded`, `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold`, `billing_error`, `invalid_request`, `model_not_found`, `server_error`, `max_output_tokens`, `cloud_credential_error`, `unknown`) | `error`, `error_details`, `last_assistant_message` | nothing | command, http | loads |
 | `subagent_start` | Before a spawned child's first run | agent type | `agent_type` | `additionalContext` → harness note ahead of the child's first prompt | command, http | loads |
-| `subagent_stop` | In `continue_agent` for a child whose run ended `Done`, after mail and before `teammate_idle` | agent type | `stop_hook_active`, `agent_type`, `last_assistant_message` | block or `additionalContext` → the child is resumed with the reason | command, http, prompt | **ignored with warning** (forces spend) |
+| `subagent_stop` | In `continue_agent` for a child whose run ended `Done`, after mail and before `teammate_idle` | agent type | `stop_hook_active`, `agent_type`, `last_assistant_message` | block or `additionalContext` → the child is resumed with the reason; prompt `impossible: true` lets it stop | command, http, prompt | **ignored with warning** (forces spend) |
 | `pre_compact` | Before `Session::compact` asks the model | `manual` (Asked), `auto` (Threshold only; nothing constructs Overflow) | `trigger`, `custom_instructions` (the `/compact` focus or null) | block: an Asked or Threshold compaction is skipped with the reason as a warning. Plain stdout on exit 0 is appended to the summary focus | command, http | loads |
 | `post_compact` | After a compaction saved its summary | `manual`, `auto` | `trigger`, `compact_summary` (added to `CompactResult::Compacted`) | nothing | command, http | loads |
 | `post_tool_use_failure` | In the result pipeline when the outcome is `Err` (`post_tool_use` now fires only on `Ok`, as in Claude Code) | tool rule | `error` | `additionalContext` → appended to the error the agent reads; block → its reason appended | command, http, prompt | loads |
@@ -217,9 +217,9 @@ path (deny, reason appended to the result the agent reads, task kept open, agent
 **Loop bounds.** `stop` continuations are capped at **8 in a row**, Claude Code's cap, as a
 constant; `subagent_stop` uses the same constant with its own counter. A per-agent tool-call counter on
 `SessionState`, bumped where `set_current_call` runs (`agent/build.rs:74`), is the signal. The
-`stop` method (root) and `continue_agent` (child) snapshot it at each stop and reset their streak
+`stop` method (root) and the `subagent_stop` gate (child) snapshot it at each stop and reset their streak
 when it grew since the previous stop, as `Teams::allow_idle_resume` does with `mutations_of`
-(`tasks.rs:685`). `AgentRuntime::prompt_submit` also resets the `stop` streak on a human prompt. At the cap, Fontaine warns once and the turn or agent
+(`tasks.rs:685`). `fontaine-agents` cannot read `SessionState` (`fontaine-core` depends on it), so the child's snapshot and streak reset live inside `user_hooks::SubagentGate`, which holds `SessionState`; its `subagent_stop` returns the block reason only while the streak allows it, and `continue_agent` counts the cap from what the gate returns. `AgentRuntime::prompt_submit` also resets the `stop` streak on a human prompt. At the cap, Fontaine warns once and the turn or agent
 ends. `stop_hook_active` is `true` on any continuation after the first.
 
 **Ordering with `/goal`.** On a root `Answer`, the `stop` hooks run first. Only when no hook
@@ -230,8 +230,8 @@ returning `Option<String /* continuation note */>`, called once per root turn en
 `TurnOutcome`, whether or not a goal is active, before the goal pieces (`goal_turn_ended` /
 `next_goal_step`, `agent/goal.rs:112-208`). The TUI calls it in `Ui::turn` before `goal_after_turn`
 (`ui/turn.rs:~1035`), not from `ui/goal.rs`. Headless calls it in `run_one` (`headless.rs:~645-653`),
-where the `TurnOutcome` still exists, which covers `guarded_turn` (`:879-891`) and the notification
-turns of `settle` (`:897-927`).
+where the `TurnOutcome` still exists, but it returns the continuation note instead of looping there: the continuation loop runs in `guarded_turn` (`:879-891`) and the notification
+turns of `settle` (`:897-927`), so each continuation goes back through `stop_before_call` (budget check, `record_run_start`, `compact_if_needed`).
 
 **Headless.** A blocked `user_prompt_submit` ends the `-p` run before any model call, with exit 0, subtype
 `success`, and `result` = the block message followed by `Original prompt: <prompt>`.
@@ -262,7 +262,7 @@ load error in TOML and is ignored for plugins, as today.
 - **`http` and `prompt` handlers from project scope are ignored with one warning.**
   User config, `--settings` and plugins may define both, since install approved
   a plugin. A project-local untracked `settings.local.toml` of a trusted root has user trust, as
-  today.
+  today. The drop applies when `origin.is_project() && !origin.user_trust`; the `IgnoredWithWarning` events keep today's `is_project()` test (as `teammate_idle` does at `user_hooks.rs:642`).
 - No new handler or event can allow: only `pre_tool_use` `allow` and `permission_denied` `retry`
   loosen, and only with user trust (unchanged).
 
@@ -311,13 +311,13 @@ load error in TOML and is ignored for plugins, as today.
    `goal.rs` instead of copying it (DRY).
 5. Add `systemMessage` → `Approver::warn`, and the 10,000-character cap. Pass `Arc<dyn Approver>`
    into `UserHook`, `PostHookStage::new` / `result_pipeline()` and the new gates.
-6. Add the trust drop for project `http`/`prompt` and for `IgnoredWithWarning` events in
+6. Add the trust drop for project `http`/`prompt` (when `origin.is_project() && !origin.user_trust`, so a trusted untracked `settings.local.toml` and plugins keep them) and for `IgnoredWithWarning` events (keeping today's `is_project()` test, as `teammate_idle` does at `user_hooks.rs:642`) in
    `build()`. Make `build()` and `permission_pipeline` return `Result` for the `allowed_env_vars`
    violation.
 
 ### Phase C — events
 1. The runtime keeps the lifecycle hook set: a `LifecycleHooks` field on `AgentRuntime`, taken out of
-   `BuiltHooks` in setup.
+   `BuiltHooks` in setup. `permission_pipeline` (`agent/setup.rs:614-655`) also returns the `LifecycleHooks`, which setup moves onto `AgentRuntime`.
 2. `post_tool_use_failure`: split `PostHookStage` by outcome. Send `error` for the failure event.
 3. `user_prompt_submit`: `AgentRuntime::prompt_submit(&str) -> PromptGate { Blocked(reason) |
    Proceed { context } }`. Call it before the ledger user-message write at each of these sites (not before `record_run_start`, which
@@ -329,7 +329,7 @@ load error in TOML and is ignored for plugins, as today.
    harness note.
 4. `stop`: the core `AgentRuntime` method called on every root turn end, before the goal pieces;
    the continuation cap (streak reset by the tool-call counter, Design §4 Loop bounds; a human prompt resets it in `prompt_submit`); one call site in `Ui::turn` (`ui/turn.rs`, before `goal_after_turn`) and one in
-   headless `run_one`.
+   headless `run_one`, which returns the continuation note; the continuation loop runs in `guarded_turn`/`settle` so each continuation passes through `stop_before_call`.
 5. `stop_failure`: classify the failure (provider HTTP status, rig error, claude_subscription kinds
    at `protocol.rs:848-850`) into the 12-value set in the matcher row, and carry kind and details out
    of `run_turn` in `TurnOutcome::Failed` (today `Failed(String)`; `error_class`, `turn.rs:331`,
@@ -351,7 +351,7 @@ load error in TOML and is ignored for plugins, as today.
    `compact_summary`.
 8. `subagent_start` and `subagent_stop`: `LifecycleGate` in `fontaine-agents/src/spawn.rs`. Call
    `subagent_stop` in `continue_agent` after the mail check and before the teams-off early return,
-   with a new `Reason::SubagentStop` and its own cap counter (streak reset by the child's tool-call counter, like `Teams::allow_idle_resume`; counted in its `match` arm after
+   with a new `Reason::SubagentStop` and its own cap counter (the tool-call snapshot and streak reset live inside `user_hooks::SubagentGate`, like `Teams::allow_idle_resume`, and its `subagent_stop` returns the reason only while the streak allows it; `continue_agent` counts the cap in its `match` arm after
    `continue_blocker`, with its own harness note; pass `&report.text` into `continue_agent`), and `subagent_start` in the spawn
    closure at `child_runner.rs:716-722`. Implement it in `user_hooks.rs`. Install it in
    `setup.rs`.
@@ -511,16 +511,15 @@ assertions (`user_prompt_submit` block exit code/subtype/result, `session_start`
 - `stop`: a blocking hook resumes the turn with its reason. `stop_hook_active` flips to `true`.
   The cap stops at 8 with a warning. A prompt hook with `impossible` stops. `/goal` runs only
   after no stop hook blocks.
-- `stop_failure` fires on a failed provider call, using the `wiremock` 500 that the existing
-  turn-failure tests use.
+- `stop_failure` fires on a failed provider call, in the core test using rig's mock `failing_turn(status)` (as `fontaine-core/tests/audit_telemetry.rs:367`, used with 400 at `:383`), not `wiremock`; a 500 case lives in `rust/fontaine/tests/lifecycle_hooks_headless.rs` using `Turn::Fail(500)` from `tests/common` (as `headless_smoke.rs:253` does).
 - `session_start` context reaches the first model request; `source` is right for a fresh,
   `--continue` and `--fork-session` run. `session_end` fires at headless end.
 - `pre_compact` blocks a `/compact`, and its stdout lands in the summary request's focus.
   `post_compact` receives the summary.
 - `post_tool_use` no longer fires on a failed call. `post_tool_use_failure` does, and its
   context is in the error the model reads.
-- `subagent_start` context is in the child's first prompt. `subagent_stop` resumes the child and
-  respects the cap. Both fire with teams off.
+- `subagent_start` context is in the child's first prompt. `subagent_stop` resumes the child, respects the cap,
+  and a prompt `impossible: true` lets it stop. Both fire with teams off.
 - `task_created` blocks a create, and the tool error carries the reason.
 - `http` handler against `wiremock`: the body is the event JSON, headers are interpolated, a
   `deny` answer on `pre_tool_use` denies, and a 500 decides nothing.
