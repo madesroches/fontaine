@@ -7,6 +7,22 @@ fn kinds(lines: &[Value]) -> Vec<&str> {
     lines.iter().map(|l| l["type"].as_str().unwrap()).collect()
 }
 
+/// The `bash.exe` of the Git for Windows that `git` on the test host's own PATH belongs to.
+#[cfg(windows)]
+fn git_bash_on_path() -> Option<std::path::PathBuf> {
+    let out = std::process::Command::new("git")
+        .arg("--exec-path")
+        .output()
+        .ok()?;
+    // <Git>\mingw64\libexec\git-core
+    let exec = std::path::PathBuf::from(String::from_utf8(out.stdout).ok()?.trim());
+    let root = exec.ancestors().nth(3)?;
+    [root.join("bin"), root.join("usr").join("bin")]
+        .into_iter()
+        .map(|dir| dir.join("bash.exe"))
+        .find(|bash| bash.is_file())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_prompt_streams_to_stdout_and_exits_zero() {
     let endpoint = Endpoint::start(Wire::Chat, vec![Turn::text("Hello from the mock")]).await;
@@ -52,6 +68,15 @@ async fn the_registered_tools_are_advertised_to_the_model() {
     let mut s = Sandbox::compatible(&endpoint.url());
     // A container runtime on the test host would add the default `websearch` tool.
     s.set_env("PATH", "/nonexistent");
+    // Without PATH, Git for Windows is found only in its standard install folders, so a copy
+    // reached through PATH (scoop, winget) is named explicitly.
+    #[cfg(windows)]
+    if let Some(bash) = git_bash_on_path() {
+        s.set_env(
+            fontaine_tools::git_bash::OVERRIDE_VAR,
+            bash.to_str().unwrap(),
+        );
+    }
     // Windows PowerShell is found in System32 without PATH, and would add the `powershell` tool.
     s.set_env("FONTAINE_POWERSHELL_PATH", "/nonexistent/pwsh.exe");
     let out = s.headless(&["--output-format", "stream-json", "hi"]).await;
