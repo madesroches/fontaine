@@ -419,3 +419,79 @@ async fn a_changed_agent_type_alone_rebuilds_the_agent() {
     );
     assert!(runtime.agent_types().get("helper").is_some());
 }
+
+#[tokio::test]
+async fn a_staged_revision_is_applied_and_its_server_restarted_on_reload() {
+    let w = World::new();
+    marketplace(&w.config);
+    let market = marketplace_dir(&w.config, "team");
+    common::write(
+        &market.join("plugins/review/.mcp.json"),
+        r#"{"mcpServers": {"srv": {"command": "fontaine-no-such-binary"}}}"#,
+    );
+    install(&w.config);
+    let approver = Arc::new(Capture::default());
+    let mut runtime = runtime(&w, approver.clone());
+    runtime.reload_extensions(&[]).await;
+    let warnings_before = approver.warnings.lock().unwrap().len();
+    approver.take_notices();
+
+    let mut registry = fontaine_core::plugins::read_registry(&w.config).unwrap();
+    registry.plugin[0].staged_pin = Some("pin-two".into());
+    write_registry(&w.config, &registry).unwrap();
+    let checkout = fontaine_core::plugins::checkout_dir(&w.config, "team", "review");
+    let staged = fontaine_core::plugins::staged_dir(&checkout);
+    common::write(
+        &staged.join(".claude-plugin/plugin.json"),
+        r#"{"name": "review"}"#,
+    );
+    common::write(&staged.join("skills/review/SKILL.md"), SKILL);
+    common::write(
+        &staged.join(".mcp.json"),
+        r#"{"mcpServers": {"srv": {"command": "fontaine-no-such-binary"}}}"#,
+    );
+
+    let report = runtime.reload_extensions(&[]).await;
+    assert!(
+        report
+            .lines
+            .iter()
+            .any(|l| l.contains("applied the staged update of `review`")),
+        "{:?}",
+        report.lines
+    );
+    let registry = fontaine_core::plugins::read_registry(&w.config).unwrap();
+    assert_eq!(registry.plugin[0].pin, "pin-two");
+    assert!(registry.plugin[0].staged_pin.is_none());
+    assert!(!staged.exists());
+    // The server was stopped for the swap and started again from the new revision.
+    let states = runtime.mcp_states();
+    assert_eq!(states.len(), 1, "{states:?}");
+    assert!(approver.warnings.lock().unwrap().len() > warnings_before);
+}
+
+#[tokio::test]
+async fn a_held_plugin_is_announced_once_across_reloads() {
+    let w = World::new();
+    marketplace(&w.config);
+    install(&w.config);
+    let approver = Arc::new(Capture::default());
+    let mut runtime = runtime(&w, approver.clone());
+    runtime.reload_extensions(&[]).await;
+    approver.take_notices();
+
+    let mut registry = fontaine_core::plugins::read_registry(&w.config).unwrap();
+    registry.plugin[0].held_pin = Some("pin-two".into());
+    registry.plugin[0].staged_pin = Some("pin-two".into());
+    registry.plugin[0].auto_update = Some(false);
+    write_registry(&w.config, &registry).unwrap();
+
+    runtime.reload_extensions(&[]).await;
+    runtime.reload_extensions(&[]).await;
+    let held = approver
+        .notices()
+        .iter()
+        .filter(|n| n.contains("held for review"))
+        .count();
+    assert_eq!(held, 1, "{:?}", approver.notices());
+}

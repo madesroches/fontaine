@@ -140,12 +140,6 @@ impl ServerSlot {
         self.spec.kind() == "http"
     }
 
-    fn stop_watcher(&self) {
-        if let Some(handle) = lock(&self.watcher, "MCP watcher").take() {
-            handle.abort();
-        }
-    }
-
     /// Stops the watcher and starts a new generation, returning it. The bump happens under the
     /// watcher lock, which `install` checks it against.
     fn supersede(&self) -> u64 {
@@ -221,7 +215,8 @@ impl McpServers {
 /// Ends a slot's watcher and marks its connection as closed by us.
 fn retire(slot: &ServerSlot) {
     slot.closing.store(true, Ordering::SeqCst);
-    slot.stop_watcher();
+    // A reconnect that finishes after this is handed back by `install` instead of reviving the slot.
+    slot.supersede();
 }
 
 impl Drop for McpServers {
@@ -941,5 +936,21 @@ mod tests {
             Some(true)
         );
         assert!(servers.states().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_connection_finishing_after_the_server_is_removed_is_handed_back() {
+        let rig = rig(vec![Ok(live("srv", "http").await)]);
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        let generation = slot.generation.load(Ordering::SeqCst);
+        let mut servers = McpServers::default();
+        servers.insert(slot.clone());
+        let tools = ToolServer::new().run();
+        servers.remove("srv", &tools, MCP_DRAIN_BOUND).await;
+
+        let late = live("srv", "http").await.connected;
+        assert!(rig.supervisor.install(&slot, late, generation).is_err());
+        assert!(slot.closing.load(Ordering::SeqCst));
+        assert!(lock(&slot.connection, "test").is_none());
     }
 }

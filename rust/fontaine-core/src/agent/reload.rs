@@ -656,9 +656,11 @@ struct SkillChanges {
     added: Vec<String>,
     removed: Vec<String>,
     changed: Vec<String>,
+    /// Skills in both loads whose trust differs.
+    trust: Vec<String>,
 }
 
-fn skill_changes(old: &Extensions, new: &Extensions) -> SkillChanges {
+fn skill_changes(old_extensions: &Extensions, new_extensions: &Extensions) -> SkillChanges {
     let digests = |extensions: &Extensions| -> BTreeMap<String, String> {
         extensions
             .skills
@@ -666,8 +668,19 @@ fn skill_changes(old: &Extensions, new: &Extensions) -> SkillChanges {
             .map(|skill| (skill.name.clone(), skill.digest.clone()))
             .collect()
     };
-    let (old, new) = (digests(old), digests(new));
+    let trust: Vec<String> = new_extensions
+        .skills
+        .iter()
+        .filter(|skill| {
+            old_extensions.skill(&skill.name).is_some_and(|before| {
+                old_extensions.trust_state(before) != new_extensions.trust_state(skill)
+            })
+        })
+        .map(|skill| skill.name.clone())
+        .collect();
+    let (old, new) = (digests(old_extensions), digests(new_extensions));
     SkillChanges {
+        trust,
         added: new
             .keys()
             .filter(|n| !old.contains_key(*n))
@@ -697,6 +710,9 @@ impl SkillChanges {
             if !names.is_empty() {
                 out.push(format!("skills {label}: {}", names.join(", ")));
             }
+        }
+        if !self.trust.is_empty() {
+            out.push(format!("skill trust applied: {}", self.trust.join(", ")));
         }
         out
     }

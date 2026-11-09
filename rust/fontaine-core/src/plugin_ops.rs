@@ -27,6 +27,7 @@ use fontaine_tools::error_chain::chain;
 pub struct OpError {
     message: String,
     source: Option<Box<dyn Error + Send + Sync>>,
+    unknown_marketplace: bool,
 }
 
 impl OpError {
@@ -34,7 +35,20 @@ impl OpError {
         OpError {
             message: message.into(),
             source: None,
+            unknown_marketplace: false,
         }
+    }
+
+    /// The named marketplace is not registered.
+    fn unknown_marketplace(message: impl Into<String>) -> OpError {
+        OpError {
+            unknown_marketplace: true,
+            ..OpError::msg(message)
+        }
+    }
+
+    pub fn is_unknown_marketplace(&self) -> bool {
+        self.unknown_marketplace
     }
 
     pub fn caused(
@@ -44,6 +58,7 @@ impl OpError {
         OpError {
             message: message.into(),
             source: Some(Box::new(source)),
+            unknown_marketplace: false,
         }
     }
 }
@@ -733,7 +748,7 @@ pub fn prepare_install(fx: &Fetch<'_>, spec: &str, kind: Workdir) -> Result<Prep
             .iter()
             .find(|m| m.name == marketplace)
             .ok_or_else(|| {
-                OpError::msg(format!(
+                OpError::unknown_marketplace(format!(
                     "no marketplace named `{marketplace}` is registered"
                 ))
             })?

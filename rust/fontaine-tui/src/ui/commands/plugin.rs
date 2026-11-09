@@ -170,9 +170,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         {
             Ok(prepared) => prepared,
             Err(e) => {
-                let hint = if chain(&e).contains("is registered")
-                    && chain(&e).contains("no marketplace")
-                {
+                let hint = if e.is_unknown_marketplace() {
                     format!(" ({NO_MARKETPLACE})")
                 } else {
                     String::new()

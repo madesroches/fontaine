@@ -14,10 +14,6 @@ impl<T> Live<T> {
         Live(RwLock::new(Arc::new(value)))
     }
 
-    pub fn from_arc(value: Arc<T>) -> Live<T> {
-        Live(RwLock::new(value))
-    }
-
     /// The current value. It stays what the reader saw even if a swap follows.
     pub fn get(&self) -> Arc<T> {
         // The contents feed permission decisions (a skill's `allowed-tools`, spawn checks), so a
