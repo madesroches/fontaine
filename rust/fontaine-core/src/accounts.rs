@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup, check_account};
 use crate::credentials::{self, Credentials, StoredCredential};
+use crate::model_roles::Roles;
 use crate::models::{Credential, credential};
 use crate::providers::{self, CredentialPolicy, SignInError, SignInProgress};
 use crate::runtime_error::RuntimeError;
@@ -321,6 +322,20 @@ pub fn log_out(data_dir: &Path, name: &str) -> Result<bool, ConfigError> {
 pub fn check_defined_only_in_user_file(config: &Config, name: &str) -> Result<(), AccountsError> {
     if config.shadowed_accounts.contains(name) {
         return Err(AccountsError::NotInUserFile);
+    }
+    Ok(())
+}
+
+/// Refuses a removal that would leave a model role, from any settings layer, naming an account
+/// that no longer exists.
+pub fn check_roles_survive(config: &Config, name: &str) -> Result<(), AccountsError> {
+    let mut without = config.clone();
+    without.accounts.remove(name);
+    if Roles::from_config(config).is_ok() && Roles::from_config(&without).is_err() {
+        return Err(AccountsError::Invalid(
+            "the account is in use by a model role in [models.roles]; remove the role entry first"
+                .to_string(),
+        ));
     }
     Ok(())
 }

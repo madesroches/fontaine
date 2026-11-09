@@ -834,10 +834,10 @@ impl SessionState {
             class: class.to_string(),
         });
         self.record_session_event(
-            "model_fall_through",
+            "model_fell_through",
             serde_json::json!({ "agent": agent, "role": role, "from": from, "to": to, "class": class }),
             Tier::Mode,
-            "model_fall_through",
+            "model_fell_through",
             &format!("{agent} moved from {from} to {to} after {class}"),
         );
     }

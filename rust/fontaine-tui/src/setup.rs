@@ -545,6 +545,7 @@ impl Setup {
                 },
                 DialogKey::Remove(account) => {
                     let removal = accounts::check_defined_only_in_user_file(&self.config, &account)
+                        .and_then(|()| accounts::check_roles_survive(&self.config, &account))
                         .and_then(|()| {
                             accounts::remove(&self.user_file, &self.dirs.data, &account)
                         });

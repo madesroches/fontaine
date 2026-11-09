@@ -579,7 +579,7 @@ Fontaine reads four role names itself. Every other name is yours, so Claude Code
 
 | Role | Used for | When it is not defined |
 |---|---|---|
-| `main` | The session's model. It is the same list as `[model] model`. | `[model] model`, then `--model` |
+| `main` | The session's model. It is the same list as `[model] model`. | `main` is the same setting as `[model] model`, so set one or the other; `--model` overrides it. With neither, the run exits with code 2 |
 | `critique` | The `fontaine auto-mode critique` review. | The guardian's model |
 | `setup` | The model scan of `/auto-mode-setup` and `fontaine auto-mode setup`. | The guardian's model |
 | `compaction` | The summary request of a [compaction](tui.md#context). The threshold still follows the main model's window. | The main model, at its current entry |

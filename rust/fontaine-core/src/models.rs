@@ -940,8 +940,10 @@ impl Switcher {
         env: SharedEnv,
         session_id: Option<String>,
     ) -> Switcher {
-        let roles =
-            Roles::from_config(&config).expect("the config's roles validated when it loaded");
+        // A caller that edits accounts after load (the setup screen) refuses edits that
+        // dangle a role; if one slips through, no roles beats a panic: the listings this
+        // switcher serves do not use them.
+        let roles = Roles::from_config(&config).unwrap_or_default();
         Switcher {
             config,
             data_dir,
@@ -968,14 +970,7 @@ impl Switcher {
 
     /// The shared chain of the role `name`, when the user defined it.
     pub fn role_chain(&self, name: &str) -> Option<Arc<ModelChain>> {
-        self.roles.contains(name).then(|| {
-            self.chains
-                .chain_for(
-                    &self.roles,
-                    &fontaine_agents::registry::ModelSpec::Named(name.to_string()),
-                )
-                .ok()
-        })?
+        self.chains.chain_of_role(&self.roles, name)
     }
 
     /// A chain of its own for `text`: a reference, a role name or a list.
@@ -996,9 +991,9 @@ impl Switcher {
     }
 
     /// Runs a one-shot job on `chain`: `call` on the active entry's handle and, on an error
-    /// `falls_through` accepts, on the entries after it. An entry that does not resolve is skipped
-    /// (`unresolved` turns the failure into the job's error, which is returned if nothing
-    /// serves). With `explicit_cap` an entry other than the first that has no known price is
+    /// `falls_through` accepts, on the entries in `fall_through_order(start)`. A start entry that
+    /// does not resolve returns its failure at once; a later one is skipped (`unresolved` turns
+    /// the failure into the job's error, which is returned if nothing serves). With `explicit_cap` an entry other than the first that has no known price is
     /// skipped. With `settle` the entry that served becomes the chain's active one.
     pub async fn run_through<T, E, C, Cf>(
         &self,

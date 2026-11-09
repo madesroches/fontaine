@@ -246,17 +246,9 @@ impl AgentRuntime {
 
     /// The chain of the role `name`, shared by everything running on it, when the user defined it.
     pub fn role_chain(&self, name: &str) -> Option<Arc<ModelChain>> {
-        use fontaine_agents::registry::ModelSpec;
         self.setup
-            .roles
-            .contains(name)
-            .then(|| {
-                self.setup
-                    .role_chains
-                    .chain_for(&self.setup.roles, &ModelSpec::Named(name.to_string()))
-                    .ok()
-            })
-            .flatten()
+            .role_chains
+            .chain_of_role(&self.setup.roles, name)
     }
 
     /// The switcher and the chain of the role `name`, for a one-shot job that outlives a borrow of

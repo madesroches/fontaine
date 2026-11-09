@@ -283,9 +283,10 @@ impl ModelChain {
     }
 
     /// Runs `call` on the active entry's handle and, on an error `falls_through` accepts, on the
-    /// others in fall-through order. `resolve` builds a handle for an entry; `fallback` says it
-    /// is not the entry the chain started on, where `Ok(None)` skips it. An entry that fails to
-    /// resolve is skipped too, and the last error is returned if nothing served. With `settle`
+    /// others in `fall_through_order(start)`. `resolve` builds a handle for an entry; `fallback`
+    /// says it is not the entry the chain started on, where `Ok(None)` skips it. A start entry
+    /// that fails to resolve returns its error at once; a later one is skipped, and the last
+    /// error is returned if nothing served. With `settle`
     /// the serving entry becomes the chain's active one.
     pub async fn run_through<H, T, E, Rf, R, Cf, C>(
         &self,
@@ -380,6 +381,15 @@ pub struct RoleChains {
 }
 
 impl RoleChains {
+    /// The shared chain of the role `name`, when the user defined it.
+    pub fn chain_of_role(&self, roles: &Roles, name: &str) -> Option<Arc<ModelChain>> {
+        if !roles.contains(name) {
+            return None;
+        }
+        self.chain_for(roles, &ModelSpec::Named(name.to_string()))
+            .ok()
+    }
+
     /// The chain a spec stands for: the shared one of a role or an inline list, and a fresh
     /// one-entry chain for a lone reference. `$main` and `$guardian_default` are the session's
     /// own, which the caller serves.
@@ -405,6 +415,19 @@ impl RoleChains {
 mod tests {
     use super::*;
     use crate::config::{Account, OneOrMany};
+
+    #[test]
+    fn removing_an_account_a_role_names_is_refused_and_the_switcher_survives() {
+        let mut config = config(&[("coding", &["a/m"])]);
+        let err = crate::accounts::check_roles_survive(&config, "a").unwrap_err();
+        assert!(err.to_string().contains("model role"), "{err}");
+        crate::accounts::check_roles_survive(&config, "b").unwrap();
+
+        config.accounts.remove("a");
+        let switcher =
+            crate::models::Switcher::new(config, std::env::temp_dir(), Arc::new(|_| None), None);
+        assert!(switcher.roles().is_empty());
+    }
 
     fn config(roles: &[(&str, &[&str])]) -> Config {
         let mut config = Config::defaults(std::env::temp_dir());
