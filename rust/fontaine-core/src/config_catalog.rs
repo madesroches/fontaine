@@ -116,7 +116,7 @@ pub fn winning_slot(config: &Config, path: &str) -> Option<Slot> {
         .and_then(|slots| slots.first().copied())
 }
 
-fn rank(slot: Slot) -> u8 {
+pub(crate) fn rank(slot: Slot) -> u8 {
     match slot {
         Slot::Managed => 0,
         Slot::Cli => 1,
@@ -339,6 +339,7 @@ pub const KEYS: &[KeyRow] = &[
         "unset (the model's own default)"
     )),
     row!("accounts", Map, |c, _| names(c.accounts.keys())),
+    row!("models.roles", Map, |c, _| names(c.roles.keys())),
     row!("network.https_proxy", Scalar, |c, _| {
         c.network
             .https_proxy

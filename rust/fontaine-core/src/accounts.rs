@@ -7,6 +7,7 @@ use std::path::Path;
 
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup, check_account};
 use crate::credentials::{self, Credentials, StoredCredential};
+use crate::model_roles::Roles;
 use crate::models::{Credential, credential};
 use crate::providers::{self, CredentialPolicy, SignInError, SignInProgress};
 use crate::runtime_error::RuntimeError;
@@ -83,6 +84,11 @@ pub enum AccountsError {
     InUse {
         by: &'static str,
     },
+    /// A model setting in the user settings file, such as `[models.roles] coding`, names the
+    /// account.
+    InSettings {
+        key: String,
+    },
     /// The account is defined in another settings file than the user's own.
     NotInUserFile,
     Invalid(String),
@@ -101,6 +107,7 @@ impl fmt::Display for AccountsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AccountsError::InUse { by } => write!(f, "the account is in use by {by}"),
+            AccountsError::InSettings { key } => write!(f, "the account is in use by `{key}`"),
             AccountsError::NotInUserFile => {
                 f.write_str("the account is defined in another settings file than your own")
             }
@@ -319,6 +326,20 @@ pub fn check_defined_only_in_user_file(config: &Config, name: &str) -> Result<()
     Ok(())
 }
 
+/// Refuses a removal that would leave a model role, from any settings layer, naming an account
+/// that no longer exists.
+pub fn check_roles_survive(config: &Config, name: &str) -> Result<(), AccountsError> {
+    let mut without = config.clone();
+    without.accounts.remove(name);
+    if Roles::from_config(config).is_ok() && Roles::from_config(&without).is_err() {
+        return Err(AccountsError::Invalid(
+            "the account is in use by a model role in [models.roles]; remove the role entry first"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Deletes `[accounts.<name>]` from the user settings file and then the account's stored
 /// credential, so no orphaned secret is left. It has no view of the live session: a host that
 /// has one refuses a removal of an account in use before calling this. A model setting in the
@@ -327,7 +348,7 @@ pub fn remove(user_file: &Path, data_dir: &Path, name: &str) -> Result<(), Accou
     let key = user_config::model_key_naming(user_file, name)
         .map_err(|e| io_error(format!("could not read {}", user_file.display()), e))?;
     if let Some(key) = key {
-        return Err(AccountsError::InUse { by: key });
+        return Err(AccountsError::InSettings { key });
     }
     let removed = user_config::remove_account(user_file, name).map_err(|e| {
         io_error(

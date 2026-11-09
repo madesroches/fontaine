@@ -152,7 +152,12 @@ async fn a_new_user_adds_an_account_logs_in_picks_a_model_and_the_session_starts
 
     assert_eq!(models.main.reference.to_string(), "gw/gw-small");
     assert!(config.accounts.contains_key("gw"));
-    assert_eq!(config.model.as_deref(), Some("gw/gw-small"));
+    assert_eq!(
+        config.model,
+        Some(fontaine_core::config::OneOrMany::One(
+            "gw/gw-small".to_string()
+        ))
+    );
     let settings = std::fs::read_to_string(&s.user_file).unwrap();
     assert!(settings.contains("[accounts.gw]"), "{settings}");
     assert!(settings.contains("model = \"gw/gw-small\""), "{settings}");

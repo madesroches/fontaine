@@ -32,6 +32,7 @@ async fn root_turn(priced: bool) -> (Option<f64>, Option<f64>) {
     };
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hi".to_string(),
@@ -74,6 +75,7 @@ async fn an_unpriced_subagent_adds_tokens_but_no_cost_to_the_subagent_total() {
     let mut seen = |_| Flow::Continue;
     let outcome = drive(
         Drive {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             agent_id: "child-1",
@@ -126,6 +128,7 @@ async fn writing_during_a_step(stop_at_delta: bool) -> (Vec<u64>, u64) {
     };
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hi".to_string(),
@@ -171,6 +174,7 @@ async fn a_failed_step_leaves_no_writing_behind() {
     let mut on_event = |_: SessionEvent| Flow::Continue;
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hi".to_string(),
@@ -243,6 +247,7 @@ async fn writing_across_a_tool_call() -> Vec<u64> {
     };
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hi".to_string(),
@@ -287,6 +292,7 @@ async fn argument_characters_count_toward_writing_at_the_next_delta() {
     };
     run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hi".to_string(),
@@ -322,6 +328,7 @@ async fn reasoning_events(turn: Vec<MockStreamEvent>) -> Vec<String> {
     };
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hi".to_string(),

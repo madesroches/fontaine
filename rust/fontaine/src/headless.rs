@@ -15,9 +15,12 @@ use fontaine_core::audit::{Converted, Decision, DecisionRecord};
 use fontaine_core::config::PermissionMode;
 use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
+use fontaine_core::model_roles::Tried;
 use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
 use fontaine_core::trust;
-use fontaine_core::turn::{Flow, SessionEvent, TurnOutcome, TurnParams, run_turn, user_message};
+use fontaine_core::turn::{
+    Flow, RETRY_NOTE, SessionEvent, TurnFailure, TurnOutcome, TurnParams, run_turn, user_message,
+};
 use fontaine_core::turn_recovery::{Fallback, Unsettled};
 use fontaine_core::usage_ledger::{Bucket, UsageSource};
 use fontaine_tools::kills::KILL_SETTLE;
@@ -499,12 +502,50 @@ fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Value {
     )
 }
 
-/// One user message: runs the agent to its answer, a limit or a failure.
+/// One user message: runs the agent to its answer, a limit or a failure. A model that ran out of
+/// quota hands the run to the next entry of its list, and the message carries on there.
 async fn run_one(
+    runtime: &mut AgentRuntime,
+    options: &Options,
+    text: String,
+    stream_events: bool,
+) -> Outcome {
+    let mut fell = None;
+    let mut tried = Tried::default();
+    let mut outcome = run_attempt(runtime, options, text, stream_events, &mut fell).await;
+    while let Some(failure) = fell.take() {
+        if runtime
+            .fall_through(failure.class.unwrap_or("quota"), &mut tried)
+            .await
+            .is_none()
+        {
+            if let (Some(spent), Some(error)) = (runtime.fall_through_spent(), &mut outcome.error) {
+                error.push('\n');
+                error.push_str(&spent);
+            }
+            break;
+        }
+        let next = run_attempt(
+            runtime,
+            options,
+            RETRY_NOTE.to_string(),
+            stream_events,
+            &mut fell,
+        )
+        .await;
+        outcome = merge(outcome, next);
+    }
+    outcome
+}
+
+/// One run of the agent on `text`. A failure that is the model's quota running out is left in
+/// `fell` for the caller to answer.
+async fn run_attempt(
     runtime: &AgentRuntime,
     options: &Options,
     text: String,
     stream_events: bool,
+    fell: &mut Option<TurnFailure>,
 ) -> Outcome {
     let started = std::time::Instant::now();
     let sid = runtime.session.id.as_str();
@@ -617,6 +658,7 @@ async fn run_one(
             provider,
             native_search: runtime.native_search_active(),
             generation_options: runtime.turn_generation_options(),
+            served: runtime.served(),
         },
         &mut on_event,
     );
@@ -642,6 +684,11 @@ async fn run_one(
         return afk::stopped_outcome(started, denials);
     };
 
+    if let TurnOutcome::Failed(failure) = &turn
+        && failure.falls_through
+    {
+        *fell = Some(failure.clone());
+    }
     let (subtype, text, error) = match turn {
         TurnOutcome::Answer(text) => (Subtype::Success, text, None),
         TurnOutcome::Stopped => (
@@ -650,7 +697,7 @@ async fn run_one(
             Some("the run's spend exceeded --max-budget-usd".to_string()),
         ),
         TurnOutcome::MaxTurns(message) => (Subtype::MaxTurns, String::new(), Some(message)),
-        TurnOutcome::Failed(message) => (Subtype::Execution, String::new(), Some(message)),
+        TurnOutcome::Failed(failure) => (Subtype::Execution, String::new(), Some(failure.message)),
     };
     let mut outcome = Outcome {
         subtype,
@@ -877,7 +924,7 @@ fn merge(earlier: Outcome, mut next: Outcome) -> Outcome {
 
 /// One turn, started once `stop_before_call` finds nothing to stop it.
 async fn guarded_turn(
-    runtime: &AgentRuntime,
+    runtime: &mut AgentRuntime,
     options: &Options,
     stream_events: bool,
     prompt: String,
@@ -895,7 +942,7 @@ async fn guarded_turn(
 /// reach the main conversation as notifications, each a turn of its own, until none is running.
 /// A run stopped by a limit kills them and drops their reports.
 async fn settle(
-    runtime: &AgentRuntime,
+    runtime: &mut AgentRuntime,
     options: &Options,
     stream_events: bool,
     mut outcome: Outcome,
@@ -942,7 +989,7 @@ struct Handled {
 /// One user message. `/goal <condition>` keeps running turns after the first until the
 /// evaluator finds the condition met, or the goal ends or pauses.
 async fn handle_message(
-    runtime: &AgentRuntime,
+    runtime: &mut AgentRuntime,
     options: &Options,
     stream_events: bool,
     text: String,
@@ -1161,7 +1208,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             }
         };
         let mut handled = match runtime.refresh_before_turn() {
-            Ok(()) => handle_message(&runtime, &options, stream_events, text).await,
+            Ok(()) => handle_message(&mut runtime, &options, stream_events, text).await,
             Err(e) => Handled {
                 outcome: Outcome {
                     subtype: Subtype::Execution,
@@ -1300,7 +1347,7 @@ mod tests {
             usage.input_tokens = Some(1000);
             usage.cached_input_tokens = read;
             usage.cache_creation_input_tokens = written;
-            ledger.record(UsageSource::Main, &usage, true);
+            ledger.record(UsageSource::Main, &usage, true, &Default::default());
         }
         let outcome = Outcome {
             subtype: Subtype::Success,

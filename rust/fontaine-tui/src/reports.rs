@@ -17,7 +17,7 @@ use fontaine_core::ledger::LedgerRecap;
 use fontaine_core::permission_rules::SourcedRule;
 use fontaine_core::plugins::Registry;
 use fontaine_core::skill_trust::TrustState;
-use fontaine_core::usage_ledger::{Bucket, UsageSource};
+use fontaine_core::usage_ledger::{Bucket, Served, UsageSource};
 use fontaine_guardian::evasion::AttemptDecision;
 use fontaine_tools::display::compact_count;
 
@@ -697,6 +697,8 @@ pub fn recap(input: &RecapInput) -> String {
 pub struct UsageReport {
     /// In `UsageSource::ALL` order.
     pub by_source: [Bucket; 6],
+    /// One bucket per role and model that served a call.
+    pub by_model: Vec<(Served, Bucket)>,
     /// The `[agents]` session cost cap and what the session has spent against it.
     pub budget: Option<(f64, f64)>,
 }
@@ -738,12 +740,15 @@ pub fn cost(report: &UsageReport) -> String {
         row.push(cost_cell(b));
         row
     };
-    let mut head = vec!["source", "calls", "input", "output"];
-    if cache {
-        head.extend(["cache read", "cache write"]);
-    }
-    head.push("cost");
-    let mut table: Vec<Vec<String>> = vec![head.into_iter().map(String::from).collect()];
+    let header = |first: &str| {
+        let mut head = vec![first, "calls", "input", "output"];
+        if cache {
+            head.extend(["cache read", "cache write"]);
+        }
+        head.push("cost");
+        head.into_iter().map(String::from).collect::<Vec<_>>()
+    };
+    let mut table: Vec<Vec<String>> = vec![header("source")];
     for (label, source) in shown {
         let b = bucket(source);
         if b.calls > 0 {
@@ -755,31 +760,17 @@ pub fn cost(report: &UsageReport) -> String {
         out.push_str("\n  no model calls yet");
     } else {
         table.push(cells("total", &total));
-        let columns = table[0].len();
-        let widths: Vec<usize> = (0..columns)
-            .map(|c| {
-                table
+        write_table(&mut out, &table);
+        if !report.by_model.is_empty() {
+            let mut by_model = vec![header("model")];
+            by_model.extend(
+                report
+                    .by_model
                     .iter()
-                    .map(|row| row[c].chars().count())
-                    .max()
-                    .unwrap_or(0)
-            })
-            .collect();
-        for row in &table {
-            out.push_str("\n ");
-            for (c, cell) in row.iter().enumerate() {
-                match c {
-                    0 => {
-                        let _ = write!(out, " {cell:<w$}", w = widths[c]);
-                    }
-                    c if c + 1 == columns => {
-                        let _ = write!(out, "  {cell}");
-                    }
-                    _ => {
-                        let _ = write!(out, "  {cell:>w$}", w = widths[c]);
-                    }
-                }
-            }
+                    .map(|(served, bucket)| cells(&served.to_string(), bucket)),
+            );
+            out.push_str("\nBy model");
+            write_table(&mut out, &by_model);
         }
     }
     out.push_str(
@@ -789,6 +780,36 @@ pub fn cost(report: &UsageReport) -> String {
         let _ = write!(out, "\nSession cost budget: ${spent:.4} / ${cap:.2}");
     }
     out
+}
+
+/// Appends `table` as aligned rows: the first column left, the last unpadded, the rest right.
+fn write_table(out: &mut String, table: &[Vec<String>]) {
+    let columns = table[0].len();
+    let widths: Vec<usize> = (0..columns)
+        .map(|c| {
+            table
+                .iter()
+                .map(|row| row[c].chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    for row in table {
+        out.push_str("\n ");
+        for (c, cell) in row.iter().enumerate() {
+            match c {
+                0 => {
+                    let _ = write!(out, " {cell:<w$}", w = widths[c]);
+                }
+                c if c + 1 == columns => {
+                    let _ = write!(out, "  {cell}");
+                }
+                _ => {
+                    let _ = write!(out, "  {cell:>w$}", w = widths[c]);
+                }
+            }
+        }
+    }
 }
 
 /// `/context`: what fills the window, estimated. With `all`, each instruction file and tool
@@ -1470,6 +1491,7 @@ mod tests {
         }
         UsageReport {
             by_source,
+            by_model: Vec::new(),
             budget: None,
         }
     }
@@ -1498,6 +1520,55 @@ mod tests {
         assert!(lines[2].contains("84.2k"), "{text}");
         assert!(!text.contains("unpriced"), "{text}");
         assert!(!text.contains("budget"), "{text}");
+    }
+
+    #[test]
+    fn cost_breaks_spend_down_by_role_and_model() {
+        let mut report = usage_report(&[
+            (UsageSource::Main, spent(12, 84_200, 9_100, Some(0.412), 0)),
+            (
+                UsageSource::Subagent,
+                spent(8, 40_100, 5_000, Some(0.19), 0),
+            ),
+        ]);
+        report.by_model = vec![
+            (
+                Served::new(Some("coding"), "anthropic/claude-sonnet-5-5"),
+                spent(5, 30_000, 4_000, Some(0.1), 0),
+            ),
+            (
+                Served::new(Some("coding"), "kimi/kimi-for-coding"),
+                spent(3, 10_100, 1_000, Some(0.09), 0),
+            ),
+            (
+                Served::direct("anthropic/claude-opus-5-5"),
+                spent(12, 84_200, 9_100, Some(0.412), 0),
+            ),
+        ];
+        let text = cost(&report);
+        let at = text.find("By model").expect("a by-model block");
+        let block: Vec<&str> = text[at..].lines().collect();
+        assert!(block[1].starts_with("  model"), "{text}");
+        assert!(
+            block[2].starts_with("  coding · anthropic/claude-sonnet-5-5"),
+            "{text}"
+        );
+        assert!(
+            block[3].starts_with("  coding · kimi/kimi-for-coding"),
+            "{text}"
+        );
+        assert!(
+            block[4].starts_with("  anthropic/claude-opus-5-5"),
+            "{text}"
+        );
+        assert!(block[2].ends_with("$0.1000"), "{text}");
+        assert!(
+            !cost(&usage_report(&[(
+                UsageSource::Main,
+                spent(1, 1, 1, Some(0.1), 0)
+            )]))
+            .contains("By model")
+        );
     }
 
     #[test]

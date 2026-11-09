@@ -360,6 +360,50 @@ pub async fn propose(
     })
 }
 
+/// A scan that ran on a model list.
+pub struct ScanRun {
+    pub proposals: Proposals,
+    /// The model that answered.
+    pub served: crate::models::ModelRef,
+    /// Whether its cost is counted.
+    pub billed: bool,
+    /// The entry the list started on, when another one answered.
+    pub fell_from: Option<crate::models::ModelRef>,
+}
+
+/// [`propose`] on the `setup` role's list: the active entry, then the others while the account's
+/// quota runs out. The entry that answers becomes the list's active one.
+pub async fn propose_on_chain(
+    switcher: &crate::models::Switcher,
+    chain: &crate::model_roles::ModelChain,
+    timeout_secs: u64,
+    sample: &sample::Sample,
+) -> Result<ScanRun, env_scan::ScanError> {
+    let through = switcher
+        .run_through(
+            chain,
+            true,
+            false,
+            |handle| async move {
+                let handle = handle.guardian_scoped();
+                let label = handle.reference.to_string();
+                let settings = scan_settings(&handle, timeout_secs);
+                let proposals = propose(&handle.completion, &label, &settings, sample).await?;
+                Ok((proposals, handle.reference.clone(), handle.catalog_billed()))
+            },
+            |e: &env_scan::ScanError| crate::turn::error_falls_through(e),
+            |_, e| env_scan::ScanError::Model(Box::new(e)),
+        )
+        .await?;
+    let (proposals, served, billed) = through.value;
+    Ok(ScanRun {
+        proposals,
+        served,
+        billed,
+        fell_from: through.from.map(|from| chain.entries[from].clone()),
+    })
+}
+
 /// How the model scan ended, for the setup report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScanStatus {

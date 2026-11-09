@@ -13,11 +13,40 @@ use super::setup::{build_guardian_telling, warm_output_mode};
 use crate::accounts::AccountsError;
 use crate::child_runner::MainModel;
 use crate::config::Account;
-use crate::models::{AccountListing, GuardianChoice, GuardianModel, ModelRef, Switcher};
+use crate::config::MainSource;
+use crate::model_roles::{ModelChain, Tried, fall_through_notice};
+use crate::models::{
+    AccountListing, GuardianChoice, GuardianModel, Listing, ModelHandle, ModelRef, Switcher,
+};
 use crate::quota::QuotaSource;
 use crate::runtime_error::RuntimeError;
 use crate::scanner_stage::llm_backend;
+use crate::usage_ledger::Served;
 use crate::user_config;
+
+/// Whether role `name` is `main` or lists, through other roles, `main` (or `$main`): saving
+/// its name as `[model] model` would fold into `main` and make it list itself.
+fn reaches_main(roles: &std::collections::BTreeMap<String, Vec<String>>, name: &str) -> bool {
+    let mut seen = vec![name];
+    let mut pending = vec![name];
+    while let Some(role) = pending.pop() {
+        if role == crate::model_roles::MAIN_ROLE {
+            return true;
+        }
+        for entry in roles.get(role).into_iter().flatten() {
+            let target = if entry == "$main" {
+                crate::model_roles::MAIN_ROLE
+            } else {
+                entry.as_str()
+            };
+            if !entry.contains('/') && !seen.contains(&target) {
+                seen.push(target);
+                pending.push(target);
+            }
+        }
+    }
+    false
+}
 
 /// A guardian account's name and the source of its subscription quota.
 pub type GuardianQuota = (String, Arc<dyn QuotaSource>);
@@ -49,6 +78,15 @@ pub struct Switched {
     /// The installed guardian's facts warning, set where the runtime's own record of the
     /// guardian is not updated and the caller cannot read it from there.
     pub facts_notice: Option<String>,
+    /// Why the choice was deliberately not saved, naming the setting to edit instead.
+    pub session_only: Option<String>,
+}
+
+/// A main model list that moved to its next entry after the serving one ran out of quota.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FellThrough {
+    pub from: ModelRef,
+    pub to: ModelRef,
 }
 
 /// What a credential change did to the live session.
@@ -84,7 +122,7 @@ impl AgentRuntime {
     }
 
     /// A copy of the shared switcher, so no lock is held across an await.
-    fn switcher(&self) -> Result<Switcher, RuntimeError> {
+    pub(super) fn switcher(&self) -> Result<Switcher, RuntimeError> {
         self.setup
             .switcher
             .as_ref()
@@ -117,23 +155,127 @@ impl AgentRuntime {
     }
 
     /// `/model`: switches the live session's model, rebuilds the agent on it and saves the
-    /// choice as `[model] model`. The guardian follows only when it is on the main-model
-    /// fallback; a pinned or validated guardian stays where it is.
+    /// choice as `[model] model`, unless the user's settings give the main model as a role or a
+    /// list, which a typed choice must not overwrite. The guardian follows only when it is on the
+    /// main-model fallback; a pinned or validated guardian stays where it is.
     pub async fn switch_main_model(&mut self, text: &str) -> Result<Switched, RuntimeError> {
-        let guardian_followed = self.install_main(text).await?;
+        let text = text.trim();
+        let guardian_followed = self.install_main_chain(text).await?;
         // The level stays; a new model that cannot take it is told about now, not at the next
         // turn.
         self.turn_generation_options();
         let reference = self.models.main.reference.to_string();
-        let persist_error = self
-            .persist(|path| user_config::set_model(path, &reference))
-            .map(|e| chain(&e));
+        let (persist_error, session_only) = match self.main_choice_persistence(text) {
+            Ok(None) => (
+                self.persist(|path| user_config::set_model(path, text))
+                    .map(|e| chain(&e)),
+                None,
+            ),
+            Ok(Some(why)) => (None, Some(why)),
+            Err(e) => (Some(chain(&e)), None),
+        };
         Ok(Switched {
             reference,
             guardian_followed,
             persist_error,
             facts_notice: None,
+            session_only,
         })
+    }
+
+    /// Whether a typed `/model` choice may be saved as `[model] model`: `None` when it may, else
+    /// why it stays with this session. A role or a list in the settings is the user's own
+    /// document, and a second `main` key beside it would stop the next start.
+    fn main_choice_persistence(&self, text: &str) -> Result<Option<String>, RuntimeError> {
+        use fontaine_agents::registry::ModelSpec;
+        match ModelSpec::parse(text) {
+            Ok(ModelSpec::Model(_)) => {}
+            Ok(ModelSpec::Named(name)) => {
+                if reaches_main(&self.config.roles, &name) {
+                    return Ok(Some(format!(
+                        "`{name}` reaches `main`, so saving it as `[model] model` would make the roles loop; edit the `{name}` role under `[models.roles]` to change it for later sessions"
+                    )));
+                }
+            }
+            Ok(ModelSpec::Main) => {
+                return Ok(Some(
+                    "`$main` is already the configured main model".to_string(),
+                ));
+            }
+            _ => {
+                return Ok(Some(
+                    "a list is not saved; set `[model] model` to it in your settings".to_string(),
+                ));
+            }
+        }
+        let held = match self.config.main_source {
+            MainSource::Role => Some("`main` under `[models.roles]`"),
+            MainSource::ModelKeyList => Some("`[model] model`, which is a list"),
+            MainSource::Unset | MainSource::ModelKeyString => None,
+        };
+        if let Some(held) = held {
+            return Ok(Some(format!(
+                "the main model is set by {held}; edit it there to change it for later sessions"
+            )));
+        }
+        let Some(path) = &self.setup.user_config else {
+            return Ok(None);
+        };
+        let shape = user_config::main_model_shape(path)
+            .map_err(|e| RuntimeError::caused("could not read the settings file", e))?;
+        Ok(match shape {
+            user_config::MainShape::Role => Some(
+                "the main model is set by `main` under `[models.roles]` in your settings; edit it there to change it for later sessions"
+                    .to_string(),
+            ),
+            user_config::MainShape::List => Some(
+                "`[model] model` in your settings is a list; edit it there to change it for later sessions"
+                    .to_string(),
+            ),
+            user_config::MainShape::Other => None,
+        })
+    }
+
+    /// The role and model the main conversation's calls are recorded against in the usage ledger.
+    pub fn served(&self) -> Served {
+        Served::new(
+            self.models.main_chain.role.as_deref(),
+            &self.models.main.reference,
+        )
+    }
+
+    /// The chain of the role `name`, shared by everything running on it, when the user defined it.
+    pub fn role_chain(&self, name: &str) -> Option<Arc<ModelChain>> {
+        self.setup
+            .role_chains
+            .chain_of_role(&self.setup.roles, name)
+    }
+
+    /// The switcher and the chain of the role `name`, for a one-shot job that outlives a borrow of
+    /// the runtime. `None` when the user did not define the role or no switcher is available.
+    pub fn job_chain(&self, name: &str) -> Option<(Switcher, Arc<ModelChain>)> {
+        Some((self.switcher().ok()?, self.role_chain(name)?))
+    }
+
+    /// Records a one-shot job's move to the next entry of its list, and says so.
+    pub(super) fn announce_fall_through(
+        &self,
+        agent: &str,
+        subject: &str,
+        chain: &ModelChain,
+        from: &ModelRef,
+        to: &ModelRef,
+        class: &str,
+    ) {
+        self.state.record_model_fall_through(
+            agent,
+            chain.role.as_deref(),
+            &from.to_string(),
+            &to.to_string(),
+            class,
+        );
+        self.approver
+            .warn(&fall_through_notice(subject, from, to, class));
     }
 
     /// The reasoning effort the next main turn sends, checked against the current model. A level
@@ -144,14 +286,42 @@ impl AgentRuntime {
             .generation_options_warned(&self.state, self.state.effort())
     }
 
-    /// Resolves `text`, rebuilds the agent on it and makes it the model of the session and its
-    /// subagents, without saving anything. Returns whether the guardian followed.
-    async fn install_main(&mut self, text: &str) -> Result<bool, RuntimeError> {
+    /// Resolves the first entry of the list `text` names, rebuilds the agent on it and makes the
+    /// list the session's main chain and its entry the model of the session and its subagents,
+    /// without saving anything. Returns whether the guardian followed.
+    async fn install_main_chain(&mut self, text: &str) -> Result<bool, RuntimeError> {
         let switcher = self.switcher()?;
+        let list = Arc::new(
+            switcher
+                .main_chain(text)
+                .map_err(|e| RuntimeError::caused("could not resolve the model", e))?,
+        );
         let (handle, listing) = switcher
-            .main(text)
+            .main(&list.entries[0].to_string())
             .await
             .map_err(|e| RuntimeError::caused("could not resolve the model", e))?;
+        self.install_handle(handle, listing, Some(list))
+    }
+
+    /// Resolves entry `index` of the session's main chain and rebuilds the agent on it, keeping
+    /// the chain. Does not move the chain's active entry.
+    async fn install_main_entry(&mut self, index: usize) -> Result<bool, RuntimeError> {
+        let switcher = self.switcher()?;
+        let reference = self.models.main_chain.entries[index].clone();
+        let (handle, listing) = switcher
+            .main(&reference.to_string())
+            .await
+            .map_err(|e| RuntimeError::caused("could not resolve the model", e))?;
+        self.install_handle(handle, listing, None)
+    }
+
+    /// Makes `handle` the model of the session, and `chain` its list when it starts a new one.
+    fn install_handle(
+        &mut self,
+        handle: ModelHandle,
+        listing: Listing,
+        chain: Option<Arc<ModelChain>>,
+    ) -> Result<bool, RuntimeError> {
         let previous = std::mem::replace(&mut self.models.main, handle);
         let previous_listing = std::mem::replace(&mut self.models.main_listing, listing);
         if let Err(e) = self.rebuild() {
@@ -159,8 +329,12 @@ impl AgentRuntime {
             self.models.main_listing = previous_listing;
             return Err(e);
         }
+        if let Some(chain) = chain {
+            self.models.main_chain = chain;
+        }
         *write(&self.main, "main model") = MainModel {
             handle: self.models.main.clone(),
+            chain: self.models.main_chain.clone(),
             listing: self.models.main_listing.clone(),
         };
         self.state
@@ -173,6 +347,57 @@ impl AgentRuntime {
             self.models.guardian = Some(model);
         }
         Ok(guardian_followed)
+    }
+
+    /// The main model ran out of quota: moves the session to the next entry of its list that can
+    /// serve, rebuilding the agent on it, and warns. The entry becomes the one later turns start
+    /// on. `tried` holds the entries this request has already failed on, which are not tried
+    /// again. `None` when the list is spent: every other entry failed, failed to resolve, was
+    /// skipped under a cost cap, or there is none.
+    pub async fn fall_through(&mut self, class: &str, tried: &mut Tried) -> Option<FellThrough> {
+        let list = self.models.main_chain.clone();
+        let failed = list.active();
+        let from = list.entries[failed].clone();
+        let switcher = self.switcher().ok()?;
+        for index in tried.order(&list, failed) {
+            let to = list.entries[index].clone();
+            let resolved = switcher.main(&to.to_string()).await;
+            let (handle, listing) = match resolved {
+                Ok(resolved) => resolved,
+                Err(e) => {
+                    self.approver.warn(&format!("skipping {to}: {}", chain(&e)));
+                    tried.note(index);
+                    continue;
+                }
+            };
+            if self.setup.explicit_budget_cap && !handle.priced() {
+                tried.note(index);
+                continue;
+            }
+            if let Err(e) = self.install_handle(handle, listing, None) {
+                self.approver.warn(&format!("skipping {to}: {}", chain(&e)));
+                tried.note(index);
+                continue;
+            }
+            list.settle(index);
+            tried.note(index);
+            self.announce_fall_through(
+                fontaine_tools::gate::ROOT_AGENT,
+                list.role.as_deref().unwrap_or("main"),
+                &list,
+                &from,
+                &to,
+                class,
+            );
+            return Some(FellThrough { from, to });
+        }
+        None
+    }
+
+    /// What to add to a failure when the main model's list has nothing left to fall through to.
+    pub fn fall_through_spent(&self) -> Option<String> {
+        let list = &self.models.main_chain;
+        (list.entries.len() > 1).then(|| format!("every model in {} failed", list.label()))
     }
 
     /// The models of every configured account, for the `/model` and `/guardian-model` pickers. The first call fetches
@@ -266,6 +491,7 @@ impl AgentRuntime {
     /// the guardian's composition uses it.
     pub fn removable(&self, name: &str) -> Result<(), AccountsError> {
         crate::accounts::check_defined_only_in_user_file(&self.config, name)?;
+        crate::accounts::check_roles_survive(&self.config, name)?;
         let on = |reference: &str| ModelRef::parse(reference).is_some_and(|r| r.account == name);
         if self.models.main.reference.account == name {
             return Err(AccountsError::InUse {
@@ -297,8 +523,14 @@ impl AgentRuntime {
         self.listings.retain(|l| l.account != name);
         let mut effect = CredentialEffect::default();
         if self.models.main.reference.account == name {
-            let reference = self.models.main.reference.to_string();
-            match self.install_main(&reference).await {
+            let at = self
+                .models
+                .main_chain
+                .entries
+                .iter()
+                .position(|entry| *entry == self.models.main.reference)
+                .unwrap_or_else(|| self.models.main_chain.active());
+            match self.install_main_entry(at).await {
                 Ok(_) => effect.main_rebuilt = true,
                 Err(e) => effect.main_error = Some(chain(&e)),
             }
@@ -330,6 +562,7 @@ impl AgentRuntime {
             guardian_followed: false,
             persist_error,
             facts_notice: None,
+            session_only: None,
         })
     }
 
@@ -367,6 +600,7 @@ impl AgentRuntime {
             guardian_followed: false,
             persist_error,
             facts_notice,
+            session_only: None,
         }))
     }
 
@@ -381,5 +615,27 @@ impl AgentRuntime {
                 )
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod reaches_main_tests {
+    use super::reaches_main;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn a_role_listing_main_would_loop_when_saved_as_the_main_model() {
+        let roles = BTreeMap::from([
+            (
+                "thinking".to_string(),
+                vec!["$main".to_string(), "b/y".to_string()],
+            ),
+            ("plain".to_string(), vec!["b/y".to_string()]),
+            ("outer".to_string(), vec!["thinking".to_string()]),
+        ]);
+        assert!(reaches_main(&roles, "main"));
+        assert!(reaches_main(&roles, "thinking"));
+        assert!(reaches_main(&roles, "outer"));
+        assert!(!reaches_main(&roles, "plain"));
     }
 }

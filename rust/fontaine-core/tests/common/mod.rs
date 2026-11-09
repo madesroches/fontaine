@@ -13,6 +13,8 @@ use tempfile::TempDir;
 
 /// A scratch world: a launch dir, a config dir and a data dir, all canonical and separate.
 pub struct World {
+    /// Makes runtimes built in this world run as if `--max-budget-usd` were given.
+    pub explicit_budget_cap: std::sync::atomic::AtomicBool,
     _tmp: TempDir,
     pub root: PathBuf,
     pub work: PathBuf,
@@ -31,6 +33,7 @@ impl World {
             std::fs::create_dir_all(dir).unwrap();
         }
         World {
+            explicit_budget_cap: Default::default(),
             _tmp: tmp,
             root,
             work,

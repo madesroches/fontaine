@@ -103,6 +103,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[accounts.*]`, including their network keys | no | no | yes |
 | `[network]` | no | no | yes |
 | `[websearch]` | no | no | yes |
+| `[models.roles]` | no | no | yes |
 | `[model] model` | no | yes | yes |
 | `[guardian] model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | yes |
 | `[guardian] scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no |
@@ -554,8 +555,76 @@ max_results = 8
 
 | Key | Meaning | Default |
 |---|---|---|
-| `model` | The session model as `<account>/<model>`. `--model` overrides it. There is no default model: a run with neither is a configuration error (exit code 2) that names both. | unset |
+| `model` | The session model as `<account>/<model>`, a [role](#modelsroles) name, or an ordered list of them. It is shorthand for the `main` role, so setting it and `[models.roles] main` in one file is an error. `--model` overrides it. There is no default model: a run with neither is a configuration error (exit code 2) that names both. | unset |
 | `effort` | The main agent's reasoning effort: `off`, `low`, `medium`, `high` or `max`. `--effort` overrides it and `/effort` changes it for a session. Fontaine passes it through rig's portable setting, which maps it onto the provider's own parameter. The levels a model takes come from rig's catalog; a derived model's come from the listed model it was derived from, and on `claude-subscription` from the flags the Claude CLI reports for it. Unset sends no reasoning parameter, so the model thinks at its own default. A level the model or its endpoint cannot take (a non-reasoning model, a level the catalog does not list for it, or a generic `openai-compatible` gateway, which has no known mapping) is left out of the request with a one-time warning, and the run goes on. Subagents use it too, unless their type sets its own. The guardian is not affected: it always runs with thinking off. Not settable from the shared project file. | unset |
+
+### `[models.roles]`
+
+A role is a name for an ordered list of models. Each entry is an `<account>/<model>` or the name
+of another role, and a bare name (no `/`) stands for its role's list everywhere a model is
+accepted: `--model`, `[model] model`, `[agents.types.<name>] model`, an [agent file](extensions.md#agent-files)'s `model`,
+the `agent` tool's `model` argument and `/model`. The list is a preference order.
+
+```toml
+[models.roles]
+main       = ["anthropic/claude-opus-5-5"]
+setup      = ["anthropic/claude-haiku-5-5"]
+sonnet     = ["anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-4-6"]
+coding     = ["sonnet", "kimi/kimi-for-coding"]
+thinking   = ["anthropic/claude-opus-5-5", "openai/gpt-5.5"]
+```
+
+Fontaine reads four role names itself. Every other name is yours, so Claude Code's `sonnet` and
+`opus` aliases port unchanged once you define them.
+
+| Role | Used for | When it is not defined |
+|---|---|---|
+| `main` | The session's model. It is the same list as `[model] model`. | `main` is the same setting as `[model] model`, so set one or the other; `--model` overrides it. With neither, the run exits with code 2 |
+| `critique` | The `fontaine auto-mode critique` review. | The guardian's model |
+| `setup` | The model scan of `/auto-mode-setup` and `fontaine auto-mode setup`. | The guardian's model |
+| `compaction` | The summary request of a [compaction](tui.md#context). The threshold still follows the main model's window. | The main model, at its current entry |
+
+Roles never apply to the guardian: `[guardian] model` and the `[guardian.composition]` models stay
+one `<account>/<model>`, and a pinned guardian is never substituted.
+
+Rules, all checked when the configuration loads (exit code 2):
+
+- A role name uses letters, digits, `_` and `-`. `inherit` is reserved, and a name never starts with `$`.
+- A list is not empty. Each entry is an `<account>/<model>` of a configured account or a defined role. `$main` is a synonym for `main`, and naming it needs `[model] model` or `[models.roles] main` in your settings: `--model` does not define it, so a list naming `main` without one fails to load.
+- A role never reaches itself through other roles; the error names the cycle.
+- Every role is checked, whether or not anything uses it.
+- The section is read from your user file and `--settings` only, like `[accounts]`, because an entry names an endpoint. A later scope replaces a whole role.
+- `[model] model` and `[models.roles] main` are one setting. In one file they are an error naming both keys; across scopes the one from the higher-precedence scope wins, so a trusted project-local `[model] model` still overrides a `main` in your user file.
+- `main` or `$main` inside another role splices the configured `main` list. `--model` does not re-point it.
+
+An entry that names a role is replaced by that role's list in place, and a model listed twice
+keeps its first position. A repository's agent file or a plugin's may name a role or `$main`, not an
+endpoint; see [Extensions](extensions.md#agent-files).
+
+#### Falling through to the next entry
+
+When the serving entry fails with a quota-class error that persists past the retries on the same
+model, the caller moves to the next entry of its list and stays there. The errors are an HTTP 402,
+429 or 529, a rate-limit, quota or overload code a provider sends without a status, and a
+`claude-subscription` [plan limit](claude-subscription.md#failures). A 400, a 500 or a refused
+request never moves on, and neither do Fontaine's own token and cost budgets, which are your limit
+and not the account's.
+
+- The main conversation moves its agent to the next entry and continues the turn there. A warning
+  names both models and the switch is recorded in the session log and the audit log. The entry
+  that worked becomes the one later turns start on.
+- A subagent on a role or a list moves for itself, and the role's other subagents start on the entry
+  that worked. A subagent on `$main` moves its own agent without changing the main conversation's entry.
+- Compaction, the critique and the setup scan walk their own role's list the same way.
+- Each request tries every entry once. When the whole list is spent the turn fails as it does today,
+  with `every model in <role> failed` added.
+- With an explicit `--max-budget-usd`, an entry with no known price is skipped, because a capped run
+  has to stay measurable.
+- A resumed session starts every list at its first entry again.
+
+Falling through reacts to what happens at run time. A typo, a missing credential or an account
+that no longer exists is still an error at startup and never silently skipped. The `/cost` report
+breaks the session's spend down by role and model.
 
 ### `[guardian]`
 
@@ -902,8 +971,9 @@ hard_deny = ["$defaults", "Never send repo contents to third-party code-review A
 | `session_cost_budget_usd` | The same in dollars, when set. | unset |
 | `teams` | Turns on the [task boards](agents.md#task-boards): the `board_show` and `board_update` tools, the owner reminders and the `task_completed` and `teammate_idle` hooks. Set to `false`, the board tools are not registered. It does not control idling: a subagent that ends `done` or `failed` goes idle when its turn ends and can be woken, unless it is later killed, runs out of budget or is retired. Like the other `[agents]` keys it cannot be set from the repository's shared settings. | `true` |
 
-`[agents.types.<name>]` defines an agent type with `model` (`$main`, `$guardian_default` or
-`<account>/<model>`), `tools` (built-in or `mcp__` tool names), `effort` (`off`, `low`, `medium`,
+`[agents.types.<name>]` defines an agent type with `model` (`<account>/<model>`, a
+[role](#modelsroles) name, `$main`, `$guardian_default`, or a list of the first three; a list of
+roles is its own preference order, and `$guardian_default` stands alone), `tools` (built-in or `mcp__` tool names), `effort` (`off`, `low`, `medium`,
 `high` or `max`; unset inherits the session's level, and a subagent may run above or below its
 parent because effort is not a permission) and `mode`. `mode` accepts only
 `inherit` (the default: the parent's mode), `manual` or `dontAsk`; any other value is an error, so

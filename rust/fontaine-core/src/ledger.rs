@@ -256,6 +256,15 @@ pub enum Record {
         class: String,
         message: String,
     },
+    /// A model list ran out of quota on its serving entry and moved on. `role` is the list's
+    /// role, if it has one; `from` and `to` are `<account>/<model>`.
+    ModelFellThrough {
+        agent: String,
+        role: Option<String>,
+        from: String,
+        to: String,
+        class: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -636,7 +645,8 @@ impl LedgerView {
             | Record::AfkReviewed {}
             | Record::AfkAssessment { .. }
             | Record::Goal { .. }
-            | Record::RequestFailed { .. } => {}
+            | Record::RequestFailed { .. }
+            | Record::ModelFellThrough { .. } => {}
         }
     }
 }

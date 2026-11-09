@@ -11,7 +11,7 @@ and asynchronous tasks, with stricter permission rules.
 |---|---|
 | `agent_type` | One of the [agent types](#agent-types). Required. |
 | `prompt` | The task. A subagent cannot see the conversation, so it needs everything in `prompt`; a [`fork`](#forking-the-conversation) already has the conversation and needs only a short task. Required. |
-| `model` | Optional: `$main`, `$guardian_default` or `<account>/<model>`. |
+| `model` | Optional: a [role](configuration.md#modelsroles) name, `$main`, `$guardian_default` or `<account>/<model>`. The tool's description lists the session's roles, so the model can choose one. |
 | `name` | Optional [name](#naming-a-subagent) for the subagent. |
 
 The call returns `{"agent_id": "agent-1", "name": "explore-1"}` at once and the subagent runs alongside its parent and
@@ -31,7 +31,8 @@ the subagents it started are stopped with it, and their reports are not delivere
 
 The model used is the call's `model`, else the agent type's `model`, else the session model. An
 invalid value is an error result, and so is a `model` on a type defined by a project file (see
-[agent files](#agent-files)).
+[agent files](#agent-files)). A role name stands for the role's list of models in preference
+order; see [Roles](#roles-and-model-lists).
 
 ### Naming a subagent
 
@@ -91,8 +92,19 @@ On Windows without Git Bash the main conversation has no `shell`, and `worker` g
 its place; a type of your own that lists `shell` does too, and one that disallows `shell` gets no
 command tool.
 
-`$main` is the session model. `$guardian_default` is the top-ranked validated guardian model your
+`$main` is the session model, including the entry it has fallen through to. `$guardian_default` is the top-ranked validated guardian model your
 accounts offer, or the session model when there is none; it is opt-in — no built-in type uses it.
+
+### Roles and model lists
+
+A `model` may be a [role](configuration.md#modelsroles) name (`coding`), a list of references and
+roles, or an `<account>/<model>`; a role your `[models.roles]` does not define is an error in a user
+file or `[agents.types]` and a spawn error when the model passes it. Every subagent started on one
+role shares the role's current entry: when the entry in use runs out of quota and a subagent moves to
+the next one, the others, and later spawns, start on the entry that worked. A subagent on `$main`
+moves for itself and leaves the main conversation's entry alone. A bare `main` is the role of that
+name, a list of its own, not the live session model; use `$main` for that. The tool description the main
+model sees lists the roles and their models, and it does not change during a session.
 
 Types come from four places, later ones replacing earlier ones of the same name: the built-in
 ones, [agent files](#agent-files) in your config directory, `[agents.types.<name>]` entries, and
@@ -246,8 +258,8 @@ brought back.
 - The conversation model is built on the first wake, not at startup, so a resume opens nothing for
   agents nobody talks to. A missing log or an unavailable model ends that wake as `failed`, with the
   reason, and releases the agent's tasks.
-- It runs on the model recorded when it was spawned (a project agent type always runs on the
-  session model, as at spawn). Its tools are the type's, cut to its parent's, and its mode is never
+- It runs on the model it last served (a project agent type runs on the model its file names, or
+  the session model, as at spawn), without a list to fall through to. Its tools are the type's, cut to its parent's, and its mode is never
   looser than its parent's, both worked out again on resume.
 - Spend starts over in the new process, as the session's does; per-agent budgets are opt-in.
 - Its view in the terminal UI shows only turns from after the resume.
@@ -397,7 +409,9 @@ copying. Files live in `<config dir>/agents/<name>.md` and `<root>/.fontaine/age
 [Extensions](extensions.md#agent-files) for the frontmatter and what is refused.
 
 A file in a repository can only narrow: its tools must be tools its parent has, its mode is
-`default` (the default) or `dontAsk`, and it names no model and no effort, so it runs on the session model at the session's level. A file
+`default` (the default) or `dontAsk`, and it names no effort. It may name a [role](configuration.md#modelsroles) or `$main`
+as its model, never an `<account>/<model>`, a list or `$guardian_default`, because the repository cannot define a role: a role you have not
+defined makes the type run on the session model, with a warning at startup. The `agent` tool's per-call `model` is still refused for it. A file
 that breaks this stops startup with exit code 2 naming the file. A repository's file replaces a
 user file or `[agents.types]` entry of the same name, and so stays narrowed.
 

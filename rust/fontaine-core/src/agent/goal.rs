@@ -12,10 +12,12 @@ use crate::goal::{
     Pending, REASON_CHARS, Step, cut, goal_prompt_text, transcript_of,
 };
 use crate::ledger::{GoalEvent, Record};
+use crate::model_roles::{COMPACTION_ROLE, ModelChain};
+use crate::models::Switcher;
 use crate::session::{CONVERSATION_LOG, CompactReason, CompactResult};
 use crate::side_question::{Answer, SideQuestion, SideQuestionError};
 use crate::turn::TurnOutcome;
-use crate::usage_ledger::UsageSource;
+use crate::usage_ledger::{Served, UsageSource};
 
 impl AgentRuntime {
     /// What the session has spent so far: the root's spend, which holds the main model, the
@@ -34,23 +36,135 @@ impl AgentRuntime {
         self.compact_with(CompactReason::Threshold).await
     }
 
-    /// [`Session::compact_logged`](crate::session::Session::compact_logged) on the main model,
-    /// debited like [`compact_if_needed`](Self::compact_if_needed).
+    /// [`Session::compact_logged_via`](crate::session::Session::compact_logged_via): the
+    /// conversation is measured against the main model and summarized by the `compaction` role's
+    /// model, or by the main model when no such role is defined. The usage is debited to the root
+    /// like [`compact_if_needed`](Self::compact_if_needed). A role's list falls through to its
+    /// next entry when the summary request runs out of quota.
     pub async fn compact_with(&self, reason: CompactReason) -> CompactResult {
+        let main = &self.models.main;
+        if let (Some(chain), Ok(switcher)) = (self.role_chain(COMPACTION_ROLE), self.switcher()) {
+            return self.compact_on_chain(reason, &switcher, &chain).await;
+        }
         let result = self
             .session
-            .compact_logged(
-                &self.models.main.completion,
-                self.models.main.catalog_billed(),
+            .compact_logged_via(
+                &main.completion,
+                None,
+                main.catalog_billed(),
                 reason,
                 self.approver(),
             )
             .await;
-        if let Some(usage) = result.usage() {
-            self.state
-                .record_usage(UsageSource::Compaction, ROOT_AGENT, usage, true);
+        self.record_compaction(
+            &result,
+            &Served::new(self.models.main_chain.role.as_deref(), &main.reference),
+        );
+        if matches!(
+            result,
+            CompactResult::Failed {
+                falls_through: true,
+                ..
+            }
+        ) {
+            self.approver()
+                .warn("compaction skipped: the model ran out of quota");
         }
         result
+    }
+
+    fn record_compaction(&self, result: &CompactResult, served: &Served) {
+        if let Some(usage) = result.usage() {
+            self.state
+                .record_usage(UsageSource::Compaction, ROOT_AGENT, usage, true, served);
+        }
+    }
+
+    /// The compaction on the `compaction` role's list: the active entry, then the others while
+    /// the summary request runs out of quota.
+    async fn compact_on_chain(
+        &self,
+        reason: CompactReason,
+        switcher: &Switcher,
+        chain: &ModelChain,
+    ) -> CompactResult {
+        let main = &self.models.main;
+        let role = chain.role.clone();
+        let start = chain.active_ref().clone();
+        let start_unresolved = std::cell::Cell::new(false);
+        let through = switcher
+            .run_through(
+                chain,
+                true,
+                self.setup.explicit_budget_cap,
+                |handle| {
+                    let reason = reason.clone();
+                    let served = Served::new(role.as_deref(), &handle.reference);
+                    async move {
+                        let result = self
+                            .session
+                            .compact_logged_via(
+                                &main.completion,
+                                Some(&handle.completion),
+                                handle.catalog_billed(),
+                                reason,
+                                self.approver(),
+                            )
+                            .await;
+                        self.record_compaction(&result, &served);
+                        match result {
+                            CompactResult::Failed {
+                                falls_through: true,
+                                ..
+                            } => Err(result),
+                            done => Ok(done),
+                        }
+                    }
+                },
+                |_| true,
+                |reference, why| {
+                    // The active entry failing to resolve ends the job without walking the list.
+                    let verb = if *reference == start {
+                        start_unresolved.set(true);
+                        "skipped"
+                    } else {
+                        "skipping"
+                    };
+                    self.approver().warn(&format!(
+                        "compaction: {verb} {reference}: {}",
+                        fontaine_tools::error_chain::chain(&why)
+                    ));
+                    CompactResult::Failed {
+                        usage: None,
+                        falls_through: true,
+                    }
+                },
+            )
+            .await;
+        match through {
+            Ok(done) => {
+                if let Some(from) = done.from {
+                    self.announce_fall_through(
+                        ROOT_AGENT,
+                        COMPACTION_ROLE,
+                        chain,
+                        &chain.entries[from],
+                        &chain.entries[done.index],
+                        "quota",
+                    );
+                }
+                done.value
+            }
+            Err(last) => {
+                if !start_unresolved.get() {
+                    self.approver().warn(&format!(
+                        "compaction skipped: every model in {} failed",
+                        chain.label()
+                    ));
+                }
+                last
+            }
+        }
     }
 
     /// `/btw`: answers `question` from the saved conversation on the main model, debited to the
@@ -70,8 +184,13 @@ impl AgentRuntime {
             Err(e) => e.usage(),
         };
         if let Some(usage) = usage {
-            self.state
-                .record_usage(UsageSource::SideQuestion, ROOT_AGENT, usage, true);
+            self.state.record_usage(
+                UsageSource::SideQuestion,
+                ROOT_AGENT,
+                usage,
+                true,
+                &Served::direct(&main.reference),
+            );
         }
         asked
     }
@@ -198,7 +317,12 @@ impl AgentRuntime {
         let judged = evaluator
             .evaluate(&pending.condition, &transcript_of(&conversation))
             .await;
-        self.state.add_goal_usage(&judged.usage);
+        let served = self
+            .models
+            .guardian
+            .as_ref()
+            .map_or_else(Served::default, |model| Served::direct(model.reference()));
+        self.state.add_goal_usage(&judged.usage, &served);
         judged.evaluation
     }
 

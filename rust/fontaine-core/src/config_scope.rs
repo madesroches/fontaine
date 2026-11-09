@@ -168,6 +168,7 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_only("checkpoints", CHECKPOINTS),
     Rule::user_only("plugins.auto_update", PLUGINS),
     Rule::user_or_cli("accounts", USER_FILE),
+    Rule::user_or_cli("models", USER_FILE),
     Rule::user_or_cli("network", NETWORK),
     Rule::user_or_cli("websearch", WEBSEARCH),
     Rule::user_or_cli("lsp", LSP),
@@ -414,6 +415,7 @@ mod tests {
             None,
         ),
         ("accounts", "[accounts.x]\nkind = \"ollama\"\n", None),
+        ("models", "[models.roles]\ncoding = [\"x/y\"]\n", None),
         ("network", "[network]\nhttps_proxy = \"http://p:1\"\n", None),
         ("websearch", "[websearch]\nnative = \"off\"\n", None),
         (

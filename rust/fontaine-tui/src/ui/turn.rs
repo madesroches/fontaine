@@ -11,11 +11,12 @@ use fontaine_core::audit::Decision;
 use fontaine_core::gate::AgentViewEvent;
 use fontaine_core::goal::Continue;
 use fontaine_core::ledger::Record;
+use fontaine_core::model_roles::Tried;
 use fontaine_core::schedule::{Fired, Kind};
 use fontaine_core::steering::Queued;
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
-    Attachment, AttachmentMedia, Flow, SessionEvent, TurnOutcome, TurnParams, run_turn,
+    Attachment, AttachmentMedia, Flow, RETRY_NOTE, SessionEvent, TurnOutcome, TurnParams, run_turn,
     user_message,
 };
 use fontaine_core::turn_recovery::{Fallback, Unsettled};
@@ -266,7 +267,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             fontaine_tools::error_chain::chain(&e)
         );
         self.app.transcript.error(message.clone());
-        Some(TurnEnd::Finished(TurnOutcome::Failed(message)))
+        Some(TurnEnd::Finished(TurnOutcome::Failed(message.into())))
     }
 
     /// Folds a turn an earlier fold failed to keep into the conversation, so it sits before
@@ -780,7 +781,44 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// `human` is what the user typed, recorded in the ledger as theirs; `None` is a turn the
     /// harness started, whose prompt is not. `attachments` are the message's inline files,
     /// already read from disk.
+    ///
+    /// A model that ran out of quota hands the session to the next entry of its list and the
+    /// turn carries on there, before the failure is reported and before a goal hears of it.
     async fn turn(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        text: String,
+        human: Option<&str>,
+        attachments: Vec<Attachment>,
+    ) -> TurnEnd {
+        let mut end = self.attempt(runtime, text, human, attachments).await;
+        let mut tried = Tried::default();
+        while let TurnEnd::Finished(TurnOutcome::Failed(failure)) = &end
+            && failure.falls_through
+        {
+            let class = failure.class.unwrap_or("quota");
+            if runtime.fall_through(class, &mut tried).await.is_some() {
+                end = self
+                    .attempt(runtime, RETRY_NOTE.to_string(), None, Vec::new())
+                    .await;
+                continue;
+            }
+            if let Some(spent) = runtime.fall_through_spent()
+                && let TurnEnd::Finished(TurnOutcome::Failed(failure)) = &mut end
+            {
+                failure.message.push('\n');
+                failure.message.push_str(&spent);
+            }
+            break;
+        }
+        self.finish_turn(runtime, &end).await;
+        self.goal_after_turn(runtime, &end);
+        runtime.refresh_files();
+        end
+    }
+
+    /// One run of the agent on `text`, to its end.
+    async fn attempt(
         &mut self,
         runtime: &AgentRuntime,
         text: String,
@@ -872,7 +910,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     // The turn never runs, and the record its start wrote must not be
                     // read later as this turn's fallback.
                     runtime.clear_run_start().await;
-                    return TurnOutcome::Failed(message);
+                    return TurnOutcome::Failed(message.into());
                 }
             };
             if started_at.swap(len, std::sync::atomic::Ordering::Relaxed) != len
@@ -901,6 +939,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     provider,
                     native_search: runtime.native_search_active(),
                     generation_options: runtime.turn_generation_options(),
+                    served: runtime.served(),
                 },
                 &mut on_event,
             )
@@ -911,7 +950,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             if let Some(e) = record_error.take() {
                 // The turn never ran: no fold is owed, and `finish_turn` below reports the
                 // failure to the transcript.
-                break TurnEnd::Finished(TurnOutcome::Failed(e));
+                break TurnEnd::Finished(TurnOutcome::Failed(e.into()));
             }
             let changed = tree.changed().notified();
             tokio::pin!(changed);
@@ -1031,9 +1070,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
             self.on_event(runtime, event);
         }
         self.show_delivered(runtime);
-        self.finish_turn(runtime, &end).await;
-        self.goal_after_turn(runtime, &end);
-        runtime.refresh_files();
         end
     }
 
@@ -1125,8 +1161,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.drain_prompts();
         self.app.transcript.interrupt_pending();
         match end {
-            TurnEnd::Finished(TurnOutcome::Failed(message)) => {
-                self.app.transcript.error(message.clone());
+            TurnEnd::Finished(TurnOutcome::Failed(failure)) => {
+                self.app.transcript.error(failure.message.clone());
             }
             TurnEnd::Finished(TurnOutcome::MaxTurns(message)) => {
                 self.app.transcript.notice(message.clone());

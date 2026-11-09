@@ -1174,7 +1174,7 @@ impl AgentTree {
             ModelSpec::parse(&node.info.model)
                 .unwrap_or_else(|_| agent_type.model.clone().unwrap_or(ModelSpec::Main))
         } else {
-            ModelSpec::Main
+            agent_type.model.clone().unwrap_or(ModelSpec::Main)
         };
         Some(RevivalRequest {
             id: id.to_string(),
@@ -3278,6 +3278,42 @@ mod tests {
         let start = tokio::time::Instant::now();
         tree.settled(Duration::from_secs(5)).await;
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    struct NoLedger;
+
+    impl RootLedger for NoLedger {
+        fn human_messages(&self) -> Vec<String> {
+            Vec::new()
+        }
+
+        fn append_event(&self, _event: crate::root_ledger::AgentEvent) {}
+    }
+
+    #[test]
+    fn a_revived_agent_that_refuses_a_per_call_model_keeps_the_model_its_type_names() {
+        let tree = tree(8);
+        tree.set_root_tools(|| ["read", "agent"].map(String::from).to_vec());
+        let mut types = AgentTypes::builtin();
+        let mut project = types.get("explore").unwrap().clone();
+        project.name = "repo-bot".into();
+        project.origin = crate::registry::TypeOrigin::ProjectFile("repo-bot.md".into());
+        project.model = Some(ModelSpec::Named("coding".into()));
+        types.insert(project);
+        tree.rebuild(
+            &[
+                (record("agent-1", ROOT_AGENT, "repo-bot"), true),
+                (record("agent-2", ROOT_AGENT, "explore"), true),
+            ],
+            &types,
+        );
+        let ledger: Arc<dyn RootLedger> = Arc::new(NoLedger);
+        // A type that refuses a per-call model comes back on the model it names, not on `$main`.
+        let project = tree.revival_request("agent-1", ledger.clone()).unwrap();
+        assert_eq!(project.model, ModelSpec::Named("coding".into()));
+        // One that accepts a per-call model comes back on the concrete model it last served.
+        let user = tree.revival_request("agent-2", ledger).unwrap();
+        assert_eq!(user.model, ModelSpec::Model("acct/model".into()));
     }
 
     #[test]

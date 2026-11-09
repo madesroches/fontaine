@@ -777,7 +777,13 @@ async fn the_per_call_model_overrides_the_types_and_bad_values_are_error_results
     let h = agent_result(&lines, 2);
     assert!(h["text"].as_str().unwrap().contains("session model"), "{h}");
     let i = agent_result(&lines, 3);
-    assert!(i["text"].as_str().unwrap().contains("not a model"), "{i}");
+    assert!(
+        i["text"]
+            .as_str()
+            .unwrap()
+            .contains("not a defined model role"),
+        "{i}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

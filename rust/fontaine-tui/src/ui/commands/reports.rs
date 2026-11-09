@@ -47,6 +47,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         });
         let text = reports::cost(&reports::UsageReport {
             by_source: runtime.state.usage_ledger().snapshot(),
+            by_model: runtime.state.usage_ledger().by_model(),
             budget,
         });
         self.app.transcript.notice(text);

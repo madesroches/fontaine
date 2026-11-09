@@ -85,6 +85,7 @@ async fn with_one_child_seen(
     built.runtime.begin_turn("start it", false);
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "start it".to_string(),
@@ -425,6 +426,7 @@ async fn a_resumed_session_brings_back_a_done_agent_idle_and_wakes_it_from_its_l
     built.runtime.begin_turn("wake it", false);
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "wake it".to_string(),

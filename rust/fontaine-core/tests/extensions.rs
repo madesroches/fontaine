@@ -8,10 +8,11 @@ use std::sync::Arc;
 use common::pipeline::{Options, Rig, allowed};
 use common::{World, write};
 use fontaine_agents::mode::ModeSetting;
-use fontaine_agents::registry::TypeOrigin;
+use fontaine_agents::registry::{ModelSpec, TypeOrigin};
 use fontaine_core::agent::build_agent_types;
 use fontaine_core::config::PermissionMode::Manual;
 use fontaine_core::extensions::{Extensions, LoadParams, Scope, load};
+use fontaine_core::model_roles::Roles;
 use fontaine_core::permissions::Answer;
 use fontaine_core::skills::SkillRuntime;
 use fontaine_core::tier::Tier;
@@ -114,7 +115,7 @@ fn tool_lists_load_as_yaml_lists_and_as_comma_strings() {
 }
 
 #[test]
-fn unmapped_names_colon_specifiers_and_model_aliases_are_errors_naming_the_file() {
+fn unmapped_names_colon_specifiers_and_bad_models_are_errors_naming_the_file() {
     let w = World::new();
     user_agent(&w, "bad", "---\ntools: Read, MadeUpTool\n---\nx");
     let e = message(&w, &[]);
@@ -126,9 +127,15 @@ fn unmapped_names_colon_specifiers_and_model_aliases_are_errors_naming_the_file(
     assert!(e.contains("SKILL.md") && e.contains("allowed-tools"), "{e}");
 
     let w = World::new();
-    user_agent(&w, "alias", "---\nmodel: sonnet\n---\nx");
+    user_agent(&w, "alias", "---\nmodel: two words\n---\nx");
     let e = message(&w, &[]);
-    assert!(e.contains("alias.md") && e.contains("sonnet"), "{e}");
+    assert!(e.contains("alias.md") && e.contains("two words"), "{e}");
+
+    // A Claude Code alias is a role name now; whether the user defined it is checked later.
+    let w = World::new();
+    user_agent(&w, "alias", "---\nmodel: sonnet\n---\nx");
+    user_skill(&w, "alias", "---\nmodel: opus\n---\nx");
+    assert!(load_for(&w, &[]).is_ok());
 
     let w = World::new();
     user_agent(&w, "ok", "---\nmodel: work/claude-sonnet\n---\nx");
@@ -252,6 +259,80 @@ fn a_project_agent_file_can_only_narrow() {
 }
 
 #[test]
+fn a_project_agent_file_may_name_a_role_or_main_but_not_an_endpoint() {
+    let w = World::new();
+    project_agent(&w, "p", "---\nmodel: coding\n---\nx");
+    project_agent(&w, "q", "---\nmodel: $main\n---\nx");
+    let ext = load_for(&w, &[]).unwrap();
+    let model = |name: &str| {
+        ext.agent_types
+            .iter()
+            .find(|t| t.name == name)
+            .unwrap()
+            .model
+            .clone()
+    };
+    assert_eq!(model("p"), Some(ModelSpec::Named("coding".into())));
+    assert_eq!(model("q"), Some(ModelSpec::Main));
+
+    for text in [
+        "---\nmodel: a/b\n---\nx",
+        "---\nmodel: coding, a/b\n---\nx",
+        "---\nmodel: $guardian_default\n---\nx",
+    ] {
+        let w = World::new();
+        project_agent(&w, "p", text);
+        let e = message(&w, &[]);
+        assert!(e.contains("p.md") && e.contains("model"), "{text}: {e}");
+    }
+}
+
+#[test]
+fn a_role_the_user_never_defined_runs_a_repository_agent_on_the_session_model_with_a_warning() {
+    let w = World::new();
+    w.user_file("[accounts.work]\nkind = \"ollama\"\n\n[models.roles]\ncoding = [\"work/m\"]\n");
+    project_agent(&w, "known", "---\nmodel: coding\n---\nx");
+    project_agent(&w, "ghost", "---\nmodel: ghost\n---\nx");
+    let ext = load_for(&w, &[]).unwrap();
+    let config = w.load().unwrap();
+    let roles = Roles::from_config(&config).unwrap();
+    let (types, warnings) = build_agent_types(&config, &ext, &roles).unwrap();
+    assert_eq!(
+        types.get("known").unwrap().model,
+        Some(ModelSpec::Named("coding".into()))
+    );
+    assert_eq!(types.get("ghost").unwrap().model, None);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains("ghost.md") && warnings[0].contains("ghost"),
+        "{:?}",
+        warnings[0]
+    );
+}
+
+#[test]
+fn a_role_the_user_never_defined_is_an_error_in_a_user_agent_file_and_in_a_configured_type() {
+    let w = World::new();
+    user_agent(&w, "u", "---\nmodel: ghost\n---\nx");
+    let ext = load_for(&w, &[]).unwrap();
+    let config = w.load().unwrap();
+    let roles = Roles::from_config(&config).unwrap();
+    let error = build_agent_types(&config, &ext, &roles)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("`u`") && error.contains("ghost"), "{error}");
+
+    let w = World::new();
+    w.user_file("[agents.types.t]\nmodel = [\"ghost\", \"a/b\"]\n");
+    let error = w.load().unwrap_err().to_string();
+    assert!(
+        error.contains("agents.types.t") && error.contains("ghost"),
+        "{error}"
+    );
+}
+
+#[test]
 fn a_project_agent_overrides_a_same_name_user_agent_and_stays_narrowed() {
     let w = World::new();
     user_agent(
@@ -263,7 +344,9 @@ fn a_project_agent_overrides_a_same_name_user_agent_and_stays_narrowed() {
     w.user_file("[agents.types.other]\ntools = [\"read\"]\n");
     let ext = load_for(&w, &[]).unwrap();
     let config = w.load().unwrap();
-    let types = build_agent_types(&config, &ext);
+    let roles = Roles::from_config(&config).unwrap();
+    let (types, warnings) = build_agent_types(&config, &ext, &roles).unwrap();
+    assert!(warnings.is_empty());
     let builder = types.get("builder").unwrap();
     assert_eq!(builder.prompt.as_deref(), Some("project version"));
     assert_eq!(builder.model, None);

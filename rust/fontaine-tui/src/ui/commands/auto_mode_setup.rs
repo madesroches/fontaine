@@ -5,10 +5,12 @@ use crate::{Action, Ui};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::now_rfc3339;
 use fontaine_core::composition_offer::{self, Candidate, Offer};
+use fontaine_core::model_roles::{SETUP_ROLE, fall_through_notice};
 use fontaine_core::project_env::discover::{self, SystemGh};
 use fontaine_core::project_env::{self, ProjectEnvironment, ScanStatus, ScanStep, sample};
 use fontaine_core::trust;
 use fontaine_tools::error_chain::chain;
+use fontaine_tools::gate::ROOT_AGENT;
 use tokio::task::JoinHandle;
 
 /// How a background step ended.
@@ -158,29 +160,55 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         if let Err(why) = project_env::scan_gate(false, true, trusted) {
             return Ok(ScanStep::without(ScanStatus::Skipped(why)));
         }
-        let handle = match project_env::scan_model(runtime.models.guardian.as_ref()) {
-            Ok(handle) => handle.clone(),
-            Err(status) => return Ok(ScanStep::without(status)),
-        };
-        let label = handle.reference.to_string();
-        self.app.transcript.notice(project_env::scan_notice(&label));
-        let settings = project_env::scan_settings(&handle, runtime.config.guardian.timeout_secs);
         let (repo_root, project_settings) = (found.repo_root.clone(), found.settings.clone());
-        let task = {
-            let (model, label) = (handle.completion.clone(), label.clone());
-            tokio::spawn(async move {
+        let timeout_secs = runtime.config.guardian.timeout_secs;
+        // The `setup` role's list takes the scan when the user defined one; otherwise the
+        // guardian's model does.
+        let (task, label) = if let Some((switcher, list)) = runtime.job_chain(SETUP_ROLE) {
+            let label = list.active_ref().to_string();
+            let task = tokio::spawn(async move {
                 let sample = tokio::task::spawn_blocking(move || {
                     sample::gather(&repo_root, &project_settings)
                 })
                 .await
                 .map_err(|e| e.to_string())?;
-                project_env::propose(&model, &label, &settings, &sample)
+                project_env::propose_on_chain(&switcher, &list, timeout_secs, &sample)
                     .await
                     .map_err(|e| chain(&e))
-            })
+            });
+            (task, label)
+        } else {
+            let handle = match project_env::scan_model(runtime.models.guardian.as_ref()) {
+                Ok(handle) => handle.clone(),
+                Err(status) => return Ok(ScanStep::without(status)),
+            };
+            let label = handle.reference.to_string();
+            let settings = project_env::scan_settings(&handle, timeout_secs);
+            let task = {
+                let (model, label) = (handle.completion.clone(), label.clone());
+                let (served, billed) = (handle.reference.clone(), handle.catalog_billed());
+                tokio::spawn(async move {
+                    let sample = tokio::task::spawn_blocking(move || {
+                        sample::gather(&repo_root, &project_settings)
+                    })
+                    .await
+                    .map_err(|e| e.to_string())?;
+                    let proposals = project_env::propose(&model, &label, &settings, &sample)
+                        .await
+                        .map_err(|e| chain(&e))?;
+                    Ok(project_env::ScanRun {
+                        proposals,
+                        served,
+                        billed,
+                        fell_from: None,
+                    })
+                })
+            };
+            (task, label)
         };
-        let proposals = match self.wait_for(runtime, task).await {
-            Waited::Done(Ok(proposals)) => proposals,
+        self.app.transcript.notice(project_env::scan_notice(&label));
+        let run = match self.wait_for(runtime, task).await {
+            Waited::Done(Ok(run)) => run,
             Waited::Done(Err(why)) => {
                 return Ok(ScanStep::without(ScanStatus::Failed(why)));
             }
@@ -191,7 +219,20 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             }
             Waited::Quit => return Err(ControlFlow::Break(())),
         };
-        let (mut step, proposed) = ScanStep::proposed(proposals, &label, handle.catalog_billed());
+        if let Some(from) = &run.fell_from {
+            runtime.state.record_model_fall_through(
+                ROOT_AGENT,
+                Some(SETUP_ROLE),
+                &from.to_string(),
+                &run.served.to_string(),
+                "quota",
+            );
+            self.app
+                .transcript
+                .notice(fall_through_notice("setup", from, &run.served, "quota"));
+        }
+        let label = run.served.to_string();
+        let (mut step, proposed) = ScanStep::proposed(run.proposals, &label, run.billed);
         let Some((scan, count)) = proposed else {
             return Ok(step);
         };

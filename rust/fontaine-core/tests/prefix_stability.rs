@@ -14,6 +14,7 @@ async fn first_request(built: &Built) -> String {
     let mut seen = |_| Flow::Continue;
     let outcome = run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: "hello".to_string(),

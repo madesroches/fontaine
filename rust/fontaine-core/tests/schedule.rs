@@ -25,6 +25,9 @@ fn runtime(world: &World, scheduling: bool) -> AgentRuntime {
         main.into(),
     );
     let models = Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(
+            handle.clone().reference.clone(),
+        ),
         main: handle.clone(),
         main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),

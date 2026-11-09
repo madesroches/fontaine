@@ -56,7 +56,7 @@ pub struct Cli {
     #[arg(long, value_name = "TEMPERATURE")]
     pub afk_temperature_ceiling: Option<f64>,
 
-    /// The main model as `<account>/<model>`, overriding `[model] model`
+    /// The main model as `<account>/<model>` or a role name, overriding `[model] model`
     #[arg(long, value_name = "ACCOUNT/MODEL")]
     pub model: Option<String>,
 

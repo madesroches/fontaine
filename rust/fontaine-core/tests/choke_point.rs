@@ -140,6 +140,7 @@ fn extension_asking(ask_user: AskUserTool) -> ExtensionTools {
             types: Arc::new(AgentTypes::builtin()),
             runner: Arc::new(NoRunner),
             ledger: Arc::new(NoLedger),
+            roles: String::new(),
         }),
         ExtensionTool::new(SendMessageTool {
             tree: tree.clone(),

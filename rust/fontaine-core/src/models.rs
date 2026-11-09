@@ -15,6 +15,7 @@ use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::{Credentials, StoredCredential};
 use crate::effort::Effort;
 use crate::gate::SessionState;
+use crate::model_roles::{ModelChain, RoleChains, Roles};
 use crate::providers::{
     AccountClient, Billing, ConnectContext, CredentialPolicy, RefusedModel, ServedModel,
 };
@@ -351,6 +352,9 @@ pub enum GuardianChoice {
 #[derive(Debug)]
 pub struct Models {
     pub main: ModelHandle,
+    /// The preference list the session's main model is served from; `main` is its active
+    /// entry. Shared with the children that run on `$main`.
+    pub main_chain: Arc<ModelChain>,
     /// What the main model's account listed when it was resolved.
     pub main_listing: Listing,
     pub guardian: Option<GuardianModel>,
@@ -363,7 +367,8 @@ pub struct ResolveParams<'a> {
     pub config: &'a Config,
     pub data_dir: &'a Path,
     pub env: SharedEnv,
-    /// `--model`, which wins over `[model] model`.
+    /// `--model`, a reference or a role name, which wins over `[model] model` and
+    /// `[models.roles] main`.
     pub model_override: Option<&'a str>,
     /// Sent to gateways that ask which session a request belongs to.
     pub session_id: Option<String>,
@@ -661,15 +666,25 @@ pub async fn resolve_with(
     validated: &[ModelEntry],
 ) -> Result<Models, ModelError> {
     let config = params.config;
-    let main_text = params
-        .model_override
-        .or(config.model.as_deref())
-        .ok_or_else(|| {
+    let roles = Roles::from_config(config)?;
+    let main_chain = match params.model_override {
+        Some(text) => roles.chain_from_text(text).map_err(config_error)?,
+        None => roles.main_chain().ok_or_else(|| {
             config_error("no main model: set `[model] model` in the settings or pass `--model <account>/<model>`")
-        })?;
+        })?,
+    };
+    let main_chain = Arc::new(main_chain);
     let stored = Sources::load(params.data_dir, params.session_id.as_deref())?;
-    let (main_ref, main_client, main_models, main) =
-        resolve_main_model(config, &stored, &params.env, main_text, "model").await?;
+    // A startup failure of the first entry is the user's to fix; only a runtime quota failure
+    // moves on to the next one.
+    let (main_ref, main_client, main_models, main) = resolve_main_model(
+        config,
+        &stored,
+        &params.env,
+        &main_chain.entries[0].to_string(),
+        "model",
+    )
+    .await?;
 
     let mut notices = Vec::new();
     notices.extend(main.facts_notice.clone().map(facts_warning));
@@ -715,6 +730,7 @@ pub async fn resolve_with(
     }
     Ok(Models {
         main,
+        main_chain,
         main_listing: main_models,
         guardian: Some(guardian),
         guardian_choice,
@@ -907,6 +923,8 @@ pub struct Switcher {
     pub data_dir: std::path::PathBuf,
     pub env: SharedEnv,
     pub session_id: Option<String>,
+    roles: Arc<Roles>,
+    chains: Arc<RoleChains>,
 }
 
 /// The switcher a session and its subagents share, so an account added or removed mid-session
@@ -922,12 +940,42 @@ impl Switcher {
         env: SharedEnv,
         session_id: Option<String>,
     ) -> Switcher {
+        // A caller that edits accounts after load (the setup screen) refuses edits that
+        // dangle a role; if one slips through, no roles beats a panic: the listings this
+        // switcher serves do not use them.
+        let roles = Roles::from_config(&config).unwrap_or_default();
         Switcher {
             config,
             data_dir,
             env,
             session_id,
+            roles: Arc::new(roles),
+            chains: Arc::new(RoleChains::default()),
         }
+    }
+
+    /// The session's model roles, fixed when it started.
+    pub fn roles(&self) -> &Roles {
+        &self.roles
+    }
+
+    pub fn shared_roles(&self) -> Arc<Roles> {
+        self.roles.clone()
+    }
+
+    /// The chains of the session's roles, shared by every clone of the switcher.
+    pub fn role_chains(&self) -> &Arc<RoleChains> {
+        &self.chains
+    }
+
+    /// The shared chain of the role `name`, when the user defined it.
+    pub fn role_chain(&self, name: &str) -> Option<Arc<ModelChain>> {
+        self.chains.chain_of_role(&self.roles, name)
+    }
+
+    /// A chain of its own for `text`: a reference, a role name or a list.
+    pub fn main_chain(&self, text: &str) -> Result<ModelChain, ModelError> {
+        self.roles.chain_from_text(text).map_err(config_error)
     }
 
     fn sources(&self) -> Result<Sources<'_>, ConfigError> {
@@ -940,6 +988,45 @@ impl Switcher {
         let (_, _, listing, handle) =
             resolve_main_model(&self.config, &stored, &self.env, text, "model").await?;
         Ok((handle, listing))
+    }
+
+    /// Runs a one-shot job on `chain`: `call` on the active entry's handle and, on an error
+    /// `falls_through` accepts, on the entries in `fall_through_order(start)`. A start entry that
+    /// does not resolve returns its failure at once; a later one is skipped (`unresolved` turns
+    /// the failure into the job's error, which is returned if nothing serves). With `explicit_cap` an
+    /// entry that has no known price, the first included, is skipped. With `settle` the entry that served becomes the chain's active one.
+    pub async fn run_through<T, E, C, Cf>(
+        &self,
+        chain: &ModelChain,
+        settle: bool,
+        explicit_cap: bool,
+        call: C,
+        falls_through: impl Fn(&E) -> bool,
+        unresolved: impl Fn(&ModelRef, ModelError) -> E,
+    ) -> Result<crate::model_roles::Through<T>, E>
+    where
+        C: FnMut(ModelHandle) -> Cf,
+        Cf: std::future::Future<Output = Result<T, E>>,
+    {
+        let unresolved = &unresolved;
+        chain
+            .run_through(
+                settle,
+                |index, _| async move {
+                    let reference = &chain.entries[index];
+                    match self.main(&reference.to_string()).await {
+                        Ok((handle, _)) if explicit_cap && !handle.priced() => Ok(Err(unresolved(
+                            reference,
+                            config_error("it has no known price under --max-budget-usd"),
+                        ))),
+                        Ok((handle, _)) => Ok(Ok(handle)),
+                        Err(e) => Err(unresolved(reference, e)),
+                    }
+                },
+                call,
+                falls_through,
+            )
+            .await
     }
 
     /// The guardian model `text` names. An account without a credential gives an unavailable

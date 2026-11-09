@@ -15,6 +15,8 @@ use crate::models::{ModelRef, SharedSwitcher, validated_models};
 pub type GuardianRef = Arc<dyn Fn() -> Option<ModelRef> + Send + Sync>;
 
 pub struct SessionModels {
+    /// The session's model roles, one line each, listed after the accounts.
+    pub roles: String,
     pub switcher: Option<SharedSwitcher>,
     pub main: Arc<RwLock<MainModel>>,
     pub guardian: GuardianRef,
@@ -53,13 +55,22 @@ impl ModelSource for SessionModels {
             let listings = switcher
                 .listings(Some((&main_ref, &main_listing)), only.as_deref())
                 .await;
-            Ok(ModelReport::build(
+            let mut text = ModelReport::build(
                 &listings,
                 Some(&main_ref),
                 guardian.as_ref(),
                 &validated_models(),
             )
-            .render_text())
+            .render_text();
+            if !self.roles.is_empty() {
+                if !text.ends_with('\n') {
+                    text.push('\n');
+                }
+                text.push_str("\nRoles (a role name is accepted wherever a model is):\n");
+                text.push_str(&self.roles);
+                text.push('\n');
+            }
+            Ok(text)
         })
     }
 }

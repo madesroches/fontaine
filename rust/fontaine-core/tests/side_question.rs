@@ -174,12 +174,14 @@ async fn the_runtime_answers_from_the_saved_conversation_and_changes_nothing_but
         MockTurn::text("You asked about caching.").with_usage(usage(700, 30, None)),
     ])
     .priced_as(limited(8_000));
+    let handle = ModelHandle::new(
+        ModelRef::parse("test/main").unwrap(),
+        AccountKind::named("openai-compatible"),
+        main.clone().into(),
+    );
     let models = Models {
-        main: ModelHandle::new(
-            ModelRef::parse("test/main").unwrap(),
-            AccountKind::named("openai-compatible"),
-            main.clone().into(),
-        ),
+        main_chain: fontaine_core::model_roles::ModelChain::single(handle.reference.clone()),
+        main: handle,
         main_listing: fontaine_core::models::Listing::default(),
         guardian: None,
         guardian_choice: GuardianChoice::Pinned,

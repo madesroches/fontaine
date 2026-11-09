@@ -206,7 +206,7 @@ Installed plugin content is third-party, so it loads under tighten-only rules:
 
 - its `allow` never counts, and its skills cannot lend `allowed-tools` until you
   [trust the skill](#trusting-a-skill);
-- its agent files can only narrow: no model, no `permissionMode: inherit`, and only tools the
+- its agent files can only narrow: no model endpoint (a [role](configuration.md#modelsroles) name or `$main` is allowed), no `permissionMode: inherit`, and only tools the
   session has (including the plugin's own MCP servers);
 - its deny/ask rules and guardian deny-side additions apply; nothing else may touch permissions
   or the guardian;

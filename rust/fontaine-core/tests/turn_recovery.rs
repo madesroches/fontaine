@@ -42,6 +42,7 @@ fn answer_turn(text: &str) -> Vec<MockStreamEvent> {
 async fn run(built: &Built, prompt: &str) -> TurnOutcome {
     run_turn(
         TurnParams {
+            served: Default::default(),
             agent: &built.runtime.agent,
             state: &built.runtime.state,
             prompt: prompt.to_string(),
@@ -113,6 +114,9 @@ fn holding(
         Model::new(MockScript::default(), transport).into(),
     );
     let models = Models {
+        main_chain: fontaine_core::model_roles::ModelChain::single(
+            handle.clone().reference.clone(),
+        ),
         main: handle.clone(),
         main_listing: fontaine_core::models::Listing::default(),
         guardian: Some(GuardianModel::Ready(handle)),
@@ -136,6 +140,7 @@ fn shell_turn(command: &str) -> Vec<MockStreamEvent> {
 
 fn params<'a>(runtime: &'a fontaine_core::agent::AgentRuntime, prompt: &str) -> TurnParams<'a> {
     TurnParams {
+        served: Default::default(),
         agent: &runtime.agent,
         state: &runtime.state,
         prompt: prompt.to_string(),
@@ -423,10 +428,14 @@ async fn retries_run_out_and_the_failure_is_reported_once() {
     let turns = vec![error_turn(429), error_turn(429), error_turn(429)];
     let built = build(&w, Manual, turns, true);
     let outcome = run(&built, "hi").await;
-    let TurnOutcome::Failed(message) = outcome else {
+    let TurnOutcome::Failed(failure) = outcome else {
         panic!("expected a failure, got {outcome:?}");
     };
-    assert!(message.contains("boom"), "{message}");
+    assert!(failure.message.contains("boom"), "{failure}");
+    assert!(
+        failure.falls_through,
+        "a 429 that outlasted the retries is a quota failure"
+    );
     assert_eq!(built.main.request_count(), 3);
 }
 

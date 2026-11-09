@@ -41,7 +41,7 @@ does not know is ignored, so files written for Claude Code load.
 | `name`, `description` | As above; the file name when `name` is absent. |
 | `tools` | The tools of the type: a list or a comma-separated string. Absent means every tool the parent has. |
 | `disallowedTools` | Tools taken away from that set. |
-| `model` | `inherit` (no model: the session's), `$main`, `$guardian_default` or `<account>/<model>`. |
+| `model` | `inherit` (no model: the session's), a [role](configuration.md#modelsroles) name (`sonnet`, `coding`), `$main`, `$guardian_default` or `<account>/<model>`. A role you have not defined is an error in your own file and a startup warning in a repository's or a plugin's, whose agent then runs on the session model. A skill's `model` is checked and not used. |
 | `effort` | `inherit` (the session's level), `off`, `low`, `medium`, `high` or `max`. |
 | `permissionMode` | `inherit`, `default` (that is, `manual`) or `dontAsk`. |
 
@@ -88,8 +88,8 @@ with a specifier forbids just the calls it matches.
 
 **Anything else is an error that stops startup with exit code 2 and names the file**: a Claude Code
 tool Fontaine does not have (`REPL`, say), the colon form
-`Bash(git add:*)`, which is not Fontaine's rule syntax, and a `model` such as `sonnet`, which is an
-alias and not a model reference. So are keys that would run something or change permissions from
+`Bash(git add:*)`, which is not Fontaine's rule syntax, and a `model` that is neither a role name nor a
+model reference (`two words`). So are keys that would run something or change permissions from
 inside a file: `hooks` and `mcpServers` in an agent or skill file, and `permissionMode` in a
 skill. Files load without workspace trust, so they carry no executables of their own.
 
@@ -200,7 +200,10 @@ the rules of `[agents.types]`: `permissionMode` is `inherit`, `default` or `dont
 
 A file in a repository can only narrow what its parent can do:
 
-- no `model`, other than `inherit`: it runs on the session model;
+- `model` is `inherit`, a [role](configuration.md#modelsroles) name or `$main`, never an
+  `<account>/<model>`, a list or `$guardian_default`: a role names no endpoint, because you define
+  every role. A role you have not defined runs the agent on the session model, with a warning at
+  startup that names the file and the role. The `agent` tool's per-call `model` is refused for it;
 - no `effort`, other than `inherit`: it runs at the session's level;
 - `permissionMode` is `default` (the default) or `dontAsk`, never `inherit`;
 - every tool in `tools` is a tool the parent has: a built-in tool, or a tool of an MCP server that
@@ -226,8 +229,9 @@ Copy `skills/`, `agents/` and `output-styles/` into `<config dir>/` or `<root>/.
 
 - check the `tools`, `disallowedTools` and `allowed-tools` lines against the table above, and drop
   the colon form (`Bash(git add:*)` becomes `Bash(git add *)`);
-- replace Claude Code model aliases (`sonnet`, `opus`) in `model` with `inherit` or a
-  `<account>/<model>`;
+- define the Claude Code model aliases your files use (`sonnet`, `opus`) as
+  [roles](configuration.md#modelsroles), for example `sonnet = ["work/claude-sonnet-5"]`, or replace them in `model` with `inherit` or a
+  `<account>/<model>`. A skill with `model: sonnet` loads either way; Claude Code's per-skill model override is not applied;
 - remove `hooks` and `mcpServers` from the file and declare them in [settings](configuration.md)
   (`[[hooks.*]]`, `[mcp.servers.*]`), where they are subject to workspace trust;
 - in a skill, remove `permissionMode`.

@@ -395,8 +395,10 @@ async fn guardian_spend_is_counted_per_agent_and_against_that_agents_budget() {
     usage.output_tokens = Some(8);
     // The state's own tree is the default one; its bookkeeping per agent is the same call.
     let other = child(&rig, Ladder::Manual);
-    rig.state.add_guardian_usage(&other, &usage, true);
-    rig.state.add_guardian_usage(ROOT_AGENT, &usage, true);
+    rig.state
+        .add_guardian_usage(&other, &usage, true, &Default::default());
+    rig.state
+        .add_guardian_usage(ROOT_AGENT, &usage, true, &Default::default());
     assert_eq!(rig.state.guardian_usage().input_tokens, 16);
     assert_eq!(rig.agents.spend_of(&other).input_tokens, 8);
     assert_eq!(rig.agents.spend_of(&other).tokens(), 16);
@@ -776,6 +778,7 @@ mod persistence {
         built.runtime.begin_turn(prompt, false);
         let outcome = run_turn(
             TurnParams {
+                served: Default::default(),
                 agent: &built.runtime.agent,
                 state: &built.runtime.state,
                 prompt: prompt.to_string(),
@@ -1064,6 +1067,9 @@ mod killed {
             model.into(),
         );
         let models = Models {
+            main_chain: fontaine_core::model_roles::ModelChain::single(
+                handle.clone().reference.clone(),
+            ),
             main: handle.clone(),
             main_listing: fontaine_core::models::Listing::default(),
             guardian: Some(GuardianModel::Ready(handle)),
@@ -1099,6 +1105,7 @@ mod killed {
         built.runtime.begin_turn(prompt, false);
         let outcome = run_turn(
             TurnParams {
+                served: Default::default(),
                 agent: &built.runtime.agent,
                 state: &built.runtime.state,
                 prompt: prompt.to_string(),
@@ -1435,6 +1442,9 @@ mod killed {
             model.into(),
         );
         let models = Models {
+            main_chain: fontaine_core::model_roles::ModelChain::single(
+                handle.clone().reference.clone(),
+            ),
             main: handle.clone(),
             main_listing: fontaine_core::models::Listing::default(),
             guardian: Some(GuardianModel::Ready(handle)),
@@ -1560,11 +1570,18 @@ async fn cache_tokens_reach_every_usage_bucket() {
     usage.input_tokens = Some(10);
     usage.cached_input_tokens = Some(7);
     usage.cache_creation_input_tokens = Some(3);
-    rig.state.add_guardian_usage(ROOT_AGENT, &usage, true);
-    rig.state.add_guardian_usage(ROOT_AGENT, &usage, true);
-    rig.state.add_goal_usage(&usage);
     rig.state
-        .record_usage(UsageSource::Subagent, ROOT_AGENT, &usage, true);
+        .add_guardian_usage(ROOT_AGENT, &usage, true, &Default::default());
+    rig.state
+        .add_guardian_usage(ROOT_AGENT, &usage, true, &Default::default());
+    rig.state.add_goal_usage(&usage, &Default::default());
+    rig.state.record_usage(
+        UsageSource::Subagent,
+        ROOT_AGENT,
+        &usage,
+        true,
+        &Default::default(),
+    );
     let reads = |u: fontaine_core::usage_ledger::Bucket| {
         (u.cache_read_input_tokens, u.cache_creation_input_tokens)
     };
@@ -1582,7 +1599,8 @@ async fn record_usage_lands_in_its_source_and_debits_the_calling_agent() {
     usage.output_tokens = Some(2);
     let before = rig.agents.spend_of(ROOT_AGENT).tokens();
     for source in UsageSource::ALL {
-        rig.state.record_usage(source, ROOT_AGENT, &usage, true);
+        rig.state
+            .record_usage(source, ROOT_AGENT, &usage, true, &Default::default());
     }
     for source in UsageSource::ALL {
         let bucket = rig.state.usage_ledger().bucket(source);
@@ -1590,8 +1608,13 @@ async fn record_usage_lands_in_its_source_and_debits_the_calling_agent() {
     }
     assert_eq!(rig.agents.spend_of(ROOT_AGENT).tokens() - before, 42);
 
-    rig.state
-        .record_usage(UsageSource::Subagent, &other, &usage, true);
+    rig.state.record_usage(
+        UsageSource::Subagent,
+        &other,
+        &usage,
+        true,
+        &Default::default(),
+    );
     assert_eq!(rig.agents.spend_of(&other).input_tokens, 5);
     assert_eq!(
         rig.state
@@ -1607,10 +1630,12 @@ async fn a_guardian_record_that_sent_no_request_adds_no_call() {
     let rig = Rig::new(Manual);
     let mut usage = rig_core::completion::Usage::new();
     usage.input_tokens = Some(3);
-    rig.state.add_guardian_usage(ROOT_AGENT, &usage, false);
     rig.state
-        .add_guardian_usage(ROOT_AGENT, &Default::default(), false);
-    rig.state.add_guardian_usage(ROOT_AGENT, &usage, true);
+        .add_guardian_usage(ROOT_AGENT, &usage, false, &Default::default());
+    rig.state
+        .add_guardian_usage(ROOT_AGENT, &Default::default(), false, &Default::default());
+    rig.state
+        .add_guardian_usage(ROOT_AGENT, &usage, true, &Default::default());
     let bucket = rig.state.guardian_usage();
     assert_eq!((bucket.calls, bucket.input_tokens), (1, 6));
 }

@@ -282,13 +282,48 @@ fn remove_refuses_an_account_a_user_file_model_names() {
         accounts::store_key(&w.data, "a", "k").unwrap();
         let file = w.config.join("config.toml");
         let err = accounts::remove(&file, &w.data, "a").unwrap_err();
-        assert!(matches!(err, AccountsError::InUse { .. }), "{err:?}");
+        assert!(matches!(err, AccountsError::InSettings { .. }), "{err:?}");
         assert!(
             std::fs::read_to_string(&file)
                 .unwrap()
                 .contains("[accounts.a]")
         );
         assert!(Credentials::load(&w.data).unwrap().account("a").is_some());
+    }
+}
+
+#[test]
+fn remove_refuses_an_account_a_role_a_list_or_an_agent_type_names() {
+    for (extra, key) in [
+        ("[model]\nmodel = [\"b/x\", \"a/m\"]\n", "[model] model"),
+        (
+            "[models.roles]\ncoding = [\"b/x\", \"a/m\"]\n",
+            "[models.roles] coding",
+        ),
+        (
+            "[agents.types.scout]\nmodel = \"a/m\"\n",
+            "[agents.types.scout] model",
+        ),
+        (
+            "[agents.types.scout]\nmodel = [\"b/x\", \"a/m\"]\n",
+            "[agents.types.scout] model",
+        ),
+    ] {
+        let w = World::new();
+        w.user_file(&format!(
+            "[accounts.a]\nkind = \"anthropic\"\n\n[accounts.b]\nkind = \"openai\"\n\n{extra}"
+        ));
+        let file = w.config.join("config.toml");
+        let err = accounts::remove(&file, &w.data, "a").unwrap_err();
+        assert!(
+            matches!(&err, AccountsError::InSettings { key: found } if found == key),
+            "{key}: {err:?}"
+        );
+        assert!(
+            std::fs::read_to_string(&file)
+                .unwrap()
+                .contains("[accounts.a]")
+        );
     }
 }
 

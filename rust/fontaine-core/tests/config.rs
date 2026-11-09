@@ -5,9 +5,10 @@ use std::path::Path;
 
 use common::{World, write};
 use fontaine_core::config::{
-    self, AccountKind, Column, ConfigError, GuardianProfile, PermissionMode, ThemeName,
-    parse_settings,
+    self, AccountKind, Column, Config, ConfigError, GuardianProfile, MainSource, OneOrMany,
+    PermissionMode, ThemeName, parse_settings,
 };
+use fontaine_core::model_roles::Roles;
 use fontaine_core::permission_rules::SourcedRule;
 
 fn user_ok(text: &str) {
@@ -160,14 +161,167 @@ fn model_scalar_comes_from_the_highest_scope_that_may_set_it() {
     let w = World::new();
     w.trusted_repo();
     w.user_file("[model]\nmodel = \"a/user\"\n");
-    assert_eq!(w.load().unwrap().model.as_deref(), Some("a/user"));
+    assert_eq!(
+        w.load().unwrap().model.as_ref().and_then(OneOrMany::single),
+        Some("a/user")
+    );
     w.local_file("[model]\nmodel = \"a/local\"\n");
-    assert_eq!(w.load().unwrap().model.as_deref(), Some("a/local"));
+    assert_eq!(
+        w.load().unwrap().model.as_ref().and_then(OneOrMany::single),
+        Some("a/local")
+    );
     let cli = w.cli_file("[model]\nmodel = \"a/cli\"\n");
     assert_eq!(
-        w.load_with_settings(&cli).unwrap().model.as_deref(),
+        w.load_with_settings(&cli)
+            .unwrap()
+            .model
+            .as_ref()
+            .and_then(OneOrMany::single),
         Some("a/cli")
     );
+}
+
+const TWO_ACCOUNTS: &str = "[accounts.a]\nkind = \"ollama\"\n\n[accounts.b]\nkind = \"ollama\"\n\n";
+
+fn roles_of(config: &Config) -> Roles {
+    Roles::from_config(config).unwrap()
+}
+
+#[test]
+fn model_takes_a_string_or_a_list_and_both_are_the_main_role() {
+    let w = World::new();
+    w.user_file(&format!("{TWO_ACCOUNTS}[model]\nmodel = \"a/one\"\n"));
+    let c = w.load().unwrap();
+    assert_eq!(c.main_source, MainSource::ModelKeyString);
+    assert_eq!(roles_of(&c).get("main").unwrap().len(), 1);
+
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[model]\nmodel = [\"a/one\", \"b/two\"]\n"
+    ));
+    let c = w.load().unwrap();
+    assert_eq!(c.main_source, MainSource::ModelKeyList);
+    let roles = roles_of(&c);
+    let main: Vec<String> = roles
+        .get("main")
+        .unwrap()
+        .iter()
+        .map(|r| r.to_string())
+        .collect();
+    assert_eq!(main, ["a/one", "b/two"]);
+
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[models.roles]\nmain = [\"a/one\"]\ncoding = [\"main\", \"b/two\"]\n"
+    ));
+    let c = w.load().unwrap();
+    assert_eq!(c.main_source, MainSource::Role);
+    assert_eq!(roles_of(&c).get("coding").unwrap().len(), 2);
+
+    w.user_file(&format!("{TWO_ACCOUNTS}[model]\neffort = \"low\"\n"));
+    assert_eq!(w.load().unwrap().main_source, MainSource::Unset);
+}
+
+#[test]
+fn model_and_the_main_role_in_one_layer_are_refused_naming_the_file() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[model]\nmodel = \"a/one\"\n\n[models.roles]\nmain = [\"b/two\"]\n"
+    ));
+    let e = w.load().unwrap_err().to_string();
+    assert!(
+        e.contains("config.toml") && e.contains("model.model") && e.contains("models.roles.main"),
+        "{e}"
+    );
+}
+
+#[test]
+fn across_layers_the_higher_precedence_main_key_wins() {
+    let w = World::new();
+    w.trusted_repo();
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[models.roles]\nmain = [\"a/user\"]\n"
+    ));
+    w.local_file("[model]\nmodel = \"b/local\"\n");
+    let c = w.load().unwrap();
+    assert_eq!(c.main_source, MainSource::ModelKeyString);
+    let roles = roles_of(&c);
+    assert_eq!(roles.get("main").unwrap()[0].to_string(), "b/local");
+
+    let w = World::new();
+    w.user_file(&format!("{TWO_ACCOUNTS}[model]\nmodel = \"a/user\"\n"));
+    let cli = w.cli_file("[models.roles]\nmain = [\"b/cli\", \"a/user\"]\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(c.main_source, MainSource::Role);
+    assert_eq!(roles_of(&c).get("main").unwrap().len(), 2);
+}
+
+#[test]
+fn roles_are_validated_when_the_config_loads() {
+    let bad = |roles: &str| {
+        let w = World::new();
+        w.user_file(&format!("{TWO_ACCOUNTS}[models.roles]\n{roles}"));
+        w.load().unwrap_err().to_string()
+    };
+    let e = bad("coding = [\"ghost/x\"]\n");
+    assert!(e.contains("unknown account `ghost`"), "{e}");
+    let e = bad("coding = [\"nobody\"]\n");
+    assert!(e.contains("`nobody`") && e.contains("defined role"), "{e}");
+    let e = bad("a = [\"b\"]\nb = [\"a\"]\n");
+    assert!(e.contains("a -> b -> a"), "{e}");
+    let e = bad("coding = []\n");
+    assert!(e.contains("at least one"), "{e}");
+    let e = bad("inherit = [\"a/x\"]\n");
+    assert!(e.contains("inherit"), "{e}");
+    let e = bad("\"a/b\" = [\"a/x\"]\n");
+    assert!(e.contains("not a role name"), "{e}");
+    let e = bad("coding = [\"$guardian_default\"]\n");
+    assert!(e.contains("$guardian_default"), "{e}");
+    let e = bad("coding = [\"a/x\", \"$other\"]\n");
+    assert!(e.contains("$other"), "{e}");
+    // `$main` is a synonym for `main`.
+    let w = World::new();
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[models.roles]\nmain = [\"a/x\"]\nthinking = [\"$main\", \"b/y\"]\n"
+    ));
+    assert_eq!(
+        roles_of(&w.load().unwrap()).get("thinking").unwrap().len(),
+        2
+    );
+}
+
+#[test]
+fn an_agent_type_model_takes_a_string_a_role_or_a_list_but_not_a_list_with_guardian_default() {
+    let w = World::new();
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[model]\nmodel = \"a/x\"\n\n[models.roles]\ncoding = [\"a/x\"]\n\n[agents.types.one]\nmodel = \"coding\"\n\n[agents.types.two]\nmodel = [\"coding\", \"$main\", \"b/y\"]\n\n[agents.types.three]\nmodel = \"$guardian_default\"\n"
+    ));
+    assert!(w.load().is_ok());
+    w.user_file(&format!(
+        "{TWO_ACCOUNTS}[agents.types.bad]\nmodel = [\"$guardian_default\", \"a/x\"]\n"
+    ));
+    let e = w.load().unwrap_err().to_string();
+    assert!(
+        e.contains("agents.types.bad.model") && e.contains("$guardian_default"),
+        "{e}"
+    );
+}
+
+#[test]
+fn models_roles_come_only_from_the_user_file_or_settings() {
+    let w = World::new();
+    w.trusted_repo();
+    w.project_file("[models.roles]\ncoding = [\"a/x\"]\n");
+    let e = w.load().unwrap_err().to_string();
+    assert!(e.contains("models") && e.contains("project"), "{e}");
+    let w = World::new();
+    w.trusted_repo();
+    w.local_file("[models.roles]\ncoding = [\"a/x\"]\n");
+    assert!(w.load().is_err());
+
+    let w = World::new();
+    w.user_file(TWO_ACCOUNTS);
+    let cli = w.cli_file("[models.roles]\ncoding = [\"a/x\"]\n");
+    let c = w.load_with_settings(&cli).unwrap();
+    assert_eq!(roles_of(&c).get("coding").unwrap().len(), 1);
 }
 
 #[test]
@@ -754,7 +908,7 @@ command = "srv"
 "#,
     );
     let c = w.load().unwrap();
-    assert_eq!(c.model.as_deref(), Some("a/m"));
+    assert_eq!(c.model.as_ref().and_then(OneOrMany::single), Some("a/m"));
     assert_eq!(c.guardian.profile, GuardianProfile::Minimal);
     assert_eq!(c.permissions.allow.len(), 1);
     assert_eq!(c.permissions.additional_directories, ["/tmp/extra"]);

@@ -609,7 +609,7 @@ error: an export never overwrites.
 | `/config`, `/settings` | Opens the [settings panel](#settings-panel): every settings key with its effective value and the scope that supplied it, and a few preferences you can change. |
 | `/context [all]` | Shows what fills the context window. See [Context](#context). |
 | `/copy [<n>]` | Copies the latest assistant reply, or the `n`th latest, to the system clipboard. A reply is the text between tool calls, so a turn that calls a tool and then answers has two; `/copy` takes the last one. It is an error when there is no such reply. |
-| `/cost`, `/usage` | Shows the session's token usage and spend by source, guardian included; see [Usage and cost](#usage-and-cost). Runs immediately, turn or no turn. |
+| `/cost`, `/usage` | Shows the session's token usage and spend by source and by model, guardian included; see [Usage and cost](#usage-and-cost). Runs immediately, turn or no turn. |
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/bug [<description> \| <draft id> \| discard <draft id>]` | Files a Fontaine bug report as a GitHub issue on `madesroches/fontaine`. It first shows the exact text that will be sent; nothing is written or sent until you confirm, and Esc cancels. The default `minimal` level holds the environment, a redacted settings snapshot, recent warnings and guardian verdict summaries; `full` adds the last turns of the transcript, and you toggle it in the preview. Known secret values (stored credentials, API-key environment values, MCP environment values) are scrubbed, plus a token-pattern pass. With `gh` installed and authenticated it runs `gh issue create`; otherwise it prints a prefilled new-issue URL and keeps the full report in an owner-only file under the data directory's `bug-reports/` folder. The transcript never goes in the URL. The submission is recorded in the ledger and audit log. The URL carries the report without the transcript, cut so the encoded URL stays under 8000 bytes, and names the bundle file rather than its path. Drafts the model queued with `draft_bug_report` are listed by a bare `/bug` and can be loaded as the description with `/bug <draft id>`; a draft is deleted once the report built from it is filed, and `/bug discard <draft id>` deletes one without filing. The footer counts the drafts still pending. Main conversation only. |
 | `/exit`, `/quit` | Leave. |
@@ -627,7 +627,7 @@ error: an export never overwrites.
 | `/loop [<interval>] <prompt>`, `/loop list`, `/loop stop [<id>]` | Runs a prompt again and again while the session is idle; see [Scheduled prompts](#scheduled-prompts). |
 | `/mcp` | Lists each [MCP server](mcp.md) as `connected`, `failed` with the error, `left off` (you declined it) or `not loaded` (the workspace is not trusted), each with the scope that contributed it — a plugin's servers read `[plugin]`. It takes no arguments. |
 | `/memory [<n>]` | Lists the instruction files, numbered, with where each came from and the `FONTAINE.md` files that do not exist yet. With a number it opens that file in `$VISUAL` or `$EDITOR`, creating it first when needed. See [Instruction files](instructions.md#memory). |
-| `/model [<account>/<model>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, switches the live session to that model, rebuilds the agent on it with the conversation kept, and saves it as `[model] model` in your user settings file; when a higher scope sets `[model] model`, the notice adds that the scope wins from the next launch. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. The session's [`/effort`](#commands) level is kept and checked against the new model; one it cannot take is dropped with a warning. |
+| `/model [<account>/<model>\|<role>]` | Without an argument, opens the [model picker](#choosing-a-model). With one, which may also be a [role](configuration.md#modelsroles) name or a comma-separated list, switches the live session to that model (the role's first entry) and makes the list the session's, rebuilds the agent on it with the conversation kept, and saves what you typed as `[model] model` in your user settings file; when a higher scope sets `[model] model`, the notice adds that the scope wins from the next launch. The switch is for this session only, and the notice names the key to edit, when you type a list, `$main`, or a role that reaches `main`, and when `main` under `[models.roles]` or a list in `[model] model` is set in any settings scope. The guardian moves with it only when it is on the main-model fallback (no `[guardian] model` and no validated model available); a pinned or validated guardian stays. The session's [`/effort`](#commands) level is kept and checked against the new model; one it cannot take is dropped with a warning. |
 | `/output-style [<name>\|none]` | Without an argument, lists the [output styles](extensions.md#output-styles). With one, switches to it for the next turn; `none` removes it. |
 | `/permissions` | Shows the permission mode and the `deny`, `ask` and `allow` rules in force, each with the scope that contributed it (session and always grants included), the workspace roots and the settings file where rules are edited. It is read-only; see [Permissions](permissions.md). While the guardian is off it adds that these rules are not being enforced. |
 | `/plan [<description>]` | Switches to plan mode, as Shift+Tab does (out of AFK it reviews the stretch). With a description it also sends it as your next message, so `/plan fix the auth bug` plans the fix. |
@@ -721,7 +721,7 @@ included.
 ## Usage and cost
 
 `/cost` (alias `/usage`) prints what the session's model calls have used, one row per source that
-made a call, then a total:
+made a call, then a total, then a second table by model:
 
 ```
 Session usage
@@ -730,6 +730,12 @@ Session usage
   guardian         31   22.0k    1.4k        9.8k          0      $0.0150
   subagents         8   40.1k    5.0k          0           0      $0.1900 · 5.0k unpriced tok
   total            51  146.3k   15.5k       70.8k       3.2k      $0.6170 · 5.0k unpriced tok
+By model
+  model                                 calls   input   output  cache read  cache write  cost
+  main · anthropic/claude-opus-5-5         12   84.2k    9.1k       61.0k       3.2k      $0.4120
+  coding · anthropic/claude-sonnet-5-5      5   30.0k    4.0k          0           0      $0.1000
+  coding · kimi/kimi-for-coding             3   10.1k    1.0k          0           0      $0.0900 · 5.0k unpriced tok
+  anthropic/claude-haiku-5-5               31   22.0k    1.4k        9.8k          0      $0.0150
 ```
 
 The sources are `main`, `guardian`, `subagents`, `goal` (the goal evaluator), `compaction` and
@@ -738,6 +744,12 @@ adjudication counting once however many requests it took to get a verdict; a gua
 from its verdict cache is not a call, but one inside a guardian composition cannot be told apart
 and does count. The `cache read` and `cache write` columns are left out when the provider reported
 no cache tokens.
+
+The by-model table has one row per role and model that served a call, with the same columns. A
+call asked for through a [role](configuration.md#modelsroles) shows the role first
+(`coding · anthropic/claude-sonnet-5-5`), so a list that fell through shows the spend on each entry;
+a model named directly, and the guardian, show the reference alone. Compaction counts under the
+`compaction` role, or under the main model when you defined none.
 
 A dollar figure covers only the calls that had a price. A source with none shows `n/a`, and when
 some calls had no price (an account whose models the catalog does not price) the figure is a lower

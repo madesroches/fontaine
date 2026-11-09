@@ -44,6 +44,7 @@ use crate::preview::{self, DiffPreview};
 use crate::runtime_error::RuntimeError;
 use crate::tier::Tier;
 use crate::trust::{self, Tracking};
+use crate::usage_ledger::Served;
 use crate::user_config;
 
 const TARGET: &str = "fontaine::telemetry";
@@ -1814,11 +1815,17 @@ impl PermissionPipeline {
                 .await;
                 let screened = self.note_composition(&stage, &composed, &guardian);
                 if let Some(usage) = &composed.llm_usage {
-                    self.state.add_guardian_usage(cx.call.agent, usage, true);
+                    let served = Served::direct(guardian.label());
+                    self.state
+                        .add_guardian_usage(cx.call.agent, usage, true, &served);
                 }
                 // Reads that share a request share its usage, which one of them carries.
-                for usage in composed.reads.iter().filter_map(|read| read.usage.as_ref()) {
-                    self.state.add_guardian_usage(cx.call.agent, usage, true);
+                for read in &composed.reads {
+                    if let Some(usage) = &read.usage {
+                        let served = Served::direct(&read.model);
+                        self.state
+                            .add_guardian_usage(cx.call.agent, usage, true, &served);
+                    }
                 }
                 (composed.decided, Some(screened))
             }
@@ -1904,6 +1911,7 @@ impl PermissionPipeline {
             cx.call.agent,
             &adjudication.usage,
             adjudication.transport.is_some() && !adjudication.cache_hit,
+            &Served::direct(self.state.guardian().label()),
         );
         self.settle(cx, adjudication, screened.as_ref()).await
     }

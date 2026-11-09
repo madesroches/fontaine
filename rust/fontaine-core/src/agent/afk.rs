@@ -12,6 +12,7 @@ use crate::gate::Blocked;
 use crate::goal::PauseReason;
 use crate::ledger::Record;
 use crate::runtime_error::RuntimeError;
+use crate::usage_ledger::Served;
 
 impl AgentRuntime {
     /// Why a turn nobody typed may not start.
@@ -57,15 +58,24 @@ impl AgentRuntime {
         let guardian = self.state.guardian();
         let result = match assess_evasion(&guardian, &report.assessment_input()).await {
             Ok(assessed) => {
-                self.state
-                    .add_guardian_usage(ROOT_AGENT, &assessed.usage, true);
+                self.state.add_guardian_usage(
+                    ROOT_AGENT,
+                    &assessed.usage,
+                    true,
+                    &Served::direct(guardian.label()),
+                );
                 AssessmentResult::Completed {
                     suspected: assessed.suspected,
                 }
             }
             Err(e) => {
                 // A timed-out or unparseable answer still cost tokens.
-                self.state.add_guardian_usage(ROOT_AGENT, &e.usage, true);
+                self.state.add_guardian_usage(
+                    ROOT_AGENT,
+                    &e.usage,
+                    true,
+                    &Served::direct(guardian.label()),
+                );
                 AssessmentResult::Unavailable { reason: chain(&e) }
             }
         };
