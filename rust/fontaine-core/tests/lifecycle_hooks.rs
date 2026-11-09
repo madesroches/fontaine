@@ -1196,6 +1196,21 @@ async fn clear_ends_the_session_for_the_hooks_and_starts_it_again() {
 }
 
 #[tokio::test]
+async fn an_abandoned_prompt_gate_drops_only_its_own_note() {
+    let f = Fixture::new();
+    f.rig.state.queue_hook_context("session".into());
+    f.rig.state.set_prompt_context(Some("gate".into()));
+    f.rig.state.clear_prompt_context();
+    assert_eq!(f.rig.state.take_hook_context(), ["session"]);
+    f.rig.state.set_prompt_context(Some("old".into()));
+    f.rig.state.set_prompt_context(None);
+    assert!(
+        f.rig.state.take_hook_context().is_empty(),
+        "a new gate replaces the old note"
+    );
+}
+
+#[tokio::test]
 async fn impossible_does_not_cancel_a_block_outside_stop_events() {
     let f = Fixture::new();
     let mock = MockCompletionModel::from_turns(vec![verdict(false, "not allowed", true)]);

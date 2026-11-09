@@ -511,11 +511,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     "/{name}: {}",
                     fontaine_tools::error_chain::chain(&e)
                 ));
+                runtime.clear_prompt_context();
                 Continue(SkillRun::Spent)
             }
             Err(TurnEnd::InputClosed) => Break(()),
             Err(_) => {
                 self.app.transcript.notice("interrupted");
+                runtime.clear_prompt_context();
                 Continue(SkillRun::Spent)
             }
         }
@@ -819,49 +821,57 @@ impl<R: FnMut(&mut App)> Ui<R> {
         human: Option<&str>,
         attachments: Vec<Attachment>,
     ) -> TurnEnd {
-        let mut end = self.attempt(runtime, text, human, attachments).await;
-        let mut tried = Tried::default();
-        while let TurnEnd::Finished(TurnOutcome::Failed(failure)) = &end
-            && failure.falls_through
-        {
-            let class = failure.class.unwrap_or("quota");
-            if runtime.fall_through(class, &mut tried).await.is_some() {
-                end = self
-                    .attempt(runtime, RETRY_NOTE.to_string(), None, Vec::new())
-                    .await;
-                continue;
-            }
-            if let Some(spent) = runtime.fall_through_spent()
-                && let TurnEnd::Finished(TurnOutcome::Failed(failure)) = &mut end
+        let mut text = text;
+        let mut human = human;
+        let mut attachments = attachments;
+        loop {
+            let mut end = self.attempt(runtime, text, human, attachments).await;
+            let mut tried = Tried::default();
+            while let TurnEnd::Finished(TurnOutcome::Failed(failure)) = &end
+                && failure.falls_through
             {
-                failure.message.push('\n');
-                failure.message.push_str(&spent);
-            }
-            break;
-        }
-        self.finish_turn(runtime, &end).await;
-        // Before the goal hears of the turn: a `stop` hook that blocks continues the turn, and
-        // only the turn that finally ends reaches the goal.
-        if let TurnEnd::Finished(outcome) = &end {
-            match self.hooks_after_turn(runtime, outcome).await {
-                Ok(Some(note)) => {
-                    self.app
-                        .transcript
-                        .notice("a stop hook asked the agent to keep working");
-                    // The mode or rules may have changed during the turn, as for any other turn.
-                    if let Some(end) = self.refresh_before_turn(runtime) {
-                        return end;
-                    }
-                    return Box::pin(self.turn(runtime, note, None, Vec::new())).await;
+                let class = failure.class.unwrap_or("quota");
+                if runtime.fall_through(class, &mut tried).await.is_some() {
+                    end = self
+                        .attempt(runtime, RETRY_NOTE.to_string(), None, Vec::new())
+                        .await;
+                    continue;
                 }
-                Ok(None) => {}
-                Err(TurnEnd::InputClosed) => return TurnEnd::InputClosed,
-                Err(_) => {}
+                if let Some(spent) = runtime.fall_through_spent()
+                    && let TurnEnd::Finished(TurnOutcome::Failed(failure)) = &mut end
+                {
+                    failure.message.push('\n');
+                    failure.message.push_str(&spent);
+                }
+                break;
             }
+            self.finish_turn(runtime, &end).await;
+            // Before the goal hears of the turn: a `stop` hook that blocks continues the turn,
+            // and only the turn that finally ends reaches the goal.
+            if let TurnEnd::Finished(outcome) = &end {
+                match self.hooks_after_turn(runtime, outcome).await {
+                    Ok(Some(note)) => {
+                        self.app
+                            .transcript
+                            .notice("a stop hook asked the agent to keep working");
+                        // The mode or rules may have changed during the turn, as for any other turn.
+                        if let Some(end) = self.refresh_before_turn(runtime) {
+                            return end;
+                        }
+                        text = note;
+                        human = None;
+                        attachments = Vec::new();
+                        continue;
+                    }
+                    Ok(None) => {}
+                    Err(TurnEnd::InputClosed) => return TurnEnd::InputClosed,
+                    Err(_) => {}
+                }
+            }
+            self.goal_after_turn(runtime, &end);
+            runtime.refresh_files();
+            return end;
         }
-        self.goal_after_turn(runtime, &end);
-        runtime.refresh_files();
-        end
     }
 
     /// One run of the agent on `text`, to its end.
@@ -1100,6 +1110,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
             }
         };
         drop(run);
+        // A turn that never reached its drain leaves the gate's note for the next one.
+        runtime.clear_prompt_context();
         // Only a run cut short is unsettled: one that answered was saved, even when a stop
         // landed in the same poll and is relabelled below. A failure with the stop standing
         // was ended by the stop's dispatch denial and is kept with its marker.

@@ -1072,6 +1072,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Continue(true) => {}
                     }
                     if let Err(e) = runtime.set_goal(&condition) {
+                        runtime.clear_prompt_context();
                         self.app
                             .transcript
                             .error(fontaine_tools::error_chain::chain(&e));

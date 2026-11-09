@@ -120,6 +120,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     Continue(true) => {}
                 }
                 let Some(prompt) = self.start_interval(&scheduler, interval) else {
+                    runtime.clear_prompt_context();
                     return Continue(());
                 };
                 return self
@@ -139,12 +140,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 match scheduler.begin_loop(&prompt) {
                     Ok(_) => {}
                     Err(ScheduleError::LoopActive) => {
+                        runtime.clear_prompt_context();
                         self.app.transcript.error(
                             "a self-paced loop is already running; /loop stop ends it first",
                         );
                         return Continue(());
                     }
                     Err(e) => {
+                        runtime.clear_prompt_context();
                         self.app.transcript.error(chain(&e));
                         return Continue(());
                     }

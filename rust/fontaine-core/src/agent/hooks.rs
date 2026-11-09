@@ -49,13 +49,17 @@ impl AgentRuntime {
     /// prompt; a block means the prompt is neither sent nor recorded.
     pub async fn prompt_submit(&self, prompt: &str) -> PromptGate {
         let gate = self.setup.lifecycle.prompt_submit(prompt).await;
-        if let PromptGate::Proceed {
-            context: Some(note),
-        } = &gate
-        {
-            self.state.queue_hook_context(note.clone());
-        }
+        let note = match &gate {
+            PromptGate::Proceed { context } => context.clone(),
+            PromptGate::Blocked(_) => None,
+        };
+        self.state.set_prompt_context(note);
         gate
+    }
+
+    /// Drops the `user_prompt_submit` note of a gated command that ended without a turn.
+    pub fn clear_prompt_context(&self) {
+        self.state.clear_prompt_context();
     }
 
     /// The harness notes hooks added for the next root prompt, in order.
