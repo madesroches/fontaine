@@ -753,6 +753,27 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-22: Deviation — a stdio MCP server gets a scrubbed environment (a base set plus the variables in `env_vars`) and its stderr goes to the debug file; reason: provider keys and telemetry credentials must not reach a third-party process (Phase 5).
 - 2026-10-25: Deviation — an MCP server's `requiresUserInteraction` marker stays in force for the life of the connection once any `tools/list` response carried it (Claude Code follows the latest listing); overlapping refreshes and late responses could otherwise let a stale page loosen it. It only ever asks more.
 - 2026-11-08: Fold `fontaine-mcp` into `fontaine-tools` as the `mcp` module (8 → 7 crates); the full merge into `fontaine-core` proposed in #485 was declined to keep the compiler-enforced tools/agents boundary.
+- 2026-11-08: (#35) Elicitation declares and serves form mode only. URL mode is declined, because opening a browser on a server's say-so is an outward action that needs its own design (follow-up issue).
+- 2026-11-08: (#35) There is no `Elicitation` hook event yet. Headless and AFK answer `cancel`, as Claude Code's non-interactive sessions do (follow-up issue).
+- 2026-11-08: (#35) Elicitation is served from a transport tap, because rig-rmcp's `McpClientHandler` does not expose `create_elicitation`. Wrapping the handler would mean reimplementing `connect`, whose initial fetch is `pub(crate)`, and a fork breaks the exact-version pin.
+- 2026-11-08: (#35) In headless runs a stdio server that exits stays failed and is not restarted on the next call, and there is no 30-minute background retry after the five reconnect attempts (follow-up issue).
+- 2026-11-08: (#35) Oversized MCP results are saved to `<scratch>/mcp-results/`, not to a `tool-results` directory under the data dir. The scratch directory is the session's private root, so reading the file needs no out-of-root gate, and the file is cleaned up with the session.
+- 2026-11-08: (#35) There is no 10,000-token warning. The cap already keeps oversized output out of context (follow-up issue).
+- 2026-11-08: (#35) Results that carry image content are not capped or spilled. Fontaine has no image token estimate for them yet.
+- 2026-11-08: (#35) `/mcp reconnect` only restarts servers attempted this session, including ones that failed at startup. It never starts a left-off or untrusted one.
+- 2026-11-08: (#35) The disconnect text reads "run /mcp reconnect <name>" where Claude Code says "open /mcp to reconnect", because Fontaine's `/mcp` is a read-only notice, not a menu, so the command has to be named.
+- 2026-11-08: (#35) The reconnect watcher stops early on a `Permanent` error rather than spending all 5 attempts, because retrying an auth or protocol failure cannot succeed.
+- 2026-11-08: (#35) HTTP disconnects are detected from a Transient `ServiceError::TransportSend` or `TransportClosed` on a tool call (not a ping, not rmcp's own recovery), because rmcp's streamable-HTTP worker never closes on a dead server and so `closed()` alone would never reconnect or retire its tools.
+- 2026-11-08: (#35) 5xx and 429 at connect are Transient, read from the `HTTP <code>` prefix rmcp puts in `UnexpectedServerResponse`, so they are retried as Claude Code retries them; any other text stays Permanent (follow-up issue asks rmcp for a typed status).
+- 2026-11-08: (#35) The supervisor connects through an injectable `McpConnector` trait (production `ServerConnector` calls `connect_server`), so `tokio::time::pause` unit tests can script connects, failures and closes.
+- 2026-11-08: (#35) Elicitation writes no audit record, only the `mcp_elicitation` telemetry event emitted by the tap, because the audit log holds gate decisions and its strict reader feeds `/bug`; `ApproverElicitor` keeps only the approver.
+- 2026-11-08: (#35) An elicitation that arrives while a subagent's call is in flight on that connection is answered `cancel` without a dialog, so a subagent can never put a dialog in front of the user, as with `ask_user_question`.
+- 2026-11-08: (#35) `client_config()` offers protocol version 2025-11-25 (`LATEST_WITH_INITIALIZE`), not rmcp's 2026-07-28 default, because at 2026-07-28 elicitation arrives as an MRTR result rig-rmcp cannot surface; servers that answer only 2026-07-28 still connect but their elicitations are not served (follow-up issue).
+- 2026-11-08: (#35) Startup still blocks on MCP connects, and a server's startup retries share one 30 s deadline instead of 30 s per attempt, unlike Claude Code's per-attempt retries, so an unresponsive server delays startup by at most 30 s rather than about 127 s.
+- 2026-11-08: (#35) rig-rmcp's 300 s tool-call timeout is left unchanged although it covers the human's answer time, and pending elicitations are answered `cancel` (dialog closed) once no call is in flight on their connection, so no dialog outlives the call that caused it.
+- 2026-11-08: (#35) The choke-point reconnect case is kept, with `close().await` on the first connection and an assertion that a call reaches the new server, because the floor's choke-point coverage is a security invariant and a duplicated check costs little.
+- 2026-11-08: (#35) The elicitation dialog and validator use a simplified field model exposed by fontaine-tools (`ElicitForm::fields()`, `FieldKind`, `ElicitForm::validate`) instead of re-exporting rmcp's schema types, so fontaine-tui keeps no rmcp dependency.
+- 2026-11-08: (#35) `connect_transport` returns a `Connected`, and `McpOptions` carries the guard, `reveal_names`, the output limits, the elicitor and the warn callback, so the connect signatures stop growing.
 
 ### Observability
 
@@ -1096,6 +1117,8 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-04: (#51) `osc9` and `osc777` are generic, not Claude Code's per-terminal `iterm2`/`kitty`/`ghostty` channels, because those terminals read the same sequences and one value per sequence keeps the schema small.
 - 2026-11-04: (#51) No combined bell+OSC value (Claude Code has `iterm2_with_bell`); add on request.
 - 2026-11-08: (#514) On Windows the terminal reader treats a burst of key events (gap under 15 ms) with at least two keys and a newline as one paste, because crossterm's Windows reader never emits a bracketed paste and each pasted line would submit; Claude Code gets bracketed paste from its input layer. A dropped file path (chars only, no newline) is replayed as keys, so PDF-by-path attachment is not detected on Windows unless it arrives bracketed.
+- 2026-11-08 (supersedes the 2026-10-24 "`/mcp` takes no `reconnect`/`enable`/`disable` arguments until #35." line): (#35) `/mcp reconnect <name|all>` is offered. `enable` and `disable` are still not offered.
+- 2026-11-08: (#35) The 2026-10-24 line "`/help`, `/status`, `/permissions`, `/mcp`, `/hooks` and `/skills` are read-only transcript notices ..." no longer covers `/mcp reconnect`, which acts on servers; a bare `/mcp` stays a read-only notice.
 
 ## Open Questions
 

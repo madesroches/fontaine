@@ -140,14 +140,13 @@ impl Command {
                 | Command::Permissions
                 | Command::Hooks
                 | Command::Plugins
-                | Command::Mcp(_)
                 | Command::Expand(_)
                 | Command::Config
                 | Command::Recap
                 | Command::Cost
                 | Command::Vim
                 | Command::Keybindings
-        ) || matches!(self, Command::Skills(argument) if argument.is_empty())
+        ) || matches!(self, Command::Skills(argument) | Command::Mcp(argument) if argument.is_empty())
     }
 }
 
@@ -358,8 +357,8 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "mcp",
         aliases: &[],
-        hint: None,
-        description: "the MCP servers and their state",
+        hint: Some("[reconnect <name|all>]"),
+        description: "the MCP servers and their state, or restart one",
         command: Command::Mcp,
     },
     Builtin {
@@ -831,6 +830,32 @@ pub fn expand_target(argument: &str) -> Result<ExpandTarget, String> {
         })
 }
 
+/// What `/mcp` is asked to do.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum McpRequest {
+    List,
+    Reconnect(fontaine_core::agent::ReconnectTarget),
+}
+
+pub fn parse_mcp(argument: &str) -> Result<McpRequest, String> {
+    let usage = || {
+        format!(
+            "/mcp takes nothing or `reconnect <name|all>`, not `{argument}`: it lists the servers, or restarts one that dropped or failed"
+        )
+    };
+    let mut words = argument.split_whitespace();
+    match (words.next(), words.next(), words.next()) {
+        (None, ..) => Ok(McpRequest::List),
+        (Some("reconnect"), Some("all"), None) => Ok(McpRequest::Reconnect(
+            fontaine_core::agent::ReconnectTarget::AllFailed,
+        )),
+        (Some("reconnect"), Some(name), None) => Ok(McpRequest::Reconnect(
+            fontaine_core::agent::ReconnectTarget::One(name.to_string()),
+        )),
+        _ => Err(usage()),
+    }
+}
+
 /// Which instruction file `/memory` is asked to open: none for the bare list, otherwise the
 /// 1-based number the list shows.
 pub fn memory_number(argument: &str) -> Result<Option<usize>, String> {
@@ -1107,6 +1132,9 @@ mod tests {
             "/plan do x",
             "/goal win",
             "/init",
+            "/mcp reconnect all",
+            "/mcp reconnect github",
+            "/mcp nonsense",
             "/add-dir /tmp",
             "/export notes.md",
             "/context",
@@ -1128,6 +1156,31 @@ mod tests {
             }
             .runs_mid_turn()
         );
+    }
+
+    #[test]
+    fn mcp_takes_nothing_or_reconnect_with_a_name_or_all() {
+        use fontaine_core::agent::ReconnectTarget::{AllFailed, One};
+        assert_eq!(parse_mcp(""), Ok(McpRequest::List));
+        assert_eq!(
+            parse_mcp("reconnect all"),
+            Ok(McpRequest::Reconnect(AllFailed))
+        );
+        assert_eq!(
+            parse_mcp("reconnect  github "),
+            Ok(McpRequest::Reconnect(One("github".into())))
+        );
+        for bad in [
+            "reconnect",
+            "reconnect a b",
+            "enable x",
+            "disable x",
+            "all",
+            "RECONNECT all",
+        ] {
+            let usage = parse_mcp(bad).expect_err(bad);
+            assert!(usage.contains("reconnect <name|all>"), "{bad}");
+        }
     }
 
     #[test]

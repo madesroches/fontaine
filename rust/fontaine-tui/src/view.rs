@@ -338,6 +338,7 @@ impl Overlay {
             self.title,
             "approval"
                 | "question"
+                | "MCP input"
                 | "MCP server"
                 | "guardian unavailable"
                 | "guardian"
@@ -369,12 +370,13 @@ pub(crate) fn transcript_has_keys(app: &App) -> bool {
         && app.agents.is_none()
         && app.approval.is_none()
         && app.questions.is_empty()
+        && app.elicitations.is_empty()
 }
 
 /// What sits above the message box, if anything: the denied list, the unavailable-guardian
 /// prompt, the MCP server prompt, the guardian-off confirmation, the model picker, the resume
 /// picker, the rewind picker, the settings panel, the provider dialog, the agents panel, the
-/// approval prompt, the model's questions, the transcript view, the history search or the file
+/// approval prompt, the model's questions, an MCP server's request for input, the transcript view, the history search or the file
 /// completion list, then
 /// the `/` menu (at most `MAX_MENU_ROWS` rows and a key-help footer), in that order of
 /// precedence, which is the order `App::handle_key` routes keys in.
@@ -504,6 +506,15 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
             instance: Some(panel.id),
             field: panel.field(),
             ..Overlay::new("question", panel.body(width, rows, theme), footer)
+        };
+    }
+    if let Some(panel) = app.elicitations.front() {
+        let footer = panel.footer();
+        let rows = body_rows(app, width, height, footer.len());
+        return Overlay {
+            instance: Some(panel.id),
+            field: panel.field(),
+            ..Overlay::new("MCP input", panel.body(width, rows, theme), footer)
         };
     }
     if transcript_has_keys(app)

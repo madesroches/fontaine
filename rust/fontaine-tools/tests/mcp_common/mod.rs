@@ -74,6 +74,10 @@ pub fn guard(gate: Arc<Gate>) -> Guard {
     }
 }
 
+pub fn options(gate: Arc<Gate>) -> fontaine_tools::mcp::McpOptions {
+    fontaine_tools::mcp::McpOptions::new(guard(gate), true)
+}
+
 pub fn tool_server() -> ToolServerHandle {
     ToolServer::new().run()
 }

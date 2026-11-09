@@ -5,7 +5,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::interaction::Marked;
+use tokio::sync::Notify;
+
+use super::elicitation::CallTracker;
+use super::meta::ToolMeta;
+use super::output::{OutputLimits, cap};
+use super::servers::signals_transport_failure;
+use crate::gate::{AgentId, ROOT_AGENT};
 use crate::guarded::{Guard, guard_callback};
 use crate::risk::RiskClass;
 use rig_core::message::ToolName;
@@ -47,30 +53,44 @@ pub struct GuardedSink<S> {
     pub guard: Guard,
     /// Whether telemetry may carry the server and tool names.
     pub reveal_names: bool,
-    marked: Marked,
+    meta: ToolMeta,
+    limits: Arc<OutputLimits>,
+    warn: Arc<dyn Fn(&str) + Send + Sync>,
+    tracker: CallTracker,
+    transport_failed: Arc<Notify>,
+}
+
+/// What a connection's [`GuardedSink`] shares with the rest of the connection.
+pub(crate) struct Shared {
+    pub(crate) meta: ToolMeta,
+    pub(crate) tracker: CallTracker,
+    pub(crate) transport_failed: Arc<Notify>,
 }
 
 impl<S> GuardedSink<S> {
     pub(crate) fn new(
         inner: S,
         server: &str,
-        guard: Guard,
-        reveal_names: bool,
-        marked: Marked,
+        options: &super::servers::McpOptions,
+        shared: &Shared,
     ) -> Self {
         GuardedSink {
             inner,
             server: server.to_string(),
-            guard,
-            reveal_names,
-            marked,
+            guard: options.guard.clone(),
+            reveal_names: options.reveal_names,
+            meta: shared.meta.clone(),
+            limits: options.limits.clone(),
+            warn: options.warn.clone(),
+            tracker: shared.tracker.clone(),
+            transport_failed: shared.transport_failed.clone(),
         }
     }
 
     fn wrap(&self, tool: DynamicTool) -> Option<DynamicTool> {
         let mut definition = tool.definition();
         let original_name = definition.name.to_string();
-        let requires_user_interaction = self.marked.contains(&original_name);
+        let requires_user_interaction = self.meta.requires_user_interaction(&original_name);
         let name = match ToolName::new(mcp_tool_name(&self.server, &original_name)) {
             Ok(name) => name,
             Err(e) => {
@@ -79,22 +99,50 @@ impl<S> GuardedSink<S> {
             }
         };
         definition.name = name;
+        let registered = definition.name.to_string();
         let original = Arc::new(tool);
         let probe = original.clone();
+        let server_tool = original_name.clone();
         let (server, tool_label) = if self.reveal_names {
             (self.server.clone(), original_name)
         } else {
             (HIDDEN.to_string(), HIDDEN.to_string())
         };
+        let meta = self.meta.clone();
+        let limits = self.limits.clone();
+        let warn = self.warn.clone();
+        let tracker = self.tracker.clone();
+        let transport_failed = self.transport_failed.clone();
         let callback = as_callback(move |context: &mut ToolContext, args: Value| {
             let original = original.clone();
+            let (meta, limits, warn) = (meta.clone(), limits.clone(), warn.clone());
+            let (tracker, transport_failed) = (tracker.clone(), transport_failed.clone());
+            let (server_tool, registered) = (server_tool.clone(), registered.clone());
+            // A call that does not say who made it counts as a subagent's, the stricter side.
+            let root = context
+                .require::<AgentId>()
+                .is_ok_and(|agent| agent.0 == ROOT_AGENT);
             let span = tracing::info_span!(
                 target: TARGET,
                 "fontaine.mcp.call",
                 mcp.server = server.as_str(),
                 mcp.tool = tool_label.as_str(),
             );
-            Box::pin(async move { original.run_with(context, args).await }.instrument(span))
+            Box::pin(
+                async move {
+                    let _in_flight = tracker.enter(root);
+                    let outcome = original.run_with(context, args).await;
+                    signals_transport_failure(&outcome, &transport_failed);
+                    cap(
+                        outcome,
+                        &registered,
+                        meta.char_limit(&server_tool),
+                        &limits,
+                        &*warn,
+                    )
+                }
+                .instrument(span),
+            )
         });
         // Declared hints travel with the definition as text for the guardian; the class is
         // fixed here, whatever the server says. The interaction marker is the one declared

@@ -87,6 +87,15 @@ All notable changes are recorded here. The format follows
 - A live guardian eval records the provider's `/models` entry for the guardian model (id,
   display name, context length) as `served_model` in the scorecard summary and prints it, so a
   moving alias such as `kimi/kimi-for-coding` can be tied to the version that answered (#440).
+- MCP servers survive real-world conditions, as in Claude Code. A server's `elicitation/create`
+  request is shown as a form in the terminal UI (form mode only; headless runs, AFK mode, the
+  doctor probe and a subagent's call answer `cancel`, and URL mode is declined). A remote server
+  that drops mid-session is reconnected up to five times with a 1 s doubling backoff, and its first
+  connection is retried three times after a transient error; a stdio server that exits is marked
+  failed. `/mcp` shows `pending (reconnecting, attempt N of 5)`, and `/mcp reconnect <name|all>`
+  restarts a server by hand. A successful result over 50,000 characters or
+  `MAX_MCP_OUTPUT_TOKENS` tokens (default 25,000) is saved to `<scratch>/mcp-results/` and the
+  model gets the path; a long error result keeps its first and last 5,000 characters (#35).
 
 ### Changed
 

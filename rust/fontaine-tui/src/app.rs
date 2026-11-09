@@ -13,6 +13,7 @@ use fontaine_core::statusline::{RecentVerdict, StatuslineState};
 use fontaine_core::steering::Queued;
 use fontaine_core::turn::SessionEvent;
 use fontaine_tools::ask_user::{Question, QuestionReply};
+use fontaine_tools::mcp::{ElicitForm, ElicitReply};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::oneshot;
 
@@ -24,6 +25,7 @@ use crate::complete::{self, Token};
 use crate::config_panel::{ConfigKey, ConfigPanel};
 use crate::confirm_prompt::ConfirmPrompt;
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
+use crate::elicitation::ElicitationPanel;
 use crate::history::History;
 use crate::input::{InputBuffer, MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia};
 use crate::keymap::Keymap;
@@ -204,6 +206,9 @@ pub struct App {
     /// The model's questions for the human, the one being answered first. They wait behind an
     /// open approval, which can come from a subagent while the root asks.
     pub questions: VecDeque<QuestionPanel>,
+    /// MCP servers' requests for input, the one being answered first. They wait behind the
+    /// model's questions and behind each other.
+    pub elicitations: VecDeque<ElicitationPanel>,
     /// The `/agents` panel while it is open.
     pub agents: Option<AgentsPanel>,
     /// The model's task list, shown above the input.
@@ -313,6 +318,7 @@ pub struct App {
     setup_review_opened: u64,
     setup_composition_opened: u64,
     questions_opened: u64,
+    elicitations_opened: u64,
     unavailable_opened: u64,
 }
 
@@ -391,6 +397,7 @@ impl App {
             approval: None,
             queued_approvals: VecDeque::new(),
             questions: VecDeque::new(),
+            elicitations: VecDeque::new(),
             agents: None,
             todos: TodoPanel::default(),
             transcript_view: None,
@@ -450,6 +457,7 @@ impl App {
             setup_review_opened: 0,
             setup_composition_opened: 0,
             questions_opened: 0,
+            elicitations_opened: 0,
             unavailable_opened: 0,
         }
     }
@@ -735,6 +743,15 @@ impl App {
         self.questions.push_back(panel);
     }
 
+    /// Shows an MCP server's request for input, or queues it behind the ones the human is
+    /// answering.
+    pub fn begin_elicitation(&mut self, form: ElicitForm, reply: oneshot::Sender<ElicitReply>) {
+        let mut panel = ElicitationPanel::new(form, reply);
+        self.elicitations_opened += 1;
+        panel.id = self.elicitations_opened;
+        self.elicitations.push_back(panel);
+    }
+
     /// Drops the approvals whose call is gone, such as those of an agent that was killed, and
     /// opens the next one when the open one went away.
     pub fn prune_closed(&mut self) {
@@ -747,6 +764,7 @@ impl App {
             self.approval = self.queued_approvals.pop_front();
         }
         self.questions.retain(|panel| !panel.is_closed());
+        self.elicitations.retain(|panel| !panel.is_closed());
     }
 
     pub fn begin_server(&mut self, mut prompt: ConfirmPrompt) {
@@ -837,7 +855,12 @@ impl App {
         if let Some(p) = &self.approval {
             return Some((PromptKind::Approval, p.id));
         }
-        self.questions.front().map(|p| (PromptKind::Question, p.id))
+        if let Some(p) = self.questions.front() {
+            return Some((PromptKind::Question, p.id));
+        }
+        self.elicitations
+            .front()
+            .map(|p| (PromptKind::Elicitation, p.id))
     }
 
     /// Answers every open or queued prompt the way `AfkApprover` would, because nobody is asked
@@ -860,6 +883,10 @@ impl App {
         }
         for mut panel in self.questions.drain(..) {
             panel.reply(QuestionReply::Unavailable);
+            closed += 1;
+        }
+        for mut panel in self.elicitations.drain(..) {
+            panel.reply(ElicitReply::Cancel);
             closed += 1;
         }
         closed
@@ -898,6 +925,11 @@ impl App {
             panel.reply(QuestionReply::Declined);
         }
         self.questions = background;
+        // An elicitation names no agent, and a call of a subagent's is cancelled before it gets
+        // here, so every open one belongs to the conversation that was interrupted.
+        for mut panel in self.elicitations.drain(..) {
+            panel.reply(ElicitReply::Cancel);
+        }
     }
 
     /// Tells the waiting pipeline what the human chose about the unavailable guardian.
@@ -928,6 +960,7 @@ impl App {
                 // Overlays that take keys before the dialog also own the paste.
                 let above_dialog = self.approval.is_some()
                     || !self.questions.is_empty()
+                    || !self.elicitations.is_empty()
                     || self.denied.is_some()
                     || self.unavailable.is_some()
                     || self.server.is_some()
@@ -942,6 +975,14 @@ impl App {
                     || self.rewind.is_some()
                     || self.config.is_some();
                 if above_dialog {
+                    // Only the MCP form takes a paste, into its focused field; it is the dialog
+                    // on top when no approval or question is open.
+                    if self.approval.is_none()
+                        && self.questions.is_empty()
+                        && let Some(panel) = self.elicitations.front_mut()
+                    {
+                        panel.handle_paste(&text);
+                    }
                 } else if let Some(dialog) = &mut self.providers {
                     dialog.handle_paste(&text);
                 } else if !self.covered() {
@@ -1019,6 +1060,7 @@ impl App {
     pub fn covered(&self) -> bool {
         self.approval.is_some()
             || !self.questions.is_empty()
+            || !self.elicitations.is_empty()
             || self.denied.is_some()
             || self.unavailable.is_some()
             || self.server.is_some()
@@ -1265,6 +1307,10 @@ impl App {
             self.question_key(key);
             return Action::None;
         }
+        if self.approval.is_none() && !self.elicitations.is_empty() {
+            self.elicitation_key(key);
+            return Action::None;
+        }
         if control
             && matches!(key.code, KeyCode::Char('p' | 'n'))
             && !key.modifiers.contains(KeyModifiers::ALT)
@@ -1303,6 +1349,7 @@ impl App {
             && !typing_reason
             && self.approval.is_none()
             && self.questions.is_empty()
+            && self.elicitations.is_empty()
         {
             self.toggle_transcript();
             return Action::None;
@@ -1591,6 +1638,25 @@ impl App {
         self.questions.pop_front();
         if declined {
             self.transcript.notice("question declined".to_string());
+        }
+    }
+
+    fn elicitation_key(&mut self, key: KeyEvent) {
+        let Some(panel) = self.elicitations.front_mut() else {
+            return;
+        };
+        let Some(reply) = panel.handle_key(key) else {
+            return;
+        };
+        let note = match &reply {
+            ElicitReply::Accept(_) => None,
+            ElicitReply::Decline => Some("input declined"),
+            ElicitReply::Cancel => Some("input cancelled"),
+        };
+        panel.reply(reply);
+        self.elicitations.pop_front();
+        if let Some(note) = note {
+            self.transcript.notice(note.to_string());
         }
     }
 
@@ -2528,6 +2594,124 @@ mod tests {
         drop(rx);
         app.prune_closed();
         assert!(app.questions.is_empty());
+    }
+
+    fn elicit_form() -> ElicitForm {
+        ElicitForm {
+            server: "srv".into(),
+            message: "Who?".into(),
+            schema: fontaine_tools::mcp::elicitation::ElicitationSchema::builder()
+                .required_string("name")
+                .build()
+                .unwrap(),
+        }
+    }
+
+    /// An elicitation dialog past its grace period, and the receiver of its answer.
+    fn open_elicitation(app: &mut App) -> oneshot::Receiver<ElicitReply> {
+        let (tx, rx) = oneshot::channel();
+        app.begin_elicitation(elicit_form(), tx);
+        app.elicitations.back_mut().unwrap().settle();
+        rx
+    }
+
+    #[test]
+    fn an_elicitation_takes_the_keys_and_what_is_typed_stays_out_of_the_message_box() {
+        let mut app = app();
+        let mut rx = open_elicitation(&mut app);
+        assert!(app.covered());
+        assert_eq!(crate::view::overlay(&app, 60, 30, false).title, "MCP input");
+        type_text(&mut app, "Ada");
+        assert!(app.input.is_empty());
+        let Action::None = press(&mut app, KeyCode::Enter) else {
+            panic!("a key is not an action");
+        };
+        match rx.try_recv() {
+            Ok(ElicitReply::Accept(answer)) => assert_eq!(answer["name"], "Ada"),
+            other => panic!("{other:?}"),
+        }
+        assert!(app.elicitations.is_empty());
+    }
+
+    #[test]
+    fn esc_cancels_an_elicitation_while_running_and_ctrl_d_declines() {
+        let mut app = app();
+        app.running = true;
+        let mut rx = open_elicitation(&mut app);
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(rx.try_recv().unwrap(), ElicitReply::Cancel);
+        assert!(app.running, "Esc answered the dialog and did not interrupt");
+        assert_eq!(last_notice(&app), Some("input cancelled"));
+
+        let mut rx = open_elicitation(&mut app);
+        ctrl(&mut app, 'd');
+        assert_eq!(rx.try_recv().unwrap(), ElicitReply::Decline);
+        assert_eq!(last_notice(&app), Some("input declined"));
+    }
+
+    #[test]
+    fn a_paste_goes_to_the_forms_focused_field_not_the_message_box() {
+        let mut app = app();
+        let mut rx = open_elicitation(&mut app);
+        app.handle_input(Input::Paste("Ada Lovelace".into()));
+        assert!(app.input.is_empty());
+        press(&mut app, KeyCode::Enter);
+        match rx.try_recv() {
+            Ok(ElicitReply::Accept(answer)) => assert_eq!(answer["name"], "Ada Lovelace"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_open_elicitation_blocks_the_transcript_toggle() {
+        let mut app = app();
+        let _rx = open_elicitation(&mut app);
+        ctrl(&mut app, 'o');
+        assert!(app.transcript_view.is_none());
+    }
+
+    #[test]
+    fn a_question_is_answered_before_a_waiting_elicitation() {
+        let mut app = app();
+        let _elicit = open_elicitation(&mut app);
+        let _question = open_question(&mut app, "root", false);
+        assert_eq!(crate::view::overlay(&app, 60, 30, false).title, "question");
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(crate::view::overlay(&app, 60, 30, false).title, "MCP input");
+    }
+
+    #[test]
+    fn a_closed_elicitation_is_pruned() {
+        let mut app = app();
+        let rx = open_elicitation(&mut app);
+        drop(rx);
+        app.prune_closed();
+        assert!(app.elicitations.is_empty());
+    }
+
+    #[test]
+    fn afk_and_an_interrupt_cancel_an_open_elicitation() {
+        let mut app = app();
+        let mut rx = open_elicitation(&mut app);
+        assert_eq!(app.answer_for_afk(), 1);
+        assert_eq!(rx.try_recv().unwrap(), ElicitReply::Cancel);
+
+        let mut rx = open_elicitation(&mut app);
+        app.deny_pending();
+        assert_eq!(rx.try_recv().unwrap(), ElicitReply::Cancel);
+        assert!(app.elicitations.is_empty());
+    }
+
+    #[test]
+    fn an_open_elicitation_is_a_pending_prompt_and_stops_the_spinner() {
+        let mut app = app();
+        assert!(app.pending_prompt().is_none());
+        let _rx = open_elicitation(&mut app);
+        let (kind, _) = app.pending_prompt().expect("a prompt is waiting");
+        assert_eq!(kind, crate::notify::PromptKind::Elicitation);
+        app.running = true;
+        assert!(!crate::spinner::active(&app));
+        assert!(crate::view::overlay(&app, 60, 30, false).needs_answer());
     }
 
     #[test]

@@ -2,12 +2,23 @@
 //! built-ins, always as `Arbitrary`, under `mcp__<server>__<tool>`; what a server declares about
 //! a tool reaches the guardian as untrusted text and never earns a fast path. The one declared
 //! value that changes a decision is `requiresUserInteraction`, and it only forces a prompt.
+//! Oversized results are saved to a file instead of entering the model's context, and a server's
+//! request for input is shown to the person, never answered by the harness.
 
-mod interaction;
+pub mod elicitation;
+mod meta;
+pub mod output;
 pub mod register;
 pub mod servers;
 
-pub use interaction::REQUIRES_USER_INTERACTION;
+pub use elicitation::{
+    CancelAll, Choice, ElicitForm, ElicitReply, Elicitor, Field, FieldKind, TextFormat,
+};
+pub use meta::{MAX_RESULT_SIZE_CHARS, REQUIRES_USER_INTERACTION};
+pub use output::OutputLimits;
 pub use register::{GuardedSink, mcp_tool_name};
 pub use rig_rmcp::McpConnection as McpConnectionHandle;
-pub use servers::{Connected, McpError, ServerSpec, Transport, connect, connect_transport};
+pub use servers::{
+    CONNECT_TIMEOUT, Connected, McpError, McpErrorKind, McpOptions, ServerSpec, Transport, connect,
+    connect_transport,
+};

@@ -15,6 +15,7 @@ pub mod config_panel;
 pub mod confirm_prompt;
 pub mod denials;
 pub mod diff;
+pub mod elicitation;
 pub mod guardian_prompt;
 pub mod history;
 pub mod input;
@@ -63,6 +64,7 @@ use fontaine_core::permissions::{
 use fontaine_core::statusline::{StatuslineScript, StatuslineState};
 use fontaine_tools::ask_user::{Question, QuestionReply};
 use fontaine_tools::kills::KILL_SETTLE;
+use fontaine_tools::mcp::{ElicitForm, ElicitReply};
 use futures::future::BoxFuture;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
@@ -130,6 +132,8 @@ enum Prompt {
     /// The model's questions for the human, with the agent that asks. A dropped sender means
     /// nobody could answer.
     Question(String, Vec<Question>, oneshot::Sender<QuestionReply>),
+    /// An MCP server's request for input. A dropped sender means nobody could answer.
+    Elicit(Box<ElicitForm>, oneshot::Sender<ElicitReply>),
     Notice(Severity, String),
 }
 
@@ -186,6 +190,16 @@ impl Approver for ChannelApprover {
                 return QuestionReply::Unavailable;
             }
             answer.await.unwrap_or(QuestionReply::Unavailable)
+        })
+    }
+
+    fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
+        Box::pin(async move {
+            let (reply, answer) = oneshot::channel();
+            if self.tx.send(Prompt::Elicit(Box::new(form), reply)).is_err() {
+                return ElicitReply::Cancel;
+            }
+            answer.await.unwrap_or(ElicitReply::Cancel)
         })
     }
 

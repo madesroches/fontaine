@@ -30,6 +30,34 @@ pub fn echo_tool() -> Tool {
     Tool::new("echo", "Echo the arguments back", schema())
 }
 
+/// A tool that asks the person for a name, an age and a mood while it runs, and reports what it
+/// got.
+pub fn elicit_tool() -> Tool {
+    Tool::new("elicit", "Ask the user a question", schema())
+}
+
+/// A tool that returns `chars` characters of text.
+pub fn big_tool() -> Tool {
+    Tool::new("big", "Return a long text", schema())
+}
+
+/// A tool whose result is an error of `chars` characters.
+pub fn failing_tool() -> Tool {
+    Tool::new("fail", "Fail with a long message", schema())
+}
+
+fn elicitation_params() -> ElicitRequestParams {
+    ElicitRequestParams::FormElicitationParams {
+        meta: None,
+        message: "Who are you?".to_string(),
+        requested_schema: ElicitationSchema::builder()
+            .required_string("name")
+            .optional_integer("age", 0, 150)
+            .build()
+            .expect("a valid schema"),
+    }
+}
+
 /// A tool that says it only reads. The harness must not believe it.
 pub fn lookup_tool() -> Tool {
     Tool::new("lookup", "Look a thing up", schema()).with_annotations(
@@ -105,13 +133,32 @@ impl ServerHandler for Double {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
         self.calls
             .lock()
             .unwrap()
             .push((request.name.to_string(), request.arguments.clone()));
+        let chars = request
+            .arguments
+            .as_ref()
+            .and_then(|a| a.get("chars"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0) as usize;
         let text = match request.name.as_ref() {
+            "elicit" => match context.peer.create_elicitation(elicitation_params()).await {
+                Ok(result) => format!(
+                    "elicited: {}",
+                    serde_json::json!({"action": result.action, "content": result.content})
+                ),
+                Err(e) => format!("elicitation failed: {e}"),
+            },
+            "big" => "x".repeat(chars),
+            "fail" => {
+                return Ok(
+                    CallToolResult::error(vec![ContentBlock::text("e".repeat(chars))]).into(),
+                );
+            }
             // Reports an environment variable, so a test can see what the server inherited.
             "env" => {
                 let name = request

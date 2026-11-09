@@ -11,7 +11,10 @@ use std::time::Duration;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::guarded::Guard;
-use fontaine_tools::mcp::{ServerSpec, Transport, connect as connect_server};
+use fontaine_tools::mcp::output::{DEFAULT_MAX_TOKENS, OutputLimits, Spill};
+use fontaine_tools::mcp::{
+    ElicitForm, ElicitReply, Elicitor, McpOptions, ServerSpec, Transport, connect as connect_server,
+};
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::tls::LoadedNetwork;
 use futures::future::BoxFuture;
@@ -20,7 +23,11 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use super::AgentRuntime;
+use super::mcp_supervisor::{
+    McpServerState, ReconnectTarget, ServerConnector, ServerSlot, Supervisor,
+};
 use crate::config::{Config, McpServer};
+use crate::permissions::Approver;
 use crate::runtime_error::RuntimeError;
 use crate::tools;
 use crate::trust;
@@ -197,6 +204,64 @@ impl ManagedToolSink for CountingSink {
     }
 }
 
+/// Shows an MCP server's request for input through the session's approver, so the terminal UI's
+/// dialog answers it and every other surface cancels.
+pub(crate) struct ApproverElicitor(pub(crate) Arc<dyn Approver>);
+
+impl Elicitor for ApproverElicitor {
+    fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
+        self.0.elicit(form)
+    }
+}
+
+/// Why `name`, which has no slot, was never started. A configured server the plan leaves out is
+/// the repository's, withheld because the workspace is not trusted; one the plan holds back for
+/// approval was left off.
+fn not_attempted(name: &str, configured: bool, plan: &[McpServerPlan]) -> String {
+    if configured && !plan.iter().any(|p| p.name == name) {
+        format!(
+            "MCP server `{name}` is defined by the repository and the workspace is not trusted, so it is not started"
+        )
+    } else if plan.iter().any(|p| p.name == name && p.needs_approval) {
+        format!("MCP server `{name}` was left off at startup; restart Fontaine to approve it")
+    } else {
+        format!("no MCP server named `{name}` was started this session")
+    }
+}
+
+const MAX_OUTPUT_TOKENS_VAR: &str = "MAX_MCP_OUTPUT_TOKENS";
+
+/// The output limits a session applies to MCP results: the token limit from the environment and
+/// a spill directory in the session's scratch root. An unusable value is warned about and the
+/// default used.
+pub(crate) fn output_limits(
+    env: &(dyn Fn(&str) -> Option<OsString> + Sync),
+    scratch: Option<&Path>,
+    warn: &dyn Fn(&str),
+) -> OutputLimits {
+    let max_tokens = match env(MAX_OUTPUT_TOKENS_VAR) {
+        None => DEFAULT_MAX_TOKENS,
+        Some(value) => match value
+            .to_str()
+            .and_then(|text| text.trim().parse::<usize>().ok())
+            .filter(|tokens| *tokens > 0)
+        {
+            Some(tokens) => tokens,
+            None => {
+                warn(&format!(
+                    "{MAX_OUTPUT_TOKENS_VAR} is not a positive whole number ({}); using {DEFAULT_MAX_TOKENS}",
+                    value.to_string_lossy()
+                ));
+                DEFAULT_MAX_TOKENS
+            }
+        },
+    };
+    OutputLimits::new(
+        max_tokens,
+        scratch.map(|dir| Spill(dir.join("mcp-results"))),
+    )
+}
+
 /// How long a probe waits for a server to start and list its tools.
 pub const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -216,8 +281,10 @@ pub async fn probe_server(
         pre_images: None,
         kills: None,
     };
+    // One attempt, no retry; the default options cancel any request for input and keep nothing.
+    let options = McpOptions::new(guard, false);
     let attempt = async {
-        let connected = connect_server(spec, sink.clone(), guard, false, network, env)
+        let connected = connect_server(spec, sink.clone(), &options, network, env)
             .await
             .map_err(|e| chain(&e))?;
         let count = sink.0.load(Ordering::Relaxed);
@@ -247,7 +314,8 @@ impl AgentRuntime {
     }
 
     /// Starts the MCP servers the plan allows: those that need no approval and those named in
-    /// `approved`. A server that fails to start is reported and skipped; the session goes on.
+    /// `approved`, all at once. A server that fails to start is reported and skipped, and keeps a
+    /// slot so `/mcp reconnect` can try it again; the session goes on.
     pub async fn connect_mcp(&mut self, approved: &[String]) -> Vec<McpOutcome> {
         let telemetry = &self.config.telemetry;
         let reveal = telemetry.enabled && telemetry.log_tool_details;
@@ -259,41 +327,65 @@ impl AgentRuntime {
             // MCP tools join outside the registry, so the session's switches reach them here.
             kills: Some(self.kills.clone()),
         };
-        let mut outcomes = Vec::new();
-        for plan in self.mcp_plan() {
-            if plan.needs_approval && !approved.contains(&plan.name) {
-                continue;
-            }
-            let Some(spec) = server_spec(&self.config, &plan.name, &self.primary_root()) else {
-                continue;
-            };
-            let env = self.setup.env.clone();
-            match connect_server(
-                &spec,
-                self.tool_server.clone(),
-                guard.clone(),
-                reveal,
-                &self.setup.network,
+        let env = self.setup.env.clone();
+        let approver = self.approver.clone();
+        let limits = {
+            let env = env.clone();
+            let approver = approver.clone();
+            output_limits(
                 &move |name| env(name),
+                self.state.scratch.as_deref(),
+                &move |m| approver.warn(m),
             )
-            .await
-            {
-                Ok(connected) => {
-                    self.mcp.push(connected);
-                    outcomes.push(McpOutcome {
-                        server: plan.name,
-                        error: None,
-                    });
-                }
-                Err(e) => {
-                    let rendered = chain(&e);
-                    self.approver.warn(&rendered);
-                    outcomes.push(McpOutcome {
-                        server: plan.name,
-                        error: Some(rendered),
-                    });
-                }
+        };
+        let mut options = McpOptions::new(guard, reveal);
+        options.limits = Arc::new(limits);
+        options.elicitor = Arc::new(ApproverElicitor(approver.clone()));
+        let warner = approver.clone();
+        options.warn = Arc::new(move |message| warner.warn(message));
+        let connector = ServerConnector {
+            options,
+            tool_server: self.tool_server.clone(),
+            network: self.setup.network.clone(),
+            env,
+        };
+        let state = self.state.clone();
+        let types = self.agent_types.clone();
+        let supervisor = Supervisor::new(
+            Arc::new(connector),
+            approver.clone(),
+            Arc::new(move || state.agents().refresh_rebuilt_toolsets(&types)),
+        );
+        self.mcp.supervisor = Some(supervisor.clone());
+
+        let root = self.primary_root();
+        let attempts: Vec<(String, ServerSpec)> = self
+            .mcp_plan()
+            .into_iter()
+            .filter(|plan| !plan.needs_approval || approved.contains(&plan.name))
+            .filter_map(|plan| {
+                Some((
+                    plan.name.clone(),
+                    server_spec(&self.config, &plan.name, &root)?,
+                ))
+            })
+            .collect();
+        let started = futures::future::join_all(attempts.into_iter().map(|(name, spec)| {
+            let supervisor = supervisor.clone();
+            async move { (name, supervisor.start(spec).await) }
+        }))
+        .await;
+        let mut outcomes = Vec::new();
+        for (name, (slot, result)) in started {
+            self.mcp.insert(slot);
+            let error = result.err().map(|e| chain(&e));
+            if let Some(rendered) = &error {
+                approver.warn(rendered);
             }
+            outcomes.push(McpOutcome {
+                server: name,
+                error,
+            });
         }
         // The rebuild at startup derived each rebuilt agent's toolset before any server
         // connected; now that the tool server holds every MCP tool, the handle-less rebuilt
@@ -302,6 +394,50 @@ impl AgentRuntime {
             .agents()
             .refresh_rebuilt_toolsets(&self.agent_types);
         outcomes
+    }
+
+    /// The state of each MCP server the session attempted, by name.
+    pub fn mcp_states(&self) -> Vec<(String, McpServerState)> {
+        self.mcp.states()
+    }
+
+    /// Restarts MCP servers by hand, with no backoff. Only a server the session attempted has a
+    /// slot, so this never starts one that was left off or that workspace trust withholds.
+    pub async fn reconnect_mcp(&self, target: ReconnectTarget) -> Vec<McpOutcome> {
+        let slots: Vec<Arc<ServerSlot>> = match &target {
+            ReconnectTarget::One(name) => match self.mcp.slot(name) {
+                Some(slot) => vec![slot],
+                None => {
+                    return vec![McpOutcome {
+                        server: name.clone(),
+                        error: Some(self.not_attempted(name)),
+                    }];
+                }
+            },
+            ReconnectTarget::AllFailed => self.mcp.failed(),
+        };
+        let Some(supervisor) = self.mcp.supervisor.clone() else {
+            return Vec::new();
+        };
+        futures::future::join_all(slots.into_iter().map(|slot| {
+            let supervisor = supervisor.clone();
+            async move {
+                McpOutcome {
+                    server: slot.name().to_string(),
+                    error: supervisor.reconnect(&slot).await.err().map(|e| chain(&e)),
+                }
+            }
+        }))
+        .await
+    }
+
+    /// Why a server with no slot cannot be restarted.
+    fn not_attempted(&self, name: &str) -> String {
+        not_attempted(
+            name,
+            self.config.mcp_servers.contains_key(name),
+            &self.mcp_plan(),
+        )
     }
 
     /// Records the user's approval of a repository-defined MCP server in the trust store.
@@ -318,8 +454,72 @@ impl AgentRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::env_key_matches;
+    use super::{McpServerPlan, env_key_matches, not_attempted, output_limits};
+    use std::cell::RefCell;
     use std::ffi::OsString;
+    use std::path::Path;
+
+    fn limits_for(value: Option<&str>) -> (usize, Vec<String>) {
+        let warnings = RefCell::new(Vec::new());
+        let value = value.map(OsString::from);
+        let limits = output_limits(
+            &move |name| {
+                (name == "MAX_MCP_OUTPUT_TOKENS")
+                    .then(|| value.clone())
+                    .flatten()
+            },
+            Some(Path::new("/scratch")),
+            &|m| warnings.borrow_mut().push(m.to_string()),
+        );
+        assert_eq!(
+            limits.spill.as_ref().unwrap().0,
+            Path::new("/scratch/mcp-results")
+        );
+        (limits.max_tokens, warnings.into_inner())
+    }
+
+    #[test]
+    fn the_token_limit_defaults_and_follows_a_valid_environment_value() {
+        assert_eq!(limits_for(None), (25_000, Vec::new()));
+        assert_eq!(limits_for(Some("40000")), (40_000, Vec::new()));
+        assert_eq!(limits_for(Some(" 8000 ")), (8_000, Vec::new()));
+    }
+
+    #[test]
+    fn an_unusable_token_limit_is_warned_about_and_the_default_used() {
+        for bad in ["lots", "0", "-5", "1.5", ""] {
+            let (tokens, warnings) = limits_for(Some(bad));
+            assert_eq!(tokens, 25_000, "{bad}");
+            assert_eq!(warnings.len(), 1, "{bad}");
+            assert!(warnings[0].contains("MAX_MCP_OUTPUT_TOKENS"), "{bad}");
+        }
+    }
+
+    fn planned(name: &str, needs_approval: bool) -> McpServerPlan {
+        McpServerPlan {
+            name: name.to_string(),
+            description: String::new(),
+            project: true,
+            needs_approval,
+            digest: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_server_without_a_slot_is_refused_with_the_reason_it_was_never_started() {
+        let plan = [planned("left-off", true)];
+        assert!(not_attempted("repo", true, &plan).contains("workspace is not trusted"));
+        assert!(not_attempted("left-off", true, &plan).contains("left off at startup"));
+        assert!(not_attempted("nope", false, &plan).contains("no MCP server named `nope`"));
+        // A name nobody configured is unknown even when the plan is empty.
+        assert!(not_attempted("nope", false, &[]).contains("no MCP server named"));
+    }
+
+    #[test]
+    fn without_a_scratch_directory_there_is_nowhere_to_spill() {
+        let limits = output_limits(&|_| None, None, &|_| {});
+        assert!(limits.spill.is_none());
+    }
 
     #[cfg(not(windows))]
     #[test]

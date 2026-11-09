@@ -1,4 +1,4 @@
-//! A stdio MCP server for tests: `echo`, `lookup` (declared read-only) and `env` (reports a
+//! A stdio MCP server for tests: `echo`, `lookup` (declared read-only), `elicit` (asks the person a question) and `env` (reports a
 //! variable of its own environment).
 
 #[path = "../tests/mcp_common/server.rs"]
@@ -11,6 +11,7 @@ async fn main() {
     let double = server::Double::with_tools(vec![
         server::echo_tool(),
         server::lookup_tool(),
+        server::elicit_tool(),
         rmcp::model::Tool::new(
             "env",
             "Report an environment variable",

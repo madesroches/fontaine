@@ -20,7 +20,6 @@ use fontaine_tools::jobs::Jobs;
 use fontaine_tools::kills::KillSwitches;
 use fontaine_tools::lock::{read, write_recovering};
 use fontaine_tools::lsp::LspServers;
-use fontaine_tools::mcp::Connected;
 use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::RiskClass;
@@ -66,6 +65,7 @@ mod build;
 mod goal;
 mod lsp;
 mod mcp;
+mod mcp_supervisor;
 mod messaging;
 mod model_source;
 mod models;
@@ -75,6 +75,9 @@ mod setup;
 pub(crate) use build::apply_common;
 use build::{Parts, build_agent};
 pub use mcp::{McpOutcome, McpServerPlan, mcp_plan, probe_server, server_digest, server_spec};
+pub use mcp_supervisor::{
+    McpServerState, RECONNECT_ATTEMPTS as MCP_RECONNECT_ATTEMPTS, ReconnectTarget,
+};
 pub use messaging::{Delivered, MessageRefusal};
 pub use model_source::{GuardianRef, SessionModels};
 pub use models::{CredentialEffect, GuardianQuota, Switched};
@@ -206,7 +209,7 @@ pub struct AgentRuntime {
     main: Arc<RwLock<MainModel>>,
     runner: Arc<CoreChildRunner>,
     output_style: Option<String>,
-    mcp: Vec<Connected>,
+    mcp: mcp_supervisor::McpServers,
     /// What `model_listings` has fetched this session.
     listings: Vec<AccountListing>,
     /// Whether the agent was built with the provider's search tool.
@@ -363,7 +366,7 @@ impl AgentRuntime {
             main,
             runner,
             output_style: None,
-            mcp: Vec::new(),
+            mcp: Default::default(),
             listings: Vec::new(),
             native_search: native,
         })

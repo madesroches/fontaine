@@ -10,7 +10,7 @@ use fontaine_tools::risk::RiskClass;
 use mcp_common::server::{
     Double, echo_tool, grant_access_tool, lookup_tool, marked, unmarked_grant_access_tool,
 };
-use mcp_common::{Gate, call, guard, names, tool_server};
+use mcp_common::{Gate, call, names, options, tool_server};
 use rmcp::ServiceExt;
 use serde_json::json;
 
@@ -24,16 +24,28 @@ async fn serve(
     fontaine_tools::mcp::McpConnectionHandle,
     tokio::task::JoinHandle<()>,
 ) {
+    serve_with(name, double, handle, &options(gate)).await
+}
+
+async fn serve_with(
+    name: &str,
+    double: Double,
+    handle: rig_agent::tool::server::ToolServerHandle,
+    options: &fontaine_tools::mcp::McpOptions,
+) -> (
+    fontaine_tools::mcp::McpConnectionHandle,
+    tokio::task::JoinHandle<()>,
+) {
     let (c2s, sfc) = tokio::io::duplex(8192);
     let (s2c, cfs) = tokio::io::duplex(8192);
     let task = tokio::spawn(async move {
         let running = double.serve((sfc, s2c)).await.expect("server start");
         let _ = running.waiting().await;
     });
-    let connection = connect_transport(name, (cfs, c2s), handle, guard(gate), true)
+    let connected = connect_transport(name, (cfs, c2s), handle, options)
         .await
         .expect("connect");
-    (connection, task)
+    (connected.connection, task)
 }
 
 #[tokio::test]
@@ -254,8 +266,7 @@ async fn a_stdio_server_gets_only_the_variables_it_is_given_by_name() {
     let connected = connect(
         &spec,
         handle.clone(),
-        guard(gate.clone()),
-        true,
+        &options(gate.clone()),
         &Default::default(),
         &env,
     )
@@ -263,7 +274,12 @@ async fn a_stdio_server_gets_only_the_variables_it_is_given_by_name() {
     .expect("the stdio server starts");
     assert_eq!(
         names(&handle),
-        ["mcp__stdio__echo", "mcp__stdio__env", "mcp__stdio__lookup"]
+        [
+            "mcp__stdio__echo",
+            "mcp__stdio__elicit",
+            "mcp__stdio__env",
+            "mcp__stdio__lookup"
+        ]
     );
     let granted = call(
         &handle,
@@ -311,8 +327,7 @@ async fn configured_env_reaches_a_stdio_server_and_overrides_a_copied_value() {
     let connected = connect(
         &spec,
         handle.clone(),
-        guard(gate.clone()),
-        true,
+        &options(gate.clone()),
         &fontaine_tools::tls::LoadedNetwork::default(),
         &env,
     )
@@ -350,8 +365,7 @@ async fn a_server_that_cannot_start_is_an_error_naming_it() {
     let error = connect(
         &spec,
         tool_server(),
-        guard(gate),
-        true,
+        &options(gate),
         &Default::default(),
         &|_| None,
     )
@@ -414,8 +428,7 @@ async fn a_streamable_http_server_registers_and_runs_behind_the_gate() {
     let connected = connect(
         &spec,
         handle.clone(),
-        guard(gate.clone()),
-        true,
+        &options(gate.clone()),
         &Default::default(),
         &|_| None,
     )
@@ -451,9 +464,177 @@ async fn an_http_server_is_reached_through_the_configured_proxy() {
         },
     };
     let gate = Gate::new(true);
-    let result = connect(&spec, tool_server(), guard(gate), true, &network, &|_| None).await;
+    let result = connect(&spec, tool_server(), &options(gate), &network, &|_| None).await;
     assert!(result.is_err());
     let seen = proxy.received_requests().await.unwrap();
     assert!(!seen.is_empty());
     assert_eq!(seen[0].url.host_str(), Some("mcp.test"));
+}
+
+/// Answers every elicitation with `reply` and keeps the forms it was shown.
+struct Answers {
+    reply: fontaine_tools::mcp::ElicitReply,
+    forms: std::sync::Mutex<Vec<fontaine_tools::mcp::ElicitForm>>,
+}
+
+impl fontaine_tools::mcp::Elicitor for Answers {
+    fn elicit<'a>(
+        &'a self,
+        form: fontaine_tools::mcp::ElicitForm,
+    ) -> futures::future::BoxFuture<'a, fontaine_tools::mcp::ElicitReply> {
+        self.forms.lock().unwrap().push(form);
+        let reply = self.reply.clone();
+        Box::pin(async move { reply })
+    }
+}
+
+#[tokio::test]
+async fn a_tool_that_asks_for_input_gets_cancel_when_nobody_can_answer() {
+    let gate = Gate::new(true);
+    let handle = tool_server();
+    let (connection, _task) = serve(
+        "double",
+        Double::with_tools(vec![mcp_common::server::elicit_tool()]),
+        gate,
+        handle.clone(),
+    )
+    .await;
+    let out = call(&handle, "mcp__double__elicit", "{}").await.unwrap();
+    assert!(out.contains(r#""action":"cancel""#), "{out}");
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_tool_that_asks_for_input_gets_the_form_answer() {
+    use fontaine_tools::mcp::ElicitReply;
+    let answers = std::sync::Arc::new(Answers {
+        reply: ElicitReply::Accept(serde_json::Map::from_iter([
+            ("name".to_string(), json!("Ada")),
+            ("age".to_string(), json!(36)),
+        ])),
+        forms: Default::default(),
+    });
+    let mut options = options(Gate::new(true));
+    options.elicitor = answers.clone();
+    let handle = tool_server();
+    let (connection, _task) = serve_with(
+        "double",
+        Double::with_tools(vec![mcp_common::server::elicit_tool()]),
+        handle.clone(),
+        &options,
+    )
+    .await;
+    let out = call(&handle, "mcp__double__elicit", "{}").await.unwrap();
+    assert!(out.contains(r#""action":"accept""#), "{out}");
+    assert!(
+        out.contains(r#""name":"Ada""#) && out.contains(r#""age":36"#),
+        "{out}"
+    );
+    {
+        let forms = answers.forms.lock().unwrap();
+        assert_eq!(forms.len(), 1);
+        assert_eq!(forms[0].server, "double");
+        assert_eq!(forms[0].message, "Who are you?");
+        let keys: Vec<_> = forms[0]
+            .fields()
+            .into_iter()
+            .map(|f| (f.key, f.required))
+            .collect();
+        assert_eq!(
+            keys,
+            [("age".to_string(), false), ("name".to_string(), true)]
+        );
+    }
+    connection.close().await;
+}
+
+fn spilling(dir: &std::path::Path, gate: std::sync::Arc<Gate>) -> fontaine_tools::mcp::McpOptions {
+    let mut options = options(gate);
+    options.limits = std::sync::Arc::new(fontaine_tools::mcp::OutputLimits::new(
+        25_000,
+        Some(rig_tools::Spill(dir.join("mcp-results"))),
+    ));
+    options
+}
+
+#[tokio::test]
+async fn a_result_over_the_limit_is_saved_to_a_file_and_the_model_gets_the_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = tool_server();
+    let (connection, _task) = serve_with(
+        "double",
+        Double::with_tools(vec![mcp_common::server::big_tool()]),
+        handle.clone(),
+        &spilling(dir.path(), Gate::new(true)),
+    )
+    .await;
+    let out = call(&handle, "mcp__double__big", r#"{"chars":60000}"#)
+        .await
+        .unwrap();
+    assert!(
+        out.starts_with("Output too large (60000 chars, ~15000 tokens), saved to "),
+        "{out}"
+    );
+    let saved: Vec<_> = std::fs::read_dir(dir.path().join("mcp-results"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .collect();
+    assert_eq!(saved.len(), 1);
+    assert!(out.contains(&saved[0].display().to_string()), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(&saved[0]).unwrap(),
+        "x".repeat(60_000)
+    );
+
+    let small = call(&handle, "mcp__double__big", r#"{"chars":100}"#)
+        .await
+        .unwrap();
+    assert_eq!(small, "x".repeat(100));
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_declared_max_result_size_raises_the_limit_for_that_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut big = mcp_common::server::big_tool();
+    let mut meta = rmcp::model::MetaObject::new();
+    meta.insert("anthropic/maxResultSizeChars".to_string(), json!(100_000));
+    big.meta = Some(meta);
+    let handle = tool_server();
+    let (connection, _task) = serve_with(
+        "double",
+        Double::with_tools(vec![big]),
+        handle.clone(),
+        &spilling(dir.path(), Gate::new(true)),
+    )
+    .await;
+    let out = call(&handle, "mcp__double__big", r#"{"chars":60000}"#)
+        .await
+        .unwrap();
+    assert_eq!(out.len(), 60_000);
+    assert!(!dir.path().join("mcp-results").exists());
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_long_error_result_keeps_its_head_and_tail() {
+    let dir = tempfile::tempdir().unwrap();
+    let handle = tool_server();
+    let (connection, _task) = serve_with(
+        "double",
+        Double::with_tools(vec![mcp_common::server::failing_tool()]),
+        handle.clone(),
+        &spilling(dir.path(), Gate::new(true)),
+    )
+    .await;
+    let out = call(&handle, "mcp__double__fail", r#"{"chars":20000}"#)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        out.len(),
+        5_000 + 5_000 + "\n[… 10000 chars cut …]\n".len(),
+        "{}",
+        out.len()
+    );
+    connection.close().await;
 }

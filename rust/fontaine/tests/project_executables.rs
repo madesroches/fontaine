@@ -213,3 +213,43 @@ async fn the_same_hook_in_the_users_own_settings_does_allow() {
     assert_eq!(decision["tier"], "hook");
     assert_eq!(decision["decision"], "allow");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_mcp_tool_that_asks_for_input_in_a_headless_run_gets_cancel_and_the_run_completes() {
+    let endpoint = Endpoint::start(
+        Wire::Chat,
+        vec![
+            Turn::tool("c1", "mcp__repo__elicit", json!({})),
+            Turn::text("done"),
+        ],
+    )
+    .await;
+    let s = Sandbox::compatible(&endpoint.url());
+    project_settings(
+        &s,
+        &format!(
+            "[mcp.servers.repo]\ncommand = '{}'\n",
+            example("repo_mcp_server")
+        ),
+    );
+    let out = s
+        .headless(&[
+            "--output-format",
+            "stream-json",
+            "--allowed-tools",
+            "mcp__repo__elicit",
+            "go",
+        ])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let lines = out.lines();
+    let result = of_type(&lines, "tool_result")[0];
+    assert_eq!(result["success"], json!(true), "{result}");
+    assert!(
+        result["text"]
+            .as_str()
+            .unwrap()
+            .contains(r#""action":"cancel""#),
+        "{result}"
+    );
+}

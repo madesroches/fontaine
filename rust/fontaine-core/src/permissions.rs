@@ -18,6 +18,7 @@ use fontaine_tools::descriptor::is_shell_class;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::lock::lock;
+use fontaine_tools::mcp::{ElicitForm, ElicitReply};
 use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
 use fontaine_tools::risk::RiskClass;
 use fontaine_tools::scope::{Scope, ScopeError, is_external_read, is_external_write};
@@ -121,6 +122,12 @@ pub trait Approver: Send + Sync {
     ) -> BoxFuture<'a, QuestionReply> {
         Box::pin(async { QuestionReply::Unavailable })
     }
+
+    /// An MCP server's request for input. Only a frontend with a dialog answers; every other
+    /// approver cancels, as Claude Code does in a non-interactive session.
+    fn elicit<'a>(&'a self, _form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
+        Box::pin(async { ElicitReply::Cancel })
+    }
 }
 
 /// Why the guardian could not be asked, for the human who has to decide what to do.
@@ -207,6 +214,13 @@ impl Approver for AfkApprover {
             return Box::pin(async { QuestionReply::Unavailable });
         }
         self.inner.ask_user(agent, questions)
+    }
+
+    fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
+        if self.state.afk_on() {
+            return Box::pin(async { ElicitReply::Cancel });
+        }
+        self.inner.elicit(form)
     }
 }
 

@@ -466,6 +466,56 @@ async fn the_approver_decorator_answers_for_the_user_while_afk_is_on() {
     assert_eq!(rig.approver.notices.lock().unwrap().len(), 1);
 }
 
+fn elicit_form() -> fontaine_tools::mcp::ElicitForm {
+    fontaine_tools::mcp::ElicitForm {
+        server: "srv".into(),
+        message: "Who?".into(),
+        schema: fontaine_tools::mcp::elicitation::ElicitationSchema::builder()
+            .required_string("name")
+            .build()
+            .unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn an_approver_with_no_dialog_cancels_an_mcp_elicitation() {
+    struct Bare;
+    impl Approver for Bare {
+        fn approve<'a>(&'a self, _: ApprovalRequest) -> BoxFuture<'a, Answer> {
+            Box::pin(async { Answer::Deny { feedback: None } })
+        }
+    }
+    assert_eq!(
+        Bare.elicit(elicit_form()).await,
+        fontaine_tools::mcp::ElicitReply::Cancel
+    );
+    assert_eq!(
+        fontaine_core::permissions::DenyAll
+            .elicit(elicit_form())
+            .await,
+        fontaine_tools::mcp::ElicitReply::Cancel
+    );
+}
+
+#[tokio::test]
+async fn the_approver_decorator_cancels_an_mcp_elicitation_only_while_afk_is_on() {
+    use fontaine_tools::mcp::ElicitReply;
+    let rig = Rig::new(Manual);
+    let decorated = AfkApprover::new(rig.approver.clone(), rig.state.clone());
+    rig.approver.elicit_reply(ElicitReply::Decline);
+    assert_eq!(decorated.elicit(elicit_form()).await, ElicitReply::Decline);
+    assert_eq!(rig.approver.elicited.lock().unwrap().len(), 1);
+
+    afk_on(&rig);
+    rig.approver.elicit_reply(ElicitReply::Decline);
+    assert_eq!(decorated.elicit(elicit_form()).await, ElicitReply::Cancel);
+    assert_eq!(
+        rig.approver.elicited.lock().unwrap().len(),
+        1,
+        "the user's approver is never reached"
+    );
+}
+
 #[tokio::test]
 async fn the_outcome_stage_records_how_each_allowed_call_ended() {
     let rig = Rig::new(Manual);

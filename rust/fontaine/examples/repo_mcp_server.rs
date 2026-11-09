@@ -11,6 +11,7 @@ async fn main() {
     let double = server::Double::with_tools(vec![
         server::echo_tool(),
         server::lookup_tool(),
+        server::elicit_tool(),
         rmcp::model::Tool::new(
             "env",
             "Report an environment variable",

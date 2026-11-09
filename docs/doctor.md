@@ -80,7 +80,8 @@ continues), or was not started with the reason. Doctor follows the interactive r
 prompt. User and plugin servers are started. A server from the repository is skipped when the
 workspace is not trusted, and a repository-defined one is also skipped until you have approved it
 in the interactive UI, so doctor never runs repository code a session would not. Each probe lasts
-at most 10 seconds and is closed before doctor exits. Doctor sends no tool call.
+at most 10 seconds, makes one attempt without the retries a session makes, and is closed before
+doctor exits. Doctor sends no tool call, and a server's request for input is answered `cancel`.
 
 **Instructions, hooks, skills.** The instruction files loaded and where each came from, in load
 order; the hook count per event and scope, with project hooks marked by what a headless and an

@@ -65,6 +65,7 @@ pub fn active(app: &App) -> bool {
     if app.linear
         || app.approval.is_some()
         || !app.questions.is_empty()
+        || !app.elicitations.is_empty()
         || app.unavailable.is_some()
     {
         return false;

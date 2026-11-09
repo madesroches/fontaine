@@ -24,6 +24,15 @@ fn clean(text: &str) -> String {
         .collect()
 }
 
+/// `clean` for text that keeps its line breaks, such as a server's message: a tab becomes a
+/// space and every other control character goes.
+pub(crate) fn clean_multiline(text: &str) -> String {
+    text.chars()
+        .map(|c| if c == '\t' { ' ' } else { c })
+        .filter(|c| *c == '\n' || !c.is_control())
+        .collect()
+}
+
 pub struct QuestionPanel {
     pub agent: String,
     /// Set by the app; tells two consecutive dialogs apart.
