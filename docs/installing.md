@@ -145,9 +145,10 @@ The installer writes `%USERPROFILE%\.fontaine\bin\fontaine.exe` and replaces wha
 directory comes first on your `Path` runs, and only the installer's copy can `fontaine update`.
 An install made by an earlier installer is in `%CARGO_HOME%\bin` and keeps updating itself there;
 running the current installer adds a copy under `.fontaine` and overwrites the receipt. Delete
-`%CARGO_HOME%\bin\fontaine.exe` (`%USERPROFILE%\.cargo\bin` by default) afterwards, and with no
-Rust toolchain installed also the `%CARGO_HOME%\bin` entry in your user `Path` and the `.cargo`
-directory.
+`%CARGO_HOME%\bin\fontaine.exe` (`%USERPROFILE%\.cargo\bin\fontaine.exe` by default) afterwards,
+together with any `fontaine.exe.old` and `fontaine.exe.old-*` beside it (left by `fontaine update`),
+and with no Rust toolchain installed also the `%CARGO_HOME%\bin` entry in your user `Path` and the
+`.cargo` directory.
 
 ### Uninstalling (Windows)
 
