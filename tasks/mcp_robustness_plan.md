@@ -106,8 +106,11 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
   `[… N chars cut …]` marker: the head comes from `rig_tools::clip`, the tail is cut on a char
   boundary, and the marker counts the removed span in chars. A failed write is reported once
   through the warn callback in `McpOptions`. The fallback is never a silent drop.
-- **`isError` with text longer than `ERROR_THRESHOLD`.** Keep the first and last `ERROR_KEEP`
-  chars (cut the same way) with a marker that counts what was removed.
+- **`isError` with text longer than `ERROR_THRESHOLD`.** rig-rmcp maps `is_error` to
+  `Err(ToolExecutionError::other(..).with_model_output(output))`. The cut applies to that `Err`'s
+  model output and replaces it via `with_model_output`: keep the first and last `ERROR_KEEP` chars
+  (cut the same way) with a marker that counts what was removed. Other errors (transport, timeout)
+  are untouched.
 - **Results with image content** are passed through unchanged (see Decisions).
 - **Per-tool `char_limit`.** It is `DEFAULT_CHAR_LIMIT` unless the tool's `tools/list` entry
   carries a positive integer `_meta["anthropic/maxResultSizeChars"]`, clamped to `MAX_CHAR_LIMIT`.
@@ -134,14 +137,18 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
   the cause is no longer flattened into `message`: `message` becomes a short context prefix and the
   rmcp error moves to `source`. This is the "typed error enum where a caller
   dispatches on the kind" case in AGENTS.md. The kind is set where the error is made, from the
-  typed rmcp error. A failed connect is a `ClientInitializeError` (recurse into
-  `LegacyFallbackFailed`, a variant of it), or an `McpClientError` from rig-rmcp's initial
-  `tools/list` inside `handler.connect`. A `TransportError { error: DynamicTransportError }`'s boxed
-  error downcasts to `StreamableHttpError<reqwest::Error>`. Every variant gets a kind:
-  - `Transient`: `StreamableHttpError::Client(e)` with `e.is_connect()` or `e.is_timeout()`, `Io`,
-    `Sse`, `UnexpectedEndOfStream`, `SessionRecoveryTimeout`; `ClientInitializeError::ConnectionClosed`;
-    `McpClientError::Timeout` and `McpClientError::Request` (a server mid-restart looks like
-    these); and expiry of the connect timeout below.
+  typed rmcp error. `handler.connect` returns `McpClientError`; a `ClientInitializeError` arrives
+  inside `McpClientError::Connection(..)`, and a stdio/duplex transport error is `std::io::Error`
+  (Transient, though stdio is never retried). A `TransportError { error: DynamicTransportError }`'s
+  boxed error downcasts to `StreamableHttpError<reqwest::Error>`. Every variant gets a kind, and the
+  `non_exhaustive` enums get a wildcard arm that defaults to `Permanent`:
+  - `Transient`: `StreamableHttpError::Client(e)` for every request error (a reset after TCP connect
+    is neither `is_connect()` nor `is_timeout()`), `Io`, `Sse`, `UnexpectedEndOfStream`,
+    `SessionRecoveryTimeout`; `ClientInitializeError::ConnectionClosed` and `TransportChannelClosed`;
+    `McpClientError::Timeout`; `McpClientError::Request(ServiceError)` recursed by inner error
+    (`TransportSend` is classified by its inner `DynamicTransportError`; `Timeout` and
+    `TransportClosed` are Transient; `McpError` and `UnexpectedResponse` are Permanent); and expiry
+    of the connect timeout below.
   - `Permanent`: `AuthRequired` / `InsufficientScope`, `SessionExpired`, `ReinitializationFailed`,
     `ClientInitializeError::JsonRpcError` (a non-2xx answer with a JSON-RPC error body), other
     protocol and deserialize errors, a spawn failure, and `UnexpectedServerResponse(String)`. rmcp
@@ -171,12 +178,14 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
   }
   ```
 
-  `Drop for McpServers` aborts every watcher. Dropping the `Connected`s closes the connections as
-  it does today.
+  `Drop for McpServers` aborts every watcher. Teardown sets `closing` and calls `close()` on each
+  connection.
 - **Startup (`connect_mcp`).** Every server it attempts gets a slot, so a server that fails at
   startup has a slot in state `Failed(..)` with no connection. For an HTTP server whose first
   attempt fails with `Transient`, retry up to 3 more times after 1 s, 2 s and 4 s. Stdio servers
-  and `Permanent` errors are not retried. `McpOutcome` is unchanged. `probe_server` (doctor) does
+  and `Permanent` errors are not retried. The planned servers connect concurrently
+  (`futures::future::join_all` over the plans, outcomes pushed in plan order), so one slow server
+  does not delay the others. `McpOutcome` is unchanged. `probe_server` (doctor) does
   not retry.
 - **Watcher.** After each successful connect, spawn a task that waits on
   `connection.closed().await` and then:
@@ -187,6 +196,8 @@ pub(crate) fn cap(outcome: ToolOutcome, tool: &str, char_limit: usize, limits: &
     `Connected`, sets `Connected`, sends `approver.notice("MCP server `<name>` reconnected")`, calls
     `state.agents().refresh_rebuilt_toolsets(&agent_types)` as `connect_mcp` does, and starts a
     new watcher. On a `Permanent` error, or after 5 failures, it sets `Failed` and warns as above.
+    Each attempt goes through `connect_server`, so it emits the existing `mcp_server_connection`
+    event with `connected` or `failed`.
 
   The watcher holds `Arc`s (approver, tool server handle, agent state, options, `network:
   Arc<LoadedNetwork>`, `env: EnvLookup`), never
@@ -294,8 +305,13 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 - A footer line reads "This goes to the server, not to the model. Don't enter secrets you wouldn't
   give this server."
 - `ChannelApprover::elicit` queues the dialog the same way `ask_user` does through a new `Prompt`
-  variant. `answer_unattended` answers it `Cancel`, and the closed-reply pruning drops it. `linear.rs`
-  renders the dialog in screen-reader mode.
+  variant. `App::answer_for_afk` (`app.rs`), which closes dialogs already open when AFK turns on and
+  drains approvals, `unavailable` and `questions` by name, also answers an open elicitation dialog
+  with `Cancel`, and `App::prune_closed` drops closed-reply ones. The dialog is drawn in `view.rs`
+  beside the question panel. `linear.rs` renders the dialog in screen-reader mode.
+- `fontaine_tools::mcp` re-exports the rmcp elicitation schema types the dialog matches on
+  (`ElicitationSchema`, `PrimitiveSchema` and the enum schema types), since fontaine-tui has no
+  rmcp dependency.
 
 ## Implementation Steps
 
@@ -319,8 +335,8 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
    case (drop the connection, `connect_transport` again over a new duplex pipe).
 6. **TUI.** Add `McpState::Pending`, live `/mcp` and `/status` rendering from `mcp_states()`,
    `/mcp reconnect <name|all>` (command split and parse in `commands.rs`, dispatched through
-   `dispatch_inner`), the `elicitation.rs` dialog, the `Prompt` variant, and
-   `ChannelApprover::elicit`.
+   `dispatch_inner`), the `elicitation.rs` dialog (rendered in `view.rs`), the `Prompt` variant,
+   `ChannelApprover::elicit`, and the `App::answer_for_afk` / `App::prune_closed` handling.
 7. **Integration tests** (see Testing Strategy).
 8. **Master plan.** Add the Decisions lines below to the end of the `### MCP` subsection of
    `tasks/fontaine_harness_plan.md`, except the `/mcp reconnect` supersede line, which goes at the
@@ -334,7 +350,8 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 
 ## Files to Modify
 
-- `rust/fontaine-tools/src/mcp.rs` — module list, re-exports
+- `rust/fontaine-tools/src/mcp.rs` — module list, re-exports (including the rmcp elicitation schema
+  types)
 - `rust/fontaine-tools/src/mcp/interaction.rs` → `rust/fontaine-tools/src/mcp/meta.rs`
 - `rust/fontaine-tools/src/mcp/output.rs` (new)
 - `rust/fontaine-tools/src/mcp/elicitation.rs` (new)
@@ -348,9 +365,9 @@ pub struct CancelAll; // Elicitor that always answers Cancel (probe, tests)
 - `rust/fontaine-core/src/audit.rs` — elicitation record
 - `rust/fontaine-core/tests/choke_point.rs` — reconnect case
 - `rust/fontaine-tui/src/elicitation.rs` (new), `rust/fontaine-tui/src/lib.rs`,
-  `rust/fontaine-tui/src/app.rs`, `rust/fontaine-tui/src/reports.rs`,
-  `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/ui/mod.rs` (`dispatch_inner`,
-  `answer_unattended`, pruning), `rust/fontaine-tui/src/ui/commands/*` (`/mcp reconnect`, `/status`),
+  `rust/fontaine-tui/src/app.rs` (`answer_for_afk`, `prune_closed`), `rust/fontaine-tui/src/view.rs`,
+  `rust/fontaine-tui/src/reports.rs`,
+  `rust/fontaine-tui/src/ui/mcp.rs`, `rust/fontaine-tui/src/ui/mod.rs` (`dispatch_inner`), `rust/fontaine-tui/src/ui/commands/*` (`/mcp reconnect`, `/status`),
   `rust/fontaine-tui/src/question.rs` (`clean`), `rust/fontaine-tui/src/linear.rs`
 - `rust/fontaine-tui/src/commands.rs` — `runs_mid_turn`, hint, split, parse tests
 - `rust/fontaine-tools/Cargo.toml`, `rust/fontaine/Cargo.toml` — `elicitation` feature on the
@@ -416,7 +433,8 @@ line, which goes at the end of `### TUI`:
   the startup retry.
 - `docs/tui.md`: the `/mcp reconnect` argument, the pending state, and the elicitation dialog keys.
 - `docs/headless.md` and `docs/afk.md`: elicitation is answered `cancel`.
-- `docs/telemetry.md`: an `mcp_elicitation` event row.
+- `docs/telemetry.md`: an `mcp_elicitation` event row, and a note that reconnect attempts emit
+  `mcp_server_connection`.
 - `docs/doctor.md`: the probe does not retry and cancels elicitation.
 - `docs/configuration.md`: `MAX_MCP_OUTPUT_TOKENS` in its environment-variable list.
 
@@ -442,10 +460,12 @@ Unit tests (`cargo test`):
   - Dropping the tap aborts a pending elicitation.
   - Other messages pass through untouched.
   - The schema backstop declines an invalid `Accept`.
-- `servers.rs`: `McpErrorKind` classification for refused connections, a connection reset or end of
-  stream during initialize, a `tools/list` timeout, and expiry of the connect timeout (`Transient`);
+- `servers.rs`: `McpErrorKind` classification for refused connections, a connection reset after TCP
+  connect (a raw `tokio::net::TcpListener` that accepts and drops the socket, since wiremock cannot
+  drop a connection), an end of stream during initialize, a `tools/list` timeout, a `ServiceError`
+  `McpError` (Permanent) and `TransportSend` wrapping `AuthRequired` (Permanent), and expiry of the connect timeout (`Transient`);
   401 with and without `WWW-Authenticate`, 5xx, 404 at initialize, a non-2xx JSON-RPC error body,
-  `LegacyFallbackFailed` and spawn failures (wiremock where an HTTP server is needed; `Permanent`).
+  and spawn failures (wiremock where an HTTP server is needed; `Permanent`).
 - Supervisor (`tokio::time::pause`):
   - The backoff schedule is 1, 2, 4, 8, 16 s.
   - The server is marked failed after 5 attempts and after a `Permanent` error.
