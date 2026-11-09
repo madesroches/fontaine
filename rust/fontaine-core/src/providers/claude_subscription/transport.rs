@@ -22,7 +22,7 @@ use super::cli::{
     ChildFiles, Cli, CliChild, ModelRow, ReadFail, Scratch, fixed_args, initialize_id,
     initialize_request, scratch_error,
 };
-use super::context::{self, Sent};
+use super::context::{self, Sent, Verdicts};
 use super::inventory::INVENTORY_FLAG;
 use super::protocol::{
     Event, Expect, Failure, Frame, Reader, SessionSeed, Translated, exit_failure, translate,
@@ -188,6 +188,7 @@ impl ClaudeTransport {
                 pending: VecDeque::new(),
                 sent: Some(sent),
                 warn: self.cli.warn().clone(),
+                verdicts: self.cli.verdicts().clone(),
             })
             .boxed(),
         ))
@@ -240,7 +241,7 @@ impl ClaudeTransport {
         check_row(&listing.rows, selection).map_err(provider)?;
 
         let prints = context::fingerprints(&translated.frames);
-        let layout = context::layout(&listing.context);
+        let layout = context::layout(&listing.context, self.cli.verdicts());
         context::apply(&mut translated.frames, &listing.context, layout);
         let sent = Sent::new(
             &translated.session_id,
@@ -408,6 +409,7 @@ struct Running {
     /// The request as sent, until its result is recorded.
     sent: Option<Sent>,
     warn: Warn,
+    verdicts: Arc<Verdicts>,
 }
 
 /// The most of a rejected line the debug file keeps.
@@ -476,13 +478,22 @@ fn stream(
                         _ => None,
                     };
                     if let Some(sent) = running.sent.take()
-                        && let Some(version) =
-                            context::finished(sent, cache_usage, std::time::Instant::now())
+                        && let Some((version, saved)) = context::finished(
+                            sent,
+                            cache_usage,
+                            std::time::Instant::now(),
+                            &running.verdicts,
+                        )
                     {
+                        let remembered = if saved {
+                            " and the verdict is remembered across restarts"
+                        } else {
+                            ""
+                        };
                         running.warn.emit(&format!(
                             "the Claude CLI's replayed context was not read back from the \
                              prompt cache; the cache optimization is off for CLI version \
-                             {}.{}.{} until restart (`cache-bench` measures it)",
+                             {}.{}.{}{remembered} (`cache-bench` measures it)",
                             version.0, version.1, version.2
                         ));
                     }

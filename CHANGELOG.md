@@ -8,6 +8,10 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- A `claude-subscription` account's cache self-check now keeps its broken-CLI-version verdict in
+  `claude-cache-verdicts.json` in the data dir, so a restart no longer pays one full-history cache
+  rewrite to rediscover it. Verdicts are keyed by CLI version and reminder-template revision, so an
+  update that changes the template retires them (#503).
 - The shell and PowerShell installers install to `~/.fontaine/bin` (`%USERPROFILE%\.fontaine\bin`)
   instead of `$CARGO_HOME/bin`, so a machine without a Rust toolchain no longer gets a `.cargo`
   directory. `fontaine update` reads the receipt's layout, so an earlier install in
