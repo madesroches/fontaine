@@ -182,7 +182,10 @@ connection; stragglers end with the existing transport error. The supervisor `re
 (private, capturing `types` once) reads the live `AgentTypes` cell. `refresh_rebuilt_toolsets`
 only re-derives tool lists of revived nodes; new children already see the new set via `fork_tools`.
 LSP: `LspServers` fixes its slots in `new` and exposes no per-server stop, so a changed plugin LSP
-set is reported "applies next session" (never silently ignored).
+set is reported "applies next session" (never silently ignored). Before `replace_dir` or checkout
+removal of a plugin that declares LSP servers, call `LspServers::shutdown_all` (no new per-slot
+stop; all servers restart on next need). A slot of an uninstalled plugin keeps its stale spec until
+next session; a relaunch failure surfaces as the normal LSP launch error.
 
 3d. **Stale history.** Conversation history is never edited. When a plugin or skill is unloaded
 or reloaded, the next user turn gets a reminder via `SessionState::queue_hook_context`/
@@ -193,10 +196,15 @@ snapshot, and only in-flight calls get the transport error. New children see the
 
 ### 4. Update and remove ordering
 
-Unload before filesystem change, load after: `update` = stop plugin's MCP servers → drop its
-layer entries → `commit_update` (`replace_dir`) → `reload_extensions`. `uninstall` = unload →
-registry/checkout removal. `disable` = registry flag → unload. A failure between steps leaves the
-plugin unloaded and reports it (conservative: a half-updated plugin never runs).
+Stop processes before the filesystem change, reload after. There is no per-plugin unload
+primitive: `reload_extensions` only diffs the registry after it changes. `update` = stop the
+plugin's MCP servers and LSP servers → `commit_update` (`replace_dir`) → `reload_extensions`.
+`uninstall` = stop the plugin's MCP and LSP servers → registry/checkout removal →
+`reload_extensions`. `disable` = registry flag → `reload_extensions`. Hooks, rules, skills and
+agents are read from the live layers, not held open, so they need no unload before the swap.
+A failed checkout removal or rename (Windows locks) is reported through `Approver::warn`, not
+ignored; a failed `replace_dir` is treated like `Swap::Failed`: the update stays staged and is
+reported.
 
 ### 5. External changes
 
@@ -283,7 +291,9 @@ the new fingerprint so it does not repeat.
 
 ## Decisions
 
-(Entries are added as review settles questions.)
+AFK: Design 4 narrowed to "stop the plugin's MCP/LSP servers, change the filesystem, then reload_extensions" instead of adding a per-plugin unload primitive (smaller change; hooks/rules/skills are not held open by the checkout); removal/rename failures are warned, not ignored.
+AFK: Plugin LSP servers are stopped with the existing `shutdown_all` before replace_dir/checkout removal (no new per-slot stop); an uninstalled plugin's slot is not disabled until next session; a rename failure is treated like `Swap::Failed` (stays staged, reported).
+AFK: Dropped the duplicate MCP-double stop test bullet; "the server process exits after stop" appended to the first MCP start/stop test.
 
 ## Documentation
 
@@ -325,15 +335,13 @@ Unit tests (constructed inputs, no network, no live APIs):
 - MCP start/stop with the existing test double server: tools appear/leave the toolset; drain
   waits for an in-flight call and times out after the bound; the in-flight-call-on-closing
   behavior the research left unverified is pinned here, as is rig tolerating a managed tool
-  removal (`reconcile_managed_tools`).
+  removal (`reconcile_managed_tools`); and the server process exits after stop.
 - Choke-point test stays green (no new tool).
 - `Record::PluginChange` reaches ledger and audit (modeled on `tests/guardian_off.rs`).
 - TUI integration test: edit a skill file, see the notice, `/reload-plugins`, `/skills` shows the
   change (harness `fontaine-tui/tests/common/mod.rs`, `World::with_user_file`, `Ui::send`,
   precedent `tests/extensions.rs:219-228`). Update the `tests/tui.rs:827-847` assertions ("active
   next session", "run `fontaine plugin update review`") if the notice text changes.
-- MCP-double stop test (`fontaine-tools/tests/mcp_common/server.rs`): after a plugin uninstall the
-  server process exits and its tool is gone.
 - Headless integration (`fontaine -p`): startup load unchanged.
 
 ## Manual Verification
