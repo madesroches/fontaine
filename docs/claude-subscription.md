@@ -197,16 +197,15 @@ conversation is written once more on its second step.
 
 The adapter checks that the replay works. It compares a conversation's cache read with what the
 previous request of that conversation wrote. On a shortfall (the CLI changed its reminder, so the
-replayed bytes no longer match), it turns the layout off for that CLI version and shows one warning in the session naming the version;
-`cache-bench` measures the effect. The verdict is kept in `claude-cache-verdicts.json` in the data
-dir (readable by the current user only), so a restart keeps the fallback, and it is retired when a
-Fontaine update changes the reminder template the adapter replays. A new CLI version is judged
-afresh. The layout
-needs an account email in the CLI's answer. On versions below 2.1.319, without an email, or after a
-warning, the adapter keeps the earlier layout: the marker on the last replayed user message, read
-back up to that message, and each request writing the last two messages, about twice a native
-session's write per step. The never-read 5-minute write there is the CLI's breakpoint on the final
-message.
+replayed bytes no longer match), it turns the layout off for that CLI version and shows one warning
+in the session naming the version; `cache-bench` measures the effect. The verdict is kept in
+`claude-cache-verdicts.json` in the data dir (readable by the current user only), so a restart keeps
+the fallback, and it is retired when a Fontaine update changes the reminder template the adapter
+replays. A new CLI version is judged afresh. The layout needs an account email in the CLI's answer.
+On versions below 2.1.319, without an email, or after a warning, the adapter keeps the earlier
+layout: the marker on the last replayed user message, read back up to that message, and each request
+writing the last two messages, about twice a native session's write per step. The never-read
+5-minute write there is the CLI's breakpoint on the final message.
 
 Reuse holds while a step adds no more than about 20 blocks; a wider parallel step (about ten or
 more tool calls) re-writes the history once.

@@ -488,7 +488,8 @@ fn stream(
                         running.warn.emit(&format!(
                             "the Claude CLI's replayed context was not read back from the \
                              prompt cache; the cache optimization is off for CLI version \
-                             {}.{}.{} and the verdict is remembered across restarts (`cache-bench` measures it)",
+                             {}.{}.{} and the verdict is remembered across restarts (`cache-bench` \
+                             measures it)",
                             version.0, version.1, version.2
                         ));
                     }

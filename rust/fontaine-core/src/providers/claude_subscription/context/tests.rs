@@ -238,11 +238,12 @@ fn a_failed_write_still_marks_in_memory_and_warns_once() {
     let blocker = dir.path().join("not-a-dir");
     std::fs::write(&blocker, "").unwrap();
     let (v, warnings) = store_in(&blocker);
-    assert!(warnings.lock().unwrap().is_empty());
+    // Unix warns at load (ENOTDIR) and Windows does not, so count only what the mark adds.
+    let before = warnings.lock().unwrap().len();
     assert!(v.mark((2, 9, 140)));
     assert!(v.contains((2, 9, 140)));
     assert!(!v.mark((2, 9, 140)));
-    assert_eq!(warnings.lock().unwrap().len(), 1);
+    assert_eq!(warnings.lock().unwrap().len(), before + 1);
 }
 
 #[test]
