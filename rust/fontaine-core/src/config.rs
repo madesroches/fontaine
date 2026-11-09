@@ -858,16 +858,13 @@ impl HookEvent {
             }
             // The rule grammar is checked by the caller, which owns the file path for the error.
             MatcherKind::Tool => Ok(()),
-            MatcherKind::AgentType => {
-                if matcher
-                    .split('|')
-                    .all(|name| name == "*" || !name.trim().is_empty())
-                {
-                    Ok(())
-                } else {
-                    Err("an agent-type matcher is `|`-separated, non-empty names".to_string())
-                }
+            MatcherKind::AgentType | MatcherKind::Values(_)
+                if matcher.contains('|')
+                    && matcher.split('|').any(|name| name.trim().is_empty() || name == "*") =>
+            {
+                Err("a `|` list takes exact, non-empty names; `*` and empty entries only work as the whole matcher".to_string())
             }
+            MatcherKind::AgentType => Ok(()),
             MatcherKind::Values(values) => {
                 for name in matcher.split('|') {
                     if name != "*" && !name.is_empty() && !values.contains(&name) {
@@ -4180,6 +4177,20 @@ fn read_optional(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hook_matcher_wildcards_only_work_as_the_whole_matcher() {
+        let start = crate::config::HookEvent::SessionStart;
+        assert!(start.check_matcher("*").is_ok());
+        assert!(start.check_matcher("startup|resume").is_ok());
+        assert!(start.check_matcher("startup|*").is_err());
+        assert!(start.check_matcher("startup|").is_err());
+        assert!(
+            crate::config::HookEvent::SubagentStart
+                .check_matcher("a|*")
+                .is_err()
+        );
+    }
+
     use super::{Account, AccountKind, AutoMode, case_colliding_env_name, systemone_endpoint};
     use fontaine_guardian::rules::{DEFAULT_ENVIRONMENT, DEFAULT_HARD_DENY};
 

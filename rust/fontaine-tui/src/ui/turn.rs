@@ -639,7 +639,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     // A prompt from the user resumes a paused goal.
                     runtime.goal_user_prompt();
                     match self.refresh_before_turn(runtime) {
-                        Some(end) => end,
+                        Some(end) => {
+                            runtime.clear_prompt_context();
+                            end
+                        }
                         None => {
                             Self::keep_leftover_turn(runtime).await;
                             // Recorded as the human's message before this point.
@@ -855,8 +858,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             .transcript
                             .notice("a stop hook asked the agent to keep working");
                         // The mode or rules may have changed during the turn, as for any other turn.
-                        if let Some(end) = self.refresh_before_turn(runtime) {
-                            return end;
+                        if let Some(refused) = self.refresh_before_turn(runtime) {
+                            // The turn that ran still ends here, so the goal hears of it.
+                            self.goal_after_turn(runtime, &end);
+                            runtime.refresh_files();
+                            return refused;
                         }
                         text = note;
                         human = None;

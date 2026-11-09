@@ -451,6 +451,9 @@ impl HttpSpec {
     }
 }
 
+/// How much sooner a prompt hook's judge gives up than the hook's own timeout.
+const JUDGE_DEADLINE_MARGIN: Duration = Duration::from_millis(250);
+
 impl PromptSpec {
     async fn ask(
         &self,
@@ -485,7 +488,9 @@ impl PromptSpec {
             &model,
             params.as_ref(),
             billed,
-            timeout,
+            // Shorter than the outer timeout, which would otherwise drop this future before
+            // the usage is recorded below.
+            timeout.saturating_sub(JUDGE_DEADLINE_MARGIN),
             PROMPT_HOOK_PREAMBLE,
             request,
         )
@@ -508,16 +513,16 @@ impl PromptSpec {
                 impossible: verdict.impossible.unwrap_or(false),
                 ..Answer::default()
             }),
-            Err(JudgeFailure::Timeout(wait)) => Err(HookError::failed(format!(
+            Err(JudgeFailure::Timeout(_)) => Err(HookError::failed(format!(
                 "the prompt hook `{label}` got no answer within {} seconds",
-                wait.as_secs()
+                timeout.as_secs()
             ))),
-            Err(JudgeFailure::Unreachable(why)) => Err(HookError::failed(format!(
-                "the model could not be reached: {why}"
-            ))),
-            Err(JudgeFailure::Unusable(why)) => Err(HookError::malformed(format!(
-                "the answer was not a verdict: {why}"
-            ))),
+            Err(JudgeFailure::Unreachable(why)) => {
+                Err(HookError::failed_by("the model could not be reached", why))
+            }
+            Err(JudgeFailure::Unusable(why)) => {
+                Err(HookError::malformed_by("the answer was not a verdict", why))
+            }
         }
     }
 }

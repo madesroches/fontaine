@@ -922,10 +922,12 @@ impl GoalEvaluator {
                 Evaluation::Failed(format!("no answer within {} seconds", wait.as_secs()))
             }
             Err(JudgeFailure::Unreachable(error)) => {
+                let error = chain(&error);
                 tracing::warn!(error = %error, "the goal evaluator call failed");
                 Evaluation::Failed(format!("the model could not be reached: {error}"))
             }
             Err(JudgeFailure::Unusable(error)) => {
+                let error = chain(&error);
                 tracing::warn!(error = %error, "the goal evaluator's answer could not be used");
                 Evaluation::Failed(format!("the answer was not a valid verdict: {error}"))
             }
@@ -938,10 +940,10 @@ impl GoalEvaluator {
 /// Why a structured judgment on the guardian's model produced nothing.
 pub enum JudgeFailure {
     Timeout(Duration),
-    /// The call itself failed; the rendered error chain.
-    Unreachable(String),
-    /// The model answered, but not in the schema; the rendered error chain.
-    Unusable(String),
+    /// The call itself failed.
+    Unreachable(StructuredOutputError),
+    /// The model answered, but not in the schema.
+    Unusable(StructuredOutputError),
 }
 
 /// One structured extraction on the guardian's model, with `preamble` as its system text,
@@ -971,10 +973,8 @@ where
     let extraction = tokio::time::timeout(timeout, extractor.extract(Message::user(request))).await;
     let answer = match extraction {
         Err(_) => Err(JudgeFailure::Timeout(timeout)),
-        Ok(Err(StructuredOutputError::Prompt(error))) => {
-            Err(JudgeFailure::Unreachable(chain(&error)))
-        }
-        Ok(Err(error)) => Err(JudgeFailure::Unusable(chain(&error))),
+        Ok(Err(error @ StructuredOutputError::Prompt(_))) => Err(JudgeFailure::Unreachable(error)),
+        Ok(Err(error)) => Err(JudgeFailure::Unusable(error)),
         Ok(Ok(response)) => Ok(response.output),
     };
     let mut usage = *spent.lock().expect("the usage tally lock is not poisoned");
