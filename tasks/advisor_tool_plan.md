@@ -189,8 +189,9 @@ human's messages only, and the advice reaches the conversation solely as a tool 
 - `rust/fontaine-tools/src/advisor_tool.rs` (new), `lib.rs`, `descriptor.rs`
 - `rust/fontaine-agents/src/registry.rs`
 - `rust/fontaine-tui/src/reports.rs`, `rust/fontaine-core/tests/agent_pipeline.rs`
+- `rust/fontaine/src/headless.rs` (`main_usage` folds `UsageSource::Advisor` in beside Compaction)
 - `docs/configuration.md`, `docs/tools.md`, `docs/tui.md`, `docs/permissions.md`, `docs/agents.md`,
-  `docs/telemetry.md`, `CHANGELOG.md`
+  `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (Decisions), `research/research-claude-code-parity.md`
 
 ## Trade-offs
@@ -206,6 +207,9 @@ human's messages only, and the advice reaches the conversation solely as a tool 
 - 2026-11-08: Risk class `Arbitrary`, guardian-judged, no tier exemption; users opt out of friction with an allow rule (the call egresses the conversation and model-written text).
 - 2026-11-08: Root session only; stripped from all child toolsets (children would multiply spend and egress).
 - 2026-11-08: No new config keys: timeout and token cap are constants, as for `/btw` (nothing to disagree with the role).
+- 2026-11-08: AFK: Headless folds advisor spend into `main_usage` beside Compaction, with no new result field — keeps `total_cost_usd` truthful without touching headless-v1.schema.json or docs/headless.md.
+- 2026-11-08: AFK: No new telemetry surface: advisor calls report `query_source = main` like `/btw` and compaction (no span_bridge branch, no docs/telemetry.md edit) — nothing in code distinguishes them and issue #44 does not ask for it.
+- 2026-11-08: AFK: Keep the permission-matrix tests (headless `-p`, plan, dontAsk, floor) despite overlap with tests/permissions.rs — they pin the advisor's `Arbitrary` class in each mode; redundancy is the conservative side (escalated reviewer request to delete them declined).
 
 ## Documentation
 
@@ -215,7 +219,6 @@ human's messages only, and the advice reaches the conversation solely as a tool 
 - `docs/permissions.md`: the tool table row for `Arbitrary` tools (~267) gains `advisor`.
 - `docs/agents.md` (~89): `fork` gets every tool the main conversation has except `ask_user_question`
   and `advisor` (root-only, like the strip in every child toolset).
-- `docs/telemetry.md` (~137): `query_source` gains `advisor` for the advisor's calls.
 - `docs/tools.md`: built-in tool row and a short section (when it exists, what it sees, cost,
   root-only, how to allow it without prompts).
 - `docs/tui.md`: `/cost` sources list gains `advisor`, appended last (the list is in that order).
@@ -244,6 +247,7 @@ Unit (no live APIs; `rig_core::test_utils` completion models):
   the model can read; an unpriced entry is skipped under an explicit cap.
 - `build`: with no `advisor` role the tool list lacks `advisor`; with the role it has it.
 - `usage_ledger`/`reports`: `/cost` shows the advisor row and totals include it.
+- `headless`: `main_usage` (and so `result.usage` and `total_cost_usd`) includes advisor spend; no schema change.
 - Permissions: the manual prompt detail shows `question`; `tool_rule_hint` offers an `advisor`
   rule; headless `-p` in `manual` denies the prompt without an allow rule; in `auto` the call reaches the guardian and in `manual` it prompts (no tier
   exemption), in `plan` it is guardian-judged, in `dontAsk` it is denied unless an allow rule
