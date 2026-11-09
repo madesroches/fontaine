@@ -87,7 +87,11 @@ allow = []                        # pre-approval rules, same grammar; user trust
                                   #   floor; broad code-exec rules suspended in `auto`
 additional_directories = []      # extra workspace roots; user trust scopes only
 
-[[hooks.pre_tool_use]]             # user hooks (`permissions.md` §User hooks); also post_tool_use, permission_denied
+[[hooks.pre_tool_use]]             # user hooks (`permissions.md` §User hooks); one table per event: post_tool_use,
+                                   #   post_tool_use_failure, permission_denied, task_created, task_completed,
+                                   #   teammate_idle, session_start, session_end, user_prompt_submit, stop,
+                                   #   stop_failure, subagent_start, subagent_stop, pre_compact, post_compact,
+                                   #   notification; `type` = command (default) | http | prompt
 matcher = "shell(git *)"           #   rule grammar
 command = "<config dir>/hooks/git-guard.sh"
 timeout_secs = 10

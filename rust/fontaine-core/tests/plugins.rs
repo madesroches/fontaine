@@ -6,13 +6,27 @@ mod common;
 use std::ffi::OsString;
 
 use common::{World, write};
-use fontaine_core::config::{Hook, McpServer, Origin, Slot};
+use fontaine_core::config::{Hook, HookEvent, McpServer, Origin, Slot};
 use fontaine_core::extensions::{self, Scope};
 use fontaine_core::permission_rules::{RuleSource, SourcedRule, parse_rule};
 use fontaine_core::plugins::{
     self, InstalledPlugin, MarketplaceEntry, PluginContext, Registry, build_plugin, checkout_dir,
     load_installed,
 };
+
+/// One plugin hook of `event`, as a plugin `p` contributes it.
+fn plugin_hooks(event: HookEvent, command: &str) -> plugins::PluginHooks {
+    let mut hooks = plugins::PluginHooks::default();
+    hooks.list_mut(event).push(Hook {
+        origin: Origin {
+            slot: Slot::Plugin,
+            user_trust: false,
+        },
+        plugin: Some("p".to_string()),
+        ..Hook::command(None, command)
+    });
+    hooks
+}
 
 fn no_env(_: &str) -> Option<OsString> {
     None
@@ -137,7 +151,7 @@ fn plugin_hooks_and_servers_carry_a_tighten_only_origin() {
     let build = build_plugin(&root, "p", &context(&w.work)).unwrap();
     assert_eq!(build.summary.hooks, 1);
     assert_eq!(build.summary.servers, 1);
-    let hook = &build.hooks.pre_tool_use[0];
+    let hook = &build.hooks.get(HookEvent::PreToolUse)[0];
     assert_eq!(hook.origin.slot, Slot::Plugin);
     assert!(!hook.origin.user_trust);
     assert_eq!(hook.matcher.as_deref(), Some("shell"));
@@ -451,18 +465,160 @@ fn a_hook_runs_only_at_the_event_its_entry_names() {
         r#"{"hooks": {
             "PostToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "post"}]}],
             "PermissionDenied": [{"matcher": "Write", "hooks": [{"type": "command", "command": "deny"}]}],
-            "SessionStart": [{"hooks": [{"type": "command", "command": "ignored"}]}]
+            "PermissionRequest": [{"hooks": [{"type": "command", "command": "ignored"}]}]
         }}"#,
     );
     let contributions = load_installed(&w.config, &context(&w.work)).unwrap();
     let mut config = w.load().unwrap();
     config.apply_plugins(&contributions).unwrap();
 
-    assert!(config.hooks.pre_tool_use.is_empty());
-    assert_eq!(config.hooks.post_tool_use.len(), 1);
-    assert_eq!(config.hooks.permission_denied.len(), 1);
-    assert_eq!(config.hooks.post_tool_use[0].command, "post");
-    assert_eq!(config.hooks.permission_denied[0].command, "deny");
+    assert!(config.hooks.get(HookEvent::PreToolUse).is_empty());
+    assert_eq!(config.hooks.get(HookEvent::PostToolUse).len(), 1);
+    assert_eq!(config.hooks.get(HookEvent::PermissionDenied).len(), 1);
+    assert_eq!(
+        config.hooks.get(HookEvent::PostToolUse)[0]
+            .command
+            .as_deref(),
+        Some("post")
+    );
+    assert_eq!(
+        config.hooks.get(HookEvent::PermissionDenied)[0]
+            .command
+            .as_deref(),
+        Some("deny")
+    );
+    assert!(
+        contributions
+            .warnings
+            .iter()
+            .any(|w| w.contains("`PermissionRequest` hook, an event Fontaine does not build")),
+        "{:?}",
+        contributions.warnings
+    );
+}
+
+fn hooks_of(json: &str) -> (plugins::PluginContributions, fontaine_core::config::Config) {
+    let w = World::new();
+    plugins::write_registry(&w.config, &registry("team", "p", true)).unwrap();
+    let root = checkout(&w, "team", "p");
+    manifest(&root, "p", "");
+    write(&root.join("hooks/hooks.json"), json);
+    let contributions = load_installed(&w.config, &context(&w.work)).unwrap();
+    let mut config = w.load().unwrap();
+    config.apply_plugins(&contributions).unwrap();
+    (contributions, config)
+}
+
+#[test]
+fn plugin_lifecycle_events_http_and_prompt_hooks_load_with_their_matchers() {
+    use fontaine_core::config::HandlerKind;
+    let (contributions, config) = hooks_of(
+        r#"{"hooks": {
+            "SessionStart": [{"matcher": "startup|clear", "hooks": [{"type": "command", "command": "start"}]}],
+            "Stop": [{"hooks": [{"type": "prompt", "prompt": "done? $ARGUMENTS", "model": "haiku"}]}],
+            "SessionEnd": [{"hooks": [{"type": "http", "url": "https://example.test/${CLAUDE_PLUGIN_ROOT}/h",
+                "headers": {"Authorization": "Bearer $TOKEN", "X-Home": "${HOME}"}, "allowedEnvVars": ["TOKEN"]}]}],
+            "SubagentStop": [{"matcher": "worker|explore", "hooks": [{"type": "command", "command": "sub"}]}]
+        }}"#,
+    );
+    let start = &config.hooks.get(HookEvent::SessionStart)[0];
+    assert_eq!(start.matcher.as_deref(), Some("startup|clear"));
+    let stop = &config.hooks.get(HookEvent::Stop)[0];
+    assert_eq!(stop.kind, HandlerKind::Prompt);
+    assert_eq!(stop.prompt.as_deref(), Some("done? $ARGUMENTS"));
+    let end = &config.hooks.get(HookEvent::SessionEnd)[0];
+    assert_eq!(end.kind, HandlerKind::Http);
+    assert!(
+        end.url
+            .as_deref()
+            .unwrap()
+            .starts_with("https://example.test//"),
+        "{:?}",
+        end.url
+    );
+    assert!(!end.url.as_deref().unwrap().contains("CLAUDE_PLUGIN_ROOT"));
+    let headers = end.headers.as_ref().unwrap();
+    assert_eq!(headers["Authorization"], "Bearer $TOKEN");
+    assert_eq!(
+        headers["X-Home"], "${HOME}",
+        "a variable the plugin does not list is not read at load"
+    );
+    assert_eq!(
+        end.allowed_env_vars.as_deref(),
+        Some(&["TOKEN".to_string()][..])
+    );
+    assert_eq!(
+        config.hooks.get(HookEvent::SubagentStop)[0]
+            .matcher
+            .as_deref(),
+        Some("worker|explore")
+    );
+    assert!(
+        contributions.warnings.iter().any(|w| w.contains("`model`")),
+        "{:?}",
+        contributions.warnings
+    );
+}
+
+#[test]
+fn plugin_hooks_fontaine_does_not_build_are_skipped_with_one_warning_each() {
+    let (contributions, config) = hooks_of(
+        r#"{"hooks": {
+            "PreToolUse": [{"hooks": [
+                {"type": "agent", "prompt": "a"},
+                {"type": "mcp_tool", "server": "s", "tool": "t"},
+                {"type": "command", "command": "exec", "args": ["x"]},
+                {"type": "command", "command": "cond", "if": "Bash(git *)"},
+                {"type": "command", "command": "ps", "shell": "powershell"},
+                {"type": "command", "command": "kept", "shell": "bash"}
+            ]}],
+            "SessionStart": [{"hooks": [{"type": "prompt", "prompt": "not for this event"}]}],
+            "Stop": [{"hooks": [{"type": "agent", "prompt": "b"}]}],
+            "FileChanged": [{"hooks": [{"type": "command", "command": "watch"}]}],
+            "Setup": [{"hooks": [{"type": "command", "command": "setup"}]}]
+        }}"#,
+    );
+    let pre: Vec<_> = config
+        .hooks
+        .get(HookEvent::PreToolUse)
+        .iter()
+        .map(|h| h.command.as_deref().unwrap())
+        .collect();
+    assert_eq!(pre, ["kept"]);
+    assert!(config.hooks.get(HookEvent::SessionStart).is_empty());
+    assert!(config.hooks.get(HookEvent::Stop).is_empty());
+    let warnings = &contributions.warnings;
+    let count = |needle: &str| warnings.iter().filter(|w| w.contains(needle)).count();
+    assert_eq!(count("type `agent`"), 2, "one per event: {warnings:?}");
+    assert_eq!(count("type `mcp_tool`"), 1, "{warnings:?}");
+    assert_eq!(count("exec-form"), 1, "{warnings:?}");
+    assert_eq!(count("conditional"), 1, "{warnings:?}");
+    assert_eq!(count("PowerShell"), 1, "{warnings:?}");
+    assert_eq!(count("which that event does not take"), 1, "{warnings:?}");
+    assert_eq!(count("`FileChanged` hook"), 1, "{warnings:?}");
+    assert_eq!(count("`Setup` hook"), 1, "{warnings:?}");
+}
+
+#[test]
+fn a_plugin_matcher_a_lifecycle_event_does_not_know_skips_the_entry() {
+    let (contributions, config) = hooks_of(
+        r#"{"hooks": {
+            "SessionStart": [
+                {"matcher": "startup", "hooks": [{"type": "command", "command": "ok"}]},
+                {"matcher": "bogus", "hooks": [{"type": "command", "command": "bad"}]}
+            ],
+            "Stop": [{"matcher": "ignored", "hooks": [{"type": "command", "command": "stop"}]}]
+        }}"#,
+    );
+    let start: Vec<_> = config
+        .hooks
+        .get(HookEvent::SessionStart)
+        .iter()
+        .map(|h| h.command.as_deref().unwrap())
+        .collect();
+    assert_eq!(start, ["ok"]);
+    assert_eq!(config.hooks.get(HookEvent::Stop)[0].matcher, None);
+    assert!(contributions.warnings.iter().any(|w| w.contains("`bogus`")));
 }
 
 #[test]
@@ -482,17 +638,27 @@ fn plugin_task_completed_and_teammate_idle_hooks_parse_without_a_matcher_and_mer
     assert_eq!(contributions.hooks.len(), 2);
     let mut config = w.load().unwrap();
     config.apply_plugins(&contributions).unwrap();
-    assert_eq!(config.hooks.task_completed.len(), 1);
-    assert_eq!(config.hooks.task_completed[0].command, "gate");
-    assert_eq!(config.hooks.task_completed[0].matcher, None);
-    assert_eq!(config.hooks.teammate_idle.len(), 1);
-    assert_eq!(config.hooks.teammate_idle[0].command, "idle");
-    assert!(config.hooks.pre_tool_use.is_empty());
+    assert_eq!(config.hooks.get(HookEvent::TaskCompleted).len(), 1);
+    assert_eq!(
+        config.hooks.get(HookEvent::TaskCompleted)[0]
+            .command
+            .as_deref(),
+        Some("gate")
+    );
+    assert_eq!(config.hooks.get(HookEvent::TaskCompleted)[0].matcher, None);
+    assert_eq!(config.hooks.get(HookEvent::TeammateIdle).len(), 1);
+    assert_eq!(
+        config.hooks.get(HookEvent::TeammateIdle)[0]
+            .command
+            .as_deref(),
+        Some("idle")
+    );
+    assert!(config.hooks.get(HookEvent::PreToolUse).is_empty());
 
     // Re-applying replaces the plugin's hooks rather than stacking them.
     config.apply_plugins(&contributions).unwrap();
-    assert_eq!(config.hooks.task_completed.len(), 1);
-    assert_eq!(config.hooks.teammate_idle.len(), 1);
+    assert_eq!(config.hooks.get(HookEvent::TaskCompleted).len(), 1);
+    assert_eq!(config.hooks.get(HookEvent::TeammateIdle).len(), 1);
 }
 
 #[test]
@@ -559,34 +725,19 @@ fn an_identical_plugin_hook_merges_by_attribution_only() {
     let w = World::new();
     let mut config = w.load().unwrap();
     let project_hook = fontaine_core::config::Hook {
-        matcher: None,
-        command: "true".to_string(),
-        timeout_secs: None,
         origin: Origin {
             slot: Slot::Project,
             user_trust: false,
         },
-        plugin: None,
+        ..Hook::command(None, "true")
     };
-    config.hooks.pre_tool_use.push(project_hook);
+    config
+        .hooks
+        .list_mut(HookEvent::PreToolUse)
+        .push(project_hook);
     let contributions = plugins::PluginContributions {
         dirs: Vec::new(),
-        hooks: plugins::PluginHooks {
-            pre_tool_use: vec![fontaine_core::config::Hook {
-                matcher: None,
-                command: "true".to_string(),
-                timeout_secs: None,
-                origin: Origin {
-                    slot: Slot::Plugin,
-                    user_trust: false,
-                },
-                plugin: Some("p".to_string()),
-            }],
-            post_tool_use: Vec::new(),
-            permission_denied: Vec::new(),
-            task_completed: Vec::new(),
-            teammate_idle: Vec::new(),
-        },
+        hooks: plugin_hooks(HookEvent::PreToolUse, "true"),
         servers: Default::default(),
         lsp_servers: Vec::new(),
         deny: Vec::new(),
@@ -596,10 +747,13 @@ fn an_identical_plugin_hook_merges_by_attribution_only() {
         warnings: Vec::new(),
     };
     config.apply_plugins(&contributions).unwrap();
-    assert_eq!(config.hooks.pre_tool_use.len(), 1);
-    assert_eq!(config.hooks.pre_tool_use[0].origin.slot, Slot::Project);
+    assert_eq!(config.hooks.get(HookEvent::PreToolUse).len(), 1);
     assert_eq!(
-        config.hooks.pre_tool_use[0].plugin.as_deref(),
+        config.hooks.get(HookEvent::PreToolUse)[0].origin.slot,
+        Slot::Project
+    );
+    assert_eq!(
+        config.hooks.get(HookEvent::PreToolUse)[0].plugin.as_deref(),
         Some("p"),
         "a plugin hook identical to a project hook merges by attribution only"
     );
@@ -609,9 +763,12 @@ fn an_identical_plugin_hook_merges_by_attribution_only() {
     config
         .apply_plugins(&plugins::PluginContributions::default())
         .unwrap();
-    assert_eq!(config.hooks.pre_tool_use.len(), 1);
-    assert_eq!(config.hooks.pre_tool_use[0].origin.slot, Slot::Project);
-    assert_eq!(config.hooks.pre_tool_use[0].plugin, None);
+    assert_eq!(config.hooks.get(HookEvent::PreToolUse).len(), 1);
+    assert_eq!(
+        config.hooks.get(HookEvent::PreToolUse)[0].origin.slot,
+        Slot::Project
+    );
+    assert_eq!(config.hooks.get(HookEvent::PreToolUse)[0].plugin, None);
 }
 
 #[test]
@@ -747,8 +904,16 @@ fn manifest_hooks_and_mcp_paths_merge_over_the_default_files() {
     let build = build_plugin(&root, "p", &context(&w.work)).unwrap();
     assert_eq!(build.summary.hooks, 2);
     assert_eq!(build.summary.servers, 2);
-    assert_eq!(build.hooks.pre_tool_use[0].command, "default");
-    assert_eq!(build.hooks.post_tool_use[0].command, "extra");
+    assert_eq!(
+        build.hooks.get(HookEvent::PreToolUse)[0].command.as_deref(),
+        Some("default")
+    );
+    assert_eq!(
+        build.hooks.get(HookEvent::PostToolUse)[0]
+            .command
+            .as_deref(),
+        Some("extra")
+    );
     assert_eq!(
         build.servers["plugin_p_local"].command.as_deref(),
         Some("extra-srv")
@@ -788,22 +953,7 @@ fn apply_plugins_replaces_the_previous_plugins_contributions() {
     let contributions = plugins::PluginContributions {
         dirs: Vec::new(),
         lsp_servers: Vec::new(),
-        hooks: plugins::PluginHooks {
-            pre_tool_use: vec![Hook {
-                matcher: None,
-                command: "true".to_string(),
-                timeout_secs: None,
-                origin: Origin {
-                    slot: Slot::Plugin,
-                    user_trust: false,
-                },
-                plugin: Some("p".to_string()),
-            }],
-            post_tool_use: Vec::new(),
-            permission_denied: Vec::new(),
-            task_completed: Vec::new(),
-            teammate_idle: Vec::new(),
-        },
+        hooks: plugin_hooks(HookEvent::PreToolUse, "true"),
         servers: [(
             "plugin_p_s".to_string(),
             McpServer {
@@ -826,7 +976,7 @@ fn apply_plugins_replaces_the_previous_plugins_contributions() {
         warnings: Vec::new(),
     };
     config.apply_plugins(&contributions).unwrap();
-    assert_eq!(config.hooks.pre_tool_use.len(), 1);
+    assert_eq!(config.hooks.get(HookEvent::PreToolUse).len(), 1);
     assert_eq!(config.mcp_servers.len(), 1);
     assert_eq!(config.permissions.deny.len(), 1);
     assert_eq!(config.plugin_hard_deny, vec!["never push on Fridays"]);
@@ -834,7 +984,7 @@ fn apply_plugins_replaces_the_previous_plugins_contributions() {
     config
         .apply_plugins(&plugins::PluginContributions::default())
         .unwrap();
-    assert!(config.hooks.pre_tool_use.is_empty());
+    assert!(config.hooks.get(HookEvent::PreToolUse).is_empty());
     assert!(config.mcp_servers.is_empty());
     assert!(config.mcp_origins.is_empty());
     assert!(config.permissions.deny.is_empty());

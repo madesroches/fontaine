@@ -355,7 +355,7 @@ running is killed as soon as the shell exits, so `server &` dies with its shell.
   output is data from a program and not the user. It starts a turn of its own when nothing else
   is running, and reaches the model with the next tool result when a turn is in progress.
   Job output is screened like any tool result: the tool-result scanner, secret redaction and
-  `post_tool_use` hooks all see it. A job the model stopped itself posts nothing, and neither does
+  `post_tool_use` and `post_tool_use_failure` hooks all see it. A job the model stopped itself posts nothing, and neither does
   one whose end `job_output` already returned.
 - **`job_output`.** With no `id` it lists every job: id, state, age and the start of its command.
   With an `id` it returns what the job printed since it was last read and whether it still runs.

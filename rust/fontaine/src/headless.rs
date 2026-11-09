@@ -23,6 +23,7 @@ use fontaine_core::turn::{
 };
 use fontaine_core::turn_recovery::{Fallback, Unsettled};
 use fontaine_core::usage_ledger::{Bucket, UsageSource};
+use fontaine_core::user_hooks::PromptGate;
 use fontaine_tools::kills::KILL_SETTLE;
 use rig_core::schemars::Schema;
 use serde_json::{Value, json};
@@ -502,17 +503,29 @@ fn gate_decision_event(session_id: &str, record: &DecisionRecord) -> Value {
     )
 }
 
+/// Puts the notes hooks left for the model ahead of `text`.
+fn with_hook_context(runtime: &AgentRuntime, text: String) -> String {
+    let notes = runtime.take_hook_context();
+    if notes.is_empty() {
+        return text;
+    }
+    format!("{}\n\n{text}", notes.join("\n\n"))
+}
+
 /// One user message: runs the agent to its answer, a limit or a failure. A model that ran out of
-/// quota hands the run to the next entry of its list, and the message carries on there.
+/// quota hands the run to the next entry of its list, and the message carries on there. The note
+/// is what a `stop` hook asks the run to continue on, when it blocked the stop of a successful
+/// run.
 async fn run_one(
     runtime: &mut AgentRuntime,
     options: &Options,
     text: String,
     stream_events: bool,
-) -> Outcome {
+) -> (Outcome, Option<String>) {
     let mut fell = None;
     let mut tried = Tried::default();
-    let mut outcome = run_attempt(runtime, options, text, stream_events, &mut fell).await;
+    let (mut outcome, mut note) =
+        run_attempt(runtime, options, text, stream_events, &mut fell).await;
     while let Some(failure) = fell.take() {
         if runtime
             .fall_through(failure.class.unwrap_or("quota"), &mut tried)
@@ -523,9 +536,10 @@ async fn run_one(
                 error.push('\n');
                 error.push_str(&spent);
             }
+            runtime.turn_ended(&TurnOutcome::Failed(failure)).await;
             break;
         }
-        let next = run_attempt(
+        let (next, next_note) = run_attempt(
             runtime,
             options,
             RETRY_NOTE.to_string(),
@@ -534,8 +548,9 @@ async fn run_one(
         )
         .await;
         outcome = merge(outcome, next);
+        note = next_note;
     }
-    outcome
+    (outcome, note)
 }
 
 /// One run of the agent on `text`. A failure that is the model's quota running out is left in
@@ -546,7 +561,9 @@ async fn run_attempt(
     text: String,
     stream_events: bool,
     fell: &mut Option<TurnFailure>,
-) -> Outcome {
+) -> (Outcome, Option<String>) {
+    // After the compaction that may have preceded this run, so the notes it queued are in.
+    let text = with_hook_context(runtime, text);
     let started = std::time::Instant::now();
     let sid = runtime.session.id.as_str();
     let mut denials: Vec<Value> = Vec::new();
@@ -631,14 +648,14 @@ async fn run_attempt(
             // The preflight wrote the record before the compaction; the refusal must not
             // leave it for a fold to read as this turn's fallback.
             runtime.clear_run_start().await;
-            return count_stop(&e);
+            return (count_stop(&e), None);
         }
     };
     if let Err(e) = runtime.rewrite_run_start(sent.clone(), len).await {
         // The turn must not run unrecorded: the run that follows leaves a window in
         // which a kill would lose the prompt. The rewrite already cleared the record
         // the preflight wrote, so the refusal cannot resurrect the turn as a fold.
-        return record_stop(&e);
+        return (record_stop(&e), None);
     }
     // What a stopped run is kept as when it committed nothing.
     let fallback = Fallback {
@@ -681,14 +698,18 @@ async fn run_attempt(
     let turn = turn.filter(|_| !stopped);
     let Some(turn) = turn else {
         runtime.handle_afk_stop().await;
-        return afk::stopped_outcome(started, denials);
+        return (afk::stopped_outcome(started, denials), None);
     };
 
-    if let TurnOutcome::Failed(failure) = &turn
-        && failure.falls_through
-    {
-        *fell = Some(failure.clone());
-    }
+    // A failure the next entry of a model list may answer is reported to the hooks only once the
+    // list is spent, by the caller.
+    let note = match &turn {
+        TurnOutcome::Failed(failure) if failure.falls_through => {
+            *fell = Some(failure.clone());
+            None
+        }
+        _ => runtime.turn_ended(&turn).await,
+    };
     let (subtype, text, error) = match turn {
         TurnOutcome::Answer(text) => (Subtype::Success, text, None),
         TurnOutcome::Stopped => (
@@ -717,7 +738,8 @@ async fn run_attempt(
             }
         }
     }
-    outcome
+    let note = note.filter(|_| outcome.subtype == Subtype::Success);
+    (outcome, note)
 }
 
 /// Startup notices: the scanner's, in every mode, then those that matter to a run that can
@@ -933,8 +955,29 @@ async fn guarded_turn(
         runtime.goal_turn_ended(Some(&goal::turn_end(&stop)));
         return stop;
     }
-    let outcome = run_one(runtime, options, prompt, stream_events).await;
+    let (outcome, note) = run_one(runtime, options, prompt, stream_events).await;
+    let outcome = continue_on_stop(runtime, options, stream_events, outcome, note).await;
     runtime.goal_turn_ended(Some(&goal::turn_end(&outcome)));
+    outcome
+}
+
+/// Runs further turns while a `stop` hook keeps blocking the end of the run, each through the
+/// budget check and compaction a turn of its own gets.
+async fn continue_on_stop(
+    runtime: &mut AgentRuntime,
+    options: &Options,
+    stream_events: bool,
+    mut outcome: Outcome,
+    mut note: Option<String>,
+) -> Outcome {
+    while let Some(prompt) = note.take() {
+        if let Some(stop) = stop_before_call(runtime, options, Some(&prompt)).await {
+            return merge(outcome, stop);
+        }
+        let (next, again) = run_one(runtime, options, prompt, stream_events).await;
+        outcome = merge(outcome, next);
+        note = again;
+    }
     outcome
 }
 
@@ -955,7 +998,8 @@ async fn settle(
                 runtime
                     .keep_unsettled_turn(Unsettled::SessionEnded, None)
                     .await;
-                let next = run_one(runtime, options, prompt, stream_events).await;
+                let (next, note) = run_one(runtime, options, prompt, stream_events).await;
+                let next = continue_on_stop(runtime, options, stream_events, next, note).await;
                 runtime.goal_turn_ended(Some(&goal::turn_end(&next)));
                 outcome = merge(outcome, next);
             }
@@ -1005,7 +1049,27 @@ async fn handle_message(
         };
     }
     let mut involved = runtime.session.goal().is_active();
-    let prompt = match goal::command(&text) {
+    let command = goal::command(&text);
+    if matches!(command, None | Some(GoalArg::Set(_)))
+        && let PromptGate::Blocked(message) = runtime.prompt_submit(&text).await
+    {
+        // The hook said no: nothing is sent, recorded or set, and the run ends as a success
+        // that says why, as Claude Code's does.
+        return Handled {
+            outcome: Outcome {
+                subtype: Subtype::Success,
+                text: format!("{message}\n\n\nOriginal prompt: {text}"),
+                structured: None,
+                error: None,
+                started: std::time::Instant::now(),
+                denials: Vec::new(),
+            },
+            goal: None,
+            goal_ran: false,
+            afk: afk_report(runtime),
+        };
+    }
+    let prompt = match command {
         None => {
             // A turn a resume-time fold failed to keep belongs before this one: the
             // checkpoint `begin_turn` records must hold the recovered history, or a
@@ -1174,7 +1238,14 @@ async fn final_afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
 
 /// Runs the headless session and returns the process exit code: 0 completed, 1 run error or a
 /// `/goal` that did not end met, 2 usage error.
-pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Path) -> u8 {
+pub async fn run(options: Options, mut runtime: AgentRuntime, data_dir: &Path) -> u8 {
+    let code = run_session(options, &mut runtime, data_dir).await;
+    // One exit point, so an input error ends the session for the hooks too.
+    runtime.fire_session_end("other").await;
+    code
+}
+
+async fn run_session(mut options: Options, runtime: &mut AgentRuntime, data_dir: &Path) -> u8 {
     let mut input = match open_input(&mut options).await {
         Ok(input) => input,
         Err(message) => {
@@ -1185,10 +1256,10 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
 
     let session_id = runtime.session.id.clone();
     runtime.record_session_start().await;
-    announce(&runtime);
+    announce(runtime);
     let stream_events = options.output_format == OutputFormat::StreamJson;
     if stream_events {
-        emit_line(&init_event(&runtime, data_dir));
+        emit_line(&init_event(runtime, data_dir));
     }
 
     let mut last: Option<Handled> = None;
@@ -1208,7 +1279,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             }
         };
         let mut handled = match runtime.refresh_before_turn() {
-            Ok(()) => handle_message(&mut runtime, &options, stream_events, text).await,
+            Ok(()) => handle_message(runtime, &options, stream_events, text).await,
             Err(e) => Handled {
                 outcome: Outcome {
                     subtype: Subtype::Execution,
@@ -1223,7 +1294,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
                 },
                 goal: None,
                 goal_ran: false,
-                afk: afk_report(&runtime),
+                afk: afk_report(runtime),
             },
         };
         let failed = handled.outcome.subtype != Subtype::Success;
@@ -1239,7 +1310,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
         // The review is paid for once, with the message that ends the run.
         if (input.is_exhausted() || failed || goal_failure.is_some())
             && !reviewed
-            && let Some(report) = final_afk_report(&runtime).await
+            && let Some(report) = final_afk_report(runtime).await
         {
             handled.afk = Some(report);
             reviewed = true;
@@ -1256,11 +1327,11 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
             runtime.lsp().shutdown_all().await;
         }
         if stream_events {
-            let account_usage = account_usage(&runtime, &mut usage_warned).await;
+            let account_usage = account_usage(runtime, &mut usage_warned).await;
             emit_line(&result_event(
                 &session_id,
                 outcome,
-                &Usage::of(&runtime),
+                &Usage::of(runtime),
                 handled.goal.as_ref(),
                 &account_usage,
                 handled.afk.as_ref(),
@@ -1274,7 +1345,7 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
     }
     if !reviewed
         && let Some(last) = last.as_mut()
-        && let Some(report) = final_afk_report(&runtime).await
+        && let Some(report) = final_afk_report(runtime).await
     {
         last.afk = Some(report);
     }
@@ -1297,11 +1368,11 @@ pub async fn run(mut options: Options, mut runtime: AgentRuntime, data_dir: &Pat
     match options.output_format {
         OutputFormat::StreamJson => {}
         OutputFormat::Json => {
-            let account_usage = account_usage(&runtime, &mut usage_warned).await;
+            let account_usage = account_usage(runtime, &mut usage_warned).await;
             emit_line(&result_event(
                 &session_id,
                 &last.outcome,
-                &Usage::of(&runtime),
+                &Usage::of(runtime),
                 last.goal.as_ref(),
                 &account_usage,
                 last.afk.as_ref(),

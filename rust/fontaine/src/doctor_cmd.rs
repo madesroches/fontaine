@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use fontaine_core::agent::{mcp_plan, probe_server, server_spec};
-use fontaine_core::config::{self, Config, Hook, LayerDiagnosis, Slot};
+use fontaine_core::config::{self, Config, LayerDiagnosis, Slot};
 use fontaine_core::config_catalog::Running;
 use fontaine_core::containment;
 use fontaine_core::dirs::Dirs;
@@ -350,14 +350,10 @@ fn extensions_section(
 
 /// Hooks per event and scope, in the order the events are documented.
 fn hook_counts(config: &Config) -> Vec<HookCount> {
-    let hooks = &config.hooks;
-    let events: [(&'static str, &Vec<Hook>); 5] = [
-        ("pre_tool_use", &hooks.pre_tool_use),
-        ("post_tool_use", &hooks.post_tool_use),
-        ("permission_denied", &hooks.permission_denied),
-        ("task_completed", &hooks.task_completed),
-        ("teammate_idle", &hooks.teammate_idle),
-    ];
+    let events = config
+        .hooks
+        .iter()
+        .map(|(event, list)| (event.config_key(), list));
     let mut out = Vec::new();
     for (event, list) in events {
         for slot in [

@@ -7,9 +7,9 @@ mod common;
 use std::sync::Arc;
 
 use common::{World, git, git_init};
-use fontaine_core::config::{Config, Slot};
+use fontaine_core::config::{Config, HookEvent, Slot};
 use fontaine_core::trust;
-use fontaine_core::user_hooks::{self, HookProcess};
+use fontaine_core::user_hooks::{self, HookDeps, HookProcess};
 
 const HOOK: &str = "[[hooks.pre_tool_use]]\ncommand = \"check.sh\"\n";
 const SERVER: &str = "[mcp.servers.srv]\ncommand = \"srv\"\n";
@@ -24,7 +24,8 @@ fn process() -> Arc<HookProcess> {
 }
 
 fn counts(config: &Config, project_executables: bool) -> (usize, usize) {
-    let built = user_hooks::build(config, project_executables, process());
+    let built = user_hooks::build(config, project_executables, &HookDeps::new(process()))
+        .expect("the hooks build");
     (built.pre.len(), built.post.len())
 }
 
@@ -33,7 +34,7 @@ fn a_hooks_matcher_is_optional() {
     let w = World::new();
     w.user_file(HOOK);
     let c = w.load().unwrap();
-    assert_eq!(c.hooks.pre_tool_use[0].matcher, None);
+    assert_eq!(c.hooks.get(HookEvent::PreToolUse)[0].matcher, None);
 }
 
 #[test]
@@ -46,9 +47,9 @@ fn user_cli_and_project_hooks_and_servers_know_where_they_came_from() {
     let c = w.load().unwrap();
     let origin = |command: &str| {
         c.hooks
-            .pre_tool_use
+            .get(HookEvent::PreToolUse)
             .iter()
-            .find(|h| h.command == command)
+            .find(|h| h.command.as_deref() == Some(command))
             .unwrap()
             .origin
     };
@@ -66,7 +67,7 @@ fn an_untracked_local_file_in_a_trusted_root_has_user_trust_but_is_still_a_proje
     w.trusted_repo();
     w.local_file(&format!("{HOOK}{SERVER}"));
     let c = w.load().unwrap();
-    let hook = &c.hooks.pre_tool_use[0];
+    let hook = &c.hooks.get(HookEvent::PreToolUse)[0];
     assert_eq!(hook.origin.slot, Slot::ProjectLocal);
     assert!(hook.origin.user_trust, "its allow counts as a user grant");
     assert!(
@@ -82,13 +83,21 @@ fn a_local_file_that_is_tracked_or_in_an_untrusted_root_is_project_scope() {
     let w = World::new();
     git_init(&w.work);
     w.local_file(HOOK);
-    assert!(!w.load().unwrap().hooks.pre_tool_use[0].origin.user_trust);
+    assert!(
+        !w.load().unwrap().hooks.get(HookEvent::PreToolUse)[0]
+            .origin
+            .user_trust
+    );
     // Tracked file.
     let w = World::new();
     w.trusted_repo();
     w.local_file(HOOK);
     git(&w.work, &["add", "-f", ".fontaine/settings.local.toml"]);
-    assert!(!w.load().unwrap().hooks.pre_tool_use[0].origin.user_trust);
+    assert!(
+        !w.load().unwrap().hooks.get(HookEvent::PreToolUse)[0]
+            .origin
+            .user_trust
+    );
 }
 
 #[test]
@@ -109,8 +118,8 @@ fn the_same_hook_in_two_scopes_runs_once_under_the_higher_trust() {
     w.user_file(HOOK);
     w.project_file(HOOK);
     let c = w.load().unwrap();
-    assert_eq!(c.hooks.pre_tool_use.len(), 1);
-    assert!(c.hooks.pre_tool_use[0].origin.user_trust);
+    assert_eq!(c.hooks.get(HookEvent::PreToolUse).len(), 1);
+    assert!(c.hooks.get(HookEvent::PreToolUse)[0].origin.user_trust);
 }
 
 #[test]
@@ -167,8 +176,8 @@ fn a_hook_defined_in_several_scopes_is_kept_under_the_origin_with_more_trust() {
     w.project_file(HOOK);
     let cli = w.cli_file(HOOK);
     let c = w.load_with_settings(&cli).unwrap();
-    assert_eq!(c.hooks.pre_tool_use.len(), 1);
-    let origin = c.hooks.pre_tool_use[0].origin;
+    assert_eq!(c.hooks.get(HookEvent::PreToolUse).len(), 1);
+    let origin = c.hooks.get(HookEvent::PreToolUse)[0].origin;
     assert_eq!(origin.slot, Slot::Cli);
     assert!(origin.user_trust && !origin.is_project());
 }

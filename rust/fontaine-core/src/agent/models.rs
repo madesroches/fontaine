@@ -115,6 +115,7 @@ impl AgentRuntime {
         warm_output_mode(&guardian);
         self.state.set_guardian(guardian);
         *write(&self.guardian_quota, "guardian quota") = guardian_quota_of(Some(model));
+        self.setup.lifecycle.set_guardian(model);
         if let Some(slot) = &self.llm_scanner {
             let timeout = std::time::Duration::from_secs(self.config.guardian.timeout_secs);
             *write(slot, "scanner model") = llm_backend(Some(model), timeout);

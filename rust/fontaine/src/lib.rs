@@ -221,11 +221,9 @@ fn apply_cd(cli: &Cli, host: &mut Host) -> Result<(), u8> {
 fn trust_summary(config: &Config) -> fontaine_tui::trust_prompt::Summary {
     let hooks = config
         .hooks
-        .pre_tool_use
         .iter()
-        .chain(&config.hooks.post_tool_use)
-        .chain(&config.hooks.permission_denied)
-        .chain(&config.hooks.task_completed)
+        .filter(|(event, _)| event.project_scope() == fontaine_core::config::ProjectScope::Loads)
+        .flat_map(|(_, hooks)| hooks)
         .filter(|hook| hook.origin.is_project())
         .count();
     let servers = config

@@ -10,7 +10,7 @@ use serde_json::json;
 
 use crate::root_ledger::{AgentEvent, RootLedger};
 use crate::spawn::{caller_of, task_event};
-use crate::tasks::{BoardError, Task, TaskBoard, Teams};
+use crate::tasks::{BoardError, Task, TaskBoard, TaskStatus, Teams};
 use crate::tree::AgentTree;
 
 fn board_of(tree: &AgentTree) -> Result<Arc<Teams>, ToolExecutionError> {
@@ -271,14 +271,27 @@ impl Tool for BoardUpdateTool {
         let (event, task) = match args.action {
             BoardAction::Create => {
                 let title = need(&args.title, "title", "create")?;
+                let description = args.description.as_deref().unwrap_or("");
+                let blocked_by = args.blocked_by.as_deref().unwrap_or(&[]);
+                // Before the board's lock is taken: a hook is a process. The task has no id
+                // until the create the hook gates assigns one.
+                let draft = Task {
+                    id: String::new(),
+                    title: title.to_string(),
+                    description: description.to_string(),
+                    status: TaskStatus::Pending,
+                    owner: None,
+                    blocked_by: blocked_by.to_vec(),
+                    created_by: agent.clone(),
+                };
+                if let Some(reason) = teams.gate.task_created(&agent, &draft).await {
+                    return Err(ToolExecutionError::refused(format!(
+                        "a task_created hook blocked creating the task: {reason}"
+                    )));
+                }
                 let task = self
                     .create_board(&teams, &agent)
-                    .create(
-                        &agent,
-                        title,
-                        args.description.as_deref().unwrap_or(""),
-                        args.blocked_by.as_deref().unwrap_or(&[]),
-                    )
+                    .create(&agent, title, description, blocked_by)
                     .map_err(board_error)?;
                 ("created", task)
             }

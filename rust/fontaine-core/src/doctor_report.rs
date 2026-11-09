@@ -511,10 +511,19 @@ pub fn extensions_section(facts: &ExtensionFacts) -> Section {
         findings.push(Finding::ok("hooks", "none"));
     }
     for hook in &facts.hooks {
-        let detail = if hook.project && hook.event == "teammate_idle" {
+        let ignored = crate::config::HookEvent::ALL
+            .into_iter()
+            .find(|e| e.config_key() == hook.event)
+            .and_then(|e| match e.project_scope() {
+                crate::config::ProjectScope::IgnoredWithWarning(_) => Some(e),
+                crate::config::ProjectScope::Loads => None,
+            });
+        let detail = if let (true, Some(event)) = (hook.project, ignored) {
             format!(
-                "{} ({}); never run (a repository may not define teammate_idle hooks)",
-                hook.count, hook.scope
+                "{} ({}); never run (a repository may not define {} hooks)",
+                hook.count,
+                hook.scope,
+                event.config_key()
             )
         } else if hook.project {
             format!("{} ({}); {project_state}", hook.count, hook.scope)

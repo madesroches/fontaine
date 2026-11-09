@@ -854,6 +854,17 @@ impl ChildRunner for CoreChildRunner {
             } else {
                 request.prompt
             };
+            // Ahead of the task, as notes the parent did not write.
+            let notes = state
+                .agents()
+                .lifecycle()
+                .subagent_start(&request.id, &request.agent_type.name)
+                .await;
+            let prompt = if notes.is_empty() {
+                prompt
+            } else {
+                format!("{}\n\n{prompt}", notes.join("\n\n"))
+            };
             launch(shared, prompt, span);
             Ok(handle as Arc<dyn ChildHandle>)
         })

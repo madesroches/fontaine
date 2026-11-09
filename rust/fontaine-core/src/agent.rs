@@ -59,11 +59,13 @@ use crate::steering::Steering;
 use crate::tools;
 use crate::trust;
 use crate::turn_recovery::{self, Fallback, Unsettled};
+use crate::user_hooks;
 use crate::workspace::{self, RootSource};
 
 mod afk;
 mod build;
 mod goal;
+mod hooks;
 mod lsp;
 mod mcp;
 mod messaging;
@@ -269,6 +271,8 @@ pub(crate) struct Setup {
     pub(crate) lsp: Arc<LspServers>,
     /// The session store, which every subagent's conversation persists into under its own log.
     store: DirStore,
+    /// The user's hooks for the events the runtime fires itself.
+    pub(crate) lifecycle: user_hooks::LifecycleHooks,
 }
 
 /// One line when the main model has no way to search: no provider search for its account, no
@@ -805,6 +809,7 @@ impl AgentRuntime {
             self.keep_unsettled_turn(Unsettled::SessionEnded, None)
                 .await;
         }
+        self.fire_session_start_for_origin().await;
     }
 
     /// How many messages the main conversation holds now, for the fallback of a turn that may
@@ -1019,7 +1024,10 @@ impl AgentRuntime {
             spawn::slot_freed(agents, &self.ledger_window(), None);
             return Err(ClearError::SubagentsRunning);
         }
+        self.setup.lifecycle.session_end("clear").await;
         self.session.clear().await?;
+        // Context queued for the conversation that just ended has nothing to attach to.
+        self.state.clear_hook_context();
         // A reset means a reset: an interrupted turn kept pending in the journal by a failed
         // fold must not re-enter the emptied conversation at the next turn.
         self.discard_unsettled_turn().await;
@@ -1046,6 +1054,7 @@ impl AgentRuntime {
         }
         // The goal was set under the intent this clear drops.
         self.clear_goal();
+        self.fire_session_start("clear").await;
         Ok(())
     }
 

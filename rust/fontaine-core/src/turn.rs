@@ -95,15 +95,19 @@ pub struct TurnFailure {
     pub falls_through: bool,
     /// The stable error class of the failed request, as the `api_error` event carries it.
     pub class: Option<&'static str>,
+    /// The class a `stop_failure` hook is told; one of [`crate::config::STOP_FAILURE_KINDS`].
+    pub kind: &'static str,
 }
 
 impl TurnFailure {
-    /// A failure that is not a quota failure.
+    /// A failure that is not a quota failure and did not come from a provider call, so it is of
+    /// the `unknown` kind.
     pub fn new(message: impl Into<String>) -> TurnFailure {
         TurnFailure {
             message: message.into(),
             falls_through: false,
             class: None,
+            kind: "unknown",
         }
     }
 }
@@ -123,6 +127,39 @@ impl From<&str> for TurnFailure {
 impl std::fmt::Display for TurnFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.message)
+    }
+}
+
+/// The `stop_failure` class of a failed model request.
+fn failure_kind(error: &PromptError) -> &'static str {
+    use crate::providers::claude_subscription::{ErrorKind as Claude, claude_error};
+    if let PromptError::Provider(e) = error
+        && let Some(claude) = claude_error(e)
+    {
+        return match claude.kind {
+            Claude::Auth => "authentication_failed",
+            Claude::Limit => "rate_limit",
+            Claude::UsageCredits => "billing_error",
+            Claude::Catalog => "model_not_found",
+            Claude::Unsupported => "invalid_request",
+            _ => "unknown",
+        };
+    }
+    let body = error.provider_response_body().unwrap_or("").to_lowercase();
+    match error.provider_response_status().map(|s| s.as_u16()) {
+        Some(401) => "authentication_failed",
+        Some(403) if body.contains("organization") => "oauth_org_not_allowed",
+        Some(403) => "authentication_failed",
+        Some(402) => "billing_error",
+        Some(404) => "model_not_found",
+        Some(400 | 413 | 422) if body.contains("max_tokens") => "max_output_tokens",
+        Some(429) if body.contains("credit") || body.contains("billing") => "billing_error",
+        Some(429) => "rate_limit",
+        Some(529) => "overloaded",
+        Some(500..=599) if body.contains("overloaded") => "overloaded",
+        Some(500..=599) => "server_error",
+        Some(400..=499) => "invalid_request",
+        _ => "unknown",
     }
 }
 
@@ -568,6 +605,7 @@ pub async fn drive(
                 message,
                 falls_through: falls_through(&error),
                 class: error_class(&error),
+                kind: failure_kind(&error),
             });
         }
         tokio::time::sleep(BACKOFF * (1 << attempt)).await;

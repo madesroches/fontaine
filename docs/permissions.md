@@ -203,7 +203,7 @@ allows a `monitor` by itself, so allow one with `monitor(tail *)` or let the gua
 
 With `[agents] teams` on (the default) the [task boards](agents.md#the-task-board) add two tools. `board_show` is read-only and names no path, so it takes the read-only fast path in every
 mode. `board_update` is a coordination tool like `send_message`: it writes only the session's own
-`tasks.json` and runs your `task_completed` hooks, so in every mode it runs at `tier = coordination` with
+`tasks.json` and runs your `task_created` and `task_completed` hooks, so in every mode it runs at `tier = coordination` with
 no guardian verdict and no prompt. A `deny` or `ask` rule naming `board_update` (a hook too) runs
 first in every mode. It has no fast path and no specifier. Waking an idle agent
 with `send_message` is likewise unjudged, and each call the woken agent makes passes the

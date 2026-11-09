@@ -34,11 +34,15 @@ pub(crate) fn permitted(mode: PermissionMode, rules: &Rules) -> bool {
 /// the model's response, so a hook would never see it; a hook that cannot be read counts as
 /// covering, as it runs for every call.
 fn hook_covers(config: &Config) -> bool {
-    config.hooks.pre_tool_use.iter().any(|hook| {
-        hook.matcher
-            .as_deref()
-            .is_none_or(|text| parse_rule(text).map_or(true, |rule| rule.tool == TOOL))
-    })
+    config
+        .hooks
+        .get(crate::config::HookEvent::PreToolUse)
+        .iter()
+        .any(|hook| {
+            hook.matcher
+                .as_deref()
+                .is_none_or(|text| parse_rule(text).map_or(true, |rule| rule.tool == TOOL))
+        })
 }
 
 /// The provider's search tool entry when the main model's account supports it and
@@ -156,13 +160,10 @@ mod tests {
 
     fn config_with_hook(matcher: Option<&str>) -> Config {
         let mut config = Config::defaults(std::path::PathBuf::new());
-        config.hooks.pre_tool_use.push(crate::config::Hook {
-            matcher: matcher.map(str::to_string),
-            command: "true".to_string(),
-            timeout_secs: None,
-            origin: Default::default(),
-            plugin: None,
-        });
+        config
+            .hooks
+            .list_mut(crate::config::HookEvent::PreToolUse)
+            .push(crate::config::Hook::command(matcher, "true"));
         config
     }
 

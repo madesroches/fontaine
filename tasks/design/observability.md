@@ -50,7 +50,8 @@ them via `record_content_telemetry`.
 **What is emitted** (names mirror Claude Code with a `fontaine.` prefix):
 - Spans: `fontaine.session` > `fontaine.interaction` (one user turn; `prompt.id`) > rig
   `invoke_agent`/`chat` and `fontaine.tool` > `fontaine.permission` (> `fontaine.hook`,
-  `fontaine.guardian`, `fontaine.tool.blocked_on_user`) + rig `execute_tool`; `fontaine.subagent`
+  `fontaine.guardian`, `fontaine.tool.blocked_on_user`) + rig `execute_tool`; `fontaine.hook` (`hook_event`, `hook_type`, `success`) also
+  runs for the lifecycle events, which have no `fontaine.permission` parent; `fontaine.subagent`
   parented to the spawning tool call; `fontaine.mcp.call`. Both backends export this as a tree.
 - Metrics: `fontaine.session.count` (`start_type` = fresh/resume/continue, as Claude Code — a fork
   takes the value of the flag it forks from, and a `/resume` or `/branch` switch inside the TUI

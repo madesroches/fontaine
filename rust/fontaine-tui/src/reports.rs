@@ -8,7 +8,10 @@ use std::time::SystemTime;
 
 use fontaine_agents::registry::TypeOrigin;
 use fontaine_core::afk_report::{AfkOutcome, AfkReport, Attempt, LinkKind};
-use fontaine_core::config::{Hook, Hooks, McpServer, Origin, PermissionMode, Slot};
+use fontaine_core::config::{
+    HandlerKind, Hook, HookEvent, Hooks, MatcherKind, McpServer, Origin, PermissionMode,
+    ProjectScope, Slot,
+};
 use fontaine_core::context::ContextUsage;
 use fontaine_core::extensions::{Extensions, Scope};
 use fontaine_core::gate::Rules;
@@ -264,39 +267,37 @@ pub fn mcp_with_origins(
         .join("\n")
 }
 
-pub fn hooks(
-    pre_tool_use: &[Hook],
-    post_tool_use: &[Hook],
-    permission_denied: &[Hook],
-    task_completed: &[Hook],
-    teammate_idle: &[Hook],
-    project_executables: bool,
-) -> String {
+/// Every event that has hooks, with each hook's matcher, type, target and scope, and why one that
+/// is configured does not run. A last line names the events with none.
+pub fn hooks(hooks: &Hooks, project_executables: bool) -> String {
     let mut sections = Vec::new();
-    for (event, hooks) in [
-        ("pre_tool_use", pre_tool_use),
-        ("post_tool_use", post_tool_use),
-        ("permission_denied", permission_denied),
-        ("task_completed", task_completed),
-        ("teammate_idle", teammate_idle),
-    ] {
-        if hooks.is_empty() {
+    let mut empty = Vec::new();
+    for (event, list) in hooks.iter() {
+        if list.is_empty() {
+            empty.push(event.config_key());
             continue;
         }
-        let mut section = format!("{event}:");
-        for hook in hooks {
-            let matcher = hook.matcher.as_deref().unwrap_or("every call");
+        let mut section = format!("{}:", event.config_key());
+        for hook in list {
+            let matcher = hook
+                .matcher
+                .as_deref()
+                .unwrap_or(match event.matcher_kind() {
+                    MatcherKind::Tool => "every call",
+                    _ => "every time",
+                });
             let _ = write!(
                 section,
-                "\n  {matcher} → {} [{}]",
-                hook.command,
+                "\n  {matcher} → ({}) {} [{}]",
+                hook.kind.as_str(),
+                hook.target(),
                 hook.origin.slot.label()
             );
             if let Some(secs) = hook.timeout_secs {
                 let _ = write!(section, " timeout {secs}s");
             }
-            if hook.origin.is_project() && !project_executables {
-                section.push_str(" not loaded (workspace not trusted)");
+            if let Some(why) = not_run(event, hook, project_executables) {
+                let _ = write!(section, " not run ({why})");
             }
         }
         sections.push(section);
@@ -304,7 +305,25 @@ pub fn hooks(
     if sections.is_empty() {
         return "no hooks configured".to_string();
     }
+    sections.push(format!("no hooks for: {}", empty.join(", ")));
     sections.join("\n")
+}
+
+/// Why a configured hook does not run, when it does not.
+fn not_run(event: HookEvent, hook: &Hook, project_executables: bool) -> Option<&'static str> {
+    if !hook.origin.is_project() {
+        return None;
+    }
+    if !project_executables {
+        return Some("workspace not trusted");
+    }
+    if matches!(event.project_scope(), ProjectScope::IgnoredWithWarning(_)) {
+        return Some("a repository may not define it: it forces model calls");
+    }
+    if hook.kind != HandlerKind::Command && !hook.origin.user_trust {
+        return Some("a repository may not define http or prompt hooks");
+    }
+    None
 }
 
 pub fn skills(extensions: &Extensions) -> String {
@@ -379,12 +398,7 @@ pub fn plugins(
                 .filter(|style| style.scope == Scope::Plugin && style.name.starts_with(&prefix))
                 .count();
             let hooks = hooks
-                .pre_tool_use
-                .iter()
-                .chain(&hooks.post_tool_use)
-                .chain(&hooks.permission_denied)
-                .chain(&hooks.task_completed)
-                .chain(&hooks.teammate_idle)
+                .all()
                 .filter(|hook| hook.plugin.as_deref() == Some(plugin.name.as_str()))
                 .count();
             let server_prefix = format!("plugin_{}_", plugin.name);
@@ -1015,14 +1029,12 @@ mod tests {
 
     fn hook(matcher: Option<&str>, command: &str, slot: Slot, timeout: Option<u64>) -> Hook {
         Hook {
-            matcher: matcher.map(str::to_string),
-            command: command.to_string(),
             timeout_secs: timeout,
             origin: Origin {
                 slot,
                 user_trust: true,
             },
-            plugin: None,
+            ..Hook::command(matcher, command)
         }
     }
 
@@ -1274,7 +1286,7 @@ mod tests {
         let mut hooks = Hooks::default();
         let mut plugin_hook = hook(None, "check.sh", Slot::Plugin, None);
         plugin_hook.plugin = Some("p".to_string());
-        hooks.pre_tool_use.push(plugin_hook);
+        hooks.list_mut(HookEvent::PreToolUse).push(plugin_hook);
         let servers = BTreeMap::from([(
             "plugin_p_srv".to_string(),
             McpServer {
@@ -1311,25 +1323,70 @@ mod tests {
 
     #[test]
     fn hooks_group_by_event() {
-        assert_eq!(hooks(&[], &[], &[], &[], &[], true), "no hooks configured");
-        let pre = [
+        assert_eq!(hooks(&Hooks::default(), true), "no hooks configured");
+        let mut configured = Hooks::default();
+        configured.list_mut(HookEvent::PreToolUse).extend([
             hook(Some("shell(git push)"), "check.sh", Slot::User, Some(5)),
             hook(None, "log.sh", Slot::Project, None),
-        ];
-        let denied = [hook(None, "notify.sh", Slot::User, None)];
-        let text = hooks(&pre, &[], &denied, &[], &[], true);
-        assert_eq!(
-            text,
-            "pre_tool_use:\n  shell(git push) → check.sh [user] timeout 5s\n  every call → log.sh [project]\npermission_denied:\n  every call → notify.sh [user]"
-        );
-        let untrusted = hooks(&pre, &[], &[], &[], &[], false);
+        ]);
+        configured.list_mut(HookEvent::PermissionDenied).push(hook(
+            None,
+            "notify.sh",
+            Slot::User,
+            None,
+        ));
+        let text = hooks(&configured, true);
         assert!(
-            untrusted.contains("every call → log.sh [project] not loaded (workspace not trusted)"),
+            text.starts_with(
+                "pre_tool_use:\n  shell(git push) → (command) check.sh [user] timeout 5s\n  every call → (command) log.sh [project]\npermission_denied:\n  every call → (command) notify.sh [user]\nno hooks for: "
+            ),
+            "{text}"
+        );
+        assert!(text.contains("stop, "), "{text}");
+        let untrusted = hooks(&configured, false);
+        assert!(
+            untrusted.contains("log.sh [project] not run (workspace not trusted)"),
             "{untrusted}"
         );
+        assert!(!untrusted.contains("timeout 5s not run"), "{untrusted}");
+    }
+
+    #[test]
+    fn hooks_show_types_and_why_a_repository_hook_does_not_run() {
+        let mut configured = Hooks::default();
+        let mut stop = hook(None, "stop.sh", Slot::Project, None);
+        stop.origin.user_trust = false;
+        configured.list_mut(HookEvent::Stop).push(stop);
+        let mut post = Hook {
+            kind: HandlerKind::Http,
+            command: None,
+            url: Some("https://example.test/hook".to_string()),
+            origin: Origin {
+                slot: Slot::Project,
+                user_trust: false,
+            },
+            ..Hook::default()
+        };
+        configured
+            .list_mut(HookEvent::PostToolUse)
+            .push(post.clone());
+        post.origin = Origin::default();
+        configured.list_mut(HookEvent::SessionEnd).push(Hook {
+            matcher: Some("clear".into()),
+            ..post
+        });
+        let text = hooks(&configured, true);
         assert!(
-            !untrusted.contains("check.sh [user] timeout 5s not loaded"),
-            "{untrusted}"
+            text.contains("stop:\n  every time → (command) stop.sh [project] not run (a repository may not define it"),
+            "{text}"
+        );
+        assert!(
+            text.contains("(http) https://example.test/hook [project] not run (a repository may not define http or prompt hooks)"),
+            "{text}"
+        );
+        assert!(
+            text.contains("session_end:\n  clear → (http) https://example.test/hook [user]\n"),
+            "{text}"
         );
     }
 

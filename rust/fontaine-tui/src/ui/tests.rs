@@ -79,6 +79,7 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
     ];
     let (result_tx, result_rx) = tokio::sync::mpsc::unbounded_channel();
     Ui {
+        hook_notifier: crate::notify::Notifier::new(fontaine_core::config::NotifyMethod::Off),
         afk_stops: tokio::sync::watch::channel(0).1,
         app: App::new(PermissionMode::Manual, "m".into()),
         input: unbounded_channel().1,

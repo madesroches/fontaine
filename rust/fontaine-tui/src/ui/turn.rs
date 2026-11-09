@@ -8,6 +8,7 @@ use crate::{Action, App, Ui, parse_command};
 use fontaine_core::RuntimeError;
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::Decision;
+use fontaine_core::config::HookEvent;
 use fontaine_core::gate::AgentViewEvent;
 use fontaine_core::goal::Continue;
 use fontaine_core::ledger::Record;
@@ -20,6 +21,7 @@ use fontaine_core::turn::{
     user_message,
 };
 use fontaine_core::turn_recovery::{Fallback, Unsettled};
+use fontaine_core::user_hooks::PromptGate;
 use tokio::sync::mpsc::unbounded_channel;
 
 /// How a turn ended from the interface's side.
@@ -484,6 +486,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         argument: &str,
     ) -> std::ops::ControlFlow<(), SkillRun> {
         use std::ops::ControlFlow::{Break, Continue};
+        match self.prompt_passes(runtime, raw).await {
+            Break(()) => return Break(()),
+            Continue(false) => return Continue(SkillRun::Spent),
+            Continue(true) => {}
+        }
         // Esc during the expansion interrupts it, at idle and queued alike.
         self.app.set_running(true);
         // Recorded before the skill's commands run so the guardian judging them has
@@ -510,6 +517,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Err(_) => {
                 self.app.transcript.notice("interrupted");
                 Continue(SkillRun::Spent)
+            }
+        }
+    }
+
+    /// How a typed message ends when a `user_prompt_submit` hook refuses it or the wait is cut
+    /// short; `None` lets it through. Nothing is recorded for a refused prompt.
+    async fn refuse_by_hook(&mut self, runtime: &AgentRuntime, text: &str) -> Option<TurnEnd> {
+        match self.prompt_allowed(runtime, text).await {
+            Ok(true) => None,
+            Ok(false) => Some(TurnEnd::Finished(TurnOutcome::Answer(String::new()))),
+            Err(end) => {
+                self.finish_turn(runtime, &end).await;
+                Some(end)
             }
         }
     }
@@ -569,9 +589,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Some(end) => end,
                         None => {
                             Self::keep_leftover_turn(runtime).await;
-                            runtime.begin_turn(&text, false);
-                            self.turn(runtime, text.clone(), Some(&text), Vec::new())
-                                .await
+                            if let Some(end) = self.refuse_by_hook(runtime, &text).await {
+                                end
+                            } else {
+                                runtime.begin_turn(&text, false);
+                                self.turn(runtime, text.clone(), Some(&text), Vec::new())
+                                    .await
+                            }
                         }
                     }
                 }
@@ -599,8 +623,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Some(end) => end,
                         None => {
                             Self::keep_leftover_turn(runtime).await;
-                            runtime.begin_turn(&text, false);
-                            self.turn(runtime, text.clone(), Some(&text), files).await
+                            if let Some(end) = self.refuse_by_hook(runtime, &text).await {
+                                end
+                            } else {
+                                runtime.begin_turn(&text, false);
+                                self.turn(runtime, text.clone(), Some(&text), files).await
+                            }
                         }
                     }
                 }
@@ -812,6 +840,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
             break;
         }
         self.finish_turn(runtime, &end).await;
+        // Before the goal hears of the turn: a `stop` hook that blocks continues the turn, and
+        // only the turn that finally ends reaches the goal.
+        if let TurnEnd::Finished(outcome) = &end {
+            match self.hooks_after_turn(runtime, outcome).await {
+                Ok(Some(note)) => {
+                    self.app
+                        .transcript
+                        .notice("a stop hook asked the agent to keep working");
+                    return Box::pin(self.turn(runtime, note, None, Vec::new())).await;
+                }
+                Ok(None) => {}
+                Err(TurnEnd::InputClosed) => return TurnEnd::InputClosed,
+                Err(_) => {}
+            }
+        }
         self.goal_after_turn(runtime, &end);
         runtime.refresh_files();
         end
@@ -924,6 +967,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 );
                 runtime.approver().warn(&message);
             }
+            // After the compaction, which can queue the context of a `compact` session start.
+            let late = runtime.take_hook_context();
+            let prompt = if late.is_empty() {
+                prompt
+            } else {
+                let prompt = format!("{}\n\n{prompt}", late.join("\n\n"));
+                let record_prompt = user_message(&prompt, &attachments, &modalities);
+                if let Err(e) = runtime.record_run_start(record_prompt, len).await {
+                    runtime.approver().warn(&format!(
+                        "the run's pending record could not be rewritten after hook context was added: {}",
+                        fontaine_tools::error_chain::chain(&e)
+                    ));
+                }
+                prompt
+            };
             let ids = runtime.models.main.wire_ids();
             let (model, provider) = (ids.model, ids.provider);
             run_turn(
@@ -1073,6 +1131,65 @@ impl<R: FnMut(&mut App)> Ui<R> {
         end
     }
 
+    /// Fires the `stop` and `stop_failure` hooks while still serving keys and prompts. `Some` is
+    /// the note a blocking `stop` hook continues the turn on.
+    async fn hooks_after_turn(
+        &mut self,
+        runtime: &AgentRuntime,
+        outcome: &TurnOutcome,
+    ) -> Result<Option<String>, TurnEnd> {
+        if !runtime.has_hook(HookEvent::Stop) && !runtime.has_hook(HookEvent::StopFailure) {
+            return Ok(None);
+        }
+        self.app.set_running(true);
+        let mut hooks = Box::pin(runtime.turn_ended(outcome));
+        let result = self.serve_while(runtime, &mut hooks, Serve::Prompts).await;
+        drop(hooks);
+        self.app.set_running(false);
+        result
+    }
+
+    /// Whether the hooks let a line the human typed start a turn, for the commands that record
+    /// it themselves. `Break` is the input closing; an interrupt ends the wait as a refusal.
+    pub(crate) async fn prompt_passes(
+        &mut self,
+        runtime: &AgentRuntime,
+        raw: &str,
+    ) -> std::ops::ControlFlow<(), bool> {
+        match self.prompt_allowed(runtime, raw).await {
+            Ok(allowed) => std::ops::ControlFlow::Continue(allowed),
+            Err(TurnEnd::InputClosed) => std::ops::ControlFlow::Break(()),
+            Err(end) => {
+                self.finish_turn(runtime, &end).await;
+                std::ops::ControlFlow::Continue(false)
+            }
+        }
+    }
+
+    /// Runs the `user_prompt_submit` hooks for a prompt the human sent, while still serving keys
+    /// and prompts. `Ok(true)` sends the prompt; a block is shown and sends nothing.
+    pub(crate) async fn prompt_allowed(
+        &mut self,
+        runtime: &AgentRuntime,
+        prompt: &str,
+    ) -> Result<bool, TurnEnd> {
+        if !runtime.has_hook(HookEvent::UserPromptSubmit) {
+            return Ok(true);
+        }
+        self.app.set_running(true);
+        let mut gate = Box::pin(runtime.prompt_submit(prompt));
+        let result = self.serve_while(runtime, &mut gate, Serve::Prompts).await;
+        drop(gate);
+        self.app.set_running(false);
+        match result? {
+            PromptGate::Proceed { .. } => Ok(true),
+            PromptGate::Blocked(message) => {
+                self.app.transcript.error(message);
+                Ok(false)
+            }
+        }
+    }
+
     /// Shows queued messages where the agent received them.
     fn show_delivered(&mut self, runtime: &AgentRuntime) {
         for text in runtime.steering.take_delivered() {
@@ -1137,7 +1254,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
-    async fn finish_turn(&mut self, runtime: &AgentRuntime, end: &TurnEnd) {
+    pub(crate) async fn finish_turn(&mut self, runtime: &AgentRuntime, end: &TurnEnd) {
         self.settle_turn(end);
         if matches!(end, TurnEnd::Stopped) {
             // Before the goal hears how the turn ended, so the stop is the reason it pauses.

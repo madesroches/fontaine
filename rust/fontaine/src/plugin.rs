@@ -8,6 +8,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use fontaine_core::config::HandlerKind;
 use fontaine_core::dirs::{self, Dirs};
 use fontaine_core::extensions::{self, Scope};
 use fontaine_core::notice::Notice;
@@ -1008,13 +1009,8 @@ fn summary_lines(entry: &CatalogPlugin, build: &plugins::PluginBuild, root: &Pat
     )];
     match unexpanded_build(root, &entry.name) {
         Some(shown) => {
-            for (event, hooks) in [
-                ("PreToolUse", &shown.hooks.pre_tool_use),
-                ("PostToolUse", &shown.hooks.post_tool_use),
-                ("PermissionDenied", &shown.hooks.permission_denied),
-                ("TaskCompleted", &shown.hooks.task_completed),
-                ("TeammateIdle", &shown.hooks.teammate_idle),
-            ] {
+            for (event, hooks) in shown.hooks.iter() {
+                let event = event.wire_name();
                 for hook in hooks {
                     let matcher = hook
                         .matcher
@@ -1022,8 +1018,12 @@ fn summary_lines(entry: &CatalogPlugin, build: &plugins::PluginBuild, root: &Pat
                         .map(|m| format!(" [{m}]"))
                         .unwrap_or_default();
                     lines.push(format!(
-                        "  hook {event}{matcher}: {}",
-                        with_root_placeholder(&hook.command, root)
+                        "  hook {event}{matcher}: {}{}",
+                        match hook.kind {
+                            HandlerKind::Command => String::new(),
+                            other => format!("({}) ", other.as_str()),
+                        },
+                        with_root_placeholder(hook.target(), root)
                     ));
                 }
             }

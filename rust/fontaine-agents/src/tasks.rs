@@ -650,6 +650,16 @@ pub trait QualityGate: Send + Sync {
     /// Runs the `teammate_idle` hooks when `name` ended a turn with a task in progress;
     /// `Some(reason)` resumes it with the reason as feedback.
     fn teammate_idle<'a>(&'a self, agent: &'a str, name: &'a str) -> BoxFuture<'a, Option<String>>;
+
+    /// Runs the `task_created` hooks before `agent` creates `task`, which has no id yet;
+    /// `Some(reason)` refuses the create.
+    fn task_created<'a>(
+        &'a self,
+        _agent: &'a str,
+        _task: &'a Task,
+    ) -> BoxFuture<'a, Option<String>> {
+        Box::pin(async { None })
+    }
 }
 
 /// What a session with teams on holds: the boards, the gates and the resume streaks.
