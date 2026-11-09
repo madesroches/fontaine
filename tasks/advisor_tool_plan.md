@@ -108,7 +108,14 @@ announce logic of `compact_on_chain` is extracted into a free helper over those 
    `ParentContext::conversation()` accessor (`Conversation::from_messages` plus `validate`, as
    `seed` does), and render it with `transcript_of` (the existing cap bounds the digest;
    `neutralize` keeps `</untrusted>` in the transcript from closing the block). An empty snapshot is
-   a tool error, as `ForkError::NoContext` is for `fork`. The `question` is neutralized the same way.
+   a tool error, as `ForkError::NoContext` is for `fork`. The digest holds the turn up to the
+   completion call that produced the `advisor` call (`ParentContextHook` records history plus
+   prompt before the response holding the call), so the assistant message that issued the call is
+   absent and the `question` carries that content. In `side_question.rs` `run` the question is
+   interpolated raw outside the `<untrusted>` block; the advisor purpose neutralizes the
+   model-written `question` (and places it inside the untrusted block), while the `/btw` path is
+   left untouched. `consult` returns a tool error when there is no switcher
+   (`Setup.switcher` is `Option<SharedSwitcher>`; `AgentRuntime::switcher()` errors on `None`).
 2. Run it on the `advisor` role's chain through the shared helper (`Switcher::run_through`), as
    `compact_on_chain` does: fall through to the next entry on a quota-class error, skip unpriced
    entries under an explicit `--max-budget-usd`, warn through the `Approver` on a skipped entry,
@@ -153,7 +160,9 @@ human's messages only, and the advice reaches the conversation solely as a tool 
 3. `fontaine-tools`: add `advisor_tool.rs` (+ `pub mod` in `lib.rs`), the `TOOLS` row in
    `descriptor.rs`, `FONTAINE_ONLY` in its test, and the matching `advisor` tuple in the pinned
    `expected` table (next to `models`/`draft_bug_report`, same position as the `TOOLS` row), which
-   the test compares with `assert_eq`.
+   the test compares with `assert_eq`; its length `[Pinned; 28]` becomes 29. `advisor` is
+   `Destructive::Never` yet `Arbitrary`, so `path_policy_is_consistent` (which allows that
+   combination only for `job_cancel`) is widened to also exempt `advisor`.
 4. `side_question.rs`: introduce `Purpose`; route `ask` through it; `SideQuestion::new` keeps its
    current signature and `/btw` behavior (`SideQuestion::advisor(...)` constructs the other).
 5. `fork_context.rs`: add `ParentContext::conversation()`. `agent/goal.rs`: extract the
@@ -186,19 +195,10 @@ human's messages only, and the advice reaches the conversation solely as a tool 
 
 ## Trade-offs
 
-- **Role vs. `[advisor] model` key.** A role gives lists, fall-through, user-scope-only reading and
-  load-time validation for free, and "defined ⇒ enabled" removes a second switch that could
-  disagree with the first. A key would need all of that re-implemented. Cost: the advisor model is
-  named in `[models.roles]`, which a reader of the docs must be pointed to.
 - **Default off.** The tool costs money, adds latency, and sends the conversation to a second
   account the user may not expect; there is also no sensible default model.
-- **Guardian-judged instead of a `coordination`-style exemption.** The call egresses data and
-  carries model-chosen text. The price is a guardian call (auto) or a prompt (manual) per consult;
-  `allow = ["advisor"]` removes it for users who accept the egress.
 - **Reuse `SideQuestion` vs. a new type.** The two differ only in preamble, token cap and labels;
   a copy would drift on the safety-relevant parts (neutralizing, fail handling).
-- **Root only.** Children multiplying advisor calls would defeat "counts against budgets"
-  predictability; a child that needs a second opinion can return to its parent.
 
 ## Decisions
 
@@ -218,7 +218,7 @@ human's messages only, and the advice reaches the conversation solely as a tool 
 - `docs/telemetry.md` (~137): `query_source` gains `advisor` for the advisor's calls.
 - `docs/tools.md`: built-in tool row and a short section (when it exists, what it sees, cost,
   root-only, how to allow it without prompts).
-- `docs/tui.md`: `/cost` sources list gains `advisor`.
+- `docs/tui.md`: `/cost` sources list gains `advisor`, appended last (the list is in that order).
 - `CHANGELOG.md`: user-facing entry; the existing `[models.roles]` entry (~26) saying "four roles"
   becomes five.
 
@@ -233,8 +233,9 @@ Unit (no live APIs; `rig_core::test_utils` completion models):
 - `registry`: no child toolset contains `advisor`, including a `tools: None` type and a custom type
   that lists it (mirrors `no_subagent_gets_draft_bug_report_even_with_no_tool_list`).
 - `side_question`: `/btw` output and prompt are unchanged after the refactor (golden assertions on
-  the built request); advisor purpose uses its own preamble and cap; a `</untrusted>` in the
-  transcript or question is neutralized.
+  the built request, including a raw `/btw` question left un-neutralized); advisor purpose uses its
+  own preamble and cap; a `</untrusted>` in the transcript or in the advisor's question is
+  neutralized and cannot close the block.
 - `ask_advisor`: the digest includes the in-flight turn (modeled on
   `a_fork_also_sees_what_the_turn_did_before_forking` in `rust/fontaine/tests/fork_agent.rs`); an
   empty `ParentContext` is a tool error; returns the scripted answer; records one `UsageSource::Advisor` entry on the root
