@@ -69,7 +69,7 @@ impl<W> Wire for ReasoningPartsWire<W> where W: Wire<Op = Completion, Payload = 
 pub(super) fn merge_reasoning_parts(body: &mut Value) -> bool
 ```
 
-**Merge rule** (it mirrors rig's `merge_details`):
+**Merge rule** (it follows `merge_details`' field-merge rules; parts carry no `index`, so a part continues the previous one until that one is signed):
 
 - A *reasoning part* is an object with `"type": "reasoning"`.
 - A part is *signed* when any `summary[]` entry has a non-empty `signature`, or the part has a
