@@ -50,11 +50,13 @@ A new dev-only workspace crate, `rust/fontaine-testkit` (picked up automatically
 pub fn example_bin(package: &str, name: &str) -> PathBuf
 ```
 
-Internals (std-only, no new dependencies):
+Internals (one dependency: `serde_json`, already a workspace dependency):
 
 - A process-wide `static CACHE: OnceLock<Mutex<HashMap<(String, String), PathBuf>>>`; the first call
-  for a `(package, name)` pair runs the build under the lock, later calls and other threads reuse
-  the path. Builds after the first are fast no-ops.
+  for a `(package, name)` pair runs the build, later calls and other threads reuse the path.
+  Builds after the first are fast no-ops. The lock is held only for the cache get/insert, never
+  across the build, so an expected build failure does not poison the mutex for other tests in
+  the process.
 - The test binary path gives everything needed: `current_exe()` is
   `target/<profile>/deps/<test>` (with an optional `<triple>` segment before `<profile>`). Strip
   `deps/<test>` to get the profile dir; the examples dir is its sibling `examples/`.
@@ -75,7 +77,15 @@ Internals (std-only, no new dependencies):
   an already-fresh example is rebuilt once.
 - Non-zero exit panics with cargo's combined stdout/stderr, so a build failure surfaces at the call
   site instead of as a timeout later.
-- Return `<profile_dir>/examples/<name><EXE_SUFFIX>` (`std::env::consts::EXE_SUFFIX`).
+- The build runs with `--message-format=json-render-diagnostics`, and the executable path is taken
+  from the `compiler-artifact` message for the example (`serde_json` parses the JSON lines; the
+  `executable` field filters out dependencies sharing the example's name). The layout-derived
+  `<profile_dir>/examples/<name><EXE_SUFFIX>` (`std::env::consts::EXE_SUFFIX`) is only a fallback
+  for a cargo that reports no artifact message — the JSON answer stays correct for triple, custom
+  target-dir, and profile combinations the path guess gets wrong.
+- A `build.rs` captures Cargo's `TARGET` env var into `FONTAINE_TESTKIT_TARGET`, which the crate
+  compiles in as `BUILD_TARGET`: the outer build's exact target triple, used to decide whether a
+  `-`-bearing path segment is the outer build's triple or a hyphenated target-dir name.
 
 Call sites become one-liners, e.g. `example_bin("fontaine", "hook_marker")`, keeping each file's
 existing return type (`String` via `to_string_lossy()` where the caller wants a string).
@@ -85,9 +95,10 @@ crates add it under `[dev-dependencies]` (`.workspace = true`, matching conventi
 
 ## Implementation Steps
 
-1. Create `rust/fontaine-testkit/`: `Cargo.toml` (workspace-inherited metadata, no dependencies) and
-   `src/lib.rs` with `example_bin` plus unit tests for the pure path/profile-derivation helpers
-   (feed synthetic exe paths: with/without triple, debug/release/custom profile dirs).
+1. Create `rust/fontaine-testkit/`: `Cargo.toml` (workspace-inherited metadata, `serde_json`
+   dependency) and `src/lib.rs` with `example_bin` plus unit tests for the pure
+   path/profile-derivation helpers (feed synthetic exe paths: with/without triple, debug/release/
+   custom profile dirs). Add `build.rs` emitting `cargo:rustc-env=FONTAINE_TESTKIT_TARGET=<TARGET>`.
 2. Add `fontaine-testkit` to `[workspace.dependencies]` in `rust/Cargo.toml`.
 3. Add `fontaine-testkit.workspace = true` to `[dev-dependencies]` of `fontaine`, `fontaine-core`,
    `fontaine-tools`, `fontaine-tui`.
@@ -127,7 +138,8 @@ crates add it under `[dev-dependencies]` (`.workspace = true`, matching conventi
   keeps the intent explicit and the shipped artifact untouched, at the cost of one small crate and
   four one-line dev-dependency entries.
 - **Hand-rolled vs the `escargot` crate**: escargot implements exactly this pattern, but it is a new
-  pinned dependency for ~60 lines of std-only code (path derivation plus one `std::process::Command`).
+  pinned dependency for ~60 lines of path derivation plus one `std::process::Command` and a small
+  `serde_json` parse.
 - **Build-on-first-use vs an mtime staleness check**: rejected in the issue — the examples also
   depend on `fontaine-core` and other crates, so source mtimes alone cannot prove freshness.
   Delegating freshness to cargo is exact.

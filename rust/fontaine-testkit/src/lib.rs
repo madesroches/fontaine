@@ -25,11 +25,15 @@ const BUILD_TARGET: &str = env!("FONTAINE_TESTKIT_TARGET");
 /// first use. Panics with cargo's combined output if the build fails.
 pub fn example_bin(package: &str, name: &str) -> PathBuf {
     let key = (package.to_string(), name.to_string());
-    let mut cache = CACHE
-        .get_or_init(|| Mutex::new(HashMap::new()))
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    // The lock is only held for the cache get/insert. The build below panics on failure, and
+    // holding the guard across it would poison the mutex, making unrelated tests that share
+    // the process panic on their next `example_bin` call instead of building.
+    if let Some(path) = cache
         .lock()
-        .expect("fontaine-testkit cache mutex poisoned");
-    if let Some(path) = cache.get(&key) {
+        .expect("fontaine-testkit cache mutex poisoned")
+        .get(&key)
+    {
         return path.clone();
     }
     let exe = std::env::current_exe().expect("current_exe() unavailable in a test process");
@@ -89,7 +93,10 @@ pub fn example_bin(package: &str, name: &str) -> PathBuf {
         "{} was not produced by the build",
         path.display()
     );
-    cache.insert(key, path.clone());
+    cache
+        .lock()
+        .expect("fontaine-testkit cache mutex poisoned")
+        .insert(key, path.clone());
     path
 }
 
@@ -199,8 +206,9 @@ fn configured_target_match(above: &Path, configured: &Path) -> Option<(PathBuf, 
 
 /// Best-effort triple detection for the optional segment between the target dir and the
 /// profile dir. This only gates validation: a `-`-bearing name is a triple candidate, and
-/// [`is_known_triple`] decides. Any directory name with no `-` (including a custom
-/// `CARGO_TARGET_DIR`) is not a triple.
+/// comparison against [`BUILD_TARGET`] decides — only a segment equal to the outer build's
+/// compiled-in target triple is treated as one. Any directory name with no `-` (including a
+/// custom `CARGO_TARGET_DIR`) is not a triple.
 fn looks_like_triple(dir: &Path) -> bool {
     let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
         return false;
