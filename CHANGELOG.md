@@ -12,6 +12,11 @@ All notable changes are recorded here. The format follows
   tree stopped, not just the direct child. On Windows, where a launcher `sh` left a grandchild
   holding the output pipes open, this deadlocked the status line test and leaked a process tree and
   a blocked thread per timeout; a kill-on-close Job Object also stops descendants of a leader that already exited, and is cleared when the command finishes so intentional daemons survive (#562).
+- `openrouter` and `openai-compatible`: Claude reasoning that a Chat Completions host streams as
+  `reasoning` content parts is merged back into one part before it is replayed, and a part with no
+  text and no signature is dropped. Before, the empty placeholder chunk was sent back as its own
+  thinking block, and the host rejected the next request after any turn that thought and then
+  called a tool (`each thinking block must contain thinking`) (#567).
 
 ### Changed
 
