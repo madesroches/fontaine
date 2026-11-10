@@ -82,8 +82,8 @@ In `plugin_install`, after the executable-surface approval answers `Some(true)` 
    skills' records.
 4. If the interface goes away mid-question (`None`, as `confirm_plugin` treats `Action::Quit`),
    drop the `PreparedInstall` (its scratch is removed) with the notice `install cancelled`, and
-   break — quitting the wizard cancels the whole install, exactly as quitting at the
-   executable-surface prompt does.
+   break — quitting the wizard cancels the whole install, printing the same `install cancelled`
+   notice the decline path uses.
 5. On `commit_install` success, write the accepted records with `skill_trust::trust` (its file
    locking and replace-by-name semantics are unchanged), then for each call
    `runtime.state.record_skill_trust(name, digest)` so the ledger and audit log carry the trust
@@ -120,9 +120,10 @@ Headless `fontaine -p` never installs plugins (install is a separate subcommand)
 nothing to gate there; the rule "headless never trusts implicitly" holds through the terminal
 check, matching `fontaine plugin trust`'s refusal to trust without a terminal.
 
-One deliberate side effect: enumerating skills parses their frontmatter at prepare time, so a
-malformed skill file now fails the install with its parse error instead of failing the first
-session load. Same cause, surfaced earlier, at the step that already validates the plugin.
+One deliberate side effect: enumerating skills parses their frontmatter at install time, before
+the commit, so a malformed skill file now fails the install with its parse error instead of
+failing the first session load. Same cause, surfaced earlier, at install time rather than at
+first session load.
 
 ### Out of scope
 
@@ -153,6 +154,7 @@ digest and becomes untrusted (or stale) automatically, and the issue covers inst
 - `rust/fontaine-tui/tests/plugins_live.rs` (tests)
 - `rust/fontaine/tests/plugin.rs` (tests)
 - `docs/plugins.md`, `docs/extensions.md`, `tasks/fontaine_harness_plan.md` (Decisions)
+- `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -165,8 +167,8 @@ digest and becomes untrusted (or stale) automatically, and the issue covers inst
   plugin, matching `fontaine plugin trust <plugin>`.
 - **New dialog vs reused**: the install question reuses `skill_trust_prompt` verbatim so the
   install-time and `/skills trust` questions can never drift apart.
-- **Enumeration at prepare time** slightly widens what `prepare_install` validates (skill
-  frontmatter), trading an install-time error for a first-load error.
+- **Enumeration at install time, before the commit** slightly widens what install validates
+  (skill frontmatter), trading an install-time error for a first-load error.
 
 ## Decisions
 
@@ -199,7 +201,9 @@ digest and becomes untrusted (or stale) automatically, and the issue covers inst
     appears, `/skills` shows the skill without `(trusted)`;
   - a plugin whose skills declare no `allowed-tools` installs with no trust dialog (the existing
     tests already cover this implicitly; keep one explicit);
-  - `Esc`/quit at the trust dialog cancels the install (registry stays empty).
+  - quit at the trust dialog (interface gone / Ctrl+C) cancels the install, registry stays empty;
+  - `Esc` at the trust dialog declines that skill and the install still commits untrusted
+    (registry holds the plugin, no trust record).
 - **CLI integration** (`rust/fontaine/tests/plugin.rs`): a piped (non-terminal) install of a
   plugin with a trustable skill succeeds, writes no trust record, and prints the hint line;
   existing `plugin trust` tests stay green.
