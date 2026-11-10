@@ -9,7 +9,7 @@
 //! [`example_bin`] builds the requested example on first use per test process (a no-op under
 //! the workspace run, since cargo's own freshness check is exact) and returns its path.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -37,11 +37,18 @@ pub fn example_bin(package: &str, name: &str) -> PathBuf {
     });
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     cmd.current_dir(env!("CARGO_MANIFEST_DIR"));
+    // The nested build uses default features: cargo does not export the outer invocation's
+    // feature selection (no CARGO_FEATURE_* vars) or its default-feature state to the test
+    // process, so a feature-matched build is impossible to request reliably. The outer
+    // `cargo test --features ...` run compiles feature-selected example variants beside the
+    // default ones; these examples have no feature-gated behavior, so the mismatch only
+    // costs a redundant default-feature build.
     cmd.args(["build", "-p", package, "--example", name])
         .arg("--target-dir")
         .arg(&layout.target_dir)
         .arg("--profile")
-        .arg(profile_flag(&layout.profile_dir));
+        .arg(profile_flag(&layout.profile_dir))
+        .arg("--message-format=json-render-diagnostics");
     if let Some(triple) = &layout.triple {
         // A triple from CARGO_BUILD_TARGET or config is inherited by the child, but an explicit
         // command-line --target is not; without the flag the nested build would place the
@@ -62,10 +69,16 @@ pub fn example_bin(package: &str, name: &str) -> PathBuf {
             String::from_utf8_lossy(&out.stderr),
         );
     }
-    let path = layout
-        .profile_dir
-        .join("examples")
-        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    // Ask the build where it put the executable instead of deriving it from the layout:
+    // this stays correct for triple, custom target-dir, and profile combinations the path
+    // guess gets wrong. The guessed location is only a fallback for a cargo that reports no
+    // artifact message.
+    let path = artifact_executable(&out.stdout, name).unwrap_or_else(|| {
+        layout
+            .profile_dir
+            .join("examples")
+            .join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+    });
     assert!(
         path.is_file(),
         "{} was not produced by the build",
@@ -86,6 +99,16 @@ impl Layout {
     /// `cargo_target_dir` is the `CARGO_TARGET_DIR` of the outer build, which Cargo exports to
     /// the test process when the outer build used one.
     fn from_exe(exe: &Path, cargo_target_dir: Option<&Path>) -> Option<Layout> {
+        Self::from_exe_with(exe, cargo_target_dir, is_known_triple)
+    }
+
+    /// `is_triple` validates a candidate triple segment; injectable so the layout logic stays
+    /// testable without a rustc.
+    fn from_exe_with(
+        exe: &Path,
+        cargo_target_dir: Option<&Path>,
+        is_triple: impl Fn(&str) -> bool,
+    ) -> Option<Layout> {
         let deps = exe.parent()?;
         if deps.file_name()? != "deps" {
             return None;
@@ -109,15 +132,19 @@ impl Layout {
                 };
                 (triple, target_dir)
             }
-            // Without a configured dir (or an exe outside it) the workspace's `target/`
-            // name has no `-`, so a `-`-bearing segment must be a triple. A
-            // `--target-dir` passed only on the outer command line with a `-` in its
-            // name and no env var is indistinguishable from a triple; that combination
-            // is not supported.
-            None if looks_like_triple(above) => (
-                Some(above.file_name()?.to_string_lossy().into_owned()),
-                above.parent()?.to_path_buf(),
-            ),
+            // Without a configured dir, a `-`-bearing segment may be a triple (an explicit
+            // outer command-line `--target`, which cargo does not export to the test
+            // process) or a hyphenated `--target-dir`/build config dir (cargo exports
+            // neither of those either). The segment only counts as a triple when it
+            // appears in rustc's target list; an unrecognized one is a target dir.
+            None if looks_like_triple(above) => {
+                let name = above.file_name()?.to_string_lossy().into_owned();
+                if is_triple(&name) {
+                    (Some(name), above.parent()?.to_path_buf())
+                } else {
+                    (None, above.to_path_buf())
+                }
+            }
             None => (None, above.to_path_buf()),
         };
         Some(Layout {
@@ -162,8 +189,9 @@ fn configured_target_match(above: &Path, configured: &Path) -> Option<(PathBuf, 
 }
 
 /// Best-effort triple detection for the optional segment between the target dir and the
-/// profile dir. Any directory name with no `-` (including a custom `CARGO_TARGET_DIR`) is not
-/// a triple; a custom target dir whose name itself contains a `-` would be misread as one.
+/// profile dir. This only gates validation: a `-`-bearing name is a triple candidate, and
+/// [`is_known_triple`] decides. Any directory name with no `-` (including a custom
+/// `CARGO_TARGET_DIR`) is not a triple.
 fn looks_like_triple(dir: &Path) -> bool {
     let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
         return false;
@@ -172,6 +200,58 @@ fn looks_like_triple(dir: &Path) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Checks a candidate triple against the installed rustc's target list, cached per process.
+/// A segment that cannot be verified is treated as a directory name: a wrong `--target`
+/// fails the whole nested build, while omitting it only costs a rebuild whose artifact
+/// location cargo reports in the build's JSON messages.
+fn is_known_triple(name: &str) -> bool {
+    static TARGETS: OnceLock<Option<HashSet<String>>> = OnceLock::new();
+    let targets = TARGETS.get_or_init(|| {
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let out = Command::new(rustc)
+            .args(["--print", "target-list"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::to_owned)
+                .collect(),
+        )
+    });
+    targets.as_ref().is_some_and(|set| set.contains(name))
+}
+
+/// Extracts the executable cargo built for example `name` from the stdout of a build run
+/// with `--message-format=json-render-diagnostics`, or `None` when no artifact message
+/// carries an `executable` for it. A dependency sharing the example's name is filtered out
+/// by the `executable` field: only bin/example artifacts have one.
+fn artifact_executable(stdout: &[u8], name: &str) -> Option<PathBuf> {
+    let mut found = None;
+    for line in stdout.split(|&b| b == b'\n') {
+        let Ok(msg) = serde_json::from_slice::<serde_json::Value>(line) else {
+            continue;
+        };
+        if msg.get("reason").and_then(serde_json::Value::as_str) != Some("compiler-artifact") {
+            continue;
+        }
+        if msg
+            .pointer("/target/name")
+            .and_then(serde_json::Value::as_str)
+            != Some(name)
+        {
+            continue;
+        }
+        if let Some(exe) = msg.get("executable").and_then(serde_json::Value::as_str) {
+            found = Some(PathBuf::from(exe));
+        }
+    }
+    found
 }
 
 /// The `--profile` flag that reproduces the profile under which `cargo test` built the
@@ -203,6 +283,14 @@ mod tests {
         Layout::from_exe(Path::new(exe), cargo_target_dir.map(Path::new))
     }
 
+    fn layout_with_validator(
+        exe: &str,
+        cargo_target_dir: Option<&str>,
+        is_triple: impl Fn(&str) -> bool,
+    ) -> Option<Layout> {
+        Layout::from_exe_with(Path::new(exe), cargo_target_dir.map(Path::new), is_triple)
+    }
+
     #[test]
     fn exe_without_triple_gives_target_dir_and_no_triple() {
         let l = layout("/ws/rust/target/debug/deps/my_test").unwrap();
@@ -228,6 +316,61 @@ mod tests {
         assert_eq!(l.target_dir, Path::new("/ws/rust/target"));
         assert_eq!(l.triple, None);
         assert_eq!(l.profile_dir, Path::new("/ws/rust/target/ci"));
+    }
+
+    #[test]
+    fn hyphenated_outer_target_dir_without_env_is_not_misread_as_triple() {
+        // Regression: an outer `cargo test --target-dir /tmp/fontaine-target` with no
+        // CARGO_TARGET_DIR exported must not produce `--target fontaine-target`.
+        let l = layout("/tmp/fontaine-target/debug/deps/my_test").unwrap();
+        assert_eq!(l.target_dir, Path::new("/tmp/fontaine-target"));
+        assert_eq!(l.triple, None);
+        assert_eq!(l.profile_dir, Path::new("/tmp/fontaine-target/debug"));
+    }
+
+    #[test]
+    fn unverified_hyphenated_segment_is_a_target_dir_not_a_triple() {
+        let l = layout_with_validator("/ws/fontaine-target/debug/deps/my_test", None, |_| false)
+            .unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/fontaine-target"));
+        assert_eq!(l.triple, None);
+    }
+
+    #[test]
+    fn verified_segment_is_forwarded_as_triple() {
+        let l = layout_with_validator("/ws/target/fake-triple/debug/deps/my_test", None, |n| {
+            n == "fake-triple"
+        })
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/target"));
+        assert_eq!(l.triple.as_deref(), Some("fake-triple"));
+    }
+
+    #[test]
+    fn known_triple_validation_matches_rustc_target_list() {
+        assert!(is_known_triple("x86_64-unknown-linux-gnu"));
+        assert!(!is_known_triple("fontaine-target"));
+    }
+
+    #[test]
+    fn artifact_executable_picks_the_named_examples_executable() {
+        let stdout = br#"{"reason":"compiler-artifact","target":{"name":"hook_marker","kind":["example"]},"executable":"/t/debug/examples/hook_marker"}
+{"reason":"compiler-artifact","target":{"name":"hook_marker","kind":["lib"]},"executable":null}
+{"reason":"compiler-artifact","target":{"name":"other","kind":["example"]},"executable":"/t/debug/examples/other"}
+"#;
+        assert_eq!(
+            artifact_executable(stdout, "hook_marker"),
+            Some(PathBuf::from("/t/debug/examples/hook_marker"))
+        );
+    }
+
+    #[test]
+    fn artifact_executable_returns_none_without_a_matching_executable() {
+        assert_eq!(artifact_executable(b"not json\n", "x"), None);
+        assert_eq!(
+            artifact_executable(b"{\"reason\":\"compiler-artifact\",\"target\":{\"name\":\"x\",\"kind\":[\"lib\"]},\"executable\":null}\n", "x"),
+            None
+        );
     }
 
     #[test]

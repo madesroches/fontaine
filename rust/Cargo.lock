@@ -1782,6 +1782,9 @@ dependencies = [
 [[package]]
 name = "fontaine-testkit"
 version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "fontaine-tools"
