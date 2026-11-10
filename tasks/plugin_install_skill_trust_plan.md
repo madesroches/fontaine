@@ -24,7 +24,9 @@ question, skills stay untrusted.
   config dir, one `TrustRecord` per skill (name, `sha256:` digest of the file, declared tools,
   `!` commands). `TrustedSkills` is read-only for a session's lifetime; a reload re-reads the
   file, so a trust written at install takes effect in the same session through the install's own
-  reload (`skill_changes` in `agent/reload.rs` already reports `skill trust applied: …`).
+  reload (`skill_changes` in `agent/reload.rs` reports `skill trust applied: …` only for a skill
+  that existed before the reload and whose trust state changed — a freshly installed skill shows
+  under `skills added: …` instead).
 - **The question to reuse**: `rust/fontaine-tui/src/skill_trust_prompt.rs::new` builds the
   `/skills trust` dialog from a `Skill` (`describe` shows the split `allowed-tools`, the `!`
   commands, the file and digest). The `/skills trust` command loop
@@ -76,10 +78,14 @@ In `plugin_install`, after the executable-surface approval answers `Some(true)` 
 
 1. Enumerate `load_plugin_skills(&prepared.build.dir)`, keep the trustable ones, in load order.
 2. If none, commit as today.
-3. Otherwise, for each trustable skill, show the same dialog `/skills trust` shows:
-   `begin_skill_trust(skill_trust_prompt::new(skill, None))` and the same input loop as
+3. Otherwise, for each trustable skill, show the same dialog `/skills trust` shows, with an
+   install-aware footer variant: `begin_skill_trust(skill_trust_prompt::new(skill, None))` and
+   the same input loop as
    `skills.rs` (decline clears the prompt and moves to the next skill). Collect the accepted
-   skills' records.
+   skills' records. The footer says the trust takes effect when the install finishes loading
+   (the install's own reload applies it moments later) instead of "after /reload-plugins or at
+   the next session start"; the wording is a parameter to `skill_trust_prompt::new`, so
+   `/skills trust`'s footer is unchanged.
 4. If the interface goes away mid-question (`None`, as `confirm_plugin` treats `Action::Quit`),
    drop the `PreparedInstall` (its scratch is removed) with the notice `install cancelled`, and
    break — quitting the wizard cancels the whole install, printing the same `install cancelled`
@@ -111,8 +117,12 @@ In `install` (`rust/fontaine/src/plugin.rs`), after the summary and before `comm
    `print_trust_details` (the same details `fontaine plugin trust` shows) and ask once, with
    `crate::auto_mode::confirm`: `Honour the allowed-tools of these N skills?` — mirroring
    `fontaine plugin trust <plugin>`. On yes, record after a successful commit with
-   `skill_trust::trust` and print the same "trusted N skill(s)…" line the trust command prints.
-   On no, continue untrusted.
+   `skill_trust::trust` and print an install-aware "trusted N skill(s)…" line ("from the
+   install's own reload"), not the trust command's "next session start, or at /reload-plugins"
+   wording, which is stale for an install with no running session. On no, continue untrusted.
+   Note: enumeration runs on the pre-commit scratch checkout, so the `file:` path
+   `print_trust_details` prints is the scratch path that `commit_install` moves moments later —
+   harmless, since the digest, not the path, pins the trust.
 3. If stdin is not a terminal, no question: after `installed plugin …`, print one hint line —
    `note: N skill(s) declare allowed-tools and stay untrusted; \`fontaine plugin trust <plugin>\` reviews and trusts them`.
 
@@ -165,8 +175,9 @@ digest and becomes untrusted (or stale) automatically, and the issue covers inst
   is pinned to one skill file's digest and `/skills trust`'s dialog is per skill; a single
   bundled yes/no would hide which file each digest covers. The CLI asks once for the whole
   plugin, matching `fontaine plugin trust <plugin>`.
-- **New dialog vs reused**: the install question reuses `skill_trust_prompt` verbatim so the
-  install-time and `/skills trust` questions can never drift apart.
+- **New dialog vs reused**: the install question reuses `skill_trust_prompt` with an
+  install-aware footer variant, so the install-time and `/skills trust` questions stay identical
+  except for when the trust takes effect.
 - **Enumeration at install time, before the commit** slightly widens what install validates
   (skill frontmatter), trading an install-time error for a first-load error.
 
@@ -192,8 +203,10 @@ digest and becomes untrusted (or stale) automatically, and the issue covers inst
 - **Unit** (`fontaine-core`): `load_plugin_skills` — namespaced names for `skills/` and
   `commands/` files, duplicate rejection between them, `declared_tools` parsed, digest is
   `sha256:`. Existing `extensions` tests keep `load_plugin` behavior pinned.
-- **TUI live** (`rust/fontaine-tui/tests/plugins_live.rs`, fixture marketplace like the existing
-  `demo`, plus a skill with `allowed-tools`):
+- **TUI live** (`rust/fontaine-tui/tests/plugins_live.rs`): the fixture marketplace gains a
+  second plugin beside `demo` whose skill declares `allowed-tools` (`demo` itself stays
+  untouched, so the existing tests driving `demo@local` keep answering only the
+  executable-surface prompt and never stall at the trust dialog):
   - approve the install → the trust dialog appears naming the skill and its tools; `y` →
     `skill-trust.toml` holds the record, the ledger carries `skill_trust`, `/skills` shows the
     skill trusted;
