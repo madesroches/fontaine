@@ -25,6 +25,10 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- `/plugin marketplace add|list|update|remove` in the terminal UI: marketplaces are registered,
+  updated and removed in the running session, with the same effect as the `fontaine plugin
+  marketplace` commands, so installing a plugin no longer needs the CLI or a `!` shell escape
+  (#559).
 - In-app plugin management: `/plugin install|uninstall|update|enable|disable` and
   `/reload-plugins` in the terminal UI load, reload and unload a plugin's skills, agents, hooks,
   rules and MCP servers in the running session without losing the conversation. An install shows

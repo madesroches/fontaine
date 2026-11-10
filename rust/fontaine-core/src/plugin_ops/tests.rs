@@ -339,3 +339,206 @@ fn errors_keep_their_cause_as_the_source() {
     assert!(error.source().is_some());
     assert_eq!(String::from(error), "cannot read x: no such file");
 }
+
+#[test]
+fn tilde_paths_expand_to_the_home_directory() {
+    let home = ::dirs::home_dir().unwrap();
+    assert_eq!(expand_tilde("~"), home.to_string_lossy());
+    assert_eq!(expand_tilde("~/x"), home.join("x").to_string_lossy());
+    assert_eq!(expand_tilde("https://x/y"), "https://x/y");
+    assert_eq!(expand_tilde("plain"), "plain");
+}
+
+fn market_entry() -> MarketplaceEntry {
+    MarketplaceEntry {
+        name: "team".into(),
+        url: "https://x/team".into(),
+        pin: "0123456789abcdef".into(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn marketplace_line_shows_offered_and_installed() {
+    let line = marketplace_line(&market_entry(), Some(3), 1);
+    assert!(line.ends_with("— 3 offered, 1 installed"), "{line}");
+}
+
+#[test]
+fn marketplace_line_shows_a_fresh_marketplace_as_offering_with_none_installed() {
+    let line = marketplace_line(&market_entry(), Some(3), 0);
+    assert!(line.ends_with("— 3 offered, 0 installed"), "{line}");
+}
+
+#[test]
+fn marketplace_line_does_not_pass_an_unreadable_catalog_off_as_empty() {
+    let line = marketplace_line(&market_entry(), None, 2);
+    assert!(
+        line.ends_with("— catalog unreadable, 2 installed"),
+        "{line}"
+    );
+    assert!(!line.contains("0 offered"), "{line}");
+}
+
+#[test]
+fn marketplace_line_appends_the_auto_update_marker() {
+    let line = marketplace_line(
+        &MarketplaceEntry {
+            auto_update: Some(false),
+            ..market_entry()
+        },
+        Some(1),
+        0,
+    );
+    assert!(
+        line.ends_with("— 1 offered, 0 installed — auto-update off"),
+        "{line}"
+    );
+    let on = MarketplaceEntry {
+        auto_update: Some(true),
+        ..market_entry()
+    };
+    assert!(!marketplace_line(&on, Some(1), 0).contains("auto-update"));
+}
+
+/// A local marketplace source directory with the catalog `body`.
+fn market_source(tmp: &TempDir, body: &str) -> PathBuf {
+    let src = tmp.path().join("src");
+    write(&src.join(".claude-plugin/marketplace.json"), body);
+    src
+}
+
+fn fx_at(config: &Path) -> Fetch<'_> {
+    Fetch::new(config, &|_| None, GitMode::Interactive)
+}
+
+#[test]
+fn add_marketplace_registers_a_local_directory_under_the_catalog_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = temp_root(&tmp).join("config");
+    let src = market_source(
+        &tmp,
+        r#"{"name": "team", "plugins": [{"name": "a", "source": "./a"}, {"name": "b", "source": "./b"}]}"#,
+    );
+    let added =
+        add_marketplace(&fx_at(&config), src.to_str().unwrap(), None, Workdir::Cli).unwrap();
+    assert_eq!(added.name, "team");
+    assert_eq!(added.plugins, 2);
+    let registry = read_registry(&config).unwrap();
+    assert_eq!(registry.marketplace.len(), 1);
+    assert_eq!(
+        registry.marketplace[0].url,
+        src.canonicalize().unwrap().to_string_lossy()
+    );
+    assert!(marketplace_dir(&config, "team").is_dir());
+}
+
+#[test]
+fn add_marketplace_takes_the_name_override_and_refuses_duplicates() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = temp_root(&tmp).join("config");
+    let src = market_source(&tmp, r#"{"name": "team", "plugins": []}"#);
+    let added = add_marketplace(
+        &fx_at(&config),
+        src.to_str().unwrap(),
+        Some("tools"),
+        Workdir::Cli,
+    )
+    .unwrap();
+    assert_eq!(added.name, "tools");
+    let error = add_marketplace(
+        &fx_at(&config),
+        src.to_str().unwrap(),
+        Some("tools"),
+        Workdir::Cli,
+    )
+    .err()
+    .expect("duplicate");
+    assert!(
+        chain(&error).contains("already registered"),
+        "{}",
+        chain(&error)
+    );
+    assert_eq!(read_registry(&config).unwrap().marketplace.len(), 1);
+}
+
+#[test]
+fn add_marketplace_fails_on_a_missing_path_and_keeps_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = temp_root(&tmp).join("config");
+    let missing = tmp.path().join("nowhere");
+    let error = add_marketplace(
+        &fx_at(&config),
+        missing.to_str().unwrap(),
+        None,
+        Workdir::Cli,
+    )
+    .err()
+    .expect("missing");
+    assert!(
+        chain(&error).contains("is not a directory"),
+        "{}",
+        chain(&error)
+    );
+    assert!(
+        read_registry(&config).is_err() || read_registry(&config).unwrap().marketplace.is_empty()
+    );
+    assert!(
+        !marketplaces_parent(&config).exists()
+            || std::fs::read_dir(marketplaces_parent(&config))
+                .map(|mut r| r.next().is_none())
+                .unwrap_or(false)
+    );
+}
+
+#[test]
+fn remove_marketplace_refuses_while_a_plugin_names_it_and_removes_otherwise() {
+    let f = Fixture::new();
+    f.install();
+    let error = remove_marketplace(&f.config, "team").expect_err("installed plugin");
+    assert!(
+        chain(&error).contains("uninstall it first"),
+        "{}",
+        chain(&error)
+    );
+
+    uninstall(&f.config, "review").unwrap();
+    remove_marketplace(&f.config, "team").unwrap();
+    assert!(read_registry(&f.config).unwrap().marketplace.is_empty());
+    assert!(!marketplace_dir(&f.config, "team").exists());
+    let error = remove_marketplace(&f.config, "team").expect_err("gone");
+    assert!(error.is_unknown_marketplace());
+}
+
+#[test]
+fn update_marketplace_named_reports_up_to_date_and_moves_with_the_content() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = temp_root(&tmp).join("config");
+    let src = market_source(&tmp, r#"{"name": "team", "plugins": []}"#);
+    add_marketplace(&fx_at(&config), src.to_str().unwrap(), None, Workdir::Cli).unwrap();
+
+    let before = read_registry(&config).unwrap().marketplace[0].pin.clone();
+    match update_marketplace_named(&fx_at(&config), None).unwrap() {
+        MarketplaceUpdate::UpToDate { name, pin } => {
+            assert_eq!(name, "team");
+            assert_eq!(pin, before);
+        }
+        MarketplaceUpdate::Moved { .. } => panic!("unchanged content moved the pin"),
+    }
+
+    write(&src.join("notes.txt"), "new content");
+    match update_marketplace_named(&fx_at(&config), None).unwrap() {
+        MarketplaceUpdate::Moved { name, old, new } => {
+            assert_eq!(name, "team");
+            assert_eq!(old, before);
+            assert_ne!(new, old);
+            assert_eq!(read_registry(&config).unwrap().marketplace[0].pin, new);
+        }
+        MarketplaceUpdate::UpToDate { .. } => panic!("changed content left the pin"),
+    }
+
+    let error = update_marketplace_named(&fx_at(&config), Some("ghost"))
+        .err()
+        .expect("unknown");
+    assert!(error.is_unknown_marketplace());
+}

@@ -67,6 +67,7 @@ impl Fixture {
         };
         plugin::marketplace_add(
             &dirs,
+            &host,
             &MarketplaceAddArgs {
                 source: src.to_string_lossy().into_owned(),
                 name: None,
@@ -115,7 +116,7 @@ impl Fixture {
     fn leftovers(&self) -> Vec<String> {
         let mut found = Vec::new();
         for parent in [
-            plugin::marketplaces_parent(&self.dirs.config),
+            fontaine_core::plugin_ops::marketplaces_parent(&self.dirs.config),
             fontaine_core::plugin_ops::installed_parent(&self.dirs.config, "team"),
         ] {
             for entry in std::fs::read_dir(parent).unwrap().flatten() {
@@ -380,7 +381,7 @@ fn stale_leftovers_are_removed_and_young_or_recorded_ones_are_kept() {
     assert!(!installed.join(".auto-2").exists());
     assert!(installed.join(".staged-review").exists());
     assert!(
-        plugin::marketplaces_parent(&f.dirs.config)
+        fontaine_core::plugin_ops::marketplaces_parent(&f.dirs.config)
             .join(".staged-team")
             .exists()
     );
@@ -547,6 +548,7 @@ fn a_sha_pinned_plugin_moves_only_when_the_catalog_sha_differs() {
     };
     plugin::marketplace_add(
         &dirs,
+        &host,
         &MarketplaceAddArgs {
             source: src.to_string_lossy().into_owned(),
             name: None,
