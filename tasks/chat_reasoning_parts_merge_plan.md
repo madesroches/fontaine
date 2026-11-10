@@ -112,7 +112,7 @@ the issue reports the host accepts.
 2. Wrap the Chat wire in `openrouter.rs` (`Connected::model`).
 3. Wrap the routed wire in `openai_compatible.rs` (`Connected::completion`). `rig_core::Model`
    must be imported there.
-4. Add the end-to-end regression test in `rust/fontaine/tests/` with a new scripted `Turn`
+4. Add the end-to-end regression test in `rust/fontaine/tests/headless_tools.rs` with a new scripted `Turn`
    variant in `rust/fontaine/tests/common/mod.rs` (see Testing). The new
    `Turn::ContentReasoningThenTool` variant also needs an arm in `chat_json` (non-streamed
    reply) and in `responses_response`, which it reaches through `Turn::answer()`'s wildcard; or
@@ -125,7 +125,7 @@ the issue reports the host accepts.
 - `rust/fontaine-core/src/providers/openrouter.rs`
 - `rust/fontaine-core/src/providers/openai_compatible.rs`
 - `rust/fontaine/tests/common/mod.rs`
-- `rust/fontaine/tests/<new or existing headless test file>.rs`
+- `rust/fontaine/tests/headless_tools.rs`
 
 ## Trade-offs
 
@@ -164,13 +164,8 @@ the CHANGELOG entry.
   `messages`.
 - User messages, string `content`, and a body with no reasoning parts are unchanged, and the
   function returns `false` for them.
-- At the wire level: `ReasoningPartsWire<Chat>` encodes a `CompletionRequest` whose assistant turn
-  holds two replayable `Opaque` reasoning items (placeholder, then signed), and the encoded body
-  has one reasoning part. `Completion::prepare` runs `history::adapt_for`, which drops opaques
-  whose `origin` does not match the target, and `AssistantMessage::new` leaves `origin: None`; so
-  the hand-built assistant turn must set `origin` to an `Origin` matching the Chat wire's
-  api/provider/model (rig completion/message/native.rs), or the test calls `wire.encode`
-  directly without `prepare`. A body without `"type":"reasoning"` comes out byte-identical.
+- At the wire level: `ReasoningPartsWire<Chat>`'s `wire.encode` on a request with no reasoning
+  parts produces a byte-identical body.
 
 **End-to-end regression test** (pins issue #567, the bug seen in the wild). It goes in
 `rust/fontaine/tests/`: add a `Turn::ContentReasoningThenTool` variant to `common/mod.rs` that
@@ -180,8 +175,9 @@ tool call, `finish_reason: "tool_calls"`). Run the headless binary for that turn
 `reasoning` part in its assistant message, carrying the signature. Run it for
 both kinds. `openai-compatible` uses `Sandbox::compatible`. `openrouter` uses `Sandbox::new()` plus
 `user_config(...)` with an account of `kind = "openrouter"`, `base_url = endpoint.url()`, and an
-`api_key_env` whose variable is set via `set_env` (patterns:
-`rust/fontaine/tests/opencode_go_headless.rs:19-22`, `Sandbox::priced` in `common/mod.rs`). This
+`api_key_env` whose variable is set via `set_env`, plus `models = ["scripted"]` and
+`[model] model = "<acct>/scripted"` so no model discovery (`GET /models`) is attempted (pattern:
+`Sandbox::priced`, `rust/fontaine/tests/common/mod.rs:648-655`). This
 covers what the unit tests cannot: the real rig
 decode → store → replay path through the provider's wiring.
 
