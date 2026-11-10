@@ -113,8 +113,8 @@ writes:
   `FONTAINE_NO_MODIFY_PATH=1` to skip it.
 
 Open a new terminal, then run `fontaine --version`. Git for Windows is recommended but not required:
-Fontaine runs commands through Git Bash when it finds it and through PowerShell when it does not;
-see [Shell](tools.md#shell).
+Fontaine runs commands through Git Bash when it finds it (a scoop install is discovered
+automatically) and through PowerShell when it does not; see [Shell](tools.md#shell).
 
 ### Verification (Windows)
 

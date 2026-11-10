@@ -15,6 +15,7 @@ async fn the_shell_runs_a_posix_command_through_git_bash() {
     let git_bash = discover(&Probe {
         env: &env,
         is_file: &|path| path.is_file(),
+        read_file: &|path| std::fs::read_to_string(path).ok(),
     })
     .expect("Git for Windows is installed on the Windows CI image");
 
@@ -38,6 +39,7 @@ async fn a_double_backslash_reaches_git_bash_as_written() {
     let git_bash = discover(&Probe {
         env: &env,
         is_file: &|path| path.is_file(),
+        read_file: &|path| std::fs::read_to_string(path).ok(),
     })
     .expect("Git for Windows is installed on the Windows CI image");
 

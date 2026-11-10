@@ -292,7 +292,7 @@ given (the primary root at the start).
   those variables, plus every entry of [`[env]`](configuration.md#env), which is applied after the
   scrub.
 - **Windows.** The shell runs through Git Bash when Git for Windows is installed. Fontaine
-  finds `git.exe` on `PATH`, then in the standard install locations, and puts Git's `usr\bin` and
+  finds `git.exe` on `PATH` (following a [scoop](https://scoop.sh) shim's sibling `git.shim` to the real install), then in the standard install locations, then in scoop's `apps\git\current` under `%SCOOP%` and `%SCOOP_GLOBAL%` (defaulting to `%USERPROFILE%\scoop` and `%ProgramData%\scoop`), so a scoop-installed Git for Windows needs no override. It puts Git's `usr\bin` and
   `bin` directories first on the shell's `PATH`, in front of the `PATH` from `[env]` when it sets one. `FONTAINE_GIT_BASH_PATH` names a `bash.exe` and
   overrides the search; a value that is not a `bash.exe` inside a Git for Windows installation is
   an error and Fontaine exits with code 2. The command reaches Git Bash as written,

@@ -8,6 +8,9 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- On Windows, Git Bash discovery follows a scoop `git.shim` from a `git.exe` on `PATH` and probes
+  scoop's `apps\git\current` under `%SCOOP%` and `%SCOOP_GLOBAL%`, so a scoop-installed Git for
+  Windows is found without `FONTAINE_GIT_BASH_PATH` (#553).
 - A repository's root `.mcp.json` is now read as project-scope MCP servers, alongside
   `.fontaine/settings.toml`, with `${VAR}` and `${VAR:-default}` expanded when the server starts
   (never into a credential variable). It goes through workspace trust and per-server approval like

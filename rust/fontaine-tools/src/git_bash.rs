@@ -144,10 +144,48 @@ impl std::error::Error for GitBashError {}
 pub struct Probe<'a> {
     pub env: &'a dyn Fn(&str) -> Option<OsString>,
     pub is_file: &'a dyn Fn(&Path) -> bool,
+    /// Full file contents, for shim following. `None` when unreadable or not a file.
+    pub read_file: &'a dyn Fn(&Path) -> Option<String>,
 }
 
-/// The override when set, otherwise `git.exe` on PATH, otherwise the standard install
-/// locations.
+/// The `path` value of a scoop `git.shim`; every other line is ignored.
+fn shim_target(contents: &str) -> Option<PathBuf> {
+    contents.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        if key.trim() != "path" {
+            return None;
+        }
+        let value = value.trim();
+        let value = value
+            .strip_prefix('"')
+            .and_then(|v| v.strip_suffix('"'))
+            .unwrap_or(value);
+        (!value.is_empty()).then(|| PathBuf::from(value))
+    })
+}
+
+/// A candidate `git.exe` that is a Git install, or, with `follow_shim`, whose sibling scoop
+/// `git.shim` names one. The shim is followed once: a chain is not recursed into.
+fn resolve_candidate(probe: &Probe<'_>, candidate: &Path, follow_shim: bool) -> Option<GitBash> {
+    if (probe.is_file)(candidate)
+        && let Some(found) = GitBash::from_executable(candidate)
+    {
+        return Some(found);
+    }
+    if !follow_shim {
+        return None;
+    }
+    let contents = (probe.read_file)(&candidate.with_file_name("git.shim"))?;
+    let target = shim_target(&contents)?;
+    if (probe.is_file)(&target) {
+        GitBash::from_executable(&target)
+    } else {
+        None
+    }
+}
+
+/// The override when set, otherwise `git.exe` on PATH (following a scoop shim), otherwise the
+/// standard install locations, otherwise scoop's `current` app junctions.
 pub fn discover(probe: &Probe<'_>) -> Result<GitBash, GitBashError> {
     if let Some(value) = (probe.env)(OVERRIDE_VAR).filter(|v| !v.is_empty()) {
         let path = PathBuf::from(value);
@@ -169,10 +207,32 @@ pub fn discover(probe: &Probe<'_>) -> Result<GitBash, GitBashError> {
     .into_iter()
     .filter_map(|(var, git)| (probe.env)(var).map(|base| PathBuf::from(base).join(git)))
     .map(|git| git.join("cmd").join("git.exe"));
-    for candidate in on_path.chain(installs) {
-        if (probe.is_file)(&candidate)
-            && let Some(found) = GitBash::from_executable(&candidate)
-        {
+    let scoop_root = |var: &str, default: (&str, &str)| {
+        (probe.env)(var)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| (probe.env)(default.0).map(|base| PathBuf::from(base).join(default.1)))
+    };
+    let scoop = [
+        scoop_root("SCOOP", ("USERPROFILE", "scoop")),
+        scoop_root("SCOOP_GLOBAL", ("ProgramData", "scoop")),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|root| {
+        root.join("apps")
+            .join("git")
+            .join("current")
+            .join("cmd")
+            .join("git.exe")
+    });
+    for candidate in on_path {
+        if let Some(found) = resolve_candidate(probe, &candidate, true) {
+            return Ok(found);
+        }
+    }
+    for candidate in installs.chain(scoop) {
+        if let Some(found) = resolve_candidate(probe, &candidate, false) {
             return Ok(found);
         }
     }
@@ -298,6 +358,24 @@ mod tests {
     }
 
     fn probe_with(files: &[&str], env: &[(&str, &str)]) -> Result<GitBash, GitBashError> {
+        probe_with_contents(files, &[], env)
+    }
+
+    fn probe_with_contents(
+        files: &[&str],
+        contents: &[(&str, &str)],
+        env: &[(&str, &str)],
+    ) -> Result<GitBash, GitBashError> {
+        let contents: Vec<(PathBuf, String)> = contents
+            .iter()
+            .map(|(p, c)| (PathBuf::from(p), c.to_string()))
+            .collect();
+        let read_file = move |path: &Path| {
+            contents
+                .iter()
+                .find(|(p, _)| p == path)
+                .map(|(_, c)| c.clone())
+        };
         let files: HashSet<PathBuf> = files.iter().map(PathBuf::from).collect();
         let env: Vec<(String, OsString)> = env
             .iter()
@@ -308,6 +386,7 @@ mod tests {
         discover(&Probe {
             env: &lookup,
             is_file: &is_file,
+            read_file: &read_file,
         })
     }
 
@@ -354,5 +433,93 @@ mod tests {
             &[("LocalAppData", "/local")],
         );
         assert_eq!(found, Ok(bash("/local/Programs/Git")));
+    }
+
+    const SHIM_EXE: &str = "/s/shims/git.exe";
+    const SHIM_FILE: &str = "/s/shims/git.shim";
+    const TARGET: &str = "/s/apps/git/current/cmd/git.exe";
+
+    #[test]
+    fn a_scoop_shim_on_the_path_is_followed_to_its_target() {
+        let found = probe_with_contents(
+            &[SHIM_EXE, TARGET],
+            &[(SHIM_FILE, &format!("path = \"{TARGET}\"\r\nargs =\r\n"))],
+            &[("PATH", "/s/shims")],
+        );
+        assert_eq!(found, Ok(bash("/s/apps/git/current")));
+    }
+
+    #[test]
+    fn a_recognized_path_git_is_used_without_reading_its_shim() {
+        let found = probe_with_contents(
+            &["/p/Git/cmd/git.exe", TARGET],
+            &[("/p/Git/cmd/git.shim", &format!("path = {TARGET}"))],
+            &[("PATH", "/p/Git/cmd")],
+        );
+        assert_eq!(found, Ok(bash("/p/Git")));
+    }
+
+    #[test]
+    fn a_malformed_shim_falls_through_to_the_install_locations() {
+        for contents in ["garbage", "args = x", "path =", "path = \"\""] {
+            let found = probe_with_contents(
+                &[SHIM_EXE, TARGET, "/pf/Git/cmd/git.exe"],
+                &[(SHIM_FILE, contents)],
+                &[("PATH", "/s/shims"), ("ProgramFiles", "/pf")],
+            );
+            assert_eq!(found, Ok(bash("/pf/Git")), "{contents}");
+        }
+    }
+
+    #[test]
+    fn a_dangling_shim_falls_through() {
+        let found = probe_with_contents(
+            &[SHIM_EXE],
+            &[(SHIM_FILE, &format!("path = \"{TARGET}\""))],
+            &[("PATH", "/s/shims")],
+        );
+        assert_eq!(found, Err(GitBashError::NotFound));
+    }
+
+    #[test]
+    fn a_shim_chain_is_not_followed() {
+        let found = probe_with_contents(
+            &[SHIM_EXE, "/t/shims/git.exe", TARGET],
+            &[
+                (SHIM_FILE, "path = \"/t/shims/git.exe\""),
+                ("/t/shims/git.shim", &format!("path = \"{TARGET}\"")),
+            ],
+            &[("PATH", "/s/shims")],
+        );
+        assert_eq!(found, Err(GitBashError::NotFound));
+    }
+
+    #[test]
+    fn the_scoop_root_is_searched() {
+        let found = probe_with(&[TARGET], &[("SCOOP", "/s")]);
+        assert_eq!(found, Ok(bash("/s/apps/git/current")));
+    }
+
+    #[test]
+    fn the_scoop_roots_default_when_their_variables_are_unset() {
+        let found = probe_with(
+            &["/u/scoop/apps/git/current/cmd/git.exe"],
+            &[("USERPROFILE", "/u")],
+        );
+        assert_eq!(found, Ok(bash("/u/scoop/apps/git/current")));
+        let global = probe_with(
+            &["/pd/scoop/apps/git/current/cmd/git.exe"],
+            &[("ProgramData", "/pd")],
+        );
+        assert_eq!(global, Ok(bash("/pd/scoop/apps/git/current")));
+    }
+
+    #[test]
+    fn scoop_roots_come_after_the_standard_locations() {
+        let found = probe_with(
+            &[TARGET, "/pf/Git/cmd/git.exe"],
+            &[("SCOOP", "/s"), ("ProgramFiles", "/pf")],
+        );
+        assert_eq!(found, Ok(bash("/pf/Git")));
     }
 }

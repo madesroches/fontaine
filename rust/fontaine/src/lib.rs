@@ -968,6 +968,7 @@ fn shells(host: &Host) -> Result<Shells, u8> {
     let git_bash = fontaine_tools::git_bash::discover(&fontaine_tools::git_bash::Probe {
         env: &*host.env,
         is_file: &|path| path.is_file(),
+        read_file: &|path| std::fs::read_to_string(path).ok(),
     });
     let powershell = fontaine_tools::powershell::discover(&fontaine_tools::powershell::Probe {
         env: &*host.env,

@@ -68,8 +68,8 @@ async fn the_registered_tools_are_advertised_to_the_model() {
     let mut s = Sandbox::compatible(&endpoint.url());
     // A container runtime on the test host would add the default `websearch` tool.
     s.set_env("PATH", "/nonexistent");
-    // Without PATH, Git for Windows is found only in its standard install folders, so a copy
-    // reached through PATH (scoop, winget) is named explicitly.
+    // Without PATH, Git for Windows is found only in its standard and scoop install folders, so
+    // a copy reached through PATH is named explicitly.
     #[cfg(windows)]
     if let Some(bash) = git_bash_on_path() {
         s.set_env(

@@ -690,6 +690,7 @@ fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
     let probe = fontaine_tools::git_bash::Probe {
         env: &|name| std::env::var_os(name),
         is_file: &|path| path.is_file(),
+        read_file: &|path| std::fs::read_to_string(path).ok(),
     };
     fontaine_tools::git_bash::discover(&probe).ok()
 }
