@@ -196,10 +196,15 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
 
     /// The `/skills trust` question for one skill of an install in progress. `None` means the
     /// interface is gone.
-    async fn ask_skill_trust(&mut self, runtime: &AgentRuntime, skill: &Skill) -> Option<bool> {
+    async fn ask_skill_trust(
+        &mut self,
+        runtime: &AgentRuntime,
+        skill: &Skill,
+        previous: Option<&skill_trust::TrustRecord>,
+    ) -> Option<bool> {
         self.app.begin_skill_trust(skill_trust_prompt::new(
             skill,
-            None,
+            previous,
             SkillTrustFooter::Install,
         ));
         loop {
@@ -264,10 +269,18 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             }
             Some(true) => {}
         }
+        let (recorded, unreadable) = skill_trust::load(runtime.config_dir());
+        if let Some(message) = unreadable {
+            self.app.transcript.warning(message, None);
+        }
         let trustable: Vec<Skill> = match extensions::load_plugin_skills(&prepared.build.dir) {
             Ok(skills) => skills
                 .into_iter()
                 .filter(|skill| !skill.declared_tools.is_empty())
+                .filter(|skill| {
+                    recorded.state(&skill.name, skill.scope, &skill.digest)
+                        != skill_trust::TrustState::Trusted
+                })
                 .collect(),
             Err(e) => {
                 drop(prepared);
@@ -281,7 +294,8 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         let mut accepted: Vec<Skill> = Vec::new();
         let mut declined: Vec<String> = Vec::new();
         for skill in trustable {
-            match self.ask_skill_trust(runtime, &skill).await {
+            let previous = recorded.record(&skill.name);
+            match self.ask_skill_trust(runtime, &skill, previous).await {
                 None => {
                     drop(prepared);
                     self.app.transcript.notice("install cancelled");

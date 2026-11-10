@@ -179,10 +179,18 @@ pub(crate) fn install(dirs: &Dirs, host: &Host, spec: &str) -> Result<(), String
         eprintln!("fontaine: warning: {warning}");
     }
     use std::io::IsTerminal;
+    let (recorded, unreadable) = skill_trust::load(&dirs.config);
+    if let Some(message) = unreadable {
+        eprintln!("fontaine: warning: {message}");
+    }
     let trustable: Vec<extensions::Skill> = extensions::load_plugin_skills(&prepared.build.dir)
         .map_err(|e| e.to_string())?
         .into_iter()
         .filter(|skill| !skill.declared_tools.is_empty())
+        .filter(|skill| {
+            recorded.state(&skill.name, skill.scope, &skill.digest)
+                != skill_trust::TrustState::Trusted
+        })
         .collect();
     let interactive = std::io::stdin().is_terminal();
     let mut to_trust = Vec::new();
@@ -219,7 +227,7 @@ pub(crate) fn install(dirs: &Dirs, host: &Host, spec: &str) -> Result<(), String
             )
         })?;
         println!(
-            "trusted {count} skill(s); their allowed-tools count from the install's own reload"
+            "trusted {count} skill(s); this takes effect at the next session start, or at /reload-plugins in a running one"
         );
     } else if !interactive && !trustable.is_empty() {
         println!(

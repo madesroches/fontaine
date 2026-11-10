@@ -643,12 +643,6 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-03 AFK (#379): CLI `trust`/`untrust` enumerate skills with the real config dir, a
   nonexistent sentinel `project_root` and `plugins::load_installed`; reason: user-directory skills
   must be found while project files are never read.
-- 2026-11-10 (#561): Plugin install now asks the skill-trust question, narrowing the earlier split
-  where install approved only the executable surface: `/plugin install` asks per skill that declares
-  `allowed-tools`, after the surface approval and before the commit (quitting cancels the install);
-  `fontaine plugin install` asks once on a terminal and otherwise prints a hint and trusts nothing;
-  `/plugin update` and auto-update re-ask nothing, since a changed file mismatches its pinned digest;
-  reason: the user learned of untrusted skills only at first use, as a one-line warning.
 - 2026-11-07: The `skill` tool takes optional `args` (Claude Code's field) and accepts
   `arguments`, `argument`, `input`, `params` as aliases, non-string values coerced to text;
   deviation from Claude Code's strict schema, reason: models guess the field name and a failed
@@ -726,6 +720,13 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   follow the #554 rules (turn boundary, subagent guard, unattended git, `Record::PluginChange` is
   not recorded since a marketplace loads nothing executable). Reason: registering a marketplace
   is the first step of installing a plugin, which the TUI already does.
+- 2026-11-10 (#561): Plugin install now asks the skill-trust question, narrowing the earlier split
+  where install approved only the executable surface: `/plugin install` asks per skill that declares
+  `allowed-tools`, after the surface approval and before the commit (quitting cancels the install);
+  `fontaine plugin install` asks once on a terminal and otherwise prints a hint and trusts nothing;
+  skills already trusted at their current digest are not asked again, and a stale record is shown as
+  a diff; `/plugin update` and auto-update re-ask nothing, since a changed file mismatches its
+  pinned digest; reason: the user learned of untrusted skills only at first use, as a one-line warning.
 
 ### Guardian
 
