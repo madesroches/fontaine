@@ -81,7 +81,8 @@ all tests pass:
   `SECURITY.md`, `.gitignore`, `.ignore`.
 - The Cargo workspace lives at `rust/Cargo.toml` (micromegas convention) and **every crate
   sits directly under `rust/`**: `fontaine` (bin), `fontaine-core`, `fontaine-tools`,
-  `fontaine-guardian`, `fontaine-agents`, `fontaine-tui`, `fontaine-evals`.
+  `fontaine-guardian`, `fontaine-agents`, `fontaine-tui`, `fontaine-evals`, `fontaine-testkit`
+  (dev-only test helpers).
 - The core is built on the **rig** crate family (`rig-core` / `rig-agent` / `rig-memory` /
   `rig-tools` / `rig-rmcp`, `rig-cassette` for dev tests), **pinned to exact versions**.
   No custom provider layer; no custom agent loop or history management. Do not adopt rig's

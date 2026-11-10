@@ -1,7 +1,7 @@
 //! `fontaine -p` on a `claude-subscription` account against the scripted CLI double
-//! (`fontaine_claude_cli_double`, built as an example of this package; prebuild it when running
-//! this test alone): the conversation, Fontaine's own gate around every tool call, usage without
-//! cost, and the documented exit codes. The real CLI never runs here.
+//! (`fontaine_claude_cli_double`, built as an example of this package): the conversation,
+//! Fontaine's own gate around every tool call, usage without cost, and the documented exit
+//! codes. The real CLI never runs here.
 
 mod common;
 
@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 use common::{Output, Sandbox, ledger, write};
+use fontaine_testkit::example_bin;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -17,23 +18,6 @@ const CONFLICTS: [&str; 3] = [
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
 ];
-
-fn double() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "fontaine_claude_cli_double.exe"
-    } else {
-        "fontaine_claude_cli_double"
-    };
-    let path = dir.join(name);
-    assert!(
-        path.exists(),
-        "{} is not built: run `cargo build -p fontaine --example fontaine_claude_cli_double`",
-        path.display()
-    );
-    path
-}
 
 fn toml_path(path: &std::path::Path) -> String {
     format!("{:?}", path.to_string_lossy())
@@ -53,7 +37,7 @@ impl Claude {
         std::fs::create_dir_all(&dir).unwrap();
         s.user_config(&format!(
             "[accounts.claude]\nkind = \"claude-subscription\"\ncli_path = {}\nclaude_config_dir = {}\n\n[model]\nmodel = \"claude/sonnet\"\n",
-            toml_path(&double()),
+            toml_path(&example_bin("fontaine", "fontaine_claude_cli_double")),
             toml_path(&dir)
         ));
         for name in CONFLICTS {
@@ -363,7 +347,7 @@ fn with_guardian_account(guardian_scenario: Value) -> (Claude, PathBuf) {
     write(&dir.join("double.json"), &guardian_scenario.to_string());
     claude.s.user_config(&format!(
         "[accounts.claude]\nkind = \"claude-subscription\"\ncli_path = {cli}\nclaude_config_dir = {main}\n\n[accounts.judge]\nkind = \"claude-subscription\"\ncli_path = {cli}\nclaude_config_dir = {judge}\n\n[model]\nmodel = \"claude/sonnet\"\n\n[guardian]\nmodel = \"judge/sonnet\"\n",
-        cli = toml_path(&double()),
+        cli = toml_path(&example_bin("fontaine", "fontaine_claude_cli_double")),
         main = toml_path(&claude.dir),
         judge = toml_path(&dir),
     ));

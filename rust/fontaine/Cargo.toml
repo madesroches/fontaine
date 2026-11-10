@@ -59,6 +59,7 @@ uuid.workspace = true
 zip.workspace = true
 
 [dev-dependencies]
+fontaine-testkit.workspace = true
 rmcp = { workspace = true, features = ["server", "transport-io", "elicitation"] }
 base64.workspace = true
 jsonschema.workspace = true

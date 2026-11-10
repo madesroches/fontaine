@@ -6,27 +6,17 @@
 mod common;
 
 use common::{Endpoint, Sandbox, Turn, Wire, ledger};
+use fontaine_testkit::example_bin;
 use serde_json::{Value, json};
-
-fn example(name: &str) -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    let path = dir.join(file);
-    assert!(path.exists(), "{} is not built", path.display());
-    path.to_string_lossy().into_owned()
-}
 
 /// Adds `[[hooks.<event>]]` to the sandbox's user config: `hook_marker` run with `args`.
 fn hook(s: &Sandbox, event: &str, extra: &str, args: &str) {
     let config = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
     s.user_config(&format!(
         "{config}\n[[hooks.{event}]]\n{extra}command = '''\n'{}' {args}\n'''\n",
-        example("hook_marker")
+        example_bin("fontaine", "hook_marker")
+            .to_string_lossy()
+            .into_owned()
     ));
 }
 
@@ -306,7 +296,9 @@ async fn a_project_stop_hook_is_ignored_with_a_warning() {
         ".fontaine/settings.toml",
         &format!(
             "[[hooks.stop]]\ncommand = '''\n'{}' --append --exit 2 '{}'\n'''\n",
-            example("hook_marker"),
+            example_bin("fontaine", "hook_marker")
+                .to_string_lossy()
+                .into_owned(),
             seen.display()
         ),
     );

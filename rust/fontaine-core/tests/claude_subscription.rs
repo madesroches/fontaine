@@ -1,7 +1,6 @@
 //! The `claude-subscription` account against the scripted CLI double (`claude_cli_double`, built
-//! as an example of this package; prebuild it when running this test alone): configuration,
-//! preflight, discovery, request translation, stream decoding, lifecycle and failure mapping.
-//! The real CLI never runs here.
+//! as an example of this package): configuration, preflight, discovery, request translation,
+//! stream decoding, lifecycle and failure mapping. The real CLI never runs here.
 
 mod common;
 

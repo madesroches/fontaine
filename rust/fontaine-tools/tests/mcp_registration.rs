@@ -3,8 +3,10 @@
 
 mod mcp_common;
 
+use std::path::PathBuf;
 use std::time::Duration;
 
+use fontaine_testkit::example_bin;
 use fontaine_tools::mcp::{ServerSpec, Transport, connect, connect_transport};
 use fontaine_tools::risk::RiskClass;
 use mcp_common::server::{
@@ -257,15 +259,8 @@ async fn two_servers_keep_their_tools_apart() {
 }
 
 /// The example binary Cargo builds beside the tests.
-fn double_binary() -> std::path::PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "mcp_double.exe"
-    } else {
-        "mcp_double"
-    };
-    dir.join(name)
+fn double_binary() -> PathBuf {
+    example_bin("fontaine-tools", "mcp_double")
 }
 
 #[tokio::test]

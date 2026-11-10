@@ -4,20 +4,8 @@
 mod common;
 
 use common::{Endpoint, Sandbox, Turn, Wire, write};
+use fontaine_testkit::example_bin;
 use serde_json::{Value, json};
-
-fn example(name: &str) -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    let path = dir.join(file);
-    assert!(path.exists(), "{} is not built", path.display());
-    path.to_string_lossy().into_owned()
-}
 
 fn with_server(s: &Sandbox) {
     let path = s.config.join("config.toml");
@@ -26,7 +14,9 @@ fn with_server(s: &Sandbox) {
         &path,
         &format!(
             "{base}\n[lsp.servers.fake]\ncommand = '{}'\nextension_to_language = {{ \".rs\" = \"rust\" }}\n",
-            example("fontaine_fake_lsp")
+            example_bin("fontaine", "fontaine_fake_lsp")
+                .to_string_lossy()
+                .into_owned()
         ),
     );
 }

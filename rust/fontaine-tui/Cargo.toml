@@ -23,6 +23,7 @@ toml_edit.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+fontaine-testkit.workspace = true
 rig-agent = { workspace = true, features = ["test-utils"] }
 rig-core = { workspace = true, features = ["test-utils"] }
 tempfile.workspace = true

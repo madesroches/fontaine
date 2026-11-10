@@ -4,19 +4,13 @@
 mod common;
 
 use common::World;
+use fontaine_testkit::example_bin;
 use serde_json::{Value, json};
 
 fn touch_marker() -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "touch_marker.exe"
-    } else {
-        "touch_marker"
-    };
-    let path = dir.join(name);
-    assert!(path.exists(), "{} is not built", path.display());
-    path.to_string_lossy().into_owned()
+    example_bin("fontaine-tui", "touch_marker")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn lines(path: &std::path::Path) -> Vec<Value> {
@@ -91,16 +85,9 @@ async fn a_notification_hook_for_a_question_does_not_fire_for_an_approval() {
 }
 
 fn hook_marker() -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "hook_marker.exe"
-    } else {
-        "hook_marker"
-    };
-    let path = dir.join(name);
-    assert!(path.exists(), "{} is not built", path.display());
-    path.to_string_lossy().into_owned()
+    example_bin("fontaine", "hook_marker")
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use common::{Dirs, as_root, scope};
+use fontaine_testkit::example_bin;
 use fontaine_tools::child_env::BASE_ENV;
 use fontaine_tools::gate::CallView;
 use fontaine_tools::lsp::manager::EditKind;
@@ -22,15 +23,7 @@ use rig_core::tool::{Tool, ToolOutput};
 use serde_json::{Value, json};
 
 fn fake_lsp() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    // target/debug/deps/<test> -> target/debug/examples/fake_lsp
-    let name = format!("fake_lsp{}", std::env::consts::EXE_SUFFIX);
-    exe.parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .join("examples")
-        .join(name)
+    example_bin("fontaine-tools", "fake_lsp")
 }
 
 struct Workspace(Arc<Scope>);
