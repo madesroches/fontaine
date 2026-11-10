@@ -1090,6 +1090,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-08 (#44): The `advisor` tool is default-off and activated by an `advisor` model role in the user file or `--settings`; present means enabled. A role gives lists, quota fall-through and load-time validation, so there is no `[advisor]` section or on/off flag; a repository cannot turn it on.
 - 2026-11-08 (#44): `advisor` is an `Arbitrary` tool, guardian-judged with no tier exemption (the call egresses the conversation and model-written text to a second provider); an allow rule in user scope is how to lift the prompt. Headless `-p` therefore needs `allow = ["advisor"]` or `auto`.
 - 2026-11-08 (#44): `advisor` is root only, stripped from every child toolset beside `draft_bug_report`, so subagents cannot multiply its spend or egress.
+- 2026-11-09 (#553): Supersedes "follows Claude Code's pattern" for Git Bash discovery in one respect: a `git.exe` on `PATH` that is not a Git install gets one hop through a sibling scoop `git.shim`, and the `%SCOOP%`/`%SCOOP_GLOBAL%` `apps\git\current` roots are probed, because a scoop install puts only a shim on `PATH`, which Claude Code's pattern does not recognize, so the override would otherwise be needed (Claude Code needs its own override on the same machine, #562).
 
 ### TUI
 
