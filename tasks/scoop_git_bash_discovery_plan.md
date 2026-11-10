@@ -50,7 +50,7 @@ pointing at something that is not a Git executable falls through to the next can
 error. A PATH `git.exe` that `from_executable` already recognizes wins without the shim being
 read at all.
 
-Parsing: decode the file as UTF-8 (lossy), scan its lines for one of the form `path = <value>`,
+Parsing: decode the file as UTF-8 (invalid UTF-8 counts as an unreadable shim), scan its lines for one of the form `path = <value>`,
 take the value, trim it, strip one pair of surrounding double quotes, and accept it when non-empty.
 Every other line is ignored.
 
@@ -122,8 +122,12 @@ with `false`.
 2. Add the real-filesystem `read_file` closure at the five construction sites.
 3. Extend the unit tests' `probe_with` with a file-contents map next to the file set; write the
    tests listed below.
-4. Docs: the Windows bullet of the Shell section in `docs/tools.md`; one line in
-   `docs/installing.md`; the discovery sentence in `tasks/design/platforms.md`.
+4. Reword the comment at `rust/fontaine/tests/headless_smoke.rs:71-72` to say that without PATH,
+   only the standard and scoop install folders are searched.
+5. Docs: the Windows bullet of the Shell section in `docs/tools.md`; one line in
+   `docs/installing.md`; the discovery sentence in `tasks/design/platforms.md`; the
+   `CHANGELOG.md` `[Unreleased]` entry citing #553; a dated `(#553)` line at the end of the
+   Tools subsection of `## Decisions` in `tasks/fontaine_harness_plan.md`.
 
 ## Files to Modify
 
@@ -132,7 +136,9 @@ with `false`.
 - `rust/fontaine-tools/tests/shell.rs` (two closures)
 - `rust/fontaine-core/tests/common/mod.rs` (one closure)
 - `rust/fontaine-tui/tests/common/mod.rs` (one closure)
-- `docs/tools.md`, `docs/installing.md`, `tasks/design/platforms.md`
+- `rust/fontaine/tests/headless_smoke.rs` (one comment)
+- `docs/tools.md`, `docs/installing.md`, `tasks/design/platforms.md`, `CHANGELOG.md`
+- `tasks/fontaine_harness_plan.md` (dated Decisions line)
 
 ## Trade-offs
 
@@ -152,7 +158,8 @@ with `false`.
 
 ## Decisions
 
-(none yet — the review loop settles findings here)
+- 2026-11-09 (#553): Scoop shim following and the scoop roots deviate from Claude Code's discovery pattern; recorded in the master plan's Tools decisions.
+- 2026-11-09 (#553): The plan had omitted the master-plan Decisions line, a `CHANGELOG.md` entry and the stale `headless_smoke.rs` comment; all three are now steps. Invalid UTF-8 in a shim is treated as unreadable rather than decoded lossily.
 
 ## Documentation
 
@@ -163,6 +170,7 @@ with `false`.
   scoop install is discovered automatically.
 - `tasks/design/platforms.md` — the discovery sentence gains the shim-following and scoop-root
   clause.
+- `CHANGELOG.md` — an `[Unreleased]` entry citing #553.
 
 ## Testing Strategy
 
