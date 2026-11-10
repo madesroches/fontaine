@@ -35,6 +35,7 @@ pub mod openai;
 pub mod openai_compatible;
 pub mod opencode_go;
 pub mod openrouter;
+mod reasoning_parts;
 pub mod token_source;
 pub mod warn;
 
