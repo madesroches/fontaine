@@ -1220,33 +1220,16 @@ fn detached_kill(child: Child, pid: Option<u32>) {
     procgroup::detached_settle(child, pid, STOP_GRACE);
 }
 
-/// `taskkill /T /F` ends the whole tree, which a Windows process group alone cannot.
 #[cfg(windows)]
 async fn kill_tree(child: &mut Child, pid: Option<u32>, _wait: bool) {
-    taskkill(pid);
-    if !matches!(child.try_wait(), Ok(Some(_))) {
-        let _ = child.start_kill();
-    }
+    procgroup::force_kill(child, pid);
     let _ = child.wait().await;
 }
 
 #[cfg(windows)]
 fn detached_kill(mut child: Child, pid: Option<u32>) {
-    taskkill(pid);
-    let _ = child.start_kill();
+    procgroup::force_kill(&mut child, pid);
     procgroup::detached_settle(child, pid, STOP_GRACE);
-}
-
-#[cfg(windows)]
-fn taskkill(pid: Option<u32>) {
-    let Some(pid) = pid else { return };
-    // Best effort: the tree may already be gone.
-    let _ = std::process::Command::new("taskkill")
-        .args(["/T", "/F", "/PID", &pid.to_string()])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
 }
 
 /// The usage-credit text shown whenever a plan limit or billing failure is reported.

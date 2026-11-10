@@ -242,8 +242,11 @@ impl CommandScanner {
         for name in &self.scrub_env {
             process.env_remove(name);
         }
+        // A group kill must never reach our own group.
+        #[cfg(unix)]
+        process.process_group(0);
         let mut child = match process.spawn() {
-            Ok(child) => child,
+            Ok(child) => TreeKill::new(child),
             Err(e) => return failed(format!("cannot start the scanner command: {e}")),
         };
         let input = json!({ "tool": tool, "content": content }).to_string();
@@ -270,7 +273,12 @@ impl CommandScanner {
                 .map_err(|e| format!("the scanner command did not finish: {e}"))?;
             Ok::<_, String>((status, printed))
         };
-        let (status, printed) = match tokio::time::timeout(self.timeout, work).await {
+        let finished = tokio::time::timeout(self.timeout, work).await;
+        // Only a finished scanner is disarmed: its pid must not be signalled after the reap.
+        if finished.is_ok() {
+            child.disarm();
+        }
+        let (status, printed) = match finished {
             Err(_) => {
                 return failed(format!(
                     "the scanner command did not finish within {} seconds",
@@ -292,6 +300,67 @@ impl CommandScanner {
                 "the scanner command's answer is not a verdict: {e}"
             )),
         }
+    }
+}
+
+/// Kills the scanner's whole tree when dropped while armed: a descendant that inherited the
+/// stdout pipe would otherwise keep it open and a timed-out scan would leak the process. This is
+/// a local copy of the shared helper, which this dependency-light crate does not pull in.
+struct TreeKill {
+    child: tokio::process::Child,
+    pid: Option<u32>,
+    armed: bool,
+}
+
+impl TreeKill {
+    fn new(child: tokio::process::Child) -> Self {
+        TreeKill {
+            pid: child.id(),
+            child,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl std::ops::Deref for TreeKill {
+    type Target = tokio::process::Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.child
+    }
+}
+
+impl std::ops::DerefMut for TreeKill {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.child
+    }
+}
+
+impl Drop for TreeKill {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let Some(pid) = self.pid else { return };
+        // Best effort: the tree may already be gone.
+        #[cfg(unix)]
+        let _ = std::process::Command::new("kill")
+            .args(["-s", "KILL", "--", &format!("-{pid}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        #[cfg(windows)]
+        let _ = std::process::Command::new("taskkill")
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
     }
 }
 

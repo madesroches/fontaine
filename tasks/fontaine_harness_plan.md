@@ -1063,7 +1063,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   version, or with no version the first after the sync; the "new" diff identity is (severity, code,
   message) as a multiset, ignoring range — an in-flight set for older content is not taken as
   current, and line shifts do not re-report.
-- 2026-10-30: On Windows only the direct language-server child is killed (websearch's fallback);
+- 2026-10-30 (superseded by 2026-11-10 below): On Windows only the direct language-server child is killed (websearch's fallback);
   the orphan risk from a wrapper is accepted — no new Job-object code.
 - 2026-10-30: The diagnostics stage lives in `fontaine-tools/src/lsp/diagnostics.rs` and resolves
   `args["path"]` with `Scope::find`/`Scope::resolved` instead of core's `touched_paths` —
@@ -1093,6 +1093,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-08 (#44): `advisor` is an `Arbitrary` tool, guardian-judged with no tier exemption (the call egresses the conversation and model-written text to a second provider); an allow rule in user scope is how to lift the prompt. Headless `-p` therefore needs `allow = ["advisor"]` or `auto`.
 - 2026-11-08 (#44): `advisor` is root only, stripped from every child toolset beside `draft_bug_report`, so subagents cannot multiply its spend or egress.
 - 2026-11-09 (#553): Supersedes "follows Claude Code's pattern" for Git Bash discovery in one respect: a `git.exe` on `PATH` that is not a Git install gets one hop through a sibling scoop `git.shim`, and the `%SCOOP%`/`%SCOOP_GLOBAL%` `apps\git\current` roots are probed, because a scoop install puts only a shim on `PATH`, which Claude Code's pattern does not recognize, so the override would otherwise be needed (Claude Code needs its own override on the same machine, #562).
+- 2026-11-10 (#562): Supersedes the 2026-10-30 "only the direct language-server child is killed" line: `procgroup::force_kill` runs `taskkill /T /F` on Windows, so the LSP client and websearch gain a tree kill, as do the status line, command hooks (through a `TreeGuard` drop guard, since the hook timeout stays caller-owned) and the claude CLI provider, which shares the helper. It holds only while the leader lives, since `taskkill` cannot reach descendants of an exited leader; Job Objects stay deferred. `fontaine-guardian` keeps a local copy for its BYO scanner rather than depend on `fontaine-tools`.
 
 ### TUI
 

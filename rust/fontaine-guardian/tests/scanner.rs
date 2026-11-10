@@ -184,6 +184,37 @@ mod command {
     }
 
     #[tokio::test]
+    async fn a_timed_out_scanner_leaves_no_descendant() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let program = script(
+            dir.path(),
+            &format!("sleep 30 &\necho $! > '{}'\nwait", pid_file.display()),
+        );
+        let scan = run(&scanner(program, Duration::from_millis(500)), "shell", "x").await;
+        assert!(matches!(scan, Scan::Failed { .. }), "{scan:?}");
+        let pid = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .to_string();
+        for _ in 0..100 {
+            if !alive(&pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the backgrounded sleeper {pid} survived the timeout");
+    }
+
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    #[tokio::test]
     async fn stdin_carries_exactly_the_tool_and_the_content() {
         let dir = tempfile::tempdir().unwrap();
         let seen = dir.path().join("stdin.json");

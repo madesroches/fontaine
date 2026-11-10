@@ -7,6 +7,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use fontaine_tools::command_shell::CommandShell;
+use fontaine_tools::procgroup::{TreeGuard, collect_output};
 use serde::Serialize;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -192,7 +193,12 @@ impl StatuslineScript {
             child.env(name, value);
         }
 
-        let mut process = child.spawn()?;
+        // A group kill must never reach our own group.
+        #[cfg(unix)]
+        child.process_group(0);
+
+        let mut guard = TreeGuard::new(child.spawn()?);
+        let process = guard.child();
         if let Some(mut input) = process.stdin.take() {
             let bytes =
                 serde_json::to_vec(payload).expect("the payload is a serializable JSON object");
@@ -202,13 +208,13 @@ impl StatuslineScript {
             });
         }
 
-        let result = tokio::time::timeout(self.timeout, process.wait_with_output()).await;
-        let output = match result {
-            Ok(output) => output?,
-            Err(_) => {
-                return Ok(None);
-            }
+        // On timeout the guard drops here, killing the whole tree so the pipes a descendant
+        // inherited close.
+        let Ok(output) = tokio::time::timeout(self.timeout, collect_output(process)).await else {
+            return Ok(None);
         };
+        let output = output?;
+        guard.disarm();
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             if !stderr.trim().is_empty() {
@@ -398,6 +404,43 @@ mod tests {
             .run(&payload())
             .await;
         assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn timeout_stops_a_backgrounded_descendant_holding_the_pipes() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        // The subshell keeps the sleeper a descendant on MSYS, where a lone `sleep` is exec'd
+        // in place of the shell.
+        let command = format!(
+            "(sleep 30; true) & echo $! > '{}'; wait",
+            pid_file.display()
+        );
+        let result = script(&command)
+            .with_timeout(Duration::from_millis(500))
+            .run(&payload())
+            .await;
+        assert_eq!(result, None);
+        // Without the tree kill the blocked pipe read hangs the runtime's shutdown, so reaching
+        // here is the assertion on Windows.
+        #[cfg(unix)]
+        {
+            let pid = std::fs::read_to_string(&pid_file).unwrap();
+            let alive = || {
+                std::process::Command::new("kill")
+                    .args(["-0", pid.trim()])
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|s| s.success())
+            };
+            for _ in 0..100 {
+                if !alive() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            panic!("the backgrounded sleeper survived the timeout");
+        }
     }
 
     #[test]

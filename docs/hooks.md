@@ -54,7 +54,7 @@ command = "/home/me/.config/fontaine/hooks/format.sh"
 | `headers` | `http` hooks: a table of extra request headers. `$VAR` and `${VAR}` in a value expand only for variables named in `allowed_env_vars`; any other name becomes empty. | none |
 | `allowed_env_vars` | `http` hooks: the environment variables `headers` may read. It may not name a variable the `shell` tool's scrub removes (an API-key variable of an account, a telemetry key, ...): that is a startup error. | none |
 | `prompt` | `prompt` hooks: the question put to the model. `$ARGUMENTS` stands for the event; without it the event is appended. Required for `prompt`. | none |
-| `timeout_secs` | At least 1. A hook that takes longer is cut off. | `30`; `session_end` has `1.5` seconds |
+| `timeout_secs` | At least 1. A command hook that takes longer is cut off: its process tree is stopped, not just the shell (on Windows, only while the command itself is still running). | `30`; `session_end` has `1.5` seconds |
 
 A hook has exactly the fields of its type, and the event must take its type: anything else is a
 load error naming the key.
