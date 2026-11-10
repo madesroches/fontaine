@@ -5,12 +5,38 @@ use crate::confirm_prompt::{Block, ConfirmPrompt};
 use fontaine_core::extensions::{Scope, Skill};
 use fontaine_core::skill_trust::{self, TrustRecord};
 
+/// When the trust the dialog records takes effect, which depends on who asks.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SkillTrustFooter {
+    /// `/skills trust`: a running session keeps its grants until a reload.
+    Command,
+    /// A plugin install: the install's own reload applies it.
+    Install,
+}
+
+impl SkillTrustFooter {
+    fn text(self) -> &'static str {
+        match self {
+            SkillTrustFooter::Command => {
+                "The trust applies after /reload-plugins or at the next session start; until then this session keeps its current grants."
+            }
+            SkillTrustFooter::Install => {
+                "The trust applies when the install finishes loading, moments after this answer."
+            }
+        }
+    }
+}
+
 /// `previous` is the record the user made for an earlier version of the file, if any.
 /// `Some(true)` from the prompt records the trust, `Some(false)` leaves things as they are.
-pub fn new(skill: &Skill, previous: Option<&TrustRecord>) -> ConfirmPrompt {
+pub fn new(
+    skill: &Skill,
+    previous: Option<&TrustRecord>,
+    footer: SkillTrustFooter,
+) -> ConfirmPrompt {
     ConfirmPrompt::new(
         format!("Honour the allowed-tools of {}?", skill.name),
-        describe(skill, previous)
+        describe(skill, previous, footer)
             .into_iter()
             .map(Block::Text)
             .collect(),
@@ -19,7 +45,11 @@ pub fn new(skill: &Skill, previous: Option<&TrustRecord>) -> ConfirmPrompt {
 }
 
 /// What the dialog says, one entry per line (long ones wrap when drawn).
-pub fn describe(skill: &Skill, previous: Option<&TrustRecord>) -> Vec<String> {
+pub fn describe(
+    skill: &Skill,
+    previous: Option<&TrustRecord>,
+    footer: SkillTrustFooter,
+) -> Vec<String> {
     let current = skill_trust::record_of(skill);
     let (specific, wildcard) = skill_trust::split_tools(skill);
     let mut out = Vec::new();
@@ -76,10 +106,7 @@ pub fn describe(skill: &Skill, previous: Option<&TrustRecord>) -> Vec<String> {
     out.push(format!("file: {}", skill.path.display()));
     out.push(format!("digest: {}", current.digest));
     out.push(String::new());
-    out.push(
-        "The trust applies after /reload-plugins or at the next session start; until then this session keeps its current grants."
-            .to_string(),
-    );
+    out.push(footer.text().to_string());
     out
 }
 
@@ -118,6 +145,7 @@ mod tests {
         let lines = describe(
             &skill(&["shell(git *)", "shell(git status)"], "!`git log`"),
             None,
+            SkillTrustFooter::Command,
         )
         .join("\n");
         assert!(
@@ -130,10 +158,25 @@ mod tests {
     }
 
     #[test]
+    fn the_install_footer_says_the_trust_applies_when_the_install_loads() {
+        let lines = describe(
+            &skill(&["shell(git status)"], ""),
+            None,
+            SkillTrustFooter::Install,
+        )
+        .join("\n");
+        assert!(
+            lines.contains("when the install finishes loading"),
+            "{lines}"
+        );
+        assert!(!lines.contains("/reload-plugins"), "{lines}");
+    }
+
+    #[test]
     fn a_user_skills_wildcards_are_not_called_never_an_allow() {
         let mut user = skill(&["shell(git *)", "shell(git status)"], "");
         user.scope = Scope::User;
-        let lines = describe(&user, None).join("\n");
+        let lines = describe(&user, None, SkillTrustFooter::Command).join("\n");
         assert!(!lines.contains("never an allow"), "{lines}");
         assert!(
             lines.contains("already allowed too; trust only shows them to the guardian"),
@@ -159,6 +202,7 @@ mod tests {
                 "!`git log` !`make`",
             ),
             Some(&before),
+            SkillTrustFooter::Command,
         )
         .join("\n");
         assert!(

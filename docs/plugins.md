@@ -122,7 +122,7 @@ session.
 | `fontaine plugin marketplace update [name]` | Fetch, move the pin to the remote default-branch HEAD, report old and new sha. Installed plugins are not touched: a path-source plugin follows on its next `plugin update` or auto-update. Discards a staged revision of the marketplace. |
 | `fontaine plugin marketplace auto-update <name> yes\|no` | Opts one marketplace out of (or back into) [auto-update](#auto-update). |
 | `fontaine plugin marketplace remove <name>` | Refuses while an installed plugin names it; else drops the clone and the entry. |
-| `fontaine plugin install <name>@<marketplace>` | Resolve the entry in the pinned catalog, fetch or copy it, pin the commit, validate every component, record it enabled. Refuses a plugin name already installed from any marketplace. A failed install leaves nothing. |
+| `fontaine plugin install <name>@<marketplace>` | Resolve the entry in the pinned catalog, fetch or copy it, pin the commit, validate every component, record it enabled. Refuses a plugin name already installed from any marketplace. A failed install leaves nothing. On a terminal it asks once whether to honour the `allowed-tools` of the plugin's untrusted skills; without one it trusts nothing and prints a `fontaine plugin trust` hint. |
 | `fontaine plugin uninstall <name>` | Remove the checkout and the entry. |
 | `fontaine plugin update <name>` | Re-fetch or re-copy, re-validate, print the approval summary and record the new approval; a broken new revision keeps the old checkout live. Clears a held or staged revision. This is how a revision that auto-update held is approved. |
 | `fontaine plugin auto-update <name> yes\|no` | Opts one plugin out of (or back into) [auto-update](#auto-update). |
@@ -145,7 +145,7 @@ losing the conversation. `/plugin` alone lists them, as `/plugins` does.
 
 | Command | Effect |
 |---|---|
-| `/plugin install <name>@<marketplace>` | Fetches and validates the plugin, then asks you to approve the executable surface (every hook command, MCP and LSP server, skill `!` line and referenced `${VAR}` name, with the fingerprint that is recorded). Nothing is recorded until you answer `y`; `n` leaves nothing behind. Install always asks here, where the command line treats typing it as consent. |
+| `/plugin install <name>@<marketplace>` | Fetches and validates the plugin, then asks you to approve the executable surface (every hook command, MCP and LSP server, skill `!` line and referenced `${VAR}` name, with the fingerprint that is recorded). Nothing is recorded until you answer `y`; `n` leaves nothing behind. Install always asks here, where the command line treats typing it as consent. A second question follows for each skill that declares `allowed-tools`, the same one `/skills trust` asks (`y` trusts that skill, `n` or `Esc` leaves it untrusted and the install still completes); leaving the interface at it cancels the install. |
 | `/plugin update [<name>\|all]` | Re-fetches and validates. It asks only when the executable surface differs from what you approved before, or none was recorded; an update that changes nothing executable applies without a question. The plugin's MCP and language servers stop before its checkout is replaced, so nothing runs from files that change under it. |
 | `/plugin uninstall <name>` | Stops the plugin's servers, then removes the checkout and the entry. |
 | `/plugin enable <name>`, `/plugin disable <name>` | Flip the registry flag and load or unload the plugin. |
@@ -272,10 +272,14 @@ Installed plugin content is third-party, so it loads under tighten-only rules:
 
 ### Trusting a skill
 
-Install approves a plugin's executables, not what its skills may do. `fontaine plugin trust
-<plugin>:<skill>` (or `trust <plugin>` for the skills it has now) is the separate step that honours
-a skill's `allowed-tools`, pinned to that version of the skill file; `fontaine plugin untrust
-<name>` takes it back. A skill the plugin adds later, or changes on update, is untrusted until you
+Approving a plugin's executables does not honour what its skills may do; trust is a separate
+question, pinned to that version of the skill file. In the terminal UI, `/plugin install` asks it
+right after the executable-surface approval, once for each skill that declares `allowed-tools`, with
+the same dialog as `/skills trust`; a trust you give applies when the install finishes loading, and
+a skill you decline stays untrusted. `fontaine plugin install` asks once for all of the plugin's
+such skills when it has a terminal; without one it trusts nothing and prints a hint. Later,
+`fontaine plugin trust <plugin>:<skill>` (or `trust <plugin>` for the skills it has now) honours a
+skill's `allowed-tools`, and `fontaine plugin untrust <name>` takes it back. A skill the plugin adds later, or changes on update, is untrusted until you
 trust it again. A skill's body can change on an auto-update without a prompt, which is why the
 trust is pinned to a digest and not to the plugin. What trust does, and what it does not, is in
 [Trusted skills](extensions.md#trusted-skills).

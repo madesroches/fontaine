@@ -181,7 +181,9 @@ fontaine plugin untrust dev-skills:pr
 
 `trust` prints each skill's digest, its `allowed-tools` split as below, and the `!` commands it
 runs, then asks for confirmation. Without a terminal it refuses unless you pass `--yes`, which
-skips only the question. In the terminal UI, `/skills trust <name>` shows the same and asks. A
+skips only the question. In the terminal UI, `/skills trust <name>` shows the same and asks, and
+`/plugin install` asks it for each of the plugin's skills that declares `allowed-tools`, while
+`fontaine plugin install` on a terminal asks once for all of them. A
 trust or untrust applies from `/reload-plugins` in a running session, or from the next session
 start. The record is
 `<config dir>/skill-trust.toml`, [described here](configuration.md#skill-trust).

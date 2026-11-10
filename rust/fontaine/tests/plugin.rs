@@ -499,6 +499,32 @@ async fn trust_and_untrust_refuse_to_overwrite_a_corrupt_record() {
     assert_eq!(trust_file(&sandbox).unwrap(), "not toml [\n");
 }
 
+#[tokio::test]
+async fn a_piped_install_leaves_allowed_tools_untrusted_and_hints_at_the_trust_command() {
+    let sandbox = Sandbox::new();
+    write_marketplace(&sandbox, "team-market");
+    sandbox.add_file(
+        "team-market/plugins/review/skills/review/SKILL.md",
+        "---\ndescription: reviews\nallowed-tools: Bash(git status)\n---\nLook.",
+    );
+    let market = sandbox.work.join("team-market");
+    let add = sandbox
+        .run(&["plugin", "marketplace", "add", &market.to_string_lossy()])
+        .await;
+    assert_eq!(add.code, Some(0), "{}", add.stderr);
+
+    let install = sandbox.run(&["plugin", "install", "review@team"]).await;
+    assert_eq!(install.code, Some(0), "{}", install.stderr);
+    assert!(
+        install.stdout.contains(
+            "note: 1 skill(s) declare allowed-tools and stay untrusted; `fontaine plugin trust review` reviews and trusts them"
+        ),
+        "{}",
+        install.stdout
+    );
+    assert!(trust_file(&sandbox).is_none());
+}
+
 fn write_text(path: &std::path::Path, text: &str) {
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();

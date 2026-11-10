@@ -6,6 +6,14 @@ All notable changes are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Installing a plugin now asks whether to trust the skills that declare `allowed-tools`, at the
+  moment of install: `/plugin install` asks per skill with the same digest-pinned dialog
+  `/skills trust` shows, and `fontaine plugin install` asks once for the plugin's skills on a
+  terminal. Skills already trusted at their current file are not re-asked. Headless installs trust
+  nothing and print a `fontaine plugin trust` hint (#561).
+
 ### Fixed
 
 - A status line command, command hook or BYO scanner that times out now has its whole process

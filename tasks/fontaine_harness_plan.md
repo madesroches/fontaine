@@ -720,6 +720,13 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   follow the #554 rules (turn boundary, subagent guard, unattended git, `Record::PluginChange` is
   not recorded since a marketplace loads nothing executable). Reason: registering a marketplace
   is the first step of installing a plugin, which the TUI already does.
+- 2026-11-10 (#561): Plugin install now asks the skill-trust question, narrowing the earlier split
+  where install approved only the executable surface: `/plugin install` asks per skill that declares
+  `allowed-tools`, after the surface approval and before the commit (quitting cancels the install);
+  `fontaine plugin install` asks once on a terminal and otherwise prints a hint and trusts nothing;
+  skills already trusted at their current digest are not asked again, and a stale record is shown as
+  a diff; `/plugin update` and auto-update re-ask nothing, since a changed file mismatches its
+  pinned digest; reason: the user learned of untrusted skills only at first use, as a one-line warning.
 
 ### Guardian
 
