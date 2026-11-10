@@ -42,9 +42,7 @@ The rewrite is added to the two account kinds that send on the Chat wire with an
 
 ### Where the fix lives
 
-The fix goes in Fontaine's request path, as a new `Wire` wrapper modelled on `CacheWire`. rig is
-pinned and third-party, so it is not changed here. Rewriting at encode time also repairs
-conversations that were stored before the fix (resumed sessions already hold the split parts).
+The fix goes in Fontaine's request path, as a new `Wire` wrapper modelled on `CacheWire`.
 
 ### New module `rust/fontaine-core/src/providers/reasoning_parts.rs`
 
@@ -59,7 +57,7 @@ impl<W> Wire for ReasoningPartsWire<W> where W: Wire<Op = Completion, Payload = 
     fn encode(&self, request, mode) -> Result<Encoded, EncodeError> {
         let mut encoded = self.inner.encode(request, mode)?;
         // Body::Bytes only, and only when the bytes contain `"type":"reasoning"` (rig serializes
-        // compact JSON), so the usual request is never parsed. Parse; if
+        // compact JSON), so a Chat request without reasoning parts is never parsed. Parse; if
         // merge_reasoning_parts(&mut body) changed anything, re-serialize. If the body is not
         // JSON, leave it as it is.
         Ok(encoded)
@@ -103,8 +101,8 @@ the issue reports the host accepts.
   runs inside, and `CacheWire` marks the result.
 - `openai_compatible.rs`: `let routed = self.client.completion(model);
   Model::new(ReasoningPartsWire::new(routed.wire), routed.transport).erase()`. `OpenAiWire`
-  implements `Wire<Op = Completion, Payload = Encoded>`. On the Responses route the body has no
-  `messages`, so the rewrite does nothing there.
+  implements `Wire<Op = Completion, Payload = Encoded>`. `openai-compatible` always uses the Chat
+  route: the GATEWAY dialect has no route hook and defaults to `Route::Chat`.
 - `providers/mod.rs`: `mod reasoning_parts;`.
 
 ## Implementation Steps
@@ -113,9 +111,13 @@ the issue reports the host accepts.
    `merge_reasoning_parts` as specified, plus unit tests (see Testing). Register it in
    `providers/mod.rs`.
 2. Wrap the Chat wire in `openrouter.rs` (`Connected::model`).
-3. Wrap the routed wire in `openai_compatible.rs` (`Connected::completion`).
+3. Wrap the routed wire in `openai_compatible.rs` (`Connected::completion`). `rig_core::Model`
+   must be imported there.
 4. Add the end-to-end regression test in `rust/fontaine/tests/` with a new scripted `Turn`
-   variant in `rust/fontaine/tests/common/mod.rs` (see Testing).
+   variant in `rust/fontaine/tests/common/mod.rs` (see Testing). The new
+   `Turn::ContentReasoningThenTool` variant also needs an arm in `chat_json` (non-streamed
+   reply) and in `responses_response`, which it reaches through `Turn::answer()`'s wildcard; or
+   map it in `Turn::answer()` to the equivalent `Turn::Tool`.
 
 ## Files to Modify
 
@@ -164,25 +166,25 @@ the CHANGELOG entry.
   function returns `false` for them.
 - At the wire level: `ReasoningPartsWire<Chat>` encodes a `CompletionRequest` whose assistant turn
   holds two replayable `Opaque` reasoning items (placeholder, then signed), and the encoded body
-  has one reasoning part. A body without `"type":"reasoning"` comes out byte-identical.
+  has one reasoning part. `Completion::prepare` runs `history::adapt_for`, which drops opaques
+  whose `origin` does not match the target, and `AssistantMessage::new` leaves `origin: None`; so
+  the hand-built assistant turn must set `origin` to an `Origin` matching the Chat wire's
+  api/provider/model (rig completion/message/native.rs), or the test calls `wire.encode`
+  directly without `prepare`. A body without `"type":"reasoning"` comes out byte-identical.
+- Through `CacheWire::new(ReasoningPartsWire::new(chat), model, PromptCaching{..},
+  CacheScope::StaticPrefix, warn)`, the placeholder plus signed opaques encode to one signed
+  reasoning part, and the cache marker is still on the system message.
 
 **End-to-end regression test** (pins issue #567, the bug seen in the wild). It goes in
 `rust/fontaine/tests/`: add a `Turn::ContentReasoningThenTool` variant to `common/mod.rs` that
 streams the issue's frames (placeholder reasoning part, signed reasoning part, a text delta, a
 tool call, `finish_reason: "tool_calls"`). Run the headless binary for that turn followed by a
 `Turn::text`, then check that the **second** request in `Endpoint::requests()` has exactly one
-`reasoning` part in its assistant message, carrying the signature. Run it for both
-`openai-compatible` (`Sandbox::compatible`) and `openrouter` (user config pointing
-`kind = "openrouter"` at the endpoint). This covers what the unit tests cannot: the real rig
-decode → store → replay path through each provider's wiring.
+`reasoning` part in its assistant message, carrying the signature. Run it for
+`openai-compatible` (`Sandbox::compatible`). This covers what the unit tests cannot: the real rig
+decode → store → replay path through the provider's wiring.
 
 ## Manual Verification
 
 Optional. Re-run the issue's reproduction against the real host. It isn't automated because it
 needs a real Databricks workspace and token.
-
-## Open Questions
-
-- Does the `openai-compatible` kind default to the Chat route for an arbitrary `base_url`? If it
-  routes some models to Responses, the wrapper does nothing there, which is harmless. The e2e
-  test should still confirm it hits `/chat/completions`.
