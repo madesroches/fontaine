@@ -25,6 +25,14 @@ All notable changes are recorded here. The format follows
   text and no signature is dropped. Before, the empty placeholder chunk was sent back as its own
   thinking block, and the host rejected the next request after any turn that thought and then
   called a tool (`each thinking block must contain thinking`) (#567).
+- Every main and subagent turn now sends an explicit `max_tokens`: the model's known output limit,
+  else 32000 (nothing on `ollama`, `anthropic` or `claude-subscription` when the limit is unknown).
+  Before, `openrouter`, `openai-compatible`, `openai` and the other chat kinds left it unset, so a
+  gateway's own default cap applied and a long reasoning-heavy turn could stop at
+  `finish_reason=length` with no answer. A known limit also replaces the fixed 4096 that Messages
+  gateways such as opencode-go sent. The new `[model] max_output_tokens` lowers the cap (clamped
+  to each model's limit; not settable from the shared project file); set it lower for a
+  small-context local server that rejects the 32000 fallback (#571).
 
 ### Changed
 
@@ -45,17 +53,6 @@ All notable changes are recorded here. The format follows
   directory. `fontaine update` reads the receipt's layout, so an earlier install in
   `$CARGO_HOME/bin` keeps updating in place. To move, run the installer again and delete the old
   `$CARGO_HOME/bin/fontaine`; see `docs/installing.md` (#527).
-
-#### Providers
-
-- Every main and subagent turn now sends an explicit `max_tokens`: the model's known output limit,
-  else 32000 (nothing on `ollama`, `anthropic` or `claude-subscription` when the limit is unknown).
-  Before, `openrouter`, `openai-compatible`, `openai` and the other chat kinds left it unset, so a
-  gateway's own default cap applied and a long reasoning-heavy turn could stop at
-  `finish_reason=length` with no answer. A known limit also replaces the fixed 4096 that Messages
-  gateways such as opencode-go sent. The new `[model] max_output_tokens` lowers the cap (clamped
-  to each model's limit; not settable from the shared project file); set it lower for a
-  small-context local server that rejects the 32000 fallback (#571).
 
 ### Added
 
