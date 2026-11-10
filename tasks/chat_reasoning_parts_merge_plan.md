@@ -12,8 +12,7 @@ next request, so the host gets a `thinking` block with no thinking and no signat
 `400 each thinking block must contain thinking`. Any turn that thinks and then calls a tool breaks the
 next request. Fontaine will fix the outgoing request: the streamed fragments of one reasoning part
 get merged back into a single part, and a part left with no text and no signature gets dropped.
-The rewrite is added to the two account kinds that send on the Chat wire with an arbitrary
-`base_url`, `openrouter` and `openai-compatible`.
+The rewrite is added to the two kinds the issue names, `openrouter` and `openai-compatible`.
 
 ## Current State
 
@@ -86,9 +85,9 @@ pub(super) fn merge_reasoning_parts(body: &mut Value) -> bool
 - Once merging is done, drop any reasoning part that is neither signed nor has non-empty `text`
   in any summary entry. This is the issue's fallback rule, and it also covers a stray placeholder
   that was not followed by a fragment.
-- If dropping leaves `content` empty, remove the `content` key. rig only sends an assistant
-  message that has content or `tool_calls`, so this only happens on a tool-call turn, and an
-  absent `content` is valid there.
+- If dropping leaves `content` empty, remove the `content` key when the message has
+  `tool_calls`; otherwise remove the whole assistant message from `messages`, matching rig's own
+  rule of never sending a message with neither.
 - Other part types and other messages are not touched.
 
 Result for the issue's stream: one part
@@ -143,8 +142,6 @@ the issue reports the host accepts.
 - **Scope**: only `openrouter` and `openai-compatible`, the kinds the issue names. Other Chat
   users (`opencode-go`'s Chat wire, `kimi`) can add the wrapper if they ever hit this.
 
-## Decisions
-
 ## Documentation
 
 No user-facing doc change: there is no new config or behavior beyond the fix. The `pr` stage adds
@@ -161,7 +158,10 @@ the CHANGELOG entry.
 - A lone empty unsigned part is dropped. A lone unsigned part that has text is kept.
 - A placeholder separated from the signed part by a text part is dropped, and the signed part is
   kept.
-- A message whose only content was a dropped placeholder loses its `content` key.
+- A message whose only content was a dropped placeholder loses its `content` key when it has
+  `tool_calls`.
+- A message with no `tool_calls` whose content was only a dropped placeholder is removed from
+  `messages`.
 - User messages, string `content`, and a body with no reasoning parts are unchanged, and the
   function returns `false` for them.
 - At the wire level: `ReasoningPartsWire<Chat>` encodes a `CompletionRequest` whose assistant turn
@@ -171,9 +171,6 @@ the CHANGELOG entry.
   the hand-built assistant turn must set `origin` to an `Origin` matching the Chat wire's
   api/provider/model (rig completion/message/native.rs), or the test calls `wire.encode`
   directly without `prepare`. A body without `"type":"reasoning"` comes out byte-identical.
-- Through `CacheWire::new(ReasoningPartsWire::new(chat), model, PromptCaching{..},
-  CacheScope::StaticPrefix, warn)`, the placeholder plus signed opaques encode to one signed
-  reasoning part, and the cache marker is still on the system message.
 
 **End-to-end regression test** (pins issue #567, the bug seen in the wild). It goes in
 `rust/fontaine/tests/`: add a `Turn::ContentReasoningThenTool` variant to `common/mod.rs` that
@@ -181,7 +178,11 @@ streams the issue's frames (placeholder reasoning part, signed reasoning part, a
 tool call, `finish_reason: "tool_calls"`). Run the headless binary for that turn followed by a
 `Turn::text`, then check that the **second** request in `Endpoint::requests()` has exactly one
 `reasoning` part in its assistant message, carrying the signature. Run it for
-`openai-compatible` (`Sandbox::compatible`). This covers what the unit tests cannot: the real rig
+both kinds. `openai-compatible` uses `Sandbox::compatible`. `openrouter` uses `Sandbox::new()` plus
+`user_config(...)` with an account of `kind = "openrouter"`, `base_url = endpoint.url()`, and an
+`api_key_env` whose variable is set via `set_env` (patterns:
+`rust/fontaine/tests/opencode_go_headless.rs:19-22`, `Sandbox::priced` in `common/mod.rs`). This
+covers what the unit tests cannot: the real rig
 decode → store → replay path through the provider's wiring.
 
 ## Manual Verification
