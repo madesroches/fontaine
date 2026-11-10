@@ -221,6 +221,41 @@ fn model_options_belong_to_ollama_only() {
 }
 
 #[test]
+fn auth_belongs_to_anthropic_only() {
+    use fontaine_core::config::AnthropicAuth;
+    let auth_of = |line: &str| {
+        parse(&format!("[accounts.x]\nkind = \"anthropic\"\n{line}"))
+            .unwrap()
+            .accounts
+            .unwrap()["x"]
+            .auth
+    };
+    assert_eq!(auth_of("auth = \"bearer\"\n"), Some(AnthropicAuth::Bearer));
+    assert_eq!(
+        auth_of("auth = \"x-api-key\"\n"),
+        Some(AnthropicAuth::XApiKey)
+    );
+    assert_eq!(auth_of(""), None);
+    assert!(parse("[accounts.x]\nkind = \"anthropic\"\nauth = \"basic\"\n").is_err());
+    for kind in [
+        "openai-compatible",
+        "openai",
+        "gemini",
+        "kimi",
+        "ollama",
+        "opencode-go",
+        "openrouter",
+    ] {
+        let err = parse(&format!(
+            "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\nauth = \"bearer\"\n"
+        ))
+        .unwrap_err();
+        assert!(err.contains("accounts.x.auth"), "{kind}: {err}");
+        assert!(err.contains("not used by kind"), "{kind}: {err}");
+    }
+}
+
+#[test]
 fn quota_belongs_to_openai_compatible_only() {
     let ok = parse(
         "[accounts.k]\nkind = \"openai-compatible\"\nbase_url = \"http://localhost:1\"\nquota = \"kimi\"\n",

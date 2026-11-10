@@ -128,6 +128,11 @@ pub trait Provider: Send + Sync + 'static {
         false
     }
 
+    /// Whether the account may set `auth`.
+    fn accepts_auth(&self) -> bool {
+        false
+    }
+
     /// Whether requests carry cache breakpoints when the account sets no `prompt_caching`.
     fn default_prompt_caching(&self) -> bool {
         false

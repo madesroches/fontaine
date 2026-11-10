@@ -35,6 +35,9 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- An `anthropic` account takes `auth = "bearer"` to send its key as `Authorization: Bearer`
+  instead of `x-api-key`, for Messages-API gateways such as Databricks AI Gateway, OpenRouter's
+  Anthropic endpoint and LiteLLM. The default is unchanged (#566).
 - `/plugin marketplace add|list|update|remove` in the terminal UI: marketplaces are registered,
   updated and removed in the running session, with the same effect as the `fontaine plugin
   marketplace` commands, so installing a plugin no longer needs the CLI or a `!` shell escape

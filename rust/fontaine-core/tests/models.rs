@@ -73,6 +73,8 @@ async fn anthropic_uses_the_messages_wire_and_the_env_key() {
     assert_eq!(handle.kind, AccountKind::named("anthropic"));
     assert_eq!(handle.reference.to_string(), "work/claude-haiku-4-5");
     assert_eq!(say_hi(&handle).await, "hi from anthropic");
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests[0].headers.get("authorization").is_none());
 }
 
 #[tokio::test]
@@ -552,6 +554,60 @@ async fn the_main_account_is_judged_by_the_listing_already_fetched() {
         "work/claude-haiku-5-5"
     );
     assert_eq!(resolved.main_listing.models.len(), 2);
+}
+
+#[tokio::test]
+async fn a_bearer_anthropic_account_sends_the_key_as_a_bearer_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("authorization", "Bearer key-from-env"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "msg_1", "type": "message", "role": "assistant", "model": "claude-haiku-4-5",
+            "content": [{"type": "text", "text": "hi"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 3, "output_tokens": 4},
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.work]\nkind = \"anthropic\"\nbase_url = \"{}\"\napi_key_env = \"WORK_KEY\"\nauth = \"bearer\"\nmodels = [\"claude-haiku-4-5\"]\n\n[model]\nmodel = \"work/claude-haiku-4-5\"\n",
+        server.uri()
+    ));
+    let handle = resolve_main(&w, env_of(&[("WORK_KEY", "key-from-env")])).await;
+    assert_eq!(say_hi(&handle).await, "hi");
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests[0].headers.get("x-api-key").is_none());
+}
+
+#[tokio::test]
+async fn a_bearer_anthropic_account_lists_models_with_the_bearer_header() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/models"))
+        .and(header("authorization", "Bearer k"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": [{"id": "claude-sonnet-4-6", "type": "model", "display_name": "s", "created_at": "2025-01-01T00:00:00Z"}],
+            "has_more": false, "first_id": "a", "last_id": "b"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let w = World::new();
+    w.user_file(&format!(
+        "[accounts.work]\nkind = \"anthropic\"\nbase_url = \"{}\"\napi_key_env = \"K\"\nauth = \"bearer\"\n\n[model]\nmodel = \"work/claude-sonnet-4-6\"\n",
+        server.uri()
+    ));
+    let resolved = resolve_listed(&w, env_of(&[("K", "k")]), &[]).await;
+    assert_eq!(resolved.main_listing.models.len(), 1);
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.headers.get("x-api-key").is_none())
+    );
 }
 
 #[tokio::test]

@@ -5,6 +5,7 @@ use futures::future::BoxFuture;
 use rig_core::DynModel;
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
+use rig_core::providers::anthropic::wire::Auth;
 use rig_core::providers::anthropic::{Anthropic as Client, AnthropicConfig};
 
 use rig_core::providers::registry::ProviderId;
@@ -13,6 +14,7 @@ use super::derived_facts::unlisted_facts;
 use super::{
     AccountClient, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider, vendor,
 };
+use crate::config::AnthropicAuth;
 use crate::transport::caused_client;
 use fontaine_tools::error_chain::chain;
 
@@ -44,10 +46,17 @@ impl Provider for Anthropic {
         true
     }
 
+    fn accepts_auth(&self) -> bool {
+        true
+    }
+
     fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String> {
         let mut config = AnthropicConfig::new(ctx.api_key().unwrap_or_default());
         if let Some(url) = ctx.base_url() {
             config = config.with_base_url(url);
+        }
+        if ctx.account.auth == Some(AnthropicAuth::Bearer) {
+            config.dialect.quirks.auth = Auth::OptionalBearer;
         }
         Ok(Arc::new(Connected {
             client: config.connect(caused_client(ctx.network).map_err(|e| chain(&e))?),
