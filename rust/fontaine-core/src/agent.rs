@@ -264,6 +264,8 @@ pub(crate) struct Setup {
     pub(crate) roles: Arc<Roles>,
     pub(crate) role_chains: Arc<RoleChains>,
     pub(crate) explicit_budget_cap: bool,
+    /// `[model] max_output_tokens`, the cap on every subagent turn's output.
+    pub(crate) max_output_tokens: Option<u32>,
     project_executables: bool,
     confirm_project_servers: bool,
     scheduling: bool,

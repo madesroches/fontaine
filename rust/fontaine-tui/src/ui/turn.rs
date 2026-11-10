@@ -1018,6 +1018,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     provider,
                     native_search: runtime.native_search_active(),
                     generation_options: runtime.turn_generation_options(),
+                    max_tokens: runtime.turn_max_tokens(),
                     served: runtime.served(),
                 },
                 &mut on_event,

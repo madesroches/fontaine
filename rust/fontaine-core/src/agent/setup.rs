@@ -902,6 +902,7 @@ pub(super) fn retained(
         roles,
         role_chains,
         explicit_budget_cap: setup.explicit_budget_cap,
+        max_output_tokens: setup.config.max_output_tokens,
         config_dir: setup.config_dir.clone(),
         home: setup.home.clone(),
         data_dir: setup.data_dir.clone(),
@@ -1023,6 +1024,7 @@ fn child_runner(
             roles: retained.roles.clone(),
             chains: retained.role_chains.clone(),
             explicit_budget_cap: retained.explicit_budget_cap,
+            max_output_tokens: retained.max_output_tokens,
             preamble: Arc::new(move |agent_type: &AgentType| {
                 let roots: Vec<PathBuf> = preamble_state.scope().roots().to_vec();
                 let sources = Sources::for_state(

@@ -310,6 +310,8 @@ pub struct ChildContext {
     pub chains: Arc<RoleChains>,
     /// Whether the run has an explicit cost cap, which skips unpriced fall-through entries.
     pub explicit_budget_cap: bool,
+    /// `[model] max_output_tokens`, which lowers the output cap of every child turn.
+    pub max_output_tokens: Option<u32>,
     pub preamble: Preamble,
     pub approver: Arc<dyn Approver>,
     pub record_content: bool,
@@ -709,6 +711,7 @@ fn child_model(
         model: model_id,
         provider,
         generation_options: model.generation_options_warned(&context.state, effort),
+        max_tokens: model.turn_max_tokens(context.max_output_tokens),
         modalities: model
             .completion
             .spec()
@@ -928,6 +931,8 @@ struct ChildModel {
     provider: String,
     /// The reasoning effort the child's turns send, validated against its model at spawn.
     generation_options: Option<rig_core::completion::GenerationOptions>,
+    /// The output cap the child's turns send, from its own model and the session's cap.
+    max_tokens: Option<u64>,
     /// What the child's model accepts, for the read tool's multimodal dispatch.
     modalities: rig_core::catalog::Modalities,
     /// The role and model its calls are recorded against.
@@ -1036,6 +1041,7 @@ async fn run_child(
                 provider: model.provider.clone(),
                 native_search: false,
                 generation_options: model.generation_options.clone(),
+                max_tokens: model.max_tokens,
                 served: model.served.clone(),
                 span: tracing::Span::current(),
             },

@@ -93,6 +93,7 @@ async fn run(
             provider: "mock".to_string(),
             native_search: false,
             generation_options: None,
+            max_tokens: None,
         },
         &mut |_| Flow::Continue,
     )

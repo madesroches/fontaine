@@ -185,6 +185,9 @@ pub struct TurnParams<'a> {
     /// The turn's reasoning effort, from `ModelHandle::generation_options` on the current model;
     /// `None` sends nothing.
     pub generation_options: Option<GenerationOptions>,
+    /// The output cap the turn's calls send, from `ModelHandle::turn_max_tokens`; `None` sends
+    /// nothing.
+    pub max_tokens: Option<u64>,
     /// The role and model the turn's calls are recorded against in the usage ledger.
     pub served: Served,
 }
@@ -283,6 +286,7 @@ pub async fn run_turn(
             provider: params.provider,
             native_search: params.native_search,
             generation_options: params.generation_options,
+            max_tokens: params.max_tokens,
             served: params.served,
             span: interaction,
         },
@@ -398,6 +402,8 @@ pub struct Drive<'a> {
     /// The reasoning effort this run's model calls send, already checked against the model;
     /// `None` sends nothing.
     pub generation_options: Option<GenerationOptions>,
+    /// The output cap this run's model calls send; `None` sends nothing.
+    pub max_tokens: Option<u64>,
     /// The role and model this run's calls are recorded against in the usage ledger.
     pub served: Served,
     /// The run adopts this span as its own agent span.
@@ -581,6 +587,7 @@ pub async fn drive(
                 provider: params.provider.clone(),
                 native_search: params.native_search,
                 generation_options: params.generation_options.clone(),
+                max_tokens: params.max_tokens,
                 served: params.served.clone(),
                 span: params.span.clone(),
             },
@@ -645,6 +652,10 @@ async fn drive_once(
     // Per turn, not at build, so `/effort` and `/model` take effect without a rebuild.
     let runner = match params.generation_options {
         Some(options) => runner.options(options),
+        None => runner,
+    };
+    let runner = match params.max_tokens {
+        Some(n) => runner.max_tokens(n),
         None => runner,
     };
     // The run adopts the span it is built under as its own agent span.

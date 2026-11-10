@@ -54,6 +54,7 @@ async fn run(built: &Built, prompt: &str) -> TurnOutcome {
             provider: "mock".to_string(),
             native_search: false,
             generation_options: None,
+            max_tokens: None,
         },
         &mut |_| Flow::Continue,
     )
@@ -152,6 +153,7 @@ fn params<'a>(runtime: &'a fontaine_core::agent::AgentRuntime, prompt: &str) -> 
         provider: "mock".to_string(),
         native_search: false,
         generation_options: None,
+        max_tokens: None,
     }
 }
 

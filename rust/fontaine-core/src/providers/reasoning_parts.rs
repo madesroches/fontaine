@@ -349,5 +349,8 @@ mod tests {
             panic!("a chat body is JSON");
         };
         assert_eq!(a, b);
+        // The chat wire carries the output cap as `max_tokens`.
+        let body: serde_json::Value = serde_json::from_slice(a).expect("a JSON body");
+        assert_eq!(body["max_tokens"], 16);
     }
 }

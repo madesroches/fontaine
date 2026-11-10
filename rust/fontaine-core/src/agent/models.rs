@@ -312,6 +312,14 @@ impl AgentRuntime {
             .generation_options_warned(&self.state, self.state.effort())
     }
 
+    /// The output cap the next main turn sends: the current model's limit or the fallback,
+    /// lowered to `[model] max_output_tokens` when set. See `ModelHandle::turn_max_tokens`.
+    pub fn turn_max_tokens(&self) -> Option<u64> {
+        self.models
+            .main
+            .turn_max_tokens(self.config.max_output_tokens)
+    }
+
     /// Resolves the first entry of the list `text` names, rebuilds the agent on it and makes the
     /// list the session's main chain and its entry the model of the session and its subagents,
     /// without saving anything. Returns whether the guardian followed.

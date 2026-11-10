@@ -790,6 +790,7 @@ mod persistence {
                 provider: "mock".to_string(),
                 native_search: false,
                 generation_options: None,
+                max_tokens: None,
             },
             &mut |_| Flow::Continue,
         )
@@ -1117,6 +1118,7 @@ mod killed {
                 provider: "mock".to_string(),
                 native_search: false,
                 generation_options: None,
+                max_tokens: None,
             },
             &mut |_| Flow::Continue,
         )

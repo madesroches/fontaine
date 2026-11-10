@@ -525,6 +525,8 @@ pub struct ModelSection {
     /// role.
     pub model: Option<OneOrMany>,
     pub effort: Option<Effort>,
+    /// The output cap a main or subagent turn sends, lowered to the model's own limit.
+    pub max_output_tokens: Option<u32>,
 }
 
 /// `[models]`: the user's model roles.
@@ -1766,6 +1768,9 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
     {
         return bad("model.model", &message);
     }
+    if s.model.as_ref().and_then(|m| m.max_output_tokens) == Some(0) {
+        return bad("model.max_output_tokens", "must be at least 1");
+    }
     for (name, list) in s.models.iter().flat_map(|m| m.roles.iter().flatten()) {
         let key = format!("models.roles.{name}");
         if let Err(message) = fontaine_agents::registry::valid_role_name(name) {
@@ -2672,6 +2677,8 @@ pub struct Config {
     pub main_source: MainSource,
     /// `[model] effort`; unset sends no reasoning parameter.
     pub effort: Option<Effort>,
+    /// `[model] max_output_tokens`; unset sends the model's output limit, else a fixed fallback.
+    pub max_output_tokens: Option<u32>,
     pub guardian: Guardian,
     pub permissions: Permissions,
     pub hooks: Hooks,
@@ -2778,6 +2785,7 @@ impl Config {
             roles: BTreeMap::new(),
             main_source: MainSource::Unset,
             effort: None,
+            max_output_tokens: None,
             guardian: Guardian {
                 model: None,
                 profile: GuardianProfile::Full,
@@ -2921,6 +2929,9 @@ impl Config {
         }
         if let Some(effort) = s.model.as_ref().and_then(|m| m.effort) {
             self.effort = Some(effort);
+        }
+        if let Some(cap) = s.model.as_ref().and_then(|m| m.max_output_tokens) {
+            self.max_output_tokens = Some(cap);
         }
         if let Some(g) = &s.guardian {
             let t = &mut self.guardian;

@@ -97,6 +97,7 @@ async fn with_one_child_seen(
             provider: "mock".to_string(),
             native_search: false,
             generation_options: None,
+            max_tokens: None,
         },
         &mut |_| Flow::Continue,
     )
@@ -438,6 +439,7 @@ async fn a_resumed_session_brings_back_a_done_agent_idle_and_wakes_it_from_its_l
             provider: "mock".to_string(),
             native_search: false,
             generation_options: None,
+            max_tokens: None,
         },
         &mut |_| Flow::Continue,
     )

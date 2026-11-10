@@ -219,6 +219,7 @@ async fn root_turn(built: &Built) {
             provider: "mock".to_string(),
             native_search: false,
             generation_options: built.runtime.turn_generation_options(),
+            max_tokens: built.runtime.turn_max_tokens(),
         },
         &mut |_| Flow::Continue,
     )

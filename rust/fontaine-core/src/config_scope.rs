@@ -874,6 +874,7 @@ mod tests {
     fn effort_keys_refuse_the_shared_project_file() {
         for text in [
             "[model]\neffort = \"high\"\n",
+            "[model]\nmax_output_tokens = 4096\n",
             "[agents.types.x]\neffort = \"max\"\n",
         ] {
             assert_scope(text, Column::Project, text);
