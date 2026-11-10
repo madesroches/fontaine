@@ -15,20 +15,24 @@ today) and `headersHelper` scripts restricted to trusted scopes.
   `env_vars`, `env`, `url`; `#[serde(deny_unknown_fields)]` means a `headers` key in a settings
   TOML is a parse error. `.mcp.json` entries with `headers` are parsed but warned about and
   dropped (`rust/fontaine-core/src/mcp_json.rs:103`). CLI stubs `reject_header` /
-  `reject_oauth` (`rust/fontaine/src/cli.rs:216-222`) make `-H/--header` and
+  `reject_oauth` (`rust/fontaine/src/cli.rs:224`/`228`) make `-H/--header` and
   `--client-id/--client-secret/--callback-port` fail with "not supported yet (see issue #32)".
 - **Transport** — `fontaine-tools/src/mcp/servers.rs` builds one reqwest client per HTTP server
-  (`http_client`, line 314, applying `[network]` proxy/CA/client-cert via `tls::build_client`)
-  and hands it to `StreamableHttpClientTransport::with_client` (line 399). No headers, no auth;
+  (`http_client`, line 343, applying `[network]` proxy/CA/client-cert via `tls::build_client`)
+  and hands it to `StreamableHttpClientTransport::with_client` (line 543). No headers, no auth;
   a 401 is a permanent failure (`McpErrorKind::Permanent`, line ~694 tests).
 - **rmcp auth stack (feature `auth`, not enabled)** — `rmcp::transport::auth` provides
-  `AuthorizationManager` (protected-resource + authorization-server metadata discovery),
-  `AuthClient<C: OAuthHttpClient>` which implements `StreamableHttpClient` and drives
-  authorization lazily from 401 `WWW-Authenticate` challenges (surfacing
-  `StreamableHttpError::AuthRequired` when no credentials exist),
-  `CredentialStore` / `StateStore` traits (in-memory impls only ship in rmcp), PKCE +
-  loopback-redirect authorization sessions (`AuthorizationRequest`, `AuthorizationSession`),
-  and `WWWAuthenticateParams` for challenge parsing.
+  `AuthorizationManager` (protected-resource + authorization-server metadata discovery;
+  `new_with_oauth_http_client` routes its metadata/authorize/token HTTP through an
+  `OAuthHttpClient` adapter, with `set_credential_store`/`set_state_store` for persistence),
+  `AuthClient<C>` which drives authorization lazily from 401 `WWW-Authenticate` challenges
+  (surfacing `StreamableHttpError::AuthRequired` when no credentials exist) — note
+  `AuthClient` has no `C: OAuthHttpClient` bound and its `StreamableHttpClient` impl
+  requires `C: StreamableHttpClient`, so it wraps the protocol-level reqwest client, not
+  the adapter — `CredentialStore` / `StateStore` traits (in-memory impls only ship in
+  rmcp), PKCE + loopback-redirect authorization sessions (`AuthorizationRequest`,
+  `AuthorizationSession`, driven through `OAuthState`), and `WWWAuthenticateParams` for
+  challenge parsing.
 - **Credentials** — `rust/fontaine-core/src/credentials.rs` writes `credentials.toml` in the
   data dir owner-only (0600, `owner_only::write_atomic`), with a cross-process
   `credentials.lock`; today it holds `accounts`, `telemetry`, `websearch` entries.
@@ -74,9 +78,17 @@ state = "<JSON: rmcp StoredAuthorizationState>"
   versioned by the pinned crate; storing them as JSON strings keeps `credentials.toml` parsing
   decoupled from rmcp and lets a newer rmcp migrate on read.
 - A new `rust/fontaine-core/src/mcp_auth.rs` implements rmcp's `CredentialStore` and
-  `StateStore` traits over this table, going through `credentials::lock()` for read-modify-write
-  so a concurrent `fontaine mcp login` and an agent refresh never clobber each other (the same
-  rotation hazard `TokenSource` handles for provider OAuth). Writes reuse
+  `StateStore` traits over this table. Refresh coordination follows rmcp's contract:
+  `acquire_refresh_guard` returns a `CredentialRefreshGuard` wrapping
+  `credentials::lock(data_dir)`, which the manager holds across its whole
+  load → token request → save sequence, and load/save must not reacquire that same lock —
+  so the file-backed impl locks once per refresh through the guard, with load/save
+  operating under it, rather than taking the lock per call. That is what keeps a concurrent
+  `fontaine mcp login` and an agent refresh from clobbering each other (the same rotation
+  hazard `TokenSource` handles for provider OAuth). On the `StateStore` side,
+  `StoredAuthorizationState` serializes its own `csrf_token` field, so the file-backed
+  `load`/`delete(csrf_token)` match the key against the csrf token embedded in the stored
+  JSON rather than keying entries by it separately. Writes reuse
   `owner_only::write_atomic` (0600). This must live in fontaine-core, not fontaine-tools:
   fontaine-tools has no fontaine-core dependency and adding one would create a cycle
   (fontaine-core depends on fontaine-tools), so rmcp is promoted from a dev-dependency to a
@@ -96,15 +108,24 @@ In `fontaine-tools/src/mcp/servers.rs`:
 - New `ServerSpec`/`Transport::Http` payloads: `headers` (expanded map), `headers_helper`, and
   the file-backed stores as `Arc<dyn CredentialStore>` / `Arc<dyn StateStore>` (built in
   fontaine-core, consumed by `start()` when it wraps the transport in `AuthClient`).
-- An `OAuthHttpClient` adapter over the same reqwest client built by `http_client(network)` so
-  token/metadata/authorize HTTP goes through the user's proxy and CA settings.
-- For every HTTP server, build `AuthorizationManager::new(url)` with the file-backed stores,
-  then `AuthClient::new(adapter, manager)` and pass it to
+- An `OAuthHttpClient` adapter over its own reqwest client built by `http_client(network)` so
+  token/metadata/authorize HTTP goes through the user's proxy and CA settings — a build
+  separate from the protocol client, so declared headers never reach the authorization
+  server.
+- For every HTTP server, build the manager via
+  `AuthorizationManager::new_with_oauth_http_client(url, adapter)` and attach the
+  file-backed stores with `set_credential_store`/`set_state_store`; then
+  `AuthClient::new(reqwest_client, manager)` — `AuthClient<C>` has no `C: OAuthHttpClient`
+  bound and its `StreamableHttpClient` impl requires `C: StreamableHttpClient`, so the
+  wrapped client is the protocol-level reqwest one — and pass that to
   `StreamableHttpClientTransport::with_client`. rmcp's design is lazy: requests go out
   unauthenticated when no usable token exists and the server's 401 challenge drives
   authorization, so always wrapping costs nothing for open servers.
-- When the server has declared `headers`, they are applied on the underlying reqwest client
-  (default headers) so they ride every protocol request — independent of OAuth.
+- When the server has declared `headers`, they are passed as
+  `StreamableHttpClientTransportConfig::custom_headers`, which rmcp applies to protocol
+  requests only and validates against reserved header names — never as reqwest default
+  headers, which would leak secret-bearing values to the authorization server's
+  token/metadata/authorize endpoints (a different origin). Independent of OAuth.
 - `headers_helper`: when set, the executable is run at connect time, its stdout parsed as
   `KEY: VALUE` lines, and those headers merged in. It runs **only when the declaration's
   origin is trusted**, stated at `Slot` granularity: refused for `Slot::Project` only (the
@@ -115,6 +136,9 @@ In `fontaine-tools/src/mcp/servers.rs`:
   message naming the scope: a repo Fontaine merely opened (cloned, checked out) must not be
   able to make Fontaine execute a script. (This is the "headersHelper runs only for trusted
   scopes" requirement.)
+- Approval: `headers` and `headers_helper` join the `server_digest` canonicalization in
+  `agent/mcp.rs`, so adding or changing either on an already-approved server invalidates the
+  approval — the digest must cover everything that alters what is sent to the remote.
 - Supervisor reconnection (`mcp_supervisor.rs`) treats `AuthRequired` as permanent, with the
   error message naming `fontaine mcp login <name>`.
 
@@ -122,10 +146,14 @@ In `fontaine-tools/src/mcp/servers.rs`:
 
 A new `McpAction::Login` / `Logout` in `rust/fontaine/src/cli.rs` / `mcp_cmd.rs`:
 
-1. Resolve the server (must be `url`), build `AuthorizationManager` with the file-backed
-   stores, `configure_client(OAuthClientConfig)` with a loopback redirect URI on a fixed
-   callback port (Claude Code uses a fixed port; pick one, e.g. 3111, with
-   `AuthorizationRequest::new(redirect_uri)`), PKCE on by default in rmcp.
+1. Resolve the server (must be `url`), build the `AuthorizationManager` with the file-backed
+   stores, and drive rmcp's discovery + dynamic-registration + PKCE flow through
+   `OAuthState`: `start_authorization(AuthorizationRequest::new(redirect_uri))` resolves the
+   metadata and opens an `AuthorizationSession` (no `configure_client(OAuthClientConfig)` —
+   that path requires already-resolved metadata and a pre-registered client_id). The
+   redirect URI is loopback on a fixed callback port (Claude Code uses a fixed port; pick
+   one, e.g. 3111); with no pre-registered identity, registration falls back to Dynamic
+   Client Registration and the resulting `client_id` is stored in `StoredCredentials`.
 2. Print the authorize URL, open the user's browser (`open` crate equivalent — check
    `fontaine-tui`/`fontaine` for an existing opener; else print the URL and let the user open
    it), run the loopback callback listener until the redirect arrives or a timeout (5 min).
@@ -134,8 +162,9 @@ A new `McpAction::Login` / `Logout` in `rust/fontaine/src/cli.rs` / `mcp_cmd.rs`
    "authentication required; run `fontaine mcp login <name>`". This matches the existing
    user-interaction posture (`mcp_requires_user_interaction_plan.md`): no hidden prompts in
    headless runs.
-5. `logout` clears the server's `[mcp]` entry (and would delete a dynamic client registration
-   if rmcp stored one — it does not persist registration, so clearing tokens suffices).
+5. `logout` clears the server's `[mcp]` entry. rmcp does persist the dynamically registered
+   client — as the `client_id` field of `StoredCredentials` — so clearing the entry drops
+   the registration too, and the next login simply re-registers.
 
 The TUI `/mcp` listing shows an `auth` column (ok / required / n/a) driven by whether the
 server is HTTP and whether tokens exist; reconnect after a CLI login picks them up.
@@ -160,23 +189,34 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
    `mcp_config.rs`: write `headers` / `headers_helper` in `server_table` (~line 277) and
    `json_entry` (~line 319) — both build field-by-field today and would silently drop headers
    (`mcp add -H` stores nothing otherwise).
-3. `mcp_json.rs`: parse `headers` / `headersHelper`; drop the #32 warnings.
-4. `credentials.rs`: `[mcp]` table, `McpEntry`, public API `mcp_get`/`mcp_put`/`mcp_remove`
-   under the existing lock. New `fontaine-core/src/mcp_auth.rs`: `CredentialStore` +
-   `StateStore` impls over that API.
-5. `fontaine-tools/src/mcp/auth.rs`: the `OAuthHttpClient` reqwest adapter honoring
-   `[network]` (the store impls live in fontaine-core — step 4).
-6. `servers.rs`: thread headers/helper through `ServerSpec::Http` — including the
-   `Arc<dyn CredentialStore>` / `Arc<dyn StateStore>` from step 4 — into `start()`, which
-   builds the `AuthClient` for HTTP servers; helper execution + header merge; `AuthRequired`
-   error text. Header values are `${VAR}`-expanded upstream of this: extend `expanded()` in
-   `agent/mcp.rs` (~lines 190–219) to map `headers` values through `expand_at_start`, with the
-   same credential-variable refusal as `url`/`command` for repo definitions.
-7. `cli.rs` / `mcp_cmd.rs`: `login` / `logout` actions; unhide `-H/--header`; remove the
+3. `agent/mcp.rs`: extend `server_digest` (~line 56) to canonicalize `headers` and
+   `headers_helper` alongside name/command/args/env_vars/env/url/expand — both alter what is
+   sent to the remote server, so they must enter the per-server approval digest (included
+   only when set, matching the `expand` treatment).
+4. `mcp_json.rs`: parse `headers` / `headersHelper`; drop the #32 warnings.
+5. `credentials.rs`: `[mcp]` table, `McpEntry`, public API `mcp_get`/`mcp_put`/`mcp_remove`.
+   New `fontaine-core/src/mcp_auth.rs`: `CredentialStore` + `StateStore` impls over that
+   API, with `acquire_refresh_guard` returning a `CredentialRefreshGuard` around
+   `credentials::lock(data_dir)` and load/save operating under that guard instead of taking
+   the lock per call (the manager holds the guard across load → token request → save).
+6. `fontaine-tools/src/mcp/auth.rs`: the `OAuthHttpClient` reqwest adapter honoring
+   `[network]` (the store impls live in fontaine-core — step 5).
+7. `servers.rs`: thread headers/helper through `ServerSpec::Http` — including the
+   `Arc<dyn CredentialStore>` / `Arc<dyn StateStore>` from step 5 — into `start()`, which
+   for HTTP servers builds the `AuthorizationManager` via
+   `new_with_oauth_http_client(url, adapter)` (+ `set_credential_store`/`set_state_store`),
+   wraps the protocol-level reqwest client in `AuthClient::new(reqwest_client, manager)`,
+   and passes it to `StreamableHttpClientTransport::with_client` with the declared headers
+   in `StreamableHttpClientTransportConfig::custom_headers` (never as client default
+   headers); helper execution + header merge; `AuthRequired` error text. Header values are
+   `${VAR}`-expanded upstream of this: extend `expanded()` in `agent/mcp.rs` (~lines 190–219)
+   to map `headers` values through `expand_at_start`, with the same credential-variable
+   refusal as `url`/`command` for repo definitions.
+8. `cli.rs` / `mcp_cmd.rs`: `login` / `logout` actions; unhide `-H/--header`; remove the
    `--client-id/--client-secret/--callback-port` stubs.
-8. TUI `ui/mcp.rs`: auth status column.
-9. Docs: `docs/mcp.md` (auth section, headers, headersHelper trust rule), `docs/configuration.md`
-   (credentials schema + validation rules).
+9. TUI `ui/mcp.rs`: auth status column.
+10. Docs: `docs/mcp.md` (auth section, headers, headersHelper trust rule), `docs/configuration.md`
+    (credentials schema + validation rules).
 
 ## Files to Modify
 
@@ -187,6 +227,8 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
 - `rust/fontaine/src/cli.rs`, `mcp_cmd.rs`
 - `rust/fontaine-tui/src/ui/mcp.rs`
 - `docs/mcp.md`, `docs/configuration.md`
+- `CHANGELOG.md` (Unreleased entry: MCP OAuth login for remote servers, `headers` /
+  `headersHelper` declarations)
 
 ## Trade-offs
 
@@ -218,6 +260,9 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
   `[mcp.servers]` config name, so a project reusing a user-scope server's name picks up its
   token. Accepted scope-reuse risk: the token only goes to that server's URL. A URL-binding
   judgment (additionally keying on, or verifying, the URL) is pending and left for the user.
+- **`fontaine mcp list` keeps probing connections** (2026-11-10): an authenticated server is
+  still probed over the network rather than trusting stored tokens; the probe simply surfaces
+  the new `auth` status. (Resolves the plan's earlier open question.)
 
 ## Documentation
 
@@ -236,7 +281,9 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
   through `owner_only::write_atomic`, lock behavior, malformed-JSON entry never clobbers the
   file; the 0600 mode itself is covered by the existing `the_file_is_owner_only` test, since
   MCP writes reuse the same writer.
-- **Unit** (`mcp_auth.rs`): store trait impls against a temp data dir. **Unit**
+- **Unit** (`mcp_auth.rs`): store trait impls against a temp data dir, including `load` /
+  `delete(csrf_token)` matching the key against the csrf token serialized inside the stored
+  `StoredAuthorizationState` JSON. **Unit**
   (`fontaine-tools/src/mcp/auth.rs`): adapter maps rmcp's `OAuthHttpRequest` onto reqwest
   including redirect policy and `[network]` proxy env.
 - **Integration** (`fontaine-tools/tests/mcp_common` wiremock server): full OAuth dance —
@@ -258,16 +305,8 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
    `fontaine mcp login github` — browser opens, authorize, tools list in
    `fontaine mcp list`. Not automated: requires a real GitHub OAuth app round-trip and a human
    browser; breakage would be obvious (login fails immediately).
-2. After the step-1 login, a later connect reuses the stored token without re-authorizing
-   (re-run `fontaine mcp list` — no second browser flow). Not automated: this half of the
-   round-trip needs the real GitHub OAuth app; the 0600 file mode and the `[mcp]` parse
-   round-trip are covered by the `credentials.rs` unit tests.
-3. Re-run `fontaine mcp list` after `fontaine mcp logout github` — server shows
-   authentication required.
 
 ## Open Questions
 
 - Which callback port? Claude Code's exact port is undocumented in the issue; pick an
   unregistered-looking default (3111) — the review pass may settle this from the parity docs.
-- Should `fontaine mcp list` attempt a probe connection (current behavior) or trust stored
-  tokens and skip the network probe for authenticated servers? Deferred: keep current probing.
