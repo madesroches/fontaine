@@ -130,7 +130,8 @@ impl Layout {
         // Cargo's configured target dir is authoritative when the exe descends from it:
         // anything between it and the profile dir is a triple, and the configured dir's
         // own name is part of the target dir even when it contains a `-`.
-        let matched = cargo_target_dir.and_then(|c| configured_target_match(above, c));
+        let matched =
+            cargo_target_dir.and_then(|c| configured_target_match(above, c, build_target));
         let (triple, target_dir) = match matched {
             Some((dir, rest)) => {
                 let triple = rest
@@ -176,11 +177,22 @@ impl Layout {
 /// `above` (the triple segment, if any). Absolute configured dirs match by prefix; relative
 /// ones match as a contiguous run of `above`'s trailing components (with the base
 /// `current_exe()` cannot reveal), because `current_exe()` is absolute and Cargo resolved
-/// the configured dir against that unknown base.
-fn configured_target_match(above: &Path, configured: &Path) -> Option<(PathBuf, PathBuf)> {
+/// the configured dir against that unknown base. A match is accepted only when the
+/// remainder is empty or the build target: a CLI `--target-dir` may override
+/// `CARGO_TARGET_DIR` into a subdirectory of it, and the overridden name (e.g. `host`) is
+/// not a triple; anything else falls through to the unconfigured heuristic.
+fn configured_target_match(
+    above: &Path,
+    configured: &Path,
+    build_target: Option<&str>,
+) -> Option<(PathBuf, PathBuf)> {
     if configured.is_absolute() {
         let rest = above.strip_prefix(configured).ok()?;
-        return Some((configured.to_path_buf(), rest.to_path_buf()));
+        let rest = rest.to_path_buf();
+        if !valid_configured_rest(&rest, build_target) {
+            return None;
+        }
+        return Some((configured.to_path_buf(), rest));
     }
     let suffix: Vec<_> = configured.components().collect();
     let comps: Vec<_> = above.components().collect();
@@ -189,19 +201,39 @@ fn configured_target_match(above: &Path, configured: &Path) -> Option<(PathBuf, 
     }
     // The configured dir sits directly below the (unknown) base Cargo resolved it
     // against, so it is a contiguous run of `above`'s components with at most one
-    // segment — the triple — after it.
+    // segment — the triple — after it. A match carrying the build target as that
+    // segment is a real triple layout and wins over an empty-remainder match of the
+    // same configured name (a base directory may itself end with it).
+    let mut dir_only = None;
     for start in (0..=comps.len() - suffix.len()).rev() {
         if comps[start..start + suffix.len()] != suffix[..] {
             continue;
         }
         let rest: PathBuf = comps[start + suffix.len()..].iter().collect();
-        if rest.components().count() > 1 {
+        if !valid_configured_rest(&rest, build_target) {
             continue;
         }
         let base: PathBuf = comps[..start].iter().collect();
-        return Some((base.join(configured), rest));
+        let matched = (base.join(configured), rest);
+        if matched.1.components().next().is_some() {
+            return Some(matched);
+        }
+        if dir_only.is_none() {
+            dir_only = Some(matched);
+        }
     }
-    None
+    dir_only
+}
+
+/// The remainder between a matched configured dir and `above` is a triple segment only
+/// when it is empty or equals the outer build's target triple.
+fn valid_configured_rest(rest: &Path, build_target: Option<&str>) -> bool {
+    match rest.components().next() {
+        None => true,
+        Some(_) => {
+            rest.components().count() == 1 && build_target.is_some_and(|t| rest == Path::new(t))
+        }
+    }
 }
 
 /// Best-effort triple detection for the optional segment between the target dir and the
@@ -451,9 +483,10 @@ mod tests {
 
     #[test]
     fn triple_under_configured_target_dir_is_still_detected() {
-        let l = layout_with_env(
+        let l = layout_with_target(
             "/ws/my-target/x86_64-pc-windows-gnu/debug/deps/my_test.exe",
             Some("/ws/my-target"),
+            Some("x86_64-pc-windows-gnu"),
         )
         .unwrap();
         assert_eq!(l.target_dir, Path::new("/ws/my-target"));
@@ -474,9 +507,10 @@ mod tests {
 
     #[test]
     fn triple_under_relative_target_dir_is_still_detected() {
-        let l = layout_with_env(
+        let l = layout_with_target(
             "/ws/my-target/x86_64-pc-windows-gnu/debug/deps/my_test.exe",
             Some("my-target"),
+            Some("x86_64-pc-windows-gnu"),
         )
         .unwrap();
         assert_eq!(l.target_dir, Path::new("/ws/my-target"));
@@ -485,6 +519,51 @@ mod tests {
             l.profile_dir,
             Path::new("/ws/my-target/x86_64-pc-windows-gnu/debug")
         );
+    }
+
+    #[test]
+    fn cli_overridden_target_dir_under_env_dir_absolute_is_not_misread_as_triple() {
+        // Regression: CARGO_TARGET_DIR=/tmp/base with an outer `cargo test --target-dir
+        // /tmp/base/host` places the exe under /tmp/base/host/debug/deps. `host` is the
+        // overridden directory name, not a triple: the configured match is rejected and
+        // the fallback treats the whole overridden dir as the target dir rather than
+        // forwarding `host` as `--target`.
+        let l = layout_with_target(
+            "/tmp/base/host/debug/deps/my_test",
+            Some("/tmp/base"),
+            Some("x86_64-unknown-linux-gnu"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/tmp/base/host"));
+        assert_eq!(l.triple, None);
+        assert_eq!(l.profile_dir, Path::new("/tmp/base/host/debug"));
+    }
+
+    #[test]
+    fn cli_overridden_target_dir_under_env_dir_relative_is_not_misread_as_triple() {
+        let l = layout_with_target(
+            "/ws/base/host/debug/deps/my_test",
+            Some("base"),
+            Some("x86_64-unknown-linux-gnu"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/base/host"));
+        assert_eq!(l.triple, None);
+        assert_eq!(l.profile_dir, Path::new("/ws/base/host/debug"));
+    }
+
+    #[test]
+    fn relative_match_prefers_target_bearing_over_dir_only() {
+        // A base directory that itself ends with the configured name: the match carrying
+        // the build target as its remainder is the real triple layout.
+        let l = layout_with_target(
+            "/x86_64-pc-windows-gnu/x86_64-pc-windows-gnu/debug/deps/my_test",
+            Some("x86_64-pc-windows-gnu"),
+            Some("x86_64-pc-windows-gnu"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/x86_64-pc-windows-gnu"));
+        assert_eq!(l.triple.as_deref(), Some("x86_64-pc-windows-gnu"));
     }
 
     #[test]
