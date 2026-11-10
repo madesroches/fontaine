@@ -13,10 +13,18 @@ const MAX_UNDO: usize = 100;
 /// Whether the platform's terminal reports AltGr as Ctrl+Alt held together.
 const ALTGR_IS_CTRL_ALT: bool = cfg!(windows);
 
+// The initializer is already `const`; clippy still flags it on the windows-gnu target, and an
+// `allow` on the macro invocation itself is ignored.
 #[cfg(test)]
-thread_local! {
-    static ALTGR_OVERRIDE: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+#[allow(clippy::missing_const_for_thread_local)]
+mod altgr_override {
+    thread_local! {
+        pub(super) static ALTGR_OVERRIDE: std::cell::Cell<Option<bool>> =
+            const { std::cell::Cell::new(None) };
+    }
 }
+#[cfg(test)]
+use altgr_override::ALTGR_OVERRIDE;
 
 /// The character a key types into a text field, or `None` when it is not text: a `Char` with
 /// neither Ctrl nor Alt (Shift is fine), or an AltGr-composed `Char`.
