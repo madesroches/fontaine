@@ -56,8 +56,7 @@ account. Issue: #557.
 
 ### 2. The login command, owned by the provider (open/closed)
 
-- A fallible free function `login_command(cli_path, config_dir, env) -> Result<ExternalLogin,
-  ClaudeError>` where `ExternalLogin { program, args, env, display }` is built from the same
+- A free function `login_command(cli_path, config_dir, env) -> ExternalLogin` where `ExternalLogin { program, args, env, display }` is built from the same
   program path (`cli_path` or bare `claude`) and `CLAUDE_CONFIG_DIR` as the probes. The login is a
   std `Command` with inherited env and stdio and no
   process-group/creation flags, as `memory.rs` ~l.138-146 does for the editor. `display` is the
@@ -65,12 +64,8 @@ account. Issue: #557.
   The command is `claude auth login --claudeai` (Claude subscription; matches the
   `auth_method == "claude.ai"` check). On Windows it launches the same `.exe` the probes use
   (`.cmd` shims are unsupported, as today).
-- `login_command` runs the env-conflict check first: an inherited `ANTHROPIC_API_KEY` etc. would
-  change what the login does, so the same refusal applies. That check (today `Cli::check_environment`,
-  cli.rs ~l.328-345) is pulled into a free function that both `Cli::check_environment` and
-  `login_command` call.
-- New `Provider::external_login(&self, account, env) -> Option<Result<ExternalLogin, Box<ProviderError>>>`
-  (like `Provider::list`) with default `None`, converting with `ClaudeError::boxed()`; `ClaudeSubscription` implements it. The TUI and setup never name the claude kind.
+- New `Provider::external_login(&self, account, env) -> Option<ExternalLogin>`
+  (like `Provider::list`) with default `None`; `ClaudeSubscription` implements it. The TUI and setup never name the claude kind.
 
 ### 3. A typed check result
 
@@ -100,7 +95,7 @@ keeps the provider error as `source()` (AGENTS.md chain convention): its new sha
 
 In `ui/providers.rs::external_check`, on `ExternalCheckError::NotSignedIn`:
 
-1. Ask "`claude` is not signed in. Run `claude auth login` now? (opens a browser; you may be asked
+1. Ask "`claude` is not signed in. Run `<login.display>` now? (opens a browser; you may be asked
    to paste a code)", awaiting the answer inline the same way `ui/providers.rs::sign_in` does
    (`self.input.recv()`), with `ConfirmPrompt::handle_key` as the widget (the setup screen uses
    the provider dialog's `Confirm` state with a new variant). Declining ends with the existing
@@ -152,8 +147,8 @@ because it is built around the main `LiveScreen` and `ReaderPause`.
 ### 6. Headless: fail fast
 
 - Main model: a not-signed-in account already fails in `resolve_models` before `headless::run`;
-  only the message changes, to ``account `claude` is not signed in; run `claude auth login`, then
-  retry`` (the `login.display` form, so a custom config dir is included).
+  only the message changes, to ``account `claude` is not signed in; run `<login.display>`, then
+  retry`` (so `--claudeai` and a custom config dir are included).
 - Guardian on a separate account (the new case): `headless.rs` stops before the first turn when
   the guardian's account is signed out, using what `announce` already inspects in
   `runtime.models.guardian`; its message has the same form (account name plus `login.display`). The stop applies only to modes that consult the guardian (auto, afk,
@@ -282,8 +277,7 @@ because it is built around the main `LiveScreen` and `ReaderPause`.
 Automated, using the portable `claude_cli_double` fake (never the real binary):
 
 - Unit: `check_login` returns `NotSignedIn` for `logged_in:false`, for unparseable status; `Plan`
-  for a non-claude.ai method; `login_command` carries `cli_path`, `CLAUDE_CONFIG_DIR`, refuses
-  with a conflicting env var; `external_check` yields `NotSignedIn` with the command attached.
+  for a non-claude.ai method; `login_command` carries `cli_path`, `CLAUDE_CONFIG_DIR`; `external_check` yields `NotSignedIn` with the command attached.
 - Unit (guardian): a `NotSignedIn` backend denies every call with the new label and never allows;
   `is_unavailable()` covers both variants; the no-human conversion treats them identically.
 - TUI: point `cli_path` at `claude_cli_double` (extended with an `auth login` scenario that flips
