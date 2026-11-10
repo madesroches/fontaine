@@ -58,11 +58,12 @@ pub fn load_plugin_skills(plugin: &PluginDir) -> Result<Vec<Skill>, ExtensionErr
 ```
 
 It runs the existing `skills` + `commands` loops unchanged — same namespacing
-(`namespaced(plugin.name, segments, base)`), same duplicate-name rejection within those two
-kinds — and returns the `Skill`s instead of pushing them into `Extensions`. `load_plugin` calls
-it and keeps its cross-kind duplicate check for agents and styles against the returned names
-(the existing `seen` set semantics stay intact: build the set from the returned names, then check
-agents and styles against it). No behavior change for session loads.
+(`namespaced(plugin.name, segments, base)`), same `valid_namespaced` rejection for each name
+(same error text) and duplicate-name rejection within those two kinds — and returns the `Skill`s
+instead of pushing them into `Extensions`. `load_plugin` calls it and keeps the
+`valid_namespaced` rejection for agent and style names alongside its cross-kind duplicate check
+against the returned names (the existing `seen` set semantics stay intact: build the set from the
+returned names, then check agents and styles against it). No behavior change for session loads.
 
 A skill is **trustable** when `!skill.declared_tools.is_empty()`. The records to offer are
 `skill_trust::record_of(skill)` — name, digest, tools, commands — exactly what `/skills trust`
@@ -86,8 +87,10 @@ In `plugin_install`, after the executable-surface approval answers `Some(true)` 
 5. On `commit_install` success, write the accepted records with `skill_trust::trust` (its file
    locking and replace-by-name semantics are unchanged), then for each call
    `runtime.state.record_skill_trust(name, digest)` so the ledger and audit log carry the trust
-   as `/skills trust`'s does. Notice per trusted skill:
-   `` `<name>` trusted: its allowed-tools count from this reload on ``.
+   as `/skills trust`'s does; if a write fails, surface the same
+   `could not record the trust: <chain>` error notice `/skills trust` uses, leaving the completed
+   install itself intact. Notice per trusted skill:
+   `` `<name>` trusted: its allowed-tools count from this reload onward ``.
 6. If any trustable skill was declined, one notice naming them and the way to trust later:
    `` left untrusted: <a>, <b>; `/skills trust <name>` or `fontaine plugin trust <plugin>` honours them later ``.
    (The existing first-use warning in `gate.rs` is unchanged.)
@@ -130,7 +133,8 @@ digest and becomes untrusted (or stale) automatically, and the issue covers inst
 
 1. **`rust/fontaine-core/src/extensions.rs`**: extract `load_plugin_skills` from `load_plugin`;
   adjust `load_plugin` to use it while keeping its cross-kind duplicate check. Unit-test the new
-  function: namespacing, skill/command duplicate rejection, `declared_tools` population, digest.
+  function: namespacing, `valid_namespaced` rejection (same error text), skill/command duplicate
+  rejection, `declared_tools` population, digest.
 2. **`rust/fontaine-tui/src/ui/commands/plugin.rs`**: add the trust step to `plugin_install`
   per Design. Decline/quit paths leave nothing recorded.
 3. **`rust/fontaine/src/plugin.rs`**: the CLI offer/hint per Design, reusing
