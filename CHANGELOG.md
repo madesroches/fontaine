@@ -191,6 +191,10 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- TUI on Windows: AltGr characters (`@`, `€`, `{`, `}`, `[`, `]`, `~` on the French Canadian
+  layout, and their kin on every AltGr layout) type into the message box, history search, filter
+  boxes and dialog fields again instead of being dropped. A keymap binding on the same Ctrl+Alt
+  chord still wins (#556).
 - TUI on Windows: user messages and replies reach Windows Terminal's (and conhost's) scrollback
   again, including after an agent switch or a resize. Settled rows now leave the screen by line
   feeds instead of a scroll-up (`CSI S`), whose rows those terminals drop instead of keeping in

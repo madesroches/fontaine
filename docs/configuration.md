@@ -1263,7 +1263,8 @@ included; names read case-insensitively (`Ctrl+Shift+T` and `ctrl+shift+t` are t
 One keystroke per entry — chords (space-separated sequences) are not supported. Binding a
 keystroke that already triggers an action replaces that action's use of the key; several keys may
 trigger one action. A bare printable key (such as `"a"`) bound to an action can no longer be
-typed into the input. Changes apply on the next launch; `/keybindings` prints the effective table
+typed into the input. On Windows, a `ctrl+alt+<char>` binding hides that AltGr character, as the
+console reports AltGr as Ctrl+Alt. Changes apply on the next launch; `/keybindings` prints the effective table
 and the file to edit.
 
 `ctrl+c` (`interrupt`) and `ctrl+d` (`quit`) are reserved: they cannot be rebound or unbound, so

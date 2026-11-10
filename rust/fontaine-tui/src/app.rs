@@ -27,7 +27,9 @@ use crate::confirm_prompt::ConfirmPrompt;
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
 use crate::elicitation::ElicitationPanel;
 use crate::history::History;
-use crate::input::{InputBuffer, MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia};
+use crate::input::{
+    InputBuffer, MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia, typed_char,
+};
 use crate::keymap::Keymap;
 use crate::model_picker::{ModelPicker, PickerKey, PickerPurpose};
 use crate::notify::PromptKind;
@@ -690,7 +692,10 @@ impl App {
                 }
                 self.search_step(false);
             }
-            KeyCode::Char(c) if !control && !key.modifiers.contains(KeyModifiers::ALT) => {
+            KeyCode::Char(_) => {
+                let Some(c) = typed_char(&key) else {
+                    return;
+                };
                 if let Some(search) = &mut self.search {
                     search.query.push(c);
                 }
@@ -1357,7 +1362,10 @@ impl App {
             key = KeyEvent::new(code, key.modifiers - KeyModifiers::CONTROL);
             control = false;
         }
-        if self.agent_list.focused && !control && !self.covered() {
+        if self.agent_list.focused
+            && (!control || (typed_char(&key).is_some() && mapped.is_none()))
+            && !self.covered()
+        {
             return self.list_key(key);
         }
         if mapped == Some(TuiAction::AgentsPanel) && !typing_reason {
@@ -4052,5 +4060,53 @@ mod tests {
         assert!(app.rewind.is_none());
         app.restore_to_input("first");
         assert_eq!(app.input.text(), "first");
+    }
+
+    #[test]
+    fn an_altgr_character_blurs_the_focused_list_and_is_typed_into_the_prompt() {
+        crate::input::with_altgr(true, || {
+            let mut app = with_agent_list();
+            app.agent_list.focused = true;
+            app.handle_input(key(
+                KeyCode::Char('@'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ));
+            assert!(!app.agent_list.focused);
+            assert_eq!(app.input.text(), "@");
+        });
+    }
+
+    #[test]
+    fn a_bound_ctrl_alt_chord_still_fires_with_the_list_focused() {
+        crate::input::with_altgr(true, || {
+            let mut app = with_agent_list();
+            app.keymap = Keymap::resolve(
+                &[("ctrl+alt+@".to_string(), "todos".to_string())]
+                    .into_iter()
+                    .collect(),
+            )
+            .unwrap();
+            app.todos.set_items(some_todos());
+            app.agent_list.focused = true;
+            app.handle_input(key(
+                KeyCode::Char('@'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ));
+            assert!(app.todos.expanded);
+            assert_eq!(app.input.text(), "");
+        });
+    }
+
+    #[test]
+    fn an_altgr_character_is_typed_into_the_history_search() {
+        crate::input::with_altgr(true, || {
+            let mut app = app();
+            ctrl(&mut app, 'r');
+            app.handle_input(key(
+                KeyCode::Char('@'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ));
+            assert_eq!(app.search.as_ref().map(|s| s.query.as_str()), Some("@"));
+        });
     }
 }

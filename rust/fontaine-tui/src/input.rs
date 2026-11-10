@@ -10,6 +10,61 @@ use rig_core::message::ImageMediaType;
 /// The most undo snapshots kept; edits before the oldest are no longer undoable.
 const MAX_UNDO: usize = 100;
 
+/// Whether the platform's terminal reports AltGr as Ctrl+Alt held together.
+const ALTGR_IS_CTRL_ALT: bool = cfg!(windows);
+
+// The initializer is already `const`; clippy still flags it on the windows-gnu target, and an
+// `allow` on the macro invocation itself is ignored.
+#[cfg(test)]
+#[allow(clippy::missing_const_for_thread_local)]
+mod altgr_override {
+    thread_local! {
+        pub(super) static ALTGR_OVERRIDE: std::cell::Cell<Option<bool>> =
+            const { std::cell::Cell::new(None) };
+    }
+}
+#[cfg(test)]
+use altgr_override::ALTGR_OVERRIDE;
+
+/// The character a key types into a text field, or `None` when it is not text: a `Char` with
+/// neither Ctrl nor Alt (Shift is fine), or an AltGr-composed `Char`.
+pub(crate) fn typed_char(key: &KeyEvent) -> Option<char> {
+    // Tests override the flag per thread so the AltGr path runs on every OS.
+    #[cfg(test)]
+    let flag = ALTGR_OVERRIDE
+        .with(|o| o.get())
+        .unwrap_or(ALTGR_IS_CTRL_ALT);
+    #[cfg(not(test))]
+    let flag = ALTGR_IS_CTRL_ALT;
+    typed_char_on(key, flag)
+}
+
+/// `typed_char` with the AltGr-is-Ctrl+Alt flag given. ASCII letters and digits with Ctrl+Alt
+/// stay shortcuts, as no layout composes them with AltGr.
+pub(crate) fn typed_char_on(key: &KeyEvent, altgr_is_ctrl_alt: bool) -> Option<char> {
+    let KeyCode::Char(c) = key.code else {
+        return None;
+    };
+    let mods = key.modifiers;
+    if !mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        return Some(c);
+    }
+    (altgr_is_ctrl_alt
+        && mods.contains(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && !c.is_ascii_alphanumeric()
+        && !c.is_control())
+    .then_some(c)
+}
+
+/// Runs `f` with `typed_char` seeing the given flag.
+#[cfg(test)]
+pub(crate) fn with_altgr<R>(on: bool, f: impl FnOnce() -> R) -> R {
+    let previous = ALTGR_OVERRIDE.with(|o| o.replace(Some(on)));
+    let result = f();
+    ALTGR_OVERRIDE.with(|o| o.set(previous));
+    result
+}
+
 /// A vim operator waiting for its motion or target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PendingOp {
@@ -342,6 +397,10 @@ impl InputBuffer {
 
     /// The readline/emacs key set: unchanged from before vim mode existed.
     fn emacs_key(&mut self, key: KeyEvent) -> bool {
+        if let Some(c) = typed_char(&key) {
+            self.insert(c);
+            return true;
+        }
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
@@ -364,7 +423,6 @@ impl InputBuffer {
                 'd' => self.delete_word_forward(),
                 _ => return false,
             },
-            KeyCode::Char(c) => self.insert(c),
             KeyCode::Backspace if control || alt => self.delete_word(),
             // Backspace on an empty input removes the last attachment chip.
             KeyCode::Backspace if self.chars.is_empty() && self.pop_attachment().is_some() => {}
@@ -389,11 +447,13 @@ impl InputBuffer {
     /// Vim Insert: printable text edits; Esc switches to Normal; the Ctrl+D/H/W editing keys
     /// stay the buffer's. Every other Ctrl+key returns false so the App-level keymap sees it.
     fn vim_insert_key(&mut self, key: KeyEvent) -> bool {
+        if let Some(c) = typed_char(&key) {
+            self.insert(c);
+            return true;
+        }
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             KeyCode::Esc => return self.esc_leaves_insert(),
-            KeyCode::Char(c) if !control && !alt => self.insert(c),
             KeyCode::Char('d') if control => self.delete(),
             KeyCode::Char('h') if control => self.backspace(),
             KeyCode::Char('w') if control => self.delete_word_whitespace(),
@@ -416,15 +476,15 @@ impl InputBuffer {
     /// the App-level keymap (interrupt, history search); every other key is consumed, and an
     /// unrecognized one just cancels a pending operator.
     fn vim_normal_key(&mut self, key: KeyEvent) -> bool {
-        let control = key.modifiers.contains(KeyModifiers::CONTROL);
-        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        if let Some(c) = typed_char(&key) {
+            return self.vim_normal_char(c);
+        }
         match key.code {
             KeyCode::Esc => {
                 // Esc cancels a pending operator but still belongs to the App-level keymap.
                 self.vim = VimState::Normal { pending: None };
                 return false;
             }
-            KeyCode::Char(c) if !control && !alt => return self.vim_normal_char(c),
             KeyCode::Char(_) => return false,
             KeyCode::Left => {
                 self.vim_motion(|b| b.left());
@@ -1326,5 +1386,83 @@ mod tests {
         press(&mut b, Char('y'), C);
         assert_eq!(b.text(), "one two");
         assert!(!press(&mut at("abc", 1), Char('z'), A));
+    }
+
+    fn altgr(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL | KeyModifiers::ALT)
+    }
+
+    #[test]
+    fn typed_char_recognises_text_and_altgr_only_when_the_flag_is_on() {
+        let k = |code, mods| KeyEvent::new(code, mods);
+        let n = KeyModifiers::NONE;
+        let ca = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        for on in [false, true] {
+            assert_eq!(typed_char_on(&k(KeyCode::Char('a'), n), on), Some('a'));
+            assert_eq!(
+                typed_char_on(&k(KeyCode::Char('A'), KeyModifiers::SHIFT), on),
+                Some('A')
+            );
+            assert_eq!(typed_char_on(&k(KeyCode::Char('\n'), n), on), Some('\n'));
+            assert_eq!(
+                typed_char_on(&k(KeyCode::Char('a'), KeyModifiers::CONTROL), on),
+                None
+            );
+            assert_eq!(
+                typed_char_on(&k(KeyCode::Char('a'), KeyModifiers::ALT), on),
+                None
+            );
+            assert_eq!(typed_char_on(&k(KeyCode::Enter, n), on), None);
+            assert_eq!(typed_char_on(&k(KeyCode::Char('a'), ca), on), None);
+            assert_eq!(typed_char_on(&k(KeyCode::Char('A'), ca), on), None);
+            assert_eq!(typed_char_on(&k(KeyCode::Char('2'), ca), on), None);
+        }
+        for c in ['@', '€', '{', 'ł'] {
+            assert_eq!(typed_char_on(&k(KeyCode::Char(c), ca), true), Some(c));
+            assert_eq!(typed_char_on(&k(KeyCode::Char(c), ca), false), None);
+        }
+        assert_eq!(typed_char_on(&k(KeyCode::Char('\u{1}'), ca), true), None);
+    }
+
+    #[test]
+    fn an_altgr_character_is_typed_into_the_buffer() {
+        with_altgr(true, || {
+            let mut b = InputBuffer::default();
+            assert!(b.handle_key(altgr('@')));
+            assert_eq!(b.text(), "@");
+        });
+        with_altgr(false, || {
+            let mut b = InputBuffer::default();
+            assert!(!b.handle_key(altgr('@')));
+            assert_eq!(b.text(), "");
+        });
+    }
+
+    #[test]
+    fn ctrl_alt_letters_stay_shortcuts_under_altgr() {
+        with_altgr(true, || {
+            let mut b = at("abc", 2);
+            assert!(press(
+                &mut b,
+                KeyCode::Char('a'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT
+            ));
+            assert_eq!(b.cursor, 0);
+            assert_eq!(b.text(), "abc");
+        });
+    }
+
+    #[test]
+    fn vim_insert_types_an_altgr_character_and_normal_replaces_with_one() {
+        with_altgr(true, || {
+            let mut b = vim("");
+            assert!(b.handle_key(altgr('{')));
+            assert_eq!(b.text(), "{");
+            let mut b = vim_at("abc", 1);
+            normal(&mut b);
+            b.handle_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
+            assert!(b.handle_key(altgr('@')));
+            assert_eq!(b.text(), "a@c");
+        });
     }
 }

@@ -4,13 +4,13 @@
 use std::time::Instant;
 
 use fontaine_tools::ask_user::{Question, QuestionAnswer, QuestionReply};
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 use tokio::sync::oneshot;
 
 use crate::confirm_prompt::ANSWER_GRACE;
-use crate::input::{InputBuffer, wrap};
+use crate::input::{InputBuffer, typed_char, wrap};
 use crate::theme::Theme;
 
 pub const OTHER_PROMPT: &str = "Other: ";
@@ -146,11 +146,8 @@ impl QuestionPanel {
             KeyCode::Up => self.selected = (self.selected + rows - 1) % rows,
             KeyCode::Down | KeyCode::Tab => self.selected = (self.selected + 1) % rows,
             KeyCode::Enter => return self.confirm(),
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
+            KeyCode::Char(_) => {
+                let c = typed_char(&key)?;
                 match c {
                     'k' => self.selected = (self.selected + rows - 1) % rows,
                     'j' => self.selected = (self.selected + 1) % rows,
@@ -338,6 +335,7 @@ impl QuestionPanel {
 mod tests {
     use super::*;
     use fontaine_tools::ask_user::QuestionOption;
+    use ratatui::crossterm::event::KeyModifiers;
 
     fn option(label: &str) -> QuestionOption {
         QuestionOption {
@@ -737,5 +735,22 @@ mod tests {
             let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
             assert!(!text.chars().any(char::is_control), "{text:?}");
         }
+    }
+
+    #[test]
+    fn an_altgr_character_starts_the_other_answer() {
+        crate::input::with_altgr(true, || {
+            let (mut panel, _rx) = panel(vec![question("Q?", false)]);
+            let later = panel.opened + ANSWER_GRACE;
+            panel.handle_key_at(
+                KeyEvent::new(
+                    KeyCode::Char('@'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ),
+                later,
+            );
+            assert_eq!(panel.selected, 3);
+            assert_eq!(panel.other.text(), "@");
+        });
     }
 }

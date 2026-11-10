@@ -9,10 +9,11 @@ use fontaine_core::accounts::{
 use fontaine_core::config::AccountKind;
 use fontaine_core::providers::{self as accounts_providers, CredentialPolicy};
 use fontaine_tools::error_chain::chain;
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
 
+use crate::input::typed_char;
 use crate::theme::Theme;
 
 /// A secret typed or pasted into the dialog. It has no `Display` and its `Debug` is redacted, so
@@ -162,16 +163,7 @@ pub fn sign_in_failure(error: accounts_providers::SignInError) -> String {
 }
 
 fn is_text(key: &KeyEvent) -> Option<char> {
-    match key.code {
-        KeyCode::Char(c)
-            if !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-        {
-            Some(c)
-        }
-        _ => None,
-    }
+    typed_char(key)
 }
 
 fn clip(text: &str, width: usize) -> String {
@@ -896,6 +888,7 @@ impl ProviderDialog {
 mod tests {
     use super::*;
     use fontaine_core::accounts::SignInState;
+    use ratatui::crossterm::event::KeyModifiers;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -1391,5 +1384,25 @@ mod tests {
             .collect();
         assert_eq!(shown.len(), 6);
         assert!(shown.iter().any(|l| l.starts_with("> a25")), "{shown:?}");
+    }
+
+    #[test]
+    fn an_altgr_character_reaches_a_text_field() {
+        crate::input::with_altgr(true, || {
+            let mut d = dialog();
+            select(&mut d, "work");
+            press(&mut d, KeyCode::Enter);
+            d.handle_key(KeyEvent::new(
+                KeyCode::Char('@'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            ));
+            assert_eq!(
+                press(&mut d, KeyCode::Enter),
+                DialogKey::StoreKey {
+                    account: "work".into(),
+                    key: Secret::new("@"),
+                }
+            );
+        });
     }
 }
