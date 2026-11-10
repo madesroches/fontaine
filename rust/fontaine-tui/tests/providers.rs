@@ -115,24 +115,6 @@ async fn an_external_cli_account_checks_the_cli_and_never_asks_for_a_key() {
     );
 }
 
-/// The Claude CLI double, built as an example of the `fontaine` package.
-fn claude_double() -> std::path::PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "fontaine_claude_cli_double.exe"
-    } else {
-        "fontaine_claude_cli_double"
-    };
-    let path = dir.join(name);
-    assert!(
-        path.exists(),
-        "{} is not built: run `cargo build -p fontaine --example fontaine_claude_cli_double`",
-        path.display()
-    );
-    path
-}
-
 /// A world with a `claude` account on the double, signed out unless `scenario` says otherwise,
 /// and the CLI profile directory that holds the scenario and the log.
 fn signed_out_claude(scenario: serde_json::Value) -> (World, tempfile::TempDir) {
@@ -140,18 +122,10 @@ fn signed_out_claude(scenario: serde_json::Value) -> (World, tempfile::TempDir) 
     std::fs::write(profile.path().join("double.json"), scenario.to_string()).unwrap();
     let account = format!(
         "\n[accounts.claude]\nkind = \"claude-subscription\"\ncli_path = {:?}\nclaude_config_dir = {:?}\n",
-        claude_double().to_string_lossy(),
+        common::claude_double().to_string_lossy(),
         profile.path().to_string_lossy()
     );
     (World::routed("http://127.0.0.1:9", &account), profile)
-}
-
-fn logins(profile: &tempfile::TempDir) -> usize {
-    std::fs::read_to_string(profile.path().join("log.jsonl"))
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| line.contains("\"kind\":\"login\""))
-        .count()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -166,7 +140,7 @@ async fn accepting_the_offer_runs_the_login_and_checks_again() {
         ui.wait_for("sonnet").await;
     })
     .await;
-    assert_eq!(logins(&profile), 1);
+    assert_eq!(common::logins(profile.path()), 1);
     let log = std::fs::read_to_string(profile.path().join("log.jsonl")).unwrap();
     assert!(
         log.contains(r#""argv":["auth","login","--claudeai"]"#),
@@ -185,7 +159,7 @@ async fn declining_the_offer_starts_no_login() {
         ui.wait_for("offers to sign in").await;
     })
     .await;
-    assert_eq!(logins(&profile), 0);
+    assert_eq!(common::logins(profile.path()), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -204,7 +178,7 @@ async fn a_login_that_fails_or_changes_nothing_ends_with_one_attempt_and_no_seco
             assert!(!ui.live().contains("Run `"), "{}", ui.live());
         })
         .await;
-        assert_eq!(logins(&profile), 1);
+        assert_eq!(common::logins(profile.path()), 1);
     }
 }
 

@@ -727,6 +727,8 @@ pub struct Reader {
     open: BTreeSet<usize>,
     suppressed: BTreeSet<usize>,
     native: Option<Native>,
+    /// The account's own sign-in command, shown when the login is refused.
+    login: String,
     streamed_output_tokens: Option<u64>,
     usage: Option<Arc<Usage>>,
     cache_usage: Option<CacheUsage>,
@@ -752,9 +754,19 @@ impl Reader {
             open: BTreeSet::new(),
             suppressed: BTreeSet::new(),
             native: None,
+            login: "claude auth login --claudeai".into(),
             streamed_output_tokens: None,
             cache_usage: None,
         }
+    }
+
+    pub fn with_login(mut self, login: String) -> Self {
+        self.login = login;
+        self
+    }
+
+    pub(crate) fn login(&self) -> &str {
+        &self.login
     }
 
     pub fn expect_ack(&mut self) {
@@ -1307,7 +1319,7 @@ impl Reader {
         match by_status.or(by_text).or_else(|| self.native.clone()) {
             Some(Native::Auth) => ClaudeError::new(
                 ErrorKind::Auth,
-                "the Claude CLI's login was refused; run `claude auth login --claudeai`",
+                format!("the Claude CLI's login was refused; run `{}`", self.login),
             )
             .boxed(),
             Some(Native::Limit) => limit_error().boxed(),
@@ -1354,11 +1366,11 @@ pub(crate) fn classify_text(text: &str) -> Option<Native> {
 
 /// The failure for a process that ended without a complete response, classified from its
 /// stderr and exit status without showing either.
-pub(crate) fn exit_failure(stderr: &str, native: Option<&Native>) -> Failure {
+pub(crate) fn exit_failure(stderr: &str, native: Option<&Native>, login: &str) -> Failure {
     match classify_text(stderr).or_else(|| native.cloned()) {
         Some(Native::Auth) => ClaudeError::new(
             ErrorKind::Auth,
-            "the Claude CLI's login was refused; run `claude auth login --claudeai`",
+            format!("the Claude CLI's login was refused; run `{login}`"),
         )
         .boxed(),
         Some(Native::Limit) => limit_error().boxed(),

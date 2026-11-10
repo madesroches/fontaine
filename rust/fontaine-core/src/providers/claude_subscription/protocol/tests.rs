@@ -843,17 +843,24 @@ fn native_errors_map_without_echoing_what_the_cli_said() {
 
 #[test]
 fn the_reported_category_backs_an_empty_stderr() {
-    assert!(!exit_failure("", Some(&Native::Auth)).is_retryable());
-    assert!(exit_failure("", Some(&Native::Server)).is_retryable());
+    assert!(!exit_failure("", Some(&Native::Auth), "claude auth login").is_retryable());
+    assert!(exit_failure("", Some(&Native::Server), "claude auth login").is_retryable());
 }
 
 #[test]
 fn stderr_classifies_an_early_exit_without_being_shown() {
-    assert!(!exit_failure("Error: not logged in", None).is_retryable());
-    assert!(!exit_failure("usage limit reached for your plan", None).is_retryable());
-    assert!(exit_failure("segfault", None).is_retryable());
+    assert!(!exit_failure("Error: not logged in", None, "claude auth login").is_retryable());
     assert!(
-        !exit_failure("usage limit", None)
+        !exit_failure(
+            "usage limit reached for your plan",
+            None,
+            "claude auth login"
+        )
+        .is_retryable()
+    );
+    assert!(exit_failure("segfault", None, "claude auth login").is_retryable());
+    assert!(
+        !exit_failure("usage limit", None, "claude auth login")
             .to_string()
             .contains("usage limit reached")
     );

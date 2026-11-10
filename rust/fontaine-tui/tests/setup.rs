@@ -1,6 +1,7 @@
 //! The pre-session setup screen: no main model resolves, so the provider dialog runs first and
 //! the session starts once a model does.
 
+mod common;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -342,23 +343,6 @@ async fn typing_a_key_in_the_linear_setup_echoes_bullets_only() {
     assert!(out.ends_with("API key: ••••"), "{out:?}");
 }
 
-fn claude_double() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "fontaine_claude_cli_double.exe"
-    } else {
-        "fontaine_claude_cli_double"
-    };
-    let path = dir.join(name);
-    assert!(
-        path.exists(),
-        "{} is not built: run `cargo build -p fontaine --example fontaine_claude_cli_double`",
-        path.display()
-    );
-    path
-}
-
 /// A scratch setup with a signed-out `claude` account on the double, whose profile directory
 /// holds the scenario and the log.
 fn signed_out_claude(scenario: serde_json::Value) -> (Scratch, PathBuf) {
@@ -370,7 +354,7 @@ fn signed_out_claude(scenario: serde_json::Value) -> (Scratch, PathBuf) {
         &s.user_file,
         format!(
             "[accounts.claude]\nkind = \"claude-subscription\"\ncli_path = {:?}\nclaude_config_dir = {:?}\n\n[model]\nmodel = \"claude/sonnet\"\n",
-            claude_double().to_string_lossy(),
+            common::claude_double().to_string_lossy(),
             profile.to_string_lossy()
         ),
     )
@@ -391,14 +375,6 @@ fn login_of(s: &Scratch) -> fontaine_core::providers::ExternalLogin {
         .expect("the claude account has a login")
 }
 
-fn logins(profile: &std::path::Path) -> usize {
-    std::fs::read_to_string(profile.join("log.jsonl"))
-        .unwrap_or_default()
-        .lines()
-        .filter(|line| line.contains("\"kind\":\"login\""))
-        .count()
-}
-
 #[tokio::test]
 async fn a_signed_out_main_account_opens_on_the_login_offer_and_the_session_starts_after_it() {
     let (s, profile) = signed_out_claude(json!({"auth": {"loggedIn": false}}));
@@ -410,7 +386,7 @@ async fn a_signed_out_main_account_opens_on_the_login_offer_and_the_session_star
         .unwrap()
         .expect("the login signs in and the session starts");
     assert_eq!(models.main.reference.to_string(), "claude/sonnet");
-    assert_eq!(logins(&profile), 1);
+    assert_eq!(common::logins(&profile), 1);
 }
 
 #[tokio::test]
@@ -426,7 +402,7 @@ async fn declining_the_startup_offer_runs_no_login() {
     .await
     .unwrap();
     assert!(out.is_none());
-    assert_eq!(logins(&profile), 0);
+    assert_eq!(common::logins(&profile), 0);
 }
 
 #[tokio::test]
@@ -447,5 +423,5 @@ async fn logging_in_from_the_list_offers_the_login_once() {
     .await
     .unwrap();
     assert!(out.is_none());
-    assert_eq!(logins(&profile), 1);
+    assert_eq!(common::logins(&profile), 1);
 }

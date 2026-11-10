@@ -699,3 +699,29 @@ fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
 fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
     None
 }
+
+/// The Claude CLI double, built as an example of the `fontaine` package.
+pub fn claude_double() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
+    let name = if cfg!(windows) {
+        "fontaine_claude_cli_double.exe"
+    } else {
+        "fontaine_claude_cli_double"
+    };
+    let path = dir.join(name);
+    assert!(
+        path.exists(),
+        "{} is not built: run `cargo build -p fontaine --example fontaine_claude_cli_double`",
+        path.display()
+    );
+    path
+}
+
+pub fn logins(profile: &std::path::Path) -> usize {
+    std::fs::read_to_string(profile.join("log.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains("\"kind\":\"login\""))
+        .count()
+}

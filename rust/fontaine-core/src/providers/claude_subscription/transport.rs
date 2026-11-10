@@ -222,7 +222,8 @@ impl ClaudeTransport {
                 web_search: translated.web_search,
             },
             Some(self.usage.clone()),
-        );
+        )
+        .with_login(self.cli.login().display);
 
         // The model's current row: one that now draws from usage credits, or resolves
         // differently, is refused before a turn.
@@ -368,7 +369,11 @@ async fn write_frame(
     if let Err(error) = child.write_line(value, idle).await {
         if error.kind == ErrorKind::Protocol && child.exit_status().await.is_some() {
             child.settle_stderr().await;
-            return Err(exit_failure(&child.stderr_text(), reader.native()));
+            return Err(exit_failure(
+                &child.stderr_text(),
+                reader.native(),
+                reader.login(),
+            ));
         }
         return Err(provider(error));
     }
@@ -391,7 +396,11 @@ pub(super) async fn next(
             // Let the exit be observed so stderr is complete before it is classified.
             child.exit_status().await;
             child.settle_stderr().await;
-            Err(exit_failure(&child.stderr_text(), reader.native()))
+            Err(exit_failure(
+                &child.stderr_text(),
+                reader.native(),
+                reader.login(),
+            ))
         }
         Err(ReadFail::Idle) => Err(Box::new(read_idle_error(idle))),
         Err(ReadFail::TooLong | ReadFail::Io) => Err(provider(ClaudeError::new(
