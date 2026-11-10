@@ -33,6 +33,8 @@ url = "https://mcp.example.com/docs"
 | `env_vars` | The names of environment variables to pass through. Stdio only. |
 | `env` | Literal variables set on the server, after the pass-through and [`[env]`](#declaring-servers) layers, replacing a variable of the same name. Stdio only. |
 | `url` | The endpoint of a streamable HTTP server. It is reached through the proxy, extra CA roots and client certificate of [`[network]`](configuration.md#network). |
+| `headers` | Static headers sent on the server's protocol requests, as a map. HTTP servers only; never sent to an OAuth authorization server. See [Authentication](#authentication). |
+| `headers_helper` | Path to an executable run at connect time; its `KEY: VALUE` stdout lines become headers, overriding static `headers` of the same name. HTTP servers only, and never in the project scope; see [Authentication](#authentication). |
 
 A server name contains letters, digits, `_` and `-`, and has no `__` and no leading or trailing `_`.
 
@@ -129,8 +131,12 @@ with [`/mcp reconnect`](#reconnecting).
   `mcp__github__*` in `allow`, `ask` or `deny` work like any other rule. Allow rules come from
   user-trust scopes only, so a repository can never allow its own server's tools. No rule
   pre-approves a tool its server marked as requiring your approval.
-- **Credentials stay out.** Nothing is sent to a streamable HTTP server but the protocol's own
-  requests; Fontaine adds no credentials of its own.
+- **Credentials stay out of stdio.** A stdio server does not inherit your model-account keys,
+  the telemetry credentials or any other secret: it gets the base set and what you name. A
+  streamable HTTP server in the project scope likewise never receives credential variables
+  through `${VAR}` expansion. Authenticating *to* a remote server is a different thing and is
+  [described below](#authentication): it stores an OAuth token bound to that one URL, never a
+  credential of yours.
 
 ### Requiring approval for a tool
 
@@ -183,13 +189,14 @@ make that approval stricter.
 ### `.mcp.json`
 
 Each entry takes `type` (`stdio` or `http`; absent means `stdio` for a `command` entry and `http`
-for a `url` entry), `command`, `args`, `env` and `url`. An entry with `type` `sse` or `ws` is
-skipped with a warning, since those transports are not supported yet. `headers` is not supported
-yet either: the server is kept, connects without them, and a warning says so.
+for a `url` entry), `command`, `args`, `env`, `url`, `headers` and `headersHelper`. An entry
+with `type` `sse` or `ws` is skipped with a warning, since those transports are not supported
+yet. `headers` and `headersHelper` behave as in the [key table](#declaring-servers): http only,
+and a helper is refused in the project scope.
 
-`${VAR}` and `${VAR:-default}` in `command`, `args`, `env` values and `url` are expanded **when the
-server starts**, from Fontaine's environment. `${CLAUDE_PROJECT_DIR}` is the session's workspace
-root, never a value inherited from a parent process. Because the text stays as written, the
+`${VAR}` and `${VAR:-default}` in `command`, `args`, `env` values, `url` and `headers` values
+are expanded **when the server starts**, from Fontaine's environment. `${CLAUDE_PROJECT_DIR}` is
+the session's workspace root, never a value inherited from a parent process. Because the text stays as written, the
 approval prompt shows `${GITHUB_TOKEN}` and never the value, lists the variables the definition
 references next to its environment names, and the approval survives a rotated token but not a
 changed reference.
@@ -216,16 +223,61 @@ name = "github"
 digest = "9f2c1c8e1a7d4b1f"
 ```
 
+## Authentication
+
+A streamable HTTP server can require OAuth 2.1, as the MCP authorization spec describes.
+Fontaine drives the flow with the protocol library's own auth stack; nothing about it changes
+how the server's tools are judged.
+
+**`fontaine mcp login <name>`** signs in to one configured server:
+
+1. It discovers the server's protected-resource metadata and authorization-server metadata,
+   registers itself with the server (dynamic client registration; Fontaine has no hosted client
+   identity of its own), and prints the authorize URL to open in your browser.
+2. The server redirects to Fontaine's loopback listener on the fixed port 3111, where the
+   sign-in completes; the listener gives up after 5 minutes. PKCE protects the exchange.
+3. The token is stored under the server's name in `<data dir>/credentials.toml`, in a `[mcp]`
+   table, through the same owner-only writer and cross-process lock as your other credentials.
+   The entry also records the URL the token was issued for: a declaration whose `url` differs
+   from the stored one never receives the token, and fails with a message naming
+   `fontaine mcp login <name>` — so a project reusing a user-scope server's name cannot ride on
+   its login.
+
+While a token is valid it is sent as `Authorization: Bearer` and refreshed as it expires; a
+refresh and a concurrent `fontaine mcp login` coordinate through the credentials lock, so they
+cannot clobber each other. **`fontaine mcp logout <name>`** deletes the entry, including the
+registration; the next login simply registers again.
+
+A server that answers 401 while no usable token is stored fails permanently with
+`authentication required; run fontaine mcp login <name>` — reconnecting cannot fix that, and a
+[headless run](headless.md) never starts the flow for you. The `/mcp` listing's auth column
+shows `ok`, `required` or `n/a` per server, and `/mcp reconnect` after a CLI login picks the new
+token up.
+
+**Headers** are the other way a remote server knows you. `headers` declares static headers on
+an HTTP server (`fontaine mcp add -H KEY=value`, or `headers = { ... }` in a settings file;
+`headers` in `.mcp.json`). They are sent on the server's protocol requests only — never to an
+authorization server's token, metadata or authorize endpoints, which are a different origin and
+use their own client — and a repository's `${VAR}` references in header values expand at start
+under the same credential rules as its URL. `headers_helper` (`headersHelper` in `.mcp.json`)
+names an executable run at connect time whose `KEY: VALUE` stdout lines become headers,
+overriding static headers of the same name; Fontaine runs it only for scopes you control and
+refuses it in the project scope, where a repository Fontaine merely opened must not make
+Fontaine execute a script. Changing `headers` or `headers_helper` on an approved server
+invalidates the approval, exactly like changing its URL.
+
 ## The `fontaine mcp` command
 
 `fontaine mcp` manages servers outside any session. You typed the command, so it needs no
 permission; nothing it does starts a server the terminal UI would ask about first.
 
 ```
-fontaine mcp add [-s local|project|user] [-t stdio|http] [-e KEY=value]... [--env-var NAME]... <name> <command-or-url> [args...]
+fontaine mcp add [-s local|project|user] [-t stdio|http] [-e KEY=value]... [--env-var NAME]... [-H KEY=value]... <name> <command-or-url> [args...]
 fontaine mcp list [--connect=no]
 fontaine mcp get <name> [--connect=no]
 fontaine mcp remove <name> [-s local|project|user]
+fontaine mcp login <name>
+fontaine mcp logout <name>
 ```
 
 - **`add`** writes the server to the scope's file (`local` by default; `project` writes
@@ -234,9 +286,10 @@ fontaine mcp remove <name> [-s local|project|user]
   stdio`. `-e` sets a literal variable on the server (`env`). `--env-var NAME` passes a variable
   of Fontaine's environment through by name (`env_vars`), since Fontaine otherwise [scrubs](#declaring-servers)
   it; in `.mcp.json` it is written as `"NAME": "${NAME}"`. `-e` and `--env-var` are for stdio
-  only. Adding a project server records no approval: the next terminal session asks. A name
-  already in that scope is an error. `-H`/`--header`, `-t sse` and the OAuth flags are not
-  supported yet (they are refused with a message naming the issue), and there is no `add-json`.
+  only; `-H KEY=value` declares a header for http servers only, repeatable, and is stored in the
+  declaration. Adding a project server records no approval: the next terminal session asks. A
+  name already in that scope is an error. `-t sse` is not supported yet (it is refused with a
+  message naming the issue), and there is no `add-json`.
 - **`list`** prints one line per server, `<name>: <command or URL> - <status>`, in name order.
   The status is `connected (N tools)`, `failed: <reason>`, `pending approval (run fontaine to
   approve)` for a repository's server you have not approved, or `not started: workspace not
@@ -251,6 +304,8 @@ fontaine mcp remove <name> [-s local|project|user]
   `.fontaine/settings.toml`. Plugin, `--settings` and `settings.local.toml` servers are not
   writable scopes; the error names the file to edit or the plugin to uninstall. An approval left
   in `trust.toml` is inert.
+- **`login`** signs in to a streamable HTTP server with OAuth, as [described
+  below](#authentication); **`logout`** deletes the stored token.
 
 Exit status: 0 on success; 1 for an unknown name, a duplicate, an ambiguous `remove` or an I/O
 error; 2 for a usage or configuration error.

@@ -910,8 +910,13 @@ UI, and their `allow` is ignored. A repository's `http` and `prompt` hooks, and 
 ### `[mcp.servers.<name>]`
 
 [MCP servers](mcp.md). Set exactly one of `command` (a stdio server) or `url` (streamable HTTP).
-`args` and `env_vars` apply to stdio servers only. `env_vars` lists variable names to pass
+`args`, `env_vars` and `env` apply to stdio servers only. `env_vars` lists variable names to pass
 through; values never appear in configuration, and the rest of Fontaine's environment is not passed.
+`headers` (a string map) and `headers_helper` (a path to an executable) apply to http servers
+only: static headers sent on the server's protocol requests, and an executable run at connect
+time whose `KEY: VALUE` stdout lines become headers, overriding static ones of the same name.
+A `headers_helper` in the project scope is refused: a repository Fontaine merely opened must not
+make Fontaine execute a script. See [Authentication](mcp.md#authentication).
 Tools register as `mcp__<server>__<tool>`, always as `arbitrary` tools. A server a repository
 defines starts only after workspace trust and your approval of that server in the terminal UI.
 The same servers can be declared in local scope (`mcp-local.toml`) or a repository's `.mcp.json`,
@@ -925,6 +930,7 @@ env_vars = ["GITHUB_TOKEN"]
 
 [mcp.servers.docs]
 url = "https://mcp.example.com/docs"
+headers = { "X-Team" = "payments" }
 ```
 
 ### `[lsp.servers.<name>]`
@@ -1400,6 +1406,14 @@ api_key = "ingestion-key"
 
 [websearch]
 api_key = "tavily-key"
+
+# MCP servers `fontaine mcp login` signed in to. `credentials` and `state` are the
+# authorization library's stored credentials and PKCE state as JSON, and `resource` is the URL
+# they were issued for: a declaration with a different `url` never receives the token.
+[mcp."github"]
+credentials = "{\"client_id\":\"...\",\"token_response\":{...}}"
+state = "{\"pkce_verifier\":\"...\",\"csrf_token\":\"...\"}"
+resource = "https://mcp.example.com/mcp"
 ```
 
 `/login` in the terminal UI is the way to store a credential interactively; see
@@ -1410,7 +1424,9 @@ pair as an `oauth` entry. The account can also be added in the dialog, which wri
 `[accounts.<name>]` table to your user settings file in place, keeping the file's comments and
 layout. The credentials file is written through the owner-only writer and every other entry in it
 is kept. A file that cannot be parsed is never overwritten. Logging out and removing an account
-delete its entry.
+delete its entry. An MCP server's entry is written by `fontaine mcp login` and deleted by
+`fontaine mcp logout`; it holds an OAuth token bound to that one server URL, never one of your
+other credentials.
 
 Fontaine refreshes the access token as it expires and writes the rotated pair back; writers of the
 file take a lock beside it (`credentials.lock`), so concurrent sessions and logins do not overwrite

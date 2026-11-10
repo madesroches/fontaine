@@ -449,9 +449,7 @@ async fn a_streamable_http_server_registers_and_runs_behind_the_gate() {
     let handle = tool_server();
     let spec = ServerSpec {
         name: "web".to_string(),
-        transport: Transport::Http {
-            url: format!("{}/mcp", server.uri()),
-        },
+        transport: mcp_common::http_transport(&format!("{}/mcp", server.uri())),
     };
     let connected = connect(
         &spec,
@@ -487,9 +485,7 @@ async fn an_http_server_is_reached_through_the_configured_proxy() {
     .unwrap();
     let spec = ServerSpec {
         name: "remote".to_string(),
-        transport: Transport::Http {
-            url: "http://mcp.test/mcp".to_string(),
-        },
+        transport: mcp_common::http_transport("http://mcp.test/mcp"),
     };
     let gate = Gate::new(true);
     let result = connect(&spec, tool_server(), &options(gate), &network, &|_| None).await;

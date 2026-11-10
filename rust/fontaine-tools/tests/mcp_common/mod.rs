@@ -82,6 +82,19 @@ pub fn tool_server() -> ToolServerHandle {
     ToolServer::new().run()
 }
 
+/// An HTTP transport with empty stores, for servers that need no OAuth or headers in a test.
+pub fn http_transport(url: &str) -> fontaine_tools::mcp::Transport {
+    use std::sync::Arc;
+
+    fontaine_tools::mcp::Transport::Http {
+        url: url.to_string(),
+        headers: Default::default(),
+        headers_helper: None,
+        credentials: Arc::new(rmcp::transport::auth::InMemoryCredentialStore::new()),
+        states: Arc::new(rmcp::transport::auth::InMemoryStateStore::new()),
+    }
+}
+
 pub fn names(handle: &ToolServerHandle) -> Vec<String> {
     let mut names: Vec<String> = handle.toolset().names().map(str::to_owned).collect();
     names.sort();

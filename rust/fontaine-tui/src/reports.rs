@@ -17,6 +17,7 @@ use fontaine_core::extensions::{Extensions, Scope};
 use fontaine_core::gate::Rules;
 use fontaine_core::instructions::{MemoryEntry, MemoryKind};
 use fontaine_core::ledger::LedgerRecap;
+use fontaine_core::mcp_auth::McpAuth;
 use fontaine_core::permission_rules::SourcedRule;
 use fontaine_core::plugins::Registry;
 use fontaine_core::skill_trust::TrustState;
@@ -243,10 +244,12 @@ pub fn permissions(
     out
 }
 
-/// The `/mcp` listing: each server's state with the label of the scope that contributed it.
+/// The `/mcp` listing: each server's state and auth status with the label of the scope that
+/// contributed it.
 pub fn mcp_with_origins(
     servers: &[(String, McpState)],
     origins: &BTreeMap<String, Origin>,
+    auth: &BTreeMap<String, McpAuth>,
 ) -> String {
     if servers.is_empty() {
         return "no MCP servers configured".to_string();
@@ -269,7 +272,12 @@ pub fn mcp_with_origins(
                 .get(name)
                 .map(|origin| origin.slot.label())
                 .unwrap_or("configured");
-            format!("{name}: {state} [{origin}]")
+            let auth = match auth.get(name) {
+                Some(McpAuth::Ok) => "auth ok",
+                Some(McpAuth::Required) => "auth required",
+                Some(McpAuth::Na) | None => "auth n/a",
+            };
+            format!("{name}: {state} [{origin}] · {auth}")
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -1257,7 +1265,14 @@ mod tests {
                 },
             ),
         ]);
-        assert_eq!(mcp_with_origins(&[], &origins), "no MCP servers configured");
+        assert_eq!(
+            mcp_with_origins(&[], &origins, &BTreeMap::new()),
+            "no MCP servers configured"
+        );
+        let auth = BTreeMap::from([
+            ("a".to_string(), McpAuth::Ok),
+            ("d".to_string(), McpAuth::Required),
+        ]);
         let text = mcp_with_origins(
             &[
                 ("a".into(), McpState::Connected { tools: 2 }),
@@ -1271,10 +1286,11 @@ mod tests {
                 ("plugin_p_srv".into(), McpState::NotTrusted),
             ],
             &origins,
+            &auth,
         );
         assert_eq!(
             text,
-            "a: connected · 2 tools [user]\ne: connected · 1 tool [configured]\nb: failed: MCP server `b` failed: boom [configured]\nc: left off [configured]\nd: pending (reconnecting, attempt 2 of 5) [configured]\nplugin_p_srv: not loaded (workspace not trusted) [plugin]"
+            "a: connected · 2 tools [user] · auth ok\ne: connected · 1 tool [configured] · auth n/a\nb: failed: MCP server `b` failed: boom [configured] · auth n/a\nc: left off [configured] · auth n/a\nd: pending (reconnecting, attempt 2 of 5) [configured] · auth required\nplugin_p_srv: not loaded (workspace not trusted) [plugin] · auth n/a"
         );
     }
 
@@ -1306,6 +1322,8 @@ mod tests {
                 env_vars: None,
                 env: None,
                 url: None,
+                headers: None,
+                headers_helper: None,
                 expand: false,
             },
         )]);

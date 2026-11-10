@@ -273,6 +273,8 @@ mod tests {
                 env_vars: Some(vec!["MCP_TOKEN".into()]),
                 env: None,
                 url: None,
+                headers: None,
+                headers_helper: None,
                 expand: false,
             },
         );

@@ -3,17 +3,21 @@
 //! server the interactive UI would ask about first.
 
 use std::collections::BTreeMap;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use fontaine_core::config::{self, Config, Slot};
 use fontaine_core::dirs::Dirs;
 use fontaine_core::doctor_report::{McpGate, McpState};
+use fontaine_core::mcp_auth::{FileCredentialStore, FileStateStore};
 use fontaine_core::mcp_config::{self, Scope};
 use fontaine_core::mcp_json;
 use fontaine_core::plugins::PluginContributions;
 use fontaine_core::trust;
 use fontaine_tools::error_chain::chain;
+use rmcp::transport::auth::{AuthorizationManager, AuthorizationRequest, OAuthState};
 
 use crate::cli::{
     Cli, McpAction, McpAddArgs, McpArgs, McpGetArgs, McpListArgs, McpRemoveArgs, McpScopeArg,
@@ -86,6 +90,8 @@ fn dispatch(
         McpAction::Remove(remove_args) => remove(cli, remove_args, host, sink, dirs, &root),
         McpAction::List(list_args) => with_runtime(list(cli, list_args, host, sink, dirs)),
         McpAction::Get(get_args) => with_runtime(get(cli, get_args, host, sink, dirs, &root)),
+        McpAction::Login(login_args) => with_runtime(login(cli, login_args, host, sink, dirs)),
+        McpAction::Logout(logout_args) => logout(dirs, logout_args),
     }
 }
 
@@ -129,12 +135,19 @@ fn add(args: &McpAddArgs, dirs: &Dirs, root: &Path) -> Result<(), Failure> {
     }
     let scope: Scope = args.scope.into();
     let server = match args.transport {
-        McpTransportArg::Stdio => mcp_config::stdio(
-            &args.command_or_url,
-            &args.args,
-            args.env.iter().cloned().collect::<BTreeMap<_, _>>(),
-            args.env_var.clone(),
-        ),
+        McpTransportArg::Stdio => {
+            if !args.header.is_empty() {
+                return Err(Failure::usage(
+                    "`-H`/`--header` applies to http servers only",
+                ));
+            }
+            mcp_config::stdio(
+                &args.command_or_url,
+                &args.args,
+                args.env.iter().cloned().collect::<BTreeMap<_, _>>(),
+                args.env_var.clone(),
+            )
+        }
         McpTransportArg::Http => {
             if !args.env.is_empty() || !args.env_var.is_empty() {
                 return Err(Failure::usage(
@@ -146,7 +159,10 @@ fn add(args: &McpAddArgs, dirs: &Dirs, root: &Path) -> Result<(), Failure> {
                     "an http server takes a URL and no arguments",
                 ));
             }
-            mcp_config::http(&args.command_or_url)
+            mcp_config::http_with_headers(
+                &args.command_or_url,
+                args.header.iter().cloned().collect(),
+            )
         }
     };
     mcp_config::validate(&args.name, &server).map_err(Failure::usage)?;
@@ -461,5 +477,152 @@ fn default_file(scope: Scope, dirs: &Dirs, root: &Path) -> PathBuf {
         Scope::Local => mcp_config::local_path(&dirs.config),
         Scope::Project => mcp_config::json_path(root),
         Scope::User => mcp_config::user_path(&dirs.config),
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+
+/// The loopback redirect target of `fontaine mcp login`: a fixed unregistered port, matching
+/// the issue's Claude Code parity requirement for a fixed port.
+const CALLBACK_PORT: u16 = 3111;
+/// How long the loopback listener waits for the browser's redirect before giving up.
+const LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+async fn login(
+    cli: &Cli,
+    args: &crate::cli::McpLoginArgs,
+    host: &Host,
+    sink: Option<&DebugSink>,
+    dirs: &Dirs,
+) -> Result<(), Failure> {
+    let name = &args.name;
+    let config = load_config(cli, host, sink, dirs)?;
+    let (config, _, plugin_error) = apply_installed_plugins(config, dirs, host);
+    if let Some(error) = plugin_error {
+        eprintln!("fontaine: warning: plugins are not applied: {error}");
+    }
+    let Some(server) = config.mcp_servers.get(name) else {
+        return Err(Failure::failed(format!("no MCP server named `{name}`")));
+    };
+    let Some(url) = server.url.clone() else {
+        return Err(Failure::usage(format!(
+            "MCP server `{name}` is a stdio server; `login` applies to http servers"
+        )));
+    };
+    if server.headers_helper.is_some() {
+        // Same refusal as at connect time: the project scope must not run a script, and a login
+        // would store credentials a later connect refuses to attach.
+        let slot = config.mcp_origins.get(name).map(|origin| origin.slot);
+        if let Some(refusal) =
+            slot.and_then(|slot| fontaine_core::agent::headers_helper_refusal(name, server, slot))
+        {
+            return Err(Failure::usage(refusal));
+        }
+    }
+    let network = config
+        .loaded_network(None)
+        .map_err(|e| Failure::usage(chain(&e)))?;
+    let oauth =
+        fontaine_tools::mcp::auth::build_oauth_client(&network, &url).map_err(Failure::failed)?;
+    let mut manager =
+        AuthorizationManager::new_with_oauth_http_client(url.as_str(), Arc::new(oauth))
+            .await
+            .map_err(|e| Failure::failed(chain(&e)))?;
+    manager.set_credential_store(FileCredentialStore::new(&dirs.data, name, &url));
+    manager.set_state_store(FileStateStore::new(&dirs.data, name));
+
+    let redirect_uri = format!("http://127.0.0.1:{CALLBACK_PORT}/callback");
+    let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, CALLBACK_PORT))
+        .await
+        .map_err(|e| {
+            Failure::failed(format!(
+                "cannot listen for the OAuth callback on 127.0.0.1:{CALLBACK_PORT}: {e}"
+            ))
+        })?;
+
+    let mut state = OAuthState::Unauthorized(manager);
+    let request = AuthorizationRequest::new(redirect_uri.clone()).with_client_name("Fontaine");
+    state.start_authorization(request).await.map_err(|e| {
+        Failure::failed(format!(
+            "could not start the OAuth flow with `{url}`: {}",
+            chain(&e)
+        ))
+    })?;
+    let OAuthState::Session(session) = &state else {
+        return Err(Failure::failed(
+            "the OAuth flow did not reach the authorization stage".to_string(),
+        ));
+    };
+    println!("Sign in to `{url}` in your browser to authorize Fontaine:");
+    println!("{}", session.get_authorization_url());
+    println!(
+        "If the browser does not open, paste the URL above; the flow gives up after {} minutes.",
+        LOGIN_TIMEOUT.as_secs() / 60
+    );
+
+    let callback =
+        tokio::time::timeout(LOGIN_TIMEOUT, wait_for_callback(listener))
+            .await
+            .map_err(|_| {
+                Failure::failed(format!(
+                    "no OAuth callback arrived within {} minutes; run `fontaine mcp login {name}` to try again",
+                    LOGIN_TIMEOUT.as_secs() / 60
+                ))
+            })??;
+    let callback_url = format!("{redirect_uri}{callback}");
+    session
+        .handle_callback_url(&callback_url)
+        .await
+        .map_err(|e| Failure::failed(format!("could not complete the sign-in: {}", chain(&e))))?;
+    println!("Signed in; the token is stored for `{name}`.");
+    println!("Run `fontaine mcp logout {name}` to delete it.");
+    Ok(())
+}
+
+/// Accepts one connection and reads the request target of its first request: the path and query
+/// of the redirect. Answers the browser with a page it can close.
+async fn wait_for_callback(listener: tokio::net::TcpListener) -> Result<String, Failure> {
+    use tokio::io::AsyncReadExt;
+    use tokio::io::AsyncWriteExt;
+
+    let (mut socket, _) = listener
+        .accept()
+        .await
+        .map_err(|e| Failure::failed(format!("cannot accept the OAuth callback: {e}")))?;
+    let mut buf = vec![0u8; 8192];
+    let read = socket
+        .read(&mut buf)
+        .await
+        .map_err(|e| Failure::failed(format!("cannot read the OAuth callback: {e}")))?;
+    let text = String::from_utf8_lossy(&buf[..read]);
+    let Some(target) = text.lines().next().and_then(|line| line.split(' ').nth(1)) else {
+        return Err(Failure::failed(
+            "the OAuth callback was not an HTTP request".to_string(),
+        ));
+    };
+    let target = target.to_string();
+    let body = b"Sign-in received; you can close this tab and return to Fontaine.";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        body.len()
+    );
+    let mut writer = socket;
+    let _ = writer.write_all(response.as_bytes()).await;
+    let _ = writer.write_all(body).await;
+    let _ = writer.shutdown().await;
+    Ok(target)
+}
+
+fn logout(dirs: &Dirs, args: &crate::cli::McpLogoutArgs) -> Result<(), Failure> {
+    match fontaine_core::credentials::mcp_remove(&dirs.data, &args.name) {
+        Ok(true) => {
+            println!("Deleted the stored credentials of `{}`.", args.name);
+            Ok(())
+        }
+        Ok(false) => Err(Failure::failed(format!(
+            "no stored credentials for `{}`",
+            args.name
+        ))),
+        Err(e) => Err(Failure::failed(chain(&e))),
     }
 }

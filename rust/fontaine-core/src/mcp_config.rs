@@ -302,6 +302,16 @@ fn server_table(server: &McpServer) -> Table {
     if let Some(url) = &server.url {
         table.insert("url", toml_edit::value(url.as_str()));
     }
+    if let Some(headers) = &server.headers {
+        let mut inline = InlineTable::new();
+        for (key, value) in headers {
+            inline.insert(key, value.as_str().into());
+        }
+        table.insert("headers", toml_edit::value(inline));
+    }
+    if let Some(helper) = &server.headers_helper {
+        table.insert("headers_helper", toml_edit::value(helper.as_str()));
+    }
     table
 }
 
@@ -328,7 +338,16 @@ fn json_entry(server: &McpServer) -> Value {
             }
             entry
         }
-        (None, url) => json!({ "type": "http", "url": url }),
+        (None, url) => {
+            let mut entry = json!({ "type": "http", "url": url });
+            if let Some(headers) = &server.headers {
+                entry["headers"] = json!(headers);
+            }
+            if let Some(helper) = &server.headers_helper {
+                entry["headersHelper"] = json!(helper);
+            }
+            entry
+        }
     }
 }
 
@@ -651,6 +670,8 @@ pub fn stdio(
         env_vars: (!env_vars.is_empty()).then_some(env_vars),
         env: (!env.is_empty()).then_some(env),
         url: None,
+        headers: None,
+        headers_helper: None,
         expand: false,
     }
 }
@@ -663,7 +684,17 @@ pub fn http(url: &str) -> McpServer {
         env_vars: None,
         env: None,
         url: Some(url.to_string()),
+        headers: None,
+        headers_helper: None,
         expand: false,
+    }
+}
+
+/// An HTTP server definition with static headers, from `fontaine mcp add -H`.
+pub fn http_with_headers(url: &str, headers: BTreeMap<String, String>) -> McpServer {
+    McpServer {
+        headers: (!headers.is_empty()).then_some(headers),
+        ..http(url)
     }
 }
 
@@ -783,6 +814,8 @@ mod tests {
             env_vars: None,
             env: None,
             url: Some("https://h/mcp".into()),
+            headers: None,
+            headers_helper: None,
             expand: false,
         };
         add_server(Scope::Project, &w.config, &w.root, "web", &http).unwrap();
