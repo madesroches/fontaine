@@ -113,7 +113,7 @@ pub struct DecisionRecord {
     /// How long the guardian took, apart from the rest of the pipeline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guardian_latency_ms: Option<u64>,
-    /// `error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`, when the guardian
+    /// `error`, `timeout`, `unparseable`, `low_confidence`, `unavailable` or `not_signed_in`, when the guardian
     /// failed closed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fail_closed_reason: Option<String>,

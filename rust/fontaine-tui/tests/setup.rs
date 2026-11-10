@@ -65,6 +65,7 @@ impl Scratch {
             session_id: "00000000-0000-4000-8000-000000000001".to_string(),
             user_file: self.user_file.clone(),
             screen_reader: None,
+            not_signed_in: None,
         }
     }
 }
@@ -339,4 +340,112 @@ async fn typing_a_key_in_the_linear_setup_echoes_bullets_only() {
     // The footer changes once typing starts, which reprints the prompt once; no key reprints it.
     assert_eq!(out.matches('•').count(), 4, "{out:?}");
     assert!(out.ends_with("API key: ••••"), "{out:?}");
+}
+
+fn claude_double() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
+    let name = if cfg!(windows) {
+        "fontaine_claude_cli_double.exe"
+    } else {
+        "fontaine_claude_cli_double"
+    };
+    let path = dir.join(name);
+    assert!(
+        path.exists(),
+        "{} is not built: run `cargo build -p fontaine --example fontaine_claude_cli_double`",
+        path.display()
+    );
+    path
+}
+
+/// A scratch setup with a signed-out `claude` account on the double, whose profile directory
+/// holds the scenario and the log.
+fn signed_out_claude(scenario: serde_json::Value) -> (Scratch, PathBuf) {
+    let s = Scratch::new("");
+    let profile = s.root.join("claude-profile");
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(profile.join("double.json"), scenario.to_string()).unwrap();
+    std::fs::write(
+        &s.user_file,
+        format!(
+            "[accounts.claude]\nkind = \"claude-subscription\"\ncli_path = {:?}\nclaude_config_dir = {:?}\n\n[model]\nmodel = \"claude/sonnet\"\n",
+            claude_double().to_string_lossy(),
+            profile.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    (s, profile)
+}
+
+fn login_of(s: &Scratch) -> fontaine_core::providers::ExternalLogin {
+    let config = s.config();
+    let account = &config.accounts["claude"];
+    account
+        .kind
+        .provider()
+        .external_login(
+            account,
+            &(Arc::new(|_: &str| None) as fontaine_core::models::SharedEnv),
+        )
+        .expect("the claude account has a login")
+}
+
+fn logins(profile: &std::path::Path) -> usize {
+    std::fs::read_to_string(profile.join("log.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains("\"kind\":\"login\""))
+        .count()
+}
+
+#[tokio::test]
+async fn a_signed_out_main_account_opens_on_the_login_offer_and_the_session_starts_after_it() {
+    let (s, profile) = signed_out_claude(json!({"auth": {"loggedIn": false}}));
+    let mut params =
+        s.params("cannot list the models of account `claude`: the Claude CLI is not signed in");
+    params.not_signed_in = Some(("claude".to_string(), login_of(&s)));
+    let (models, _) = drive(params, terminal(), keys(&[key(KeyCode::Char('y'))]))
+        .await
+        .unwrap()
+        .expect("the login signs in and the session starts");
+    assert_eq!(models.main.reference.to_string(), "claude/sonnet");
+    assert_eq!(logins(&profile), 1);
+}
+
+#[tokio::test]
+async fn declining_the_startup_offer_runs_no_login() {
+    let (s, profile) = signed_out_claude(json!({"auth": {"loggedIn": false}}));
+    let mut params = s.params("the Claude CLI is not signed in");
+    params.not_signed_in = Some(("claude".to_string(), login_of(&s)));
+    let out = drive(
+        params,
+        terminal(),
+        keys(&[key(KeyCode::Char('n')), key(KeyCode::Esc)]),
+    )
+    .await
+    .unwrap();
+    assert!(out.is_none());
+    assert_eq!(logins(&profile), 0);
+}
+
+#[tokio::test]
+async fn logging_in_from_the_list_offers_the_login_once() {
+    let (s, profile) =
+        signed_out_claude(json!({"auth": {"loggedIn": false}, "login_keeps_signed_out": true}));
+    // Enter on the account checks it; `y` accepts the offer; the login changes nothing, so the
+    // setup stays and the second check offers nothing again.
+    let out = drive(
+        s.params("the Claude CLI is not signed in"),
+        terminal(),
+        keys(&[
+            key(KeyCode::Enter),
+            key(KeyCode::Char('y')),
+            key(KeyCode::Char(' ')),
+        ]),
+    )
+    .await
+    .unwrap();
+    assert!(out.is_none());
+    assert_eq!(logins(&profile), 1);
 }

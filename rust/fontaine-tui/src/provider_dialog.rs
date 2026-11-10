@@ -50,6 +50,8 @@ pub enum DialogKey {
     SignIn(String),
     /// Run the external login's preflight (the Claude CLI's checks) for this account.
     ExternalCheck(String),
+    /// The user accepted running the external program's own login for this account.
+    ExternalLogin(String),
     CancelSignIn,
     LogOut(String),
     Remove(String),
@@ -76,6 +78,13 @@ pub enum Outcome {
     /// A log-out or removal went through.
     Done(String),
     Failed(String),
+    /// Nobody is signed in to the account's external program; offer to run `login` (the command
+    /// as typed). A decline ends as the failure `reason`.
+    OfferLogin {
+        account: String,
+        login: String,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,6 +123,11 @@ enum Screen {
     Confirm {
         what: Confirm,
         account: String,
+    },
+    OfferLogin {
+        account: String,
+        login: String,
+        reason: String,
     },
     Message {
         text: String,
@@ -222,7 +236,8 @@ impl ProviderDialog {
             return DialogKey::None;
         };
         if row.kind.provider().credential() == CredentialPolicy::ExternalCli {
-            // Fontaine neither prompts for a key nor starts a login: it checks the external one.
+            // Fontaine neither prompts for a key nor runs a login unasked: it checks the external one
+            // and offers its login when nobody is signed in.
             self.screen = Screen::Waiting {
                 account: account.to_string(),
                 url: None,
@@ -302,6 +317,7 @@ impl ProviderDialog {
                 DialogKey::None
             }
             Screen::Confirm { .. } => self.confirm_key(key),
+            Screen::OfferLogin { .. } => self.offer_login_key(key),
             Screen::Message { .. } => {
                 self.back_to_list();
                 DialogKey::None
@@ -543,6 +559,24 @@ impl ProviderDialog {
         }
     }
 
+    fn offer_login_key(&mut self, key: KeyEvent) -> DialogKey {
+        let Screen::OfferLogin {
+            account, reason, ..
+        } = &self.screen
+        else {
+            return DialogKey::None;
+        };
+        let (account, reason) = (account.clone(), reason.clone());
+        match key.code {
+            KeyCode::Char('y') => self.request(DialogKey::ExternalLogin(account)),
+            KeyCode::Char('n') | KeyCode::Esc => {
+                self.fail(reason);
+                DialogKey::None
+            }
+            _ => DialogKey::None,
+        }
+    }
+
     /// A paste goes into the text field the dialog has open and nowhere else. Line breaks are
     /// dropped, and a key is trimmed.
     pub fn handle_paste(&mut self, text: &str) {
@@ -616,6 +650,17 @@ impl ProviderDialog {
                 };
             }
             Outcome::Failed(text) => self.fail(text),
+            Outcome::OfferLogin {
+                account,
+                login,
+                reason,
+            } => {
+                self.screen = Screen::OfferLogin {
+                    account,
+                    login,
+                    reason,
+                };
+            }
         }
         DialogKey::None
     }
@@ -761,6 +806,13 @@ impl ProviderDialog {
                     ),
                 ],
             },
+            Screen::OfferLogin { account, login, .. } => vec![
+                line(format!("`{account}` is not signed in. Run `{login}` now?")),
+                Line::styled(
+                    "It opens a browser and may ask you to paste a code; the terminal is the login's until it ends.",
+                    dim,
+                ),
+            ],
             Screen::Message { text, failed } => text
                 .lines()
                 .map(|l| {
@@ -878,6 +930,7 @@ impl ProviderDialog {
             }
             Screen::Waiting { .. } => "Esc cancel the sign-in",
             Screen::Confirm { .. } => "y confirm · n/Esc cancel",
+            Screen::OfferLogin { .. } => "y run the login · n/Esc not now",
             Screen::Message { .. } => "press any key",
         };
         vec![Line::styled(text, dim)]
@@ -1054,6 +1107,32 @@ mod tests {
     }
 
     #[test]
+    fn a_signed_out_external_account_offers_its_login_and_a_decline_is_the_failure() {
+        let mut all = rows();
+        all.push(row(
+            "claude",
+            "claude-subscription",
+            SignInState::ExternalCli,
+        ));
+        let offer = || Outcome::OfferLogin {
+            account: "claude".into(),
+            login: "claude auth login --claudeai".into(),
+            reason: "the Claude CLI is not signed in".into(),
+        };
+        let (mut d, _) = ProviderDialog::new(all, Some("claude"));
+        d.finish(offer());
+        let shown = text(&d);
+        assert!(shown.contains("claude auth login --claudeai"), "{shown}");
+        assert_eq!(
+            press(&mut d, KeyCode::Char('y')),
+            DialogKey::ExternalLogin("claude".into())
+        );
+        d.finish(offer());
+        assert_eq!(press(&mut d, KeyCode::Char('n')), DialogKey::None);
+        assert!(text(&d).contains("the Claude CLI is not signed in"));
+    }
+
+    #[test]
     fn an_external_cli_account_checks_the_login_instead_of_asking_for_a_key() {
         let mut all = rows();
         all.push(row(
@@ -1069,11 +1148,11 @@ mod tests {
         assert_eq!(key, DialogKey::ExternalCheck("claude".into()));
         let shown = text(&d);
         assert!(!shown.contains("API key for"), "{shown}");
-        // A failure says what to run outside Fontaine; the dialog shows it as given.
+        // A failure is shown as given.
         d.finish(Outcome::Failed(
-            "the Claude CLI is not signed in; run `claude auth login` outside Fontaine".into(),
+            "the Claude CLI's plan is not Max or Ultra".into(),
         ));
-        assert!(text(&d).contains("claude auth login"));
+        assert!(text(&d).contains("not Max or Ultra"));
         // A named account opens straight on the check.
         let (_, key) = ProviderDialog::new(all, Some("claude"));
         assert_eq!(key, DialogKey::ExternalCheck("claude".into()));

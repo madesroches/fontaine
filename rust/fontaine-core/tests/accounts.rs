@@ -298,7 +298,10 @@ async fn a_guardian_account_with_no_models_and_no_credential_still_starts() {
         guardian.uri()
     ));
     let resolved = resolve(&w, env_of(&[]), None).await.unwrap();
-    let Some(GuardianModel::Unavailable { reference, reason }) = resolved.guardian else {
+    let Some(GuardianModel::Unavailable {
+        reference, reason, ..
+    }) = resolved.guardian
+    else {
         panic!("the guardian is unavailable");
     };
     assert_eq!(reference.to_string(), "safety/claude-haiku-4-5");

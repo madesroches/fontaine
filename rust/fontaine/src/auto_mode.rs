@@ -367,7 +367,9 @@ async fn critique_models(
     print_warnings(&models.notices);
     let handle = match models.guardian {
         Some(GuardianModel::Ready(handle)) => handle,
-        Some(GuardianModel::Unavailable { reference, reason }) => {
+        Some(GuardianModel::Unavailable {
+            reference, reason, ..
+        }) => {
             return fail(
                 format!("the guardian model {reference} is unavailable: {reason}"),
                 EXIT_CONFIG,

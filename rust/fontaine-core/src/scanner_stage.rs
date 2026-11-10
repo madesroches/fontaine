@@ -64,7 +64,9 @@ pub fn llm_backend(guardian: Option<&GuardianModel>, timeout: Duration) -> Backe
             }
             Backend::Ready(Arc::new(scanner))
         }
-        Some(GuardianModel::Unavailable { reference, reason }) => Backend::Unavailable(format!(
+        Some(GuardianModel::Unavailable {
+            reference, reason, ..
+        }) => Backend::Unavailable(format!(
             "the scanner model {reference} is unavailable: {reason}"
         )),
         None => Backend::Unavailable("there is no model for the scanner".into()),

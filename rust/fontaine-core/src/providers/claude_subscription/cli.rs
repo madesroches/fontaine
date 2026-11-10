@@ -22,6 +22,7 @@ use super::transport::{next, rejected};
 use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error};
 use crate::models::SharedEnv;
 use crate::owner_only;
+use crate::providers::ExternalLogin;
 use crate::providers::derived_facts::Capabilities;
 use crate::providers::warn::Warn;
 use fontaine_tools::lock::lock_recovering;
@@ -241,6 +242,34 @@ pub const WORKDIR_NAME: &str = "claude-cli-cwd";
 /// Entries that would put instructions into the CLI's prompt.
 const INSTRUCTION_ENTRIES: [&str; 3] = ["CLAUDE.md", "AGENTS.md", ".claude"];
 
+/// The command that signs a Claude account in, built from the same program and config directory
+/// the probes use. `env` supplies the directory when the account sets none, as the probes read
+/// it.
+pub fn login_command(
+    cli_path: Option<&Path>,
+    config_dir: Option<&Path>,
+    env: &SharedEnv,
+) -> ExternalLogin {
+    let program = cli_path.map_or_else(|| PathBuf::from("claude"), Path::to_path_buf);
+    let dir = config_dir
+        .map(|dir| dir.as_os_str().to_os_string())
+        .or_else(|| env("CLAUDE_CONFIG_DIR"));
+    let args: Vec<OsString> = ["auth", "login", "--claudeai"].map(OsString::from).into();
+    let mut display = String::new();
+    let mut vars = Vec::new();
+    if let Some(dir) = dir {
+        display.push_str(&format!("CLAUDE_CONFIG_DIR={} ", dir.to_string_lossy()));
+        vars.push((OsString::from("CLAUDE_CONFIG_DIR"), dir));
+    }
+    display.push_str(&format!("{} auth login --claudeai", program.display()));
+    ExternalLogin {
+        program,
+        args,
+        env: vars,
+        display,
+    }
+}
+
 pub struct Cli {
     program: PathBuf,
     config_dir: Option<PathBuf>,
@@ -344,14 +373,9 @@ impl Cli {
         ))
     }
 
-    fn login_hint(&self) -> String {
-        match &self.config_dir {
-            Some(dir) => format!(
-                "run `CLAUDE_CONFIG_DIR={} claude auth login` outside Fontaine",
-                dir.display()
-            ),
-            None => "run `claude auth login` outside Fontaine".to_string(),
-        }
+    /// The command that signs this account in, for a caller that owns the terminal.
+    pub fn login(&self) -> ExternalLogin {
+        login_command(Some(&self.program), self.config_dir.as_deref(), &self.env)
     }
 
     /// `claude --version`, once per connected client.
@@ -390,8 +414,19 @@ impl Cli {
     }
 
     /// `claude auth status`: signed in with `claude.ai` on a Max or Ultra plan. Only three
-    /// fields are read.
+    /// fields are read. A failure says what is wrong and nothing of what to run: the surface
+    /// that shows it knows how the user signs in from there.
     pub async fn check_login(&self) -> Result<(), ClaudeError> {
+        self.check_login_with(false).await
+    }
+
+    /// [`Cli::check_login`] for a request already under way, where no surface adds a hint:
+    /// the failure names the login command itself.
+    pub async fn check_login_hinted(&self) -> Result<(), ClaudeError> {
+        self.check_login_with(true).await
+    }
+
+    async fn check_login_with(&self, hinted: bool) -> Result<(), ClaudeError> {
         let out = self
             .probe(
                 &["auth", "status"],
@@ -399,28 +434,32 @@ impl Cli {
                 ErrorKind::SetupTimeout,
             )
             .await?;
+        let hint = || {
+            if hinted {
+                format!("; run `{}`", self.login().display)
+            } else {
+                String::new()
+            }
+        };
         let status: Option<Status> = serde_json::from_slice(&out.stdout).ok();
         let Some(status) = status else {
             return Err(ClaudeError::new(
-                ErrorKind::Auth,
-                format!(
-                    "the Claude CLI's login status could not be read; {}",
-                    self.login_hint()
-                ),
+                ErrorKind::NotSignedIn,
+                format!("the Claude CLI's login status could not be read{}", hint()),
             ));
         };
         if status.logged_in != Some(true) {
             return Err(ClaudeError::new(
-                ErrorKind::Auth,
-                format!("the Claude CLI is not signed in; {}", self.login_hint()),
+                ErrorKind::NotSignedIn,
+                format!("the Claude CLI is not signed in{}", hint()),
             ));
         }
         if status.auth_method.as_deref() != Some("claude.ai") {
             return Err(ClaudeError::new(
                 ErrorKind::Plan,
                 format!(
-                    "the Claude CLI is not signed in with a Claude subscription (claude.ai); {}, choosing the claude.ai account",
-                    self.login_hint()
+                    "the Claude CLI is not signed in with a Claude subscription (claude.ai); sign in again with `{}`",
+                    self.login().display
                 ),
             ));
         }

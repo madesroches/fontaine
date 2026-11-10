@@ -29,6 +29,13 @@ All notable changes are recorded here. The format follows
   updated and removed in the running session, with the same effect as the `fontaine plugin
   marketplace` commands, so installing a plugin no longer needs the CLI or a `!` shell escape
   (#559).
+- A `claude-subscription` account whose Claude CLI is not signed in is now its own condition. The
+  terminal UI offers to run `claude auth login --claudeai` for you (`/login claude`, and first thing
+  at startup when the main model's account is signed out): the terminal is handed to the CLI, and
+  Fontaine checks again when it exits and continues. A headless run exits 1 before any turn naming the
+  account and the command, and a pinned guardian on a signed-out account stops a run in `auto`, `afk`
+  or `plan` the same way. A guardian that cannot be asked because its account is signed out is denied
+  as `GuardianNotSignedIn` (`fail_closed_reason` `not_signed_in`), not `GuardianUnavailable` (#557).
 - In-app plugin management: `/plugin install|uninstall|update|enable|disable` and
   `/reload-plugins` in the terminal UI load, reload and unload a plugin's skills, agents, hooks,
   rules and MCP servers in the running session without losing the conversation. An install shows

@@ -20,10 +20,11 @@ experiment: selecting such an account as the main model prints a notice saying s
 
 ## Setup
 
-Install the CLI, sign in outside Fontaine, and add the account:
+Install the CLI, sign in, and add the account. You can sign in beforehand, or let Fontaine run the
+login for you the first time (see below):
 
 ```sh
-claude auth login
+claude auth login --claudeai
 ```
 
 ```toml
@@ -43,10 +44,21 @@ resolves to, so compaction and every other request address the same model.
 use two logins without Fontaine reading either. `[network]` does not configure the CLI; set its own
 proxy and TLS environment (`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, ...) where Fontaine starts.
 
-`/login claude` in the terminal UI never asks for a key and never starts a login of its own. It
-checks the CLI (installed, supported version, signed in on Max or Ultra, models listed) and opens the
-model picker; when a check fails it says to run `claude auth login` outside Fontaine. Logging out of
-or removing the Fontaine account never changes the CLI's own login.
+`/login claude` in the terminal UI never asks for a key. It checks the CLI (installed, supported
+version, signed in on Max or Ultra, models listed) and opens the model picker. When the CLI is not
+signed in, it offers to run `claude auth login --claudeai` for you (with the account's `cli_path`
+and `claude_config_dir`): on `y` the terminal is handed to the CLI, which opens a browser and may ask
+you to paste a code, and Fontaine checks again when it exits. The check, not the CLI's exit status,
+decides: a login that fails or leaves nobody signed in ends with the failure and no second offer.
+The same offer opens first when Fontaine starts on a main model whose account is signed out. Any
+other failed check (a missing or old CLI, a plan that is not Max or Ultra) is shown as is.
+Logging out of or removing the Fontaine account never changes the CLI's own login.
+
+A headless run never offers anything: it exits 1 before any turn with the account name and the exact
+login command to run, then retry. The same stop applies when a pinned
+[guardian](guardian.md) is on a signed-out account in a mode that consults it. A login that is
+revoked mid-session is not repaired mid-turn; the failure names the login command, and
+`/login <account>` performs it.
 
 ## Checks before every request
 

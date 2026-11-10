@@ -502,6 +502,8 @@ pub async fn drive(
     ui.app.menu.sort_by(|a, b| a.name.cmp(&b.name));
     if mode.rules() == PermissionMode::Auto {
         ui.announce_auto(&runtime);
+    } else {
+        ui.announce_signed_out_guardian(&runtime);
     }
     if runtime.state.afk().stopped.is_some() {
         ui.app.transcript.notice(

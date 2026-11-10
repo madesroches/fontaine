@@ -156,9 +156,17 @@ pub enum FailClosed {
     LowConfidence,
     /// No credential, or a pinned guardian that cannot be reached at all.
     Unavailable,
+    /// The pinned guardian's account has nobody signed in.
+    NotSignedIn,
 }
 
 impl FailClosed {
+    /// Whether the guardian has no model to ask at all, for either reason: callers that treat
+    /// "unavailable" specially must treat both alike.
+    pub fn is_unavailable(self) -> bool {
+        matches!(self, FailClosed::Unavailable | FailClosed::NotSignedIn)
+    }
+
     /// The `fail_closed_reason` name in the audit log and telemetry.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -167,12 +175,14 @@ impl FailClosed {
             FailClosed::Unparseable => "unparseable",
             FailClosed::LowConfidence => "low_confidence",
             FailClosed::Unavailable => "unavailable",
+            FailClosed::NotSignedIn => "not_signed_in",
         }
     }
 
     pub fn label(self) -> AuditLabel {
         match self {
             FailClosed::Error | FailClosed::Unavailable => AuditLabel::GuardianUnavailable,
+            FailClosed::NotSignedIn => AuditLabel::GuardianNotSignedIn,
             FailClosed::Timeout => AuditLabel::Timeout,
             FailClosed::Unparseable => AuditLabel::Unparseable,
             FailClosed::LowConfidence => AuditLabel::LowConfidence,
@@ -186,6 +196,7 @@ impl FailClosed {
 pub enum AuditLabel {
     Model(RuleLabel),
     GuardianUnavailable,
+    GuardianNotSignedIn,
     Unparseable,
     LowConfidence,
     Timeout,
@@ -196,6 +207,7 @@ impl AuditLabel {
         match self {
             AuditLabel::Model(label) => label.display_name(),
             AuditLabel::GuardianUnavailable => "GuardianUnavailable",
+            AuditLabel::GuardianNotSignedIn => "GuardianNotSignedIn",
             AuditLabel::Unparseable => "Unparseable",
             AuditLabel::LowConfidence => "LowConfidence",
             AuditLabel::Timeout => "Timeout",
@@ -316,6 +328,7 @@ mod tests {
         let table = [
             (Error, "error", "GuardianUnavailable"),
             (Unavailable, "unavailable", "GuardianUnavailable"),
+            (NotSignedIn, "not_signed_in", "GuardianNotSignedIn"),
             (Timeout, "timeout", "Timeout"),
             (Unparseable, "unparseable", "Unparseable"),
             (LowConfidence, "low_confidence", "LowConfidence"),
@@ -324,6 +337,8 @@ mod tests {
             assert_eq!(reason.as_str(), name);
             assert_eq!(reason.label().as_str(), label);
         }
+        assert!(Unavailable.is_unavailable() && NotSignedIn.is_unavailable());
+        assert!(!Error.is_unavailable());
     }
 
     fn answer(rule: &str, decision: &str, confidence: &str) -> String {

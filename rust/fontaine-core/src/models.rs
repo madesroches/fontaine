@@ -11,6 +11,7 @@ use rig_core::completion::{CheckError, CompletionRequest, GenerationOptions, Uns
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
 
+use crate::accounts::ExternalCheckError;
 use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup};
 use crate::credentials::{Credentials, StoredCredential};
 use crate::effort::Effort;
@@ -49,15 +50,20 @@ impl<'a> Sources<'a> {
 #[derive(Debug)]
 pub enum ModelError {
     Config(ConfigError),
-    /// A listing call to the provider failed: transport error, non-2xx, 401 or 403.
-    Provider(String),
+    /// A listing call to the provider failed: transport error, non-2xx, 401 or 403. `source` is
+    /// the provider's own error, kept for a caller that dispatches on its kind; `message` is
+    /// the text a person reads.
+    Provider {
+        message: String,
+        source: Option<Box<ProviderError>>,
+    },
 }
 
 impl ModelError {
     pub fn exit_code(&self) -> u8 {
         match self {
             ModelError::Config(e) => e.exit_code(),
-            ModelError::Provider(_) => 1,
+            ModelError::Provider { .. } => 1,
         }
     }
 }
@@ -66,12 +72,37 @@ impl fmt::Display for ModelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ModelError::Config(e) => e.fmt(f),
-            ModelError::Provider(message) => f.write_str(message),
+            ModelError::Provider { message, .. } => f.write_str(message),
         }
     }
 }
 
-impl std::error::Error for ModelError {}
+impl std::error::Error for ModelError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ModelError::Config(_) => None,
+            // A request error's own text only wraps its cause's, which the message already shows.
+            ModelError::Provider { source, .. } => source
+                .as_deref()
+                .map(|e| std::error::Error::source(e).unwrap_or(e)),
+        }
+    }
+}
+
+impl ModelError {
+    /// Whether the failure is an external-login account whose CLI has nobody signed in.
+    pub fn is_not_signed_in(&self) -> bool {
+        match self {
+            ModelError::Provider {
+                source: Some(source),
+                ..
+            } => crate::providers::claude_subscription::claude_error(source).is_some_and(|c| {
+                c.kind == crate::providers::claude_subscription::ErrorKind::NotSignedIn
+            }),
+            _ => false,
+        }
+    }
+}
 
 impl From<ConfigError> for ModelError {
     fn from(e: ConfigError) -> Self {
@@ -325,7 +356,13 @@ impl ModelHandle {
 #[derive(Clone, Debug)]
 pub enum GuardianModel {
     Ready(ModelHandle),
-    Unavailable { reference: ModelRef, reason: String },
+    Unavailable {
+        reference: ModelRef,
+        reason: String,
+        /// The account's external login has nobody signed in: `reason` then names the account
+        /// and nothing of how to sign in, which only the surface knows.
+        not_signed_in: bool,
+    },
 }
 
 impl GuardianModel {
@@ -592,13 +629,19 @@ async fn list_models(client: &Client, name: &str) -> Result<Listing, ModelError>
             models,
             refused: client.refused(),
         }),
-        Ok(Err(e)) => Err(ModelError::Provider(format!(
-            "cannot list the models of account `{name}`: {}",
-            with_causes(&e)
-        ))),
-        Err(_) => Err(ModelError::Provider(format!(
-            "listing the models of account `{name}` timed out after {RESOLVE_LISTING_TIMEOUT:?}"
-        ))),
+        Ok(Err(e)) => Err(ModelError::Provider {
+            message: format!(
+                "cannot list the models of account `{name}`: {}",
+                with_causes(&e)
+            ),
+            source: Some(e),
+        }),
+        Err(_) => Err(ModelError::Provider {
+            message: format!(
+                "listing the models of account `{name}` timed out after {RESOLVE_LISTING_TIMEOUT:?}"
+            ),
+            source: None,
+        }),
     }
 }
 
@@ -644,6 +687,16 @@ async fn resolve_main_model(
     }
     let main = ModelHandle::from_client(main_ref.clone(), main_account.kind, &main_client);
     Ok((main_ref, main_client, main_models, main))
+}
+
+/// The main model [`resolve`] starts from, for a caller that has only its failure.
+pub fn main_reference(config: &Config, model_override: Option<&str>) -> Option<ModelRef> {
+    let roles = Roles::from_config(config).ok()?;
+    let chain = match model_override {
+        Some(text) => roles.chain_from_text(text).ok()?,
+        None => roles.main_chain()?,
+    };
+    chain.entries.first().cloned()
 }
 
 /// Resolves the main model and the guardian model.
@@ -797,7 +850,8 @@ async fn build_guardian(
     let client = match reused {
         Some(client) => Ok(client.clone()),
         None => account_network(config, &reference.account)
-            .and_then(|network| client_for(&reference.account, account, env, stored, &network)),
+            .and_then(|network| client_for(&reference.account, account, env, stored, &network))
+            .map_err(|reason| (reason, false)),
     };
     let client = match client {
         Ok(client) if discovers && reused.is_none() => {
@@ -806,7 +860,14 @@ async fn build_guardian(
                 Ok(listing) => {
                     return Err(not_offered(&client, &reference, &listing.models));
                 }
-                Err(e) => Err(e.to_string()),
+                Err(e) if e.is_not_signed_in() => Err((
+                    format!(
+                        "the guardian's account `{}` is not signed in",
+                        reference.account
+                    ),
+                    true,
+                )),
+                Err(e) => Err((e.to_string(), false)),
             }
         }
         other => other,
@@ -817,7 +878,11 @@ async fn build_guardian(
             account.kind,
             &client,
         )),
-        Err(reason) => GuardianModel::Unavailable { reference, reason },
+        Err((reason, not_signed_in)) => GuardianModel::Unavailable {
+            reference,
+            reason,
+            not_signed_in,
+        },
     })
 }
 
@@ -1200,17 +1265,32 @@ pub(crate) async fn external_check(
     data_dir: &Path,
     network: &LoadedNetwork,
     env: SharedEnv,
-) -> Result<String, String> {
+) -> Result<String, ExternalCheckError> {
     let stored = Credentials::default();
     let src = Sources {
         stored,
         data_dir,
         session_id: None,
     };
-    let client = client_for(name, account, &env, &src, network)?;
-    let models = models_of(&client, name, account)
-        .await
-        .map_err(|e| fontaine_tools::error_chain::chain(&e))?;
+    let client =
+        client_for(name, account, &env, &src, network).map_err(ExternalCheckError::Failed)?;
+    let models = match models_of(&client, name, account).await {
+        Ok(models) => models,
+        Err(e) => {
+            let login = e
+                .is_not_signed_in()
+                .then(|| account.kind.provider().external_login(account, &env))
+                .flatten();
+            return Err(match login {
+                Some(login) => ExternalCheckError::NotSignedIn {
+                    account: name.to_string(),
+                    login: Box::new(login),
+                    source: Box::new(e),
+                },
+                None => ExternalCheckError::Failed(fontaine_tools::error_chain::chain(&e)),
+            });
+        }
+    };
     Ok(format!(
         "`{name}` is ready: {} model(s) available through the external login",
         models.models.len()

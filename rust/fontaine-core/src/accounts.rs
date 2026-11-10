@@ -9,7 +9,7 @@ use crate::config::{Account, AccountKind, Config, ConfigError, EnvLookup, check_
 use crate::credentials::{self, Credentials, StoredCredential};
 use crate::model_roles::Roles;
 use crate::models::{Credential, credential};
-use crate::providers::{self, CredentialPolicy, SignInError, SignInProgress};
+use crate::providers::{self, CredentialPolicy, ExternalLogin, SignInError, SignInProgress};
 use crate::runtime_error::RuntimeError;
 use crate::user_config;
 use fontaine_tools::error_chain::chain;
@@ -290,16 +290,49 @@ pub async fn sign_in(
         .await
 }
 
+/// Why the check of an external-login account failed.
+#[derive(Debug)]
+pub enum ExternalCheckError {
+    /// The program says nobody is signed in; `login` is what signs in.
+    NotSignedIn {
+        account: String,
+        login: Box<ExternalLogin>,
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+    Failed(String),
+}
+
+impl std::fmt::Display for ExternalCheckError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ExternalCheckError::NotSignedIn { source, .. } => {
+                f.write_str(&fontaine_tools::error_chain::chain(&**source))
+            }
+            ExternalCheckError::Failed(text) => f.write_str(text),
+        }
+    }
+}
+
+impl std::error::Error for ExternalCheckError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ExternalCheckError::NotSignedIn { source, .. } => Some(&**source),
+            ExternalCheckError::Failed(_) => None,
+        }
+    }
+}
+
 /// What `/login` does for an account whose login an external program owns: checks that the program
 /// is installed, signed in on a plan Fontaine accepts and offers models, and returns the summary.
-/// It never starts a login of its own; its failure says what to run outside Fontaine.
+/// It never starts a login of its own; a caller that owns the terminal runs the login the
+/// [`ExternalCheckError::NotSignedIn`] failure carries and checks again.
 pub async fn external_check(
     name: &str,
     account: &Account,
     data_dir: &Path,
     network: &LoadedNetwork,
     env: crate::models::SharedEnv,
-) -> Result<String, String> {
+) -> Result<String, ExternalCheckError> {
     crate::models::external_check(name, account, data_dir, network, env).await
 }
 

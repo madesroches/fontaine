@@ -16,6 +16,7 @@ use fontaine_core::config::PermissionMode;
 use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
 use fontaine_core::model_roles::Tried;
+use fontaine_core::providers::ExternalLogin;
 use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
 use fontaine_core::trust;
 use fontaine_core::turn::{
@@ -775,8 +776,15 @@ fn announce(runtime: &AgentRuntime) {
     if runtime.models.guardian.is_some()
         && let Some(reason) = guardian.unavailable_reason()
     {
+        let label = match &runtime.models.guardian {
+            Some(fontaine_core::models::GuardianModel::Unavailable {
+                not_signed_in: true,
+                ..
+            }) => "GuardianNotSignedIn",
+            _ => "GuardianUnavailable",
+        };
         eprintln!(
-            "fontaine: the guardian model {} is unavailable ({reason}); every call that needs it is denied with GuardianUnavailable",
+            "fontaine: the guardian model {} is unavailable ({reason}); every call that needs it is denied with {label}",
             guardian.label()
         );
     }
@@ -1240,14 +1248,28 @@ async fn final_afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
 
 /// Runs the headless session and returns the process exit code: 0 completed, 1 run error or a
 /// `/goal` that did not end met, 2 usage error.
-pub async fn run(options: Options, mut runtime: AgentRuntime, data_dir: &Path) -> u8 {
-    let code = run_session(options, &mut runtime, data_dir).await;
+///
+/// `guardian_login` is the pinned guardian's account and the login that signs it in, when that
+/// account has nobody signed in: a run that consults the guardian then stops before it starts,
+/// since every call would be denied.
+pub async fn run(
+    options: Options,
+    mut runtime: AgentRuntime,
+    data_dir: &Path,
+    guardian_login: Option<(String, ExternalLogin)>,
+) -> u8 {
+    let code = run_session(options, &mut runtime, data_dir, guardian_login).await;
     // One exit point, so an input error ends the session for the hooks too.
     runtime.fire_session_end("other").await;
     code
 }
 
-async fn run_session(mut options: Options, runtime: &mut AgentRuntime, data_dir: &Path) -> u8 {
+async fn run_session(
+    mut options: Options,
+    runtime: &mut AgentRuntime,
+    data_dir: &Path,
+    guardian_login: Option<(String, ExternalLogin)>,
+) -> u8 {
     let mut input = match open_input(&mut options).await {
         Ok(input) => input,
         Err(message) => {
@@ -1255,6 +1277,18 @@ async fn run_session(mut options: Options, runtime: &mut AgentRuntime, data_dir:
             return 2;
         }
     };
+    if let Some((account, login)) = guardian_login
+        && matches!(
+            runtime.start_mode(),
+            PermissionMode::Auto | PermissionMode::Afk | PermissionMode::Plan
+        )
+    {
+        eprintln!(
+            "fontaine: the guardian's account `{account}` is not signed in; run `{}`, then retry",
+            login.display
+        );
+        return 1;
+    }
 
     let session_id = runtime.session.id.clone();
     runtime.record_session_start().await;

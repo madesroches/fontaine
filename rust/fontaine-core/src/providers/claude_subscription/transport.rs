@@ -161,7 +161,7 @@ impl ClaudeTransport {
 
         // The login probe and the request process start together. Nothing that can start an
         // inference is written until both have passed, and a failed login drops the process.
-        let login = self.cli.check_login();
+        let login = self.cli.check_login_hinted();
         let prepare = self.prepare(translated);
         tokio::pin!(login, prepare);
         let prepared = tokio::select! {

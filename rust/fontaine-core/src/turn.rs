@@ -137,7 +137,7 @@ fn failure_kind(error: &PromptError) -> &'static str {
         && let Some(claude) = claude_error(e)
     {
         return match claude.kind {
-            Claude::Auth => "authentication_failed",
+            Claude::Auth | Claude::NotSignedIn => "authentication_failed",
             Claude::Limit => "rate_limit",
             Claude::UsageCredits => "billing_error",
             Claude::Catalog => "model_not_found",

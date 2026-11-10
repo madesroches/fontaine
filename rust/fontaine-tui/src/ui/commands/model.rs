@@ -4,8 +4,26 @@ use crate::{App, Ui, UnavailableAnswer};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::config::Slot;
 use fontaine_core::effort::Effort;
-use fontaine_core::models::GuardianModel;
+use fontaine_core::models::{GuardianModel, ModelError, ModelRef};
 use fontaine_core::permissions::UnavailableChoice;
+
+/// The account `reference` names, when `error` is that account's external program having
+/// nobody signed in.
+fn signed_out_account(
+    error: &(dyn std::error::Error + 'static),
+    reference: &str,
+) -> Option<String> {
+    let mut cause = Some(error);
+    while let Some(e) = cause {
+        if e.downcast_ref::<ModelError>()
+            .is_some_and(ModelError::is_not_signed_in)
+        {
+            return ModelRef::parse(reference).map(|r| r.account);
+        }
+        cause = e.source();
+    }
+    None
+}
 
 impl<R: FnMut(&mut App)> Ui<R> {
     /// `/model`: opens the picker, or switches the live session to the model or role named and
@@ -37,10 +55,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app.transcript.warning(notice, None);
                 }
             }
-            Err(e) => self.app.transcript.error(format!(
-                "/model: {}",
-                fontaine_tools::error_chain::chain(&e)
-            )),
+            Err(e) => {
+                let mut text = fontaine_tools::error_chain::chain(&e);
+                if let Some(account) = signed_out_account(&e, reference) {
+                    text.push_str(&format!("; sign in with `/login {account}`"));
+                }
+                self.app.transcript.error(format!("/model: {text}"));
+            }
         }
     }
 

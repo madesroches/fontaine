@@ -475,7 +475,7 @@ Claude Code CLI as a subscription transport (experimental; see
 kind = "claude-subscription"
 ```
 
-Sign in with `claude auth login` outside Fontaine, then pick a model with `--model claude/sonnet`.
+Sign in with `claude auth login --claudeai` (the terminal UI offers to run it when the CLI is not signed in; a headless run exits 1 and names the command), then pick a model with `--model claude/sonnet`.
 Usage is subscription usage: tokens are shown, a cost never is, and `--max-budget-usd` with such a
 main model is a usage error (exit code 2).
 

@@ -59,7 +59,15 @@ entry fails, the `result` is an `error_during_execution` whose `error` ends with
 `every model in main failed`. With `--max-budget-usd`, entries with no known price are skipped.
 
 A headless run on a `claude-subscription` account needs the Claude CLI signed in beforehand
-(`claude auth login`, outside Fontaine). A missing or old CLI, a login that is not a Max or Ultra
+(`claude auth login --claudeai`); it never starts a login. A CLI that is not signed in exits 1
+before any turn with ``account `claude` is not signed in; run `claude auth login --claudeai`, then
+retry`` (the command carries the account's `claude_config_dir` as `CLAUDE_CONFIG_DIR=...` when it
+sets one). If a pinned [guardian](guardian.md) model is on another account that is signed out, a run
+in `auto`, `afk` or `plan` mode exits 1 the same way, naming the guardian's account, before the
+session starts and before any guardian call; `manual` and `acceptEdits` runs are not stopped. The
+guardian model also backs the scanner, the goal evaluator and prompt hooks in every mode; in
+`manual` and `acceptEdits` those behave as before, pausing or failing with the unavailable reason.
+A missing or old CLI, a login that is not a Max or Ultra
 subscription, or a conflicting environment variable exits 1 before any turn, and a credit-billed model at
 startup exits 2, with the corrective text on stderr; a plan limit is reported without a retry (unless the account sits in a [model list](configuration.md#falling-through-to-the-next-entry) with a next entry, which the run continues on), and a stream cut
 short or a CLI silent for 180 seconds is retried twice. Ending the run stops the CLI and its
@@ -184,7 +192,9 @@ In `auto` the guardian answers instead, and a deny comes back to the model as
 `Denied by guardian: [Rule] explanation`. An `escalate` verdict is a denial, and so is every
 adjudication after three denials in a row or twenty in the session (the pause that a person would
 resolve by approving a prompt). When the guardian model cannot be used at all, every adjudication
-is a denial with the rule `GuardianUnavailable`; the `init` event reports `guardian_available:
+is a denial with the rule `GuardianUnavailable` (`GuardianNotSignedIn` when its account's CLI is
+not signed in, which stops a guarded run before it starts; see
+[Claude subscription](claude-subscription.md)); the `init` event reports `guardian_available:
 false` and a line on stderr names the model and the reason, so the run does not look like a
 guardian that judged everything unsafe.
 
@@ -218,7 +228,7 @@ these is one line, in the order the run produces them. The table lists the kinds
 | `assistant_delta` | With `--include-partial-messages`, for each text fragment | `text` |
 | `model_call` | A model call finished: after its `assistant` text and before its `tool_call` events. Main-conversation calls in call order; subagent usage is in `result.usage.subagents` and guardian calls are not events | `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `calls_tool` (whether the call asked for a tool) |
 | `tool_call` | The model called a tool | `tool_use_id`, `tool`, `args` |
-| `gate_decision` | A tool call was adjudicated | `tool_use_id`, `agent_id` (`root` for the main conversation, `agent-N` for a subagent), `agent_name` (the subagent's name, `null` for the main conversation), `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` and, when the guardian failed closed, `fail_closed_reason` (`error`, `timeout`, `unparseable`, `low_confidence` or `unavailable`); when a [`[guardian.composition]`](guardian.md#composing-the-guardian) scored the call also `screen_risk`, `screen_allow_risk` and `screen_steering` (the reads named `stop`, `allow` and `steering`, when they ran), `screen_scores` (every other read, by name) and `screen_outcome` (`stop`, `allow`, `deny`, `pass` or `unavailable`) |
+| `gate_decision` | A tool call was adjudicated | `tool_use_id`, `agent_id` (`root` for the main conversation, `agent-N` for a subagent), `agent_name` (the subagent's name, `null` for the main conversation), `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` and, when the guardian failed closed, `fail_closed_reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable` or `not_signed_in`); when a [`[guardian.composition]`](guardian.md#composing-the-guardian) scored the call also `screen_risk`, `screen_allow_risk` and `screen_steering` (the reads named `stop`, `allow` and `steering`, when they ran), `screen_scores` (every other read, by name) and `screen_outcome` (`stop`, `allow`, `deny`, `pass` or `unavailable`) |
 | `tool_result` | A tool answered | `tool_use_id`, `tool`, `success`, `text` (what the model received) |
 | `goal` | The evaluator judged a [goal](#goals) | `verdict` (`met`, `not_met`, `impossible`, or `failed` when no verdict arrived), `reason`, `evaluations` (verdicts so far) |
 | `result` | At the end of every turn | see below |
@@ -229,7 +239,8 @@ these is one line, in the order the run produces them. The table lists the kinds
 
 Every `gate_decision` also carries `afk` (whether [AFK mode](afk.md) was on) and `converted`, which
 names the prompt that was turned into a denial because nobody could answer it (`ask_rule`, `floor`,
-`mode`, `hook`, `escalate`, `screen_escalate`, `breaker_paused` or `guardian_unavailable`), or is
+`mode`, `hook`, `escalate`, `screen_escalate`, `breaker_paused` or `guardian_unavailable`, which also
+covers a guardian whose account is not signed in), or is
 `null`.
 
 The `result` object:

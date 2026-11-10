@@ -565,7 +565,10 @@ async fn a_pinned_guardian_is_never_substituted() {
     let resolved = resolve_listed(&w, env_of(&[("OA_KEY", "k")]), &list).await;
     assert_eq!(resolved.guardian_choice, GuardianChoice::Pinned);
     assert!(resolved.notices.is_empty());
-    let Some(GuardianModel::Unavailable { reference, reason }) = resolved.guardian else {
+    let Some(GuardianModel::Unavailable {
+        reference, reason, ..
+    }) = resolved.guardian
+    else {
         panic!("unavailable");
     };
     assert_eq!(reference.to_string(), "cloud/claude-haiku-5-5");

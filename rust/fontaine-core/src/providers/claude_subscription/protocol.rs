@@ -1307,7 +1307,7 @@ impl Reader {
         match by_status.or(by_text).or_else(|| self.native.clone()) {
             Some(Native::Auth) => ClaudeError::new(
                 ErrorKind::Auth,
-                "the Claude CLI's login was refused; run `claude auth login` outside Fontaine",
+                "the Claude CLI's login was refused; run `claude auth login --claudeai`",
             )
             .boxed(),
             Some(Native::Limit) => limit_error().boxed(),
@@ -1358,7 +1358,7 @@ pub(crate) fn exit_failure(stderr: &str, native: Option<&Native>) -> Failure {
     match classify_text(stderr).or_else(|| native.cloned()) {
         Some(Native::Auth) => ClaudeError::new(
             ErrorKind::Auth,
-            "the Claude CLI's login was refused; run `claude auth login` outside Fontaine",
+            "the Claude CLI's login was refused; run `claude auth login --claudeai`",
         )
         .boxed(),
         Some(Native::Limit) => limit_error().boxed(),

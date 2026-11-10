@@ -931,11 +931,17 @@ set. Logging in to an `opencode-go` account starts the device sign-in inside the
 the verification URL and the code, waits for you to approve it in a browser, and stores the token
 pair. Esc cancels the wait.
 
-Logging in to a `claude-subscription` account never opens a key prompt and never starts a login.
-It runs the checks of the external Claude CLI (installed, supported version, signed in on a Max or
-Ultra subscription, models listed) and then opens the model picker on its models; when a check
-fails the dialog says to run `claude auth login` outside Fontaine. See
-[Claude subscription](claude-subscription.md).
+Logging in to a `claude-subscription` account never opens a key prompt. It runs the checks of the
+external Claude CLI (installed, supported version, signed in on a Max or Ultra subscription, models
+listed) and then opens the model picker on its models. When the CLI is not signed in, the dialog
+asks whether to run `claude auth login --claudeai` now; it opens a browser and may ask you to paste
+a code. On `y` Fontaine hands the terminal to the CLI: the interface steps aside, the CLI owns the
+keyboard and screen, and the interface is redrawn when it exits (Ctrl-C ends the login and Fontaine
+with it). Fontaine then checks the CLI again and continues into the model picker if somebody is now
+signed in; otherwise the dialog shows the failure and does not offer again. `n` or Esc declines.
+The offer also opens first on the setup screen when Fontaine starts on a main model whose account is
+signed out, and a guardian on a signed-out account tells you at startup to run `/login <account>`.
+See [Claude subscription](claude-subscription.md).
 
 A new credential takes effect in the running session. If the main model is on the account it is
 rebuilt on the new credential, an unavailable guardian on the account is tried again, and the

@@ -1893,15 +1893,25 @@ impl PermissionPipeline {
             },
             Decided::Guardian(adjudication) => *adjudication,
         };
-        if adjudication.fail_closed == Some(FailClosed::Unavailable) && self.no_human().is_none() {
+        if adjudication
+            .fail_closed
+            .is_some_and(FailClosed::is_unavailable)
+            && self.no_human().is_none()
+        {
+            let mut reason = self
+                .state
+                .guardian()
+                .unavailable_reason()
+                .unwrap_or_default()
+                .to_string();
+            if adjudication.fail_closed == Some(FailClosed::NotSignedIn)
+                && let Some((account, _)) = adjudication.model.split_once('/')
+            {
+                reason.push_str(&format!("; sign in with `/login {account}`"));
+            }
             let info = GuardianUnavailable {
                 model: adjudication.model.clone(),
-                reason: self
-                    .state
-                    .guardian()
-                    .unavailable_reason()
-                    .unwrap_or_default()
-                    .to_string(),
+                reason,
                 tool: call.tool.to_string(),
             };
             let _waiting = self.state.wait_on_human(call.agent);
@@ -2152,7 +2162,9 @@ impl PermissionPipeline {
                 };
                 let converted = if escalated {
                     Some(Converted::Escalate)
-                } else if adjudication.fail_closed == Some(FailClosed::Unavailable)
+                } else if adjudication
+                    .fail_closed
+                    .is_some_and(FailClosed::is_unavailable)
                     && no_human.is_some()
                 {
                     Some(Converted::GuardianUnavailable)

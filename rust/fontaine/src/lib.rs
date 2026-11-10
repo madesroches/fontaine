@@ -999,7 +999,13 @@ async fn resolve_models(
     })
     .await
     .map_err(|e| {
-        eprintln!("fontaine: {e}");
+        match signed_out_login(config, &e, cli.model.as_deref(), host) {
+            Some((account, login)) => eprintln!(
+                "fontaine: account `{account}` is not signed in; run `{}`, then retry",
+                login.display
+            ),
+            None => eprintln!("fontaine: {e}"),
+        }
         e.exit_code()
     })
 }
@@ -1129,6 +1135,18 @@ async fn run_headless(
         );
         return EXIT_CONFIG;
     }
+    let guardian_login = match &models.guardian {
+        Some(models::GuardianModel::Unavailable {
+            reference,
+            not_signed_in: true,
+            ..
+        }) => config
+            .accounts
+            .get(&reference.account)
+            .and_then(|a| a.kind.provider().external_login(a, &shared_env(host)))
+            .map(|login| (reference.account.clone(), login)),
+        _ => None,
+    };
     let launch = Launch {
         cli,
         config,
@@ -1153,15 +1171,34 @@ async fn run_headless(
     };
     // Servers that fail to start are reported on stderr and skipped.
     runtime.connect_mcp(&[]).await;
-    headless::run(options, runtime, &dirs.data).await
+    headless::run(options, runtime, &dirs.data, guardian_login).await
 }
 
 /// Whether adding an account, signing in or picking a model could fix the failure.
 fn setup_can_help(error: &models::ModelError) -> bool {
     matches!(
         error,
-        models::ModelError::Provider(_) | models::ModelError::Config(ConfigError::Model { .. })
+        models::ModelError::Provider { .. } | models::ModelError::Config(ConfigError::Model { .. })
     )
+}
+
+/// The main model's account and the login that signs it in, when `error` is that account's
+/// external program having nobody signed in.
+fn signed_out_login(
+    config: &Config,
+    error: &models::ModelError,
+    model_override: Option<&str>,
+    host: &Host,
+) -> Option<(String, fontaine_core::providers::ExternalLogin)> {
+    if !error.is_not_signed_in() {
+        return None;
+    }
+    let account = models::main_reference(config, model_override)?.account;
+    let login = config
+        .accounts
+        .get(&account)
+        .and_then(|a| a.kind.provider().external_login(a, &shared_env(host)))?;
+    Some((account, login))
 }
 
 async fn run_interactive(
@@ -1203,6 +1240,7 @@ async fn run_interactive(
                 session_id: prep.session.id.clone(),
                 user_file: dirs.config.join(config::USER_FILE),
                 screen_reader,
+                not_signed_in: signed_out_login(config, &error, cli.model.as_deref(), host),
             };
             match fontaine_tui::setup::run(params).await {
                 Ok(Some((models, config))) => (models, Some(config)),

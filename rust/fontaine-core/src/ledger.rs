@@ -126,7 +126,7 @@ pub enum Record {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         converted: Option<Converted>,
         /// Why the guardian failed closed, when it did: `error`, `timeout`, `unparseable`,
-        /// `low_confidence` or `unavailable`.
+        /// `low_confidence`, `unavailable` or `not_signed_in`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fail_closed: Option<String>,
         /// The rule's explanation without the advice to the model, redacted and cut short.

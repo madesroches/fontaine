@@ -97,9 +97,14 @@ pub fn build_guardian_telling(
                 None => guardian,
             }
         }
-        Some(GuardianModel::Unavailable { reference, reason }) => {
-            Guardian::unavailable(reference.to_string(), reason, settings)
-        }
+        Some(GuardianModel::Unavailable {
+            reference,
+            reason,
+            not_signed_in: true,
+        }) => Guardian::not_signed_in(reference.to_string(), reason, settings),
+        Some(GuardianModel::Unavailable {
+            reference, reason, ..
+        }) => Guardian::unavailable(reference.to_string(), reason, settings),
         None => {
             let guardian = no_guardian();
             Guardian::unavailable(

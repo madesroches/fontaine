@@ -333,6 +333,7 @@ impl World {
             Some(GuardianModel::Unavailable {
                 reference: ModelRef::parse(reference).unwrap(),
                 reason: reason.to_string(),
+                not_signed_in: false,
             })
         } else {
             self.guardian.as_ref().map(|mock| {
