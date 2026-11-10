@@ -253,3 +253,77 @@ fn helper_path() -> String {
     assert!(path.exists(), "{} is not built", path.display());
     path.to_string_lossy().into_owned()
 }
+
+#[tokio::test]
+async fn an_expired_token_is_refreshed_before_it_is_sent() {
+    let server = auth_server().await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/oauth-authorization-server"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "issuer": server.uri(),
+            "authorization_endpoint": format!("{}/authorize", server.uri()),
+            "token_endpoint": format!("{}/token", server.uri()),
+            "response_types_supported": ["code"],
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(wiremock::matchers::body_string_contains(
+            "grant_type=refresh_token",
+        ))
+        .and(wiremock::matchers::body_string_contains(
+            "refresh_token=old-refresh",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "renewed-token",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "new-refresh",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let store = MemStore::default();
+    *store.0.lock().unwrap() = Some(
+        serde_json::from_value(json!({
+            "client_id": "test-client",
+            "token_response": {
+                "access_token": "stale-token",
+                "token_type": "Bearer",
+                "expires_in": 60,
+                "refresh_token": "old-refresh",
+            },
+            "token_received_at": 1,
+        }))
+        .expect("a stored-credentials JSON"),
+    );
+    let spec = http_spec(&format!("{}/mcp", server.uri()), &store);
+    let connected = connect(
+        &spec,
+        tool_server(),
+        &options(Gate::new(true)),
+        &Default::default(),
+        &|_| None,
+    )
+    .await
+    .expect("the expired token is refreshed");
+
+    let seen = server.received_requests().await.unwrap();
+    let renewed = seen.iter().any(|request| {
+        request
+            .headers
+            .get("authorization")
+            .is_some_and(|value| value.to_str().unwrap_or_default() == "Bearer renewed-token")
+    });
+    assert!(renewed, "a protocol request carried the renewed token");
+    let stale = seen.iter().any(|request| {
+        request
+            .headers
+            .get("authorization")
+            .is_some_and(|value| value.to_str().unwrap_or_default() == "Bearer stale-token")
+    });
+    assert!(!stale, "the stale token was never sent");
+    connected.connection.close().await;
+}

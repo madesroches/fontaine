@@ -501,24 +501,23 @@ async fn login(
     if let Some(error) = plugin_error {
         eprintln!("fontaine: warning: plugins are not applied: {error}");
     }
-    let Some(server) = config.mcp_servers.get(name) else {
-        return Err(Failure::failed(format!("no MCP server named `{name}`")));
-    };
-    let Some(url) = server.url.clone() else {
+    // Resolved as at connect time (the `headers_helper` refusal and `${VAR}` expansion): the
+    // stored token is bound to this URL, and a later connect refuses any other.
+    let scrubbed = fontaine_core::tools::scrubbed_env(&config, (host.env_names)());
+    let server = fontaine_core::agent::resolved_server(
+        &config,
+        name,
+        &config.workspace,
+        &host.env,
+        &scrubbed,
+    )
+    .map_err(Failure::usage)?
+    .ok_or_else(|| Failure::failed(format!("no MCP server named `{name}`")))?;
+    let Some(url) = server.url else {
         return Err(Failure::usage(format!(
             "MCP server `{name}` is a stdio server; `login` applies to http servers"
         )));
     };
-    if server.headers_helper.is_some() {
-        // Same refusal as at connect time: the project scope must not run a script, and a login
-        // would store credentials a later connect refuses to attach.
-        let slot = config.mcp_origins.get(name).map(|origin| origin.slot);
-        if let Some(refusal) =
-            slot.and_then(|slot| fontaine_core::agent::headers_helper_refusal(name, server, slot))
-        {
-            return Err(Failure::usage(refusal));
-        }
-    }
     let network = config
         .loaded_network(None)
         .map_err(|e| Failure::usage(chain(&e)))?;

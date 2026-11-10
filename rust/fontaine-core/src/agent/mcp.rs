@@ -252,6 +252,32 @@ pub fn headers_helper_refusal(name: &str, server: &McpServer, slot: Slot) -> Opt
     }
 }
 
+/// The configured server `name` as it will be started: the `headers_helper` refusal applied and,
+/// for a definition that expands, its `${VAR}` references resolved. `Ok(None)` when unknown.
+pub fn resolved_server(
+    config: &Config,
+    name: &str,
+    root: &Path,
+    env: &EnvLookup,
+    scrubbed: &[OsString],
+) -> Result<Option<McpServer>, String> {
+    let Some(defined) = config.mcp_servers.get(name) else {
+        return Ok(None);
+    };
+    let origin = config.mcp_origins.get(name).copied().unwrap_or_default();
+    if let Some(refusal) = headers_helper_refusal(name, defined, origin.slot) {
+        return Err(refusal);
+    }
+    if defined.expand {
+        let is_credential = credential_check(config, scrubbed);
+        expanded(defined, root, env, &is_credential)
+            .map(Some)
+            .map_err(|e| format!("MCP server `{name}`: {e}"))
+    } else {
+        Ok(Some(defined.clone()))
+    }
+}
+
 /// How to start the configured server `name` with its working directory at `root`; `Ok(None)`
 /// when it is unknown or names neither a command nor a URL. A repository's definition has its
 /// `${VAR}` references expanded here, through `env`; `scrubbed` are the credential variables it
@@ -264,19 +290,8 @@ pub fn server_spec(
     env: &EnvLookup,
     scrubbed: &[OsString],
 ) -> Result<Option<ServerSpec>, String> {
-    let Some(defined) = config.mcp_servers.get(name) else {
+    let Some(server) = resolved_server(config, name, root, env, scrubbed)? else {
         return Ok(None);
-    };
-    let origin = config.mcp_origins.get(name).copied().unwrap_or_default();
-    if let Some(refusal) = headers_helper_refusal(name, defined, origin.slot) {
-        return Err(refusal);
-    }
-    let server = if defined.expand {
-        let is_credential = credential_check(config, scrubbed);
-        expanded(defined, root, env, &is_credential)
-            .map_err(|e| format!("MCP server `{name}`: {e}"))?
-    } else {
-        defined.clone()
     };
     let transport = match (&server.command, &server.url) {
         (Some(command), _) => Transport::Stdio {
@@ -825,6 +840,31 @@ mod tests {
         );
         let err = crate::mcp_json::expand_at_start("Bearer ${KEY}", &cx).unwrap_err();
         assert!(err.contains("credential"), "{err}");
+    }
+
+    #[test]
+    fn a_login_resolves_a_variable_url_the_way_a_connect_does() {
+        let mut config = crate::config::Config::defaults("/root".into());
+        let mut server = crate::mcp_config::http("https://${HOST}/mcp");
+        server.expand = true;
+        config.mcp_servers.insert("srv".to_string(), server);
+        let env: super::EnvLookup =
+            std::sync::Arc::new(|name| (name == "HOST").then(|| OsString::from("h.example")));
+
+        let resolved = super::resolved_server(&config, "srv", Path::new("/root"), &env, &[])
+            .unwrap()
+            .expect("the server is configured");
+        assert_eq!(resolved.url.as_deref(), Some("https://h.example/mcp"));
+
+        let unset: super::EnvLookup = std::sync::Arc::new(|_| None);
+        let err =
+            super::resolved_server(&config, "srv", Path::new("/root"), &unset, &[]).unwrap_err();
+        assert!(err.contains("HOST"), "{err}");
+        assert!(
+            super::resolved_server(&config, "nope", Path::new("/root"), &env, &[])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

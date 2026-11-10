@@ -753,6 +753,12 @@ where
                     .map_err(|e| fail(spec, "could not set up OAuth for the server", e))?;
             manager.set_credential_store(auth::SharedCredentialStore(Arc::clone(credentials)));
             manager.set_state_store(auth::SharedStateStore(Arc::clone(states)));
+            // Without this the manager has no OAuth client, so a stored token near expiry
+            // cannot be refreshed.
+            manager
+                .initialize_from_store()
+                .await
+                .map_err(|e| fail(spec, "could not load the stored OAuth credentials", e))?;
             let auth_client = AuthClient::new(client, manager);
             let mut config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
             if !headers.is_empty() {
