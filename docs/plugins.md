@@ -122,7 +122,7 @@ session.
 | `fontaine plugin marketplace update [name]` | Fetch, move the pin to the remote default-branch HEAD, report old and new sha. Installed plugins are not touched: a path-source plugin follows on its next `plugin update` or auto-update. Discards a staged revision of the marketplace. |
 | `fontaine plugin marketplace auto-update <name> yes\|no` | Opts one marketplace out of (or back into) [auto-update](#auto-update). |
 | `fontaine plugin marketplace remove <name>` | Refuses while an installed plugin names it; else drops the clone and the entry. |
-| `fontaine plugin install <name>@<marketplace>` | Resolve the entry in the pinned catalog, fetch or copy it, pin the commit, validate every component, record it enabled. Refuses a plugin name already installed from any marketplace. A failed install leaves nothing. |
+| `fontaine plugin install <name>@<marketplace>` | Resolve the entry in the pinned catalog, fetch or copy it, pin the commit, validate every component, record it enabled. Refuses a plugin name already installed from any marketplace. A failed install leaves nothing. On a terminal it asks once whether to honour the `allowed-tools` of the plugin's untrusted skills; without one it trusts nothing and prints a `fontaine plugin trust` hint. |
 | `fontaine plugin uninstall <name>` | Remove the checkout and the entry. |
 | `fontaine plugin update <name>` | Re-fetch or re-copy, re-validate, print the approval summary and record the new approval; a broken new revision keeps the old checkout live. Clears a held or staged revision. This is how a revision that auto-update held is approved. |
 | `fontaine plugin auto-update <name> yes\|no` | Opts one plugin out of (or back into) [auto-update](#auto-update). |

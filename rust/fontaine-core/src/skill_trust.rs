@@ -108,6 +108,21 @@ pub fn split_tools(skill: &crate::extensions::Skill) -> (Vec<String>, Vec<String
     (text(specific), text(wildcard))
 }
 
+/// The skills of a plugin checkout an install should ask about: those declaring `allowed-tools`
+/// that are not already trusted as they are now.
+pub fn untrusted_with_tools(
+    plugin: &crate::plugins::PluginDir,
+    recorded: &TrustedSkills,
+) -> Result<Vec<crate::extensions::Skill>, crate::extensions::ExtensionError> {
+    Ok(crate::extensions::load_plugin_skills(plugin)?
+        .into_iter()
+        .filter(|skill| !skill.declared_tools.is_empty())
+        .filter(|skill| {
+            recorded.state(&skill.name, skill.scope, &skill.digest) != TrustState::Trusted
+        })
+        .collect())
+}
+
 /// What trusting `skill` as it is now would record.
 pub fn record_of(skill: &crate::extensions::Skill) -> TrustRecord {
     TrustRecord {

@@ -183,15 +183,8 @@ pub(crate) fn install(dirs: &Dirs, host: &Host, spec: &str) -> Result<(), String
     if let Some(message) = unreadable {
         eprintln!("fontaine: warning: {message}");
     }
-    let trustable: Vec<extensions::Skill> = extensions::load_plugin_skills(&prepared.build.dir)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .filter(|skill| !skill.declared_tools.is_empty())
-        .filter(|skill| {
-            recorded.state(&skill.name, skill.scope, &skill.digest)
-                != skill_trust::TrustState::Trusted
-        })
-        .collect();
+    let trustable = skill_trust::untrusted_with_tools(&prepared.build.dir, &recorded)
+        .map_err(|e| e.to_string())?;
     let interactive = std::io::stdin().is_terminal();
     let mut to_trust = Vec::new();
     if interactive && !trustable.is_empty() {

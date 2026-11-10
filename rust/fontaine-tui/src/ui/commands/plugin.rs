@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fontaine_core::agent::{AgentRuntime, EnvLookup};
-use fontaine_core::extensions::{self, Skill};
+use fontaine_core::extensions::Skill;
 use fontaine_core::plugin_ops::{
     self, Fetch, GitMode, OpError, PreparedInstall, PreparedUpdate, Workdir, commit_install,
     commit_update, prepare_install, prepare_update,
@@ -273,24 +273,18 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         if let Some(message) = unreadable {
             self.app.transcript.warning(message, None);
         }
-        let trustable: Vec<Skill> = match extensions::load_plugin_skills(&prepared.build.dir) {
-            Ok(skills) => skills
-                .into_iter()
-                .filter(|skill| !skill.declared_tools.is_empty())
-                .filter(|skill| {
-                    recorded.state(&skill.name, skill.scope, &skill.digest)
-                        != skill_trust::TrustState::Trusted
-                })
-                .collect(),
-            Err(e) => {
-                drop(prepared);
-                self.app
-                    .transcript
-                    .error(format!("/plugin install: {}", chain(&e)));
-                self.app.transcript.notice("install cancelled");
-                return ControlFlow::Continue(());
-            }
-        };
+        let trustable: Vec<Skill> =
+            match skill_trust::untrusted_with_tools(&prepared.build.dir, &recorded) {
+                Ok(skills) => skills,
+                Err(e) => {
+                    drop(prepared);
+                    self.app
+                        .transcript
+                        .error(format!("/plugin install: {}", chain(&e)));
+                    self.app.transcript.notice("install cancelled");
+                    return ControlFlow::Continue(());
+                }
+            };
         let mut accepted: Vec<Skill> = Vec::new();
         let mut declined: Vec<String> = Vec::new();
         for skill in trustable {

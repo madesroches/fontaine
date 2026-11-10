@@ -106,6 +106,7 @@ async fn an_install_confirms_the_executable_surface_then_loads_the_plugin_live()
         ui.press(KeyCode::Char('y'));
         ui.wait_for("installed plugin `demo`").await;
         ui.wait_for("loaded plugin `demo`").await;
+        assert!(!ui.screen().contains("Honour the allowed-tools"));
 
         ui.send("/skills");
         ui.wait_for("demo:hello").await;
@@ -116,6 +117,7 @@ async fn an_install_confirms_the_executable_surface_then_loads_the_plugin_live()
     let registry = fontaine_core::plugins::read_registry(&w.config_dir).unwrap();
     assert_eq!(registry.plugin.len(), 1);
     assert!(registry.plugin[0].approved.is_some());
+    assert!(!w.config_dir.join("skill-trust.toml").exists());
     assert!(w.ledger_text().contains("plugin_change"));
     assert!(w.audit().iter().any(|r| r["tool"] == "plugin_change"));
 }
@@ -193,22 +195,6 @@ async fn leaving_at_the_skill_trust_question_cancels_the_install() {
     })
     .await;
     assert_eq!(registered_plugins(&w.config_dir), 0);
-    assert!(!w.config_dir.join("skill-trust.toml").exists());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_plugin_without_allowed_tools_asks_no_trust_question() {
-    let w = World::new(Vec::new());
-    marketplace(&w.config_dir);
-    w.run(|ui| async move {
-        idle(&ui).await;
-        ui.send("/plugin install demo@local");
-        ui.wait_for_prompt("Install plugin `demo`").await;
-        ui.press(KeyCode::Char('y'));
-        ui.wait_for("loaded plugin `demo`").await;
-        assert!(!ui.screen().contains("Honour the allowed-tools"));
-    })
-    .await;
     assert!(!w.config_dir.join("skill-trust.toml").exists());
 }
 
