@@ -21,6 +21,10 @@
 //! replace everything generated), `before` and `after_stop` (raw lines added), `drop_after`,
 //! `exit_code`, `stderr`, `hang_before_output`, `hang_after_result`, `chunked` and `descendant`.
 //!
+//! `auth login` (what `claude auth login --claudeai` runs) rewrites `auth` in `double.json` to a
+//! signed-in Max account, unless `login_exit` (an exit code) or `login_keeps_signed_out` (exit 0
+//! with the state unchanged) says it fails.
+//!
 //! `claude_cli_double --descendant FILE` is the sleeping process a script's `descendant` starts.
 
 use std::io::{BufRead, Write};
@@ -45,6 +49,11 @@ pub fn main() {
             double.text("version").unwrap_or("2.1.318 (Claude Code)")
         );
         std::process::exit(double.int("version_exit") as i32);
+    }
+    if args.first().map(String::as_str) == Some("auth")
+        && args.get(1).map(String::as_str) == Some("login")
+    {
+        double.login(&args);
     }
     if args.first().map(String::as_str) == Some("auth") {
         double.pause("auth_sleep_ms");
@@ -82,6 +91,36 @@ impl Double {
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_else(|| json!({}));
         Double { scenario, dir }
+    }
+
+    /// `auth login`: logs the scenario's account in by rewriting its `auth`, so the next launch
+    /// reads the signed-in state. `login_exit` makes it fail, `login_keeps_signed_out` makes it
+    /// exit 0 without signing in. The arguments it was run with are logged.
+    fn login(&self, args: &[String]) -> ! {
+        self.log(json!({"kind": "login", "argv": args}));
+        let code = self.int("login_exit") as i32;
+        let keeps = self
+            .scenario
+            .get("login_keeps_signed_out")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if code == 0
+            && !keeps
+            && let Some(dir) = &self.dir
+        {
+            let mut scenario = self.scenario.clone();
+            scenario["auth"] = json!({
+                "loggedIn": true,
+                "authMethod": "claude.ai",
+                "subscriptionType": "max",
+            });
+            std::fs::write(
+                dir.join("double.json"),
+                serde_json::to_vec(&scenario).expect("serialize the scenario"),
+            )
+            .expect("rewrite the scenario");
+        }
+        std::process::exit(code);
     }
 
     fn text(&self, key: &str) -> Option<&str> {

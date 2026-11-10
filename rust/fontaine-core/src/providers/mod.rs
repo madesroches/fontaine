@@ -150,6 +150,33 @@ pub trait Provider: Send + Sync + 'static {
     fn sign_in(&self) -> Option<&dyn SignIn> {
         None
     }
+
+    /// The program that signs an external-login account in, for a host that can hand it the
+    /// terminal; `None` when the kind has no such program.
+    fn external_login(&self, _account: &Account, _env: &SharedEnv) -> Option<ExternalLogin> {
+        None
+    }
+}
+
+/// An external program's own sign-in, to run with the terminal's stdin and stdout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExternalLogin {
+    pub program: std::path::PathBuf,
+    pub args: Vec<std::ffi::OsString>,
+    /// Variables set on top of the inherited environment.
+    pub env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    /// The command line as a person would type it.
+    pub display: String,
+}
+
+impl ExternalLogin {
+    /// The command with inherited environment and stdio: the program talks to the terminal
+    /// itself, so it gets no process group of its own and no piped streams.
+    pub fn command(&self) -> std::process::Command {
+        let mut command = std::process::Command::new(&self.program);
+        command.args(&self.args).envs(self.env.iter().cloned());
+        command
+    }
 }
 
 /// What a sign-in tells its host while it runs.

@@ -509,6 +509,29 @@ async fn a_missing_guardian_denies_every_call() {
 }
 
 #[tokio::test]
+async fn a_guardian_whose_account_is_signed_out_denies_every_call_under_its_own_label() {
+    let guardian = Guardian::not_signed_in(
+        "claude/sonnet",
+        "the guardian's account `claude` is not signed in",
+        settings(),
+    );
+    for destructive in [false, true] {
+        let result = guardian.adjudicate(&request("ls", destructive)).await;
+        assert_eq!(names(&result), (Decision::Deny, "GuardianNotSignedIn"));
+        assert_eq!(result.fail_closed, Some(FailClosed::NotSignedIn));
+        assert!(result.fail_closed.is_some_and(FailClosed::is_unavailable));
+        assert_eq!(
+            result.explanation,
+            "the guardian's account `claude` is not signed in"
+        );
+    }
+    assert_eq!(
+        guardian.unavailable_reason(),
+        Some("the guardian's account `claude` is not signed in")
+    );
+}
+
+#[tokio::test]
 async fn a_destructive_allow_below_the_threshold_is_denied() {
     let endpoint = Endpoint::start(vec![Reply::Verdict(allow(0.5))]).await;
     let guardian = endpoint.guardian(settings());

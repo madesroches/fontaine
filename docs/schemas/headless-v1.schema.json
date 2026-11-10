@@ -211,7 +211,7 @@
             },
             "screen_outcome": { "enum": ["stop", "allow", "deny", "pass", "unavailable", null] },
             "fail_closed_reason": {
-              "enum": ["error", "timeout", "unparseable", "low_confidence", "unavailable", null]
+              "enum": ["error", "timeout", "unparseable", "low_confidence", "unavailable", "not_signed_in", null]
             },
             "afk": { "type": "boolean" },
             "converted": {

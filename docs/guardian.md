@@ -242,6 +242,7 @@ Fontaine's code, not the model, decides what happens when there is no usable ver
 | Outcome | Result | `fail_closed_reason` |
 |---|---|---|
 | No credential, unknown account, or the pinned model is unavailable | deny, rule `GuardianUnavailable` | `unavailable` |
+| The pinned model's account (an external CLI login, such as a `claude-subscription` account) is not signed in | deny, rule `GuardianNotSignedIn` | `not_signed_in` |
 | Provider error, dropped stream, connection reset or a closed socket | deny, rule `GuardianUnavailable` | `error` |
 | No answer within `[guardian] timeout_secs` (default 30, retries included; an attempt that stalls is dropped and retried inside it) | deny, rule `Timeout` | `timeout` |
 | Malformed, schema-invalid or out-of-enum verdict after two retries | deny, rule `Unparseable` | `unparseable` |

@@ -22,9 +22,11 @@ use rig_core::providers::registry::ProviderId;
 
 use super::derived_facts::{derive, notice};
 use super::{
-    AccountClient, Billing, ConnectContext, CredentialPolicy, Provider, RefusedModel, vendor,
+    AccountClient, Billing, ConnectContext, CredentialPolicy, ExternalLogin, Provider,
+    RefusedModel, vendor,
 };
 use crate::config::Account;
+use crate::models::SharedEnv;
 use crate::quota::QuotaSource;
 use fontaine_tools::lock::{read, write};
 use usage::Usage;
@@ -36,7 +38,7 @@ pub mod protocol;
 pub mod transport;
 pub mod usage;
 
-pub use cli::{CONFLICTING_ENV, Cli, MIN_VERSION, Timeouts, inherited_env_names};
+pub use cli::{CONFLICTING_ENV, Cli, MIN_VERSION, Timeouts, inherited_env_names, login_command};
 pub use inventory::INVENTORY_FLAG;
 pub use transport::{ClaudeTransport, InventoryCommand};
 
@@ -56,8 +58,10 @@ pub enum ErrorKind {
     Cli,
     /// The version is missing, malformed, too old or its probe timed out.
     Version,
-    /// Not signed in, or the sign-in cannot be used.
+    /// A login that was refused, or cannot be used.
     Auth,
+    /// Nobody is signed in: signing in is the fix.
+    NotSignedIn,
     /// Signed in with a method or plan this adapter does not accept.
     Plan,
     /// An inherited variable would change which backend or account bills.
@@ -234,6 +238,14 @@ impl Provider for ClaudeSubscription {
             }
         }
         Ok(())
+    }
+
+    fn external_login(&self, account: &Account, env: &SharedEnv) -> Option<ExternalLogin> {
+        Some(login_command(
+            account.cli_path.as_deref(),
+            account.claude_config_dir.as_deref(),
+            env,
+        ))
     }
 
     fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String> {

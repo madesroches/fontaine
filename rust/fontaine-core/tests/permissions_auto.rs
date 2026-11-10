@@ -647,6 +647,45 @@ async fn a_missing_guardian_denies_in_auto_and_names_why() {
     assert_eq!(rig.approver.unavailable_asked.lock().unwrap().len(), 0);
 }
 
+fn signed_out_guardian() -> std::sync::Arc<fontaine_guardian::Guardian> {
+    std::sync::Arc::new(fontaine_guardian::Guardian::not_signed_in(
+        "claude/sonnet",
+        "the guardian's account `claude` is not signed in",
+        Settings::default(),
+    ))
+}
+
+#[tokio::test]
+async fn a_signed_out_guardian_denies_under_its_own_label_and_never_allows() {
+    let rig = Rig::with(
+        Options::new(Auto)
+            .guardian(signed_out_guardian())
+            .headless(),
+    );
+    let d = rig.check("shell", shell("make all")).await;
+    assert!(denied_message(&d).contains("[GuardianNotSignedIn]"));
+    let record = last(&rig);
+    assert_eq!(record.fail_closed_reason.as_deref(), Some("not_signed_in"));
+    assert_eq!(record.rule.as_deref(), Some("GuardianNotSignedIn"));
+    assert!(rig.approver.unavailable_asked.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_signed_out_guardian_asks_the_human_like_an_unavailable_one_and_names_the_login() {
+    let rig = Rig::with(Options::new(Auto).guardian(signed_out_guardian()));
+    rig.approver.when_unavailable(UnavailableChoice::Deny);
+    assert!(!allowed(&rig.check("shell", shell("make all")).await));
+    let asked = rig.approver.unavailable_asked.lock().unwrap().clone();
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].reason.contains("/login claude"), "{:?}", asked[0]);
+
+    // Retry and manual take the same paths as for any unavailable guardian.
+    rig.approver.when_unavailable(UnavailableChoice::Manual);
+    rig.approver.answer(Answer::AllowOnce);
+    assert!(allowed(&rig.check("shell", shell("make all")).await));
+    assert_eq!(rig.state.mode(), Manual);
+}
+
 #[tokio::test]
 async fn an_unavailable_guardian_asks_the_human_what_to_do_unless_headless() {
     let rig = Rig::with(Options::new(Auto));

@@ -126,7 +126,7 @@ exported.
 | `fontaine.cost.usage` | USD | `model`, `query_source`; `estimated` (`true`) on the guardian spend estimate only |
 | `fontaine.tool_decision.count` | `{decision}` | `tier`, `decision` |
 | `fontaine.guardian.latency` | ms | `model`, `profile`, `cache_hit` |
-| `fontaine.guardian.fail_closed.count` | `{denial}` | `reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`) |
+| `fontaine.guardian.fail_closed.count` | `{denial}` | `reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`, `not_signed_in`) |
 | `fontaine.screen.count` | `{call}` | `outcome` (`stop`, `allow`, `deny`, `pass`, `unavailable`; in shadow mode `stop`, `allow` and `deny` are what the composition would have done) |
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,

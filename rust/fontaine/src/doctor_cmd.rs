@@ -188,7 +188,9 @@ fn model_facts(models: &models::Models) -> ModelFacts {
         main: models.main.reference.to_string(),
         guardian: match &models.guardian {
             Some(GuardianModel::Ready(handle)) => GuardianFact::Ready(handle.reference.to_string()),
-            Some(GuardianModel::Unavailable { reference, reason }) => GuardianFact::Unavailable {
+            Some(GuardianModel::Unavailable {
+                reference, reason, ..
+            }) => GuardianFact::Unavailable {
                 reference: reference.to_string(),
                 reason: reason.clone(),
             },

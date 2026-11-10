@@ -540,6 +540,7 @@ async fn the_guardian_quota_slot_follows_install_guardian() {
     built.runtime.install_guardian(&GuardianModel::Unavailable {
         reference: ModelRef::parse("moon/m").unwrap(),
         reason: "gone".into(),
+        not_signed_in: false,
     });
     assert!(built.runtime.guardian_quota().is_none());
 }

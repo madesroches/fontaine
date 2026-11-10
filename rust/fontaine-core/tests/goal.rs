@@ -820,6 +820,7 @@ fn no_evaluator_without_a_ready_guardian_model() {
     let gone = GuardianModel::Unavailable {
         reference: ModelRef::parse("test/gone").unwrap(),
         reason: "no credential".into(),
+        not_signed_in: false,
     };
     let err = GoalEvaluator::on(Some(&gone)).err().unwrap();
     assert!(
@@ -1051,6 +1052,7 @@ async fn an_unavailable_evaluator_model_pauses_the_goal_and_is_recorded() {
         guardian: Some(GuardianModel::Unavailable {
             reference: ModelRef::parse("test/gone").unwrap(),
             reason: "no credential".into(),
+            not_signed_in: false,
         }),
         guardian_choice: GuardianChoice::Pinned,
         notices: Vec::new(),

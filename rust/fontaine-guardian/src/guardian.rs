@@ -65,7 +65,7 @@ impl Default for Settings {
 
 pub(crate) enum Backend {
     Ready(Box<DynModel<Completion>>),
-    Unavailable(String),
+    Unavailable { reason: String, not_signed_in: bool },
 }
 
 /// What one adjudication came to.
@@ -119,8 +119,30 @@ impl Guardian {
         reason: impl Into<String>,
         settings: Settings,
     ) -> Self {
+        Self::without_model(label, reason, false, settings)
+    }
+
+    /// A guardian whose model's account is not signed in. Like [`Guardian::unavailable`] it
+    /// denies every adjudication; only the reason and the audit label tell the two apart.
+    pub fn not_signed_in(
+        label: impl Into<String>,
+        reason: impl Into<String>,
+        settings: Settings,
+    ) -> Self {
+        Self::without_model(label, reason, true, settings)
+    }
+
+    fn without_model(
+        label: impl Into<String>,
+        reason: impl Into<String>,
+        not_signed_in: bool,
+        settings: Settings,
+    ) -> Self {
         Guardian {
-            backend: Backend::Unavailable(reason.into()),
+            backend: Backend::Unavailable {
+                reason: reason.into(),
+                not_signed_in,
+            },
             label: label.into(),
             settings,
             cache: Mutex::default(),
@@ -168,7 +190,7 @@ impl Guardian {
     pub fn unavailable_reason(&self) -> Option<&str> {
         match &self.backend {
             Backend::Ready(_) => None,
-            Backend::Unavailable(reason) => Some(reason),
+            Backend::Unavailable { reason, .. } => Some(reason),
         }
     }
 
@@ -180,7 +202,7 @@ impl Guardian {
                 provider: model.name().to_string(),
                 model: model.id().unwrap_or("unknown").to_string(),
             }),
-            Backend::Unavailable(_) => None,
+            Backend::Unavailable { .. } => None,
         }
     }
 
@@ -225,7 +247,17 @@ impl Guardian {
 
         let model = match &self.backend {
             Backend::Ready(model) => model,
-            Backend::Unavailable(reason) => {
+            Backend::Unavailable {
+                reason,
+                not_signed_in: true,
+            } => {
+                return finish(Outcome::FailClosed(
+                    FailClosed::NotSignedIn,
+                    reason.clone(),
+                    Usage::default(),
+                ));
+            }
+            Backend::Unavailable { reason, .. } => {
                 return finish(Outcome::FailClosed(
                     FailClosed::Unavailable,
                     format!("the guardian model {} is unavailable: {reason}", self.label),

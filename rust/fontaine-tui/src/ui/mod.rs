@@ -60,6 +60,18 @@ fn soonest_tick(app: &App, waits: &[Option<Duration>]) -> Option<Duration> {
         .min()
 }
 
+/// The account of a guardian model that cannot be asked because nobody is signed in to it.
+fn signed_out_guardian_account(runtime: &AgentRuntime) -> Option<&str> {
+    match &runtime.models.guardian {
+        Some(fontaine_core::models::GuardianModel::Unavailable {
+            reference,
+            not_signed_in: true,
+            ..
+        }) => Some(&reference.account),
+        _ => None,
+    }
+}
+
 impl<R: FnMut(&mut App)> Ui<R> {
     fn draw(&mut self, runtime: &AgentRuntime) {
         self.app.mode = runtime.state.mode();
@@ -582,10 +594,27 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
         let guardian = runtime.state.guardian();
         if let Some(reason) = guardian.unavailable_reason() {
+            let fix = match signed_out_guardian_account(runtime) {
+                Some(account) => format!("sign it in with /login {account}"),
+                None => "fix it with /guardian-model".to_string(),
+            };
             self.app.transcript.error(format!(
-                "the guardian model {} is unavailable ({reason}); calls that need it are denied until you fix it with /guardian-model",
+                "the guardian model {} is unavailable ({reason}); calls that need it are denied until you {fix}",
                 guardian.label()
             ));
+        }
+    }
+
+    /// A guardian whose account is signed out, told at startup in the modes that have no other
+    /// notice of it.
+    pub(crate) fn announce_signed_out_guardian(&mut self, runtime: &AgentRuntime) {
+        if let Some(account) = signed_out_guardian_account(runtime) {
+            self.app.transcript.warning(
+                format!(
+                    "the guardian's account `{account}` is not signed in; /login {account} signs it in"
+                ),
+                None,
+            );
         }
     }
 

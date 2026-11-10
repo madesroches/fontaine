@@ -115,6 +115,73 @@ async fn an_external_cli_account_checks_the_cli_and_never_asks_for_a_key() {
     );
 }
 
+/// A world with a `claude` account on the double, signed out unless `scenario` says otherwise,
+/// and the CLI profile directory that holds the scenario and the log.
+fn signed_out_claude(scenario: serde_json::Value) -> (World, tempfile::TempDir) {
+    let profile = tempfile::tempdir().unwrap();
+    std::fs::write(profile.path().join("double.json"), scenario.to_string()).unwrap();
+    let account = format!(
+        "\n[accounts.claude]\nkind = \"claude-subscription\"\ncli_path = {:?}\nclaude_config_dir = {:?}\n",
+        common::claude_double().to_string_lossy(),
+        profile.path().to_string_lossy()
+    );
+    (World::routed("http://127.0.0.1:9", &account), profile)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn accepting_the_offer_runs_the_login_and_checks_again() {
+    let (w, profile) = signed_out_claude(json!({"auth": {"loggedIn": false}}));
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/login claude");
+        ui.wait_for("is not signed in. Run").await;
+        ui.press(KeyCode::Char('y'));
+        // The re-probe finds the signed-in state the login left, so the model picker opens.
+        ui.wait_for("sonnet").await;
+    })
+    .await;
+    assert_eq!(common::logins(profile.path()), 1);
+    let log = std::fs::read_to_string(profile.path().join("log.jsonl")).unwrap();
+    assert!(
+        log.contains(r#""argv":["auth","login","--claudeai"]"#),
+        "{log}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declining_the_offer_starts_no_login() {
+    let (w, profile) = signed_out_claude(json!({"auth": {"loggedIn": false}}));
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/login claude");
+        ui.wait_for("is not signed in. Run").await;
+        ui.press(KeyCode::Char('n'));
+        ui.wait_for("offers to sign in").await;
+    })
+    .await;
+    assert_eq!(common::logins(profile.path()), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_login_that_fails_or_changes_nothing_ends_with_one_attempt_and_no_second_offer() {
+    for scenario in [
+        json!({"auth": {"loggedIn": false}, "login_exit": 1}),
+        json!({"auth": {"loggedIn": false}, "login_keeps_signed_out": true}),
+    ] {
+        let (w, profile) = signed_out_claude(scenario);
+        w.run(|ui| async move {
+            idle(&ui).await;
+            ui.send("/login claude");
+            ui.wait_for("is not signed in. Run").await;
+            ui.press(KeyCode::Char('y'));
+            ui.wait_for("the login ended without signing").await;
+            assert!(!ui.live().contains("Run `"), "{}", ui.live());
+        })
+        .await;
+        assert_eq!(common::logins(profile.path()), 1);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_key_can_be_pasted_into_the_masked_field() {
     let w = World::routed("http://127.0.0.1:9", WORK);

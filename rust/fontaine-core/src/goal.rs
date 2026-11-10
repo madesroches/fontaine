@@ -865,7 +865,9 @@ impl GoalEvaluator {
                 billed: handle.catalog_billed(),
                 timeout: EVALUATOR_TIMEOUT,
             }),
-            Some(GuardianModel::Unavailable { reference, reason }) => Err(format!(
+            Some(GuardianModel::Unavailable {
+                reference, reason, ..
+            }) => Err(format!(
                 "the evaluator model {reference} is unavailable: {reason}"
             )),
             None => Err("there is no model for the evaluator".to_string()),

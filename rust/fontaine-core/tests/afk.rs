@@ -193,6 +193,24 @@ async fn the_guardian_unavailable_dialog_is_skipped() {
 }
 
 #[tokio::test]
+async fn a_signed_out_guardian_converts_like_an_unavailable_one_while_away() {
+    let guardian = std::sync::Arc::new(fontaine_guardian::Guardian::not_signed_in(
+        "claude/sonnet",
+        "the guardian's account `claude` is not signed in",
+        fontaine_guardian::Settings::default(),
+    ));
+    let rig = Rig::with(Options::new(Auto).guardian(guardian));
+    rig.approver.when_unavailable(UnavailableChoice::Manual);
+    afk_on(&rig);
+    let decision = rig.check("shell", shell("echo hi > x")).await;
+    assert!(!allowed(&decision));
+    assert!(rig.approver.unavailable_asked.lock().unwrap().is_empty());
+    let record = last_record(&rig);
+    assert_eq!(record.fail_closed_reason.as_deref(), Some("not_signed_in"));
+    assert_eq!(record.converted, Some(Converted::GuardianUnavailable));
+}
+
+#[tokio::test]
 async fn a_temperature_stop_denies_every_call_of_every_agent_before_the_floor() {
     let fake = fake_guardian(verdict_json("deny", "Data Exfiltration", 0.9));
     let rig = Rig::with(Options::new(Auto).guardian(fake.guardian.clone()));

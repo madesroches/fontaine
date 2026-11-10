@@ -609,11 +609,11 @@ pub fn scan_model(
 ) -> Result<&crate::models::ModelHandle, ScanStatus> {
     match guardian {
         Some(crate::models::GuardianModel::Ready(handle)) => Ok(handle),
-        Some(crate::models::GuardianModel::Unavailable { reference, reason }) => {
-            Err(ScanStatus::Failed(format!(
-                "the guardian model {reference} is unavailable: {reason}"
-            )))
-        }
+        Some(crate::models::GuardianModel::Unavailable {
+            reference, reason, ..
+        }) => Err(ScanStatus::Failed(format!(
+            "the guardian model {reference} is unavailable: {reason}"
+        ))),
         None => Err(ScanStatus::Failed(
             "no guardian model is configured".to_string(),
         )),

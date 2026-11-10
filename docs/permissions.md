@@ -171,7 +171,7 @@ verdict, confidence, whether the verdict came from the cache, how long the guard
 `verdict_transport` it was asked on (`tool`, a forced `submit` call, or `schema`, for an Ollama
 model with no tool support; see [Models with no tool
 support](guardian.md#models-with-no-tool-support)) and, when it failed closed, the reason (`error`,
-`timeout`, `unparseable`, `low_confidence` or `unavailable`). With a
+`timeout`, `unparseable`, `low_confidence`, `unavailable` or `not_signed_in`). With a
 [composition](guardian.md#composing-the-guardian) configured, the record also carries
 `screen_risk`, `screen_allow_risk` and `screen_steering` (the reads named `stop`, `allow` and
 `steering`), `screen_scores` (every other read, by name), `screen_model` (the model id a hosted

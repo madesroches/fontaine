@@ -81,7 +81,7 @@ original outcome's, `afk` is `true`, and `converted` names the prompt that was t
 | `escalate` | A guardian `escalate` verdict |
 | `screen_escalate` | A [composition](guardian.md#composing-the-guardian) stopping a call |
 | `breaker_paused` | A call that needed the guardian while `auto` was paused |
-| `guardian_unavailable` | The dialog offered when the guardian model cannot be used; AFK skips it, so it can never switch the mode to `manual` while you are away |
+| `guardian_unavailable` | The dialog offered when the guardian model cannot be used (including a guardian whose account is not signed in); AFK skips it, so it can never switch the mode to `manual` while you are away |
 
 `converted` is also set for the same denials in a headless run. A `permission_denied` hook you
 wrote keeps its own retry text.

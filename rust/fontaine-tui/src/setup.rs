@@ -8,12 +8,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use fontaine_core::accounts::{self, AccountsError};
+use fontaine_core::accounts::{self, AccountsError, ExternalCheckError};
 use fontaine_core::agent::EnvLookup;
 use fontaine_core::config::{Config, MainSource, OneOrMany};
 use fontaine_core::dirs::Dirs;
 use fontaine_core::models::{self, Models, ResolveParams, Switcher};
 use fontaine_core::notice::Notice;
+use fontaine_core::providers::ExternalLogin;
 use fontaine_core::user_config;
 use fontaine_tools::error_chain::chain;
 use ratatui::Frame;
@@ -22,6 +23,7 @@ use ratatui::backend::Backend;
 use ratatui::crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, KeyCode, KeyEventKind, KeyModifiers,
 };
+use ratatui::crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Line;
@@ -38,6 +40,7 @@ use crate::provider_dialog::{
 };
 use crate::theme::Theme;
 use crate::view::draw_overlay;
+use crate::{ReaderPause, Suspend};
 
 /// A terminal backend whose errors can become `io::Error`s.
 pub trait SetupBackend: Backend<Error: Send + Sync + 'static> {}
@@ -57,6 +60,9 @@ pub struct SetupParams {
     pub user_file: PathBuf,
     /// Print the setup as plain labelled lines instead of drawing it.
     pub screen_reader: Option<Source>,
+    /// The account whose external program has nobody signed in, with the login that fixes it:
+    /// the setup opens on the offer to run it.
+    pub not_signed_in: Option<(String, ExternalLogin)>,
 }
 
 /// Where the setup went.
@@ -69,6 +75,11 @@ enum Step {
 /// Where the setup is shown: drawn on a terminal, or printed as lines.
 trait Surface {
     fn show(&mut self, setup: &Setup) -> io::Result<()>;
+
+    /// Repaints everything, after a child process used the terminal.
+    fn redraw(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 struct Drawn<B: SetupBackend>(Terminal<B>);
@@ -79,6 +90,10 @@ impl<B: SetupBackend> Surface for Drawn<B> {
             .draw(|frame| setup.draw(frame))
             .map_err(io::Error::other)?;
         Ok(())
+    }
+
+    fn redraw(&mut self) -> io::Result<()> {
+        self.0.clear().map_err(io::Error::other)
     }
 }
 
@@ -168,6 +183,8 @@ struct Setup {
     picker: Option<ModelPicker>,
     /// What is happening that the human waits on, such as a listing.
     status: Option<String>,
+    /// Hands the terminal to an external program's login.
+    suspend: Suspend,
     /// Things that went wrong beside the setup itself, told once the session starts.
     warnings: Vec<String>,
 }
@@ -183,6 +200,8 @@ pub async fn run(params: SetupParams) -> io::Result<Option<(Models, Config)>> {
         Some(ratatui::try_init()?)
     };
     let _ = ratatui::crossterm::execute!(io::stdout(), EnableBracketedPaste);
+    let pause = Arc::new(ReaderPause::default());
+    let suspend = hand_over(pause.clone(), !linear);
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         crate::restore_terminal();
@@ -192,14 +211,20 @@ pub async fn run(params: SetupParams) -> io::Result<Option<(Models, Config)>> {
     let stop = Arc::new(AtomicBool::new(false));
     let reader = {
         let stop = stop.clone();
-        tokio::task::spawn_blocking(move || {
-            crate::read_terminal(&tx, &stop, &crate::ReaderPause::default())
-        })
+        tokio::task::spawn_blocking(move || crate::read_terminal(&tx, &stop, &pause))
     };
 
     let result = match terminal {
-        Some(terminal) => drive(params, terminal, input).await,
-        None => drive_linear(params, io::stdout(), input).await,
+        Some(terminal) => run_setup(params, Drawn(terminal), input, suspend).await,
+        None => {
+            let surface = Printed {
+                out: io::stdout(),
+                banner: OverlayEcho::default(),
+                dialog: OverlayEcho::default(),
+                echoed: None,
+            };
+            run_setup(params, surface, input, suspend).await
+        }
     };
 
     stop.store(true, Ordering::Relaxed);
@@ -213,13 +238,40 @@ pub async fn run(params: SetupParams) -> io::Result<Option<(Models, Config)>> {
     result
 }
 
-/// The setup over any terminal and input channel, which is how the tests run it.
+/// Gives the terminal to a child for the length of the closure: the reader stops, the terminal
+/// returns to the shell's modes (and the main screen for a drawn setup) and comes back after.
+fn hand_over(pause: Arc<ReaderPause>, drawn: bool) -> Suspend {
+    Box::new(move |work| {
+        use io::Write;
+        pause.pause();
+        let mut out = io::stdout();
+        if drawn {
+            let _ = ratatui::crossterm::execute!(out, LeaveAlternateScreen);
+        } else {
+            let _ = out.write_all(b"\r\n");
+            let _ = out.flush();
+        }
+        crate::restore_terminal();
+        work();
+        // A failure here shows as the next frame failing, which ends the setup like any lost
+        // terminal.
+        let _ = ratatui::crossterm::terminal::enable_raw_mode();
+        if drawn {
+            let _ = ratatui::crossterm::execute!(out, EnterAlternateScreen);
+        }
+        let _ = ratatui::crossterm::execute!(out, EnableBracketedPaste);
+        pause.resume();
+    })
+}
+
+/// The setup over any terminal and input channel, which is how the tests run it. A login the
+/// setup offers runs without handing over a terminal.
 pub async fn drive<B: SetupBackend>(
     params: SetupParams,
     terminal: Terminal<B>,
     input: UnboundedReceiver<Input>,
 ) -> io::Result<Option<(Models, Config)>> {
-    run_setup(params, Drawn(terminal), input).await
+    run_setup(params, Drawn(terminal), input, crate::no_suspend()).await
 }
 
 /// The setup printed as plain lines to `out`, for a screen reader. Line endings are `\r\n`
@@ -235,17 +287,25 @@ pub async fn drive_linear<W: io::Write>(
         dialog: OverlayEcho::default(),
         echoed: None,
     };
-    run_setup(params, surface, input).await
+    run_setup(params, surface, input, crate::no_suspend()).await
 }
 
 async fn run_setup<S: Surface>(
     params: SetupParams,
     surface: S,
     input: UnboundedReceiver<Input>,
+    suspend: Suspend,
 ) -> io::Result<Option<(Models, Config)>> {
     let rows = accounts::rows(&params.config, &params.dirs.data, &*params.env)
         .map_err(io::Error::other)?;
-    let (dialog, _) = ProviderDialog::new(rows, None);
+    let (mut dialog, _) = ProviderDialog::new(rows, None);
+    if let Some((account, login)) = params.not_signed_in {
+        dialog.finish(Outcome::OfferLogin {
+            account,
+            login: login.display,
+            reason: params.error.clone(),
+        });
+    }
     let mut setup = Setup {
         config: params.config,
         dirs: params.dirs,
@@ -257,6 +317,7 @@ async fn run_setup<S: Surface>(
         dialog,
         picker: None,
         status: None,
+        suspend,
         warnings: Vec::new(),
     };
     let step = setup.drive(&mut Io { surface, input }).await?;
@@ -520,7 +581,14 @@ impl Setup {
                     After::Quit => return Ok(Step::Quit),
                 },
                 DialogKey::ExternalCheck(account) => {
-                    match self.external_check(io, &account).await? {
+                    match self.external_check(io, &account, true, None).await? {
+                        After::Ask(next) => next,
+                        After::Start(started) => return Ok(Step::Start(started)),
+                        After::Quit => return Ok(Step::Quit),
+                    }
+                }
+                DialogKey::ExternalLogin(account) => {
+                    match self.external_login(io, &account).await? {
                         After::Ask(next) => next,
                         After::Start(started) => return Ok(Step::Start(started)),
                         After::Quit => return Ok(Step::Quit),
@@ -614,11 +682,15 @@ impl Setup {
         })))
     }
 
-    /// The external login's checks for an account, then the model is resolved again.
+    /// The external login's checks for an account, then the model is resolved again. When
+    /// nobody is signed in and `offer` is set, the dialog offers the program's own login;
+    /// `note` says what an attempt at it did, for a failure that follows.
     async fn external_check<S: Surface>(
         &mut self,
         io: &mut Io<S>,
         name: &str,
+        offer: bool,
+        note: Option<String>,
     ) -> io::Result<After> {
         let Some(account) = self.config.accounts.get(name).cloned() else {
             return Ok(After::Ask(
@@ -638,8 +710,53 @@ impl Setup {
         self.status = None;
         match checked {
             Ok(summary) => self.logged_in(io, name, summary).await,
-            Err(reason) => Ok(After::Ask(self.dialog.finish(Outcome::Failed(reason)))),
+            Err(e) => {
+                let text = e.to_string();
+                let outcome = match e {
+                    ExternalCheckError::NotSignedIn { login, .. } if offer => Outcome::OfferLogin {
+                        account: name.to_string(),
+                        login: login.display,
+                        reason: text,
+                    },
+                    ExternalCheckError::NotSignedIn { .. } => Outcome::Failed(match note {
+                        Some(note) => format!("{text}; {note}"),
+                        None => format!("{text}; the login ended without signing `{name}` in"),
+                    }),
+                    ExternalCheckError::Failed(_) => Outcome::Failed(text),
+                };
+                Ok(After::Ask(self.dialog.finish(outcome)))
+            }
         }
+    }
+
+    /// Hands the terminal to the account's own login and checks again: the program's own answer
+    /// decides, not the login's exit status.
+    async fn external_login<S: Surface>(
+        &mut self,
+        io: &mut Io<S>,
+        name: &str,
+    ) -> io::Result<After> {
+        let Some(login) = self
+            .config
+            .accounts
+            .get(name)
+            .and_then(|account| account.kind.provider().external_login(account, &self.env))
+        else {
+            return Ok(After::Ask(self.dialog.finish(Outcome::Failed(format!(
+                "`{name}` has no login Fontaine can run"
+            )))));
+        };
+        let mut command = login.command();
+        let mut outcome = None;
+        (self.suspend)(&mut || outcome = Some(command.status()));
+        io.surface.redraw()?;
+        let note = match outcome {
+            Some(Ok(status)) if status.success() => None,
+            Some(Ok(status)) => Some(format!("`{}` ended with {status}", login.display)),
+            Some(Err(e)) => Some(format!("could not run `{}`: {}", login.display, chain(&e))),
+            None => None,
+        };
+        self.external_check(io, name, false, note).await
     }
 
     async fn sign_in<S: Surface>(&mut self, io: &mut Io<S>, name: &str) -> io::Result<After> {
@@ -769,6 +886,7 @@ mod tests {
             dialog,
             picker: None,
             status: None,
+            suspend: crate::no_suspend(),
             warnings: Vec::new(),
         };
         let mut terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();

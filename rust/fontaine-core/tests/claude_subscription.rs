@@ -11,12 +11,12 @@ use common::World;
 use common::claude_cli::{
     Claude, argv, double, main_handle, tagged_conversation, three_steps, toml_path,
 };
-use fontaine_core::accounts::{self, SignInState};
+use fontaine_core::accounts::{self, ExternalCheckError, SignInState};
 use fontaine_core::agent::build_guardian;
 use fontaine_core::config::AccountKind;
 use fontaine_core::models::{self, GuardianModel, ModelError, Models, Switcher};
 use fontaine_core::providers::claude_subscription::{
-    CONFLICTING_ENV, ErrorKind, claude_error, inherited_env_names,
+    CONFLICTING_ENV, ErrorKind, claude_error, inherited_env_names, login_command,
 };
 use fontaine_guardian::{
     AdjudicationRequest, Decision, EnvironmentConfig, Profile, RuleConfig, SessionFacts,
@@ -496,10 +496,15 @@ async fn only_a_signed_in_max_or_ultra_subscription_is_accepted() {
         match expect {
             None => assert!(result.is_ok(), "{auth}: {:?}", result.err()),
             Some(text) => {
-                let error = message(&result.expect_err(&auth.to_string()));
+                let failure = result.expect_err(&auth.to_string());
+                let error = message(&failure);
                 assert!(error.contains(text), "{auth}: {error}");
-                if text == "not signed in" || text == "claude.ai" {
-                    assert!(error.contains("claude auth login"), "{error}");
+                if text == "claude.ai" {
+                    assert!(error.contains("auth login --claudeai"), "{error}");
+                }
+                if text == "not signed in" {
+                    assert!(!error.contains("claude auth login"), "{error}");
+                    assert!(failure.is_not_signed_in());
                 }
                 assert!(claude.frames().is_empty(), "no discovery after a refusal");
             }
@@ -508,7 +513,8 @@ async fn only_a_signed_in_max_or_ultra_subscription_is_accepted() {
     let claude = Claude::new();
     claude.scenario(json!({"auth_raw": "garbage", "auth_exit": 1}));
     let error = claude.resolve(None).await.unwrap_err();
-    assert!(message(&error).contains("claude auth login"), "{error}");
+    assert!(error.is_not_signed_in(), "{error}");
+    assert!(!message(&error).contains("claude auth login"), "{error}");
 }
 
 #[tokio::test]
@@ -715,6 +721,43 @@ async fn a_failed_discovery_makes_the_guardian_unavailable_not_allowed() {
         panic!("a guardian that cannot be discovered must be unavailable");
     };
     assert!(reason.contains("ANTHROPIC_API_KEY"), "{reason}");
+}
+
+#[tokio::test]
+async fn a_signed_out_guardian_account_is_marked_so_and_never_allows() {
+    let claude = Claude::new();
+    claude.scenario(json!({"auth": {"loggedIn": false}}));
+    let guardian = claude
+        .switcher()
+        .guardian("claude/sonnet", None)
+        .await
+        .unwrap();
+    let GuardianModel::Unavailable {
+        reference,
+        reason,
+        not_signed_in,
+    } = &guardian
+    else {
+        panic!("a signed-out account cannot be a ready guardian");
+    };
+    assert!(not_signed_in);
+    assert_eq!(reference.account, "claude");
+    assert_eq!(reason, "the guardian's account `claude` is not signed in");
+    // Another failure of the same account stays plain unavailable.
+    claude.scenario(json!({}));
+    claude.set_env("ANTHROPIC_API_KEY", "x");
+    let guardian = claude
+        .switcher()
+        .guardian("claude/sonnet", None)
+        .await
+        .unwrap();
+    assert!(matches!(
+        guardian,
+        GuardianModel::Unavailable {
+            not_signed_in: false,
+            ..
+        }
+    ));
 }
 
 // ---- request translation --------------------------------------------------------------------
@@ -1367,7 +1410,7 @@ async fn a_failed_check_is_refused_before_any_query_frame() {
     claude.scenario(json!({"auth": {"loggedIn": false}}));
     assert_eq!(
         refused_before_any_query(&claude, &handle).await,
-        ErrorKind::Auth
+        ErrorKind::NotSignedIn
     );
 
     claude.scenario(json!({"init_hang": true}));
@@ -1375,6 +1418,56 @@ async fn a_failed_check_is_refused_before_any_query_frame() {
         refused_before_any_query(&claude, &handle).await,
         ErrorKind::SetupTimeout
     );
+}
+
+#[tokio::test]
+async fn a_login_lost_mid_session_names_the_command_that_signs_in() {
+    let claude = Claude::new();
+    claude.scenario(json!({}));
+    let handle = main_handle(&claude).await;
+    claude.scenario(json!({"auth": {"loggedIn": false}}));
+    let error = handle
+        .completion
+        .call(CompletionRequest::new("hi").max_tokens(8))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        claude_error(&error).map(|e| e.kind),
+        Some(ErrorKind::NotSignedIn)
+    );
+    let text = error.to_string();
+    assert!(
+        text.contains("CLAUDE_CONFIG_DIR=") && text.contains("auth login --claudeai"),
+        "{text}"
+    );
+}
+
+#[test]
+fn the_login_command_follows_the_account_and_the_environment() {
+    let none: models::SharedEnv = std::sync::Arc::new(|_| None);
+    let bare = login_command(None, None, &none);
+    assert_eq!(bare.display, "claude auth login --claudeai");
+    assert!(bare.env.is_empty());
+
+    let from_env: models::SharedEnv = std::sync::Arc::new(|name| {
+        (name == "CLAUDE_CONFIG_DIR").then(|| std::ffi::OsString::from("/profile"))
+    });
+    let inherited = login_command(None, None, &from_env);
+    assert_eq!(
+        inherited.display,
+        "CLAUDE_CONFIG_DIR=/profile claude auth login --claudeai"
+    );
+    // The account's own directory wins over the environment's.
+    let own = login_command(
+        Some(std::path::Path::new("/opt/claude")),
+        Some(std::path::Path::new("/own")),
+        &from_env,
+    );
+    assert_eq!(
+        own.display,
+        "CLAUDE_CONFIG_DIR=/own /opt/claude auth login --claudeai"
+    );
+    assert_eq!(own.program, std::path::PathBuf::from("/opt/claude"));
 }
 
 #[tokio::test]
@@ -1388,7 +1481,7 @@ async fn a_signed_out_login_outranks_a_credit_billed_row() {
     }));
     assert_eq!(
         refused_before_any_query(&claude, &handle).await,
-        ErrorKind::Auth
+        ErrorKind::NotSignedIn
     );
 }
 
@@ -1614,7 +1707,29 @@ async fn the_external_check_reports_the_login_instruction() {
     )
     .await
     .unwrap_err();
-    assert!(error.contains("claude auth login"), "{error}");
+    let ExternalCheckError::NotSignedIn { account, login, .. } = &error else {
+        panic!("a signed-out CLI is its own failure: {error}");
+    };
+    assert_eq!(account, "claude");
+    assert_eq!(login.program, double());
+    assert_eq!(
+        login.args,
+        ["auth", "login", "--claudeai"].map(std::ffi::OsString::from)
+    );
+    assert_eq!(
+        login.env,
+        [(
+            std::ffi::OsString::from("CLAUDE_CONFIG_DIR"),
+            claude.dir.clone().into_os_string()
+        )]
+    );
+    assert!(
+        login.display.contains("CLAUDE_CONFIG_DIR=")
+            && login.display.ends_with("auth login --claudeai"),
+        "{}",
+        login.display
+    );
+    assert!(!error.to_string().contains("login"), "{error}");
     claude.scenario(json!({}));
     let summary = accounts::external_check(
         "claude",

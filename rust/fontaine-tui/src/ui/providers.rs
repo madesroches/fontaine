@@ -6,7 +6,7 @@ use crate::provider_dialog::{
     stored_key_summary,
 };
 use crate::{Action, App, Ui};
-use fontaine_core::accounts::{self, AccountsError, NewAccount};
+use fontaine_core::accounts::{self, AccountsError, ExternalCheckError, NewAccount};
 use fontaine_core::agent::AgentRuntime;
 use tokio::sync::mpsc::unbounded_channel;
 
@@ -81,7 +81,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.store_key(runtime, &account, key).await
                 }
                 DialogKey::SignIn(account) => self.sign_in(runtime, &account).await,
-                DialogKey::ExternalCheck(account) => self.external_check(runtime, &account).await,
+                DialogKey::ExternalCheck(account) => {
+                    self.external_check(runtime, &account, true).await
+                }
+                DialogKey::ExternalLogin(account) => self.external_login(runtime, &account).await,
                 DialogKey::LogOut(account) => self.log_out(runtime, &account).await,
                 DialogKey::Remove(account) => self.remove_account(runtime, &account),
                 DialogKey::PickModel(account) => {
@@ -293,8 +296,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
     }
 
     /// `/login` on an account whose login an external program owns: the program's checks, then
-    /// the model picker. Nothing is prompted for and no login is started.
-    async fn external_check(&mut self, runtime: &mut AgentRuntime, name: &str) -> DialogKey {
+    /// the model picker. When nobody is signed in and `offer` is set, the dialog offers to run
+    /// the program's own login, which `external_login` carries out and checks again with no
+    /// second offer.
+    async fn external_check(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        name: &str,
+        offer: bool,
+    ) -> DialogKey {
         let Some(account) = runtime.config.accounts.get(name).cloned() else {
             return self.tell_dialog(Outcome::Failed(format!("unknown account `{name}`")));
         };
@@ -317,8 +327,53 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 });
                 DialogKey::PickModel(name.to_string())
             }
-            Err(reason) => self.tell_dialog(Outcome::Failed(reason)),
+            Err(e) => {
+                let text = e.to_string();
+                self.tell_dialog(match e {
+                    ExternalCheckError::NotSignedIn { login, .. } if offer => Outcome::OfferLogin {
+                        account: name.to_string(),
+                        login: login.display,
+                        reason: format!("{text}; `/login {name}` offers to sign in"),
+                    },
+                    ExternalCheckError::NotSignedIn { .. } => Outcome::Failed(format!(
+                        "{text}; the login ended without signing `{name}` in"
+                    )),
+                    ExternalCheckError::Failed(_) => Outcome::Failed(text),
+                })
+            }
         }
+    }
+
+    /// Hands the terminal to the account's own login, then checks again: the exit status is
+    /// reported but never trusted, because the program's own answer decides.
+    async fn external_login(&mut self, runtime: &mut AgentRuntime, name: &str) -> DialogKey {
+        let Some(login) = runtime
+            .config
+            .accounts
+            .get(name)
+            .and_then(|account| account.kind.provider().external_login(account, &self.env))
+        else {
+            return self.tell_dialog(Outcome::Failed(format!(
+                "`{name}` has no login Fontaine can run"
+            )));
+        };
+        let mut command = login.command();
+        let mut outcome = None;
+        (self.suspend)(&mut || outcome = Some(command.status()));
+        match outcome {
+            Some(Ok(status)) if status.success() => {}
+            Some(Ok(status)) => self
+                .app
+                .transcript
+                .error(format!("`{}` ended with {status}", login.display)),
+            Some(Err(e)) => self.app.transcript.error(format!(
+                "could not run `{}`: {}",
+                login.display,
+                fontaine_tools::error_chain::chain(&e)
+            )),
+            None => {}
+        }
+        self.external_check(runtime, name, false).await
     }
 
     fn sign_in_step(&mut self, step: accounts::SignInStep) {

@@ -469,7 +469,9 @@ impl PromptSpec {
                 handle.thinking_off.clone(),
                 handle.catalog_billed(),
             ),
-            Some(GuardianModel::Unavailable { reference, reason }) => {
+            Some(GuardianModel::Unavailable {
+                reference, reason, ..
+            }) => {
                 return Err(HookError::failed(format!(
                     "the model {reference} is unavailable: {reason}"
                 )));

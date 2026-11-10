@@ -340,12 +340,58 @@ async fn a_logged_out_cli_fails_before_any_turn_without_retries() {
     let claude = Claude::new(json!({"auth": {"loggedIn": false}}));
     let out = claude.headless(&["hello"]).await;
     assert_eq!(out.code, Some(1), "{}", out.stderr);
-    assert!(out.stderr.contains("claude auth login"), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("account `claude` is not signed in; run `CLAUDE_CONFIG_DIR=")
+            && out.stderr.contains("auth login --claudeai`, then retry"),
+        "{}",
+        out.stderr
+    );
     assert!(claude.model_runs().is_empty());
     assert!(
         claude.log().iter().all(|e| e["kind"] != "frame"),
         "no inference"
     );
+}
+
+/// A signed-in main account and a pinned guardian on a second account of its own, whose CLI
+/// profile holds `guardian_scenario`.
+fn with_guardian_account(guardian_scenario: Value) -> (Claude, PathBuf) {
+    let claude = Claude::new(json!({}));
+    let dir = claude.dir.parent().unwrap().join("guardian-profile");
+    std::fs::create_dir_all(&dir).unwrap();
+    write(&dir.join("double.json"), &guardian_scenario.to_string());
+    claude.s.user_config(&format!(
+        "[accounts.claude]\nkind = \"claude-subscription\"\ncli_path = {cli}\nclaude_config_dir = {main}\n\n[accounts.judge]\nkind = \"claude-subscription\"\ncli_path = {cli}\nclaude_config_dir = {judge}\n\n[model]\nmodel = \"claude/sonnet\"\n\n[guardian]\nmodel = \"judge/sonnet\"\n",
+        cli = toml_path(&double()),
+        main = toml_path(&claude.dir),
+        judge = toml_path(&dir),
+    ));
+    (claude, dir)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signed_out_guardian_account_stops_a_guarded_run_before_any_turn() {
+    let (claude, dir) = with_guardian_account(json!({"auth": {"loggedIn": false}}));
+    let out = claude.auto(&["hello"]).await;
+    assert_eq!(out.code, Some(1), "{}", out.stderr);
+    assert!(
+        out.stderr
+            .contains("the guardian's account `judge` is not signed in; run `CLAUDE_CONFIG_DIR=")
+            && out.stderr.contains("auth login --claudeai`, then retry"),
+        "{}",
+        out.stderr
+    );
+    assert!(claude.model_runs().is_empty(), "no turn was made");
+    let judge_log = std::fs::read_to_string(dir.join("log.jsonl")).unwrap_or_default();
+    assert!(
+        !judge_log.contains("\"frame\""),
+        "no guardian call was made"
+    );
+
+    // A run that never consults the guardian is not stopped by it.
+    let out = claude.headless(&["hello"]).await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
 }
 
 #[tokio::test(flavor = "multi_thread")]
