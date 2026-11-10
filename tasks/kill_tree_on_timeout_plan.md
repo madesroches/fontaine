@@ -142,6 +142,9 @@ Windows by a local `taskkill /T /F` (~15 lines, mirroring the lifted helper).
 - The hook timeout stays caller-owned; cleanup rides a `Drop` guard.
 - MCP server children (rmcp-owned) and `project_env/discover.rs` (no timeout) are out of scope.
 - `fontaine-guardian` keeps its lift-out constraint: local helper, no fontaine-tools dependency.
+- AFK: The open question about whether CI's `windows-latest` `sh` is the real
+  `usr\bin\sh.exe` does not gate issue #562: no step, test, or doc wording depends on the
+  answer, and verifying the runner image's shim is left as a one-off CI check.
 
 ## Documentation
 
@@ -199,8 +202,3 @@ list. Not automated because a launcher-style `sh` is not known to be on CI's `wi
 PATH, so only this machine reproduces the original deadlock; the automated tests reproduce the
 mechanism, not the shim itself.
 
-## Open Questions
-
-- Whether CI's `windows-latest` `sh` is the real `usr\bin\sh.exe` (the issue marks it
-  unverified). Only affects how strongly the Windows unit test exercises the launcher chain;
-  the mechanism test covers the leak either way.
