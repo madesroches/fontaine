@@ -336,6 +336,44 @@ mod tests {
         panic!("the backgrounded sleeper {pid} survived force_kill");
     }
 
+    // Without `; wait` the leader exits at once, so `taskkill /T` has no tree to walk on Windows:
+    // only the Job Object can stop the sleeper that still holds the pipes.
+    #[tokio::test]
+    async fn dropping_the_guard_stops_a_descendant_that_outlived_its_exited_leader() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let record = if cfg!(windows) {
+            format!("cat /proc/$!/winpid > '{}'", pid_file.display())
+        } else {
+            format!("echo $! > '{}'", pid_file.display())
+        };
+        let mut command = tokio::process::Command::new("sh");
+        command
+            .args(["-c", &format!("(sleep 30; true) & {record}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        command.process_group(0);
+        let Ok(child) = command.spawn() else {
+            eprintln!("skipped: no `sh` on PATH");
+            return;
+        };
+        let mut guard = TreeGuard::new(child);
+        let pid = pid_in(&pid_file).await;
+        guard.child().wait().await.unwrap();
+        assert!(alive(&pid), "the sleeper outlives its leader");
+
+        drop(guard);
+        for _ in 0..100 {
+            if !alive(&pid) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("the sleeper {pid} survived the guard after its leader exited");
+    }
+
     #[tokio::test]
     async fn a_disarmed_guard_leaves_the_child_alone() {
         let mut command = tokio::process::Command::new("sh");

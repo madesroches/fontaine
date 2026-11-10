@@ -789,8 +789,7 @@ project-local and `--settings` files are refused.
 | `refresh_interval_secs` | Re-run the command while idle, at least 1; requires `command`. | unset |
 
 The command receives one JSON object on stdin and its first stdout line (ANSI escapes stripped)
-is shown in the bar. Its process tree is stopped after 5 seconds (on Windows, only while the command itself is still
-running), and any non-zero exit, timeout or empty output
+is shown in the bar. Its process tree is stopped after 5 seconds (on Windows, a descendant started before the command joins its Job Object can escape), and any non-zero exit, timeout or empty output
 keeps the previous good line. See [Custom status line](tui.md#custom-status-line) for the full JSON
 contract.
 

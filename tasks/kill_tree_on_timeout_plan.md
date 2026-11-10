@@ -115,8 +115,7 @@ Windows by a local `taskkill /T /F` (~15 lines, mirroring the lifted helper).
 6. Regression tests (see Testing Strategy) in `fontaine-tools` (procgroup), `fontaine-core`
    (statusline, hooks), `fontaine-guardian` (scanner).
 7. Docs: CHANGELOG entry; `docs/hooks.md` timeout wording ("cut off" now means its process tree
-   is stopped; on Windows, only while the command itself is still running); update the
-   `docs/configuration.md` `[statusline]` wording likewise.
+   is stopped); update the `docs/configuration.md` `[statusline]` wording likewise.
 8. `tasks/fontaine_harness_plan.md`: add a dated line at the end of the `### Tools` subsection of
    `## Decisions`, superseding the 2026-10-30 entry, which is also marked "(superseded by <date> below)" in place ("On Windows only the direct language-server
    child is killed ... no new Job-object code"): `procgroup::force_kill` now tree-kills on
@@ -151,10 +150,9 @@ Windows by a local `taskkill /T /F` (~15 lines, mirroring the lifted helper).
 
 - CHANGELOG.md entry under Unreleased.
 - `docs/hooks.md` (`timeout_secs` wording at line 57 and the "cut off" phrasing): a timed-out
-  hook has its process tree stopped, not just the direct child (on Windows, only while the
-  command itself is still running).
+  hook has its process tree stopped, not just the direct child.
 - `docs/configuration.md`: the `[statusline]` section's "It is killed after 5 seconds" now says
-  its process tree is stopped (on Windows, only while the command itself is still running).
+  its process tree is stopped.
 
 ## Testing Strategy
 
