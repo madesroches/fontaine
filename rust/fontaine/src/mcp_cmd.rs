@@ -521,8 +521,8 @@ async fn login(
     let network = config
         .loaded_network(None)
         .map_err(|e| Failure::usage(chain(&e)))?;
-    let oauth =
-        fontaine_tools::mcp::auth::build_oauth_client(&network, &url).map_err(Failure::failed)?;
+    let oauth = fontaine_tools::mcp::auth::build_oauth_client(&network, &url)
+        .map_err(|e| Failure::failed(chain(&e)))?;
     let mut manager =
         AuthorizationManager::new_with_oauth_http_client(url.as_str(), Arc::new(oauth))
             .await
@@ -534,9 +534,10 @@ async fn login(
     let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, CALLBACK_PORT))
         .await
         .map_err(|e| {
-            Failure::failed(format!(
-                "cannot listen for the OAuth callback on 127.0.0.1:{CALLBACK_PORT}: {e}"
-            ))
+            Failure::io(
+                &format!("cannot listen for the OAuth callback on 127.0.0.1:{CALLBACK_PORT}"),
+                &e,
+            )
         })?;
 
     let mut state = OAuthState::Unauthorized(manager);
@@ -555,7 +556,7 @@ async fn login(
     println!("Sign in to `{url}` in your browser to authorize Fontaine:");
     println!("{}", session.get_authorization_url());
     println!(
-        "If the browser does not open, paste the URL above; the flow gives up after {} minutes.",
+        "Fontaine does not open a browser: open the URL above yourself; the flow gives up after {} minutes.",
         LOGIN_TIMEOUT.as_secs() / 60
     );
 
@@ -587,12 +588,12 @@ async fn wait_for_callback(listener: tokio::net::TcpListener) -> Result<String, 
     let (mut socket, _) = listener
         .accept()
         .await
-        .map_err(|e| Failure::failed(format!("cannot accept the OAuth callback: {e}")))?;
+        .map_err(|e| Failure::io("cannot accept the OAuth callback", &e))?;
     let mut buf = vec![0u8; 8192];
     let read = socket
         .read(&mut buf)
         .await
-        .map_err(|e| Failure::failed(format!("cannot read the OAuth callback: {e}")))?;
+        .map_err(|e| Failure::io("cannot read the OAuth callback", &e))?;
     let text = String::from_utf8_lossy(&buf[..read]);
     let Some(target) = text.lines().next().and_then(|line| line.split(' ').nth(1)) else {
         return Err(Failure::failed(

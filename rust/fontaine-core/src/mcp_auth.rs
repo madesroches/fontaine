@@ -56,6 +56,16 @@ fn store_error(context: &str, error: ConfigError) -> AuthError {
     ))
 }
 
+/// Takes the file lock off the async threads: it blocks while another process holds it, and a
+/// current-thread runtime probing several servers would otherwise stall behind a refresh.
+async fn lock_blocking(data_dir: &Path) -> Result<credentials::Lock, AuthError> {
+    let data_dir = data_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || credentials::lock(&data_dir))
+        .await
+        .map_err(|e| AuthError::CredentialStoreError(format!("lock task failed: {e}")))?
+        .map_err(|e| store_error("cannot lock credentials.toml", e))
+}
+
 /// The lock coordination shared with the refresh guard.
 type RefreshLock = Arc<Mutex<Option<credentials::Lock>>>;
 
@@ -82,17 +92,17 @@ impl FileCredentialStore {
     }
 
     /// Runs `op` under the refresh guard's lock when one is held, else under a fresh lock.
-    fn locked<T>(
+    async fn locked<T>(
         &self,
-        op: impl FnOnce(&credentials::Lock) -> Result<T, ConfigError>,
+        op: impl FnOnce(&credentials::Lock) -> Result<T, ConfigError> + Send,
     ) -> Result<T, AuthError> {
-        let guard = fontaine_tools::lock::lock(&self.refresh_lock, "MCP refresh lock");
-        if let Some(held) = guard.as_ref() {
-            return op(held).map_err(|e| store_error("credentials.toml", e));
+        {
+            let guard = fontaine_tools::lock::lock(&self.refresh_lock, "MCP refresh lock");
+            if let Some(held) = guard.as_ref() {
+                return op(held).map_err(|e| store_error("credentials.toml", e));
+            }
         }
-        drop(guard);
-        let lock = credentials::lock(&self.data_dir)
-            .map_err(|e| store_error("cannot lock credentials.toml", e))?;
+        let lock = lock_blocking(&self.data_dir).await?;
         op(&lock).map_err(|e| store_error("credentials.toml", e))
     }
 
@@ -114,6 +124,7 @@ impl CredentialStore for FileCredentialStore {
             // a store failure: the server goes unauthenticated and the 401 names the login path.
             Ok(serde_json::from_str(&json).ok())
         })
+        .await
     }
 
     async fn save(&self, stored: StoredCredentials) -> Result<(), AuthError> {
@@ -126,6 +137,7 @@ impl CredentialStore for FileCredentialStore {
             entry.resource = Some(self.resource.clone());
             credentials::mcp_put_locked(&self.data_dir, &self.name, entry, lock)
         })
+        .await
     }
 
     async fn clear(&self) -> Result<(), AuthError> {
@@ -138,13 +150,13 @@ impl CredentialStore for FileCredentialStore {
             entry.resource = None;
             credentials::mcp_put_locked(&self.data_dir, &self.name, entry, lock)
         })
+        .await
     }
 
     /// Wraps the file lock, which the manager holds across its whole load → token request →
     /// save sequence; load and save above see it held and do not reacquire.
     async fn acquire_refresh_guard(&self) -> Result<Option<CredentialRefreshGuard>, AuthError> {
-        let lock = credentials::lock(&self.data_dir)
-            .map_err(|e| store_error("cannot lock credentials.toml", e))?;
+        let lock = lock_blocking(&self.data_dir).await?;
         *fontaine_tools::lock::lock(&self.refresh_lock, "MCP refresh lock") = Some(lock);
         Ok(Some(CredentialRefreshGuard::new(ReleaseRefreshLock(
             self.refresh_lock.clone(),
@@ -188,8 +200,7 @@ impl StateStore for FileStateStore {
     ) -> Result<(), AuthError> {
         let json = serde_json::to_string(&state)
             .map_err(|e| AuthError::CredentialStoreError(e.to_string()))?;
-        let lock = credentials::lock(&self.data_dir)
-            .map_err(|e| store_error("cannot lock credentials.toml", e))?;
+        let lock = lock_blocking(&self.data_dir).await?;
         let mut entry = credentials::mcp_get_locked(&self.data_dir, &self.name, &lock)
             .map_err(|e| store_error("credentials.toml", e))?
             .unwrap_or_default();
@@ -199,8 +210,7 @@ impl StateStore for FileStateStore {
     }
 
     async fn load(&self, csrf_token: &str) -> Result<Option<StoredAuthorizationState>, AuthError> {
-        let lock = credentials::lock(&self.data_dir)
-            .map_err(|e| store_error("cannot lock credentials.toml", e))?;
+        let lock = lock_blocking(&self.data_dir).await?;
         let entry = credentials::mcp_get_locked(&self.data_dir, &self.name, &lock)
             .map_err(|e| store_error("credentials.toml", e))?;
         let Some(json) = entry.and_then(|entry| entry.state) else {
@@ -212,8 +222,7 @@ impl StateStore for FileStateStore {
     }
 
     async fn delete(&self, csrf_token: &str) -> Result<(), AuthError> {
-        let lock = credentials::lock(&self.data_dir)
-            .map_err(|e| store_error("cannot lock credentials.toml", e))?;
+        let lock = lock_blocking(&self.data_dir).await?;
         let Some(mut entry) = credentials::mcp_get_locked(&self.data_dir, &self.name, &lock)
             .map_err(|e| store_error("credentials.toml", e))?
         else {
@@ -361,11 +370,6 @@ mod tests {
         assert_eq!(
             stored_resource(&dir, "github").unwrap().as_deref(),
             Some("https://h/mcp")
-        );
-        // A declaration with a different URL fails closed: no token is attached.
-        assert_ne!(
-            stored_resource(&dir, "github").unwrap().as_deref(),
-            Some("https://evil/mcp")
         );
     }
 }

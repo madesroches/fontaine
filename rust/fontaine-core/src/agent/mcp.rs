@@ -26,7 +26,7 @@ use super::mcp_supervisor::{
     MCP_DRAIN_BOUND, McpServerState, ReconnectTarget, ServerConnector, ServerSlot, Supervisor,
 };
 use super::{AgentRuntime, EnvLookup};
-use crate::config::{Config, McpServer, Slot};
+use crate::config::{Config, McpServer, Origin, Slot};
 use crate::mcp_auth::McpAuth;
 use crate::mcp_json::{StartContext, expand_at_start};
 use crate::permissions::Approver;
@@ -116,7 +116,8 @@ fn server_description(server: &McpServer) -> String {
             .iter()
             .chain(server.args.iter().flatten())
             .chain(server.env.iter().flat_map(|env| env.values()))
-            .chain(server.url.iter());
+            .chain(server.url.iter())
+            .chain(server.headers.iter().flat_map(|headers| headers.values()));
         for text in texts {
             for name in crate::mcp_json::references(text) {
                 // Taken from the session root, never read from the environment.
@@ -129,6 +130,9 @@ fn server_description(server: &McpServer) -> String {
     let mut line = server.command_line();
     if !variables.is_empty() && !line.is_empty() {
         line.push_str(&format!("\nenvironment: {}", variables.join(", ")));
+    }
+    if let Some(helper) = &server.headers_helper {
+        line.push_str(&format!("\nheaders helper: {helper}"));
     }
     line
 }
@@ -240,12 +244,15 @@ fn expanded(
 
 /// Why a `headers_helper` cannot run for this server, if it cannot. The helper is an executable
 /// the declaration names, so it runs only for scopes the user controls: refused for the project
-/// scope, where a repository Fontaine merely opened could otherwise make Fontaine run a script.
-pub fn headers_helper_refusal(name: &str, server: &McpServer, slot: Slot) -> Option<String> {
-    if server.headers_helper.is_some() && slot == Slot::Project {
+/// scope or a tracked project-local file, where a repository Fontaine merely opened could
+/// otherwise make Fontaine run a script.
+pub fn headers_helper_refusal(name: &str, server: &McpServer, origin: Origin) -> Option<String> {
+    let repository_defined =
+        origin.slot == Slot::Project || (origin.is_project() && !origin.user_trust);
+    if server.headers_helper.is_some() && repository_defined {
         Some(format!(
             "MCP server `{name}` sets `headers_helper` in the {} scope, which Fontaine refuses to run: a repository must not make Fontaine execute a script; move the server to a user-trust scope or drop `headers_helper`",
-            slot.label()
+            origin.slot.label()
         ))
     } else {
         None
@@ -265,7 +272,7 @@ pub fn resolved_server(
         return Ok(None);
     };
     let origin = config.mcp_origins.get(name).copied().unwrap_or_default();
-    if let Some(refusal) = headers_helper_refusal(name, defined, origin.slot) {
+    if let Some(refusal) = headers_helper_refusal(name, defined, origin) {
         return Err(refusal);
     }
     if defined.expand {
@@ -799,9 +806,10 @@ mod tests {
     }
 
     #[test]
-    fn the_headers_helper_is_refused_only_in_the_project_scope() {
+    fn the_headers_helper_is_refused_only_for_repository_defined_servers() {
         let mut server = crate::mcp_config::http("https://h/mcp");
         server.headers_helper = Some("helper".to_string());
+        let origin = |slot, user_trust| crate::config::Origin { slot, user_trust };
         for slot in [
             crate::config::Slot::Managed,
             crate::config::Slot::Cli,
@@ -811,17 +819,27 @@ mod tests {
             crate::config::Slot::Plugin,
         ] {
             assert!(
-                headers_helper_refusal("srv", &server, slot).is_none(),
+                headers_helper_refusal("srv", &server, origin(slot, true)).is_none(),
                 "{slot:?} is a user-trust scope"
             );
         }
-        let refusal = headers_helper_refusal("srv", &server, crate::config::Slot::Project)
-            .expect("project scope is refused");
+        assert!(
+            headers_helper_refusal(
+                "srv",
+                &server,
+                origin(crate::config::Slot::ProjectLocal, false)
+            )
+            .is_some(),
+            "a tracked project-local file is repository-controlled"
+        );
+        let project = origin(crate::config::Slot::Project, false);
+        let refusal =
+            headers_helper_refusal("srv", &server, project).expect("project scope is refused");
         assert!(refusal.contains("project"), "{refusal}");
         assert!(refusal.contains("`srv`"), "{refusal}");
         let mut no_helper = server.clone();
         no_helper.headers_helper = None;
-        assert!(headers_helper_refusal("srv", &no_helper, crate::config::Slot::Project).is_none());
+        assert!(headers_helper_refusal("srv", &no_helper, project).is_none());
     }
 
     #[test]

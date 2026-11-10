@@ -44,10 +44,44 @@ pub struct OAuthClient {
     base_url: Url,
 }
 
+/// Why the OAuth HTTP client could not be built.
+#[derive(Debug)]
+pub enum OAuthClientError {
+    BadUrl {
+        url: String,
+        source: url::ParseError,
+    },
+    Build(reqwest::Error),
+}
+
+impl fmt::Display for OAuthClientError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadUrl { url, .. } => write!(f, "`{url}` is not a URL"),
+            Self::Build(_) => f.write_str("could not build the OAuth HTTP client"),
+        }
+    }
+}
+
+impl std::error::Error for OAuthClientError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::BadUrl { source, .. } => Some(source),
+            Self::Build(source) => Some(source),
+        }
+    }
+}
+
 /// Builds the adapter for a server at `base_url`. `network` comes from the loaded `[network]`
 /// settings.
-pub fn build_oauth_client(network: &LoadedNetwork, base_url: &str) -> Result<OAuthClient, String> {
-    let base_url = Url::parse(base_url).map_err(|e| format!("`{base_url}` is not a URL: {e}"))?;
+pub fn build_oauth_client(
+    network: &LoadedNetwork,
+    base_url: &str,
+) -> Result<OAuthClient, OAuthClientError> {
+    let base_url = Url::parse(base_url).map_err(|source| OAuthClientError::BadUrl {
+        url: base_url.to_string(),
+        source,
+    })?;
     let policy = Arc::new(AddressPolicy::new(&base_url));
     let follow_policy = policy.clone();
     let follow_redirects = build_client(network, move || {
@@ -66,13 +100,13 @@ pub fn build_oauth_client(network: &LoadedNetwork, base_url: &str) -> Result<OAu
             .timeout(OAUTH_TIMEOUT)
             .redirect(redirect)
     })
-    .map_err(|e| format!("could not build the OAuth HTTP client: {e}"))?;
+    .map_err(OAuthClientError::Build)?;
     let stop_redirects = build_client(network, || {
         reqwest::Client::builder()
             .timeout(OAUTH_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
     })
-    .map_err(|e| format!("could not build the OAuth HTTP client: {e}"))?;
+    .map_err(OAuthClientError::Build)?;
     Ok(OAuthClient {
         follow_redirects,
         stop_redirects,

@@ -26,7 +26,9 @@ use rmcp::model::{
     Implementation, ProtocolVersion,
 };
 use rmcp::service::ClientInitializeError;
-use rmcp::transport::auth::{AuthClient, AuthorizationManager, CredentialStore, StateStore};
+use rmcp::transport::auth::{
+    AuthClient, AuthError, AuthorizationManager, CredentialStore, StateStore,
+};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpError,
 };
@@ -492,6 +494,17 @@ fn fail(
     McpError::permanent(&spec.name, message, source)
 }
 
+/// A network failure reaching the authorization server may pass; a rejection or a bad
+/// configuration will not.
+fn classify_auth(error: &AuthError) -> McpErrorKind {
+    match error {
+        AuthError::HttpError(_)
+        | AuthError::DiscoveryRequestFailed { .. }
+        | AuthError::TokenRefreshFailed(_) => McpErrorKind::Transient,
+        _ => McpErrorKind::Permanent,
+    }
+}
+
 /// The headers one HTTP server sends on its protocol requests: the static declaration with the
 /// helper's output merged over it. A bad name or value, a helper that fails, or a malformed
 /// helper line is a permanent failure naming the cause.
@@ -744,9 +757,8 @@ where
             let headers = declared_headers(spec, headers, headers_helper.as_deref()).await?;
             // Every HTTP server gets the OAuth wrapper: rmcp's design is lazy, so an open
             // server pays nothing and a challenging one's 401 drives authorization.
-            let oauth = auth::build_oauth_client(network, url).map_err(|message| {
-                McpError::new(&spec.name, McpErrorKind::Permanent, message, None)
-            })?;
+            let oauth = auth::build_oauth_client(network, url)
+                .map_err(|e| fail(spec, "could not set up the OAuth HTTP client", e))?;
             let mut manager =
                 AuthorizationManager::new_with_oauth_http_client(url.as_str(), Arc::new(oauth))
                     .await
@@ -755,10 +767,15 @@ where
             manager.set_state_store(auth::SharedStateStore(Arc::clone(states)));
             // Without this the manager has no OAuth client, so a stored token near expiry
             // cannot be refreshed.
-            manager
-                .initialize_from_store()
-                .await
-                .map_err(|e| fail(spec, "could not load the stored OAuth credentials", e))?;
+            manager.initialize_from_store().await.map_err(|e| {
+                let kind = classify_auth(&e);
+                McpError::new(
+                    &spec.name,
+                    kind,
+                    "could not load the stored OAuth credentials",
+                    Some(Box::new(e)),
+                )
+            })?;
             let auth_client = AuthClient::new(client, manager);
             let mut config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
             if !headers.is_empty() {

@@ -130,8 +130,9 @@ In `fontaine-tools/src/mcp/servers.rs`:
   token/metadata/authorize endpoints (a different origin). Independent of OAuth.
 - `headers_helper`: when set, the executable is run at connect time, its stdout parsed as
   `KEY: VALUE` lines, and those headers merged in. It runs **only when the declaration's
-  origin is trusted**, stated at `Slot` granularity: refused for `Slot::Project` only (the
-  repo-controlled scope — `.mcp.json`, project `.fontaine/settings.toml`); `Managed`, `Cli`
+  origin is trusted**: refused for repository-defined servers — `Slot::Project` (`.mcp.json`,
+  project `.fontaine/settings.toml`) or a project-scope origin without user trust (a git-tracked
+  `.fontaine/settings.local.toml`), the same rule `mcp_plan` uses for approval; `Managed`, `Cli`
   (the user's `--settings`), `Local` (`mcp-local.toml`), `ProjectLocal` (the user's own
   untracked project settings), `User`, and `Plugin` (install-approved) origins are trusted. A
   `Slot::Project` declaration carrying `headers_helper` is refused at validation time with a
