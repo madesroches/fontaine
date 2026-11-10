@@ -76,10 +76,13 @@ records.
 In `plugin_install`, after the executable-surface approval answers `Some(true)` and before
 `commit_install`:
 
-1. Enumerate `load_plugin_skills(&prepared.build.dir)`, keep the trustable ones, in load order.
+1. Enumerate `load_plugin_skills(&prepared.build.dir)`, keep the trustable ones, in load
+   order. On an enumeration error, print the parse error notice, drop the `PreparedInstall`
+   (its scratch is removed on drop) and cancel the install.
 2. If none, commit as today.
 3. Otherwise, for each trustable skill, show the same dialog `/skills trust` shows, with an
-   install-aware footer variant: `begin_skill_trust(skill_trust_prompt::new(skill, None))` and
+   install-aware footer variant:
+   `begin_skill_trust(skill_trust_prompt::new(skill, None, SkillTrustFooter::Install))` and
    the same input loop as
    `skills.rs` (decline clears the prompt and moves to the next skill). Collect the accepted
    skills' records. The footer says the trust takes effect when the install finishes loading
@@ -147,11 +150,17 @@ digest and becomes untrusted (or stale) automatically, and the issue covers inst
   function: namespacing, `valid_namespaced` rejection (same error text), skill/command duplicate
   rejection, `declared_tools` population, digest.
 2. **`rust/fontaine-tui/src/ui/commands/plugin.rs`**: add the trust step to `plugin_install`
-  per Design. Decline/quit paths leave nothing recorded.
+  per Design. Decline/quit paths leave nothing recorded. Add the install-aware footer wording
+  as a parameter to `skill_trust_prompt::new`
+  (`rust/fontaine-tui/src/skill_trust_prompt.rs`; the footer text leaves the hardcoded last
+  line of `describe`), with the call-site touch-ups in `ui/commands/skills.rs` and `linear.rs`.
 3. **`rust/fontaine/src/plugin.rs`**: the CLI offer/hint per Design, reusing
   `print_trust_details` and `auto_mode::confirm`.
 4. **Docs**: update `docs/plugins.md` ("What install approves" / "Trusting a skill") and, if it
-  restates the split, `docs/extensions.md` ("Trusted skills"). Add a dated line to the master
+  restates the split, `docs/extensions.md` ("Trusted skills"). Update the install description
+  in the `docs/tui.md` `/plugin` row and the `docs/plugins.md` "In the terminal UI" install row
+  — both currently describe install as a single executable-surface approval — to include the
+  per-skill trust question. Add a dated line to the master
   plan's `## Decisions` recording this deliberate change to the install/trust split. The `pr`
   step appends the CHANGELOG entry.
 5. **Tests** per below.
@@ -160,10 +169,13 @@ digest and becomes untrusted (or stale) automatically, and the issue covers inst
 
 - `rust/fontaine-core/src/extensions.rs`
 - `rust/fontaine-tui/src/ui/commands/plugin.rs`
+- `rust/fontaine-tui/src/skill_trust_prompt.rs` (install-aware footer parameter)
+- `rust/fontaine-tui/src/ui/commands/skills.rs`, `rust/fontaine-tui/src/linear.rs` (call-site
+  touch-ups)
 - `rust/fontaine/src/plugin.rs`
 - `rust/fontaine-tui/tests/plugins_live.rs` (tests)
 - `rust/fontaine/tests/plugin.rs` (tests)
-- `docs/plugins.md`, `docs/extensions.md`, `tasks/fontaine_harness_plan.md` (Decisions)
+- `docs/plugins.md`, `docs/tui.md`, `docs/extensions.md`, `tasks/fontaine_harness_plan.md` (Decisions)
 - `CHANGELOG.md`
 
 ## Trade-offs
@@ -194,6 +206,8 @@ digest and becomes untrusted (or stale) automatically, and the issue covers inst
 - `docs/plugins.md`: "Trusting a skill" — install now offers the question in the terminal UI and
   on interactive CLI installs; headless installs stay untrusted with a hint. "What install
   approves" — the trust question is separate from the executable-surface approval.
+- `docs/tui.md` (`/plugin` row) and `docs/plugins.md` ("In the terminal UI"): the install
+  description gains the per-skill trust question after the executable-surface approval.
 - `docs/extensions.md` ("Trusted skills"): same narrowing, if the split is restated there.
 - `tasks/fontaine_harness_plan.md` `## Decisions`: dated line recording the change.
 - `CHANGELOG.md`: entry (by the `pr` step).
