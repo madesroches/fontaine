@@ -97,7 +97,8 @@ crates add it under `[dev-dependencies]` (`.workspace = true`, matching conventi
    `common/claude_cli.rs`/`lifecycle_hooks.rs`/`user_hooks.rs`, `fontaine-tools` for
    `lsp.rs`/`mcp_registration.rs`, `fontaine-tui` for `touch_marker`.
 5. Update the now-stale "prebuild it when running a test that uses it alone" doc comments in
-   `rust/fontaine/tests/claude_subscription.rs:2` and `rust/fontaine-core/tests/common/claude_cli.rs:1-2`.
+   `rust/fontaine/tests/claude_subscription.rs:2`, `rust/fontaine-core/tests/common/claude_cli.rs:1-2`,
+   and `rust/fontaine-core/tests/claude_subscription.rs:2` (drop the prebuild clause from all three).
 6. Update `tasks/design/testing.md` (the prebuild passage at lines 114-115) to document the helper:
    tests never prebuild; `example_bin` builds on first use.
 7. Add a one-line `fontaine-testkit` entry (dev-only test helper crate) to the crate enumerations:
