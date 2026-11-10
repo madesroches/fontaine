@@ -72,7 +72,8 @@ state = "<JSON: rmcp StoredAuthorizationState>"
 ```
 
 - New `mcp: BTreeMap<String, McpEntry>` field on the private `File` struct in
-  `credentials.rs`, where `McpEntry` holds the two opaque JSON strings. rmcp's types are
+  `credentials.rs`, where `McpEntry` holds the two opaque JSON strings plus the resource
+  URL/issuer the credentials were issued for. rmcp's types are
   versioned by the pinned crate; storing them as JSON strings keeps `credentials.toml` parsing
   decoupled from rmcp and lets a newer rmcp migrate on read.
 - A new `rust/fontaine-core/src/mcp_auth.rs` implements rmcp's `CredentialStore` and
@@ -94,10 +95,10 @@ state = "<JSON: rmcp StoredAuthorizationState>"
   `Arc<dyn CredentialStore>` / `Arc<dyn StateStore>` through `ServerSpec::Http` — its
   `start()` builds the `AuthClient` from them; only the `OAuthHttpClient` reqwest adapter
   stays in `fontaine-tools/src/mcp/auth.rs`.
-- Keying is the server **name**, matching `[mcp.servers]` config; tokens therefore follow the
-  existing per-scope declaration merge (a project reusing a user-scope server's name would
-  pick up its token — acceptable, since the token only goes to that server's URL; noted in
-  Decisions).
+- Keying is the server **name**, matching `[mcp.servers]` config, and each entry is bound to
+  the resource URL it was issued for: the token is attached only when the winning
+  declaration's URL matches the stored one, and a mismatch fails closed with a message
+  naming `fontaine mcp login <name>` (noted in Decisions).
 
 ### 3. Transport wiring
 
@@ -109,7 +110,10 @@ In `fontaine-tools/src/mcp/servers.rs`:
 - An `OAuthHttpClient` adapter over its own reqwest client built by `http_client(network)` so
   token/metadata/authorize HTTP goes through the user's proxy and CA settings — a build
   separate from the protocol client, so declared headers never reach the authorization
-  server.
+  server. Because a custom client loses the SSRF guard in rmcp's default client, the adapter
+  replicates it: discovered metadata/token/authorize endpoints at private, link-local, or
+  link-local-metadata addresses are rejected unless the base MCP server URL is itself
+  loopback (which is what keeps the wiremock tests on 127.0.0.1 working).
 - For every HTTP server, build the manager via
   `AuthorizationManager::new_with_oauth_http_client(url, adapter)` and attach the
   file-backed stores with `set_credential_store`/`set_state_store`; then
@@ -149,8 +153,9 @@ A new `McpAction::Login` / `Logout` in `rust/fontaine/src/cli.rs` / `mcp_cmd.rs`
    `OAuthState`: `start_authorization(AuthorizationRequest::new(redirect_uri))` resolves the
    metadata and opens an `AuthorizationSession` (no `configure_client(OAuthClientConfig)` —
    that path requires already-resolved metadata and a pre-registered client_id). The
-   redirect URI is loopback on a fixed callback port (Claude Code uses a fixed port; pick
-   one, e.g. 3111); with no pre-registered identity, registration falls back to Dynamic
+   redirect URI is loopback on the fixed callback port 3111 (Claude Code uses a fixed
+   port; 3111 chosen — see Decisions); with no pre-registered identity, registration
+   falls back to Dynamic
    Client Registration and the resulting `client_id` is stored in `StoredCredentials`.
 2. Print the authorize URL, open the user's browser (`open` crate equivalent — check
    `fontaine-tui`/`fontaine` for an existing opener; else print the URL and let the user open
@@ -192,13 +197,16 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
    sent to the remote server, so they must enter the per-server approval digest (included
    only when set, matching the `expand` treatment).
 4. `mcp_json.rs`: parse `headers` / `headersHelper`; drop the #32 warnings.
-5. `credentials.rs`: `[mcp]` table, `McpEntry`, public API `mcp_get`/`mcp_put`/`mcp_remove`.
+5. `credentials.rs`: `[mcp]` table, `McpEntry` (the two JSON strings plus the resource
+   URL/issuer), public API `mcp_get`/`mcp_put`/`mcp_remove`.
    New `fontaine-core/src/mcp_auth.rs`: `CredentialStore` + `StateStore` impls over that
    API, with `acquire_refresh_guard` returning a `CredentialRefreshGuard` around
    `credentials::lock(data_dir)` and load/save operating under that guard instead of taking
    the lock per call (the manager holds the guard across load → token request → save).
 6. `fontaine-tools/src/mcp/auth.rs`: the `OAuthHttpClient` reqwest adapter honoring
-   `[network]` (the store impls live in fontaine-core — step 5).
+   `[network]` and replicating rmcp default client's SSRF guard (private/link-local/
+   link-local-metadata discovered endpoints rejected unless the base MCP URL is loopback)
+   (the store impls live in fontaine-core — step 5).
 7. `servers.rs`: thread headers/helper through `ServerSpec::Http` — including the
    `Arc<dyn CredentialStore>` / `Arc<dyn StateStore>` from step 5 — into `start()`, which
    for HTTP servers builds the `AuthorizationManager` via
@@ -206,7 +214,9 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
    wraps the protocol-level reqwest client in `AuthClient::new(reqwest_client, manager)`,
    and passes it to `StreamableHttpClientTransport::with_client` with the declared headers
    in `StreamableHttpClientTransportConfig::custom_headers` (never as client default
-   headers); helper execution + header merge; `AuthRequired` error text. Header values are
+   headers); helper execution + header merge; `AuthRequired` error text. Attaching a
+   stored token fails closed when the declaration's URL does not match the entry's stored
+   resource URL, with a message naming `fontaine mcp login <name>`. Header values are
    `${VAR}`-expanded upstream of this: extend `expanded()` in `agent/mcp.rs` (~lines 190–219)
    to map `headers` values through `expand_at_start`, with the same credential-variable
    refusal as `url`/`command` for repo definitions.
@@ -256,8 +266,20 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
 
 - **MCP OAuth tokens keyed by server name** (2026-11-10): token lookup uses the
   `[mcp.servers]` config name, so a project reusing a user-scope server's name picks up its
-  token. Accepted scope-reuse risk: the token only goes to that server's URL. A URL-binding
-  judgment (additionally keying on, or verifying, the URL) is pending and left for the user.
+  token. (The scope-reuse risk noted here is resolved by the AFK: URL-binding line below.)
+- **AFK: MCP OAuth tokens bound to their resource URL** (2026-11-10): stored credentials
+  are bound to the URL they were issued for — the resource URL/issuer is stored in the
+  `McpEntry` and the token is attached only when the winning declaration's URL matches it. A
+  mismatch fails closed with a message naming `fontaine mcp login <name>`, so a
+  project-scope declaration reusing a user-scope server's name cannot receive its token.
+- **AFK: callback port 3111** (2026-11-10): `fontaine mcp login` binds loopback port 3111,
+  a fixed unregistered default, matching the issue's Claude Code parity requirement for a
+  fixed port; nothing in the repo favors another number.
+- **AFK: OAuthHttpClient adapter replicates rmcp's SSRF guard** (2026-11-10): the adapter
+  rejects discovered metadata/token/authorize endpoints at private, link-local, or
+  link-local-metadata addresses unless the base MCP server URL is itself loopback, which is
+  what a custom client loses over rmcp's default and what keeps the wiremock tests on
+  127.0.0.1 working.
 - **`fontaine mcp list` keeps probing connections** (2026-11-10): an authenticated server is
   still probed over the network rather than trusting stored tokens; the probe simply surfaces
   the new `auth` status. (Resolves the plan's earlier open question.)
@@ -283,9 +305,13 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
   MCP writes reuse the same writer.
 - **Unit** (`mcp_auth.rs`): store trait impls against a temp data dir, including `load` /
   `delete(csrf_token)` matching the key against the csrf token serialized inside the stored
-  `StoredAuthorizationState` JSON. **Unit**
+  `StoredAuthorizationState` JSON; a declaration whose URL differs from the entry's stored
+  resource URL is not attached, failing closed with a message naming
+  `fontaine mcp login <name>`. **Unit**
   (`fontaine-tools/src/mcp/auth.rs`): adapter maps rmcp's `OAuthHttpRequest` onto reqwest
-  including redirect policy and `[network]` proxy env.
+  including redirect policy and `[network]` proxy env; discovered metadata/token/authorize
+  endpoints at private, link-local, or link-local-metadata addresses are rejected when the
+  base MCP URL is remote, and allowed when it is loopback (the wiremock case).
 - **Integration** (`fontaine-tools/tests/mcp_common` wiremock server): full OAuth dance —
   wiremock serves protected-resource metadata, authorization-server metadata, 401 with
   `WWW-Authenticate`, token endpoint; `CredentialStore` pre-seeded with a token → request
@@ -305,8 +331,3 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
    `fontaine mcp login github` — browser opens, authorize, tools list in
    `fontaine mcp list`. Not automated: requires a real GitHub OAuth app round-trip and a human
    browser; breakage would be obvious (login fails immediately).
-
-## Open Questions
-
-- Which callback port? Claude Code's exact port is undocumented in the issue; pick an
-  unregistered-looking default (3111) — the review pass may settle this from the parity docs.
