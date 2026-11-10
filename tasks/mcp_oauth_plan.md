@@ -73,11 +73,17 @@ state = "<JSON: rmcp StoredAuthorizationState>"
   `credentials.rs`, where `McpEntry` holds the two opaque JSON strings. rmcp's types are
   versioned by the pinned crate; storing them as JSON strings keeps `credentials.toml` parsing
   decoupled from rmcp and lets a newer rmcp migrate on read.
-- A new `rust/fontaine-tools/src/mcp/auth.rs` implements rmcp's `CredentialStore` and
+- A new `rust/fontaine-core/src/mcp_auth.rs` implements rmcp's `CredentialStore` and
   `StateStore` traits over this table, going through `credentials::lock()` for read-modify-write
   so a concurrent `fontaine mcp login` and an agent refresh never clobber each other (the same
   rotation hazard `TokenSource` handles for provider OAuth). Writes reuse
-  `owner_only::write_atomic` (0600).
+  `owner_only::write_atomic` (0600). This must live in fontaine-core, not fontaine-tools:
+  fontaine-tools has no fontaine-core dependency and adding one would create a cycle
+  (fontaine-core depends on fontaine-tools), so rmcp is promoted from a dev-dependency to a
+  real dependency of fontaine-core. fontaine-tools receives the stores as
+  `Arc<dyn CredentialStore>` / `Arc<dyn StateStore>` through `ServerSpec::Http` — its
+  `start()` builds the `AuthClient` from them; only the `OAuthHttpClient` reqwest adapter
+  stays in `fontaine-tools/src/mcp/auth.rs`.
 - Keying is the server **name**, matching `[mcp.servers]` config; tokens therefore follow the
   existing per-scope declaration merge (a project reusing a user-scope server's name would
   pick up its token — acceptable, since the token only goes to that server's URL; noted in
@@ -87,9 +93,9 @@ state = "<JSON: rmcp StoredAuthorizationState>"
 
 In `fontaine-tools/src/mcp/servers.rs`:
 
-- New `ServerSpec`/`Transport::Http` payloads: `headers` (expanded map), `headers_helper`,
-  `oauth: bool` derived from config presence of the server in `[mcp]` having had a login, or
-  simply always-on for HTTP servers (see below).
+- New `ServerSpec`/`Transport::Http` payloads: `headers` (expanded map), `headers_helper`, and
+  the file-backed stores as `Arc<dyn CredentialStore>` / `Arc<dyn StateStore>` (built in
+  fontaine-core, consumed by `start()` when it wraps the transport in `AuthClient`).
 - An `OAuthHttpClient` adapter over the same reqwest client built by `http_client(network)` so
   token/metadata/authorize HTTP goes through the user's proxy and CA settings.
 - For every HTTP server, build `AuthorizationManager::new(url)` with the file-backed stores,
@@ -100,11 +106,14 @@ In `fontaine-tools/src/mcp/servers.rs`:
 - When the server has declared `headers`, they are applied on the underlying reqwest client
   (default headers) so they ride every protocol request — independent of OAuth.
 - `headers_helper`: when set, the executable is run at connect time, its stdout parsed as
-  `KEY: VALUE` lines, and those headers merged in. It runs **only when the declaration's scope
-  is trusted** — local (`mcp-local.toml`) or user (`config.toml`) scope. A project-scope
-  declaration (repo `.mcp.json`, `.fontaine/settings.toml`) with `headers_helper` is refused at
-  validation time with a message naming the scope: a repo must not be able to make Fontaine
-  execute a script just by being opened. (This is the "headersHelper runs only for trusted
+  `KEY: VALUE` lines, and those headers merged in. It runs **only when the declaration's
+  origin is trusted**, stated at `Slot` granularity: refused for `Slot::Project` only (the
+  repo-controlled scope — `.mcp.json`, project `.fontaine/settings.toml`); `Managed`, `Cli`
+  (the user's `--settings`), `Local` (`mcp-local.toml`), `ProjectLocal` (the user's own
+  untracked project settings), `User`, and `Plugin` (install-approved) origins are trusted. A
+  `Slot::Project` declaration carrying `headers_helper` is refused at validation time with a
+  message naming the scope: a repo Fontaine merely opened (cloned, checked out) must not be
+  able to make Fontaine execute a script. (This is the "headersHelper runs only for trusted
   scopes" requirement.)
 - Supervisor reconnection (`mcp_supervisor.rs`) treats `AuthRequired` as permanent, with the
   error message naming `fontaine mcp login <name>`.
@@ -142,18 +151,27 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
 
 1. Enable rmcp's `auth` feature in `rust/Cargo.toml` (add `"auth"` to the pinned feature list;
   verify what it pulls in — `dep:oauth2` and likely a reqwest-based default client we will not
-  use).
+  use). Promote rmcp from a dev-dependency to a real dependency of `fontaine-core` — the
+  store impls must live there (fontaine-tools cannot depend on fontaine-core; that cycles).
 2. `config.rs`: `headers` / `headers_helper` fields on `McpServer`; `check_mcp_server` rules
-   (headers/helper on `url` servers only; helper requires trusted scope — needs the origin
-   available at validation; thread it from `mcp_config` layer merge or validate at
+   (headers/helper on `url` servers only; helper refused for `Slot::Project` origins — needs
+   the origin available at validation; thread it from `mcp_config` layer merge or validate at
    `server_spec()` time in `agent/mcp.rs`, which already knows origins).
+   `mcp_config.rs`: write `headers` / `headers_helper` in `server_table` (~line 277) and
+   `json_entry` (~line 319) — both build field-by-field today and would silently drop headers
+   (`mcp add -H` stores nothing otherwise).
 3. `mcp_json.rs`: parse `headers` / `headersHelper`; drop the #32 warnings.
 4. `credentials.rs`: `[mcp]` table, `McpEntry`, public API `mcp_get`/`mcp_put`/`mcp_remove`
-   under the existing lock.
-5. `fontaine-tools/src/mcp/auth.rs`: `CredentialStore` + `StateStore` impls; OAuthHttpClient
-   reqwest adapter honoring `[network]`.
-6. `servers.rs`: thread headers/helper/oauth through `ServerSpec` and `start()`; build
-   `AuthClient` for HTTP servers; helper execution + header merge; `AuthRequired` error text.
+   under the existing lock. New `fontaine-core/src/mcp_auth.rs`: `CredentialStore` +
+   `StateStore` impls over that API.
+5. `fontaine-tools/src/mcp/auth.rs`: the `OAuthHttpClient` reqwest adapter honoring
+   `[network]` (the store impls live in fontaine-core — step 4).
+6. `servers.rs`: thread headers/helper through `ServerSpec::Http` — including the
+   `Arc<dyn CredentialStore>` / `Arc<dyn StateStore>` from step 4 — into `start()`, which
+   builds the `AuthClient` for HTTP servers; helper execution + header merge; `AuthRequired`
+   error text. Header values are `${VAR}`-expanded upstream of this: extend `expanded()` in
+   `agent/mcp.rs` (~lines 190–219) to map `headers` values through `expand_at_start`, with the
+   same credential-variable refusal as `url`/`command` for repo definitions.
 7. `cli.rs` / `mcp_cmd.rs`: `login` / `logout` actions; unhide `-H/--header`; remove the
    `--client-id/--client-secret/--callback-port` stubs.
 8. TUI `ui/mcp.rs`: auth status column.
@@ -162,9 +180,10 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
 
 ## Files to Modify
 
-- `rust/Cargo.toml` (rmcp feature)
-- `rust/fontaine-core/src/config.rs`, `mcp_json.rs`, `credentials.rs`, `agent/mcp.rs`
-- `rust/fontaine-tools/src/mcp.rs`, `mcp/servers.rs`, new `mcp/auth.rs`
+- `rust/Cargo.toml` (rmcp feature; promote rmcp to a real dependency of fontaine-core)
+- `rust/fontaine-core/src/config.rs`, `mcp_json.rs`, `mcp_config.rs`, `credentials.rs`,
+  `agent/mcp.rs`, new `mcp_auth.rs`
+- `rust/fontaine-tools/src/mcp.rs`, `mcp/servers.rs`, new `mcp/auth.rs` (adapter only)
 - `rust/fontaine/src/cli.rs`, `mcp_cmd.rs`
 - `rust/fontaine-tui/src/ui/mcp.rs`
 - `docs/mcp.md`, `docs/configuration.md`
@@ -195,7 +214,10 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
 
 ## Decisions
 
-(none yet — settled outcomes land here during review)
+- **MCP OAuth tokens keyed by server name** (2026-11-10): token lookup uses the
+  `[mcp.servers]` config name, so a project reusing a user-scope server's name picks up its
+  token. Accepted scope-reuse risk: the token only goes to that server's URL. A URL-binding
+  judgment (additionally keying on, or verifying, the URL) is pending and left for the user.
 
 ## Documentation
 
@@ -209,11 +231,14 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
 ## Testing Strategy
 
 - **Unit** (`config.rs`, `mcp_json.rs`): header/helper parsing, unknown-key behavior,
-  stdio-server-with-headers rejection, project-scope helper rejection.
-- **Unit** (`credentials.rs`): `[mcp]` round-trip, lock behavior, malformed-JSON entry
-  never clobbers the file.
-- **Unit** (`auth.rs`): store trait impls against a temp data dir; adapter maps rmcp's
-  `OAuthHttpRequest` onto reqwest including redirect policy and `[network]` proxy env.
+  stdio-server-with-headers rejection, `Slot::Project` helper rejection.
+- **Unit** (`credentials.rs` / `mcp_auth.rs`): `[mcp]` round-trip (write → parse → read)
+  through `owner_only::write_atomic`, lock behavior, malformed-JSON entry never clobbers the
+  file; the 0600 mode itself is covered by the existing `the_file_is_owner_only` test, since
+  MCP writes reuse the same writer.
+- **Unit** (`mcp_auth.rs`): store trait impls against a temp data dir. **Unit**
+  (`fontaine-tools/src/mcp/auth.rs`): adapter maps rmcp's `OAuthHttpRequest` onto reqwest
+  including redirect policy and `[network]` proxy env.
 - **Integration** (`fontaine-tools/tests/mcp_common` wiremock server): full OAuth dance —
   wiremock serves protected-resource metadata, authorization-server metadata, 401 with
   `WWW-Authenticate`, token endpoint; `CredentialStore` pre-seeded with a token → request
@@ -233,7 +258,10 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
    `fontaine mcp login github` — browser opens, authorize, tools list in
    `fontaine mcp list`. Not automated: requires a real GitHub OAuth app round-trip and a human
    browser; breakage would be obvious (login fails immediately).
-2. `ls -l ~/.local/share/fontaine/credentials.toml` shows 0600 and a `[mcp."github"]` entry.
+2. After the step-1 login, a later connect reuses the stored token without re-authorizing
+   (re-run `fontaine mcp list` — no second browser flow). Not automated: this half of the
+   round-trip needs the real GitHub OAuth app; the 0600 file mode and the `[mcp]` parse
+   round-trip are covered by the `credentials.rs` unit tests.
 3. Re-run `fontaine mcp list` after `fontaine mcp logout github` — server shows
    authentication required.
 
