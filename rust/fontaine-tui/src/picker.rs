@@ -26,8 +26,11 @@ pub(crate) fn edit_query(query: &mut String, selected: &mut usize, key: &KeyEven
         KeyCode::Backspace => {
             query.pop();
         }
-        KeyCode::Char(_) if typed_char(key).is_some() => {
-            query.push(typed_char(key).expect("guarded by is_some"));
+        KeyCode::Char(_) => {
+            let Some(c) = typed_char(key) else {
+                return;
+            };
+            query.push(c);
         }
         _ => return,
     }

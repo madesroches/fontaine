@@ -146,8 +146,8 @@ impl QuestionPanel {
             KeyCode::Up => self.selected = (self.selected + rows - 1) % rows,
             KeyCode::Down | KeyCode::Tab => self.selected = (self.selected + 1) % rows,
             KeyCode::Enter => return self.confirm(),
-            KeyCode::Char(_) if typed_char(&key).is_some() => {
-                let c = typed_char(&key).expect("guarded by is_some");
+            KeyCode::Char(_) => {
+                let c = typed_char(&key)?;
                 match c {
                     'k' => self.selected = (self.selected + rows - 1) % rows,
                     'j' => self.selected = (self.selected + 1) % rows,

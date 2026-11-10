@@ -692,8 +692,10 @@ impl App {
                 }
                 self.search_step(false);
             }
-            KeyCode::Char(_) if typed_char(&key).is_some() => {
-                let c = typed_char(&key).expect("guarded by is_some");
+            KeyCode::Char(_) => {
+                let Some(c) = typed_char(&key) else {
+                    return;
+                };
                 if let Some(search) = &mut self.search {
                     search.query.push(c);
                 }

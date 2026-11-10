@@ -192,9 +192,11 @@ impl ConfigPanel {
                     self.selected = 0;
                 }
             }
-            KeyCode::Char(_) if typed_char(&key).is_some() => {
-                self.filter
-                    .push(typed_char(&key).expect("guarded by is_some"));
+            KeyCode::Char(_) => {
+                let Some(c) = typed_char(&key) else {
+                    return ConfigKey::None;
+                };
+                self.filter.push(c);
                 self.selected = 0;
             }
             _ => {}
@@ -266,8 +268,11 @@ impl ConfigPanel {
             KeyCode::Backspace => {
                 typed.pop();
             }
-            KeyCode::Char(_) if typed_char(&key).is_some_and(|c| c.is_ascii_digit()) => {
-                typed.push(typed_char(&key).expect("guarded by is_some_and"));
+            KeyCode::Char(_) => {
+                let Some(c) = typed_char(&key).filter(char::is_ascii_digit) else {
+                    return ConfigKey::None;
+                };
+                typed.push(c);
             }
             KeyCode::Enter => {
                 if typed.is_empty() {
