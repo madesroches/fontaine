@@ -78,6 +78,7 @@ fn the_account_fields_are_validated() {
         ("prompt_caching = true", "prompt_caching"),
         ("cache_ttl = \"1h\"", "cache_ttl"),
         ("quota = \"kimi\"", "quota"),
+        ("auth = \"bearer\"", "auth"),
         ("https_proxy = \"http://p:1\"", "https_proxy"),
         ("no_proxy = \"x\"", "no_proxy"),
         ("ca_bundle = \"/x.pem\"", "ca_bundle"),

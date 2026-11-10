@@ -359,6 +359,16 @@ pub enum QuotaKind {
     Kimi,
 }
 
+/// How an `anthropic` account sends its credential.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+pub enum AnthropicAuth {
+    #[default]
+    #[serde(rename = "x-api-key")]
+    XApiKey,
+    #[serde(rename = "bearer")]
+    Bearer,
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Account {
@@ -381,6 +391,9 @@ pub struct Account {
     /// `openai-compatible` only: where to read the provider's own subscription quota for the
     /// status bar. Sends the account's key to `<base_url>/usages`.
     pub quota: Option<QuotaKind>,
+    /// `anthropic` only: `"bearer"` sends the credential as `Authorization: Bearer` instead of
+    /// `x-api-key`, for gateways that accept only that. `"x-api-key"` when unset.
+    pub auth: Option<AnthropicAuth>,
     /// `claude-subscription` only: the official `claude` executable; `claude` on `PATH` when
     /// unset.
     pub cli_path: Option<PathBuf>,
@@ -446,6 +459,7 @@ impl Account {
             prompt_caching: None,
             cache_ttl: None,
             quota: None,
+            auth: None,
             cli_path: None,
             claude_config_dir: None,
             https_proxy: None,
@@ -1593,6 +1607,12 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
     if account.quota.is_some() && !provider.accepts_quota() {
         return Err((
             format!("accounts.{name}.quota"),
+            format!("not used by kind = \"{}\"", provider.name()),
+        ));
+    }
+    if account.auth.is_some() && !provider.accepts_auth() {
+        return Err((
+            format!("accounts.{name}.auth"),
             format!("not used by kind = \"{}\"", provider.name()),
         ));
     }

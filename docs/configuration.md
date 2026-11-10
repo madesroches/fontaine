@@ -183,6 +183,7 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `cache_ttl` | `anthropic`, `openrouter` and `opencode-go` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
 | `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. An explicit [`effort`](#model) wins over it, and `effort = "off"` equals `think = false` for the main agent. | unset |
 | `quota` | `openai-compatible` only (a `kimi` account shows its subscription quota with no `quota` key, like `claude-subscription`): `"kimi"` shows the account's subscription quota in the [status bar](tui.md#status-bar) and in headless `result.account_usage`, read from Kimi for Coding's `GET <base_url>/usages`. User scope only, because it sends the account's key in extra requests. | unset |
+| `auth` | `anthropic` only: how the key is sent. `"bearer"` sends `Authorization: Bearer <key>` instead of `x-api-key`, which Databricks AI Gateway, OpenRouter's Anthropic endpoint, LiteLLM and similar gateways require; it applies to requests and to model discovery alike. User scope only. | `"x-api-key"` |
 | `cli_path` | `claude-subscription` only: the absolute path of the official `claude` executable. | `claude` on `PATH` |
 | `claude_config_dir` | `claude-subscription` only: the absolute path of the CLI's own config directory, handed to it as `CLAUDE_CONFIG_DIR` for this account only, so two accounts can keep separate logins. | unset |
 | `https_proxy`, `http_proxy`, `no_proxy`, `ca_bundle`, `client_cert`, `client_key` | Override the same key of [`[network]`](#network) for this account only. | the `[network]` value |
@@ -324,6 +325,20 @@ api_key_env = "ANTHROPIC_API_KEY"
 
 [model]
 model = "work/claude-sonnet-5"
+```
+
+A gateway that speaks the Messages API but accepts only a Bearer token (Databricks-style):
+
+```toml
+[accounts.databricks]
+kind = "anthropic"
+base_url = "https://example.cloud.databricks.com/serving-endpoints/anthropic"
+api_key_env = "DATABRICKS_TOKEN"
+auth = "bearer"
+models = ["databricks-claude-sonnet-4-5"]
+
+[model]
+model = "databricks/databricks-claude-sonnet-4-5"
 ```
 
 A second Anthropic account with its own key, stored with `/login personal`:
