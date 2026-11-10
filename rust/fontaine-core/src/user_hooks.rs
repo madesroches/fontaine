@@ -28,6 +28,7 @@ use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, ROOT_AGENT};
 use fontaine_tools::live::Live;
 use fontaine_tools::lock::{lock, read, write};
+use fontaine_tools::procgroup::{TreeGuard, collect_output};
 use fontaine_tools::result_pipeline::{ResultStage, ToolOutcome, append_note, text_view};
 use futures::future::BoxFuture;
 use rig_core::completion::Usage;
@@ -108,9 +109,17 @@ impl HookProcess {
         for (name, value) in &invocation.env {
             process.env(name, value);
         }
-        let mut child = process
-            .spawn()
-            .map_err(|e| HookError::failed_by("cannot start the hook", e))?;
+        // A group kill must never reach our own group.
+        #[cfg(unix)]
+        process.process_group(0);
+        // `answer_within` owns the timeout and drops this future, so the guard is what stops the
+        // hook's tree then.
+        let mut guard = TreeGuard::new(
+            process
+                .spawn()
+                .map_err(|e| HookError::failed_by("cannot start the hook", e))?,
+        );
+        let child = guard.child();
         if let Some(mut input) = child.stdin.take() {
             let bytes = serde_json::to_vec(stdin)
                 .map_err(|e| HookError::failed_by("cannot encode the event", e))?;
@@ -120,10 +129,10 @@ impl HookProcess {
                 let _ = input.shutdown().await;
             });
         }
-        let output = child
-            .wait_with_output()
+        let output = collect_output(child)
             .await
             .map_err(|e| HookError::failed_by("the hook did not finish", e))?;
+        guard.disarm();
         Ok(HookOutput {
             code: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
@@ -1946,6 +1955,39 @@ mod tests {
             "a tool call since the last stop starts over"
         );
         assert_eq!(streak.count, 0);
+    }
+
+    fn command_hook(command: &str, timeout_secs: u64) -> UserHook {
+        let hook = Hook {
+            kind: HandlerKind::Command,
+            command: Some(command.into()),
+            timeout_secs: Some(timeout_secs),
+            ..Hook::default()
+        };
+        let process = Arc::new(HookProcess {
+            scrub_env: Vec::new(),
+            set_env: Vec::new(),
+            shell: CommandShell::Sh,
+            project_dir: std::env::temp_dir(),
+        });
+        UserHook::new(HookEvent::SessionEnd, &hook, &HookDeps::new(process))
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_command_hook_loses_its_whole_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("pid");
+        let hook = command_hook(&crate::test_pid::sleeper_command(&pid_file), 1);
+        let result = hook.answer_within(json!({})).await;
+        assert!(result.is_err(), "{result:?}");
+        crate::test_pid::assert_gone(&pid_file).await;
+    }
+
+    #[tokio::test]
+    async fn a_command_hook_that_finishes_is_answered_normally() {
+        let hook = command_hook("echo done", 10);
+        let answer = hook.answer_within(json!({})).await.expect("an answer");
+        assert_eq!(answer.plain.as_deref(), Some("done"));
     }
 
     #[test]
