@@ -612,11 +612,11 @@ fn unknown_model(reference: &ModelRef, available: &[String]) -> ModelError {
     ))
 }
 
-/// How long listing one account's models may take while a model is being resolved. The kinds that
-/// discover through a local program need more than a picker's wait, but nothing is unbounded.
 /// The output cap a turn sends when the model's own limit is unknown and the user set none.
 pub const FALLBACK_MAX_OUTPUT_TOKENS: u64 = 32_000;
 
+/// How long listing one account's models may take while a model is being resolved. The kinds that
+/// discover through a local program need more than a picker's wait, but nothing is unbounded.
 pub const RESOLVE_LISTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(240);
 
 /// What an account offers: the ids a model can be selected by, and the rows it listed but refuses.
