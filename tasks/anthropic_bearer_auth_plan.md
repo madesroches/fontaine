@@ -20,9 +20,7 @@ default stays `x-api-key`, so existing accounts are unchanged.
   and model listing alike.
 - `Account` (`fontaine-core/src/config.rs:~362`) carries per-kind keys, each refused on other kinds
   in `check_account` (`config.rs:~1570`) through a `Provider::accepts_*` method
-  (`providers/mod.rs`, e.g. `accepts_quota`). `Provider::validate` is the per-kind hook.
-- `accounts` is already `Rule::user_or_cli("accounts", USER_FILE)` in `config_scope.rs`, so every
-  account key, including a new one, is refused in project scope with no further rule.
+  (`providers/mod.rs`, e.g. `accepts_quota`).
 - Credential resolution (`api_key_env` or the `/login` stored key) reaches the provider as
   `ConnectContext::api_key()`; it is unchanged.
 
@@ -61,7 +59,8 @@ reported before `connect`.
 - `rust/fontaine-core/src/config.rs`
 - `rust/fontaine-core/src/providers/mod.rs`
 - `rust/fontaine-core/src/providers/anthropic.rs`
-- `rust/fontaine-core/tests/providers.rs`, `rust/fontaine-core/tests/models.rs`
+- `rust/fontaine-core/tests/providers.rs`, `rust/fontaine-core/tests/models.rs`,
+  `rust/fontaine-core/tests/claude_subscription.rs`
 - `docs/configuration.md`, `CHANGELOG.md`
 
 ## Trade-offs
@@ -93,6 +92,14 @@ reported before `connect`.
   `anthropic` account with `auth = "bearer"` sends `Authorization: Bearer <key>` and no `x-api-key`
   on both a completion and the model listing; the default account still sends `x-api-key` and no
   `Authorization`. This guards the silent failure mode (auth header wrong, 401 only on that host).
+  `anthropic_uses_the_messages_wire_and_the_env_key` sets `models = [...]` and so never lists: the
+  listing check is a separate test with its own GET `/v1/models` mock matching
+  `authorization: Bearer <key>`, placed next to
+  `the_main_account_is_judged_by_the_listing_already_fetched` (`tests/models.rs:527-555`), with
+  `openai_uses_the_responses_wire_and_a_bearer_key` (`models.rs:145-149`) as the header-matcher
+  template.
+- `tests/claude_subscription.rs:72-85` lists every account key refused on that kind: add
+  `("auth = \"bearer\"", "auth")`.
 - The `config_catalog` and `config_scope` schema-coverage tests stay green.
 
 ## Open Questions
