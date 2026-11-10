@@ -9,6 +9,7 @@ use rig_core::providers::openai::{OpenAI as Client, OpenAIConfig, Route};
 use rig_core::{DynModel, Model};
 
 use super::cache_wire::CacheWire;
+use super::reasoning_parts::ReasoningPartsWire;
 use super::warn::Warn;
 use rig_core::providers::registry::ProviderId;
 
@@ -73,7 +74,13 @@ impl Connected {
             chat = chat.with_facts(facts);
         }
         Model::new(
-            CacheWire::new(chat, model, self.caching, scope, self.warn.clone()),
+            CacheWire::new(
+                ReasoningPartsWire::new(chat),
+                model,
+                self.caching,
+                scope,
+                self.warn.clone(),
+            ),
             routed.transport,
         )
         .erase()

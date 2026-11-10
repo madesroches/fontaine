@@ -5,13 +5,14 @@ use rig_core::providers::openai::wire::Auth;
 
 use futures::FutureExt;
 use futures::future::BoxFuture;
-use rig_core::DynModel;
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
 use rig_core::providers::openai::OpenAI as Client;
+use rig_core::{DynModel, Model};
 
 use super::gateway::{GATEWAY, ModelsFetcher};
 use super::kimi_quota::KimiQuota;
+use super::reasoning_parts::ReasoningPartsWire;
 use super::{AccountClient, ConnectContext, CredentialPolicy, Provider, ServedModel};
 use crate::config::{Account, QuotaKind};
 use crate::quota::QuotaSource;
@@ -83,7 +84,8 @@ struct Connected {
 
 impl AccountClient for Connected {
     fn completion(&self, model: &str) -> DynModel<Completion> {
-        self.client.completion(model).erase()
+        let routed = self.client.completion(model);
+        Model::new(ReasoningPartsWire::new(routed.wire), routed.transport).erase()
     }
 
     fn quota_source(&self) -> Option<Arc<dyn QuotaSource>> {

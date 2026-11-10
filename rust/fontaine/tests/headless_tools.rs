@@ -946,3 +946,55 @@ async fn a_cd_carries_over_between_shell_calls_until_it_leaves_the_workspace() {
         results[3]
     );
 }
+
+/// Issue #567: a host streams Claude reasoning as `reasoning` content parts, an empty placeholder
+/// and then the signed part. The replayed assistant message must carry one signed part.
+async fn replayed_reasoning_is_one_signed_part(sandbox: Sandbox, endpoint: Endpoint) {
+    std::fs::write(sandbox.work.join("note.txt"), "hello").unwrap();
+    let out = sandbox
+        .headless(&["--output-format", "stream-json", "read the note"])
+        .await;
+    assert_eq!(out.code, Some(0), "{}", out.stderr);
+    let requests = endpoint.requests().await;
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    let assistant = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "assistant")
+        .unwrap_or_else(|| panic!("{}", requests[1]));
+    let parts: Vec<&Value> = assistant["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|p| p["type"] == "reasoning")
+        .collect();
+    assert_eq!(parts.len(), 1, "{assistant}");
+    assert_eq!(parts[0]["summary"][0]["signature"], json!("SIG-567"));
+}
+
+fn reasoning_turns() -> Vec<Turn> {
+    vec![
+        Turn::content_reasoning_then_tool("SIG-567", "c1", "read", json!({"path": "note.txt"})),
+        Turn::text("done"),
+    ]
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn openai_compatible_replays_streamed_reasoning_parts_as_one() {
+    let endpoint = Endpoint::start(Wire::Chat, reasoning_turns()).await;
+    let sandbox = Sandbox::compatible(&endpoint.url());
+    replayed_reasoning_is_one_signed_part(sandbox, endpoint).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn openrouter_replays_streamed_reasoning_parts_as_one() {
+    let endpoint = Endpoint::start(Wire::Chat, reasoning_turns()).await;
+    let mut sandbox = Sandbox::new();
+    sandbox.user_config(&format!(
+        "[accounts.router]\nkind = \"openrouter\"\nbase_url = \"{}\"\napi_key_env = \"ROUTER_KEY\"\nmodels = [\"scripted\"]\n\n[model]\nmodel = \"router/scripted\"\n",
+        endpoint.url()
+    ));
+    sandbox.set_env("ROUTER_KEY", "sk-test-not-a-real-key");
+    replayed_reasoning_is_one_signed_part(sandbox, endpoint).await;
+}

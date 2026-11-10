@@ -24,6 +24,15 @@ pub enum Turn {
     /// Reasoning streamed as `reasoning_content` deltas, then answer text. Only the Chat wire
     /// carries the reasoning.
     Reasoned { reasoning: String, text: String },
+    /// Reasoning streamed as `reasoning` content parts (an empty placeholder, then a part
+    /// carrying the signature), an answer text delta, then a tool call. Only the Chat wire
+    /// carries the reasoning.
+    ContentReasoningThenTool {
+        signature: String,
+        id: String,
+        name: String,
+        args: Value,
+    },
     /// A single tool call.
     Tool {
         id: String,
@@ -53,12 +62,24 @@ impl Turn {
     fn answer(&self) -> Turn {
         match self {
             Turn::Reasoned { text, .. } => Turn::Text(text.clone()),
+            Turn::ContentReasoningThenTool { id, name, args, .. } => {
+                Turn::tool(id, name, args.clone())
+            }
             other => other.clone(),
         }
     }
 
     pub fn tool(id: &str, name: &str, args: Value) -> Turn {
         Turn::Tool {
+            id: id.to_string(),
+            name: name.to_string(),
+            args,
+        }
+    }
+
+    pub fn content_reasoning_then_tool(signature: &str, id: &str, name: &str, args: Value) -> Turn {
+        Turn::ContentReasoningThenTool {
+            signature: signature.to_string(),
             id: id.to_string(),
             name: name.to_string(),
             args,
@@ -143,6 +164,39 @@ fn chat_response(turn: &Turn, usage: Usage) -> ResponseTemplate {
             frames.push(chat_chunk(json!({"content": text}), None));
             frames.push(chat_chunk(json!({}), Some("stop")));
         }
+        Turn::ContentReasoningThenTool {
+            signature,
+            id,
+            name,
+            args,
+        } => {
+            let part = |signature: Option<&str>| {
+                let mut entry = json!({"type": "summary_text", "text": ""});
+                if let Some(signature) = signature {
+                    entry["signature"] = json!(signature);
+                }
+                json!({"type": "reasoning", "summary": [entry]})
+            };
+            frames.push(chat_chunk(
+                json!({"role": "assistant", "content": [part(None)]}),
+                None,
+            ));
+            frames.push(chat_chunk(
+                json!({"content": [part(Some(signature))]}),
+                None,
+            ));
+            frames.push(chat_chunk(json!({"content": "checking"}), None));
+            frames.push(chat_chunk(
+                json!({"tool_calls": [{
+                    "index": 0,
+                    "id": id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": args.to_string()},
+                }]}),
+                None,
+            ));
+            frames.push(chat_chunk(json!({}), Some("tool_calls")));
+        }
         Turn::Tool { id, name, args } => {
             frames.push(chat_chunk(
                 json!({"role": "assistant", "tool_calls": [{
@@ -188,15 +242,17 @@ fn chat_json(turn: &Turn, usage: Usage) -> ResponseTemplate {
         Turn::Text(text) | Turn::Reasoned { text, .. } => {
             json!({"role": "assistant", "content": text})
         }
-        Turn::Tool { id, name, args } => json!({
-            "role": "assistant",
-            "content": null,
-            "tool_calls": [{
-                "id": id,
-                "type": "function",
-                "function": {"name": name, "arguments": args.to_string()},
-            }],
-        }),
+        Turn::Tool { id, name, args } | Turn::ContentReasoningThenTool { id, name, args, .. } => {
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": id,
+                    "type": "function",
+                    "function": {"name": name, "arguments": args.to_string()},
+                }],
+            })
+        }
         Turn::Fail(status) => return ResponseTemplate::new(*status).set_body_string("scripted"),
         Turn::Cut(_) => {
             return ResponseTemplate::new(500).set_body_string("a cut is only streamed");
@@ -282,7 +338,9 @@ fn responses_response(turn: &Turn, usage: Usage, id: usize) -> ResponseTemplate 
             ));
             json!([done])
         }
-        Turn::Reasoned { .. } => unreachable!("answer() drops the reasoning"),
+        Turn::Reasoned { .. } | Turn::ContentReasoningThenTool { .. } => {
+            unreachable!("answer() drops the reasoning")
+        }
         Turn::Fail(status) => return ResponseTemplate::new(*status).set_body_string("scripted"),
         Turn::Cut(prefix) => {
             frames.push(event(
