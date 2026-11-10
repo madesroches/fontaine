@@ -39,7 +39,7 @@ shared `procgroup` helper (and a local copy in the dependency-light `fontaine-gu
   timed-out BYO scanner leaks the same way on Windows. The crate is deliberately
   dependency-light (`fontaine-guardian/Cargo.toml` has no fontaine-tools dep) so it can be
   embedded by other harnesses.
-- Scoop `git.shim` following already landed (`fontaine-tools/src/git_bash.rs:145`,
+- Scoop `git.shim` following already landed (`fontaine-tools/src/git_bash.rs`,
   `resolve_candidate`), and only the test constructs `CommandShell::Sh` directly.
 - Other `kill_on_drop(true)` users, for the audit trail: `lsp/client.rs` and `websearch.rs`
   already stop through `procgroup` and gain tree kill from it while the leader is alive.
@@ -117,8 +117,8 @@ Windows by a local `taskkill /T /F` (~15 lines, mirroring the lifted helper).
 7. Docs: CHANGELOG entry; `docs/hooks.md` timeout wording ("cut off" now means its process tree
    is stopped; on Windows, only while the command itself is still running); update the
    `docs/configuration.md` `[statusline]` wording likewise.
-8. `tasks/fontaine_harness_plan.md`: add a dated line at the end of the LSP subsection of
-   `## Decisions`, superseding the 2026-10-30 entry ("On Windows only the direct language-server
+8. `tasks/fontaine_harness_plan.md`: add a dated line at the end of the `### Tools` subsection of
+   `## Decisions`, superseding the 2026-10-30 entry, which is also marked "(superseded by <date> below)" in place ("On Windows only the direct language-server
    child is killed ... no new Job-object code"): `procgroup::force_kill` now tree-kills on
    Windows (while the leader lives), so the LSP client and websearch gain it.
 
@@ -176,8 +176,8 @@ verification tiers.
   original test).
 - Unit: hooks — a command hook shaped the same way times out via `answer_within` and leaves no
   survivor; a normal hook still completes and is not re-killed (guard disarm).
-- Unit: guardian — `CommandScanner` timeout leaves no surviving descendant, Unix-gated probe
-  plus Windows-agnostic completion assertion as above.
+- Unit: guardian — `CommandScanner` timeout leaves no surviving descendant. Unix-only, like the
+  existing `scanner.rs` command tests (`#[cfg(unix)]`, shell-script scanners).
 - Existing suites: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
   `cargo test`, `cargo test --features fontaine/pg2`, rustdoc with `-D warnings`, on the
   platforms CI covers; `cargo check --target x86_64-pc-windows-gnu` for the Unix-only cfg
