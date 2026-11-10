@@ -28,7 +28,8 @@ pub fn example_bin(package: &str, name: &str) -> PathBuf {
         return path.clone();
     }
     let exe = std::env::current_exe().expect("current_exe() unavailable in a test process");
-    let layout = Layout::from_exe(&exe).unwrap_or_else(|| {
+    let cargo_target_dir = std::env::var_os("CARGO_TARGET_DIR").map(PathBuf::from);
+    let layout = Layout::from_exe(&exe, cargo_target_dir.as_deref()).unwrap_or_else(|| {
         panic!(
             "{} is not under a target/<profile>/deps directory",
             exe.display()
@@ -82,20 +83,38 @@ struct Layout {
 }
 
 impl Layout {
-    fn from_exe(exe: &Path) -> Option<Layout> {
+    /// `cargo_target_dir` is the `CARGO_TARGET_DIR` of the outer build, which Cargo exports to
+    /// the test process when the outer build used one.
+    fn from_exe(exe: &Path, cargo_target_dir: Option<&Path>) -> Option<Layout> {
         let deps = exe.parent()?;
         if deps.file_name()? != "deps" {
             return None;
         }
         let profile_dir = deps.parent()?;
         let above = profile_dir.parent()?;
-        let (triple, target_dir) = if looks_like_triple(above) {
-            (
+        let (triple, target_dir) = match cargo_target_dir {
+            // Cargo's configured target dir is authoritative when the exe descends from it:
+            // anything between it and the profile dir is a triple, and the configured dir's
+            // own name is part of the target dir even when it contains a `-`.
+            Some(configured) if above.starts_with(configured) => {
+                let rest = above.strip_prefix(configured).ok()?;
+                match rest.components().next() {
+                    None => (None, above),
+                    Some(segment) => (
+                        Some(segment.as_os_str().to_string_lossy().into_owned()),
+                        configured,
+                    ),
+                }
+            }
+            // Without a configured dir (or an exe outside it) the workspace's `target/` name
+            // has no `-`, so a `-`-bearing segment must be a triple. A `--target-dir` passed
+            // only on the outer command line with a `-` in its name and no env var is
+            // indistinguishable from a triple; that combination is not supported.
+            _ if looks_like_triple(above) => (
                 Some(above.file_name()?.to_string_lossy().into_owned()),
                 above.parent()?,
-            )
-        } else {
-            (None, above)
+            ),
+            _ => (None, above),
         };
         Some(Layout {
             target_dir: target_dir.to_path_buf(),
@@ -140,7 +159,11 @@ mod tests {
     use super::*;
 
     fn layout(exe: &str) -> Option<Layout> {
-        Layout::from_exe(Path::new(exe))
+        layout_with_env(exe, None)
+    }
+
+    fn layout_with_env(exe: &str, cargo_target_dir: Option<&str>) -> Option<Layout> {
+        Layout::from_exe(Path::new(exe), cargo_target_dir.map(Path::new))
     }
 
     #[test]
@@ -175,6 +198,40 @@ mod tests {
         let l = layout("/ws/mytarget/release/deps/my_test").unwrap();
         assert_eq!(l.target_dir, Path::new("/ws/mytarget"));
         assert_eq!(l.triple, None);
+    }
+
+    #[test]
+    fn hyphenated_custom_target_dir_is_not_misread() {
+        let l = layout_with_env("/ws/my-target/debug/deps/my_test", Some("/ws/my-target")).unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/my-target"));
+        assert_eq!(l.triple, None);
+        assert_eq!(l.profile_dir, Path::new("/ws/my-target/debug"));
+    }
+
+    #[test]
+    fn triple_under_configured_target_dir_is_still_detected() {
+        let l = layout_with_env(
+            "/ws/my-target/x86_64-pc-windows-gnu/debug/deps/my_test.exe",
+            Some("/ws/my-target"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/my-target"));
+        assert_eq!(l.triple.as_deref(), Some("x86_64-pc-windows-gnu"));
+        assert_eq!(
+            l.profile_dir,
+            Path::new("/ws/my-target/x86_64-pc-windows-gnu/debug")
+        );
+    }
+
+    #[test]
+    fn exe_outside_configured_target_dir_falls_back_to_heuristic() {
+        let l = layout_with_env(
+            "/ws/rust/target/x86_64-pc-windows-gnu/debug/deps/my_test.exe",
+            Some("/ws/other-target"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/rust/target"));
+        assert_eq!(l.triple.as_deref(), Some("x86_64-pc-windows-gnu"));
     }
 
     #[test]
