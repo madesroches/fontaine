@@ -47,10 +47,11 @@ account. Issue: #557.
 - Add `ErrorKind::NotSignedIn` to `claude_subscription::ErrorKind`. `check_login` returns it for
   `logged_in != true` and for an unreadable status (the two cases where signing in is the fix).
   Wrong auth method and wrong plan stay `Plan`; a refused login mid-session stays `Auth`.
-- Message text: the neutral `the Claude CLI is not signed in`, with no hint. Each surface adds its own hint: headless/non-TUI uses `ExternalLogin.display`; the TUI
-  says `/login <account>`. `login_hint()` and its "outside Fontaine" wording are dropped.
+- Message text: the neutral `the Claude CLI is not signed in`, with no hint. Each startup/selection
+  surface adds its own hint: headless/non-TUI uses `ExternalLogin.display`; the TUI
+  says `/login <account>`. Mid-session and guardian-path failures are the exception (below). `login_hint()` and its "outside Fontaine" wording are dropped.
 - The wrong-auth-method `Plan` message (cli.rs ~l.418-425) loses its hint too: it becomes
-  "the Claude CLI is not signed in with a Claude subscription (claude.ai)", and each surface adds
+  "the Claude CLI is not signed in with a Claude subscription (claude.ai)", and startup/selection surfaces add
   "sign in again with `claude auth login --claudeai`". That case gets the hint but no automatic offer.
   `failure_kind` in `turn.rs` maps `NotSignedIn` to `authentication_failed` like `Auth`.
 
@@ -111,11 +112,18 @@ In `ui/providers.rs::external_check`, on `ExternalCheckError::NotSignedIn`:
 Same flow in the setup wizard (`setup.rs::external_check`). `setup::run` (setup.rs ~l.177-213) uses raw mode for Printed
 and `ratatui::try_init()` (raw + alt screen) for Drawn, and its reader gets a throwaway
 `&ReaderPause::default()` (~l.193-197) that would eat the child's keys. So `setup::run` keeps a
-shared `ReaderPause`; the hand-over pauses it, then for Drawn leaves the alt screen with
-`ratatui::restore()` and re-enters with `ratatui::try_init()` afterwards, while Printed uses
-`restore_terminal` (raw mode only); it runs the child and redraws. The hand-over is a closure of
-the existing `Suspend` type: the real one is built in `setup::run`, and `drive`/`drive_linear` pass
-`no_suspend()`, so tests need no new `Surface` impl. The main UI's `Suspend` itself is not reused
+shared `ReaderPause` and builds the real `Suspend`-type hand-over closure. `setup::run` reaches the loop only through
+`drive`/`drive_linear` (~l.199-202) calling the private `run_setup` (~l.217-245): `run_setup` takes the
+`Suspend` as a parameter, `run` calls `run_setup` directly with the real closure (constructing
+`Drawn`/`Printed` itself), and the public `drive`/`drive_linear` pass `no_suspend()`, so tests need no new
+`Surface` impl. The hand-over pauses the `ReaderPause`, turns bracketed paste off (enabled at setup.rs ~l.185;
+as the main `Suspend` does, `fontaine-tui/src/lib.rs` ~l.550-558, 713) and, for Printed, uses
+`restore_terminal` (raw mode only). For Drawn it leaves and re-enters with crossterm directly
+(`disable_raw_mode` + `LeaveAlternateScreen`, then `enable_raw_mode` + `EnterAlternateScreen`), not
+`ratatui::restore()`/`try_init()` (`try_init` chains another panic hook and returns a throwaway
+`Terminal`). After the child it re-enables bracketed paste and forces a full redraw: `Surface` gains
+`fn redraw(&mut self) -> io::Result<()>` (no-op default; `Drawn` implements it with `terminal.clear()`),
+which `run_setup` calls after the suspend returns. The main UI's `Suspend` itself is not reused
 because it is built around the main `LiveScreen` and `ReaderPause`.
 
 ### 5. Pre-flight at selection, not at first use
@@ -141,8 +149,8 @@ because it is built around the main `LiveScreen` and `ReaderPause`.
   `credentials_changed`.
 - `/model` and `/login` use the `ui/providers.rs` flow above.
 - A not-signed-in state that appears mid-session (token revoked, logged out elsewhere) is not
-  repaired mid-turn: the TUI surface's error text points at `/login <account>`, which now performs
-  the login.
+  repaired mid-turn: the failure text carries the neutral hint (§1, step 7); `/login <account>`
+  performs the login. For the guardian it stays `FailClosed::Error` / `GuardianUnavailable`.
 
 ### 6. Headless: fail fast
 
@@ -160,8 +168,10 @@ because it is built around the main `LiveScreen` and `ReaderPause`.
 - The stop exits 1, like the main-model failure (`ModelError::exit_code`, models.rs ~l.57-62;
   `docs/headless.md` ~l.66-67), and runs before `record_session_start`/`init` in `run_session`
   (headless.rs ~l.1250-1266).
-- No login is attempted and nothing is prompted; no `GuardianUnavailable` denial can occur later
-  because the run never starts.
+- No login is attempted and nothing is prompted; a guardian already signed out at start cannot
+  produce a later denial because the run never starts. A login revoked mid-run is not covered: it
+  fails through the transport's per-request `check_login` as `FailClosed::Error` /
+  `GuardianUnavailable`, with the hint in its text (§5, step 7).
 
 ### 7. Guardian surfaces it distinctly (fail-closed unchanged)
 
@@ -173,20 +183,27 @@ because it is built around the main `LiveScreen` and `ReaderPause`.
 - Anywhere `permissions.rs` branches on `FailClosed::Unavailable` (~l.1896, ~l.2155: the
   no-human conversion and the TUI "unavailable" prompt) the new variant takes the same path;
   introduce `FailClosed::is_unavailable()` covering both so a future call site cannot miss one.
+  The TUI "unavailable" prompt keeps its existing choices (including Retry); for `NotSignedIn` only
+  its text changes, to name `/login <account>` (the account from the guardian's `ModelRef`).
 - The guardian crate stays dependency-light: it gets the variant, not any knowledge of Claude.
   The core, which builds the backend, decides when the unavailable reason is "not signed in"
   (via the typed error, not by text) and passes that to `Backend::Unavailable`'s constructor.
 - `build_guardian` does `Err(e) => Err(e.to_string())` (models.rs ~l.808) and builds
   `GuardianModel::Unavailable { reference, reason: String }` (~l.820); `Guardian::unavailable`
-  (guardian.rs ~l.117-129) takes text only. Both gain a typed not-signed-in marker, fed by the
-  typed error kept by `ModelError::Provider`; `build_guardian` keeps the typed `ModelError`
-  instead of `to_string()`. Match sites that break: `fontaine/src/doctor_cmd.rs` ~l.191 and
+  (guardian.rs ~l.117-129) takes text only. Shape: `GuardianModel::Unavailable { reference, reason, not_signed_in: bool }`;
+  a new `Guardian::not_signed_in(reference, reason)` constructor beside the unchanged
+  `Guardian::unavailable` (so no existing caller breaks); crate-private
+  `Backend::Unavailable { reason, not_signed_in }`, which yields `FailClosed::NotSignedIn` when set;
+  `unavailable_reason()` stays text. `build_guardian` keeps the typed `ModelError` instead of
+  `to_string()`, and calls `Guardian::not_signed_in` when `claude_error(..)` is `NotSignedIn`
+  (the guardian crate knows nothing of Claude). The headless init event and `announce` read the
+  field. Match sites that break: `fontaine/src/doctor_cmd.rs` ~l.191 and
   `fontaine/src/auto_mode.rs` ~l.370 (destructure `{ reference, reason }` with no `..`).
 
 ## Implementation Steps
 
 1. `claude_subscription/mod.rs`, `cli.rs`: `ErrorKind::NotSignedIn`; `check_login` returns it with
-   the neutral message (the per-request `check_login` path included); drop `login_hint`;
+   the neutral message (the transport's per-request `check_login` wraps it with the hint, below); drop `login_hint`;
    `login_command`; `turn.rs::failure_kind`.
 2. `providers/mod.rs`: `ExternalLogin`, `Provider::external_login`; implement for
    `ClaudeSubscription`.
@@ -196,9 +213,9 @@ because it is built around the main `LiveScreen` and `ReaderPause`.
    `ExternalCheckError` and its use in `external_check` via `claude_error`; update the two
    callers' error handling.
 4. Guardian: `FailClosed::NotSignedIn`, `AuditLabel::GuardianNotSignedIn`, `is_unavailable()`;
-   typed not-signed-in marker on `GuardianModel::Unavailable` and `Guardian::unavailable`, fed
+   `GuardianModel::Unavailable.not_signed_in` and `Guardian::not_signed_in`, fed
    from step 3's typed error (`build_guardian`, models.rs ~l.808, keeps the typed `ModelError`
-   instead of `to_string()`); update every match site, `Guardian::unavailable` caller and test literal; `permissions.rs` call
+   instead of `to_string()`); update every `GuardianModel::Unavailable` match site and test literal (`Guardian::unavailable` callers are unchanged); `permissions.rs` call
    sites; add the `not_signed_in` value to the headless schema and `audit.rs` doc comment.
 5. TUI: `ui/providers.rs` offer → suspend → re-probe flow; `setup.rs` (shared `ReaderPause`,
    `Suspend`-type hand-over closure) with the startup offer keyed on the typed error carried in
@@ -207,14 +224,16 @@ because it is built around the main `LiveScreen` and `ReaderPause`.
    `Provider::external_login` for the failing account and prints the §6 text; guardian-account stop in `headless.rs` (exit 1,
    before `record_session_start`/`init`); document that it does not cover the scanner, goal
    evaluator or prompt hooks in manual/acceptEdits.
-7. Update the mid-session auth messages in `protocol.rs` (~l.1308, ~l.1359) to neutral text with no
-   `/login` hint (core text is printed by headless too); the TUI appends `/login <account>` and
-   headless appends `login.display`.
+7. Mid-session and guardian-path failures (the transport's per-request `check_login` in `transport.rs`
+   ~l.164, the `protocol.rs` Auth messages ~l.1308, ~l.1359, and the guardian/scanner/goal/prompt-hook
+   failures that carry them) keep a surface-neutral hint in the core text: the account name where
+   known and the `claude auth login --claudeai` command line (as `login_command(..).display` renders it).
+   `TurnFailure` is unchanged and no surface appends anything for these.
 8. Docs and changelog (see below).
 
 ## Files to Modify
 
-- `rust/fontaine-core/src/providers/claude_subscription/{mod,cli,protocol}.rs`
+- `rust/fontaine-core/src/providers/claude_subscription/{mod,cli,protocol,transport}.rs`
 - `rust/fontaine-core/examples/claude_cli_double.rs`: `auth login` subcommand (today any `auth`
   subcommand is status) that persists the flipped state by rewriting `double.json`'s `auth` (it is
   re-read each launch), with `login_*` scenario keys for a failing login and for "exit 0 but still
@@ -253,6 +272,14 @@ because it is built around the main `LiveScreen` and `ReaderPause`.
   the process group and pipes stdio, all wrong for an interactive login.
 - Provider-trait hook rather than TUI special-casing `claude-subscription`: keeps the TUI closed
   to future external-login providers.
+- AFK: Fontaine does not intercept Ctrl-C during the login (it may end Fontaine too); no signal/console-handler code is added, as the issue does not require survival and it avoids new unsafe platform code.
+- AFK: A guardian login revoked mid-session stays `FailClosed::Error`/`GuardianUnavailable` with the hint in its text; no typed classifier is installed into `Guardian`, keeping the guardian crate untouched.
+- AFK: Not-signed-in marker is a `not_signed_in: bool` on `GuardianModel::Unavailable`, a new `Guardian::not_signed_in` constructor and crate-private `Backend::Unavailable { reason, not_signed_in }`, so `Guardian::unavailable` callers do not break and the guardian crate stays Claude-agnostic.
+- AFK: The TUI guardian-unavailable prompt keeps its existing choices for not-signed-in and only names `/login <account>` in its text, because changing the choice set widens the permission-prompt surface.
+- AFK: Mid-session/guardian-path auth failures carry a surface-neutral hint in core text and `TurnFailure` is unchanged, because it avoids touching `ui/turn.rs` and `headless.rs` rendering.
+- AFK: Drawn setup repaint is forced by a `Surface::redraw` method (no-op default, `Drawn` uses `terminal.clear()`) called by `run_setup` after the suspend returns, because `Suspend` only receives the work closure.
+- AFK: `run_setup` takes the `Suspend`; `run` calls it directly with the real closure and `drive`/`drive_linear` pass `no_suspend()`, because `run` otherwise cannot reach the loop with a real hand-over.
+- AFK: Drawn hand-over uses crossterm leave/re-enter plus bracketed paste off/on and a forced redraw instead of `ratatui::restore()`/`try_init()`, which chains a panic hook, returns a throwaway `Terminal` and leaves paste on during the child.
 
 ## Documentation
 
@@ -290,7 +317,7 @@ Automated, using the portable `claude_cli_double` fake (never the real binary):
 - Integration through headless `fontaine -p`: issue #557's scenario, a signed-in main account plus
   a signed-out pinned guardian account (own `claude_config_dir` and double scenario) in auto mode
   → non-zero exit, the account-naming message, and zero turns/guardian calls made (regression for
-  the mid-run `GuardianUnavailable` denial). The existing ~l.339 test is extended only for the
+  the `GuardianUnavailable` denial when the guardian is signed out at start). The existing ~l.339 test is extended only for the
   new main-model message.
 
 ## Manual Verification
@@ -299,5 +326,6 @@ Automated, using the portable `claude_cli_double` fake (never the real binary):
    the offer, complete the browser/paste-code flow; expect the live area to be restored intact
    and the model picker to open. Not automated: needs a real browser flow and a real TTY handoff
    (terminal layout bugs must be checked in real tmux, per the testing design doc).
-2. Ctrl-C during the login: expect Fontaine to survive and re-probe (checks that the child's
-   foreground process group handling does not kill the TUI).
+2. Ctrl-C during the login: Fontaine does not intercept it; the child shares the foreground process
+   group, so Ctrl-C ends both. Expect the shell prompt back with a sane terminal (raw mode is off
+   during the hand-over).
