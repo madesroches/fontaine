@@ -11,8 +11,8 @@ stdout/stderr pipe handles open, tokio's blocking-pool `ReadFile` never returns,
 `statusline::tests::timeout_keeps_the_previous_line` test deadlocks forever. The same spawn →
 timeout → drop → `kill_on_drop` shape in the status line runner and command hooks leaks one
 orphaned process tree and one blocked thread per timed-out command in a long-lived TUI. This
-plan makes every timeout-drop path kill the whole process tree, on both platforms, through one
-shared helper, and pins the bug with a regression test.
+plan makes every timeout-drop path kill the whole process tree, on both platforms, through the
+shared `procgroup` helper (and a local copy in the dependency-light `fontaine-guardian`), and pins the bug with a regression test.
 
 ## Current State
 
@@ -39,13 +39,8 @@ shared helper, and pins the bug with a regression test.
   timed-out BYO scanner leaks the same way on Windows. The crate is deliberately
   dependency-light (`fontaine-guardian/Cargo.toml` has no fontaine-tools dep) so it can be
   embedded by other harnesses.
-- Git Bash discovery already follows a scoop `git.shim` once
-  (`fontaine-tools/src/git_bash.rs:145`, `resolve_candidate`), so the issue's "discovery does
-  not recognize a shimmed `git.exe`" half is fixed. In production on Windows, `CommandShell` is
-  `GitBash` (real `usr\bin\sh.exe` first on PATH) or `PowerShell`; the bare-`Sh` path that hit
-  the shim only runs in the test, which constructs `CommandShell::Sh` directly. The leak shape
-  still applies to PowerShell (a `pwsh -c` that spawns children) and to any shell whose command
-  backgrounds a process, so the fix belongs in the timeout path, not in shell resolution.
+- Scoop `git.shim` following already landed (`fontaine-tools/src/git_bash.rs:145`,
+  `resolve_candidate`), and only the test constructs `CommandShell::Sh` directly.
 - Other `kill_on_drop(true)` users, for the audit trail: `lsp/client.rs` and `websearch.rs`
   already stop through `procgroup` and gain tree kill from it while the leader is alive.
   `mcp/servers.rs` hands the child to rmcp's transport, whose stop kills the direct child only.
@@ -102,15 +97,6 @@ fontaine-tools dependency, respecting the lift-out constraint: on timeout (and o
 completion) kill the tree — Unix by signalling the group after `process_group(0)` at spawn,
 Windows by a local `taskkill /T /F` (~15 lines, mirroring the lifted helper).
 
-### 5. Audit the remaining `kill_on_drop` sites
-
-- `lsp/client.rs`, `websearch.rs`: no change beyond `procgroup`'s — their stop paths gain
-  Windows tree kill while the leader lives; the dead-leader case is unchanged.
-- `mcp/servers.rs`: rmcp owns the child; its stop kills the direct child only. Out of scope —
-  MCP servers are long-lived and stopped at shutdown, not on a timeout-drop. Recorded in
-  Decisions.
-- `project_env/discover.rs`: no timeout exists; nothing to fix here.
-
 ## Implementation Steps
 
 1. `fontaine-tools/src/procgroup.rs`: add the Windows `taskkill /T /F` step to `force_kill`;
@@ -128,8 +114,13 @@ Windows by a local `taskkill /T /F` (~15 lines, mirroring the lifted helper).
 5. `fontaine-guardian/src/scanner.rs`: local tree-kill helper + guard for `CommandScanner`.
 6. Regression tests (see Testing Strategy) in `fontaine-tools` (procgroup), `fontaine-core`
    (statusline, hooks), `fontaine-guardian` (scanner).
-7. Docs: CHANGELOG entry; `docs/hooks.md` timeout wording ("cut off" now means the whole
-   process tree is stopped); update the `docs/configuration.md` `[statusline]` wording likewise.
+7. Docs: CHANGELOG entry; `docs/hooks.md` timeout wording ("cut off" now means its process tree
+   is stopped; on Windows, only while the command itself is still running); update the
+   `docs/configuration.md` `[statusline]` wording likewise.
+8. `tasks/fontaine_harness_plan.md`: add a dated line at the end of the LSP subsection of
+   `## Decisions`, superseding the 2026-10-30 entry ("On Windows only the direct language-server
+   child is killed ... no new Job-object code"): `procgroup::force_kill` now tree-kills on
+   Windows (while the leader lives), so the LSP client and websearch gain it.
 
 ## Files to Modify
 
@@ -139,6 +130,7 @@ Windows by a local `taskkill /T /F` (~15 lines, mirroring the lifted helper).
 - `rust/fontaine-core/src/user_hooks.rs`
 - `rust/fontaine-guardian/src/scanner.rs`
 - `CHANGELOG.md`, `docs/hooks.md`, `docs/configuration.md`
+- `tasks/fontaine_harness_plan.md` (Decisions)
 
 ## Decisions
 
@@ -155,9 +147,10 @@ Windows by a local `taskkill /T /F` (~15 lines, mirroring the lifted helper).
 
 - CHANGELOG.md entry under Unreleased.
 - `docs/hooks.md` (`timeout_secs` wording at line 57 and the "cut off" phrasing): a timed-out
-  hook has its whole process tree stopped, not just the direct child.
+  hook has its process tree stopped, not just the direct child (on Windows, only while the
+  command itself is still running).
 - `docs/configuration.md`: the `[statusline]` section's "It is killed after 5 seconds" now says
-  the command's whole process tree is stopped.
+  its process tree is stopped (on Windows, only while the command itself is still running).
 
 ## Testing Strategy
 
@@ -166,8 +159,12 @@ verification tiers.
 
 - Unit: `procgroup` — after `force_kill`, a child that backgrounded a 30 s
   sleeper inheriting its pipes leaves no survivor. Unix asserts by process-group probe
-  (`kill -0 -- -<pgid>` fails). Windows asserts by pid probe through `tasklist`/`taskkill`
-  exit codes; skip when no suitable shell is on PATH. This is the test that reproduces the
+  (`kill -0 -- -<pgid>` fails); since `run` hides the child, the command writes `$$` (the shell's
+  pid, the pgid leader) or `$!` (the sleeper) to a temp file and the test probes that pid as
+  `jobs/tests.rs` does (`echo $! > file`, then `pid_in`/`gone`). Windows asserts by pid probe
+  through `tasklist`/`taskkill` exit codes, recording the Windows pid first (`cat
+  /proc/$!/winpid` under MSYS `sh`, since `$!` is an MSYS pid `tasklist` cannot see); skip when
+  no suitable shell is on PATH. This is the test that reproduces the
   issue's mechanism without needing a scoop shim: a backgrounded job is exactly the
   "grandchild outlives the direct child, pipes stay open" shape.
 - Unit: statusline — keep `timeout_keeps_the_previous_line`; add a test whose command
@@ -198,7 +195,7 @@ cargo test -p fontaine-core --lib statusline::tests::timeout_keeps_the_previous_
 ```
 
 Expected: the test finishes in seconds and no orphaned `sh -c "sleep 5"` remains in the process
-list. Not automated because CI's `windows-latest` image does not have a launcher-style `sh` on
+list. Not automated because a launcher-style `sh` is not known to be on CI's `windows-latest`
 PATH, so only this machine reproduces the original deadlock; the automated tests reproduce the
 mechanism, not the shim itself.
 
