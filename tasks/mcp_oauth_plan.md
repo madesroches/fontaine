@@ -26,10 +26,8 @@ today) and `headersHelper` scripts restricted to trusted scopes.
   `new_with_oauth_http_client` routes its metadata/authorize/token HTTP through an
   `OAuthHttpClient` adapter, with `set_credential_store`/`set_state_store` for persistence),
   `AuthClient<C>` which drives authorization lazily from 401 `WWW-Authenticate` challenges
-  (surfacing `StreamableHttpError::AuthRequired` when no credentials exist) — note
-  `AuthClient` has no `C: OAuthHttpClient` bound and its `StreamableHttpClient` impl
-  requires `C: StreamableHttpClient`, so it wraps the protocol-level reqwest client, not
-  the adapter — `CredentialStore` / `StateStore` traits (in-memory impls only ship in
+  (surfacing `StreamableHttpError::AuthRequired` when no credentials exist),
+  `CredentialStore` / `StateStore` traits (in-memory impls only ship in
   rmcp), PKCE + loopback-redirect authorization sessions (`AuthorizationRequest`,
   `AuthorizationSession`, driven through `OAuthState`), and `WWWAuthenticateParams` for
   challenge parsing.
@@ -53,10 +51,10 @@ pub headers_helper: Option<String>, // path to an executable
 ```
 
 - `headers` on a `command` (stdio) server is a validation error in `check_mcp_server`
-  (`config.rs:1695`), matching the existing args/env rule for `url` servers. Values may carry
-  `${VAR}` references; expansion happens at connect time against Fontaine's scrubbed
-  environment (the same expander used for repo `.mcp.json` definitions), so secrets stay out of
-  the config file.
+  (`config.rs:1695`), matching the existing args/env rule for `url` servers. `${VAR}`
+  expansion applies to repository `.mcp.json` definitions only (expanded at connect time
+  via `expanded()`, Implementation step 7); settings and CLI declarations never expand
+  and are used verbatim.
 - `.mcp.json` parsing (`mcp_json.rs`) maps `headers` → `headers` and `headersHelper` →
   `headers_helper`; the "not supported yet (#32)" warnings are removed.
 - CLI `mcp add` unhides `-H/--header KEY=VALUE` (repeatable) and stores headers in the
@@ -277,6 +275,8 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
 
 - **Unit** (`config.rs`, `mcp_json.rs`): header/helper parsing, unknown-key behavior,
   stdio-server-with-headers rejection, `Slot::Project` helper rejection.
+- **Unit** (`agent/mcp.rs`): adding or changing `headers` / `headers_helper` changes the
+  server digest, mirroring the existing `expansion_changes_the_digest...` test.
 - **Unit** (`credentials.rs` / `mcp_auth.rs`): `[mcp]` round-trip (write → parse → read)
   through `owner_only::write_atomic`, lock behavior, malformed-JSON entry never clobbers the
   file; the 0600 mode itself is covered by the existing `the_file_is_owner_only` test, since
