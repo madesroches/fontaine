@@ -92,36 +92,73 @@ impl Layout {
         }
         let profile_dir = deps.parent()?;
         let above = profile_dir.parent()?;
-        let (triple, target_dir) = match cargo_target_dir {
-            // Cargo's configured target dir is authoritative when the exe descends from it:
-            // anything between it and the profile dir is a triple, and the configured dir's
-            // own name is part of the target dir even when it contains a `-`.
-            Some(configured) if above.starts_with(configured) => {
-                let rest = above.strip_prefix(configured).ok()?;
-                match rest.components().next() {
-                    None => (None, above),
-                    Some(segment) => (
-                        Some(segment.as_os_str().to_string_lossy().into_owned()),
-                        configured,
-                    ),
-                }
+        // Cargo's configured target dir is authoritative when the exe descends from it:
+        // anything between it and the profile dir is a triple, and the configured dir's
+        // own name is part of the target dir even when it contains a `-`.
+        let matched = cargo_target_dir.and_then(|c| configured_target_match(above, c));
+        let (triple, target_dir) = match matched {
+            Some((dir, rest)) => {
+                let triple = rest
+                    .components()
+                    .next()
+                    .map(|segment| segment.as_os_str().to_string_lossy().into_owned());
+                let target_dir = if triple.is_none() {
+                    above.to_path_buf()
+                } else {
+                    dir
+                };
+                (triple, target_dir)
             }
-            // Without a configured dir (or an exe outside it) the workspace's `target/` name
-            // has no `-`, so a `-`-bearing segment must be a triple. A `--target-dir` passed
-            // only on the outer command line with a `-` in its name and no env var is
-            // indistinguishable from a triple; that combination is not supported.
-            _ if looks_like_triple(above) => (
+            // Without a configured dir (or an exe outside it) the workspace's `target/`
+            // name has no `-`, so a `-`-bearing segment must be a triple. A
+            // `--target-dir` passed only on the outer command line with a `-` in its
+            // name and no env var is indistinguishable from a triple; that combination
+            // is not supported.
+            None if looks_like_triple(above) => (
                 Some(above.file_name()?.to_string_lossy().into_owned()),
-                above.parent()?,
+                above.parent()?.to_path_buf(),
             ),
-            _ => (None, above),
+            None => (None, above.to_path_buf()),
         };
         Some(Layout {
-            target_dir: target_dir.to_path_buf(),
+            target_dir,
             triple,
             profile_dir: profile_dir.to_path_buf(),
         })
     }
+}
+
+/// Locates a configured `CARGO_TARGET_DIR` within `above` (the exe's ancestor above the
+/// profile dir), returning the resolved target dir and the path remaining between it and
+/// `above` (the triple segment, if any). Absolute configured dirs match by prefix; relative
+/// ones match as a contiguous run of `above`'s trailing components (with the base
+/// `current_exe()` cannot reveal), because `current_exe()` is absolute and Cargo resolved
+/// the configured dir against that unknown base.
+fn configured_target_match(above: &Path, configured: &Path) -> Option<(PathBuf, PathBuf)> {
+    if configured.is_absolute() {
+        let rest = above.strip_prefix(configured).ok()?;
+        return Some((configured.to_path_buf(), rest.to_path_buf()));
+    }
+    let suffix: Vec<_> = configured.components().collect();
+    let comps: Vec<_> = above.components().collect();
+    if suffix.is_empty() || suffix.len() > comps.len() {
+        return None;
+    }
+    // The configured dir sits directly below the (unknown) base Cargo resolved it
+    // against, so it is a contiguous run of `above`'s components with at most one
+    // segment — the triple — after it.
+    for start in (0..=comps.len() - suffix.len()).rev() {
+        if comps[start..start + suffix.len()] != suffix[..] {
+            continue;
+        }
+        let rest: PathBuf = comps[start + suffix.len()..].iter().collect();
+        if rest.components().count() > 1 {
+            continue;
+        }
+        let base: PathBuf = comps[..start].iter().collect();
+        return Some((base.join(configured), rest));
+    }
+    None
 }
 
 /// Best-effort triple detection for the optional segment between the target dir and the
@@ -213,6 +250,29 @@ mod tests {
         let l = layout_with_env(
             "/ws/my-target/x86_64-pc-windows-gnu/debug/deps/my_test.exe",
             Some("/ws/my-target"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/my-target"));
+        assert_eq!(l.triple.as_deref(), Some("x86_64-pc-windows-gnu"));
+        assert_eq!(
+            l.profile_dir,
+            Path::new("/ws/my-target/x86_64-pc-windows-gnu/debug")
+        );
+    }
+
+    #[test]
+    fn relative_hyphenated_target_dir_is_not_misread_as_triple() {
+        let l = layout_with_env("/ws/my-target/debug/deps/my_test", Some("my-target")).unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/my-target"));
+        assert_eq!(l.triple, None);
+        assert_eq!(l.profile_dir, Path::new("/ws/my-target/debug"));
+    }
+
+    #[test]
+    fn triple_under_relative_target_dir_is_still_detected() {
+        let l = layout_with_env(
+            "/ws/my-target/x86_64-pc-windows-gnu/debug/deps/my_test.exe",
+            Some("my-target"),
         )
         .unwrap();
         assert_eq!(l.target_dir, Path::new("/ws/my-target"));
