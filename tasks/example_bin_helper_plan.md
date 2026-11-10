@@ -17,8 +17,8 @@ process, and routes every lookup through it.
 
 ## Current State
 
-Sixteen lookup sites in fourteen test files derive `target/<profile>/examples/<name>[.exe]` from
-`std::env::current_exe()` (strip `deps/<test>`) and only assert the file exists:
+Eighteen lookup sites in sixteen test files derive `target/<profile>/examples/<name>[.exe]` from
+`std::env::current_exe()` (strip `deps/<test>`); most assert the file exists:
 
 - `rust/fontaine/tests/`: `claude_subscription.rs:20-35` (`double()`, `fontaine_claude_cli_double`),
   `doctor_cmd.rs:6-19` (`example()`, `repo_mcp_server`), `lifecycle_hooks_headless.rs:11-24`
@@ -88,17 +88,18 @@ crates add it under `[dev-dependencies]` (`.workspace = true`, matching conventi
 2. Add `fontaine-testkit` to `[workspace.dependencies]` in `rust/Cargo.toml`.
 3. Add `fontaine-testkit.workspace = true` to `[dev-dependencies]` of `fontaine`, `fontaine-core`,
    `fontaine-tools`, `fontaine-tui`.
-4. Replace the sixteen lookup sites listed in Current State with `example_bin(...)` calls, deleting
-   the per-file helpers. Package per site: `fontaine` for the `fontaine/tests` files,
-   `fontaine-tui`'s `repo_mcp_server`/`hook_marker`/`claude_double`, `fontaine-core` for
+4. Replace the eighteen lookup sites listed in Current State with `example_bin(...)` calls, deleting
+   the per-file helpers. Package per site: `fontaine` for the `fontaine/tests` files and for the
+   `fontaine-tui` tests' `repo_mcp_server`/`hook_marker`/`claude_double` sites, `fontaine-core` for
    `common/claude_cli.rs`/`lifecycle_hooks.rs`/`user_hooks.rs`, `fontaine-tools` for
    `lsp.rs`/`mcp_registration.rs`, `fontaine-tui` for `touch_marker`.
 5. Update the now-stale "prebuild it when running a test that uses it alone" doc comments in
    `rust/fontaine/tests/claude_subscription.rs:2` and `rust/fontaine-core/tests/common/claude_cli.rs:1-2`.
 6. Update `tasks/design/testing.md` (the prebuild passage at lines 114-115) to document the helper:
    tests never prebuild; `example_bin` builds on first use.
-7. Run the gates: `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from
-   `rust/`, then the per-package runs from Manual Verification.
+7. Run the gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
+   from `rust/`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace`, then the per-package
+   runs from Manual Verification.
 
 ## Files to Modify
 
@@ -106,7 +107,7 @@ crates add it under `[dev-dependencies]` (`.workspace = true`, matching conventi
 - `rust/Cargo.toml` (workspace dependency).
 - `rust/fontaine/Cargo.toml`, `rust/fontaine-core/Cargo.toml`, `rust/fontaine-tools/Cargo.toml`,
   `rust/fontaine-tui/Cargo.toml` (dev-dependencies).
-- The fourteen test files listed in Current State.
+- The sixteen test files listed in Current State.
 - `tasks/design/testing.md`.
 
 ## Trade-offs
@@ -137,11 +138,12 @@ a no-op).
 - Unit tests in `fontaine-testkit` for the pure derivation helpers (exe path → profile dir, profile
   dir → profile flag, target dir with and without a triple segment). These are constructed-input
   tests, no process spawning.
-- The sixteen converted integration tests are themselves the coverage: under the workspace run the
+- The eighteen converted integration tests are themselves the coverage: under the workspace run the
   helper's nested build is a no-op and every test behaves as before; under a per-package run the
   helper rebuilds what is stale. No test hits a live API.
 - Gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` from
-  `rust/`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace`.
+  `rust/`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace`, then the per-package runs
+  from Manual Verification.
 
 ## Manual Verification
 
