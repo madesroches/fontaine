@@ -16,6 +16,11 @@ use std::sync::{Mutex, OnceLock};
 
 static CACHE: OnceLock<Mutex<HashMap<(String, String), PathBuf>>> = OnceLock::new();
 
+/// The triple the outer build compiled this crate (and the test binaries linking it) for,
+/// captured by the build script from Cargo's `TARGET`: exactly the outer build's target,
+/// host or foreign, unlike a `rustc -vV` host lookup.
+const BUILD_TARGET: &str = env!("FONTAINE_TESTKIT_TARGET");
+
 /// Returns the path to the built example `name` of workspace package `package`, building it on
 /// first use. Panics with cargo's combined output if the build fails.
 pub fn example_bin(package: &str, name: &str) -> PathBuf {
@@ -99,15 +104,15 @@ impl Layout {
     /// `cargo_target_dir` is the `CARGO_TARGET_DIR` of the outer build, which Cargo exports to
     /// the test process when the outer build used one.
     fn from_exe(exe: &Path, cargo_target_dir: Option<&Path>) -> Option<Layout> {
-        Self::from_exe_with(exe, cargo_target_dir, host_triple())
+        Self::from_exe_with(exe, cargo_target_dir, Some(BUILD_TARGET))
     }
 
-    /// `host_triple` is the triple of the machine running the test binary; injectable so the
-    /// layout logic stays testable without a rustc.
+    /// `build_target` is the outer build's target triple; injectable so the layout logic
+    /// stays testable without relying on [`BUILD_TARGET`].
     fn from_exe_with(
         exe: &Path,
         cargo_target_dir: Option<&Path>,
-        host_triple: Option<&str>,
+        build_target: Option<&str>,
     ) -> Option<Layout> {
         let deps = exe.parent()?;
         if deps.file_name()? != "deps" {
@@ -135,15 +140,15 @@ impl Layout {
             // Without a configured dir, a `-`-bearing segment may be a triple (an explicit
             // outer command-line `--target`, which cargo does not export to the test
             // process) or a hyphenated `--target-dir`/build config dir (cargo exports
-            // neither of those either). The test binary is running on the host, so a
-            // genuine foreign-triple segment could not have produced it: the segment only
-            // counts as a triple when it equals the host triple (a genuine `--target
-            // <host>` build needs it; a directory coincidentally named after the host
-            // triple is unharmed), and anything else — however triple-like — is a target
-            // dir.
+            // neither of those either). The build script compiled the outer build's
+            // target triple into this crate, so a segment equal to it is exactly the outer
+            // build's target dir layout: forward it (correct for genuine `--target <host>`
+            // and `--target <foreign>` runs alike, and harmless for a directory
+            // coincidentally named after the build target). Any other segment — however
+            // triple-like — is a target dir.
             None if looks_like_triple(above) => {
                 let name = above.file_name()?.to_string_lossy().into_owned();
-                if host_triple == Some(name.as_str()) {
+                if build_target == Some(name.as_str()) {
                     (Some(name), above.parent()?.to_path_buf())
                 } else {
                     (None, above.to_path_buf())
@@ -206,26 +211,6 @@ fn looks_like_triple(dir: &Path) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// The host triple reported by the installed rustc (`rustc -vV` `host:` field), cached per
-/// process and honoring `RUSTC`; `None` when rustc is unavailable or its output cannot be
-/// parsed. A `None` here makes every triple candidate a directory name, which only costs a
-/// rebuild whose artifact location cargo reports in the build's JSON messages.
-fn host_triple() -> Option<&'static str> {
-    static HOST: OnceLock<Option<String>> = OnceLock::new();
-    HOST.get_or_init(|| {
-        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-        let out = Command::new(rustc).arg("-vV").output().ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .find_map(|line| line.strip_prefix("host: "))
-            .map(str::to_owned)
-    })
-    .as_deref()
-}
-
 /// Extracts the executable cargo built for example `name` from the stdout of a build run
 /// with `--message-format=json-render-diagnostics`, or `None` when no artifact message
 /// carries an `executable` for it. A dependency sharing the example's name is filtered out
@@ -282,12 +267,16 @@ mod tests {
         Layout::from_exe(Path::new(exe), cargo_target_dir.map(Path::new))
     }
 
-    fn layout_with_host(
+    fn layout_with_target(
         exe: &str,
         cargo_target_dir: Option<&str>,
-        host: Option<&str>,
+        build_target: Option<&str>,
     ) -> Option<Layout> {
-        Layout::from_exe_with(Path::new(exe), cargo_target_dir.map(Path::new), host)
+        Layout::from_exe_with(
+            Path::new(exe),
+            cargo_target_dir.map(Path::new),
+            build_target,
+        )
     }
 
     #[test]
@@ -300,7 +289,7 @@ mod tests {
 
     #[test]
     fn exe_with_triple_sets_triple_and_strips_it_from_target_dir() {
-        let l = layout_with_host(
+        let l = layout_with_target(
             "/ws/rust/target/x86_64-pc-windows-gnu/debug/deps/my_test.exe",
             None,
             Some("x86_64-pc-windows-gnu"),
@@ -311,6 +300,26 @@ mod tests {
         assert_eq!(
             l.profile_dir,
             Path::new("/ws/rust/target/x86_64-pc-windows-gnu/debug")
+        );
+    }
+
+    #[test]
+    fn exe_with_foreign_build_target_sets_triple_and_strips_it_from_target_dir() {
+        // Regression: an outer `cargo test --target aarch64-unknown-linux-musl` (runnable
+        // via a cross runner or compatible musl host) places the test exe under the
+        // foreign triple, which the compiled-in build target now recognizes instead of
+        // rejecting every non-host triple as a directory name.
+        let l = layout_with_target(
+            "/ws/rust/target/aarch64-unknown-linux-musl/debug/deps/my_test",
+            None,
+            Some("aarch64-unknown-linux-musl"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/rust/target"));
+        assert_eq!(l.triple.as_deref(), Some("aarch64-unknown-linux-musl"));
+        assert_eq!(
+            l.profile_dir,
+            Path::new("/ws/rust/target/aarch64-unknown-linux-musl/debug")
         );
     }
 
@@ -334,7 +343,7 @@ mod tests {
 
     #[test]
     fn non_matching_hyphenated_segment_is_a_target_dir_not_a_triple() {
-        let l = layout_with_host(
+        let l = layout_with_target(
             "/ws/fontaine-target/debug/deps/my_test",
             None,
             Some("x86_64-unknown-linux-gnu"),
@@ -346,7 +355,7 @@ mod tests {
 
     #[test]
     fn host_triple_segment_is_forwarded_as_triple() {
-        let l = layout_with_host(
+        let l = layout_with_target(
             "/ws/target/x86_64-unknown-linux-gnu/debug/deps/my_test",
             None,
             Some("x86_64-unknown-linux-gnu"),
@@ -357,30 +366,36 @@ mod tests {
     }
 
     #[test]
-    fn non_host_triple_named_target_dir_is_not_misread_as_triple() {
+    fn foreign_triple_segment_is_forwarded_as_triple() {
+        let l = layout_with_target(
+            "/ws/target/aarch64-unknown-linux-musl/debug/deps/my_test",
+            None,
+            Some("aarch64-unknown-linux-musl"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/target"));
+        assert_eq!(l.triple.as_deref(), Some("aarch64-unknown-linux-musl"));
+    }
+
+    #[test]
+    fn foreign_triple_named_target_dir_is_not_misread_as_triple() {
         // Regression: an outer host build such as `cargo test --target-dir
         // /tmp/aarch64-apple-darwin` places the test exe under
-        // /tmp/aarch64-apple-darwin/debug/deps/. The segment is a directory name even
-        // though rustc lists it as a target: this test binary is running on the host, so
-        // a genuine foreign-triple segment could not have produced it.
-        let host = host_triple().expect("rustc -vV reports a host triple");
-        let foreign = [
-            "aarch64-apple-darwin",
-            "x86_64-pc-windows-gnu",
-            "x86_64-unknown-linux-gnu",
-        ]
-        .into_iter()
-        .find(|t| *t != host)
-        .expect("a triple different from the host");
-        let exe = format!("/tmp/{foreign}/debug/deps/my_test");
-        let l = layout(&exe).unwrap();
-        assert_eq!(l.target_dir, Path::new(&format!("/tmp/{foreign}")));
+        // /tmp/aarch64-apple-darwin/debug/deps/. The segment is a directory name: it does
+        // not equal the outer build's compiled-in target triple.
+        let l = layout_with_target(
+            "/tmp/aarch64-apple-darwin/debug/deps/my_test",
+            None,
+            Some("x86_64-unknown-linux-gnu"),
+        )
+        .unwrap();
+        assert_eq!(l.target_dir, Path::new("/tmp/aarch64-apple-darwin"));
         assert_eq!(l.triple, None);
     }
 
     #[test]
-    fn unknown_host_falls_back_to_treating_segments_as_target_dirs() {
-        let l = layout_with_host(
+    fn unknown_build_target_falls_back_to_treating_segments_as_target_dirs() {
+        let l = layout_with_target(
             "/ws/target/x86_64-pc-windows-gnu/debug/deps/my_test",
             None,
             None,
@@ -466,7 +481,7 @@ mod tests {
 
     #[test]
     fn exe_outside_configured_target_dir_falls_back_to_heuristic() {
-        let l = layout_with_host(
+        let l = layout_with_target(
             "/ws/rust/target/x86_64-pc-windows-gnu/debug/deps/my_test.exe",
             Some("/ws/other-target"),
             Some("x86_64-pc-windows-gnu"),
