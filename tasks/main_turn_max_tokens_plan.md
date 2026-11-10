@@ -13,7 +13,9 @@ cap applies, and that cap can be small or undocumented. One hosted gateway docum
 with no answer. Claude Code always sends an explicit cap sized for the model, which
 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` can override. Fontaine should do the same: every main and
 subagent turn sends a `max_tokens` taken from the model's known output limit, else a fixed
-fallback, and a user-scope `[model] max_output_tokens` overrides it.
+fallback, and a `[model] max_output_tokens` (not settable from the shared project file)
+overrides it. Where the wire already fills `max_tokens` in itself (the `anthropic` and
+`claude-subscription` kinds) the fallback is not sent; a known limit and the user cap still apply.
 
 ## Current State
 
@@ -36,7 +38,12 @@ fallback, and a user-scope `[model] max_output_tokens` overrides it.
 - rig-agent's `PromptRequest` / runner exposes `.max_tokens(u64)` per run (`runner.rs:272`). The
   ollama chat wire maps `max_tokens` to `options.num_predict` (`ollama/chat.rs:144`).
 - `claude-subscription` already sends the catalog limit when the request leaves `max_tokens`
-  unset (`tests/claude_subscription.rs:962`). The `anthropic` kind gets the same limit from rig.
+  unset (`tests/claude_subscription.rs:962`). The `anthropic` kind gets the spec limit from rig's
+  `default_max_tokens_for_model` (`providers/anthropic/completion.rs:102-110`), which returns 64000
+  for an unspecced `claude-opus-4*`, `claude-sonnet-4*` or `claude-haiku-4-5*` id, and errors
+  ("max_tokens must be set for Anthropic", `completion.rs:201`) for a fully unknown id. Gateway
+  Messages dialects (`Quirks::gateway()`, `anthropic/wire.rs:137`) send `MaxTokens::Fixed(4096)`,
+  including opencode-go's Messages route (`providers/opencode_go.rs:52`).
 - Config: `ModelSection` (`config.rs:523`) has `model` and `effort`. The resolved `Config.effort`
   (`config.rs:2674`) is merged at ~2922. The whole `[model]` table is already user-trust only
   (`config_scope.rs:175`, `Rule::user_trust("model", TIGHTEN)`), so a new key under it cannot be
@@ -51,8 +58,9 @@ Add one method on `ModelHandle` (`models.rs`):
 
 ```rust
 /// The output cap one turn on this model sends: the user's cap clamped to the model's known
-/// limit, else that limit, else `FALLBACK_MAX_OUTPUT_TOKENS`. `None` (send nothing) only on
-/// `ollama` with no known limit, where the daemon's own default is unbounded.
+/// limit, else that limit, else `FALLBACK_MAX_OUTPUT_TOKENS`. `None` (send nothing) with no known
+/// limit and no user cap on `ollama` (the daemon's own default is unbounded) and on the
+/// `anthropic` and `claude-subscription` kinds (the wire fills it in itself).
 pub fn turn_max_tokens(&self, cap: Option<u32>) -> Option<u64>
 ```
 
@@ -61,10 +69,17 @@ pub fn turn_max_tokens(&self, cap: Option<u32>) -> Option<u64>
 | `Some(c)` | `Some(l)` | `min(c, l)` |
 | `Some(c)` | `None` | `c` |
 | `None` | `Some(l)` | `l` |
-| `None` | `None` | `32_000` (`FALLBACK_MAX_OUTPUT_TOKENS`); `None` on `ollama` |
+| `None` | `None` | `32_000` (`FALLBACK_MAX_OUTPUT_TOKENS`); `None` on `ollama`, `anthropic`, `claude-subscription` |
 
 `FALLBACK_MAX_OUTPUT_TOKENS: u64 = 32_000` is a `pub const` in `models.rs`, which matches the
 issue's example and Claude Code's default cap.
+
+The kind is read with `self.kind.as_str()` (`AccountKind` is `struct AccountKind(&'static dyn
+Provider)`, `config.rs:253`, not an enum), the way `composition_offer.rs:237` detects ollama
+(`== "ollama"`). The model limit is read from `self.completion.spec()`. Nothing on `ModelHandle`
+says which wire a handle encodes on, so the Messages-wire exemption is the kind list
+`anthropic` and `claude-subscription`. opencode-go's Messages-routed models are not exempted: the
+route depends on the account's `wires` overrides, which the handle does not carry.
 
 ### Plumbing
 
@@ -79,7 +94,9 @@ issue's example and Claude Code's default cap.
   from the child's own model and the session's cap, so it is clamped to the child's model and not
   the parent's. The cap reaches `ChildContext` the same way the other spawn-time config values
   do: add a `max_output_tokens: Option<u32>` field, filled where the context is built from
-  `Config`.
+  `Config`: copy it into `Setup` the way `explicit_budget_cap` is (field at `agent.rs:266`, set at
+  `agent/setup.rs:904`), then into `ChildContext` where it is built (`agent/setup.rs:1018`, next
+  to `explicit_budget_cap` at ~1025). `ChildContext` (`child_runner.rs:303`) holds no `Config`.
 
 ### Config
 
@@ -87,8 +104,8 @@ issue's example and Claude Code's default cap.
   `max_output_tokens: Option<u32>`, merged like `effort`. A value of `0` is refused at config load
   with the key named in the error (follow the existing positive-integer validation pattern in
   `config.rs`).
-- User scope only, which comes free from the existing `[model]` user-trust rule. A test pins
-  this.
+- Not settable from the shared project file (user trust), which comes free from the existing
+  `[model]` rule. The existing `effort_keys_refuse_the_shared_project_file` test pins it.
 - `/config` catalog row `model.max_output_tokens`: `Scalar`, unset shown as
   `"unset (the model's output limit, else 32000)"`.
 - No `CLAUDE_CODE_MAX_OUTPUT_TOKENS` environment variable. This follows the precedent that
@@ -103,17 +120,18 @@ so is mapping host deployment names to facts (#167).
 ## Implementation Steps
 
 1. `models.rs`: add `FALLBACK_MAX_OUTPUT_TOKENS` and `ModelHandle::turn_max_tokens`, with unit
-   tests for every row of the table, including the ollama exemption.
-2. `config.rs`: add `max_output_tokens` to `ModelSection` and `Config`, merge it, refuse `0`, and
-   regenerate the JSON schema if the repo checks one in (`grep -r JsonSchema` output target).
-   Add the `config_scope.rs` test that a project file setting it is refused, and the
+   tests for every row of the table, including the ollama and Messages-kind exemptions.
+2. `config.rs`: add `max_output_tokens` to `ModelSection` and `Config`, merge it, refuse `0`. Add
+   `"[model]\nmax_output_tokens = 4096\n"` to the snippet list of
+   `effort_keys_refuse_the_shared_project_file` (`config_scope.rs:873-884`), and the
    `config_catalog.rs` row.
 3. `turn.rs`: add the `max_tokens` field to `TurnParams` and `Drive`, pass it through, and apply
    it in `drive_once`.
 4. `agent/models.rs`: add `AgentRuntime::turn_max_tokens()`. Fill the field in `headless.rs` and
    `fontaine-tui/src/ui/turn.rs`.
 5. `child_runner.rs`: add `ChildContext.max_output_tokens` and `ChildModel.max_tokens`, compute
-   it in `child_model`, and pass it to the child's `drive`.
+   it in `child_model`, and pass it to the child's `drive`. Add `Setup.max_output_tokens`
+   (`agent.rs`, `agent/setup.rs`) and copy it into `ChildContext` at `agent/setup.rs:1018`.
 6. Update every test that constructs `TurnParams` / `Drive` (`tests/*.rs`, see the
    `generation_options: None` sites) to add `max_tokens: None`.
 7. Docs and the master plan's Decisions (below).
@@ -133,25 +151,20 @@ so is mapping host deployment names to facts (#167).
 
 ## Trade-offs
 
-- **Per turn rather than at agent build (`AgentBuilder::max_tokens`)**: building it in would
-  freeze the cap to the model at build time and duplicate the `/model` rebuild concerns. A
-  per-turn value matches how `generation_options` already works.
 - **The model's full limit rather than a lower default** (Claude Code sends 32000 by default for
   many models even when they allow more): the issue asks for the model's `max_output_tokens`.
-  It equals what the `anthropic` and `claude-subscription` kinds already send, so those kinds do
-  not change, and the user cap can lower it.
+  On `anthropic` and `claude-subscription` a known limit equals what is already sent, and with no
+  limit and no cap they keep the wire's own fill-in. A known limit now replaces the gateway
+  dialect's fixed 4096 on Messages gateways. The user cap can lower it.
 - **`[model]` key rather than a per-account key**: one global cap mirrors
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, and clamping per model already adapts it to each account's
   models. A per-account key can be added later without breaking anything.
-- **Ollama exempt from the fallback**: an unknown local model on `ollama` gets
-  `num_predict = 32000` instead of the daemon's unbounded default, which is a new limit with no
-  gateway problem to fix. A known limit or the user cap still applies there.
 
 ## Decisions
 
 - 2026-11-10: Fallback output cap when the model's limit is unknown: 32000 tokens (issue's
   example, Claude Code's default cap).
-- 2026-11-10: The override is the config key `[model] max_output_tokens` (user scope only), not
+- 2026-11-10: The override is the config key `[model] max_output_tokens` (not settable from the shared project file: user trust), not
   a `CLAUDE_CODE_MAX_OUTPUT_TOKENS`-style environment variable, following the `[network]`
   precedent that config keys keep the scope rules in force.
 - 2026-11-10: On `ollama` with no known limit, no `max_tokens` is sent, so the daemon keeps its
@@ -159,39 +172,49 @@ so is mapping host deployment names to facts (#167).
 - 2026-11-10: Accepted risk: an `openai-compatible` local server with a small context (vLLM
   rejects `prompt + max_tokens > max_model_len`) can now refuse an unknown model's 32000 fallback
   request. The fix is `[model] max_output_tokens`, which the docs say so.
+- 2026-11-10: Accepted change: a known model limit now replaces the gateway dialect's fixed 4096
+  on Messages gateways (opencode-go), and an unspecced opencode-go Messages model sends 32000.
+- 2026-11-10: With no known limit and no user cap, the `anthropic` and `claude-subscription`
+  kinds send nothing, so the wire's own fill-in stays.
 
 ## Documentation
 
 - `docs/configuration.md` `[model]` table: add a `max_output_tokens` row. It covers what is sent
-  by default (the model's output limit, else 32000; nothing on `ollama` with no known limit),
+  by default (the model's output limit, else 32000; nothing on `ollama`, `anthropic` or
+  `claude-subscription` with no known limit),
   clamping to the model's limit, that it applies to the main agent and subagents but not the
   guardian or `/btw`, that it is not settable from the shared project file, and the
   small-context local-server note.
+- `docs/configuration.md` per-key scope table (~lines 105-125): change the row `[model] model` to
+  cover `model`, `effort`, `max_output_tokens`.
 - `tasks/fontaine_harness_plan.md` `### Providers`: append dated lines for the Decisions above
   that deviate from Claude Code (the config key instead of an env var, and the ollama exemption).
 
 ## Testing Strategy
 
-All unit or in-process integration tests against the mock model or a local HTTP stub. No live
-service is needed.
+All unit or in-process integration tests against the mock model. No live service is needed.
 
 - `models.rs` unit tests: `turn_max_tokens` for each table row, the clamp, and the ollama
-  `None`.
+  and Messages-kind `None`.
 - `config.rs` tests: `[model] max_output_tokens = 4096` resolves, `0` is refused with the key
-  named, and the project file setting it is refused (`config_scope.rs`).
+  named, and the project file setting it is refused (the `effort_keys_refuse_the_shared_project_file` snippet
+  list in `config_scope.rs`).
 - `tests/` integration through `run_turn` with `MockCompletionModel` (the `tests/effort.rs`
   harness: `built.main.requests()`):
   - A main turn on a model with no spec sends `max_tokens == Some(32000)`. With a priced spec it
     sends that spec's `max_output_tokens`. With `[model] max_output_tokens` it sends the clamped
     cap.
-  - A spawned subagent's request carries its own model's limit, or the cap.
+  - A main turn on an unspecced handle of a Messages-wire kind (`anthropic`) sends no explicit
+    `max_tokens`.
+  - A spawned subagent's request carries its own model's limit, or the cap. The `tests/effort.rs`
+    harness runs the child on the parent's handle, so use a `tests/model_roles_runtime.rs`-style
+    setup with a child model whose spec differs from the main model's.
   - `/model` mid-session: the next turn's request carries the new model's limit.
-- **Regression for the bug seen in the wild** (#571): on an `openrouter` account over the real
-  chat-completions wire, against a local HTTP stub (reuse the stub server already used by the
-  wire/provider tests in `fontaine-core/tests`, e.g. `native_search.rs` /
-  `providers/reasoning_parts.rs`), assert that the JSON body of a main-turn request contains
-  `"max_tokens"`. This pins the actual encoding through rig's chat wire, which the mock-model
-  tests cannot see.
+- **Regression for the bug seen in the wild** (#571): the `run_turn` mock-model test that a main
+  turn on a chat kind sends `max_tokens`, both with a spec and with no spec, is the pinned
+  regression. Add `assert_eq!(body["max_tokens"], 16)` to the openrouter Chat encode test in
+  `providers/reasoning_parts.rs` (~line 341), which already sets `.max_tokens(16)`, so the chat
+  wire's encoding of the field is pinned.
 
 ## Open Questions
 
