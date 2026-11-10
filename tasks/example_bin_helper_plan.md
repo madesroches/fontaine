@@ -62,7 +62,10 @@ Internals (std-only, no new dependencies):
   back to `cargo` on the rare harness that doesn't). `current_dir` is the helper crate's
   `env!("CARGO_MANIFEST_DIR")` (inside the workspace, so package selection and the workspace target
   dir resolve). Pass `--target-dir <dir>` derived from the exe path (strip the optional triple and
-  the profile segment) so a custom `CARGO_TARGET_DIR` still writes where the test looks.
+  the profile segment) so a custom `CARGO_TARGET_DIR` still writes where the test looks. When a
+  triple segment is present, also pass `--target <triple>`: a triple from `CARGO_BUILD_TARGET` or
+  config is inherited by the child, but an explicit command-line `--target` is not, and without the
+  flag the nested build would place the example where the helper does not look.
 - Profile: when the profile dir is named `debug`, omit `--profile` (dev and test profiles share the
   `debug` output dir); otherwise pass `--profile <dir-name>` (covers `release` and custom profiles,
   whose dir name equals the profile name). Implementation should check with one cheap build whether
@@ -97,7 +100,10 @@ crates add it under `[dev-dependencies]` (`.workspace = true`, matching conventi
    `rust/fontaine/tests/claude_subscription.rs:2` and `rust/fontaine-core/tests/common/claude_cli.rs:1-2`.
 6. Update `tasks/design/testing.md` (the prebuild passage at lines 114-115) to document the helper:
    tests never prebuild; `example_bin` builds on first use.
-7. Run the gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
+7. Add a one-line `fontaine-testkit` entry (dev-only test helper crate) to the crate enumerations:
+   the crate list in `AGENTS.md`, the master plan `tasks/fontaine_harness_plan.md` §Workspace layout
+   tree and dependency graph, and the crate tree/table in `docs/architecture.md`.
+8. Run the gates: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
    from `rust/`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace`, then the per-package
    runs from Manual Verification.
 
@@ -109,6 +115,8 @@ crates add it under `[dev-dependencies]` (`.workspace = true`, matching conventi
   `rust/fontaine-tui/Cargo.toml` (dev-dependencies).
 - The sixteen test files listed in Current State.
 - `tasks/design/testing.md`.
+- `AGENTS.md`, `tasks/fontaine_harness_plan.md` (§Workspace layout), `docs/architecture.md` (crate
+  enumerations).
 
 ## Trade-offs
 
@@ -125,19 +133,21 @@ crates add it under `[dev-dependencies]` (`.workspace = true`, matching conventi
 - **Duplicating the helper into each consuming crate**: rejected in the issue — four copies of the
   same cargo invocation.
 
-## Decisions
-
 ## Documentation
 
 `tasks/design/testing.md`: replace the prebuild workaround passage with the helper's contract
 (builds on first use per test process, panics with cargo's output on failure, CI's workspace run is
 a no-op).
 
+Crate enumerations: add the `fontaine-testkit` one-liner to `AGENTS.md`'s crate list, the master
+plan's §Workspace layout tree and dependency graph, and `docs/architecture.md`'s crate tree and
+crate table.
+
 ## Testing Strategy
 
 - Unit tests in `fontaine-testkit` for the pure derivation helpers (exe path → profile dir, profile
-  dir → profile flag, target dir with and without a triple segment). These are constructed-input
-  tests, no process spawning.
+  dir → profile flag, target dir with and without a triple segment, and `--target` forwarding when
+  a triple segment is present). These are constructed-input tests, no process spawning.
 - The eighteen converted integration tests are themselves the coverage: under the workspace run the
   helper's nested build is a no-op and every test behaves as before; under a per-package run the
   helper rebuilds what is stale. No test hits a live API.
