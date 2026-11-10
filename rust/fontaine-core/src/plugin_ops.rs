@@ -16,7 +16,7 @@ use crate::extensions;
 use crate::file_lock;
 use crate::plugins::{
     self, Catalog, CatalogPlugin, CatalogSource, InstalledPlugin, MarketplaceEntry, PluginContext,
-    PluginError, Registry, checkout_dir, marketplace_dir, registry_path, staged_dir,
+    PluginError, Registry, checkout_dir, content_hash, marketplace_dir, registry_path, staged_dir,
     valid_plugin_name,
 };
 use fontaine_tools::error_chain::chain;
@@ -1044,6 +1044,308 @@ pub fn commit_update(fx: &Fetch<'_>, mut prepared: PreparedUpdate) -> Result<Upd
         old_pin: prepared.old_pin.clone(),
         new_pin: prepared.new_pin.clone(),
     })
+}
+
+/// Expands a leading `~` (or `~/`) to the home directory, so a tilde path names the same
+/// directory it would in a shell. Git URLs never start with `~`, so other sources are left
+/// alone.
+pub fn expand_tilde(source: &str) -> String {
+    let Some(home) = ::dirs::home_dir() else {
+        return source.to_string();
+    };
+    if source == "~" {
+        return home.to_string_lossy().into_owned();
+    }
+    if let Some(rest) = source.strip_prefix("~/") {
+        return home.join(rest).to_string_lossy().into_owned();
+    }
+    source.to_string()
+}
+
+/// What registering a marketplace recorded.
+pub struct AddedMarketplace {
+    pub name: String,
+    /// How many plugins the registered catalog offers.
+    pub plugins: usize,
+}
+
+/// Clones (or copies) a marketplace, validates its catalog and registers it under the catalog's
+/// `name` (`name` overrides the registry key). A catalog that does not parse keeps nothing.
+pub fn add_marketplace(
+    fx: &Fetch<'_>,
+    source: &str,
+    name: Option<&str>,
+    kind: Workdir,
+) -> Result<AddedMarketplace> {
+    let _lock = lock_registry(fx.config_dir)?;
+    let mut registry = plugins::read_registry(fx.config_dir)?;
+    let source = expand_tilde(source);
+    let source_path = Path::new(&source);
+    // A source that names a path (not a git URL) must exist, so a typo fails here instead of
+    // surfacing as a confusing git error.
+    let looks_like_path = source.starts_with('.')
+        || source.starts_with('/')
+        || (source.len() > 2 && source.as_bytes()[1] == b':') // a Windows drive letter
+        || (!source.contains("://") && !source.contains('@') && source.contains('/'));
+    if looks_like_path && !source_path.is_dir() {
+        return fail(format!("{} is not a directory", source_path.display()));
+    }
+    let local = source_path.is_dir();
+    // A bare relative name carries no remote markers, so it is a path, not a git URL; git
+    // reads it the same way, and a typo fails with the same message as an absolute path.
+    if !local && !source.contains("://") && !source.contains('@') && !source.contains(':') {
+        return fail(format!("{} is not a directory", source_path.display()));
+    }
+    // A local directory is stored by its resolved absolute path, so a later `marketplace
+    // update` finds it from any working directory.
+    let stored_source = if local {
+        source_path
+            .canonicalize()
+            .map_err(|e| OpError::caused(format!("cannot resolve {}", source_path.display()), e))?
+            .to_string_lossy()
+            .into_owned()
+    } else {
+        source.clone()
+    };
+    let temp = workdir(&marketplaces_parent(fx.config_dir), kind)?;
+    let mut scratch = Scratch::new(temp.clone());
+
+    if local {
+        copy_tree(source_path, &temp)?;
+    } else {
+        clone_git(&source, &temp, fx.git)?;
+    }
+
+    let catalog = read_catalog(&temp)?;
+    let key = name
+        .map(str::to_string)
+        .unwrap_or_else(|| catalog.name.clone());
+    if !valid_plugin_name(&key) {
+        return fail(format!("`{key}` is not a marketplace name"));
+    }
+    if registry.marketplace.iter().any(|m| m.name == key) {
+        return fail(format!("a marketplace named `{key}` is already registered"));
+    }
+    let pin = if local {
+        content_hash(&temp).map_err(OpError::msg)?
+    } else {
+        git(&temp, &["rev-parse", "HEAD"], fx.git)?
+    };
+    replace_dir(&temp, &marketplace_dir(fx.config_dir, &key))?;
+    scratch.moved();
+    registry.marketplace.push(MarketplaceEntry {
+        name: key.clone(),
+        url: stored_source,
+        pin,
+        ..Default::default()
+    });
+    plugins::write_registry(fx.config_dir, &registry)?;
+    Ok(AddedMarketplace {
+        name: key,
+        plugins: catalog.plugins.len(),
+    })
+}
+
+/// One `marketplace list` line. `offered` is `None` when the catalog could not be read, which
+/// must not look like an empty catalog.
+pub fn marketplace_line(
+    entry: &MarketplaceEntry,
+    offered: Option<usize>,
+    installed: usize,
+) -> String {
+    let counts = match offered {
+        Some(n) => format!("{n} offered, {installed} installed"),
+        None => format!("catalog unreadable, {installed} installed"),
+    };
+    let marker = if entry.auto_update == Some(false) {
+        " — auto-update off"
+    } else {
+        ""
+    };
+    format!(
+        "{} — {} — pin {} — {counts}{marker}",
+        entry.name,
+        entry.url,
+        plugins::short_pin(&entry.pin)
+    )
+}
+
+/// What a fetch of a marketplace found.
+pub enum MarketplaceFetch {
+    UpToDate,
+    /// A validated checkout in `temp`, at `new`.
+    Ready {
+        temp: PathBuf,
+        new: String,
+    },
+}
+
+/// Fetches the marketplace's current upstream revision into a scratch directory and validates
+/// its catalog. `known` lists the pins that count as up to date: the remote is compared with
+/// them before anything is cloned, and the cloned revision after.
+pub fn fetch_marketplace(
+    fx: &Fetch<'_>,
+    entry: &MarketplaceEntry,
+    kind: Workdir,
+    known: &[&str],
+) -> Result<MarketplaceFetch> {
+    let local = Path::new(&entry.url).is_dir();
+    let current = if local {
+        content_hash(Path::new(&entry.url)).ok()
+    } else {
+        ls_remote_head(&entry.url, fx.git)
+    };
+    if current.is_some_and(|pin| known.contains(&pin.as_str())) {
+        return Ok(MarketplaceFetch::UpToDate);
+    }
+    let temp = workdir(&marketplaces_parent(fx.config_dir), kind)?;
+    let fetched = if local {
+        copy_tree(Path::new(&entry.url), &temp)
+            .and_then(|()| content_hash(&temp).map_err(OpError::msg))
+    } else {
+        clone_git(&entry.url, &temp, fx.git).and_then(|()| {
+            let sha = remote_head(&temp, fx.git)?;
+            git(&temp, &["checkout", "--quiet", "--detach", &sha], fx.git)?;
+            git(&temp, &["rev-parse", "HEAD"], fx.git)
+        })
+    };
+    let new = match fetched {
+        Ok(new) => new,
+        Err(e) => {
+            remove_dir(&temp);
+            return Err(e);
+        }
+    };
+    if known.contains(&new.as_str()) {
+        remove_dir(&temp);
+        return Ok(MarketplaceFetch::UpToDate);
+    }
+    // Validate the new catalog before the pin can move.
+    if let Err(e) = read_catalog(&temp) {
+        remove_dir(&temp);
+        return Err(e);
+    }
+    Ok(MarketplaceFetch::Ready { temp, new })
+}
+
+/// How one marketplace update came out.
+pub enum MarketplaceOutcome {
+    /// The new pin equals the installed one (or the revision is already staged).
+    UpToDate {
+        pin: String,
+    },
+    Moved {
+        old: String,
+        new: String,
+    },
+    Failed(String),
+}
+
+/// How one named marketplace update came out.
+pub enum MarketplaceUpdate {
+    UpToDate {
+        name: String,
+        pin: String,
+    },
+    Moved {
+        name: String,
+        old: String,
+        new: String,
+    },
+}
+
+/// Moves one named marketplace (or the only one) to its upstream revision, under the registry
+/// lock. Installed plugins are not touched. Discards a staged revision of the marketplace.
+pub fn update_marketplace_named(fx: &Fetch<'_>, name: Option<&str>) -> Result<MarketplaceUpdate> {
+    let _lock = lock_registry(fx.config_dir)?;
+    let mut registry = plugins::read_registry(fx.config_dir)?;
+    let at = match name {
+        Some(name) => registry
+            .marketplace
+            .iter()
+            .position(|m| m.name == name)
+            .ok_or_else(|| {
+                OpError::unknown_marketplace(format!("no marketplace named `{name}` is registered"))
+            })?,
+        None if registry.marketplace.len() == 1 => 0,
+        None if registry.marketplace.is_empty() => return fail("no marketplaces registered"),
+        None => return fail("`marketplace update` needs a name when several are registered"),
+    };
+    let entry = registry.marketplace[at].clone();
+    match update_marketplace(fx, &mut registry, at)? {
+        MarketplaceOutcome::UpToDate { pin } => Ok(MarketplaceUpdate::UpToDate {
+            name: entry.name,
+            pin,
+        }),
+        MarketplaceOutcome::Moved { old, new } => Ok(MarketplaceUpdate::Moved {
+            name: entry.name,
+            old,
+            new,
+        }),
+        MarketplaceOutcome::Failed(message) => fail(message),
+    }
+}
+
+/// Moves the marketplace at `at` to its upstream revision, under the registry lock the caller
+/// holds, discarding any staged revision.
+pub fn update_marketplace(
+    fx: &Fetch<'_>,
+    registry: &mut Registry,
+    at: usize,
+) -> Result<MarketplaceOutcome> {
+    let entry = registry.marketplace[at].clone();
+    let checkout = marketplace_dir(fx.config_dir, &entry.name);
+    if !checkout.is_dir() {
+        return fail(format!(
+            "the checkout of `{}` is missing; remove and re-add it",
+            entry.name
+        ));
+    }
+    let (temp, new) = match fetch_marketplace(fx, &entry, Workdir::Cli, &[&entry.pin]) {
+        Ok(MarketplaceFetch::UpToDate) => {
+            // Upstream is where the pin is, so a staged revision is stale.
+            if registry.marketplace[at].staged_pin.take().is_some() {
+                remove_dir(&staged_dir(&checkout));
+                plugins::write_registry(fx.config_dir, registry)?;
+            }
+            return Ok(MarketplaceOutcome::UpToDate { pin: entry.pin });
+        }
+        Ok(MarketplaceFetch::Ready { temp, new }) => (temp, new),
+        Err(e) => return Ok(MarketplaceOutcome::Failed(chain(&e))),
+    };
+    if let Err(e) = replace_dir(&temp, &checkout) {
+        remove_dir(&temp);
+        return Err(e);
+    }
+    let old = std::mem::replace(&mut registry.marketplace[at].pin, new.clone());
+    registry.marketplace[at].staged_pin = None;
+    remove_dir(&staged_dir(&checkout));
+    plugins::write_registry(fx.config_dir, registry)?;
+    Ok(MarketplaceOutcome::Moved { old, new })
+}
+
+/// Drops a registered marketplace and its checkout. Refuses while an installed plugin names it.
+pub fn remove_marketplace(config_dir: &Path, name: &str) -> Result<()> {
+    let _lock = lock_registry(config_dir)?;
+    let mut registry = plugins::read_registry(config_dir)?;
+    let at = registry
+        .marketplace
+        .iter()
+        .position(|m| m.name == name)
+        .ok_or_else(|| {
+            OpError::unknown_marketplace(format!("no marketplace named `{name}` is registered"))
+        })?;
+    if registry.plugin.iter().any(|p| p.marketplace == name) {
+        return fail(format!(
+            "cannot remove marketplace `{name}` while a plugin installed from it remains; uninstall it first"
+        ));
+    }
+    let checkout = marketplace_dir(config_dir, name);
+    remove_dir(&checkout);
+    remove_dir(&staged_dir(&checkout));
+    registry.marketplace.remove(at);
+    plugins::write_registry(config_dir, &registry)?;
+    Ok(())
 }
 
 pub fn set_enabled(config_dir: &Path, name: &str, enabled: bool) -> Result<()> {

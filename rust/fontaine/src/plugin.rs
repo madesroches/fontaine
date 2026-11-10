@@ -4,26 +4,23 @@
 //! `plugin_auto_update`, which reuses the fetch and validation helpers here. Git is shelled out
 //! to with fixed argv and no shell.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 
 use fontaine_core::dirs::{self, Dirs};
 use fontaine_core::extensions::{self, Scope};
 use fontaine_core::notice::Notice;
 use fontaine_core::plugin_ops::{
-    self, EnvRef, Fetch, clone_git, commit_install, commit_update, git, ls_remote_head,
-    prepare_install, prepare_update, remote_head,
+    self, EnvRef, Fetch, commit_install, commit_update, marketplace_line, prepare_install,
+    prepare_update,
 };
-use fontaine_core::plugins::{
-    self, InstalledPlugin, MarketplaceEntry, PluginContext, Registry, checkout_dir, content_hash,
-    marketplace_dir, staged_dir, valid_plugin_name,
-};
+use fontaine_core::plugins::{self, InstalledPlugin, PluginContext, Registry, checkout_dir};
 use fontaine_core::skill_trust;
 
 // The shared helpers live in core; the auto-update pass and its tests reach them from here.
 pub(crate) use fontaine_core::plugin_ops::{
-    INTERACTIVE_GIT, PluginFetch, PluginOutcome, UNATTENDED_GIT, Workdir, copy_tree, fetch_plugin,
-    marketplaces_parent, read_catalog, remove_dir, replace_dir, workdir,
+    INTERACTIVE_GIT, MarketplaceFetch, MarketplaceOutcome, PluginFetch, PluginOutcome,
+    UNATTENDED_GIT, Workdir, fetch_marketplace, fetch_plugin, read_catalog, remove_dir,
 };
 
 use crate::cli::{
@@ -45,7 +42,7 @@ pub fn run(args: &PluginArgs, host: &Host) -> ExitCode {
     };
     let result = match &args.action {
         PluginAction::Marketplace(marketplace) => match &marketplace.action {
-            MarketplaceAction::Add(add) => marketplace_add(&dirs, add),
+            MarketplaceAction::Add(add) => marketplace_add(&dirs, host, add),
             MarketplaceAction::List => marketplace_list(&dirs),
             MarketplaceAction::Update { name } => marketplace_update(&dirs, name.as_deref()),
             MarketplaceAction::Remove { name } => marketplace_remove(&dirs, name),
@@ -94,21 +91,6 @@ fn write_under_lock(config_dir: &Path, registry: &Registry) -> Result<(), String
     plugins::write_registry(config_dir, registry).map_err(|e| e.to_string())
 }
 
-/// Expands a leading `~` (or `~/`) to the home directory, so a tilde path names the same
-/// directory it would in a shell. Git URLs never start with `~`, so other sources are left
-/// alone.
-fn expand_tilde(source: &str) -> String {
-    let Some(home) = ::dirs::home_dir() else {
-        return source.to_string();
-    };
-    if source == "~" {
-        return home.to_string_lossy().into_owned();
-    }
-    if let Some(rest) = source.strip_prefix("~/") {
-        return home.join(rest).to_string_lossy().into_owned();
-    }
-    source.to_string()
-}
 fn plugin_context<'a>(env: EnvRef<'a>, project_root: &'a Path) -> PluginContext<'a> {
     PluginContext { project_root, env }
 }
@@ -121,97 +103,16 @@ fn host_fetch<'a>(dirs: &'a Dirs, host: &'a Host) -> Fetch<'a> {
     }
 }
 
-pub(crate) fn marketplace_add(dirs: &Dirs, add: &MarketplaceAddArgs) -> Result<(), String> {
-    let _lock = lock_registry(&dirs.config)?;
-    let mut registry = read_under_lock(&dirs.config)?;
-    let source = expand_tilde(&add.source);
-    let source_path = Path::new(&source);
-    // A source that names a path (not a git URL) must exist, so a typo fails here instead of
-    // surfacing as a confusing git error.
-    let looks_like_path = source.starts_with('.')
-        || source.starts_with('/')
-        || (source.len() > 2 && source.as_bytes()[1] == b':') // a Windows drive letter
-        || (!source.contains("://") && !source.contains('@') && source.contains('/'));
-    if looks_like_path && !source_path.is_dir() {
-        return fail(format!("{} is not a directory", source_path.display()));
-    }
-    let local = source_path.is_dir();
-    // A bare relative name carries no remote markers, so it is a path, not a git URL; git
-    // reads it the same way, and a typo fails with the same message as an absolute path.
-    if !local && !source.contains("://") && !source.contains('@') && !source.contains(':') {
-        return fail(format!("{} is not a directory", source_path.display()));
-    }
-    // A local directory is stored by its resolved absolute path, so a later `marketplace
-    // update` finds it from any working directory.
-    let stored_source = if local {
-        source_path
-            .canonicalize()
-            .map_err(|e| {
-                format!(
-                    "cannot resolve {}: {}",
-                    source_path.display(),
-                    fontaine_tools::error_chain::chain(&e)
-                )
-            })?
-            .to_string_lossy()
-            .into_owned()
-    } else {
-        source.clone()
-    };
-    let temp = workdir(&marketplaces_parent(&dirs.config), Workdir::Cli)?;
-    let cleanup = |temp: &Path| remove_dir(temp);
-
-    if local {
-        copy_tree(source_path, &temp).inspect_err(|_e| {
-            cleanup(&temp);
-        })?;
-    } else {
-        if let Err(e) = clone_git(&source, &temp, INTERACTIVE_GIT) {
-            cleanup(&temp);
-            return Err(e.into());
-        }
-    }
-
-    let catalog = match read_catalog(&temp) {
-        Ok(catalog) => catalog,
-        Err(e) => {
-            cleanup(&temp);
-            return Err(e.into());
-        }
-    };
-    let key = add.name.clone().unwrap_or_else(|| catalog.name.clone());
-    if !valid_plugin_name(&key) {
-        cleanup(&temp);
-        return fail(format!("`{key}` is not a marketplace name"));
-    }
-    if registry.marketplace.iter().any(|m| m.name == key) {
-        cleanup(&temp);
-        return fail(format!("a marketplace named `{key}` is already registered"));
-    }
-    let pin = if local {
-        content_hash(&temp).inspect_err(|_e| {
-            cleanup(&temp);
-        })?
-    } else {
-        git(&temp, &["rev-parse", "HEAD"], INTERACTIVE_GIT).inspect_err(|_e| {
-            cleanup(&temp);
-        })?
-    };
-    let target = marketplace_dir(&dirs.config, &key);
-    if let Err(e) = replace_dir(&temp, &target) {
-        cleanup(&temp);
-        return Err(e.into());
-    }
-    registry.marketplace.push(MarketplaceEntry {
-        name: key.clone(),
-        url: stored_source,
-        pin,
-        ..Default::default()
-    });
-    write_under_lock(&dirs.config, &registry)?;
+pub(crate) fn marketplace_add(
+    dirs: &Dirs,
+    host: &Host,
+    add: &MarketplaceAddArgs,
+) -> Result<(), String> {
+    let fx = host_fetch(dirs, host);
+    let added = plugin_ops::add_marketplace(&fx, &add.source, add.name.as_deref(), Workdir::Cli)?;
     println!(
-        "registered marketplace `{key}` ({} plugin(s))",
-        catalog.plugins.len()
+        "registered marketplace `{}` ({} plugin(s))",
+        added.name, added.plugins
     );
     Ok(())
 }
@@ -241,114 +142,7 @@ fn marketplace_list(dirs: &Dirs) -> Result<(), String> {
     Ok(())
 }
 
-/// One `marketplace list` line. `offered` is `None` when the catalog could not be read, which must
-/// not look like an empty catalog.
-fn marketplace_line(entry: &MarketplaceEntry, offered: Option<usize>, installed: usize) -> String {
-    let counts = match offered {
-        Some(n) => format!("{n} offered, {installed} installed"),
-        None => format!("catalog unreadable, {installed} installed"),
-    };
-    let marker = if entry.auto_update == Some(false) {
-        " — auto-update off"
-    } else {
-        ""
-    };
-    format!(
-        "{} — {} — pin {} — {counts}{marker}",
-        entry.name,
-        entry.url,
-        plugins::short_pin(&entry.pin)
-    )
-}
-
-/// How one marketplace update came out.
-pub(crate) enum MarketplaceOutcome {
-    /// The new pin equals the installed one (or the revision is already staged).
-    UpToDate {
-        pin: String,
-    },
-    Moved {
-        old: String,
-        new: String,
-    },
-    Failed(String),
-}
-
-/// What a fetch of a marketplace found.
-pub(crate) enum MarketplaceFetch {
-    UpToDate,
-    /// A validated checkout in `temp`, at `new`.
-    Ready {
-        temp: PathBuf,
-        new: String,
-    },
-}
-
-/// Fetches the marketplace's current upstream revision into a scratch directory and validates
-/// its catalog. `known` lists the pins that count as up to date: the remote is compared with
-/// them before anything is cloned, and the cloned revision after.
-pub(crate) fn fetch_marketplace(
-    fx: &Fetch<'_>,
-    entry: &MarketplaceEntry,
-    kind: Workdir,
-    known: &[&str],
-) -> Result<MarketplaceFetch, String> {
-    let local = Path::new(&entry.url).is_dir();
-    let current = if local {
-        content_hash(Path::new(&entry.url)).ok()
-    } else {
-        ls_remote_head(&entry.url, fx.git)
-    };
-    if current.is_some_and(|pin| known.contains(&pin.as_str())) {
-        return Ok(MarketplaceFetch::UpToDate);
-    }
-    let temp = workdir(&marketplaces_parent(fx.config_dir), kind)?;
-    let fetched = if local {
-        copy_tree(Path::new(&entry.url), &temp)
-            .map_err(String::from)
-            .and_then(|()| content_hash(&temp))
-    } else {
-        clone_git(&entry.url, &temp, fx.git)
-            .and_then(|()| {
-                let sha = remote_head(&temp, fx.git)?;
-                git(&temp, &["checkout", "--quiet", "--detach", &sha], fx.git)?;
-                git(&temp, &["rev-parse", "HEAD"], fx.git)
-            })
-            .map_err(String::from)
-    };
-    let new = match fetched {
-        Ok(new) => new,
-        Err(e) => {
-            remove_dir(&temp);
-            return Err(e);
-        }
-    };
-    if known.contains(&new.as_str()) {
-        remove_dir(&temp);
-        return Ok(MarketplaceFetch::UpToDate);
-    }
-    // Validate the new catalog before the pin can move.
-    if let Err(e) = read_catalog(&temp) {
-        remove_dir(&temp);
-        return Err(e.into());
-    }
-    Ok(MarketplaceFetch::Ready { temp, new })
-}
-
 fn marketplace_update(dirs: &Dirs, name: Option<&str>) -> Result<(), String> {
-    let _lock = lock_registry(&dirs.config)?;
-    let mut registry = read_under_lock(&dirs.config)?;
-    let at = match name {
-        Some(name) => registry
-            .marketplace
-            .iter()
-            .position(|m| m.name == name)
-            .ok_or_else(|| format!("no marketplace named `{name}` is registered"))?,
-        None if registry.marketplace.len() == 1 => 0,
-        None if registry.marketplace.is_empty() => return fail("no marketplaces registered"),
-        None => return fail("`marketplace update` needs a name when several are registered"),
-    };
-    let entry = registry.marketplace[at].clone();
     // A marketplace update expands no `${VAR}`, so it needs no environment.
     let no_env = |_: &str| None;
     let fx = Fetch {
@@ -356,80 +150,22 @@ fn marketplace_update(dirs: &Dirs, name: Option<&str>) -> Result<(), String> {
         env: &no_env,
         git: INTERACTIVE_GIT,
     };
-    match update_marketplace(&fx, &mut registry, at)? {
-        MarketplaceOutcome::UpToDate { pin } => println!(
-            "marketplace `{}` is already up to date ({})",
-            entry.name,
+    match plugin_ops::update_marketplace_named(&fx, name)? {
+        plugin_ops::MarketplaceUpdate::UpToDate { name, pin } => println!(
+            "marketplace `{name}` is already up to date ({})",
             plugins::short_pin(&pin)
         ),
-        MarketplaceOutcome::Moved { old, new } => println!(
-            "marketplace `{}` moved {} -> {}",
-            entry.name,
+        plugin_ops::MarketplaceUpdate::Moved { name, old, new } => println!(
+            "marketplace `{name}` moved {} -> {}",
             plugins::short_pin(&old),
             plugins::short_pin(&new)
         ),
-        MarketplaceOutcome::Failed(message) => return Err(message),
     }
     Ok(())
 }
 
-/// Moves the marketplace at `at` to its upstream revision, under the registry lock the caller
-/// holds, discarding any staged revision.
-fn update_marketplace(
-    fx: &Fetch<'_>,
-    registry: &mut Registry,
-    at: usize,
-) -> Result<MarketplaceOutcome, String> {
-    let entry = registry.marketplace[at].clone();
-    let checkout = marketplace_dir(fx.config_dir, &entry.name);
-    if !checkout.is_dir() {
-        return fail(format!(
-            "the checkout of `{}` is missing; remove and re-add it",
-            entry.name
-        ));
-    }
-    let (temp, new) = match fetch_marketplace(fx, &entry, Workdir::Cli, &[&entry.pin]) {
-        Ok(MarketplaceFetch::UpToDate) => {
-            // Upstream is where the pin is, so a staged revision is stale.
-            if registry.marketplace[at].staged_pin.take().is_some() {
-                remove_dir(&staged_dir(&checkout));
-                write_under_lock(fx.config_dir, registry)?;
-            }
-            return Ok(MarketplaceOutcome::UpToDate { pin: entry.pin });
-        }
-        Ok(MarketplaceFetch::Ready { temp, new }) => (temp, new),
-        Err(e) => return Ok(MarketplaceOutcome::Failed(e)),
-    };
-    if let Err(e) = replace_dir(&temp, &checkout) {
-        remove_dir(&temp);
-        return Err(e.into());
-    }
-    let old = std::mem::replace(&mut registry.marketplace[at].pin, new.clone());
-    registry.marketplace[at].staged_pin = None;
-    remove_dir(&staged_dir(&checkout));
-    write_under_lock(fx.config_dir, registry)?;
-    Ok(MarketplaceOutcome::Moved { old, new })
-}
-
-/// The revision the remote's HEAD names, without cloning.
 fn marketplace_remove(dirs: &Dirs, name: &str) -> Result<(), String> {
-    let _lock = lock_registry(&dirs.config)?;
-    let mut registry = read_under_lock(&dirs.config)?;
-    let at = registry
-        .marketplace
-        .iter()
-        .position(|m| m.name == name)
-        .ok_or_else(|| format!("no marketplace named `{name}` is registered"))?;
-    if registry.plugin.iter().any(|p| p.marketplace == name) {
-        return fail(format!(
-            "cannot remove marketplace `{name}` while a plugin installed from it remains; uninstall it first"
-        ));
-    }
-    let checkout = marketplace_dir(&dirs.config, name);
-    remove_dir(&checkout);
-    remove_dir(&staged_dir(&checkout));
-    registry.marketplace.remove(at);
-    write_under_lock(&dirs.config, &registry)?;
+    plugin_ops::remove_marketplace(&dirs.config, name)?;
     println!("removed marketplace `{name}`");
     Ok(())
 }
@@ -809,70 +545,4 @@ fn component_counts(
     plugins::build_plugin(&root, &plugin.name, &ctx)
         .ok()
         .map(|build| build.summary)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tilde_paths_expand_to_the_home_directory() {
-        let home = ::dirs::home_dir().unwrap();
-        assert_eq!(expand_tilde("~"), home.to_string_lossy());
-        assert_eq!(expand_tilde("~/x"), home.join("x").to_string_lossy());
-        assert_eq!(expand_tilde("https://x/y"), "https://x/y");
-        assert_eq!(expand_tilde("plain"), "plain");
-    }
-
-    fn entry() -> MarketplaceEntry {
-        MarketplaceEntry {
-            name: "team".into(),
-            url: "https://x/team".into(),
-            pin: "0123456789abcdef".into(),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn marketplace_line_shows_offered_and_installed() {
-        let line = marketplace_line(&entry(), Some(3), 1);
-        assert!(line.ends_with("— 3 offered, 1 installed"), "{line}");
-    }
-
-    #[test]
-    fn marketplace_line_shows_a_fresh_marketplace_as_offering_with_none_installed() {
-        let line = marketplace_line(&entry(), Some(3), 0);
-        assert!(line.ends_with("— 3 offered, 0 installed"), "{line}");
-    }
-
-    #[test]
-    fn marketplace_line_does_not_pass_an_unreadable_catalog_off_as_empty() {
-        let line = marketplace_line(&entry(), None, 2);
-        assert!(
-            line.ends_with("— catalog unreadable, 2 installed"),
-            "{line}"
-        );
-        assert!(!line.contains("0 offered"), "{line}");
-    }
-
-    #[test]
-    fn marketplace_line_appends_the_auto_update_marker() {
-        let line = marketplace_line(
-            &MarketplaceEntry {
-                auto_update: Some(false),
-                ..entry()
-            },
-            Some(1),
-            0,
-        );
-        assert!(
-            line.ends_with("— 1 offered, 0 installed — auto-update off"),
-            "{line}"
-        );
-        let on = MarketplaceEntry {
-            auto_update: Some(true),
-            ..entry()
-        };
-        assert!(!marketplace_line(&on, Some(1), 0).contains("auto-update"));
-    }
 }

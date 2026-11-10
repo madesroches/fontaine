@@ -55,7 +55,8 @@ pub enum Command {
     Skills(String),
     /// `/plugins`: the installed plugins and their components.
     Plugins,
-    /// `/plugin`, or `/plugin install|uninstall|update|enable|disable ...`; the bare form lists.
+    /// `/plugin`, or `/plugin install|uninstall|update|enable|disable|marketplace ...`; the bare
+    /// form lists.
     Plugin(String),
     /// `/reload-plugins`: applies plugin and skill changes to the running session.
     ReloadPlugins,
@@ -409,8 +410,8 @@ pub const BUILTINS: &[Builtin] = &[
     Builtin {
         name: "plugin",
         aliases: &[],
-        hint: Some("install|uninstall|update|enable|disable <name>"),
-        description: "manage plugins, or list them with no argument",
+        hint: Some("install|uninstall|update|enable|disable|marketplace ..."),
+        description: "manage plugins and marketplaces, or list them with no argument",
         command: Command::Plugin,
     },
     Builtin {
@@ -1138,6 +1139,10 @@ mod tests {
             "/plugin install demo@local",
             "/plugin uninstall demo",
             "/plugin enable demo",
+            "/plugin marketplace add madesroches/dev-skills",
+            "/plugin marketplace list",
+            "/plugin marketplace update",
+            "/plugin marketplace remove dev-skills",
             "/reload-plugins",
         ] {
             assert!(!parse_command(text).expect(text).runs_mid_turn(), "{text}");

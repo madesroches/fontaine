@@ -713,6 +713,13 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   possibly stale.
 - 2026-11-09 (#554): A bare `/plugin` lists the installed plugins like `/plugins`; Claude Code's
   `/plugin` is an interactive manager, which is not built.
+- 2026-11-09 (#559): The TUI gains `/plugin marketplace add|list|update|remove`, superseding the
+  "marketplace registration stays CLI-only" remainder of the 2026-10-28 rule: marketplace
+  operations move into `fontaine-core::plugin_ops` (`add_marketplace`, `update_marketplace_named`,
+  `remove_marketplace`, `marketplace_line`) and both the CLI and the TUI call them. The TUI forms
+  follow the #554 rules (turn boundary, subagent guard, unattended git, `Record::PluginChange` is
+  not recorded since a marketplace loads nothing executable). Reason: registering a marketplace
+  is the first step of installing a plugin, which the TUI already does.
 
 ### Guardian
 

@@ -109,11 +109,11 @@ names are unique. A path-source plugin lives inside its marketplace repository a
 
 ## Commands
 
-Plugins are managed from the command line, outside any session, or from inside the terminal UI
-with [`/plugin`](#in-the-terminal-ui), which also loads, reloads and unloads the result in the
-running session. Registering, updating and removing a marketplace stays on the command line. The
-staged [auto-update](#auto-update) pass is the only change a session makes on its own, and it
-applies only when you run `/reload-plugins` or start the next session.
+Plugins and marketplaces are managed from the command line, outside any session, or from inside
+the terminal UI with [`/plugin`](#in-the-terminal-ui), which also loads, reloads and unloads the
+result in the running session. The staged [auto-update](#auto-update) pass is the only change a
+session makes on its own, and it applies only when you run `/reload-plugins` or start the next
+session.
 
 | Command | Effect |
 |---|---|
@@ -149,6 +149,10 @@ losing the conversation. `/plugin` alone lists them, as `/plugins` does.
 | `/plugin update [<name>\|all]` | Re-fetches and validates. It asks only when the executable surface differs from what you approved before, or none was recorded; an update that changes nothing executable applies without a question. The plugin's MCP and language servers stop before its checkout is replaced, so nothing runs from files that change under it. |
 | `/plugin uninstall <name>` | Stops the plugin's servers, then removes the checkout and the entry. |
 | `/plugin enable <name>`, `/plugin disable <name>` | Flip the registry flag and load or unload the plugin. |
+| `/plugin marketplace add <url-or-path> [--name <name>]` | Registers the marketplace (cloning or copying it, reading the catalog) so `/plugin install` can name it, exactly like `fontaine plugin marketplace add`. A marketplace contributes nothing loadable by itself, so nothing in the running session changes. |
+| `/plugin marketplace list` | One line per registered marketplace: name, url, pin, plugins offered and installed from it. |
+| `/plugin marketplace update [<name>]` | Moves the pin to the upstream revision; installed plugins are not touched. |
+| `/plugin marketplace remove <name>` | Refuses while an installed plugin names it; else drops the clone and the entry. |
 | `/reload-plugins` | Applies what changed on disk: staged auto-updates, and added, edited or removed skills, agents and output styles in your user and project directories and in plugins. |
 
 Every successful change then runs the same live apply as `/reload-plugins`: the plugin's skills,

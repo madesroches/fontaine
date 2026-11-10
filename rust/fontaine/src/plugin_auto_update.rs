@@ -306,7 +306,7 @@ impl Pass<'_> {
                 };
             }
             Ok(MarketplaceFetch::Ready { temp, new }) => (temp, new),
-            Err(e) => return MarketplaceOutcome::Failed(e),
+            Err(e) => return MarketplaceOutcome::Failed(e.into()),
         };
         let checkout = marketplace_dir(&self.dirs.config, &entry.name);
         let staged = self.locked(|registry| {

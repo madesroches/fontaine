@@ -13,10 +13,7 @@ use fontaine_tools::error_chain::chain;
 use crate::plugin_prompt::{self, Change, Why};
 use crate::{Action, Ui};
 
-const USAGE: &str = "usage: /plugin, or /plugin install <name>@<marketplace>, uninstall <name>, update [<name>|all], enable <name>, disable <name>";
-
-/// Marketplace registration stays on the command line, so the message says where.
-const NO_MARKETPLACE: &str = "register a marketplace first with `fontaine plugin marketplace add`";
+const USAGE: &str = "usage: /plugin, or /plugin install <name>@<marketplace>, uninstall <name>, update [<name>|all], enable <name>, disable <name>, marketplace add <url-or-path> [--name <name>], marketplace list, marketplace update [<name>], marketplace remove <name>";
 
 /// Fetching and committing shell out to git and touch the disk, so they run off the interface's
 /// thread. Git never prompts on the terminal here: a credential request fails.
@@ -86,45 +83,78 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         self.apply_plugin_changes(runtime, &[]).await;
     }
 
-    /// `/plugin <subcommand>`: installs, updates, removes, enables and disables plugins, then
-    /// loads the result into this session. Marketplace registration stays on the command line.
+    /// `/plugin <subcommand>`: installs, updates, removes, enables and disables plugins, and
+    /// registers, updates and removes marketplaces, then loads the result into this session.
     pub(crate) async fn plugin_command(
         &mut self,
         runtime: &mut AgentRuntime,
         argument: &str,
     ) -> ControlFlow<()> {
-        let mut words = argument.split_whitespace();
-        let (verb, name, extra) = (words.next(), words.next(), words.next());
-        if extra.is_some() {
-            self.app.transcript.error(USAGE);
-            return ControlFlow::Continue(());
-        }
-        let command = format!("/plugin {}", verb.unwrap_or_default());
-        match (verb, name) {
-            (Some("install"), Some(spec)) => {
-                if !self.plugins_idle(runtime, &command) {
+        let words: Vec<&str> = argument.split_whitespace().collect();
+        match words.as_slice() {
+            ["install", spec] => {
+                if !self.plugins_idle(runtime, "/plugin install") {
                     return ControlFlow::Continue(());
                 }
                 self.plugin_install(runtime, spec).await
             }
-            (Some("update"), name) => {
-                if !self.plugins_idle(runtime, &command) {
+            ["update"] | ["update", "all"] => {
+                if !self.plugins_idle(runtime, "/plugin update") {
                     return ControlFlow::Continue(());
                 }
-                self.plugin_update(runtime, name.filter(|n| *n != "all"))
-                    .await
+                self.plugin_update(runtime, None).await
             }
-            (Some("uninstall"), Some(name)) => {
-                if self.plugins_idle(runtime, &command) {
+            ["update", name] => {
+                if !self.plugins_idle(runtime, "/plugin update") {
+                    return ControlFlow::Continue(());
+                }
+                self.plugin_update(runtime, Some(name)).await
+            }
+            ["uninstall", name] => {
+                if self.plugins_idle(runtime, "/plugin uninstall") {
                     self.plugin_uninstall(runtime, name).await;
                 }
                 ControlFlow::Continue(())
             }
-            (Some(verb @ ("enable" | "disable")), Some(name)) => {
-                if self.plugins_idle(runtime, &command) {
-                    self.plugin_toggle(runtime, name, verb == "enable").await;
+            [verb @ ("enable" | "disable"), name] => {
+                if self.plugins_idle(runtime, &format!("/plugin {verb}")) {
+                    self.plugin_toggle(runtime, name, *verb == "enable").await;
                 }
                 ControlFlow::Continue(())
+            }
+            ["marketplace", "list"] => {
+                self.marketplace_list(runtime);
+                ControlFlow::Continue(())
+            }
+            ["marketplace", "add", source] => {
+                if !self.plugins_idle(runtime, "/plugin marketplace add") {
+                    return ControlFlow::Continue(());
+                }
+                self.marketplace_add(runtime, source, None).await
+            }
+            ["marketplace", "add", source, "--name", name] => {
+                if !self.plugins_idle(runtime, "/plugin marketplace add") {
+                    return ControlFlow::Continue(());
+                }
+                self.marketplace_add(runtime, source, Some(name)).await
+            }
+            ["marketplace", "update"] => {
+                if !self.plugins_idle(runtime, "/plugin marketplace update") {
+                    return ControlFlow::Continue(());
+                }
+                self.marketplace_update(runtime, None).await
+            }
+            ["marketplace", "update", name] => {
+                if !self.plugins_idle(runtime, "/plugin marketplace update") {
+                    return ControlFlow::Continue(());
+                }
+                self.marketplace_update(runtime, Some(name)).await
+            }
+            ["marketplace", "remove", name] => {
+                if !self.plugins_idle(runtime, "/plugin marketplace remove") {
+                    return ControlFlow::Continue(());
+                }
+                self.marketplace_remove(runtime, name).await
             }
             _ => {
                 self.app.transcript.error(USAGE);
@@ -171,7 +201,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             Ok(prepared) => prepared,
             Err(e) => {
                 let hint = if e.is_unknown_marketplace() {
-                    format!(" ({NO_MARKETPLACE})")
+                    " (register it first with `/plugin marketplace add <url-or-path>`)".to_string()
                 } else {
                     String::new()
                 };
@@ -403,5 +433,137 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 .transcript
                 .error(format!("/plugin {verb}: {}", chain(&e))),
         }
+    }
+
+    /// `/plugin marketplace add`: registers the marketplace so `/plugin install` can name it.
+    /// A marketplace loads nothing by itself, so the session is not reloaded.
+    async fn marketplace_add(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        source: &str,
+        name: Option<&str>,
+    ) -> ControlFlow<()> {
+        let work = Work::of(runtime);
+        let owned = source.to_string();
+        let owned_name = name.map(str::to_string);
+        let added = work
+            .run(move |fx| {
+                plugin_ops::add_marketplace(fx, &owned, owned_name.as_deref(), Workdir::Auto)
+            })
+            .await;
+        match added {
+            Ok(added) => self.app.transcript.notice(format!(
+                "registered marketplace `{}` ({} plugin(s))",
+                added.name, added.plugins
+            )),
+            Err(e) => self
+                .app
+                .transcript
+                .error(format!("/plugin marketplace add: {}", chain(&e))),
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// `/plugin marketplace list`: one line per registered marketplace, like the CLI.
+    fn marketplace_list(&mut self, runtime: &AgentRuntime) {
+        let registry = match plugins::read_registry(runtime.config_dir()) {
+            Ok(registry) => registry,
+            Err(e) => {
+                self.app
+                    .transcript
+                    .error(format!("/plugin marketplace list: {}", chain(&e)));
+                return;
+            }
+        };
+        if registry.marketplace.is_empty() {
+            self.app.transcript.notice("no marketplaces registered");
+            return;
+        }
+        for marketplace in &registry.marketplace {
+            let installed = registry
+                .plugin
+                .iter()
+                .filter(|p| p.marketplace == marketplace.name)
+                .count();
+            let offered = match plugin_ops::read_catalog(&plugins::marketplace_dir(
+                runtime.config_dir(),
+                &marketplace.name,
+            )) {
+                Ok(catalog) => Some(catalog.plugins.len()),
+                Err(e) => {
+                    self.app
+                        .transcript
+                        .warning(format!("marketplace `{}`: {e}", marketplace.name), None);
+                    None
+                }
+            };
+            self.app.transcript.notice(plugin_ops::marketplace_line(
+                marketplace,
+                offered,
+                installed,
+            ));
+        }
+    }
+
+    /// `/plugin marketplace update`: moves the pin to the upstream revision. Installed plugins
+    /// are not touched; a path-source plugin follows on its next update.
+    async fn marketplace_update(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        name: Option<&str>,
+    ) -> ControlFlow<()> {
+        let work = Work::of(runtime);
+        let owned = name.map(str::to_string);
+        let updated = work
+            .run(move |fx| plugin_ops::update_marketplace_named(fx, owned.as_deref()))
+            .await;
+        match updated {
+            Ok(plugin_ops::MarketplaceUpdate::UpToDate { name, pin }) => {
+                self.app.transcript.notice(format!(
+                    "marketplace `{name}` is already up to date ({})",
+                    plugins::short_pin(&pin)
+                ))
+            }
+            Ok(plugin_ops::MarketplaceUpdate::Moved { name, old, new }) => {
+                self.app.transcript.notice(format!(
+                    "marketplace `{name}` moved {} -> {}",
+                    plugins::short_pin(&old),
+                    plugins::short_pin(&new)
+                ))
+            }
+            Err(e) => self
+                .app
+                .transcript
+                .error(format!("/plugin marketplace update: {}", chain(&e))),
+        }
+        ControlFlow::Continue(())
+    }
+
+    /// `/plugin marketplace remove`: drops the checkout and the entry. Refuses while an
+    /// installed plugin names the marketplace.
+    async fn marketplace_remove(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        name: &str,
+    ) -> ControlFlow<()> {
+        let config_dir = runtime.config_dir().to_path_buf();
+        let owned = name.to_string();
+        let removed = tokio::task::spawn_blocking(move || {
+            plugin_ops::remove_marketplace(&config_dir, &owned)
+        })
+        .await
+        .map_err(|e| OpError::caused("the plugin operation did not finish", e))
+        .and_then(|result| result);
+        match removed {
+            Ok(()) => self
+                .app
+                .transcript
+                .notice(format!("removed marketplace `{name}`")),
+            Err(e) => self
+                .app
+                .transcript
+                .error(format!("/plugin marketplace remove: {}", chain(&e))),
+        }
+        ControlFlow::Continue(())
     }
 }
