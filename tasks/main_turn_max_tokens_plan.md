@@ -97,13 +97,16 @@ route depends on the account's `wires` overrides, which the handle does not carr
   `Config`: copy it into `Setup` the way `explicit_budget_cap` is (field at `agent.rs:266`, set at
   `agent/setup.rs:904`), then into `ChildContext` where it is built (`agent/setup.rs:1018`, next
   to `explicit_budget_cap` at ~1025). `ChildContext` (`child_runner.rs:303`) holds no `Config`.
+  `child_model` computes the value, so it is carried both at spawn (`child_runner.rs:~787`) and
+  when a child is rebuilt on a fall-through entry (~1139).
 
 ### Config
 
 - `ModelSection` gains `max_output_tokens: Option<u32>`, and `Config` gains
   `max_output_tokens: Option<u32>`, merged like `effort`. A value of `0` is refused at config load
-  with the key named in the error (follow the existing positive-integer validation pattern in
-  `config.rs`).
+  with the key named in the error: add `bad("model.max_output_tokens", "must be at least 1")` in
+  `validate_values` (`config.rs:~1718`) next to the `[model]` check at ~1764, following the
+  existing pattern at ~1908/1912.
 - Not settable from the shared project file (user trust), which comes free from the existing
   `[model]` rule. The existing `effort_keys_refuse_the_shared_project_file` test pins it.
 - `/config` catalog row `model.max_output_tokens`: `Scalar`, unset shown as
@@ -124,7 +127,9 @@ so is mapping host deployment names to facts (#167).
 2. `config.rs`: add `max_output_tokens` to `ModelSection` and `Config`, merge it, refuse `0`. Add
    `"[model]\nmax_output_tokens = 4096\n"` to the snippet list of
    `effort_keys_refuse_the_shared_project_file` (`config_scope.rs:873-884`), and the
-   `config_catalog.rs` row.
+   `config_catalog.rs` row, plus an assertion for its unset string in
+   `defaults_render_as_documented` (`config_catalog.rs:~755`); `every_settings_leaf_has_a_row`
+   makes the row mandatory.
 3. `turn.rs`: add the `max_tokens` field to `TurnParams` and `Drive`, pass it through, and apply
    it in `drive_once`.
 4. `agent/models.rs`: add `AgentRuntime::turn_max_tokens()`. Fill the field in `headless.rs` and
@@ -147,15 +152,14 @@ so is mapping host deployment names to facts (#167).
 - `rust/fontaine-tui/src/ui/turn.rs`
 - `rust/fontaine-core/tests/*.rs` (the `TurnParams` / `Drive` construction sites, plus new tests)
 - `docs/configuration.md`
+- `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (Decisions → Providers)
 
 ## Trade-offs
 
 - **The model's full limit rather than a lower default** (Claude Code sends 32000 by default for
   many models even when they allow more): the issue asks for the model's `max_output_tokens`.
-  On `anthropic` and `claude-subscription` a known limit equals what is already sent, and with no
-  limit and no cap they keep the wire's own fill-in. A known limit now replaces the gateway
-  dialect's fixed 4096 on Messages gateways. The user cap can lower it.
+  The user cap can lower it.
 - **`[model]` key rather than a per-account key**: one global cap mirrors
   `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, and clamping per model already adapts it to each account's
   models. A per-account key can be added later without breaking anything.
@@ -187,6 +191,9 @@ so is mapping host deployment names to facts (#167).
   small-context local-server note.
 - `docs/configuration.md` per-key scope table (~lines 105-125): change the row `[model] model` to
   cover `model`, `effort`, `max_output_tokens`.
+- `CHANGELOG.md`: an `## [Unreleased]` entry under a `####` subject section (CONTRIBUTING.md:49-51)
+  covering the explicit `max_tokens` on main and subagent turns and the new
+  `[model] max_output_tokens` key.
 - `tasks/fontaine_harness_plan.md` `### Providers`: append dated lines for the Decisions above
   that deviate from Claude Code (the config key instead of an env var, and the ollama exemption).
 
@@ -209,12 +216,17 @@ All unit or in-process integration tests against the mock model. No live service
   - A spawned subagent's request carries its own model's limit, or the cap. The `tests/effort.rs`
     harness runs the child on the parent's handle, so use a `tests/model_roles_runtime.rs`-style
     setup with a child model whose spec differs from the main model's.
-  - `/model` mid-session: the next turn's request carries the new model's limit.
+  - `/model` mid-session: the `tests/effort.rs` harness has no Switcher, so `switch_main_model`
+    fails there. The test assigns `runtime.models.main` directly (the `effort.rs:145-147`
+    precedent), then checks that `turn_max_tokens()` and the next request carry the new model's
+    limit.
 - **Regression for the bug seen in the wild** (#571): the `run_turn` mock-model test that a main
   turn on a chat kind sends `max_tokens`, both with a spec and with no spec, is the pinned
-  regression. Add `assert_eq!(body["max_tokens"], 16)` to the openrouter Chat encode test in
-  `providers/reasoning_parts.rs` (~line 341), which already sets `.max_tokens(16)`, so the chat
-  wire's encoding of the field is pinned.
+  regression. In `a_request_without_reasoning_encodes_byte_identically`
+  (`providers/reasoning_parts.rs:336-354`), which already sets `.max_tokens(16)` but only
+  destructures `Body::Bytes(a)`, parse it first with
+  `let body: serde_json::Value = serde_json::from_slice(a)` and then
+  `assert_eq!(body["max_tokens"], 16)`, so the chat wire's encoding of the field is pinned.
 
 ## Open Questions
 
