@@ -586,31 +586,33 @@ fn load_scope(
     Ok(())
 }
 
-fn load_plugin(
-    plugin: &PluginDir,
-    servers: &[String],
-    warnings: &mut Vec<String>,
-    out: &mut Extensions,
+fn take_name(
+    seen: &mut std::collections::BTreeSet<String>,
+    name: &str,
+    path: &Path,
 ) -> Result<(), ExtensionError> {
-    let mut seen = std::collections::BTreeSet::new();
-    let mut take = |name: String, path: &Path| -> Result<(), ExtensionError> {
-        if !valid_namespaced(&name) {
-            return Err(ExtensionError {
-                file: path.to_path_buf(),
-                message: format!(
-                    "`{name}` is not a plugin component name: each `:`-separated segment must use letters, digits, `-` and `_`"
-                ),
-            });
-        }
-        if !seen.insert(name.clone()) {
-            return Err(ExtensionError {
-                file: path.to_path_buf(),
-                message: format!("two components of the plugin load as `{name}`"),
-            });
-        }
-        Ok(())
-    };
+    if !valid_namespaced(name) {
+        return Err(ExtensionError {
+            file: path.to_path_buf(),
+            message: format!(
+                "`{name}` is not a plugin component name: each `:`-separated segment must use letters, digits, `-` and `_`"
+            ),
+        });
+    }
+    if !seen.insert(name.to_string()) {
+        return Err(ExtensionError {
+            file: path.to_path_buf(),
+            message: format!("two components of the plugin load as `{name}`"),
+        });
+    }
+    Ok(())
+}
 
+/// The skills and commands of a plugin checkout, namespaced as a session loads them. Needs no
+/// session, so an install can show the user what it would add before anything is committed.
+pub fn load_plugin_skills(plugin: &PluginDir) -> Result<Vec<Skill>, ExtensionError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut skills = Vec::new();
     for file in &plugin.skills {
         // `skills/<name>/SKILL.md` names the skill after its directory; a manifest path naming
         // a bare file names it after the file stem.
@@ -628,9 +630,9 @@ fn load_plugin(
         };
         let mut skill = load_skill(&file.path, &default_name, Scope::Plugin)?;
         let name = namespaced(&plugin.name, &file.segments, &skill.name);
-        take(name.clone(), &file.path)?;
+        take_name(&mut seen, &name, &file.path)?;
         skill.name = name;
-        out.skills.push(skill);
+        skills.push(skill);
     }
     for file in &plugin.commands {
         let stem = file
@@ -640,10 +642,23 @@ fn load_plugin(
             .unwrap_or_default();
         let mut skill = load_skill(&file.path, &stem, Scope::Plugin)?;
         let name = namespaced(&plugin.name, &file.segments, &skill.name);
-        take(name.clone(), &file.path)?;
+        take_name(&mut seen, &name, &file.path)?;
         skill.name = name;
-        out.skills.push(skill);
+        skills.push(skill);
     }
+    Ok(skills)
+}
+
+fn load_plugin(
+    plugin: &PluginDir,
+    servers: &[String],
+    warnings: &mut Vec<String>,
+    out: &mut Extensions,
+) -> Result<(), ExtensionError> {
+    let skills = load_plugin_skills(plugin)?;
+    let mut seen: std::collections::BTreeSet<String> =
+        skills.iter().map(|s| s.name.clone()).collect();
+    out.skills.extend(skills);
     for file in &plugin.agents {
         let Some(mut agent) = agent_from(
             &file.path,
@@ -656,7 +671,7 @@ fn load_plugin(
             continue;
         };
         let name = namespaced(&plugin.name, &file.segments, &agent.name);
-        take(name.clone(), &file.path)?;
+        take_name(&mut seen, &name, &file.path)?;
         agent.name = name;
         out.agent_types.retain(|t| t.name != agent.name);
         out.agent_types.push(agent);
@@ -664,7 +679,7 @@ fn load_plugin(
     for file in &plugin.styles {
         let mut style = load_style(&file.path, Scope::Plugin)?;
         let name = namespaced(&plugin.name, &file.segments, &style.name);
-        take(name.clone(), &file.path)?;
+        take_name(&mut seen, &name, &file.path)?;
         style.name = name;
         out.output_styles.retain(|s| s.name != style.name);
         out.output_styles.push(style);
@@ -775,6 +790,76 @@ mod tests {
                 .unwrap(),
             ["shell", "write"]
         );
+    }
+
+    fn plugin_dir(root: &Path, skills: &[(&str, &str)], commands: &[(&str, &str)]) -> PluginDir {
+        let file = |dir: &str, name: &str, body: &str| {
+            let path = root.join(dir).join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, body).unwrap();
+            crate::plugins::PluginFile {
+                path,
+                segments: Vec::new(),
+            }
+        };
+        PluginDir {
+            name: "demo".into(),
+            root: root.to_path_buf(),
+            skills: skills
+                .iter()
+                .map(|(n, b)| file(&format!("skills/{n}"), "SKILL.md", b))
+                .collect(),
+            commands: commands
+                .iter()
+                .map(|(n, b)| file("commands", &format!("{n}.md"), b))
+                .collect(),
+            ..PluginDir::default()
+        }
+    }
+
+    #[test]
+    fn plugin_skills_are_namespaced_with_declared_tools_and_a_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = plugin_dir(
+            dir.path(),
+            &[(
+                "review",
+                "---\ndescription: d\nallowed-tools: Bash(git status)\n---\nbody",
+            )],
+            &[("ship", "---\ndescription: s\n---\nship it")],
+        );
+        let skills = load_plugin_skills(&plugin).unwrap();
+        let names: Vec<&str> = skills.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["demo:review", "demo:ship"]);
+        assert_eq!(skills[0].declared_tools.len(), 1);
+        assert!(skills[1].declared_tools.is_empty());
+        assert!(skills[0].digest.starts_with("sha256:"));
+        assert_eq!(skills[0].scope, Scope::Plugin);
+    }
+
+    #[test]
+    fn a_skill_and_a_command_of_one_name_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let plugin = plugin_dir(
+            dir.path(),
+            &[("same", "---\ndescription: d\n---\nx")],
+            &[("same", "---\ndescription: d\n---\ny")],
+        );
+        let e = load_plugin_skills(&plugin).unwrap_err();
+        assert!(
+            e.message
+                .contains("two components of the plugin load as `demo:same`"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_plugin_skill_with_a_bad_name_is_rejected_with_the_component_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut plugin = plugin_dir(dir.path(), &[("ok", "---\ndescription: d\n---\nx")], &[]);
+        plugin.skills[0].segments = vec!["bad seg".into()];
+        let e = load_plugin_skills(&plugin).unwrap_err();
+        assert!(e.message.contains("is not a plugin component name"), "{e}");
     }
 
     #[test]

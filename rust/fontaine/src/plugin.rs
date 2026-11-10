@@ -178,12 +178,56 @@ pub(crate) fn install(dirs: &Dirs, host: &Host, spec: &str) -> Result<(), String
     if let Some(warning) = &prepared.fingerprint_warning {
         eprintln!("fontaine: warning: {warning}");
     }
+    use std::io::IsTerminal;
+    let trustable: Vec<extensions::Skill> = extensions::load_plugin_skills(&prepared.build.dir)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|skill| !skill.declared_tools.is_empty())
+        .collect();
+    let interactive = std::io::stdin().is_terminal();
+    let mut to_trust = Vec::new();
+    if interactive && !trustable.is_empty() {
+        for skill in &trustable {
+            print_trust_details(skill);
+        }
+        let question = format!(
+            "Honour the allowed-tools of {}?",
+            match trustable.as_slice() {
+                [only] => only.name.clone(),
+                many => format!("these {} skills", many.len()),
+            }
+        );
+        if crate::auto_mode::confirm(&question) {
+            to_trust = trustable
+                .iter()
+                .map(skill_trust::record_of)
+                .collect::<Vec<_>>();
+        }
+    }
     let installed = commit_install(&fx, prepared)?;
     println!(
         "installed plugin `{}` ({})",
         installed.name,
         plugins::short_pin(&installed.pin)
     );
+    if !to_trust.is_empty() {
+        let count = to_trust.len();
+        skill_trust::trust(&dirs.config, to_trust).map_err(|e| {
+            format!(
+                "the plugin is installed, but the trust was not recorded: {}",
+                fontaine_tools::error_chain::chain(&e)
+            )
+        })?;
+        println!(
+            "trusted {count} skill(s); their allowed-tools count from the install's own reload"
+        );
+    } else if !interactive && !trustable.is_empty() {
+        println!(
+            "note: {} skill(s) declare allowed-tools and stay untrusted; `fontaine plugin trust {}` reviews and trusts them",
+            trustable.len(),
+            installed.name
+        );
+    }
     Ok(())
 }
 

@@ -3,14 +3,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use fontaine_core::agent::{AgentRuntime, EnvLookup};
+use fontaine_core::extensions::{self, Skill};
 use fontaine_core::plugin_ops::{
     self, Fetch, GitMode, OpError, PreparedInstall, PreparedUpdate, Workdir, commit_install,
     commit_update, prepare_install, prepare_update,
 };
 use fontaine_core::plugins;
+use fontaine_core::skill_trust;
 use fontaine_tools::error_chain::chain;
 
 use crate::plugin_prompt::{self, Change, Why};
+use crate::skill_trust_prompt::{self, SkillTrustFooter};
 use crate::{Action, Ui};
 
 const USAGE: &str = "usage: /plugin, or /plugin install <name>@<marketplace>, uninstall <name>, update [<name>|all], enable <name>, disable <name>, marketplace add <url-or-path> [--name <name>], marketplace list, marketplace update [<name>], marketplace remove <name>";
@@ -191,6 +194,28 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
         }
     }
 
+    /// The `/skills trust` question for one skill of an install in progress. `None` means the
+    /// interface is gone.
+    async fn ask_skill_trust(&mut self, runtime: &AgentRuntime, skill: &Skill) -> Option<bool> {
+        self.app.begin_skill_trust(skill_trust_prompt::new(
+            skill,
+            None,
+            SkillTrustFooter::Install,
+        ));
+        loop {
+            self.draw(runtime);
+            let Some(input) = self.input.recv().await else {
+                self.app.skill_trust_prompt = None;
+                return None;
+            };
+            match self.app.handle_input(input) {
+                Action::SkillTrust(answer) => return Some(answer),
+                Action::Quit => return None,
+                _ => {}
+            }
+        }
+    }
+
     async fn plugin_install(&mut self, runtime: &mut AgentRuntime, spec: &str) -> ControlFlow<()> {
         let work = Work::of(runtime);
         let owned = spec.to_string();
@@ -239,6 +264,33 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
             }
             Some(true) => {}
         }
+        let trustable: Vec<Skill> = match extensions::load_plugin_skills(&prepared.build.dir) {
+            Ok(skills) => skills
+                .into_iter()
+                .filter(|skill| !skill.declared_tools.is_empty())
+                .collect(),
+            Err(e) => {
+                drop(prepared);
+                self.app
+                    .transcript
+                    .error(format!("/plugin install: {}", chain(&e)));
+                self.app.transcript.notice("install cancelled");
+                return ControlFlow::Continue(());
+            }
+        };
+        let mut accepted: Vec<Skill> = Vec::new();
+        let mut declined: Vec<String> = Vec::new();
+        for skill in trustable {
+            match self.ask_skill_trust(runtime, &skill).await {
+                None => {
+                    drop(prepared);
+                    self.app.transcript.notice("install cancelled");
+                    return ControlFlow::Break(());
+                }
+                Some(true) => accepted.push(skill),
+                Some(false) => declined.push(skill.name),
+            }
+        }
         match work.run(move |fx| commit_install(fx, prepared)).await {
             Ok(installed) => {
                 runtime.state.record_plugin_change(
@@ -251,6 +303,33 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                     installed.name,
                     plugins::short_pin(&installed.pin)
                 ));
+                if !accepted.is_empty() {
+                    match skill_trust::trust(
+                        runtime.config_dir(),
+                        accepted.iter().map(skill_trust::record_of).collect(),
+                    ) {
+                        Ok(()) => {
+                            for skill in &accepted {
+                                runtime.state.record_skill_trust(&skill.name, &skill.digest);
+                                self.app.transcript.notice(format!(
+                                    "`{}` trusted: its allowed-tools count from this reload onward",
+                                    skill.name
+                                ));
+                            }
+                        }
+                        Err(e) => self
+                            .app
+                            .transcript
+                            .error(format!("could not record the trust: {}", chain(&e))),
+                    }
+                }
+                if !declined.is_empty() {
+                    self.app.transcript.notice(format!(
+                        "left untrusted: {}; `/skills trust <name>` or `fontaine plugin trust {}` honours them later",
+                        declined.join(", "),
+                        installed.name
+                    ));
+                }
                 self.apply_plugin_changes(runtime, &[]).await;
             }
             Err(e) => self

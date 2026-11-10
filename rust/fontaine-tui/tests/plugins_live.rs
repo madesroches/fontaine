@@ -29,7 +29,15 @@ fn marketplace(config: &Path) {
     };
     write(
         ".claude-plugin/marketplace.json",
-        r#"{"name": "local", "plugins": [{"name": "demo", "source": "./plugins/demo"}]}"#,
+        r#"{"name": "local", "plugins": [{"name": "demo", "source": "./plugins/demo"}, {"name": "tools", "source": "./plugins/tools"}]}"#,
+    );
+    write(
+        "plugins/tools/.claude-plugin/plugin.json",
+        r#"{"name": "tools"}"#,
+    );
+    write(
+        "plugins/tools/skills/status/SKILL.md",
+        "---\ndescription: Shows the repo status\nallowed-tools: Bash(git status)\n---\nRun !`git status`.\n",
     );
     write(
         "plugins/demo/.claude-plugin/plugin.json",
@@ -110,6 +118,98 @@ async fn an_install_confirms_the_executable_surface_then_loads_the_plugin_live()
     assert!(registry.plugin[0].approved.is_some());
     assert!(w.ledger_text().contains("plugin_change"));
     assert!(w.audit().iter().any(|r| r["tool"] == "plugin_change"));
+}
+
+fn registered_plugins(config: &Path) -> usize {
+    fontaine_core::plugins::read_registry(config)
+        .unwrap()
+        .plugin
+        .len()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn trusting_a_skill_at_install_records_it_and_applies_it_in_the_session() {
+    let w = World::new(Vec::new());
+    marketplace(&w.config_dir);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/plugin install tools@local");
+        ui.wait_for_prompt("Install plugin `tools`").await;
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for_prompt("Honour the allowed-tools of tools:status?")
+            .await;
+        let screen = ui.screen();
+        assert!(screen.contains("shell(git status)"), "{screen}");
+        assert!(
+            screen.contains("when the install finishes loading"),
+            "{screen}"
+        );
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for("`tools:status` trusted").await;
+        ui.wait_for("loaded plugin `tools`").await;
+        ui.send("/skills");
+        ui.wait_for("(trusted)").await;
+    })
+    .await;
+    let text = std::fs::read_to_string(w.config_dir.join("skill-trust.toml")).unwrap();
+    assert!(text.contains("name = \"tools:status\""), "{text}");
+    assert!(w.ledger_text().contains("skill_trust"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn declining_the_skill_trust_installs_the_plugin_untrusted() {
+    let w = World::new(Vec::new());
+    marketplace(&w.config_dir);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/plugin install tools@local");
+        ui.wait_for_prompt("Install plugin `tools`").await;
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for_prompt("Honour the allowed-tools of tools:status?")
+            .await;
+        ui.press(KeyCode::Esc);
+        ui.wait_for("left untrusted: tools:status").await;
+        ui.wait_for("loaded plugin `tools`").await;
+        ui.send("/skills");
+        ui.wait_for("tools:status").await;
+        assert!(!ui.screen().contains("(trusted)"));
+    })
+    .await;
+    assert_eq!(registered_plugins(&w.config_dir), 1);
+    assert!(!w.config_dir.join("skill-trust.toml").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn leaving_at_the_skill_trust_question_cancels_the_install() {
+    let w = World::new(Vec::new());
+    marketplace(&w.config_dir);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/plugin install tools@local");
+        ui.wait_for_prompt("Install plugin `tools`").await;
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for_prompt("Honour the allowed-tools of tools:status?")
+            .await;
+    })
+    .await;
+    assert_eq!(registered_plugins(&w.config_dir), 0);
+    assert!(!w.config_dir.join("skill-trust.toml").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_without_allowed_tools_asks_no_trust_question() {
+    let w = World::new(Vec::new());
+    marketplace(&w.config_dir);
+    w.run(|ui| async move {
+        idle(&ui).await;
+        ui.send("/plugin install demo@local");
+        ui.wait_for_prompt("Install plugin `demo`").await;
+        ui.press(KeyCode::Char('y'));
+        ui.wait_for("loaded plugin `demo`").await;
+        assert!(!ui.screen().contains("Honour the allowed-tools"));
+    })
+    .await;
+    assert!(!w.config_dir.join("skill-trust.toml").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]

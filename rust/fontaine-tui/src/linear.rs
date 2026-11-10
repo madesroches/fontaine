@@ -1315,8 +1315,11 @@ mod tests {
             scope: fontaine_core::extensions::Scope::Plugin,
             path: "/c/pr/SKILL.md".into(),
         };
-        rig.app
-            .begin_skill_trust(crate::skill_trust_prompt::new(&skill, None));
+        rig.app.begin_skill_trust(crate::skill_trust_prompt::new(
+            &skill,
+            None,
+            crate::skill_trust_prompt::SkillTrustFooter::Command,
+        ));
         let out = rig.render();
         assert!(out.contains('\x07'), "{out:?}");
 

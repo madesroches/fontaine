@@ -205,7 +205,11 @@ mod tests {
             scope: fontaine_core::extensions::Scope::User,
             path: "/c/pr/SKILL.md".into(),
         };
-        let trust = crate::skill_trust_prompt::new(&skill, None);
+        let trust = crate::skill_trust_prompt::new(
+            &skill,
+            None,
+            crate::skill_trust_prompt::SkillTrustFooter::Command,
+        );
         let body = rows(trust.body(300, &t));
         assert_eq!(body[0], "Honour the allowed-tools of p:pr?");
         assert_eq!(body[4], "");
