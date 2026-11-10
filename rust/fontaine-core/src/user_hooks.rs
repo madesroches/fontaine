@@ -1977,37 +1977,10 @@ mod tests {
     async fn a_timed_out_command_hook_loses_its_whole_tree() {
         let dir = tempfile::tempdir().unwrap();
         let pid_file = dir.path().join("pid");
-        // The subshell keeps the sleeper a descendant on MSYS, where a lone `sleep` is exec'd
-        // in place of the shell.
-        let hook = command_hook(
-            &format!(
-                "(sleep 30; true) & echo $! > '{}'; wait",
-                pid_file.display()
-            ),
-            1,
-        );
+        let hook = command_hook(&crate::test_pid::sleeper_command(&pid_file), 1);
         let result = hook.answer_within(json!({})).await;
         assert!(result.is_err(), "{result:?}");
-        // Without the tree kill the blocked pipe read hangs the runtime's shutdown, so reaching
-        // here is the assertion on Windows.
-        #[cfg(unix)]
-        {
-            let pid = std::fs::read_to_string(&pid_file).unwrap();
-            let alive = || {
-                std::process::Command::new("kill")
-                    .args(["-0", pid.trim()])
-                    .stderr(Stdio::null())
-                    .status()
-                    .is_ok_and(|s| s.success())
-            };
-            for _ in 0..100 {
-                if !alive() {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-            panic!("the backgrounded sleeper survived the timeout");
-        }
+        crate::test_pid::assert_gone(&pid_file).await;
     }
 
     #[tokio::test]

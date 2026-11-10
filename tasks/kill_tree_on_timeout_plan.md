@@ -138,6 +138,7 @@ Windows by a local `taskkill /T /F` (~15 lines, mirroring the lifted helper).
   Objects are deferred; revisit if a launcher is found that escapes `taskkill`'s tree walk.
 - `taskkill /T /F` cannot reach descendants of a leader that has already exited (the gap Job
   Objects would close), so Windows tree kill holds only while the leader lives.
+- 2026-11-10: Code review found `taskkill`'s dead-leader gap in practice (the sleeper outlived the timeout), so the Job Object mop-up was implemented in `TreeGuard` and the guardian's local guard: kill-on-close job closed on the kill path, flag cleared at `disarm` so backgrounded daemons survive.
 - Shell resolution is not changed; tree kill covers launchers, PowerShell and backgrounded jobs.
 - The hook timeout stays caller-owned; cleanup rides a `Drop` guard.
 - MCP server children (rmcp-owned) and `project_env/discover.rs` (no timeout) are out of scope.

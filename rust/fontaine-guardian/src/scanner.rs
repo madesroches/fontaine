@@ -310,12 +310,16 @@ struct TreeKill {
     child: tokio::process::Child,
     pid: Option<u32>,
     armed: bool,
+    #[cfg(windows)]
+    job: Option<job::Job>,
 }
 
 impl TreeKill {
     fn new(child: tokio::process::Child) -> Self {
         TreeKill {
             pid: child.id(),
+            #[cfg(windows)]
+            job: job::Job::new(&child),
             child,
             armed: true,
         }
@@ -323,6 +327,81 @@ impl TreeKill {
 
     fn disarm(&mut self) {
         self.armed = false;
+        #[cfg(windows)]
+        if let Some(job) = self.job.take() {
+            job.release();
+        }
+    }
+}
+
+/// A Job Object that kills its processes when the handle closes, until `release`: `taskkill /T`
+/// cannot reach the descendants of a leader that already exited.
+#[cfg(windows)]
+mod job {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+        SetInformationJobObject,
+    };
+
+    pub struct Job(HANDLE);
+
+    // SAFETY: a job handle is a kernel object reference usable from any thread.
+    unsafe impl Send for Job {}
+
+    impl Job {
+        pub fn new(child: &tokio::process::Child) -> Option<Job> {
+            let process = child.raw_handle()?;
+            // SAFETY: plain FFI calls; the handle is owned by the returned `Job` or closed here.
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return None;
+                }
+                let job = Job(handle);
+                if !job.set_kill_on_close(true)
+                    || AssignProcessToJobObject(job.0, process as _) == 0
+                {
+                    return None;
+                }
+                Some(job)
+            }
+        }
+
+        fn set_kill_on_close(&self, on: bool) -> bool {
+            // SAFETY: an all-zero limit struct is valid; the pointer and size describe it.
+            unsafe {
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                if on {
+                    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                }
+                SetInformationJobObject(
+                    self.0,
+                    JobObjectExtendedLimitInformation,
+                    std::ptr::from_ref(&info).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) != 0
+            }
+        }
+
+        /// Clears the kill flag before the handle closes, so daemons a finished scanner
+        /// backgrounded on purpose survive.
+        pub fn release(self) {
+            if !self.set_kill_on_close(false) {
+                // Closing now would kill them; leaking the handle keeps them alive.
+                std::mem::forget(self);
+            }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: the handle is owned by this value and closed once.
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
     }
 }
 
@@ -345,6 +424,7 @@ impl Drop for TreeKill {
         if !self.armed {
             return;
         }
+        // Declared order drops the job after this body, which closes it once taskkill has run.
         let Some(pid) = self.pid else { return };
         // Best effort: the tree may already be gone.
         #[cfg(unix)]

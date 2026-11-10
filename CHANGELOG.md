@@ -11,8 +11,7 @@ All notable changes are recorded here. The format follows
 - A status line command, command hook or BYO scanner that times out now has its whole process
   tree stopped, not just the direct child. On Windows, where a launcher `sh` left a grandchild
   holding the output pipes open, this deadlocked the status line test and leaked a process tree and
-  a blocked thread per timeout; the tree kill holds on Windows only while the command itself is
-  still running (#562).
+  a blocked thread per timeout; a kill-on-close Job Object also stops descendants of a leader that already exited, and is cleared when the command finishes so intentional daemons survive (#562).
 
 ### Changed
 

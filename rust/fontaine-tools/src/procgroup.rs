@@ -1,7 +1,8 @@
 //! Stopping a child process and everything it started: SIGTERM to its process group, a grace
 //! period, then SIGKILL. Callers spawn with `process_group(0)` on Unix. On Windows there is no
-//! group, so the kill walks the tree with `taskkill /T /F`; that reaches descendants only while
-//! the child itself is still running.
+//! group, so the kill walks the tree with `taskkill /T /F`, which reaches descendants only while
+//! the child itself is still running, and then closes a Job Object holding the child, which
+//! terminates every process still in it, orphans of an exited leader included.
 
 use std::time::{Duration, Instant};
 
@@ -50,6 +51,80 @@ fn kill_tree(pid: Option<u32>) {
         .status();
 }
 
+/// A Job Object that kills its processes when the handle closes, until [`Job::release`].
+/// A child is assigned after it spawns, so a descendant started before that is not covered.
+#[cfg(windows)]
+#[derive(Debug)]
+struct Job(windows_sys::Win32::Foundation::HANDLE);
+
+// SAFETY: a job handle is a kernel object reference usable from any thread.
+#[cfg(windows)]
+unsafe impl Send for Job {}
+
+#[cfg(windows)]
+impl Job {
+    fn new(child: &Child) -> Option<Job> {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::{AssignProcessToJobObject, CreateJobObjectW};
+
+        let process = child.raw_handle()?;
+        // SAFETY: plain FFI calls; the handle is closed on every path that does not return it.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let job = Job(job);
+            if !job.set_kill_on_close(true) || AssignProcessToJobObject(job.0, process as _) == 0 {
+                CloseHandle(job.0);
+                std::mem::forget(job);
+                return None;
+            }
+            Some(job)
+        }
+    }
+
+    fn set_kill_on_close(&self, on: bool) -> bool {
+        use windows_sys::Win32::System::JobObjects::{
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+        };
+
+        // SAFETY: an all-zero limit struct is valid; the pointer and size describe it.
+        unsafe {
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            if on {
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            }
+            SetInformationJobObject(
+                self.0,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&info).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) != 0
+        }
+    }
+
+    /// Clears the kill flag before the handle closes, so daemons the command backgrounded on
+    /// purpose outlive a run that finished.
+    fn release(self) {
+        if !self.set_kill_on_close(false) {
+            // Closing now would kill them; leaking the handle until exit keeps them alive.
+            std::mem::forget(self);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for Job {
+    fn drop(&mut self) {
+        // SAFETY: the handle is owned by this value and closed once.
+        unsafe {
+            windows_sys::Win32::Foundation::CloseHandle(self.0);
+        }
+    }
+}
+
 /// Owns a child whose whole tree must die if the owner is dropped before [`TreeGuard::disarm`],
 /// as when a timeout cancels the future that holds it.
 #[derive(Debug)]
@@ -59,12 +134,16 @@ pub struct TreeGuard {
     // Recorded at spawn: tokio's `Child::id` is None once the leader has been reaped, but the
     // group may outlive it.
     pid: Option<u32>,
+    #[cfg(windows)]
+    job: Option<Job>,
 }
 
 impl TreeGuard {
     pub fn new(child: Child) -> Self {
         TreeGuard {
             pid: child.id(),
+            #[cfg(windows)]
+            job: Job::new(&child),
             child: Some(child),
         }
     }
@@ -77,6 +156,10 @@ impl TreeGuard {
 
     /// Gives the child back for a run that finished, so the drop does not kill it.
     pub fn disarm(mut self) -> Child {
+        #[cfg(windows)]
+        if let Some(job) = self.job.take() {
+            job.release();
+        }
         self.child
             .take()
             .expect("the child is only taken by disarm and drop")
@@ -114,6 +197,9 @@ impl Drop for TreeGuard {
             return;
         };
         force_kill(&mut child, self.pid);
+        // Closing the job kills what taskkill could not reach.
+        #[cfg(windows)]
+        drop(self.job.take());
         detached_settle(child, self.pid, Duration::ZERO);
     }
 }
