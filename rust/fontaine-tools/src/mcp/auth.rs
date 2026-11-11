@@ -157,12 +157,14 @@ impl std::error::Error for ResponseBodyTooLarge {}
 /// The replicated metadata-address policy: what may be reached, given the class of the base
 /// MCP server URL's host.
 struct AddressPolicy {
+    base_origin: url::Origin,
     base_is_loopback: bool,
 }
 
 impl AddressPolicy {
     fn new(base_url: &Url) -> AddressPolicy {
         AddressPolicy {
+            base_origin: base_url.origin(),
             base_is_loopback: base_url.host().is_some_and(is_loopback_host),
         }
     }
@@ -171,6 +173,11 @@ impl AddressPolicy {
         let Some(host) = url.host() else {
             return false;
         };
+        // The server's own origin is always reachable, as in the SDK: a private-IP server could
+        // never complete OAuth otherwise.
+        if url.origin() == self.base_origin {
+            return true;
+        }
         !is_disallowed_host(host.clone()) || (self.base_is_loopback && is_loopback_host(host))
     }
 }
@@ -363,6 +370,18 @@ mod tests {
                 "{base}"
             );
         }
+    }
+
+    #[test]
+    fn a_private_base_reaches_its_own_origin_only() {
+        let base = "https://10.0.0.5/mcp";
+        assert!(allows(
+            base,
+            "https://10.0.0.5/.well-known/oauth-protected-resource"
+        ));
+        assert!(!allows(base, "https://10.0.0.6/token"));
+        assert!(!allows(base, "http://10.0.0.5/token"));
+        assert!(!allows(base, "https://10.0.0.5:8443/token"));
     }
 
     #[test]

@@ -156,6 +156,11 @@ impl Credentials {
             .filter(|k| !k.is_empty())
     }
 
+    /// Every stored MCP server entry, for scrubbing their tokens from reports.
+    pub fn mcp_entries(&self) -> impl Iterator<Item = &McpEntry> {
+        self.0.mcp.values()
+    }
+
     /// Kept apart from accounts, like the telemetry key.
     pub fn websearch(&self) -> Option<&str> {
         self.0
