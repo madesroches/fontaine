@@ -24,17 +24,21 @@ const CLAUDE_5: u32 = 512;
 /// markers to Anthropic. `None` for any other kind or model, and for a Claude release the table
 /// does not list.
 pub fn min_cacheable_tokens(kind: &str, model: &str) -> Option<u32> {
-    if !matches!(kind, "anthropic" | "openrouter") {
+    if !matches!(kind, "anthropic" | "openrouter" | "databricks") {
         return None;
     }
     // OpenRouter ids are dotted (`claude-haiku-4.5`); Anthropic's are dashed.
-    let id = model
-        .split(':')
-        .next()
-        .unwrap_or(model)
-        .strip_prefix("anthropic/")
-        .unwrap_or(model)
-        .replace('.', "-");
+    let id = model.split(':').next().unwrap_or(model);
+    let id = id.strip_prefix("anthropic/").unwrap_or(id);
+    // Databricks serves Claude as `system.ai.<id>` (and, in older configs, `databricks-<id>`).
+    let id = if kind == "databricks" {
+        id.strip_prefix("system.ai.")
+            .or_else(|| id.strip_prefix("databricks-"))
+            .unwrap_or(id)
+    } else {
+        id
+    };
+    let id = id.replace('.', "-");
     let rest = id.strip_prefix("claude-")?;
     let mut family = None;
     let mut numbers = Vec::new();
@@ -125,6 +129,26 @@ mod tests {
         assert_eq!(
             min_cacheable_tokens("openrouter", "anthropic/claude-3.5-haiku"),
             Some(2048)
+        );
+    }
+
+    #[test]
+    fn databricks_ids_drop_the_catalog_prefix() {
+        assert_eq!(
+            min_cacheable_tokens("databricks", "system.ai.claude-haiku-4-5"),
+            Some(4096)
+        );
+        assert_eq!(
+            min_cacheable_tokens("databricks", "system.ai.claude-haiku-5-5"),
+            Some(512)
+        );
+        assert_eq!(
+            min_cacheable_tokens("databricks", "databricks-claude-opus-4-7"),
+            Some(2048)
+        );
+        assert_eq!(
+            min_cacheable_tokens("databricks", "system.ai.gpt-5-6-luna"),
+            None
         );
     }
 

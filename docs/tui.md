@@ -920,8 +920,8 @@ signed in.
 | `d` | Remove the account, after a confirmation. |
 | Esc | Close the dialog. |
 
-**Adding an account** asks for the kind, a name and, for `openai-compatible` (required), `ollama`
-and `opencode-go` (optional), a base URL. A name is letters, digits, `-` and `_`, so it can always
+**Adding an account** asks for the kind, a name and, for `openai-compatible` and `databricks`
+(required), `ollama` and `opencode-go` (optional), a base URL. A name is letters, digits, `-` and `_`, so it can always
 be typed as `/login <name>` or in `<account>/<model>`. The account is written to the
 `[accounts.<name>]` table of your user settings file; the rest of the file keeps its comments and
 layout. Any credential already stored under that name is deleted first, so a leftover is never

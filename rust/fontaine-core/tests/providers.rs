@@ -20,10 +20,11 @@ fn parse(text: &str) -> Result<fontaine_core::config::Settings, String> {
 fn every_registered_name_round_trips_through_the_kind() {
     for name in providers::names() {
         // A kind whose login and endpoint belong to an external program has no URL to set.
-        let endpoint = if name == "claude-subscription" {
-            ""
-        } else {
-            "base_url = \"http://localhost:1/v1\"\n"
+        let endpoint = match name {
+            "claude-subscription" => "",
+            // The workspace origin: `validate` refuses a path.
+            "databricks" => "base_url = \"http://localhost:1\"\n",
+            _ => "base_url = \"http://localhost:1/v1\"\n",
         };
         let settings = parse(&format!("[accounts.x]\nkind = \"{name}\"\n{endpoint}"))
             .unwrap_or_else(|e| panic!("{name}: {e}"));
@@ -52,13 +53,22 @@ fn opencode_go_refuses_api_key_env_and_points_at_the_sign_in() {
 }
 
 #[test]
-fn wires_belong_to_opencode_go_only() {
+fn wires_belong_to_the_multi_wire_kinds_only() {
     let ok = parse(
         "[accounts.go]\nkind = \"opencode-go\"\n\n[accounts.go.wires]\n\"kimi-k3\" = \"messages\"\n",
     )
     .unwrap();
     let wires = ok.accounts.unwrap()["go"].wires.clone().unwrap();
     assert_eq!(wires["kimi-k3"], fontaine_core::config::Wire::Messages);
+    let ok = parse(
+        "[accounts.d]\nkind = \"databricks\"\nbase_url = \"http://localhost:1\"\n\n[accounts.d.wires]\n\"system.ai.glm-5-3\" = \"messages\"\n",
+    )
+    .unwrap();
+    let wires = ok.accounts.unwrap()["d"].wires.clone().unwrap();
+    assert_eq!(
+        wires["system.ai.glm-5-3"],
+        fontaine_core::config::Wire::Messages
+    );
 
     for kind in [
         "anthropic",
@@ -85,9 +95,14 @@ fn wires_belong_to_opencode_go_only() {
 
 #[test]
 fn prompt_caching_keys_belong_to_the_kinds_that_accept_them() {
-    for kind in ["anthropic", "opencode-go", "openrouter"] {
+    for kind in ["anthropic", "opencode-go", "openrouter", "databricks"] {
+        let endpoint = if kind == "databricks" {
+            "base_url = \"http://localhost:1\"\n"
+        } else {
+            ""
+        };
         let ok = parse(&format!(
-            "[accounts.x]\nkind = \"{kind}\"\nprompt_caching = true\ncache_ttl = \"1h\"\n"
+            "[accounts.x]\nkind = \"{kind}\"\n{endpoint}prompt_caching = true\ncache_ttl = \"1h\"\n"
         ))
         .unwrap_or_else(|e| panic!("{kind}: {e}"));
         let account = ok.accounts.unwrap()["x"].clone();
@@ -116,6 +131,7 @@ fn prompt_caching_defaults_per_kind() {
         ("anthropic", true),
         ("opencode-go", false),
         ("openrouter", true),
+        ("databricks", true),
         ("openai", false),
         ("gemini", false),
         ("openai-compatible", false),
@@ -126,7 +142,10 @@ fn prompt_caching_defaults_per_kind() {
         assert_eq!(provider.default_prompt_caching(), default, "{kind}");
         assert_eq!(
             provider.accepts_prompt_caching(),
-            matches!(kind, "anthropic" | "opencode-go" | "openrouter"),
+            matches!(
+                kind,
+                "anthropic" | "opencode-go" | "openrouter" | "databricks"
+            ),
             "{kind}"
         );
     }
@@ -208,6 +227,7 @@ fn model_options_belong_to_ollama_only() {
             "kimi",
             "opencode-go",
             "openrouter",
+            "databricks",
         ] {
             let err = parse(&format!(
                 "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\n{key}\n"
@@ -245,6 +265,7 @@ fn auth_belongs_to_anthropic_only() {
         "ollama",
         "opencode-go",
         "openrouter",
+        "databricks",
     ] {
         let err = parse(&format!(
             "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\nauth = \"bearer\"\n"
@@ -273,6 +294,7 @@ fn quota_belongs_to_openai_compatible_only() {
         "ollama",
         "opencode-go",
         "openrouter",
+        "databricks",
     ] {
         let err = parse(&format!(
             "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1\"\nquota = \"kimi\"\n"
@@ -336,16 +358,18 @@ fn every_kind_but_the_arbitrary_gateway_names_a_catalog_vendor() {
         "ollama" => Some("ollama"),
         "opencode-go" => Some("opencode-go"),
         "openrouter" => Some("openrouter"),
+        "databricks" => None,
         "openai-compatible" => None,
         "kimi" => None,
         other => panic!("say which catalog vendor `{other}` looks its ids up under"),
     };
     for name in providers::names() {
         let w = World::new();
-        let endpoint = if name == "claude-subscription" {
-            ""
-        } else {
-            "base_url = \"http://localhost:1/v1\"\n"
+        let endpoint = match name {
+            "claude-subscription" => "",
+            // The workspace origin: `validate` refuses a path.
+            "databricks" => "base_url = \"http://localhost:1\"\n",
+            _ => "base_url = \"http://localhost:1/v1\"\n",
         };
         w.user_file(&format!("[accounts.x]\nkind = \"{name}\"\n{endpoint}"));
         let config = w.load().unwrap();
@@ -378,5 +402,25 @@ fn every_kind_but_the_arbitrary_gateway_names_a_catalog_vendor() {
             expected(name),
             "{name}"
         );
+    }
+}
+
+#[test]
+fn databricks_wants_the_workspace_origin_and_names_the_key() {
+    assert!(parse("[accounts.d]\nkind = \"databricks\"\nbase_url = \"https://example.cloud.databricks.com\"\n").is_ok());
+    for (line, wanted) in [
+        ("", "required"),
+        (
+            "base_url = \"https://example.cloud.databricks.com/ai-gateway\"\n",
+            "without a path",
+        ),
+        (
+            "base_url = \"https://example.cloud.databricks.com/serving-endpoints\"\n",
+            "without a path",
+        ),
+    ] {
+        let err = parse(&format!("[accounts.d]\nkind = \"databricks\"\n{line}")).unwrap_err();
+        assert!(err.contains("accounts.d.base_url"), "{line}: {err}");
+        assert!(err.contains(wanted), "{line}: {err}");
     }
 }

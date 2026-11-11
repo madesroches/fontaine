@@ -1,5 +1,6 @@
-//! Live prompt-cache bench: one fixed multi-step read task through `fontaine -p` on a
-//! claude-subscription account and through `claude -p`, compared by per-step cache write.
+//! Live prompt-cache bench: one fixed multi-step read task through `fontaine -p` on a Claude
+//! model of a Messages-wire account (claude-subscription or databricks) and through
+//! `claude -p`, compared by per-step cache write.
 //! Manual and nightly only; never run from tests or CI.
 
 use std::path::Path;

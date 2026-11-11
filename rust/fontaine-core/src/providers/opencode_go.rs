@@ -13,10 +13,8 @@ use http::header::{HeaderName, HeaderValue};
 use rig_core::DynModel;
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
-use rig_core::providers::anthropic::{
-    Anthropic, AnthropicConfig, Dialect as MessagesDialect, compatible,
-};
-use rig_core::providers::gemini::{Gemini, GeminiConfig};
+use rig_core::providers::anthropic::{AnthropicConfig, Dialect as MessagesDialect, compatible};
+use rig_core::providers::gemini::GeminiConfig;
 use rig_core::providers::openai::wire::Dialect;
 use rig_core::providers::openai::{OpenAI, OpenAIConfig, Route};
 use rig_core::providers::registry::ProviderId;
@@ -27,6 +25,7 @@ use super::derived_facts::unlisted_facts;
 use super::device_flow::{
     DeviceFlow, DeviceFlowEndpoints, FlowError, REQUEST_TIMEOUT, RefreshError,
 };
+use super::multi_wire::WireClients;
 use super::token_source::{Refresher, TokenSource};
 use super::{
     AccountClient, Billing, CacheScope, ConnectContext, CredentialPolicy, PromptCaching, Provider,
@@ -127,6 +126,7 @@ impl Provider for OpencodeGo {
                     user_agent: Some(fontaine_tools::FONTAINE_USER_AGENT),
                     headers: headers.clone(),
                     auth: Some((source.clone(), placement)),
+                    strip_key_param: false,
                 },
             ))
         };
@@ -139,19 +139,21 @@ impl Provider for OpencodeGo {
         };
         let openai_root = format!("{base}/openai/v1");
         Ok(Arc::new(GoClient {
-            chat: openai(Some(Route::Chat), openai_root.clone())?,
-            responses: openai(Some(Route::Responses), openai_root)?,
-            messages: AnthropicConfig::with_key(&GO_MESSAGES, "")
-                .with_base_url(format!("{base}/anthropic"))
-                .connect(http(AuthPlacement::Header(HeaderName::from_static(
-                    "x-api-key",
-                )))?),
-            gemini: GeminiConfig::new("")
-                .with_base_url(format!("{base}/google"))
-                .connect(http(AuthPlacement::GoogleKey)?),
+            wires: WireClients {
+                chat: openai(Some(Route::Chat), openai_root.clone())?,
+                responses: openai(Some(Route::Responses), openai_root)?,
+                messages: AnthropicConfig::with_key(&GO_MESSAGES, "")
+                    .with_base_url(format!("{base}/anthropic"))
+                    .connect(http(AuthPlacement::Header(HeaderName::from_static(
+                        "x-api-key",
+                    )))?),
+                gemini: GeminiConfig::new("")
+                    .with_base_url(format!("{base}/google"))
+                    .connect(http(AuthPlacement::GoogleKey)?),
+                caching: PromptCaching::of(ctx.account),
+            },
             listing: openai(None, format!("{base}/v1"))?,
             overrides: ctx.account.wires.clone().unwrap_or_default(),
-            caching: PromptCaching::of(ctx.account),
         }))
     }
 
@@ -194,36 +196,16 @@ fn thinking_off(model: &str, wire: Wire) -> Option<serde_json::Value> {
 }
 
 struct GoClient {
-    chat: OpenAI,
-    responses: OpenAI,
-    messages: Anthropic,
-    gemini: Gemini,
+    wires: WireClients,
     listing: OpenAI,
     overrides: BTreeMap<String, Wire>,
-    caching: PromptCaching,
 }
 
 impl GoClient {
     fn completion_in(&self, model: &str, scope: CacheScope) -> DynModel<Completion> {
         let facts = unlisted_facts(vendor("opencode-go"), model);
-        macro_rules! bound {
-            ($built:expr) => {{
-                let mut built = $built;
-                if let Some(facts) = facts {
-                    built.wire = built.wire.with_facts(facts);
-                }
-                built
-            }};
-        }
-        match wire(model, &self.overrides) {
-            Wire::Chat => bound!(self.chat.completion(model)).erase(),
-            Wire::Responses => bound!(self.responses.completion(model)).erase(),
-            Wire::Messages => self
-                .caching
-                .apply(bound!(self.messages.completion(model)), scope)
-                .erase(),
-            Wire::Gemini => bound!(self.gemini.completion(model)).erase(),
-        }
+        self.wires
+            .completion(wire(model, &self.overrides), model, facts, scope, None)
     }
 }
 

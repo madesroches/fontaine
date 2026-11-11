@@ -157,6 +157,9 @@ pub struct Decoration {
     pub user_agent: Option<&'static str>,
     pub headers: Vec<(HeaderName, HeaderValue)>,
     pub auth: Option<(Arc<TokenSource>, AuthPlacement)>,
+    /// Drops a `key=` query parameter from every request, whether or not `auth` is set: for a
+    /// client whose credential travels in `headers` but whose rig wire still appends `?key=`.
+    pub strip_key_param: bool,
 }
 
 /// Delegates to `C` after decorating the request. Headers are replaced, never appended, so what
@@ -217,6 +220,9 @@ async fn decorate<B>(decoration: &Decoration, mut req: Request<B>) -> Result<Req
     }
     for (name, value) in &decoration.headers {
         req.headers_mut().insert(name.clone(), value.clone());
+    }
+    if decoration.strip_key_param {
+        *req.uri_mut() = without_key_param(req.uri())?;
     }
     if let Some((source, placement)) = &decoration.auth {
         let token = source
@@ -543,6 +549,7 @@ mod decoration_tests {
                 HeaderValue::from_static("sess-1"),
             )],
             auth: Some((source, placement)),
+            strip_key_param: false,
         };
         (Decorated::new(capture, decoration), seen)
     }
@@ -628,6 +635,59 @@ mod decoration_tests {
         for (_, headers) in seen.iter() {
             assert_eq!(headers["x-goog-api-key"], "the-token");
         }
+    }
+
+    #[tokio::test]
+    async fn a_static_header_and_strip_key_param_need_no_token_source() {
+        let capture = Capture::default();
+        let seen = capture.0.clone();
+        let mut bearer = HeaderValue::from_static("Bearer static-key");
+        bearer.set_sensitive(true);
+        let client = Decorated::new(
+            capture,
+            Decoration {
+                headers: vec![(AUTHORIZATION, bearer)],
+                strip_key_param: true,
+                ..Decoration::default()
+            },
+        );
+        send(
+            &client,
+            "http://gateway.test/gemini/v1beta/models/m:generateContent?key=&alt=sse",
+            &[],
+        )
+        .await;
+        send(
+            &client,
+            "http://gateway.test/gemini/v1beta/models?key=",
+            &[],
+        )
+        .await;
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen[0].0.to_string(),
+            "http://gateway.test/gemini/v1beta/models/m:generateContent?alt=sse"
+        );
+        assert_eq!(
+            seen[1].0.to_string(),
+            "http://gateway.test/gemini/v1beta/models"
+        );
+        for (_, headers) in seen.iter() {
+            assert_eq!(headers["authorization"], "Bearer static-key");
+            assert!(headers["authorization"].is_sensitive());
+        }
+    }
+
+    #[tokio::test]
+    async fn the_key_param_is_kept_unless_asked_to_strip() {
+        let capture = Capture::default();
+        let seen = capture.0.clone();
+        let client = Decorated::new(capture, Decoration::default());
+        send(&client, "http://gateway.test/m?key=k&a=1", &[]).await;
+        assert_eq!(
+            seen.lock().unwrap()[0].0.to_string(),
+            "http://gateway.test/m?key=k&a=1"
+        );
     }
 
     #[tokio::test]

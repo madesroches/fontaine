@@ -371,9 +371,10 @@ file cannot be read.
 
 ### Prompt-cache bench
 
-`cache-bench` runs one fixed read task through `fontaine -p` on a claude-subscription account and
-through `claude -p`, and compares the cache written per model call. It is manual or nightly: it
-needs a signed-in subscription and the real CLI, so neither tests nor CI run it.
+`cache-bench` runs one fixed read task through `fontaine -p` on a Claude model of a Messages-wire
+account (claude-subscription or databricks) and through `claude -p`, and compares the cache
+written per model call. It is manual or nightly: it needs a signed-in subscription or a workspace
+token, and the real CLI, so neither tests nor CI run it.
 
 ```
 cargo run -p fontaine-evals -- cache-bench --model claudemax/sonnet --out ../evals/scorecards/claude-subscription-cache-sonnet.json
@@ -381,7 +382,7 @@ cargo run -p fontaine-evals -- cache-bench --model claudemax/sonnet --out ../eva
 
 | Flag | Meaning |
 |---|---|
-| `--model <account>/<model>` | The Fontaine model on a claude-subscription account. Required. |
+| `--model <account>/<model>` | The Fontaine model: any Claude model on a claude-subscription or databricks account. Required. |
 | `--claude-model <alias>` | The `claude -p --model` value; default the part of `--model` after the `/`. |
 | `--files <n>` | Fixture files read one at a time; default 6, at least 4. |
 | `--threshold <x>` | The ratio above which the run is flagged; default 1.25. |
