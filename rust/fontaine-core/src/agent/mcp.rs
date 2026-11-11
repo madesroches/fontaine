@@ -1,24 +1,28 @@
 //! Starting the MCP servers a session is configured with, and the approval repository-defined
 //! ones need first.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::guarded::Guard;
+use fontaine_tools::lock::write_recovering;
 use fontaine_tools::mcp::output::{DEFAULT_MAX_TOKENS, OutputLimits, Spill};
 use fontaine_tools::mcp::{
-    ElicitForm, ElicitReply, Elicitor, McpOptions, ServerSpec, Transport, connect as connect_server,
+    ElicitForm, ElicitReply, Elicitor, McpOptions, PromptSummary, ServerSpec, Transport,
+    connect as connect_server, mcp_tool_name,
 };
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::tls::LoadedNetwork;
 use futures::future::BoxFuture;
 use rig_core::tool::{DynamicTool, ManagedToolSink, ManagedToolToken};
+use rmcp::model::{ContentBlock, GetPromptRequestParams, GetPromptResponse, PromptMessage, Role};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
@@ -52,6 +56,120 @@ pub struct McpServerPlan {
 pub struct McpOutcome {
     pub server: String,
     pub error: Option<String>,
+}
+
+/// An MCP resource the `@` completion can offer, with the server it belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpResourceSummary {
+    pub server: String,
+    pub uri: String,
+    pub name: String,
+    pub description: Option<String>,
+}
+
+/// Rebuilds the `@` mention resource list from what `slots` list now and bumps the listing
+/// revision, so a surface caching MCP prompt rows never sees refreshed listings without the
+/// revision moving. The completion list is advisory: a stale list only misses a suggestion.
+fn refresh_mentions(
+    revision: &AtomicU64,
+    mentions: &Arc<RwLock<Arc<Vec<McpResourceSummary>>>>,
+    slots: &Arc<RwLock<BTreeMap<String, Arc<ServerSlot>>>>,
+) {
+    revision.fetch_add(1, Ordering::Relaxed);
+    *write_recovering(mentions) = Arc::new(super::mcp_supervisor::mention_snapshot(slots));
+}
+
+/// Flattens a `prompts/get` answer into one user turn: only when every message is user-role
+/// text, joined in order with a blank line. Anything else refuses the command rather than
+/// dropping a block or folding assistant text into the user's turn.
+pub(crate) fn flatten_prompt_messages(messages: &[PromptMessage]) -> Result<String, String> {
+    let mut texts = Vec::new();
+    for message in messages {
+        match (&message.role, &message.content) {
+            (Role::User, ContentBlock::Text(text)) => texts.push(text.text.clone()),
+            (role, _) => {
+                return Err(format!(
+                    "the server's answer carried a {role:?} message or non-text content; \
+                     only user-role text can become your turn, so the command did nothing"
+                ));
+            }
+        }
+    }
+    Ok(texts.join("\n\n"))
+}
+
+/// Parses `key=value` pairs out of a prompt command's argument and checks them against what
+/// the prompt declares. `Err` names the declared arguments and an example invocation.
+pub(crate) fn parse_prompt_arguments(
+    name: &str,
+    argument: &str,
+    prompt: &PromptSummary,
+) -> Result<std::collections::BTreeMap<String, String>, String> {
+    fn usage(name: &str, prompt: &PromptSummary, why: String) -> String {
+        let declared: Vec<String> = prompt
+            .arguments
+            .iter()
+            .map(|argument| {
+                if argument.required {
+                    format!("{} (required)", argument.name)
+                } else {
+                    argument.name.clone()
+                }
+            })
+            .collect();
+        let example: Vec<String> = prompt
+            .arguments
+            .iter()
+            .map(|argument| format!("{}=<value>", argument.name))
+            .collect();
+        let spacing = if example.is_empty() { "" } else { " " };
+        let declared = if declared.is_empty() {
+            "no arguments".to_string()
+        } else {
+            declared.join(", ")
+        };
+        format!(
+            "{why}; it declares: {declared}. For example: `/{name}{spacing}{}`",
+            example.join(" ")
+        )
+    }
+    let declared: std::collections::BTreeMap<&str, bool> = prompt
+        .arguments
+        .iter()
+        .map(|argument| (argument.name.as_str(), argument.required))
+        .collect();
+    let mut given = std::collections::BTreeMap::new();
+    for pair in argument.split_whitespace() {
+        let Some((key, value)) = pair.split_once('=') else {
+            return Err(usage(
+                name,
+                prompt,
+                format!("`{pair}` is not a `key=value` pair"),
+            ));
+        };
+        if !declared.contains_key(key) {
+            return Err(usage(
+                name,
+                prompt,
+                format!("`{key}` is not an argument it declares"),
+            ));
+        }
+        given.insert(key.to_string(), value.to_string());
+    }
+    let missing: Vec<&str> = declared
+        .iter()
+        .filter(|(_, required)| **required)
+        .map(|(name, _)| *name)
+        .filter(|name| !given.contains_key(*name))
+        .collect();
+    if !missing.is_empty() {
+        return Err(usage(
+            name,
+            prompt,
+            format!("missing: {}", missing.join(", ")),
+        ));
+    }
+    Ok(given)
 }
 
 pub fn server_digest(name: &str, server: &McpServer) -> String {
@@ -524,13 +642,40 @@ impl AgentRuntime {
         };
         let state = self.state.clone();
         let types = self.agent_types.clone();
+        let slots = self.mcp.slots_handle();
+        let mentions = self.mcp_mentions.clone();
+        let revision = self.mcp_listing_revision.clone();
         let supervisor = Supervisor::new(
             Arc::new(connector),
             approver,
-            Arc::new(move || state.agents().refresh_rebuilt_toolsets(&types.get())),
+            // Watchers run on tokio worker threads, concurrent with draws that sample the
+            // revision: the bump and the snapshot ride one helper so no path refreshes the
+            // listings without moving the revision cached prompt rows key on.
+            Arc::new(move || {
+                state.agents().refresh_rebuilt_toolsets(&types.get());
+                refresh_mentions(&revision, &mentions, &slots);
+            }),
         );
         self.mcp.supervisor = Some(supervisor.clone());
         supervisor
+    }
+
+    /// Rebuilds the `@` mention resource list from what the connected servers list now. Every
+    /// listing change (connect, disconnect, reconnect, a `list_changed` refresh) rides through
+    /// here, so the bump doubles as the listing revision cached prompt rows key on.
+    pub(crate) fn refresh_mcp_mentions(&self) {
+        refresh_mentions(
+            &self.mcp_listing_revision,
+            &self.mcp_mentions,
+            &self.mcp.slots_handle(),
+        );
+    }
+
+    /// The MCP listing revision: bumped on every connect, disconnect, reconnect and
+    /// `list_changed` refresh. A caller caching `slash_prompts` rows refreshes them only when
+    /// this moves.
+    pub fn slash_prompts_revision(&self) -> u64 {
+        self.mcp_listing_revision.load(Ordering::Relaxed)
     }
 
     /// Starts the one configured server `name` that the plan lets start without asking, which is
@@ -566,6 +711,7 @@ impl AgentRuntime {
         let supervisor = self.mcp_supervisor();
         let (slot, result) = supervisor.start(spec).await;
         self.mcp.insert(slot);
+        self.refresh_mcp_mentions();
         self.state
             .agents()
             .refresh_rebuilt_toolsets(&self.agent_types.get());
@@ -576,9 +722,14 @@ impl AgentRuntime {
     /// a ten-second bound to finish, then its connection closes. `None` when the session never
     /// attempted it, else whether every call finished in time.
     pub async fn stop_mcp_server(&mut self, name: &str) -> Option<bool> {
-        self.mcp
+        let removed = self
+            .mcp
             .remove(name, &self.tool_server, MCP_DRAIN_BOUND)
-            .await
+            .await;
+        if removed.is_some() {
+            self.refresh_mcp_mentions();
+        }
+        removed
     }
 
     /// Starts the MCP servers the plan allows: those that need no approval and those named in
@@ -610,6 +761,7 @@ impl AgentRuntime {
                 error,
             });
         }
+        self.refresh_mcp_mentions();
         // The rebuild at startup derived each rebuilt agent's toolset before any server
         // connected; now that the tool server holds every MCP tool, the handle-less rebuilt
         // toolsets are re-derived, parents before children, so a later revival carries them.
@@ -716,7 +868,7 @@ impl AgentRuntime {
         let Some(supervisor) = self.mcp.supervisor.clone() else {
             return Vec::new();
         };
-        futures::future::join_all(slots.into_iter().map(|slot| {
+        let outcomes = futures::future::join_all(slots.into_iter().map(|slot| {
             let supervisor = supervisor.clone();
             async move {
                 McpOutcome {
@@ -725,7 +877,126 @@ impl AgentRuntime {
                 }
             }
         }))
-        .await
+        .await;
+        self.refresh_mcp_mentions();
+        outcomes
+    }
+
+    /// The MCP prompts a user can run as `/mcp__<server>__<prompt>`: the full command name,
+    /// a hint of the declared argument names, and the server-supplied description. Two prompts
+    /// whose names clean to the same command collide; the first stays listed and the rest are
+    /// left out, since dispatch refuses the ambiguity.
+    pub fn slash_prompts(&self) -> Vec<(String, Option<String>, String)> {
+        let mut rows = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for (server, listings) in self.mcp.listings() {
+            for prompt in listings.prompts {
+                let name = mcp_tool_name(&server, &prompt.name);
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                let hint = (!prompt.arguments.is_empty()).then(|| {
+                    prompt
+                        .arguments
+                        .iter()
+                        .map(|argument| {
+                            if argument.required {
+                                format!("{}=<value>", argument.name)
+                            } else {
+                                format!("[{}=<value>]", argument.name)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                });
+                rows.push((
+                    name,
+                    hint,
+                    prompt.description.unwrap_or_else(|| prompt.name.clone()),
+                ));
+            }
+        }
+        rows
+    }
+
+    /// `/mcp__<server>__<prompt> arguments`: fetches the prompt and flattens its answer into
+    /// one user turn's text. The command name is the cleaned `mcp__<server>__<prompt>` the
+    /// menu lists; a missing prompt, bad arguments, a fetch failure or an answer that is not
+    /// user-role text is an error naming what is connected.
+    pub async fn run_mcp_prompt(&self, name: &str, argument: &str) -> Result<String, RuntimeError> {
+        let matches: Vec<(String, PromptSummary)> = self
+            .mcp
+            .listings()
+            .into_iter()
+            .flat_map(|(server, listings)| {
+                listings
+                    .prompts
+                    .into_iter()
+                    .filter(|prompt| mcp_tool_name(&server, &prompt.name) == name)
+                    .map(|prompt| (server.clone(), prompt))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let (server, prompt) = match matches.as_slice() {
+            [] => {
+                return Err(RuntimeError::new(format!(
+                    "no MCP prompt named `{name}` is connected"
+                )));
+            }
+            [only] => only.clone(),
+            // Distinct prompt names can clean to the same command (`review.now` and
+            // `review/now` both become `review_now`); picking one would invoke the wrong
+            // prompt, so the collision is refused.
+            many => {
+                return Err(RuntimeError::new(format!(
+                    "`/{name}` names more than one prompt: {}; rename one on its server",
+                    many.iter()
+                        .map(|(server, prompt)| format!("`{}` on `{server}`", prompt.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
+        };
+        let arguments =
+            parse_prompt_arguments(name, argument, &prompt).map_err(RuntimeError::new)?;
+        let Some((connection, scope)) = self.mcp.slot(&server).and_then(|slot| slot.call_scope())
+        else {
+            return Err(RuntimeError::new(format!(
+                "MCP server `{server}` is not connected"
+            )));
+        };
+        let mut params = GetPromptRequestParams::new(prompt.name.clone());
+        if !arguments.is_empty() {
+            params.arguments = Some(serde_json::Map::from_iter(
+                arguments
+                    .into_iter()
+                    .map(|(key, value)| (key, serde_json::Value::String(value))),
+            ));
+        }
+        // The single-round variant: server-requested input is an error, not a driven round.
+        // The fetch holds a root call guard so a server unload waits it out, and a failed
+        // fetch can mark a dead transport for the watcher, as a failed tool call does.
+        let _in_flight = scope.enter(true);
+        let response = connection.peer().get_prompt_once(params).await;
+        if let Err(error) = &response {
+            scope.request_failed(error);
+        }
+        let response =
+            response.map_err(|e| RuntimeError::caused(format!("fetching `/{name}` failed"), e))?;
+        let result = match response {
+            GetPromptResponse::Complete(result) => result,
+            GetPromptResponse::InputRequired(_) => {
+                return Err(RuntimeError::new(
+                    "the server asked for input the client does not provide".to_string(),
+                ));
+            }
+            other => {
+                return Err(RuntimeError::new(format!(
+                    "the server answered unexpectedly: {other:?}"
+                )));
+            }
+        };
+        flatten_prompt_messages(&result.messages).map_err(RuntimeError::new)
     }
 
     /// Why a server with no slot cannot be restarted.
@@ -762,12 +1033,82 @@ impl AgentRuntime {
 #[cfg(test)]
 mod tests {
     use super::{
-        McpServerPlan, env_key_matches, headers_helper_refusal, not_attempted, output_limits,
-        server_digest,
+        McpServerPlan, env_key_matches, flatten_prompt_messages, headers_helper_refusal,
+        not_attempted, output_limits, parse_prompt_arguments, server_digest,
     };
+    use fontaine_tools::mcp::{PromptArgument, PromptSummary};
     use std::cell::RefCell;
     use std::ffi::OsString;
     use std::path::Path;
+
+    fn greet() -> PromptSummary {
+        PromptSummary {
+            name: "greet".to_string(),
+            description: Some("Greet someone".to_string()),
+            arguments: vec![
+                PromptArgument {
+                    name: "name".to_string(),
+                    required: true,
+                },
+                PromptArgument {
+                    name: "mood".to_string(),
+                    required: false,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn prompt_arguments_parse_and_check_against_the_declared_ones() {
+        let parsed = parse_prompt_arguments("mcp__web__greet", "name=Ada mood=calm", &greet())
+            .expect("valid arguments");
+        assert_eq!(parsed["name"], "Ada");
+        assert_eq!(parsed["mood"], "calm");
+        // A required argument alone is enough.
+        let parsed =
+            parse_prompt_arguments("mcp__web__greet", "name=Ada", &greet()).expect("valid");
+        assert_eq!(parsed.len(), 1);
+    }
+
+    #[test]
+    fn a_missing_required_argument_a_malformed_pair_and_an_unknown_key_refuse_with_the_usage() {
+        for (argument, why) in [
+            ("mood=calm", "missing: name"),
+            ("name", "`name` is not a `key=value` pair"),
+            ("name=Ada who=you", "`who` is not an argument it declares"),
+        ] {
+            let error = parse_prompt_arguments("mcp__web__greet", argument, &greet()).unwrap_err();
+            assert!(error.contains(why), "{error}");
+            assert!(error.contains("name (required), mood"), "{error}");
+            assert!(
+                error.contains("For example: `/mcp__web__greet name=<value> mood=<value>`"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_user_role_text_flattens_and_other_content_refuses() {
+        use rmcp::model::{ContentBlock, PromptMessage, Role};
+        let messages = vec![
+            PromptMessage::new_text(Role::User, "first"),
+            PromptMessage::new_text(Role::User, "second"),
+        ];
+        assert_eq!(
+            flatten_prompt_messages(&messages).unwrap(),
+            "first\n\nsecond"
+        );
+        let assistant = vec![PromptMessage::new_text(Role::Assistant, "note")];
+        let error = flatten_prompt_messages(&assistant).unwrap_err();
+        assert!(error.contains("Assistant"), "{error}");
+        assert!(error.contains("did nothing"), "{error}");
+        let image = vec![PromptMessage::new(
+            Role::User,
+            ContentBlock::image("data", "image/png"),
+        )];
+        assert!(flatten_prompt_messages(&image).is_err());
+        assert_eq!(flatten_prompt_messages(&[]).unwrap(), "");
+    }
 
     fn limits_for(value: Option<&str>) -> (usize, Vec<String>) {
         let warnings = RefCell::new(Vec::new());

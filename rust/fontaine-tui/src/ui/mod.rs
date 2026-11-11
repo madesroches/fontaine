@@ -126,6 +126,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
         // The completion index is advisory: a stale list only misses a suggestion.
         let files = read_recovering(&runtime.files).clone();
         self.app.set_files(files);
+        let mentions = read_recovering(&runtime.mcp_mentions).clone();
+        self.app.set_mentions(mentions);
+        // The menu was built before any server connected, so its MCP prompt rows can only
+        // follow the listings here: a listing revision change re-merges them, like the
+        // set_files slot. The revision is a cheap atomic read, so the rows are rebuilt only
+        // when the listings may have moved, not on every draw. The revision is sampled before
+        // the rows are read and that sample is stored: the watcher callback bumps it from a
+        // tokio worker thread, concurrent with this draw, and storing a fresh read could mark
+        // rows the next draw never installed as consumed.
+        let revision = runtime.slash_prompts_revision();
+        if self.prompts_revision != Some(revision) {
+            let prompts = runtime.slash_prompts();
+            self.refresh_menu_with(runtime, &prompts);
+            self.prompts_revision = Some(revision);
+        }
         self.trigger_statusline(StatuslineTrigger::Draw);
         if let (Some(kind), _) = self.hook_notifier.observe_opened(self.app.pending_prompt())
             && let Some(hook_type) = kind.hook_type()
@@ -1253,10 +1268,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Continue(CommandOutcome::Done)
             }
             Command::Other { name, argument } => {
+                // Dispatch follows the menu's priority: a skill named `mcp__*` shadows the
+                // prompt row, so the skill lookup runs first; MCP dispatch takes the name
+                // only when no skill answers to it and a connected prompt holds it.
                 let known = runtime
                     .slash_skills()
                     .iter()
                     .any(|(skill, _, _)| *skill == name);
+                if !known && name.starts_with("mcp__") {
+                    let listed = runtime
+                        .slash_prompts()
+                        .iter()
+                        .any(|(prompt, _, _)| *prompt == name);
+                    if listed {
+                        return self
+                            .run_mcp_prompt_command(runtime, raw, &name, &argument)
+                            .await;
+                    }
+                }
                 if !known {
                     self.app.transcript.error(format!(
                         "unknown command /{name}; type / to see the commands and skills"

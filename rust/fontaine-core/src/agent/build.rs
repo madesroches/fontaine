@@ -27,6 +27,7 @@ use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
 use rig_core::{ErrorKind, ErrorReport};
 
+use super::mcp::output_limits;
 use super::{ReportedAdvisor, SessionModels, Setup};
 use crate::bug_drafts::FileDrafts;
 use crate::checkpoint::StoreCapture;
@@ -115,6 +116,9 @@ pub(super) struct Parts<'a> {
     pub(super) instructions: &'a Arc<InstructionStage>,
     /// The session's kill switches, handed to every tool's guard.
     pub(super) kills: &'a Arc<KillSwitches>,
+    /// The session's MCP servers: the resource tools' live view and the `@<uri>` prompt
+    /// section read it.
+    pub(super) mcp: &'a super::mcp_supervisor::McpServers,
 }
 
 /// The agent, with its wrapped tools registered in the session's tool server.
@@ -197,7 +201,7 @@ fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
         p.instructions.warn_once(&notes.warnings);
         memory::layer(dir, notes.index.as_deref())
     });
-    let pieces = prompt::layers(&PromptParts {
+    let mut pieces = prompt::layers(&PromptParts {
         roots: p.roots,
         scratch: p.state.scratch.as_deref(),
         memory_root: p.state.memory_root.as_deref(),
@@ -206,6 +210,7 @@ fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
         memory: memory.as_deref(),
         skill_index: skill_index.as_deref(),
         scheduling: scheduling(p).then_some(prompt::SCHEDULING_PROMPT),
+        mcp: None,
         output_style: p
             .output_style
             .as_ref()
@@ -214,6 +219,9 @@ fn prompt_layers(p: &Parts<'_>) -> (prompt::PromptPieces, Sources, Loaded) {
         afk: p.state.afk_on(),
         posix_shell: super::posix_shell(&p.setup.git_bash),
     });
+    // Assembled from the listings the connected servers hold now, so it appears with the
+    // first build after a resources-capable server connects and goes when the last unloads.
+    pieces.mcp = prompt::mcp_resource_section(&p.mcp.listings());
     (pieces, sources, loaded)
 }
 
@@ -243,6 +251,16 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
     let registered = tools::registry(RegistryParams {
         gate: p.pipeline.clone(),
         scope: p.state.scope(),
+        mcp_resources: p.mcp.resource_queries(),
+        mcp_limits: Arc::new(output_limits(
+            &|name| (p.setup.env)(name),
+            p.state.scratch.as_deref(),
+            &|message| p.approver.warn(message),
+        )),
+        mcp_warn: Arc::new({
+            let approver = p.approver.clone();
+            move |message: &str| approver.warn(message)
+        }),
         seen: p.seen.clone(),
         scrub_env: p.setup.scrub_env.clone(),
         set_env: tools::subprocess_env(p.config),

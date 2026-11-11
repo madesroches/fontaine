@@ -437,6 +437,9 @@ fn skills(w_setup: impl FnOnce(&World)) -> Skills {
     let tools = registry(RegistryParams {
         gate: rig.pipeline.clone(),
         scope: rig.state.scope(),
+        mcp_resources: Arc::new(fontaine_tools::mcp::NoMcpResources),
+        mcp_limits: Arc::new(fontaine_tools::mcp::OutputLimits::default()),
+        mcp_warn: Arc::new(|_| {}),
         seen: Default::default(),
         scrub_env: Vec::new(),
         set_env: Vec::new(),

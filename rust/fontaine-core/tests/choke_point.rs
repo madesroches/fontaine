@@ -195,6 +195,9 @@ fn params(rig: &Rig) -> RegistryParams {
     RegistryParams {
         gate: rig.pipeline.clone(),
         scope: rig.state.scope(),
+        mcp_resources: Arc::new(fontaine_tools::mcp::NoMcpResources),
+        mcp_limits: Arc::new(fontaine_tools::mcp::OutputLimits::default()),
+        mcp_warn: Arc::new(|_| {}),
         seen: Default::default(),
         scrub_env: Vec::new(),
         set_env: Vec::new(),
@@ -270,12 +273,18 @@ fn the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools() 
         "job_cancel",
         "monitor",
         "webfetch",
+        "list_mcp_resources",
+        "read_mcp_resource",
     ]
     .into_iter()
     .collect();
     assert_eq!(&expected - &built_ins, extras);
-    // Nothing for the model to list, inspect or kill agents with.
+    // Nothing for the model to list, inspect or kill agents with. The two MCP resource tools
+    // are exempt: their snake_case names carry `list`, which the gate forbids elsewhere.
     for name in &names {
+        if matches!(*name, "list_mcp_resources" | "read_mcp_resource") {
+            continue;
+        }
         for word in name.split('_') {
             assert!(
                 !["list", "status", "kill", "interrupt", "stop"].contains(&word),
@@ -410,11 +419,11 @@ fn every_registered_tool_has_a_descriptor_row_and_its_class() {
 }
 
 #[test]
-fn without_the_extension_the_registry_is_the_twelve_built_ins() {
+fn without_the_extension_the_registry_is_the_fourteen_built_ins() {
     let rig = Rig::new(Manual);
     let mut p = params(&rig);
     p.extension = None;
-    assert_eq!(registry(p).unwrap().len(), 12);
+    assert_eq!(registry(p).unwrap().len(), 14);
 }
 
 async fn serve(

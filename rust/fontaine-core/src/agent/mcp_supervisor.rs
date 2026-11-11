@@ -9,15 +9,16 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use fontaine_tools::error_chain::chain;
-use fontaine_tools::lock::{lock, read_recovering, write_recovering};
+use fontaine_tools::lock::{lock, read, read_recovering, write, write_recovering};
 use fontaine_tools::mcp::McpConnectionHandle as McpConnection;
 use fontaine_tools::mcp::{
-    CONNECT_TIMEOUT, Connected, McpError, McpErrorKind, McpOptions, ServerSpec,
-    connect as connect_server,
+    CONNECT_TIMEOUT, CallScope, Connected, Listings, McpError, McpErrorKind, McpOptions,
+    McpResourceQueries, ServerSpec, connect as connect_server, pull_listings,
 };
 use fontaine_tools::tls::LoadedNetwork;
 use futures::future::BoxFuture;
 use rig_agent::tool::server::ToolServerHandle;
+use rmcp::model::{ReadResourceRequestParams, ReadResourceResponse, ResourceContents};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
@@ -45,12 +46,27 @@ const STARTUP_RETRY_DELAYS: [Duration; 3] = [
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum McpServerState {
-    /// Running, with `tools` registered now.
-    Connected { tools: usize },
+    /// Running, with `tools` registered now and `resources`/`prompts` listed.
+    Connected {
+        tools: usize,
+        resources: usize,
+        prompts: usize,
+    },
     /// Lost, and being started again; `attempt` runs from 1 to 5.
     Reconnecting { attempt: u32 },
     /// Not running, with the reason as a rendered error chain.
     Failed(String),
+}
+
+impl McpServerState {
+    /// Running with `tools` registered and nothing listed yet.
+    pub(crate) fn connected(tools: usize) -> Self {
+        McpServerState::Connected {
+            tools,
+            resources: 0,
+            prompts: 0,
+        }
+    }
 }
 
 /// Which servers `/mcp reconnect` restarts.
@@ -118,16 +134,30 @@ impl ServerSlot {
         &self.spec.name
     }
 
-    /// The server's state; a connected server's tool count is read from the connection the slot
-    /// holds, so it follows a `list_changed` refresh and a reconnect.
+    /// The live connection and its call scope, for a request that is not a tool call but still
+    /// joins the in-flight counting and can signal a dead transport.
+    pub(crate) fn call_scope(&self) -> Option<(McpConnection, CallScope)> {
+        lock(&self.connection, "MCP connection")
+            .as_ref()
+            .map(|connected| (connected.connection.clone(), connected.call_scope()))
+    }
+
+    /// The server's state; a connected server's counts are read from the connection the slot
+    /// holds, so they follow a `list_changed` refresh and a reconnect.
     pub fn state(&self) -> McpServerState {
         let state = read_recovering(&self.state).clone();
         match state {
-            McpServerState::Connected { .. } => McpServerState::Connected {
-                tools: lock(&self.connection, "MCP connection")
-                    .as_ref()
-                    .map_or(0, Connected::tool_count),
-            },
+            McpServerState::Connected { .. } => {
+                let guard = lock(&self.connection, "MCP connection");
+                match guard.as_ref() {
+                    Some(connected) => McpServerState::Connected {
+                        tools: connected.tool_count(),
+                        resources: connected.listings().resources.len(),
+                        prompts: connected.listings().prompts.len(),
+                    },
+                    None => McpServerState::connected(0),
+                }
+            }
             other => other,
         }
     }
@@ -152,36 +182,65 @@ impl ServerSlot {
     }
 }
 
-/// The session's MCP servers, by name.
+/// The session's MCP servers, by name. Shared with the resource tools, which read it live on
+/// every call, so it sits behind a lock: a poisoned map fed a permission decision and must
+/// panic, not be read through.
 #[derive(Default)]
 pub struct McpServers {
-    slots: BTreeMap<String, Arc<ServerSlot>>,
+    slots: Arc<RwLock<BTreeMap<String, Arc<ServerSlot>>>>,
     /// Set by the first start; the one that restarts a server by hand.
     pub(crate) supervisor: Option<Arc<Supervisor>>,
 }
 
 impl McpServers {
     pub fn states(&self) -> Vec<(String, McpServerState)> {
-        self.slots
+        read(&self.slots, "MCP server slots")
             .iter()
             .map(|(name, slot)| (name.clone(), slot.state()))
             .collect()
     }
 
     pub(crate) fn slot(&self, name: &str) -> Option<Arc<ServerSlot>> {
-        self.slots.get(name).cloned()
+        read(&self.slots, "MCP server slots").get(name).cloned()
     }
 
     pub(crate) fn failed(&self) -> Vec<Arc<ServerSlot>> {
-        self.slots
+        read(&self.slots, "MCP server slots")
             .values()
             .filter(|slot| matches!(slot.state(), McpServerState::Failed(_)))
             .cloned()
             .collect()
     }
 
-    pub(crate) fn insert(&mut self, slot: Arc<ServerSlot>) {
-        if let Some(old) = self.slots.insert(slot.name().to_string(), slot) {
+    /// The name and listings of every slot that holds a live connection, in name order.
+    pub(crate) fn listings(&self) -> Vec<(String, Listings)> {
+        read(&self.slots, "MCP server slots")
+            .iter()
+            .filter_map(|(name, slot)| {
+                let guard = lock(&slot.connection, "MCP connection");
+                let connected = guard.as_ref()?;
+                Some((name.clone(), connected.listings()))
+            })
+            .collect()
+    }
+
+    /// The resource tools' live view of the connected servers.
+    pub(crate) fn resource_queries(&self) -> Arc<dyn McpResourceQueries> {
+        Arc::new(SlotQueries {
+            slots: self.slots.clone(),
+        })
+    }
+
+    /// The live slot map, shared with anything that must see servers connecting after it was
+    /// handed out.
+    pub(crate) fn slots_handle(&self) -> Arc<RwLock<BTreeMap<String, Arc<ServerSlot>>>> {
+        self.slots.clone()
+    }
+
+    pub(crate) fn insert(&self, slot: Arc<ServerSlot>) {
+        if let Some(old) =
+            write(&self.slots, "MCP server slots").insert(slot.name().to_string(), slot)
+        {
             retire(&old);
         }
     }
@@ -191,12 +250,12 @@ impl McpServers {
     /// call starts, the calls in flight given up to `bound` to finish, and the connection closed.
     /// Returns `None` for a server with no slot, else whether every call finished in time.
     pub(crate) async fn remove(
-        &mut self,
+        &self,
         name: &str,
         tools: &ToolServerHandle,
         bound: Duration,
     ) -> Option<bool> {
-        let slot = self.slots.remove(name)?;
+        let slot = write(&self.slots, "MCP server slots").remove(name)?;
         retire(&slot);
         let connected = lock(&slot.connection, "MCP connection").take();
         let Some(connected) = connected else {
@@ -219,10 +278,161 @@ fn retire(slot: &ServerSlot) {
     slot.supersede();
 }
 
+/// Commits what a pull answered into `listings`; a listing the pull could not fetch keeps
+/// the value it already holds.
+async fn refresh_listings(connection: &McpConnection, listings: &Arc<Mutex<Listings>>) {
+    let previous = lock(listings, "MCP listings").clone();
+    let pulled = pull_listings(connection, &previous).await;
+    *lock(listings, "MCP listings") = pulled;
+}
+
+/// The `@` mention resource list built from what the slots list now.
+pub(crate) fn mention_snapshot(
+    slots: &Arc<RwLock<BTreeMap<String, Arc<ServerSlot>>>>,
+) -> Vec<super::mcp::McpResourceSummary> {
+    read(slots, "MCP server slots")
+        .iter()
+        .flat_map(|(server, slot)| {
+            let guard = lock(&slot.connection, "MCP connection");
+            let listings = guard.as_ref().map(|connected| connected.listings());
+            listings.into_iter().flat_map(move |listings| {
+                listings
+                    .resources
+                    .into_iter()
+                    .map(move |resource| super::mcp::McpResourceSummary {
+                        server: server.clone(),
+                        uri: resource.uri,
+                        name: resource.name,
+                        description: resource.description,
+                    })
+            })
+        })
+        .collect()
+}
+
+/// The resource tools' live view of the connected servers: every call reads the slot map and
+/// the listings it holds now, so a server that connects mid-session is visible without a
+/// registry rebuild.
+struct SlotQueries {
+    slots: Arc<RwLock<BTreeMap<String, Arc<ServerSlot>>>>,
+}
+
+impl SlotQueries {
+    /// The live connection, listings and call scope of `server`, or why they cannot be read.
+    fn target(&self, server: &str) -> Result<(McpConnection, Listings, CallScope), String> {
+        let slots = read(&self.slots, "MCP server slots");
+        let Some(slot) = slots.get(server) else {
+            // Failed and reconnecting slots stay in the map for `/mcp reconnect`; only live
+            // connections may be labelled connected.
+            let connected: Vec<String> = slots
+                .iter()
+                .filter(|(_, slot)| lock(&slot.connection, "MCP connection").is_some())
+                .map(|(name, _)| name.clone())
+                .collect();
+            return Err(format!(
+                "no MCP server named `{server}` is connected{}",
+                if connected.is_empty() {
+                    String::new()
+                } else {
+                    format!(" (connected: {})", connected.join(", "))
+                }
+            ));
+        };
+        let guard = lock(&slot.connection, "MCP connection");
+        let Some(connected) = guard.as_ref() else {
+            return Err(format!("MCP server `{server}` is not connected"));
+        };
+        Ok((
+            connected.connection.clone(),
+            connected.listings(),
+            connected.call_scope(),
+        ))
+    }
+}
+
+impl McpResourceQueries for SlotQueries {
+    fn connected(&self) -> Vec<(String, Listings)> {
+        read(&self.slots, "MCP server slots")
+            .iter()
+            .filter_map(|(name, slot)| {
+                let guard = lock(&slot.connection, "MCP connection");
+                let connected = guard.as_ref()?;
+                let listings = connected.listings();
+                // Tools-only servers list nothing; skip them rather than answering with an
+                // empty listing per server.
+                (!listings.is_empty()).then(|| (name.clone(), listings))
+            })
+            .collect()
+    }
+
+    fn read_resource<'a>(
+        &'a self,
+        root: bool,
+        server: &'a str,
+        uri: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<ResourceContents>, String>> {
+        Box::pin(async move {
+            let (connection, listings, scope) = self.target(server)?;
+            if !listings
+                .resources
+                .iter()
+                .any(|resource| resource.uri == uri)
+            {
+                // The diagnostic names only the first few URIs: a server listing thousands
+                // must not ship its whole catalog into an error.
+                const SHOWN: usize = 10;
+                let known: Vec<&str> = listings
+                    .resources
+                    .iter()
+                    .map(|resource| resource.uri.as_str())
+                    .collect();
+                let listed = known.len().min(SHOWN);
+                let mut names = known[..listed].join(", ");
+                if known.len() > listed {
+                    names.push_str(&format!(", … and {} more", known.len() - listed));
+                }
+                return Err(format!(
+                    "no resource `{uri}` on MCP server `{server}`{}",
+                    if known.is_empty() {
+                        " (it lists no resources)".to_string()
+                    } else {
+                        format!(" (it lists: {names})")
+                    }
+                ));
+            }
+            // The single-round variant: an InputRequired answer is the tool error saying the
+            // server asked for input the client does not provide, not a driven MRTR round. The
+            // read holds a call guard so a server unload waits it out, and a failed read can
+            // mark a dead transport for the watcher, as a failed tool call does.
+            let _in_flight = scope.enter(root);
+            match connection
+                .peer()
+                .read_resource_once(ReadResourceRequestParams::new(uri))
+                .await
+            {
+                Ok(ReadResourceResponse::Complete(result)) => Ok(result.contents),
+                Ok(ReadResourceResponse::InputRequired(_)) => Err(format!(
+                    "MCP server `{server}` asked for input the client does not provide"
+                )),
+                Ok(other) => Err(format!(
+                    "reading `{uri}` from MCP server `{server}` answered unexpectedly: {other:?}"
+                )),
+                Err(error) => {
+                    scope.request_failed(&error);
+                    Err(format!(
+                        "reading `{uri}` from MCP server `{server}` failed: {}",
+                        chain(&error)
+                    ))
+                }
+            }
+        })
+    }
+}
+
 impl Drop for McpServers {
     /// The connections close as the slots drop, and a watcher must not mistake that for a loss.
     fn drop(&mut self) {
-        for slot in self.slots.values() {
+        for slot in read(&self.slots, "MCP server slots").values() {
             retire(slot);
         }
     }
@@ -288,10 +498,13 @@ impl Supervisor {
         };
         match result {
             Ok(connected) => {
-                let slot = Arc::new(ServerSlot::new(
-                    spec,
-                    McpServerState::Connected { tools: 0 },
-                ));
+                let slot = Arc::new(ServerSlot::new(spec, McpServerState::connected(0)));
+                // The initial listing pull rides before the install, so the connect reports
+                // back with the listings in place; it is bounded by the startup deadline that
+                // is left, and a failed or expired pull leaves the empty listings the
+                // connection started with.
+                let left = deadline.saturating_duration_since(Instant::now());
+                let _ = tokio::time::timeout(left, connected.refresh_listings()).await;
                 if self.install(&slot, connected, 0).is_err() {
                     unreachable!("a new slot is still on its first generation");
                 }
@@ -318,10 +531,19 @@ impl Supervisor {
         }
         let connection = connected.connection.clone();
         let failed = connected.transport_failed.clone();
+        // The listings the watcher maintains and the signal a list_changed arrives on.
+        let listings = connected.listings_slot();
+        let listings_changed = connected.listings_changed();
         *lock(&slot.connection, "MCP connection") = Some(connected);
         slot.closing.store(false, Ordering::SeqCst);
-        slot.set_state(McpServerState::Connected { tools: 0 });
-        let new = tokio::spawn(self.clone().watch(slot.clone(), connection, failed));
+        slot.set_state(McpServerState::connected(0));
+        let new = tokio::spawn(self.clone().watch(
+            slot.clone(),
+            connection,
+            failed,
+            listings,
+            listings_changed,
+        ));
         // A replaced watcher is aborted, unless it is the task that is calling us, which ends
         // by itself.
         if let Some(old) = watcher.replace(new)
@@ -337,23 +559,47 @@ impl Supervisor {
         slot: Arc<ServerSlot>,
         connection: McpConnection,
         failed: Arc<Notify>,
+        listings: Arc<Mutex<Listings>>,
+        listings_changed: Arc<Notify>,
     ) {
-        if slot.is_remote() {
+        // The initial pull rode install; here the listings are re-pulled on every list_changed
+        // notification the transport tap forwards.
+        loop {
             tokio::select! {
-                _ = connection.closed() => {}
-                _ = failed.notified() => {
+                _ = connection.closed() => break,
+                _ = failed.notified(), if slot.is_remote() => {
                     // rmcp's HTTP worker never ends the connection of a dead server, so it is
                     // closed here, which retires its tools.
                     connection.close().await;
+                    break;
+                }
+                _ = listings_changed.notified() => {
+                    // The refresh rides as an in-flight future so a connection loss or a
+                    // transport failure stays selectable while a pull runs; losing the
+                    // connection cancels the refresh, keeping the listings it already
+                    // committed, and each listing's own deadline bounds a silent server.
+                    let mut refresh = Box::pin(refresh_listings(&connection, &listings));
+                    tokio::select! {
+                        _ = connection.closed() => break,
+                        _ = failed.notified(), if slot.is_remote() => {
+                            // rmcp's HTTP worker never ends the connection of a dead
+                            // server, so it is closed here, which retires its tools.
+                            connection.close().await;
+                            break;
+                        }
+                        _ = &mut refresh => {}
+                    }
+                    // The mention snapshot and the counts follow the listings just pulled.
+                    (self.refresh)();
                 }
             }
-        } else {
-            connection.closed().await;
         }
         if slot.closing.load(Ordering::SeqCst) {
             return;
         }
         drop(lock(&slot.connection, "MCP connection").take());
+        // The mention snapshot still lists the lost server's resources; rebuild it.
+        (self.refresh)();
         if slot.is_remote() {
             self.reconnect_with_backoff(&slot).await;
         } else {
@@ -370,6 +616,11 @@ impl Supervisor {
             tokio::time::sleep(RECONNECT_BASE * (1 << (attempt - 1))).await;
             match self.attempt(&slot.spec, CONNECT_TIMEOUT).await {
                 Ok(connected) => {
+                    // The listings ride in with the connection, so the reconnect notice and
+                    // the counts report them together; the pull is bounded like the attempt,
+                    // so an unanswered listing cannot stall the reconnect.
+                    let _ =
+                        tokio::time::timeout(CONNECT_TIMEOUT, connected.refresh_listings()).await;
                     if let Err(stale) = self.install(slot, connected, generation) {
                         stale.connection.close().await;
                         return;
@@ -389,6 +640,9 @@ impl Supervisor {
         let reason = last.map_or_else(|| "no reason".to_string(), |error| chain(&error));
         slot.set_state(McpServerState::Failed(reason));
         self.approver.warn(&disconnected(slot.name()));
+        // The loss already dropped the server's mentions; the callback also covers a caller
+        // that only observes the final state.
+        (self.refresh)();
     }
 
     /// Restarts `slot` by hand, with no backoff: its watcher stops, its connection closes, and a
@@ -405,6 +659,8 @@ impl Supervisor {
         }
         match self.attempt(&slot.spec, CONNECT_TIMEOUT).await {
             Ok(connected) => {
+                // An unanswered listing cannot stall a manual reconnect either.
+                let _ = tokio::time::timeout(CONNECT_TIMEOUT, connected.refresh_listings()).await;
                 match self.install(slot, connected, generation) {
                     Ok(()) => (self.refresh)(),
                     Err(stale) => stale.connection.close().await,
@@ -697,9 +953,10 @@ mod tests {
         assert_eq!(rig.refreshed.load(Ordering::SeqCst), 0);
         rig.script.servers.lock().unwrap().remove(0).abort();
         wait_for(&slot, McpServerState::Reconnecting { attempt: 2 }).await;
-        wait_for(&slot, McpServerState::Connected { tools: 0 }).await;
+        wait_for(&slot, McpServerState::connected(0)).await;
         assert_eq!(rig.script.attempts(), 3);
-        assert_eq!(rig.refreshed.load(Ordering::SeqCst), 1);
+        // The loss rebuilt the mention snapshot once and the reconnect's install once.
+        assert_eq!(rig.refreshed.load(Ordering::SeqCst), 2);
         let notices = rig.said.notices.lock().unwrap().clone();
         assert_eq!(notices, ["MCP server `srv` reconnected"]);
         // The new connection is watched too: losing it starts another round.
@@ -718,6 +975,39 @@ mod tests {
         failed.notify_one();
         wait_for(&slot, McpServerState::Reconnecting { attempt: 1 }).await;
         assert!(connection.is_closed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_list_changed_notification_refreshes_the_listings_and_rebuilds_the_mentions() {
+        let first = live("srv", "http").await;
+        // Notified before the watcher waits: the permit the notification stores is consumed by
+        // its first `notified()`.
+        let changed = first.connected.listings_changed();
+        let rig = rig(vec![Ok(first)]);
+        let (_slot, _) = rig.supervisor.start(spec("http")).await;
+        assert_eq!(rig.refreshed.load(Ordering::SeqCst), 0);
+        changed.notify_one();
+        for _ in 0..200 {
+            if rig.refreshed.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert_eq!(rig.refreshed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lost_connection_rebuilds_the_mentions_and_so_does_the_final_failure() {
+        let rig = rig(vec![Ok(live("srv", "http").await), permanent()]);
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        rig.script.servers.lock().unwrap().remove(0).abort();
+        wait_for(
+            &slot,
+            McpServerState::Failed("MCP server `srv`: scripted failure".into()),
+        )
+        .await;
+        // Once when the connection is dropped, once when the reconnect gives up.
+        assert_eq!(rig.refreshed.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test(start_paused = true)]
@@ -762,7 +1052,7 @@ mod tests {
         settle().await;
         tokio::time::sleep(Duration::from_secs(60)).await;
         assert_eq!(rig.script.attempts(), 1);
-        assert_eq!(slot.state(), McpServerState::Connected { tools: 0 });
+        assert_eq!(slot.state(), McpServerState::connected(0));
     }
 
     #[tokio::test(start_paused = true)]
@@ -780,7 +1070,7 @@ mod tests {
         let rig = rig(vec![transient(), Ok(live("srv", "http").await)]);
         let (slot, result) = rig.supervisor.start(spec("http")).await;
         assert!(result.is_ok());
-        assert_eq!(slot.state(), McpServerState::Connected { tools: 0 });
+        assert_eq!(slot.state(), McpServerState::connected(0));
         assert_eq!(rig.script.attempts(), 2);
     }
 
@@ -858,7 +1148,7 @@ mod tests {
         rig.supervisor.reconnect(&slot).await.expect("reconnects");
         assert_eq!(Instant::now(), before, "no backoff");
         assert!(first_connection.is_closed());
-        assert_eq!(slot.state(), McpServerState::Connected { tools: 0 });
+        assert_eq!(slot.state(), McpServerState::connected(0));
         assert_eq!(rig.script.attempts(), 2);
         assert_eq!(rig.refreshed.load(Ordering::SeqCst), 1);
         // Closing the old connection ourselves started no reconnect of its own.
@@ -877,7 +1167,7 @@ mod tests {
         let (slot, _) = rig.supervisor.start(spec("stdio")).await;
         assert!(matches!(slot.state(), McpServerState::Failed(_)));
         rig.supervisor.reconnect(&slot).await.expect("it comes up");
-        assert_eq!(slot.state(), McpServerState::Connected { tools: 0 });
+        assert_eq!(slot.state(), McpServerState::connected(0));
         let error = rig.supervisor.reconnect(&slot).await.unwrap_err();
         assert_eq!(error.kind, McpErrorKind::Permanent);
         assert!(matches!(slot.state(), McpServerState::Failed(_)));
@@ -887,11 +1177,11 @@ mod tests {
     async fn dropping_the_servers_ends_their_watchers_without_a_reconnect() {
         let rig = rig(vec![Ok(live("srv", "http").await)]);
         let (slot, _) = rig.supervisor.start(spec("http")).await;
-        let mut servers = McpServers::default();
+        let servers = McpServers::default();
         servers.insert(slot.clone());
         assert_eq!(
             servers.states(),
-            [("srv".to_string(), McpServerState::Connected { tools: 0 })]
+            [("srv".to_string(), McpServerState::connected(0))]
         );
         drop(servers);
         settle().await;
@@ -906,7 +1196,7 @@ mod tests {
         let connection = live.connected.connection.clone();
         let rig = rig(vec![Ok(live)]);
         let (slot, _) = rig.supervisor.start(spec("http")).await;
-        let mut servers = McpServers::default();
+        let servers = McpServers::default();
         servers.insert(slot.clone());
         let tools = ToolServer::new().run();
 
@@ -932,7 +1222,7 @@ mod tests {
     async fn removing_a_failed_server_just_drops_its_slot() {
         let rig = rig(vec![permanent()]);
         let (slot, _) = rig.supervisor.start(spec("stdio")).await;
-        let mut servers = McpServers::default();
+        let servers = McpServers::default();
         servers.insert(slot);
         let tools = ToolServer::new().run();
         assert_eq!(
@@ -947,7 +1237,7 @@ mod tests {
         let rig = rig(vec![Ok(live("srv", "http").await)]);
         let (slot, _) = rig.supervisor.start(spec("http")).await;
         let generation = slot.generation.load(Ordering::SeqCst);
-        let mut servers = McpServers::default();
+        let servers = McpServers::default();
         servers.insert(slot.clone());
         let tools = ToolServer::new().run();
         servers.remove("srv", &tools, MCP_DRAIN_BOUND).await;

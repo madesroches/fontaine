@@ -5,9 +5,9 @@ server runs as a child process (stdio) or is reached over streamable HTTP, and e
 becomes a tool the model can call. MCP tools go through the same permission pipeline as every other
 tool; nothing a server says about itself changes how they are judged.
 
-In the terminal UI, `/mcp` lists the servers and whether each is connected (with how many tools it
-registered), pending (being reconnected), failed, left off or not loaded, and `/mcp reconnect`
-restarts them; see [Reconnecting](#reconnecting). `fontaine mcp` adds, lists, shows and removes
+In the terminal UI, `/mcp` lists the servers and whether each is connected (with how many tools,
+resources and prompts it listed), pending (being reconnected), failed, left off or not loaded,
+and `/mcp reconnect` restarts them; see [Reconnecting](#reconnecting). `fontaine mcp` adds, lists, shows and removes
 servers from the command line; see [The `fontaine mcp` command](#the-fontaine-mcp-command).
 
 ## Declaring servers
@@ -96,8 +96,59 @@ A tool `create_issue` of the server `github` is registered as `mcp__github__crea
 name [permission rules](permissions.md#rules) use. A character in a tool name that the
 rule grammar cannot name becomes `_`. When a server announces that its tool list changed, Fontaine
 fetches the list again and registers the new tools the same way; tools that went away are removed.
-Only tools are used; resources and prompts are not. A server may also ask you for input while a
-tool runs, as [described below](#requests-for-input).
+Besides tools, a server can offer [resources](#resources) and [prompts](#prompts). A server may
+also ask you for input while a tool runs, as [described below](#requests-for-input).
+
+## Resources
+
+A resource is data a server exposes behind a URI. After a server connects, Fontaine pulls its
+resource listing once — only when the server declared the `resources` capability — and again
+each time the server announces a `resources/list_changed` notification; a failed pull keeps
+the previous listing. The model sees resources through two always-registered built-in tools:
+
+- `list_mcp_resources` lists every resource of every connected server that declared the
+capability: `server`, `uri`, `name`, `description` and `mime type`, or an explanation when
+none did. Both tools are `arbitrary`, like everything MCP: the listing is the cached,
+server-declared text Fontaine pulled at connect and on each list change (no server request
+per call) and a read is a server round trip, so every call is floor-gated and
+guardian-judged.
+- `read_mcp_resource` reads one resource by `server` and `uri`. Text contents come back as
+text; a blob is noted by its mime type and size, like an image result. A result over the MCP
+output limit is saved to a file whose path the result names, and every result passes the
+[result scanner](guardian.md) like any tool result: server content is untrusted.
+
+In the terminal UI the `@` mention popup also lists resource URIs, labelled with their server.
+Accepting one inserts `@<uri>` into the message (or `@<uri>@<server>` when more than one
+connected server exposes the same uri, so the model can tell the duplicates apart), which is
+sent as typed; the mention is inert text. The model reads the content through
+`read_mcp_resource` — this keeps every byte of server content behind the permission pipeline,
+instead of inlining it into your message at send time. While at least one resources-capable
+server is connected, the system prompt tells the model what an `@<uri>` token names.
+
+## Prompts
+
+A prompt is server-supplied text the *user* can inject into the conversation as a slash
+command. After a server connects, Fontaine pulls its prompt listing once — only when the
+server declared the `prompts` capability — and again on a `prompts/list_changed`
+notification. Every listed prompt becomes a `/mcp__<server>__<prompt>` command, cleaned to
+the rule grammar the same way tool names are, and the `/` menu shows it with its declared
+argument names as the hint. Running the command calls `prompts/get` on the server and starts
+a turn with the fetched text; the transcript shows your invocation, so the guardian judges
+the turn against what you typed. Arguments are `key=value` pairs:
+
+```
+/mcp__repo__greet name=Ada mood=calm
+```
+
+A missing required argument, a pair that is not `key=value`, or an unknown key fails the
+command with a notice naming the prompt's declared arguments and an example invocation, and
+no turn starts. The answer is used only when every message it carries is user-role text;
+an answer with an assistant-role message or non-text content (an image, audio, an embedded
+or linked resource) fails the command instead of folding server-controlled content into
+your turn. Prompt text is server-controlled, but it enters the conversation only when you
+type the command — the same trust boundary as running a skill. It is not scanner-staged: it
+arrives as your own message, like a skill's expansion. Prompt commands exist only in the
+terminal UI; headless `fontaine -p` understands no slash commands beyond `/goal`.
 
 A server that cannot be started, or that never answers the handshake, is reported (a notice in the
 terminal UI, a line on stderr in a headless run) and left out; the session goes on without it.

@@ -370,6 +370,17 @@ pub fn build_agent_types(
     Ok((types, warnings))
 }
 
+/// The session's agent types and its state, one after the other: the state derives from the
+/// types, so `new` gets both from one call.
+pub(super) fn session_types_and_state(
+    setup: &mut AgentSetup,
+    tree: &Arc<AgentTree>,
+) -> Result<(Arc<Live<AgentTypes>>, Arc<SessionState>), RuntimeError> {
+    let agent_types = session_agent_types(setup)?;
+    let state = session_state(setup, tree, &agent_types);
+    Ok((agent_types, state))
+}
+
 /// The session's agent types, built against its model roles. The warnings about a repository's
 /// agent files join the startup warnings.
 pub(super) fn session_agent_types(
@@ -1047,6 +1058,7 @@ fn child_runner(
                     memory: None,
                     skill_index: None,
                     scheduling: None,
+                    mcp: None,
                     output_style: None,
                     append: Some(&layer),
                     afk: preamble_state.afk_on(),

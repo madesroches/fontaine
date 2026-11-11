@@ -49,12 +49,44 @@ impl Work {
 }
 
 impl<R: FnMut(&mut crate::App)> Ui<R> {
-    /// The command-menu rows follow the skills the session has now.
-    fn refresh_menu(&mut self, runtime: &AgentRuntime) {
-        let (skill_rows, _hidden) = crate::commands::skill_menu(runtime.slash_skills());
+    /// The command-menu rows follow the skills and MCP prompts the session has now. Prompt
+    /// rows shadow like skills: a prompt named like a built-in or a skill is hidden, with one
+    /// notice per name per session.
+    pub(crate) fn refresh_menu(&mut self, runtime: &AgentRuntime) {
+        // Sample the revision before reading the rows, as the draw loop does: a watcher bump
+        // landing between the read and the store must not mark rows the draw loop never
+        // installed as consumed.
+        let revision = runtime.slash_prompts_revision();
+        let prompts = runtime.slash_prompts();
+        self.refresh_menu_with(runtime, &prompts);
+        // The draw loop keys its own rebuild on the listing revision; keep the cache in step
+        // so the next draw does not pay for a rebuild the menu already took.
+        self.prompts_revision = Some(revision);
+    }
+
+    /// [`refresh_menu`](Self::refresh_menu) against a prompt listing the caller already read,
+    /// so the draw loop's divergence check pays for one `slash_prompts` call, not two.
+    pub(crate) fn refresh_menu_with(
+        &mut self,
+        runtime: &AgentRuntime,
+        prompts: &[(String, Option<String>, String)],
+    ) {
+        let skills = runtime.slash_skills();
+        let (skill_rows, _hidden_skills) = crate::commands::skill_menu(skills.clone());
+        let (prompt_rows, hidden_prompts) = crate::commands::prompt_menu(prompts.to_vec(), &skills);
         self.app.menu = crate::commands::builtin_menu();
         self.app.menu.extend(skill_rows);
+        self.app.menu.extend(prompt_rows);
         self.app.menu.sort_by(|a, b| a.name.cmp(&b.name));
+        self.app.menu_prompts = prompts.to_vec();
+        for name in hidden_prompts {
+            if !self.app.noticed_hidden_prompt(&name) {
+                self.app.mark_hidden_prompt_noticed(&name);
+                self.app.transcript.notice(format!(
+                    "MCP prompt /{name} is hidden by the command or skill of the same name"
+                ));
+            }
+        }
     }
 
     /// A plugin change runs between turns, with nothing in the background that the changed

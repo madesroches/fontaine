@@ -145,7 +145,7 @@ pub struct HistorySearch {
 #[derive(Clone, Debug)]
 pub struct CompletionList {
     pub mention: Token,
-    pub matches: Vec<String>,
+    pub matches: Vec<complete::Candidate>,
     pub selected: usize,
 }
 
@@ -313,6 +313,12 @@ pub struct App {
     slash_dismissed: Option<String>,
     /// The workspace files `@` completes, as paths under the roots.
     files: Arc<Vec<String>>,
+    /// The MCP resources `@` completes, copied from the runtime each draw.
+    mcp_mentions: Arc<Vec<fontaine_core::agent::McpResourceSummary>>,
+    /// The MCP prompt rows the menu was last built with, which a divergence rebuilds it.
+    pub menu_prompts: Vec<(String, Option<String>, String)>,
+    /// Prompt shadowing notices already shown, so a rebuild does not repeat them.
+    hidden_prompt_notices: std::collections::HashSet<String>,
     pub primary_root: PathBuf,
     pub theme: Theme,
     approvals_opened: u64,
@@ -431,6 +437,8 @@ impl App {
             config: None,
             providers: None,
             menu: builtin_menu(),
+            menu_prompts: Vec::new(),
+            hidden_prompt_notices: std::collections::HashSet::new(),
             running_agents: 0,
             scheduled: 0,
             goal: None,
@@ -454,6 +462,7 @@ impl App {
             slash_selected: (0, String::new(), 0),
             slash_dismissed: None,
             files: Arc::default(),
+            mcp_mentions: Arc::default(),
             primary_root: PathBuf::new(),
             theme: Theme::default(),
             approvals_opened: 0,
@@ -601,6 +610,25 @@ impl App {
         }
     }
 
+    /// Copies the runtime's resource mention list, re-ranking an open `@` list when it
+    /// changed. The completion index is advisory: a stale list only misses a suggestion.
+    pub fn set_mentions(&mut self, mentions: Arc<Vec<fontaine_core::agent::McpResourceSummary>>) {
+        if !Arc::ptr_eq(&self.mcp_mentions, &mentions) {
+            self.mcp_mentions = mentions;
+            self.refresh_completion();
+        }
+    }
+
+    /// Whether a prompt shadowing notice for `name` was shown already.
+    pub fn noticed_hidden_prompt(&self, name: &str) -> bool {
+        self.hidden_prompt_notices.contains(name)
+    }
+
+    /// Remembers that the prompt shadowing notice for `name` was shown.
+    pub fn mark_hidden_prompt_noticed(&mut self, name: &str) {
+        self.hidden_prompt_notices.insert(name.to_string());
+    }
+
     /// Search and completion yield to anything that needs an answer.
     fn refresh_completion(&mut self) {
         let previous = self.completion.take();
@@ -619,7 +647,12 @@ impl App {
             return;
         }
         self.dismissed = None;
-        let matches = complete::rank(&mention.query, &self.files, &self.primary_root);
+        let matches = complete::rank(
+            &mention.query,
+            &self.files,
+            &self.mcp_mentions,
+            &self.primary_root,
+        );
         if matches.is_empty() {
             return;
         }
@@ -637,13 +670,17 @@ impl App {
         let Some(list) = self.completion.take() else {
             return;
         };
-        let path = &list.matches[list.selected];
-        // A directory gets no space so the list reopens on its children.
-        let space = if path.ends_with('/') { "" } else { " " };
+        let candidate = &list.matches[list.selected];
+        // A directory gets no space so the list reopens on its children; a resource, like a
+        // file, ends the token.
+        let space = match candidate {
+            complete::Candidate::File(path) if path.ends_with('/') => "",
+            _ => " ",
+        };
         self.input.replace_range(
             list.mention.start,
             list.mention.end,
-            &format!("@{path}{space}"),
+            &format!("@{}{space}", candidate.accepted(&self.mcp_mentions)),
         );
         self.history.reset();
         self.refresh_completion();
@@ -1636,7 +1673,11 @@ impl App {
             KeyCode::Up => list.selected = list.selected.saturating_sub(1),
             KeyCode::Down => list.selected = (list.selected + 1).min(list.matches.len() - 1),
             KeyCode::Tab => {
-                let names: Vec<&str> = list.matches.iter().map(String::as_str).collect();
+                let names: Vec<&str> = list
+                    .matches
+                    .iter()
+                    .map(|candidate| candidate.insertion())
+                    .collect();
                 let prefix = common_prefix(&names);
                 let canonical = |text: &str| text.to_lowercase().replace('\\', "/");
                 let narrows = list.matches.len() > 1
@@ -3127,7 +3168,13 @@ mod tests {
         let mut app = app_with_files();
         type_text(&mut app, "read @ma");
         let list = app.completion.as_ref().expect("a list");
-        assert_eq!(list.matches, vec!["src/main.rs", "src/manual.md"]);
+        assert_eq!(
+            list.matches,
+            vec![
+                complete::Candidate::File("src/main.rs".into()),
+                complete::Candidate::File("src/manual.md".into()),
+            ]
+        );
         press(&mut app, KeyCode::Down);
         assert_eq!(press(&mut app, KeyCode::Tab), Action::None);
         assert_eq!(app.input.text(), "read @src/manual.md ");
@@ -3137,6 +3184,74 @@ mod tests {
         type_text(&mut app, "@read");
         assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
         assert_eq!(app.input.text(), "@README.md ");
+    }
+
+    #[test]
+    fn a_resource_completes_like_a_file_and_inserts_the_uri() {
+        let mut app = app_with_files();
+        app.set_mentions(Arc::new(vec![fontaine_core::agent::McpResourceSummary {
+            server: "repo".to_string(),
+            uri: "repo://info".to_string(),
+            name: "repo_info".to_string(),
+            description: Some("Repository information".to_string()),
+        }]));
+        type_text(&mut app, "read @repo");
+        let list = app.completion.as_ref().expect("a list");
+        assert_eq!(
+            list.matches,
+            vec![complete::Candidate::Resource {
+                server: "repo".to_string(),
+                uri: "repo://info".to_string(),
+                name: "repo_info".to_string(),
+                description: Some("Repository information".to_string()),
+            }],
+            "the file index holds nothing matching; the resource does"
+        );
+        assert_eq!(press(&mut app, KeyCode::Tab), Action::None);
+        assert_eq!(app.input.text(), "read @repo://info ");
+
+        // A refresh that changes the resources re-ranks the open list.
+        app.input.take();
+        app.set_mentions(Arc::new(vec![fontaine_core::agent::McpResourceSummary {
+            server: "repo".to_string(),
+            uri: "repo://new".to_string(),
+            name: String::new(),
+            description: None,
+        }]));
+        type_text(&mut app, "@new");
+        let list = app.completion.as_ref().expect("the refreshed list");
+        assert_eq!(list.matches.len(), 1, "{list:?}");
+        assert_eq!(list.matches[0].insertion(), "repo://new");
+    }
+
+    #[test]
+    fn a_resource_mention_two_servers_share_carries_the_selected_server() {
+        let mut app = app_with_files();
+        let mention = |server: &str, uri: &str| fontaine_core::agent::McpResourceSummary {
+            server: server.to_string(),
+            uri: uri.to_string(),
+            name: String::new(),
+            description: None,
+        };
+        app.set_mentions(Arc::new(vec![
+            mention("alpha", "shared://doc"),
+            mention("beta", "shared://doc"),
+            mention("alpha", "only://here"),
+        ]));
+        type_text(&mut app, "@shared");
+        press(&mut app, KeyCode::Down);
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(
+            app.input.text(),
+            "@shared://doc@beta ",
+            "an ambiguous uri must name the selected server so the reader can resolve it"
+        );
+
+        // A uri only one server lists stays the plain `@<uri>`.
+        app.input.take();
+        type_text(&mut app, "@only");
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(app.input.text(), "@only://here ");
     }
 
     #[test]
@@ -3612,7 +3727,10 @@ mod tests {
         assert_eq!(press(&mut app, KeyCode::Tab), Action::None);
         assert_eq!(app.input.text(), "@tasks/");
         let list = app.completion.as_ref().expect("the children are listed");
-        assert_eq!(list.matches, vec!["tasks/plan.md"]);
+        assert_eq!(
+            list.matches,
+            vec![complete::Candidate::File("tasks/plan.md".into())]
+        );
     }
 
     #[test]

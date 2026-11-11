@@ -14,7 +14,7 @@ use fontaine_tools::risk::RiskClass;
 use rig_core::tool::{Tool, ToolContext};
 use rig_tools::{OutputLimit, Seen, WriteArgs};
 
-const EXPECTED: [(&str, RiskClass); 12] = [
+const EXPECTED: [(&str, RiskClass); 14] = [
     ("read", RiskClass::ReadOnly),
     ("ls", RiskClass::ReadOnly),
     ("glob", RiskClass::ReadOnly),
@@ -27,6 +27,8 @@ const EXPECTED: [(&str, RiskClass); 12] = [
     ("job_cancel", RiskClass::Arbitrary),
     ("monitor", RiskClass::Arbitrary),
     ("webfetch", RiskClass::Arbitrary),
+    ("list_mcp_resources", RiskClass::Arbitrary),
+    ("read_mcp_resource", RiskClass::Arbitrary),
 ];
 
 fn registered() -> Vec<builtins::Registered> {

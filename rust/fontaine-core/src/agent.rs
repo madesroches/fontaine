@@ -6,6 +6,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 
 use fontaine_agents::registry::AgentTypes;
@@ -81,16 +82,20 @@ pub use advisor::ReportedAdvisor;
 pub(crate) use build::apply_common;
 use build::{Parts, build_agent};
 pub use mcp::{
-    McpOutcome, McpServerPlan, headers_helper_refusal, mcp_plan, probe_server, resolved_server,
-    server_digest, server_spec,
+    McpOutcome, McpResourceSummary, McpServerPlan, headers_helper_refusal, mcp_plan, probe_server,
+    resolved_server, server_digest, server_spec,
 };
+use mcp_supervisor::McpServers;
 pub use mcp_supervisor::{
     McpServerState, RECONNECT_ATTEMPTS as MCP_RECONNECT_ATTEMPTS, ReconnectTarget,
 };
 pub use messaging::{Delivered, MessageRefusal};
 pub use model_source::{GuardianRef, SessionModels};
 pub use models::{CredentialEffect, GuardianQuota, Switched};
+use reload::PluginState;
 pub use rewind::{RewindError, RewindOutcome};
+use setup::ChildDeps;
+use setup::extension_runtimes as ext_runtimes;
 pub use setup::{build_agent_types, build_composition, build_guardian, build_guardian_telling};
 
 pub type EnvLookup = Arc<dyn Fn(&str) -> Option<OsString> + Send + Sync>;
@@ -200,6 +205,12 @@ pub struct AgentRuntime {
     /// The workspace files `@` completion offers: the session-start index, rebuilt by
     /// [`AgentRuntime::refresh_files`].
     pub files: Arc<RwLock<Arc<Vec<String>>>>,
+    /// The MCP resources `@` completion offers, refreshed after connect, reconnect and a
+    /// `list_changed` refresh.
+    pub mcp_mentions: Arc<RwLock<Arc<Vec<McpResourceSummary>>>>,
+    /// Bumped by every mention rebuild, which rides every listing change, so a surface caching
+    /// MCP prompt rows refreshes them only when the listings may have moved.
+    pub mcp_listing_revision: Arc<AtomicU64>,
     pipeline: Arc<PermissionPipeline>,
     approver: Arc<dyn Approver>,
     seen: Seen,
@@ -230,6 +241,8 @@ pub struct AgentRuntime {
     native_search: bool,
     /// Whether the built prompt carries the AFK guidance.
     prompt_afk: bool,
+    /// The `@<uri>` resource section the built prompt carries, if any.
+    prompt_mcp: Option<String>,
 }
 
 /// The shell hooks and the status line run in: `sh` off Windows, Git Bash when found, else
@@ -313,45 +326,40 @@ fn warn_if_no_search(setup: &AgentSetup) {
 impl AgentRuntime {
     pub fn new(mut setup: AgentSetup) -> Result<AgentRuntime, RuntimeError> {
         setup::prepare(&mut setup);
-        let plugin_state = reload::PluginState::at_start(&setup);
-        let tree = setup::agent_tree(&setup);
-        let agent_types = setup::session_agent_types(&mut setup)?;
-        let state = setup::session_state(&setup, &tree, &agent_types);
-        let setup::Gates {
-            pipeline,
-            retained,
-            instruction_stage,
-            results,
-            llm_scanner,
-        } = setup::gates(&mut setup, &tree, &state)?;
-        let (extensions, skills) =
-            setup::extension_runtimes(setup.extensions, &state, setup.project_executables);
-        let (steering, seen) = (Steering::default(), Seen::default());
-        let (main, tool_server, runner, kills) = setup::subagent_support(
-            &setup::ChildDeps::new(&retained, &state, &setup.approver, &steering, &results),
-            &tree,
-            &setup.models,
-            &setup.config,
+        let (plugin_state, tree) = (PluginState::at_start(&setup), setup::agent_tree(&setup));
+        let (agent_types, state) = setup::session_types_and_state(&mut setup, &tree)?;
+        let gates = setup::gates(&mut setup, &tree, &state)?;
+        let (exts, skills) = ext_runtimes(setup.extensions, &state, setup.project_executables);
+        let (steering, seen, mcp) = (Steering::default(), Seen::default(), McpServers::default());
+        let deps = ChildDeps::new(
+            &gates.retained,
+            &state,
+            &setup.approver,
+            &steering,
+            &gates.results,
         );
+        let (main, tool_server, runner, kills) =
+            setup::subagent_support(&deps, &tree, &setup.models, &setup.config);
         let (agent, pieces, loaded, native) = build_agent(&Parts {
-            setup: &retained,
+            setup: &gates.retained,
             roots: state.scope().roots(),
-            pipeline: &pipeline,
+            pipeline: &gates.pipeline,
             state: &state,
             seen: &seen,
             models: &setup.models,
             config: &setup.config,
             session: &setup.session,
             tool_server: &tool_server,
-            results: &results,
+            results: &gates.results,
             skills: &skills,
             approver: &setup.approver,
             types: &agent_types,
             runner: &runner,
             output_style: None,
             steering: &steering,
-            instructions: &instruction_stage,
+            instructions: &gates.instruction_stage,
             kills: &kills,
+            mcp: &mcp,
         })?;
         setup::rebuild_agents(&state, &setup.session, &tree, &agent_types.get());
         Ok(AgentRuntime {
@@ -359,7 +367,6 @@ impl AgentRuntime {
             prompt_pieces: pieces,
             launch_instructions: loaded,
             prompt_afk: state.afk_on(),
-            instruction_stage,
             start_mode: state.mode(),
             state,
             session: setup.session,
@@ -373,24 +380,28 @@ impl AgentRuntime {
             origin: setup.origin,
             steering,
             files: Arc::default(),
-            pipeline,
+            mcp_mentions: Arc::default(),
+            mcp_listing_revision: Arc::default(),
+            pipeline: gates.pipeline,
             approver: setup.approver,
             seen,
-            setup: retained,
+            setup: gates.retained,
             tool_server,
-            results,
+            results: gates.results,
             kills,
-            llm_scanner,
+            llm_scanner: gates.llm_scanner,
             skills,
             agent_types,
-            extensions,
+            extensions: exts,
             main,
             runner,
             output_style: None,
-            mcp: Default::default(),
+            mcp,
             plugin_state,
             listings: Vec::new(),
             native_search: native,
+            prompt_mcp: None,
+            instruction_stage: gates.instruction_stage,
         })
     }
 
@@ -417,12 +428,14 @@ impl AgentRuntime {
             steering: &self.steering,
             instructions: &self.instruction_stage,
             kills: &self.kills,
+            mcp: &self.mcp,
         })
     }
 
     /// Rebuilds the registry and the agent for the current scope.
     fn rebuild(&mut self) -> Result<(), RuntimeError> {
         let prompt_afk = self.state.afk_on();
+        let mcp = prompt::mcp_resource_section(&self.mcp.listings());
         let (agent, prompt_pieces, launch_instructions, native_search) = self.build_candidate()?;
         self.install_agent(
             agent,
@@ -430,6 +443,7 @@ impl AgentRuntime {
             launch_instructions,
             native_search,
             prompt_afk,
+            mcp,
         );
         Ok(())
     }
@@ -441,9 +455,11 @@ impl AgentRuntime {
         launch_instructions: Loaded,
         native_search: bool,
         prompt_afk: bool,
+        prompt_mcp: Option<String>,
     ) {
         self.native_search = native_search;
         self.prompt_afk = prompt_afk;
+        self.prompt_mcp = prompt_mcp;
         self.agent = agent;
         self.prompt_pieces = prompt_pieces;
         self.launch_instructions = launch_instructions;
@@ -466,7 +482,8 @@ impl AgentRuntime {
         self.notice_disk_changes();
         let offered = self.native_search_entry().is_some();
         let afk = self.state.afk_on();
-        if offered == self.native_search && afk == self.prompt_afk {
+        let mcp = prompt::mcp_resource_section(&self.mcp.listings());
+        if offered == self.native_search && afk == self.prompt_afk && mcp == self.prompt_mcp {
             return Ok(());
         }
         match self.rebuild() {
@@ -1184,7 +1201,8 @@ impl AgentRuntime {
             listed: spec.is_some(),
             system_prompt: context::text_tokens(&pieces.base)
                 + count(&pieces.append)
-                + count(&pieces.scheduling),
+                + count(&pieces.scheduling)
+                + count(&pieces.mcp),
             output_style: count(&pieces.output_style),
             instructions: pieces
                 .instructions

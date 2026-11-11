@@ -624,6 +624,7 @@ impl AgentRuntime {
         before_tools: &[String],
     ) -> Result<bool, crate::runtime_error::RuntimeError> {
         let prompt_afk = self.state.afk_on();
+        let prompt_mcp = crate::prompt::mcp_resource_section(&self.mcp.listings());
         let (agent, prompt_pieces, launch_instructions, native_search) = self.build_candidate()?;
         if prompt_pieces.join() == before_prompt && self.tool_fingerprint() == before_tools {
             return Ok(false);
@@ -634,6 +635,7 @@ impl AgentRuntime {
             launch_instructions,
             native_search,
             prompt_afk,
+            prompt_mcp,
         );
         Ok(true)
     }

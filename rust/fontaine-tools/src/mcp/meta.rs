@@ -9,9 +9,10 @@ use std::sync::{Arc, RwLock};
 use super::output::{DEFAULT_CHAR_LIMIT, MAX_CHAR_LIMIT};
 use crate::lock::{read, write};
 use rmcp::RoleClient;
-use rmcp::model::{ServerJsonRpcMessage, ServerResult, Tool};
+use rmcp::model::{ServerJsonRpcMessage, ServerNotification, ServerResult, Tool};
 use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
+use tokio::sync::Notify;
 
 pub const REQUIRES_USER_INTERACTION: &str = "anthropic/requiresUserInteraction";
 pub const MAX_RESULT_SIZE_CHARS: &str = "anthropic/maxResultSizeChars";
@@ -71,15 +72,23 @@ fn marks(tool: &Tool) -> bool {
         .is_some_and(|value| value.as_bool() == Some(true))
 }
 
-/// Passes every message through unchanged, noting what a `tools/list` response declares.
+/// Passes every message through unchanged, noting what a `tools/list` response declares and
+/// signalling when the server announces its resource or prompt list changed.
 pub(crate) struct MetaTap<T> {
     inner: T,
     meta: ToolMeta,
+    /// Woken by a `resources/list_changed` or `prompts/list_changed` notification; the
+    /// connection's owner re-pulls the listings. A permit is stored when nobody waits yet.
+    listings_changed: Arc<Notify>,
 }
 
 impl<T> MetaTap<T> {
-    pub(crate) fn new(inner: T, meta: ToolMeta) -> Self {
-        MetaTap { inner, meta }
+    pub(crate) fn new(inner: T, meta: ToolMeta, listings_changed: Arc<Notify>) -> Self {
+        MetaTap {
+            inner,
+            meta,
+            listings_changed,
+        }
     }
 }
 
@@ -99,12 +108,24 @@ impl<T: Transport<RoleClient>> Transport<RoleClient> for MetaTap<T> {
 
     async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
         let message = self.inner.receive().await?;
-        if let ServerJsonRpcMessage::Response(response) = &message
-            && let ServerResult::ListToolsResult(page) = &response.result
-        {
-            for tool in &page.tools {
-                self.meta.record(tool);
+        match &message {
+            ServerJsonRpcMessage::Response(response)
+                if matches!(&response.result, ServerResult::ListToolsResult(_)) =>
+            {
+                if let ServerResult::ListToolsResult(page) = &response.result {
+                    for tool in &page.tools {
+                        self.meta.record(tool);
+                    }
+                }
             }
+            ServerJsonRpcMessage::Notification(notification) => match &notification.notification {
+                ServerNotification::ResourceListChangedNotification(_)
+                | ServerNotification::PromptListChangedNotification(_) => {
+                    self.listings_changed.notify_one();
+                }
+                _ => {}
+            },
+            _ => {}
         }
         Some(message)
     }
@@ -170,8 +191,19 @@ mod tests {
 
     /// Feeds `messages` through a tap, asserting each comes out unchanged.
     async fn tap(messages: Vec<ServerJsonRpcMessage>) -> ToolMeta {
+        tap_with(messages).await.0
+    }
+
+    /// Feeds `messages` through a tap, returning the meta it recorded and the listings-change
+    /// signal the notifications woke.
+    async fn tap_with(messages: Vec<ServerJsonRpcMessage>) -> (ToolMeta, Arc<Notify>) {
         let marked = ToolMeta::default();
-        let mut tap = MetaTap::new(Script(messages.iter().cloned().collect()), marked.clone());
+        let changed = Arc::new(Notify::new());
+        let mut tap = MetaTap::new(
+            Script(messages.iter().cloned().collect()),
+            marked.clone(),
+            changed.clone(),
+        );
         for expected in messages {
             let got = tap.receive().await.expect("a message");
             assert_eq!(
@@ -180,7 +212,40 @@ mod tests {
             );
         }
         assert!(tap.receive().await.is_none());
-        marked
+        (marked, changed)
+    }
+
+    #[tokio::test]
+    async fn a_resource_or_prompt_list_change_wakes_the_listings_signal() {
+        use futures::FutureExt;
+        use rmcp::model::{PromptListChangedNotification, ResourceListChangedNotification};
+        for notification in [
+            ServerNotification::ResourceListChangedNotification(
+                ResourceListChangedNotification::default(),
+            ),
+            ServerNotification::PromptListChangedNotification(
+                PromptListChangedNotification::default(),
+            ),
+        ] {
+            let message = ServerJsonRpcMessage::Notification(rmcp::model::JsonRpcNotification {
+                jsonrpc: JsonRpcVersion2_0,
+                notification,
+            });
+            let (_meta, changed) = tap_with(vec![message]).await;
+            assert!(
+                changed.notified().now_or_never().is_some(),
+                "the notification woke the listings signal"
+            );
+        }
+        // Any other notification leaves it sleeping.
+        let other = ServerJsonRpcMessage::Notification(rmcp::model::JsonRpcNotification {
+            jsonrpc: JsonRpcVersion2_0,
+            notification: ServerNotification::ToolListChangedNotification(
+                ToolListChangedNotification::default(),
+            ),
+        });
+        let (_meta, changed) = tap_with(vec![other]).await;
+        assert!(changed.notified().now_or_never().is_none());
     }
 
     #[tokio::test]

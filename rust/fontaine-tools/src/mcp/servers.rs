@@ -35,7 +35,8 @@ use rmcp::transport::streamable_http_client::{
 use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport, TokioChildProcess};
 use tokio::sync::Notify;
 
-use super::elicitation::{CallTracker, CancelAll, ElicitationTap, Elicitor};
+use super::elicitation::{CallGuard, CallTracker, CancelAll, ElicitationTap, Elicitor};
+use super::listings::{Listings, pull_listings};
 use super::meta::{MetaTap, ToolMeta};
 use super::output::OutputLimits;
 use super::register::{GuardedSink, Shared};
@@ -380,20 +381,24 @@ pub(crate) fn signals_transport_failure(outcome: &ToolOutcome, failed: &Notify) 
     let mut link: Option<&(dyn StdError + 'static)> = StdError::source(error);
     while let Some(cause) = link {
         if let Some(service) = cause.downcast_ref::<ServiceError>() {
-            let dead = match service {
-                ServiceError::TransportClosed => true,
-                ServiceError::TransportSend(error) => {
-                    classify_transport(error) == McpErrorKind::Transient
-                }
-                _ => false,
-            };
-            if dead {
+            if service_failure_is_dead(service) {
                 // A permit is stored when the watcher is not waiting yet.
                 failed.notify_one();
             }
             return;
         }
         link = cause.source();
+    }
+}
+
+/// Whether a request's typed error says the transport is gone, so the connection has to be
+/// replaced: a send that failed for a transient reason, or a closed transport. A timeout does
+/// not: a slow server is not a dead one.
+fn service_failure_is_dead(service: &ServiceError) -> bool {
+    match service {
+        ServiceError::TransportClosed => true,
+        ServiceError::TransportSend(error) => classify_transport(error) == McpErrorKind::Transient,
+        _ => false,
     }
 }
 
@@ -408,6 +413,11 @@ pub struct Connected {
     pub transport_failed: Arc<Notify>,
     tool_count: Arc<AtomicUsize>,
     tool_names: Arc<Mutex<Vec<String>>>,
+    /// The resources and prompts the server listed, refreshed on a `list_changed`
+    /// notification. Advisory: nothing decides on it, so a poisoned lock is read through.
+    listings: Arc<Mutex<Listings>>,
+    /// Woken by the transport tap when the server announces a resource or prompt list change.
+    listings_changed: Arc<Notify>,
     muted: Arc<AtomicBool>,
     tracker: CallTracker,
 }
@@ -417,6 +427,30 @@ impl Connected {
     pub fn tool_names(&self) -> Vec<String> {
         // Only read to remove the tools; a poisoned list still holds the last names written.
         lock_recovering(&self.tool_names).clone()
+    }
+
+    /// The server's resource and prompt listings as last pulled.
+    pub fn listings(&self) -> Listings {
+        // Advisory: a stale listing only misses a mention or command.
+        lock_recovering(&self.listings).clone()
+    }
+
+    /// Replaces each listing with what a pull answered; a listing the pull could not fetch
+    /// keeps the value it already holds.
+    pub async fn refresh_listings(&self) {
+        let previous = lock_recovering(&self.listings).clone();
+        let pulled = pull_listings(&self.connection, &previous).await;
+        *lock_recovering(&self.listings) = pulled;
+    }
+
+    /// The signal a resource or prompt `list_changed` notification arrives on.
+    pub fn listings_changed(&self) -> Arc<Notify> {
+        self.listings_changed.clone()
+    }
+
+    /// The listings slot itself, for a watcher that re-pulls on [`Self::listings_changed`].
+    pub fn listings_slot(&self) -> Arc<Mutex<Listings>> {
+        self.listings.clone()
     }
 
     /// Stops a later `list_changed` refresh from registering the server's tools again. Call it
@@ -431,10 +465,45 @@ impl Connected {
             .await
             .is_ok()
     }
+
+    /// The connection's call tracking and transport-failure signal, for a request that is not
+    /// one of the guarded tool calls: a resource read or a prompt fetch joins the in-flight
+    /// counting and can show the transport dead, exactly as a tool call does.
+    pub fn call_scope(&self) -> CallScope {
+        CallScope {
+            tracker: self.tracker.clone(),
+            transport_failed: self.transport_failed.clone(),
+        }
+    }
     /// How many tools the server has registered now: the count follows every `list_changed`
     /// refresh.
     pub fn tool_count(&self) -> usize {
         self.tool_count.load(Ordering::Relaxed)
+    }
+}
+
+/// A connection's call tracking and transport-failure signal, handed to a request that is not
+/// one of the guarded tool calls. Cloned out of a [`Connected`] so the caller need not keep the
+/// connection itself.
+#[derive(Clone)]
+pub struct CallScope {
+    tracker: CallTracker,
+    transport_failed: Arc<Notify>,
+}
+
+impl CallScope {
+    /// Counts one request in flight until the guard drops. `root` is whether the session's
+    /// main agent made the call; anything else counts as a subagent's, the stricter side.
+    pub fn enter(&self, root: bool) -> CallGuard {
+        self.tracker.enter(root)
+    }
+
+    /// Signals the transport dead when `error` says it is, as a failed tool call does.
+    pub fn request_failed(&self, error: &ServiceError) {
+        if service_failure_is_dead(error) {
+            // A permit is stored when the watcher is not waiting yet.
+            self.transport_failed.notify_one();
+        }
     }
 }
 
@@ -621,6 +690,8 @@ where
 /// What `serve` wires around one transport.
 struct Wiring {
     shared: Shared,
+    listings: Arc<Mutex<Listings>>,
+    listings_changed: Arc<Notify>,
 }
 
 impl Wiring {
@@ -634,6 +705,8 @@ impl Wiring {
                 tool_names: Arc::default(),
                 muted: Arc::new(AtomicBool::new(false)),
             },
+            listings: Arc::default(),
+            listings_changed: Arc::new(Notify::new()),
         }
     }
 }
@@ -656,7 +729,11 @@ where
         GuardedSink::new(sink, name, options, &wiring.shared),
     );
     let tapped = ElicitationTap::new(
-        MetaTap::new(transport.into_transport(), wiring.shared.meta.clone()),
+        MetaTap::new(
+            transport.into_transport(),
+            wiring.shared.meta.clone(),
+            wiring.listings_changed.clone(),
+        ),
         name,
         options.shown(name),
         options.elicitor.clone(),
@@ -673,6 +750,8 @@ where
         transport_failed: wiring.shared.transport_failed,
         tool_count: wiring.shared.tool_count,
         tool_names: wiring.shared.tool_names,
+        listings: wiring.listings,
+        listings_changed: wiring.listings_changed,
         muted: wiring.shared.muted,
         tracker: wiring.shared.tracker,
     })
@@ -1251,5 +1330,25 @@ mod tests {
         let client = http_client(&LoadedNetwork::default()).unwrap();
         assert_eq!(status_of(&client, format!("{}/a", server.uri())).await, 307);
         assert!(target.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod send_checks {
+    use super::*;
+
+    #[test]
+    fn connected_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Connected>();
+    }
+
+    #[test]
+    fn pull_listings_future_is_send() {
+        async fn pull(connection: &McpConnection) {
+            let _ = super::super::listings::pull_listings(connection, &Default::default()).await;
+        }
+        fn check_send<F: Send>(_: F) {}
+        check_send(pull);
     }
 }

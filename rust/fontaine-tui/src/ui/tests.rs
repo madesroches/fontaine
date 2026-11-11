@@ -18,9 +18,10 @@ use crate::provider_dialog::DialogKey;
 use crate::recent::RecentModels;
 use crate::ui::providers::queue_provider_request;
 use crate::ui::turn::{
-    CommandOutcome, EndOfTurn, Submission, TurnEnd, end_of_turn, front_push, restore_block,
+    CommandOutcome, EndOfTurn, Serve, Submission, TurnEnd, end_of_turn, front_push, restore_block,
 };
-use crate::{App, Prompt, StatuslineTrigger, Ui, transcript};
+use crate::{App, Input, Prompt, StatuslineTrigger, Ui, transcript};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 #[test]
 fn a_cancel_removes_the_queued_sign_in_it_cancels() {
@@ -99,6 +100,7 @@ fn ui(prompts: UnboundedReceiver<Prompt>) -> Ui<impl FnMut(&mut App)> {
         user_config: None,
         env: Arc::new(|_| None),
         mcp_status: Vec::new(),
+        prompts_revision: None,
         clipboard: Box::new(|_| Ok(())),
         suspend: crate::no_suspend(),
         launcher: crate::ui::Launcher::Sh,
@@ -740,6 +742,154 @@ fn prompts_that_arrive_during_afk_mode_are_answered_without_an_overlay() {
     assert_eq!(subagent.try_recv(), Ok(Answer::Deny { feedback: None }));
     assert!(ui.app.approval.is_none() && ui.app.questions.is_empty());
     assert!(ui.app.unavailable.is_none());
+}
+
+#[tokio::test]
+async fn interrupting_a_prompt_fetch_denies_and_drains_pending_prompts() {
+    let (runtime, _tmp) = runtime();
+    let (input_tx, input_rx) = unbounded_channel();
+    let (prompt_tx, prompt_rx) = unbounded_channel();
+    let mut ui = ui(prompt_rx);
+    ui.input = input_rx;
+
+    // The fetch serves keys and prompts while it runs, so an elicitation that opened during
+    // it is still open when the interrupt lands, and an ask can still wait in the channel.
+    ui.app.set_running(true);
+    let (reply, mut elicit) = oneshot::channel();
+    ui.on_prompt(None, Prompt::Elicit(Box::new(elicit_form()), reply));
+    assert_eq!(ui.app.elicitations.len(), 1);
+    let (queued, mut answer) = ask();
+    prompt_tx.send(queued).unwrap();
+
+    // Ctrl+C interrupts even with a dialog open; the pending fetch is what serve_while drops.
+    let mut fetch = Box::pin(std::future::pending::<
+        Result<String, fontaine_core::RuntimeError>,
+    >());
+    input_tx
+        .send(Input::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+    let end = ui
+        .serve_while(&runtime, &mut fetch, Serve::Prompts)
+        .await
+        .expect_err("the interrupt ends the serve");
+    drop(fetch);
+    ui.app.set_running(false);
+    assert!(matches!(end, TurnEnd::Interrupted));
+
+    let outcome = ui.end_interrupted_prompt_fetch(&runtime, end);
+    assert!(outcome.is_continue());
+    assert_eq!(elicit.try_recv(), Ok(ElicitReply::Cancel));
+    assert!(ui.app.elicitations.is_empty() && ui.app.approval.is_none());
+    assert!(answer.try_recv().is_err(), "the queued ask is dropped");
+    assert!(ui.prompts.try_recv().is_err(), "the channel is drained");
+    let shown: String = ui
+        .app
+        .transcript
+        .lines(80, &crate::theme::Theme::default())
+        .iter()
+        .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+        .collect();
+    assert!(shown.contains("interrupted"), "{shown}");
+}
+
+/// A whole runtime over an empty scripted model, for tests that serve keys and prompts.
+fn runtime() -> (fontaine_core::agent::AgentRuntime, tempfile::TempDir) {
+    use fontaine_core::agent::{AgentRuntime, AgentSetup, EnvLookup, SessionOrigin};
+    use fontaine_core::config::{AccountKind, LoadParams};
+    use fontaine_core::extensions;
+    use fontaine_core::models::{
+        GuardianChoice, GuardianModel, ModelHandle, ModelRef, Models, Switcher,
+    };
+    use fontaine_core::permissions::DenyAll;
+    use fontaine_core::session::Session;
+    use rig_core::test_utils::{MockCompletionModel, MockStreamEvent};
+
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+    let tmp = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(tmp.path()).unwrap();
+    let dir = |name: &str| {
+        let path = root.join(name);
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    };
+    let (config_dir, data, work) = (dir("config"), dir("data"), dir("work"));
+    let config = fontaine_core::config::load(&LoadParams {
+        launch_dir: &work,
+        config_dir: &config_dir,
+        data_dir: &data,
+        settings_file: None,
+        cli_rules: Default::default(),
+        env: &|_| None,
+    })
+    .unwrap();
+    let env: EnvLookup = Arc::new(|_: &str| None);
+    let model = ModelHandle::new(
+        ModelRef::parse("test/mock").unwrap(),
+        AccountKind::named("openai-compatible"),
+        MockCompletionModel::from_stream_turns(Vec::<Vec<MockStreamEvent>>::new()).into(),
+    );
+    let servers: Vec<String> = config.mcp_servers.keys().cloned().collect();
+    let loaded = extensions::load(&mut extensions::LoadParams {
+        config_dir: &config_dir,
+        project_root: &work,
+        servers: &servers,
+        plugins: &[],
+        warnings: &mut Vec::new(),
+    })
+    .unwrap();
+    let switcher = Switcher::new(config.clone(), data.clone(), env.clone(), None);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let runtime = AgentRuntime::new(AgentSetup {
+        config,
+        config_dir: config_dir.clone(),
+        data_dir: data.clone(),
+        models: Models {
+            main_chain: fontaine_core::model_roles::ModelChain::single(model.reference.clone()),
+            main: model.clone(),
+            main_listing: Default::default(),
+            guardian: Some(GuardianModel::Ready(model)),
+            guardian_choice: GuardianChoice::MainFallback,
+            notices: Vec::new(),
+        },
+        session: Session::create(&data, &format!("00000000-0000-4000-8000-{n:012}")).unwrap(),
+        roots: vec![work],
+        scratch: None,
+        memory_root: None,
+        mode: PermissionMode::Manual,
+        scrub_env: Vec::new(),
+        git_bash: None,
+        // Startup refuses to run on Windows with no shell; nothing here launches one.
+        powershell: cfg!(windows).then(|| fontaine_tools::powershell::PowerShellSettings {
+            path: "powershell.exe".into(),
+        }),
+        system_prompt: None,
+        append_system_prompt: None,
+        json_schema: None,
+        headless: false,
+        afk: false,
+        scheduling: false,
+        approver: Arc::new(DenyAll),
+        home: None,
+        user_config: None,
+        guardian_profile: fontaine_guardian::Profile::Full,
+        notices: Vec::new(),
+        startup_warnings: Vec::new(),
+        scanner: Default::default(),
+        switcher: Some(switcher),
+        extensions: loaded,
+        plugins: Default::default(),
+        project_executables: true,
+        confirm_project_servers: false,
+        origin: SessionOrigin::Fresh,
+        env,
+        warn_no_search: true,
+        explicit_budget_cap: false,
+    })
+    .unwrap();
+    (runtime, tmp)
 }
 
 #[test]

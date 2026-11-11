@@ -109,6 +109,9 @@ pub fn scope(primary: &Path, added: &[&Path]) -> Arc<Scope> {
 pub fn env_with(scope: Arc<Scope>, gate: Arc<dyn ToolGate>) -> BuiltinEnv {
     BuiltinEnv {
         scope,
+        mcp_resources: Arc::new(fontaine_tools::mcp::NoMcpResources),
+        mcp_limits: Arc::new(fontaine_tools::mcp::OutputLimits::default()),
+        mcp_warn: Arc::new(|message| tracing::warn!("{message}")),
         seen: Default::default(),
         guard: Guard {
             gate,

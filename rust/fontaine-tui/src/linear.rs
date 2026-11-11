@@ -895,7 +895,10 @@ mod tests {
                 end: 1,
                 query: String::new(),
             },
-            matches: vec!["a.rs".into(), "b.rs".into()],
+            matches: vec![
+                crate::complete::Candidate::File("a.rs".into()),
+                crate::complete::Candidate::File("b.rs".into()),
+            ],
             selected: 1,
         });
         let overlay = view::overlay(&app, 80, 24, true);

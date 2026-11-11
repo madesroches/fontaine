@@ -12,7 +12,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mut servers = self.mcp_status.clone();
         servers.extend(runtime.mcp_states().into_iter().map(|(name, state)| {
             let state = match state {
-                McpServerState::Connected { tools } => McpState::Connected { tools },
+                McpServerState::Connected {
+                    tools,
+                    resources,
+                    prompts,
+                } => McpState::Connected {
+                    tools,
+                    resources,
+                    prompts,
+                },
                 McpServerState::Reconnecting { attempt } => McpState::Pending { attempt },
                 McpServerState::Failed(error) => McpState::Failed(error),
             };

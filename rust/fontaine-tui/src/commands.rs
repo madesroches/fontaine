@@ -926,6 +926,30 @@ pub fn skill_menu(skills: Vec<(String, Option<String>, String)>) -> (Vec<MenuEnt
     (rows, hidden)
 }
 
+/// The menu rows for MCP prompts (name, hint, description), and the names of those left out
+/// because a built-in command or a skill answers to them. `skills` is the menu-checked skill
+/// list, so a prompt never shadows a skill row.
+pub fn prompt_menu(
+    prompts: Vec<(String, Option<String>, String)>,
+    skills: &[(String, Option<String>, String)],
+) -> (Vec<MenuEntry>, Vec<String>) {
+    let mut rows = Vec::new();
+    let mut hidden = Vec::new();
+    for (name, hint, description) in prompts {
+        if is_builtin(&name) || skills.iter().any(|(skill, _, _)| *skill == name) {
+            hidden.push(name);
+        } else {
+            rows.push(MenuEntry {
+                name,
+                hint,
+                description,
+                aliases: Vec::new(),
+            });
+        }
+    }
+    (rows, hidden)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1348,6 +1372,24 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].name, "review");
         assert_eq!(parse_command("/status"), Some(Command::Status));
+    }
+
+    #[test]
+    fn a_prompt_named_like_a_skill_is_left_out_of_the_menu() {
+        let prompt = |name: &str| (name.to_string(), Some("a=<v>".to_string()), "d".to_string());
+        let (rows, hidden) = prompt_menu(
+            vec![prompt("mcp__web__review"), prompt("mcp__web__greet")],
+            &[("mcp__web__review".to_string(), None, "s".to_string())],
+        );
+        assert_eq!(hidden, vec!["mcp__web__review".to_string()]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "mcp__web__greet");
+        assert_eq!(rows[0].hint.as_deref(), Some("a=<v>"));
+        // The defensive built-in check stays: a command name that answers to a built-in is
+        // hidden too, though no built-in today is named `mcp__*`.
+        let (rows, hidden) = prompt_menu(vec![prompt("status")], &[]);
+        assert_eq!(hidden, vec!["status".to_string()]);
+        assert!(rows.is_empty());
     }
 
     fn entry(name: &str, aliases: &[&str], hint: Option<&str>) -> MenuEntry {

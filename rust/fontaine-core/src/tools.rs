@@ -10,6 +10,8 @@ use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::guarded::{Guard, GuardedTool};
 use fontaine_tools::jobs::{AgentKills, AgentWaits, Jobs, WaitWake};
 use fontaine_tools::kills::KillSwitches;
+use fontaine_tools::mcp::McpResourceQueries;
+use fontaine_tools::mcp::output::OutputLimits;
 use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::result_pipeline::ResultPipeline;
 use fontaine_tools::risk::{RiskClass, ToolSource, registered_risk};
@@ -82,6 +84,12 @@ pub struct ExtensionTools(pub Vec<ExtensionTool>);
 pub struct RegistryParams {
     pub gate: Arc<dyn ToolGate>,
     pub scope: Arc<Scope>,
+    /// How the MCP resource tools reach the session's connected servers.
+    pub mcp_resources: Arc<dyn McpResourceQueries>,
+    /// The capping policy the `read_mcp_resource` tool holds its results to.
+    pub mcp_limits: Arc<OutputLimits>,
+    /// Reports a failed spill save from the MCP resource tools to the person.
+    pub mcp_warn: Arc<dyn Fn(&str) + Send + Sync>,
     /// Read-before-edit tracking, kept across registry rebuilds.
     pub seen: Seen,
     pub scrub_env: Vec<OsString>,
@@ -145,6 +153,9 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
     };
     let mut tools = builtins::build(&BuiltinEnv {
         scope: params.scope,
+        mcp_resources: params.mcp_resources,
+        mcp_limits: params.mcp_limits,
+        mcp_warn: params.mcp_warn,
         seen: params.seen,
         guard: guard.clone(),
         shell: ShellSettings {
