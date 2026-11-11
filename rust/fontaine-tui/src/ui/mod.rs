@@ -1261,18 +1261,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Continue(CommandOutcome::Done)
             }
             Command::Other { name, argument } => {
-                // An MCP prompt command resolves against the servers' listings before the
-                // skill lookup, so a prompt and a skill of the same name both stay reachable
-                // by the prompt's full `mcp__*` name.
-                if name.starts_with("mcp__") {
-                    return self
-                        .run_mcp_prompt_command(runtime, raw, &name, &argument)
-                        .await;
-                }
+                // Dispatch follows the menu's priority: a skill named `mcp__*` shadows the
+                // prompt row, so the skill lookup runs first; MCP dispatch takes the name
+                // only when no skill answers to it and a connected prompt holds it.
                 let known = runtime
                     .slash_skills()
                     .iter()
                     .any(|(skill, _, _)| *skill == name);
+                if !known && name.starts_with("mcp__") {
+                    let listed = runtime
+                        .slash_prompts()
+                        .iter()
+                        .any(|(prompt, _, _)| *prompt == name);
+                    if listed {
+                        return self
+                            .run_mcp_prompt_command(runtime, raw, &name, &argument)
+                            .await;
+                    }
+                }
                 if !known {
                     self.app.transcript.error(format!(
                         "unknown command /{name}; type / to see the commands and skills"

@@ -1117,8 +1117,10 @@ pub struct BuiltinEnv {
     pub scope: Arc<Scope>,
     /// How the MCP resource tools reach the session's connected servers.
     pub mcp_resources: Arc<dyn McpResourceQueries>,
-    /// The capping policy a resource read's result is held to, as for an MCP tool result.
+    /// The capping policy a resource result is held to, as for an MCP tool result.
     pub mcp_limits: Arc<OutputLimits>,
+    /// Reports a failed spill save from the MCP resource tools, at most once per limits.
+    pub mcp_warn: Arc<dyn Fn(&str) + Send + Sync>,
     /// Read-before-edit tracking shared by every `read` and `edit` instance. Passing the same
     /// one again when the registry is rebuilt keeps what the model has already read.
     pub seen: Seen,
@@ -1160,6 +1162,9 @@ pub struct Registered {
 #[derive(Clone)]
 pub struct ListMcpResources {
     pub queries: Arc<dyn McpResourceQueries>,
+    pub limits: Arc<OutputLimits>,
+    /// Reports a failed spill save, at most once per limits.
+    pub warn: Arc<dyn Fn(&str) + Send + Sync>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
@@ -1177,6 +1182,7 @@ impl Tool for ListMcpResources {
          capability: one line per resource with its server, uri, name, description and mime \
          type. An `@<uri>` token in the user's message names one of these; read its content \
          with `read_mcp_resource`. You cannot know a resource's content without reading it. \
+         A result over the MCP output limit is saved to a file whose path the result names. \
          When nothing is connected or no server declared resources, the result says so."
             .to_string()
     }
@@ -1214,7 +1220,17 @@ impl Tool for ListMcpResources {
         if lines.is_empty() {
             return Ok("no connected MCP server declared resources".to_string());
         }
-        Ok(lines.join("\n"))
+        // The same cap as an MCP tool result: a huge listing spills like any oversized result.
+        match cap(
+            Ok(rig_core::tool::ToolOutput::text(lines.join("\n"))),
+            Self::NAME,
+            DEFAULT_CHAR_LIMIT,
+            &self.limits,
+            &*self.warn,
+        ) {
+            Ok(capped) => Ok(text_view(&capped)),
+            Err(error) => Err(error),
+        }
     }
 }
 
@@ -1302,7 +1318,7 @@ impl Tool for ReadMcpResource {
                     ..
                 } => {
                     let mime = mime_type.as_deref().unwrap_or("application/octet-stream");
-                    let bytes = blob.len() / 4 * 3;
+                    let bytes = decoded_base64_size(blob);
                     text.push_str(&format!("[blob at {uri}: {mime}, {bytes} bytes, base64]\n"));
                 }
                 // A variant newer than this client knows: note it rather than dropping it.
@@ -1322,6 +1338,13 @@ impl Tool for ReadMcpResource {
             Err(error) => Err(error),
         }
     }
+}
+
+/// The decoded size of a standard base64 body: three bytes per quartet, minus one for each
+/// padding `=` at the end (`QQ==` is one byte, `QUI=` two).
+fn decoded_base64_size(blob: &str) -> usize {
+    let padding = blob.bytes().rev().take_while(|&b| b == b'=').count();
+    blob.len() / 4 * 3 - padding.min(blob.len() / 4 * 3)
 }
 
 /// The risk class a built-in is registered with. A built-in missing from the table is the
@@ -1495,6 +1518,8 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
     tools.push(register(GuardedTool::single(
         ListMcpResources {
             queries: env.mcp_resources.clone(),
+            limits: env.mcp_limits.clone(),
+            warn: env.mcp_warn.clone(),
         },
         risk_of(ListMcpResources::NAME),
         guard.clone(),
@@ -1503,7 +1528,7 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
         ReadMcpResource {
             queries: env.mcp_resources.clone(),
             limits: env.mcp_limits.clone(),
-            warn: Arc::new(|message| tracing::warn!("{message}")),
+            warn: env.mcp_warn.clone(),
         },
         risk_of(ReadMcpResource::NAME),
         guard.clone(),

@@ -108,8 +108,10 @@ the previous listing. The model sees resources through two always-registered bui
 
 - `list_mcp_resources` lists every resource of every connected server that declared the
 capability: `server`, `uri`, `name`, `description` and `mime type`, or an explanation when
-none did. Both tools are `arbitrary`, like everything MCP: the listing is server-declared
-text and its read is a server round trip, so every call is floor-gated and guardian-judged.
+none did. Both tools are `arbitrary`, like everything MCP: the listing is the cached,
+server-declared text Fontaine pulled at connect and on each list change (no server request
+per call) and a read is a server round trip, so every call is floor-gated and
+guardian-judged.
 - `read_mcp_resource` reads one resource by `server` and `uri`. Text contents come back as
 text; a blob is noted by its mime type and size, like an image result. A result over the MCP
 output limit is saved to a file whose path the result names, and every result passes the

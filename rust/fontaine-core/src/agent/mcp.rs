@@ -861,36 +861,41 @@ impl AgentRuntime {
     }
 
     /// The MCP prompts a user can run as `/mcp__<server>__<prompt>`: the full command name,
-    /// a hint of the declared argument names, and the server-supplied description.
+    /// a hint of the declared argument names, and the server-supplied description. Two prompts
+    /// whose names clean to the same command collide; the first stays listed and the rest are
+    /// left out, since dispatch refuses the ambiguity.
     pub fn slash_prompts(&self) -> Vec<(String, Option<String>, String)> {
-        self.mcp
-            .listings()
-            .into_iter()
-            .flat_map(|(server, listings)| {
-                listings.prompts.into_iter().map(move |prompt| {
-                    let name = mcp_tool_name(&server, &prompt.name);
-                    let hint = (!prompt.arguments.is_empty()).then(|| {
-                        prompt
-                            .arguments
-                            .iter()
-                            .map(|argument| {
-                                if argument.required {
-                                    format!("{}=<value>", argument.name)
-                                } else {
-                                    format!("[{}=<value>]", argument.name)
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                    });
-                    (
-                        name,
-                        hint,
-                        prompt.description.unwrap_or_else(|| prompt.name.clone()),
-                    )
-                })
-            })
-            .collect()
+        let mut rows = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        for (server, listings) in self.mcp.listings() {
+            for prompt in listings.prompts {
+                let name = mcp_tool_name(&server, &prompt.name);
+                if seen.contains(&name) {
+                    continue;
+                }
+                seen.push(name.clone());
+                let hint = (!prompt.arguments.is_empty()).then(|| {
+                    prompt
+                        .arguments
+                        .iter()
+                        .map(|argument| {
+                            if argument.required {
+                                format!("{}=<value>", argument.name)
+                            } else {
+                                format!("[{}=<value>]", argument.name)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                });
+                rows.push((
+                    name,
+                    hint,
+                    prompt.description.unwrap_or_else(|| prompt.name.clone()),
+                ));
+            }
+        }
+        rows
     }
 
     /// `/mcp__<server>__<prompt> arguments`: fetches the prompt and flattens its answer into
@@ -898,7 +903,7 @@ impl AgentRuntime {
     /// menu lists; a missing prompt, bad arguments, a fetch failure or an answer that is not
     /// user-role text is an error naming what is connected.
     pub async fn run_mcp_prompt(&self, name: &str, argument: &str) -> Result<String, RuntimeError> {
-        let found = self
+        let matches: Vec<(String, PromptSummary)> = self
             .mcp
             .listings()
             .into_iter()
@@ -909,11 +914,26 @@ impl AgentRuntime {
                     .find(|prompt| mcp_tool_name(&server, &prompt.name) == name)
                     .map(|prompt| (server, prompt.clone()))
             })
-            .next();
-        let Some((server, prompt)) = found else {
-            return Err(RuntimeError::new(format!(
-                "no MCP prompt named `{name}` is connected"
-            )));
+            .collect();
+        let (server, prompt) = match matches.as_slice() {
+            [] => {
+                return Err(RuntimeError::new(format!(
+                    "no MCP prompt named `{name}` is connected"
+                )));
+            }
+            [only] => only.clone(),
+            // Distinct prompt names can clean to the same command (`review.now` and
+            // `review/now` both become `review_now`); picking one would invoke the wrong
+            // prompt, so the collision is refused.
+            many => {
+                return Err(RuntimeError::new(format!(
+                    "`/{name}` names more than one prompt: {}; rename one on its server",
+                    many.iter()
+                        .map(|(server, prompt)| format!("`{}` on `{server}`", prompt.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )));
+            }
         };
         let arguments =
             parse_prompt_arguments(name, argument, &prompt).map_err(RuntimeError::new)?;

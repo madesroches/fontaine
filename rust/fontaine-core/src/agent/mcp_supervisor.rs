@@ -277,12 +277,12 @@ fn retire(slot: &ServerSlot) {
     slot.supersede();
 }
 
-/// Replaces what a pull answers with; a failed pull keeps the previous listings.
+/// Commits what a pull answered into `listings`; a listing the pull could not fetch keeps
+/// the value it already holds.
 async fn refresh_listings(connection: &McpConnection, listings: &Arc<Mutex<Listings>>) {
-    if let Some(pulled) = pull_listings(connection).await {
-        // Advisory: a stale listing only misses a mention, a command or a count.
-        *lock(listings, "MCP listings") = pulled;
-    }
+    let previous = lock(listings, "MCP listings").clone();
+    let pulled = pull_listings(connection, &previous).await;
+    *lock(listings, "MCP listings") = pulled;
 }
 
 /// The `@` mention resource list built from what the slots list now.
@@ -474,9 +474,11 @@ impl Supervisor {
             Ok(connected) => {
                 let slot = Arc::new(ServerSlot::new(spec, McpServerState::connected(0)));
                 // The initial listing pull rides before the install, so the connect reports
-                // back with the listings in place; a failed pull leaves the empty listings
-                // the connection started with.
-                connected.refresh_listings().await;
+                // back with the listings in place; it is bounded by the startup deadline that
+                // is left, and a failed or expired pull leaves the empty listings the
+                // connection started with.
+                let left = deadline.saturating_duration_since(Instant::now());
+                let _ = tokio::time::timeout(left, connected.refresh_listings()).await;
                 if self.install(&slot, connected, 0).is_err() {
                     unreachable!("a new slot is still on its first generation");
                 }
@@ -547,6 +549,8 @@ impl Supervisor {
                 }
                 _ = listings_changed.notified() => {
                     refresh_listings(&connection, &listings).await;
+                    // The mention snapshot and the counts follow the listings just pulled.
+                    (self.refresh)();
                 }
             }
         }
@@ -554,6 +558,8 @@ impl Supervisor {
             return;
         }
         drop(lock(&slot.connection, "MCP connection").take());
+        // The mention snapshot still lists the lost server's resources; rebuild it.
+        (self.refresh)();
         if slot.is_remote() {
             self.reconnect_with_backoff(&slot).await;
         } else {
@@ -571,8 +577,10 @@ impl Supervisor {
             match self.attempt(&slot.spec, CONNECT_TIMEOUT).await {
                 Ok(connected) => {
                     // The listings ride in with the connection, so the reconnect notice and
-                    // the counts report them together.
-                    connected.refresh_listings().await;
+                    // the counts report them together; the pull is bounded like the attempt,
+                    // so an unanswered listing cannot stall the reconnect.
+                    let _ =
+                        tokio::time::timeout(CONNECT_TIMEOUT, connected.refresh_listings()).await;
                     if let Err(stale) = self.install(slot, connected, generation) {
                         stale.connection.close().await;
                         return;
@@ -592,6 +600,9 @@ impl Supervisor {
         let reason = last.map_or_else(|| "no reason".to_string(), |error| chain(&error));
         slot.set_state(McpServerState::Failed(reason));
         self.approver.warn(&disconnected(slot.name()));
+        // The loss already dropped the server's mentions; the callback also covers a caller
+        // that only observes the final state.
+        (self.refresh)();
     }
 
     /// Restarts `slot` by hand, with no backoff: its watcher stops, its connection closes, and a
@@ -608,7 +619,8 @@ impl Supervisor {
         }
         match self.attempt(&slot.spec, CONNECT_TIMEOUT).await {
             Ok(connected) => {
-                connected.refresh_listings().await;
+                // An unanswered listing cannot stall a manual reconnect either.
+                let _ = tokio::time::timeout(CONNECT_TIMEOUT, connected.refresh_listings()).await;
                 match self.install(slot, connected, generation) {
                     Ok(()) => (self.refresh)(),
                     Err(stale) => stale.connection.close().await,
@@ -903,7 +915,8 @@ mod tests {
         wait_for(&slot, McpServerState::Reconnecting { attempt: 2 }).await;
         wait_for(&slot, McpServerState::connected(0)).await;
         assert_eq!(rig.script.attempts(), 3);
-        assert_eq!(rig.refreshed.load(Ordering::SeqCst), 1);
+        // The loss rebuilt the mention snapshot once and the reconnect's install once.
+        assert_eq!(rig.refreshed.load(Ordering::SeqCst), 2);
         let notices = rig.said.notices.lock().unwrap().clone();
         assert_eq!(notices, ["MCP server `srv` reconnected"]);
         // The new connection is watched too: losing it starts another round.
@@ -922,6 +935,39 @@ mod tests {
         failed.notify_one();
         wait_for(&slot, McpServerState::Reconnecting { attempt: 1 }).await;
         assert!(connection.is_closed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_list_changed_notification_refreshes_the_listings_and_rebuilds_the_mentions() {
+        let first = live("srv", "http").await;
+        // Notified before the watcher waits: the permit the notification stores is consumed by
+        // its first `notified()`.
+        let changed = first.connected.listings_changed();
+        let rig = rig(vec![Ok(first)]);
+        let (_slot, _) = rig.supervisor.start(spec("http")).await;
+        assert_eq!(rig.refreshed.load(Ordering::SeqCst), 0);
+        changed.notify_one();
+        for _ in 0..200 {
+            if rig.refreshed.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert_eq!(rig.refreshed.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_lost_connection_rebuilds_the_mentions_and_so_does_the_final_failure() {
+        let rig = rig(vec![Ok(live("srv", "http").await), permanent()]);
+        let (slot, _) = rig.supervisor.start(spec("http")).await;
+        rig.script.servers.lock().unwrap().remove(0).abort();
+        wait_for(
+            &slot,
+            McpServerState::Failed("MCP server `srv`: scripted failure".into()),
+        )
+        .await;
+        // Once when the connection is dropped, once when the reconnect gives up.
+        assert_eq!(rig.refreshed.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test(start_paused = true)]

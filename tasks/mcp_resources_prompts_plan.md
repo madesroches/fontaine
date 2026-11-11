@@ -394,4 +394,3 @@ Unit and integration tests only; no live APIs (project rule). New coverage:
    Not automated because it needs real MCP servers and a live TTY; the automated tiers cover the
    parsing, gating and wiring, and a regression here is immediately visible to any user with an
    MCP server configured.
-

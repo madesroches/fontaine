@@ -431,12 +431,12 @@ impl Connected {
         lock_recovering(&self.listings).clone()
     }
 
-    /// Replaces the listings with what a pull answered; a failed pull keeps the previous ones.
+    /// Replaces each listing with what a pull answered; a listing the pull could not fetch
+    /// keeps the value it already holds.
     pub async fn refresh_listings(&self) {
-        if let Some(pulled) = pull_listings(&self.connection).await {
-            // Advisory: a stale listing only misses a mention or command.
-            *lock_recovering(&self.listings) = pulled;
-        }
+        let previous = lock_recovering(&self.listings).clone();
+        let pulled = pull_listings(&self.connection, &previous).await;
+        *lock_recovering(&self.listings) = pulled;
     }
 
     /// The signal a resource or prompt `list_changed` notification arrives on.
@@ -1307,7 +1307,7 @@ mod send_checks {
     #[test]
     fn pull_listings_future_is_send() {
         async fn pull(connection: &McpConnection) {
-            let _ = super::super::listings::pull_listings(connection).await;
+            let _ = super::super::listings::pull_listings(connection, &Default::default()).await;
         }
         fn check_send<F: Send>(_: F) {}
         check_send(pull);

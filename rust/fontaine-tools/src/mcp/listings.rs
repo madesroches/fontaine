@@ -43,51 +43,55 @@ impl Listings {
     }
 }
 
-/// Pulls both listings from `connection` once. Each listing is skipped when the server did not
-/// declare the capability in its initialize result (`peer_info`); an absent `peer_info` means
-/// no capabilities. `None` when a declared listing could not be pulled, so a refresh can keep
-/// the listings it already holds.
-pub async fn pull_listings(connection: &McpConnection) -> Option<Listings> {
+/// Pulls both listings from `connection` once, starting from `previous`. Each listing is
+/// skipped when the server did not declare the capability in its initialize result
+/// (`peer_info`); an absent `peer_info` means no capabilities. The two listings are pulled
+/// independently: a declared listing that cannot be pulled keeps the field's previous value,
+/// so one failed listing never discards the other.
+pub async fn pull_listings(connection: &McpConnection, previous: &Listings) -> Listings {
     let Some(info) = connection.peer().peer_info() else {
-        return Some(Listings::default());
+        return Listings::default();
     };
     let capabilities = &info.capabilities;
-    let resources = if capabilities.resources.is_some() {
-        let listed = connection.resources().await.ok()?;
-        listed
-            .into_iter()
-            .map(|resource| ResourceSummary {
-                uri: resource.uri,
-                name: resource.name,
-                description: resource.description,
-                mime_type: resource.mime_type,
-            })
-            .collect()
+    let mut listings = previous.clone();
+    if capabilities.resources.is_some() {
+        if let Ok(listed) = connection.resources().await {
+            listings.resources = listed
+                .into_iter()
+                .map(|resource| ResourceSummary {
+                    uri: resource.uri,
+                    name: resource.name,
+                    description: resource.description,
+                    mime_type: resource.mime_type,
+                })
+                .collect();
+        }
     } else {
-        Vec::new()
-    };
-    let prompts = if capabilities.prompts.is_some() {
-        let listed = connection.peer().list_all_prompts().await.ok()?;
-        listed
-            .into_iter()
-            .map(|prompt| PromptSummary {
-                name: prompt.name,
-                description: prompt.description,
-                arguments: prompt
-                    .arguments
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|argument| PromptArgument {
-                        name: argument.name,
-                        required: argument.required.unwrap_or(false),
-                    })
-                    .collect(),
-            })
-            .collect()
+        listings.resources = Vec::new();
+    }
+    if capabilities.prompts.is_some() {
+        if let Ok(listed) = connection.peer().list_all_prompts().await {
+            listings.prompts = listed
+                .into_iter()
+                .map(|prompt| PromptSummary {
+                    name: prompt.name,
+                    description: prompt.description,
+                    arguments: prompt
+                        .arguments
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|argument| PromptArgument {
+                            name: argument.name,
+                            required: argument.required.unwrap_or(false),
+                        })
+                        .collect(),
+                })
+                .collect();
+        }
     } else {
-        Vec::new()
-    };
-    Some(Listings { resources, prompts })
+        listings.prompts = Vec::new();
+    }
+    listings
 }
 
 /// How the built-in resource tools reach the session's live MCP connections. Implemented by the

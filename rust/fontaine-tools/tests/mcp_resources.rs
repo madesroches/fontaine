@@ -59,9 +59,7 @@ async fn listings_follow_the_declared_capabilities() {
         vec![greet_prompt(), assistant_prompt()],
     ))
     .await;
-    let listings = pull_listings(&connected.connection)
-        .await
-        .expect("the server declared both capabilities");
+    let listings = pull_listings(&connected.connection, &Listings::default()).await;
     assert_eq!(
         listings.resources,
         vec![ResourceSummary {
@@ -113,10 +111,93 @@ async fn a_tools_only_server_lists_nothing() {
     )
     .await
     .expect("connect");
-    let listings = pull_listings(&connected.connection)
-        .await
-        .expect("no capability is a successful empty listing");
+    let listings = pull_listings(&connected.connection, &Listings::default()).await;
     assert!(listings.is_empty());
+}
+
+/// A server whose prompt listing fails while its resource listing answers.
+#[derive(Clone)]
+struct BrokenPrompts {
+    resources: Arc<Mutex<Vec<rmcp::model::Resource>>>,
+}
+
+impl ServerHandler for BrokenPrompts {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_prompts()
+                .build(),
+        )
+    }
+
+    async fn list_resources(
+        &self,
+        _: Option<rmcp::model::PaginatedRequestParams>,
+        _: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListResourcesResult, rmcp::model::ErrorData> {
+        Ok(rmcp::model::ListResourcesResult::with_all_items(
+            self.resources.lock().unwrap().clone(),
+        ))
+    }
+
+    async fn list_prompts(
+        &self,
+        _: Option<rmcp::model::PaginatedRequestParams>,
+        _: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<rmcp::model::ListPromptsResult, rmcp::model::ErrorData> {
+        Err(rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            "the prompt list is broken",
+            None,
+        ))
+    }
+}
+
+#[tokio::test]
+async fn a_failed_prompt_listing_keeps_the_previous_prompts_and_still_updates_resources() {
+    let (c2s, sfc) = tokio::io::duplex(8192);
+    let (s2c, cfs) = tokio::io::duplex(8192);
+    tokio::spawn(async move {
+        let running = BrokenPrompts {
+            resources: Arc::new(Mutex::new(vec![info_resource()])),
+        }
+        .serve((sfc, s2c))
+        .await
+        .expect("server start");
+        let _ = running.waiting().await;
+    });
+    let connected = connect_transport(
+        "broken",
+        (cfs, c2s),
+        tool_server(),
+        &options(Gate::new(true)),
+    )
+    .await
+    .expect("connect");
+    let previous = Listings {
+        resources: Vec::new(),
+        prompts: vec![PromptSummary {
+            name: "greet".to_string(),
+            description: Some("Greet someone".to_string()),
+            arguments: vec![PromptArgument {
+                name: "name".to_string(),
+                required: true,
+            }],
+        }],
+    };
+    let pulled = pull_listings(&connected.connection, &previous).await;
+    assert_eq!(pulled.resources.len(), 1, "the resource listing landed");
+    assert_eq!(
+        pulled.prompts, previous.prompts,
+        "the failed prompt listing kept its value"
+    );
+
+    // The same independence holds through a connection's refresh.
+    connected.refresh_listings().await;
+    assert_eq!(connected.listings().resources.len(), 1);
+    assert!(connected.listings().prompts.is_empty());
 }
 
 #[tokio::test]
@@ -269,6 +350,22 @@ async fn read_mcp_resource_renders_text_and_blobs_and_names_a_bad_target() {
         ),
         (
             "repo".to_string(),
+            "repo://one".to_string(),
+            Ok(vec![
+                ResourceContents::blob("QQ==", "repo://one")
+                    .with_mime_type("application/octet-stream"),
+            ]),
+        ),
+        (
+            "repo".to_string(),
+            "repo://two".to_string(),
+            Ok(vec![
+                ResourceContents::blob("QUI=", "repo://two")
+                    .with_mime_type("application/octet-stream"),
+            ]),
+        ),
+        (
+            "repo".to_string(),
             "repo://gone".to_string(),
             Err("no resource `repo://gone` on `repo`".to_string()),
         ),
@@ -301,6 +398,21 @@ async fn read_mcp_resource_renders_text_and_blobs_and_names_a_bad_target() {
         text(&out),
         "[blob at repo://bin: application/octet-stream, 3 bytes, base64]\n"
     );
+
+    // The size accounts for base64 padding: `QQ==` is one byte, `QUI=` two.
+    for (uri, size) in [("repo://one", 1), ("repo://two", 2)] {
+        let out = call(
+            &tools,
+            "read_mcp_resource",
+            json!({"server": "repo", "uri": uri}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            text(&out),
+            format!("[blob at {uri}: application/octet-stream, {size} bytes, base64]\n")
+        );
+    }
 
     let error = call(
         &tools,
@@ -355,6 +467,51 @@ async fn an_oversized_read_spills_like_any_mcp_result() {
     assert_eq!(
         std::fs::read_to_string(saved).unwrap(),
         format!("{}\n", "x".repeat(60_000))
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_listing_spills_like_any_mcp_result() {
+    let d = Dirs::new();
+    let spill = d.dir("spill");
+    let big = "x".repeat(60_000);
+    let listings = vec![(
+        "repo".to_string(),
+        Listings {
+            resources: vec![ResourceSummary {
+                uri: format!("repo://{big}"),
+                name: String::new(),
+                description: None,
+                mime_type: None,
+            }],
+            prompts: Vec::new(),
+        },
+    )];
+    let mut env = fake_env(
+        &d,
+        Fake {
+            listings,
+            reads: Mutex::new(Vec::new()),
+        },
+    );
+    env.mcp_limits = Arc::new(OutputLimits::new(
+        1_000,
+        Some(fontaine_tools::mcp::output::Spill(spill.clone())),
+    ));
+    let tools = registry(&env);
+    let out = call(&tools, "list_mcp_resources", json!({})).await.unwrap();
+    let shown = text(&out);
+    assert!(shown.starts_with("Output too large ("), "{shown}");
+    assert!(shown.contains("saved to"), "{shown}");
+    let saved = std::fs::read_dir(&spill)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    assert_eq!(
+        std::fs::read_to_string(saved).unwrap(),
+        format!("repo: repo://{big}")
     );
 }
 

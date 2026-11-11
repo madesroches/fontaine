@@ -257,6 +257,10 @@ fn register_tools(p: &Parts<'_>) -> Result<(), RuntimeError> {
             p.state.scratch.as_deref(),
             &|message| p.approver.warn(message),
         )),
+        mcp_warn: Arc::new({
+            let approver = p.approver.clone();
+            move |message: &str| approver.warn(message)
+        }),
         seen: p.seen.clone(),
         scrub_env: p.setup.scrub_env.clone(),
         set_env: tools::subprocess_env(p.config),
