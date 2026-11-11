@@ -1,7 +1,7 @@
 //! Starting the MCP servers a session is configured with, and the approval repository-defined
 //! ones need first.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Arc;
@@ -648,12 +648,22 @@ impl AgentRuntime {
         supervisor
     }
 
-    /// Rebuilds the `@` mention resource list from what the connected servers list now.
+    /// Rebuilds the `@` mention resource list from what the connected servers list now. Every
+    /// listing change (connect, disconnect, reconnect, a `list_changed` refresh) rides through
+    /// here, so the bump doubles as the listing revision cached prompt rows key on.
     pub(crate) fn refresh_mcp_mentions(&self) {
+        self.mcp_listing_revision.fetch_add(1, Ordering::Relaxed);
         // The completion list is advisory: a stale list only misses a suggestion.
         *write_recovering(&self.mcp_mentions) = Arc::new(super::mcp_supervisor::mention_snapshot(
             &self.mcp.slots_handle(),
         ));
+    }
+
+    /// The MCP listing revision: bumped on every connect, disconnect, reconnect and
+    /// `list_changed` refresh. A caller caching `slash_prompts` rows refreshes them only when
+    /// this moves.
+    pub fn slash_prompts_revision(&self) -> u64 {
+        self.mcp_listing_revision.load(Ordering::Relaxed)
     }
 
     /// Starts the one configured server `name` that the plan lets start without asking, which is
@@ -866,14 +876,13 @@ impl AgentRuntime {
     /// left out, since dispatch refuses the ambiguity.
     pub fn slash_prompts(&self) -> Vec<(String, Option<String>, String)> {
         let mut rows = Vec::new();
-        let mut seen: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for (server, listings) in self.mcp.listings() {
             for prompt in listings.prompts {
                 let name = mcp_tool_name(&server, &prompt.name);
-                if seen.contains(&name) {
+                if !seen.insert(name.clone()) {
                     continue;
                 }
-                seen.push(name.clone());
                 let hint = (!prompt.arguments.is_empty()).then(|| {
                     prompt
                         .arguments
@@ -960,8 +969,8 @@ impl AgentRuntime {
         if let Err(error) = &response {
             scope.request_failed(error);
         }
-        let response = response
-            .map_err(|e| RuntimeError::new(format!("fetching `/{name}` failed: {}", chain(&e))))?;
+        let response =
+            response.map_err(|e| RuntimeError::caused(format!("fetching `/{name}` failed"), e))?;
         let result = match response {
             GetPromptResponse::Complete(result) => result,
             GetPromptResponse::InputRequired(_) => {

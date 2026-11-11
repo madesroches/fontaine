@@ -569,8 +569,24 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 runtime.clear_prompt_context();
                 Continue(CommandOutcome::Done)
             }
-            Err(TurnEnd::InputClosed) => Break(()),
-            Err(_) => {
+            Err(end) => self.end_interrupted_prompt_fetch(runtime, end),
+        }
+    }
+
+    /// Settles a prompt fetch the serve loop cut short. The open and queued prompts belong
+    /// to calls that no longer exist, so they are denied and drained before the end is
+    /// handled, mirroring `expand_serving`.
+    pub(crate) fn end_interrupted_prompt_fetch(
+        &mut self,
+        runtime: &AgentRuntime,
+        end: TurnEnd,
+    ) -> std::ops::ControlFlow<(), CommandOutcome> {
+        use std::ops::ControlFlow::{Break, Continue};
+        self.app.deny_pending();
+        self.drain_prompts();
+        match end {
+            TurnEnd::InputClosed => Break(()),
+            _ => {
                 self.app.transcript.notice("interrupted");
                 runtime.clear_prompt_context();
                 Continue(CommandOutcome::Done)

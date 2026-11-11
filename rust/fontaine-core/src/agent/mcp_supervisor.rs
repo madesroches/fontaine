@@ -372,17 +372,25 @@ impl McpResourceQueries for SlotQueries {
                 .iter()
                 .any(|resource| resource.uri == uri)
             {
+                // The diagnostic names only the first few URIs: a server listing thousands
+                // must not ship its whole catalog into an error.
+                const SHOWN: usize = 10;
                 let known: Vec<&str> = listings
                     .resources
                     .iter()
                     .map(|resource| resource.uri.as_str())
                     .collect();
+                let listed = known.len().min(SHOWN);
+                let mut names = known[..listed].join(", ");
+                if known.len() > listed {
+                    names.push_str(&format!(", … and {} more", known.len() - listed));
+                }
                 return Err(format!(
                     "no resource `{uri}` on MCP server `{server}`{}",
                     if known.is_empty() {
                         " (it lists no resources)".to_string()
                     } else {
-                        format!(" (it lists: {})", known.join(", "))
+                        format!(" (it lists: {names})")
                     }
                 ));
             }

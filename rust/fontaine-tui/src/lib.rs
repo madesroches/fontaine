@@ -307,6 +307,9 @@ struct Ui<R> {
     env: EnvLookup,
     /// What starting each MCP server came to, for `/mcp`.
     mcp_status: Vec<(String, McpState)>,
+    /// The MCP listing revision the command menu's prompt rows were built at: a move
+    /// re-merges them, so the draw loop does not rebuild the rows on every frame.
+    prompts_revision: Option<u64>,
     /// Where `/copy` sends text; the write's result comes back to the command.
     clipboard: ClipboardSink,
     /// Runs the editor `/memory` opens with the terminal handed over.
@@ -437,6 +440,7 @@ pub async fn drive(
         user_config,
         env,
         mcp_status: Vec::new(),
+        prompts_revision: None,
         clipboard: Box::new(clipboard),
         suspend,
         launcher,

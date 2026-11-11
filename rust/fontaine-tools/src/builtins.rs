@@ -32,7 +32,7 @@ use crate::mcp::output::{DEFAULT_CHAR_LIMIT, OutputLimits, cap};
 use crate::mcp::{McpResourceQueries, listings::Listings};
 use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, ReadView};
 use crate::powershell::{self, PowerShellSettings};
-use crate::result_pipeline::text_view;
+use crate::result_pipeline::{ToolOutcome, text_view};
 use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
 use crate::search::{GrepArgs, LsArgs, footprint, run_grep, run_ls};
@@ -1294,46 +1294,55 @@ impl Tool for ReadMcpResource {
         let root = context
             .require::<AgentId>()
             .is_ok_and(|agent| agent.0 == ROOT_AGENT);
-        let contents = self
+        // The cap rides on the outcome, not only the success: a server error or an
+        // unknown-URI diagnostic must reach the model bounded like a tool result.
+        let outcome: ToolOutcome = match self
             .queries
             .read_resource(root, &args.server, &args.uri)
             .await
-            .map_err(ToolExecutionError::other)?;
-        let several = contents.len() > 1;
-        let mut text = String::new();
-        for content in &contents {
-            match content {
-                rmcp::model::ResourceContents::TextResourceContents {
-                    uri,
-                    mime_type,
-                    text: body,
-                    ..
-                } => {
-                    if several {
-                        let mime = mime_type.as_deref().unwrap_or("text/plain");
-                        text.push_str(&format!("--- {uri} ({mime}) ---\n"));
+        {
+            Ok(contents) => {
+                let several = contents.len() > 1;
+                let mut text = String::new();
+                for content in &contents {
+                    match content {
+                        rmcp::model::ResourceContents::TextResourceContents {
+                            uri,
+                            mime_type,
+                            text: body,
+                            ..
+                        } => {
+                            if several {
+                                let mime = mime_type.as_deref().unwrap_or("text/plain");
+                                text.push_str(&format!("--- {uri} ({mime}) ---\n"));
+                            }
+                            text.push_str(body);
+                            text.push('\n');
+                        }
+                        rmcp::model::ResourceContents::BlobResourceContents {
+                            uri,
+                            mime_type,
+                            blob,
+                            ..
+                        } => {
+                            let mime = mime_type.as_deref().unwrap_or("application/octet-stream");
+                            let bytes = decoded_base64_size(blob);
+                            text.push_str(&format!(
+                                "[blob at {uri}: {mime}, {bytes} bytes, base64]\n"
+                            ));
+                        }
+                        // A variant newer than this client knows: note it rather than dropping it.
+                        _ => text.push_str("[unknown resource content]\n"),
                     }
-                    text.push_str(body);
-                    text.push('\n');
                 }
-                rmcp::model::ResourceContents::BlobResourceContents {
-                    uri,
-                    mime_type,
-                    blob,
-                    ..
-                } => {
-                    let mime = mime_type.as_deref().unwrap_or("application/octet-stream");
-                    let bytes = decoded_base64_size(blob);
-                    text.push_str(&format!("[blob at {uri}: {mime}, {bytes} bytes, base64]\n"));
-                }
-                // A variant newer than this client knows: note it rather than dropping it.
-                _ => text.push_str("[unknown resource content]\n"),
+                Ok(rig_core::tool::ToolOutput::text(text))
             }
-        }
+            Err(message) => Err(ToolExecutionError::other(message)),
+        };
         // The same cap as an MCP tool result, applied before the guard's result pipeline so
         // the scanner and redaction see what the model will.
         match cap(
-            Ok(rig_core::tool::ToolOutput::text(text)),
+            outcome,
             Self::NAME,
             DEFAULT_CHAR_LIMIT,
             &self.limits,

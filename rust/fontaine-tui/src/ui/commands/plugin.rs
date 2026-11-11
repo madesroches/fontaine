@@ -55,6 +55,9 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
     pub(crate) fn refresh_menu(&mut self, runtime: &AgentRuntime) {
         let prompts = runtime.slash_prompts();
         self.refresh_menu_with(runtime, &prompts);
+        // The draw loop keys its own rebuild on the listing revision; keep the cache in step
+        // so the next draw does not pay for a rebuild the menu already took.
+        self.prompts_revision = Some(runtime.slash_prompts_revision());
     }
 
     /// [`refresh_menu`](Self::refresh_menu) against a prompt listing the caller already read,

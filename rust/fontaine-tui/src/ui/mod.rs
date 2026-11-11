@@ -129,10 +129,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mentions = read_recovering(&runtime.mcp_mentions).clone();
         self.app.set_mentions(mentions);
         // The menu was built before any server connected, so its MCP prompt rows can only
-        // follow the listings here: a divergence re-merges them, like the set_files slot.
-        let prompts = runtime.slash_prompts();
-        if prompts != self.app.menu_prompts {
+        // follow the listings here: a listing revision change re-merges them, like the
+        // set_files slot. The revision is a cheap atomic read, so the rows are rebuilt only
+        // when the listings may have moved, not on every draw.
+        if self.prompts_revision != Some(runtime.slash_prompts_revision()) {
+            let prompts = runtime.slash_prompts();
             self.refresh_menu_with(runtime, &prompts);
+            self.prompts_revision = Some(runtime.slash_prompts_revision());
         }
         self.trigger_statusline(StatuslineTrigger::Draw);
         if let (Some(kind), _) = self.hook_notifier.observe_opened(self.app.pending_prompt())

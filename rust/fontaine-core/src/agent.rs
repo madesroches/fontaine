@@ -6,6 +6,7 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, RwLock};
 
 use fontaine_agents::registry::AgentTypes;
@@ -207,6 +208,9 @@ pub struct AgentRuntime {
     /// The MCP resources `@` completion offers, refreshed after connect, reconnect and a
     /// `list_changed` refresh.
     pub mcp_mentions: Arc<RwLock<Arc<Vec<McpResourceSummary>>>>,
+    /// Bumped by every mention rebuild, which rides every listing change, so a surface caching
+    /// MCP prompt rows refreshes them only when the listings may have moved.
+    pub mcp_listing_revision: Arc<AtomicU64>,
     pipeline: Arc<PermissionPipeline>,
     approver: Arc<dyn Approver>,
     seen: Seen,
@@ -327,18 +331,15 @@ impl AgentRuntime {
         let gates = setup::gates(&mut setup, &tree, &state)?;
         let (exts, skills) = ext_runtimes(setup.extensions, &state, setup.project_executables);
         let (steering, seen, mcp) = (Steering::default(), Seen::default(), McpServers::default());
-        let (main, tool_server, runner, kills) = setup::subagent_support(
-            &ChildDeps::new(
-                &gates.retained,
-                &state,
-                &setup.approver,
-                &steering,
-                &gates.results,
-            ),
-            &tree,
-            &setup.models,
-            &setup.config,
+        let deps = ChildDeps::new(
+            &gates.retained,
+            &state,
+            &setup.approver,
+            &steering,
+            &gates.results,
         );
+        let (main, tool_server, runner, kills) =
+            setup::subagent_support(&deps, &tree, &setup.models, &setup.config);
         let (agent, pieces, loaded, native) = build_agent(&Parts {
             setup: &gates.retained,
             roots: state.scope().roots(),
@@ -380,6 +381,7 @@ impl AgentRuntime {
             steering,
             files: Arc::default(),
             mcp_mentions: Arc::default(),
+            mcp_listing_revision: Arc::default(),
             pipeline: gates.pipeline,
             approver: setup.approver,
             seen,
