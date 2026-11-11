@@ -48,6 +48,10 @@ All notable changes are recorded here. The format follows
 
 ### Changed
 
+- Tests that spawn helper binaries built as Cargo examples (`hook_marker`,
+  `repo_mcp_server`, …) now locate them through a shared `fontaine-testkit::example_bin`
+  helper that builds the example on first use per test process, so a per-package run such as
+  `cargo test -p fontaine-tui` no longer fails on a stale example binary far from the cause (#552).
 - On Windows, Git Bash discovery follows a scoop `git.shim` from a `git.exe` on `PATH` and probes
   scoop's `apps\git\current` under `%SCOOP%` and `%SCOOP_GLOBAL%`, so a scoop-installed Git for
   Windows is found without `FONTAINE_GIT_BASH_PATH` (#553).
