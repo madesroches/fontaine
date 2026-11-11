@@ -56,14 +56,16 @@ Phase 5 (connect, lifecycle, tool registration, elicitation, `/mcp reconnect`).
 - **Slash commands** (`rust/fontaine-tui/src/commands.rs`): one static `BUILTINS` table; unknown
   names parse to `Command::Other { name, argument }`, which dispatches skills by name
   (`rust/fontaine-tui/src/ui/mod.rs` `dispatch_inner`). The `/` menu (`App.menu`,
-  `rust/fontaine-tui/src/lib.rs:494`) is built from builtins + `runtime.slash_skills()` and
+  `rust/fontaine-tui/src/lib.rs:495`) is built from builtins + `runtime.slash_skills()` and
   rebuilt by `refresh_menu` (`rust/fontaine-tui/src/ui/commands/plugin.rs:53`). A command that
   starts a turn returns `CommandOutcome::Turn(Submission::Expanded { text, prompt })` and may
   append `Record::UserMessage` to the ledger first (the `/init` and skill paths are the
   template). Skills (`AgentRuntime::expand_skill`) are the closest existing analog for MCP
   prompts. Headless `fontaine -p` has no slash commands.
-- **System prompt**: assembled in `rust/fontaine-core/src/context.rs`; the file-mention
-  explanation lives there today and is the place to explain `@<uri>` resource mentions.
+- **System prompt**: assembled in `rust/fontaine-core/src/prompt.rs`
+  (`BASE_PROMPT: include_str!("../prompts/system_prompt.md")`, layered in `assemble`), which is
+  the place to explain `@<uri>` resource mentions; `context.rs` only computes token-usage
+  statistics (`PromptPieces`).
 
 ## Design
 
@@ -86,10 +88,13 @@ URIs) is out of scope: reads of templated URIs would need user-supplied paramete
 issue does not ask for; the listing simply omits templates.
 
 On a `notifications/resources/list_changed` or `notifications/prompts/list_changed` notification,
-the listings for that server are re-pulled. `MetaTap` (`fontaine-tools/src/mcp/meta.rs`) already
-observes the transport and records facts; extend it to also forward these two notifications (it
-passes everything through today), and let the supervisor refresh the listings the way it already
-reconciles `tools/list_changed`. A failed refresh keeps the previous listings.
+the listings for that server are re-pulled. Tool-list changes are different: rig-rmcp's
+`McpClientHandler` already re-fetches and reconciles `tools/list_changed` internally through
+`GuardedSink::reconcile_managed_tools`, and the supervisor never sees notifications. The two new
+notifications reach the core only through `MetaTap` (`fontaine-tools/src/mcp/meta.rs`), which
+already observes the transport and passes everything through today; extend it to forward these
+notifications to a callback, and let the supervisor refresh the listings on that callback. A
+failed refresh keeps the previous listings.
 
 MRTR: `read_resource`/`get_prompt` are called through their plain (non-MRTR) forms. A server
 that answers a plain call with `InputRequired` gets a declined round — the call fails with a tool
@@ -100,7 +105,7 @@ the existing `ElicitationTap` transport path.
 ### Resource tools
 
 Two new built-in tools, registered in `fontaine-tools/src/builtins.rs` (construction) and
-`fontaine-tools/src/risk.rs` (two new descriptor rows, both `RiskClass::Arbitrary`), assembled
+`fontaine-tools/src/descriptor.rs` (two new descriptor rows, both `RiskClass::Arbitrary`), assembled
 into the registry through `RegistryParams` in `rust/fontaine-core/src/tools.rs`. They receive a
 new `RegistryParams` field — an `Arc<dyn McpResourceQueries>` trait object implemented by the
 runtime over the supervisor's connected servers — so the tools can reach live connections while
@@ -111,9 +116,7 @@ the tools crate stays free of runtime types.
   Read-only in spirit but `Arbitrary` in class: the *listing* is server-declared text and its
   read is a server round trip, so it takes the same gate as everything else MCP. The `Arbitrary`
   class costs a guardian judgment per listing in `auto`; accepting that keeps the "MCP is never
-  fast-pathed" invariant uniform instead of carving out an exception. A cached listing returned
-  without a server call would be a quieter, cheaper tool, but then `ListMcpResources` results
-  would be the one MCP surface the scanner and gate never see — rejected.
+  fast-pathed" invariant uniform instead of carving out an exception.
 - `ReadMcpResource(server: string, uri: string) -> contents` — reads one resource through
   `connection.read_resource(uri)` and renders text and blob contents (blobs noted with their
   mime type and size, matching how the model is told about images). Unknown server or uri is a
@@ -139,7 +142,8 @@ model (the message is sent as typed; no submit-time expansion is added):
   bare `Vec<String>` for mentions only. The `/` menu's `MenuEntry` is the in-repo model for a
   typed candidate list. Accepting a resource inserts `@<uri>` plus a trailing space, exactly like
   a file accept.
-- The system prompt (assembly in `context.rs`) gains a short section, present only while at
+- The system prompt (assembly in `prompt.rs` over `prompts/system_prompt.md`) gains a short
+  section, fed from the runtime's resource listings at assembly time and present only while at
   least one resources-capable server is connected: an `@<uri>` token names an MCP resource, and
   the model should call `ReadMcpResource` with the `server` from `ListMcpResources` to fetch its
   content (it must not pretend to know the content). This is the mechanism that keeps resource
@@ -154,9 +158,12 @@ naming stay uniform.
 
 - `AgentRuntime::slash_prompts() -> Vec<(name, hint, description)>` (name = the full
   `mcp__server__prompt` string, hint = the prompt's declared argument names, description = the
-  server-supplied description) mirrors `slash_skills()`. Menu construction
-  (`lib.rs:494` and `refresh_menu`) appends prompt rows; a prompt shadowed by a builtin or skill
-  is hidden with a notice, same as skill shadowing.
+  server-supplied description) mirrors `slash_skills()`. The `/` menu is built before
+  `start_mcp` connects (`lib.rs:495-502`), so it cannot contain prompt rows at construction;
+  `slash_prompts()` is empty then, and `refresh_menu` (`ui/commands/plugin.rs:53`) runs only on
+  plugin changes. Prompt rows are therefore appended by rebuilding the menu through
+  `refresh_menu` after `start_mcp` returns and on every listing change; a prompt shadowed by a
+  builtin or skill is hidden with a notice, same as skill shadowing.
 - Dispatch: a `Command::Other` whose name starts with `mcp__` resolves against
   `slash_prompts()` before the skill lookup. Resolution path (mirroring `expand_skill_command`
   in `ui/turn.rs`): `refuse_if_stopped`, hook gate (`prompt_passes`), then
@@ -197,22 +204,29 @@ tools with their own names; MCP prompt invocations record as user messages like 
 2. **fontaine-tools — resource tools.** Implement `ListMcpResources` and `ReadMcpResource`
    against a `McpResourceQueries` trait (list servers+resources; read one resource), with
    `OutputLimits` capping on reads; add both to `builtins.rs` construction and two `Arbitrary`
-   rows in `risk.rs`.
+   rows in `descriptor.rs`, adjusting the pinned `rows_are_pinned` count and the
+   `path_policy_is_consistent` / `names_are_unique_rule_names` tests as needed.
 3. **fontaine-core — runtime wiring.** `agent/mcp.rs`/`mcp_supervisor.rs`: pull listings at
    connect/reconnect, refresh on the two notifications, drop them on remove; expose
    `mcp_mentions()` (resource summaries), `slash_prompts()`, and `run_mcp_prompt(name, argument)`
    on `AgentRuntime`; implement `McpResourceQueries` over the supervisor; pass it through
    `RegistryParams` in `tools.rs`/`agent/build.rs`; refresh the mention slot like `files`.
-4. **fontaine-core — system prompt.** `context.rs`: the `@<uri>` + resource-tools section,
-   emitted only while a resources-capable server is connected.
+4. **fontaine-core — system prompt.** `prompt.rs` / `prompts/system_prompt.md`: a conditional
+   `@<uri>` + resource-tools section, fed from the runtime's resource listings at assembly time
+   and emitted only while a resources-capable server is connected.
 5. **fontaine-tui — mention completion.** Structured candidate through `complete.rs` /
    `CompletionList` / `accept_completion` / `view.rs` rows; wire the runtime mention slot next to
    `set_files`.
-6. **fontaine-tui — prompt commands.** Menu merge in `lib.rs` + `refresh_menu`; the `mcp__*`
+6. **fontaine-tui — prompt commands.** Menu merge: rebuild through `refresh_menu` after
+   `start_mcp` returns and on every listing change (the menu is built before servers connect, so
+   startup construction never sees prompts); the `mcp__*`
    dispatch arm in `dispatch_inner` next to `Command::Other`; the `run_mcp_prompt` UI wrapper
    following `expand_skill_command`; `/mcp` counts in `reports.rs`.
 7. **Example server.** Extend `rust/fontaine/examples/repo_mcp_server.rs` with one resource and
-   one prompt (and a `list_changed` poke if trivial) for manual verification.
+   one prompt (and a `list_changed` poke if trivial) for manual verification; the example mounts
+   the shared `Double` helper via `#[path = "../../fontaine-tools/tests/mcp_common/server.rs"]`,
+   whose `ServerHandler` implements tools only, so `Double` must grow resource and prompt
+   support.
 8. **Docs.** `docs/mcp.md` — replace "Only tools are used; resources and prompts are not." with
    Resources and Prompts sections (tool names, gating, scanner, @-mention, command syntax,
    `key=value` arguments); `docs/tui.md` file-mentions section gains the resource mention;
@@ -226,16 +240,18 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
 - `rust/fontaine-tools/src/mcp/servers.rs` — capabilities, listings, notification forwarding
 - `rust/fontaine-tools/src/mcp/meta.rs` — list_changed observation
 - `rust/fontaine-tools/src/mcp.rs`, `rust/fontaine-tools/src/mcp/output.rs` — re-exports, read capping reuse
-- `rust/fontaine-tools/src/builtins.rs`, `rust/fontaine-tools/src/risk.rs` — the two tools + risk rows
+- `rust/fontaine-tools/src/builtins.rs`, `rust/fontaine-tools/src/descriptor.rs` — the two tools + descriptor rows (and its pinned tests)
 - `rust/fontaine-core/src/agent/mcp.rs`, `mcp_supervisor.rs` — listing lifecycle, runtime surface
 - `rust/fontaine-core/src/agent.rs`, `agent/build.rs` — `RegistryParams` plumbing, mention slot
 - `rust/fontaine-core/src/tools.rs` — registry field
-- `rust/fontaine-core/src/context.rs` — system prompt section
+- `rust/fontaine-core/tests/choke_point.rs` — registry count 12 → 14
+- `rust/fontaine-core/src/prompt.rs`, `rust/fontaine-core/prompts/system_prompt.md` — system prompt section
 - `rust/fontaine-tui/src/complete.rs`, `app.rs`, `view.rs`, `ui/mod.rs` — mention candidates
 - `rust/fontaine-tui/src/lib.rs`, `ui/commands/plugin.rs`, `ui/mod.rs`, `ui/turn.rs` — prompt commands
 - `rust/fontaine-tui/src/reports.rs` — `/mcp` counts
 - `rust/fontaine/examples/repo_mcp_server.rs` — manual-verification server
-- `docs/mcp.md`, `docs/tui.md`, `docs/architecture.md`, `CHANGELOG.md`
+- `rust/fontaine-tools/tests/mcp_common/server.rs` — `Double` gains resource + prompt support (step 7)
+- `docs/mcp.md`, `docs/tui.md`, `docs/architecture.md`, `docs/tools.md`, `CHANGELOG.md`
 
 ## Trade-offs
 
@@ -276,6 +292,8 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
   arguments; the "resources and prompts are not" sentence goes away.
 - `docs/tui.md`: file-mentions section gains resource mentions.
 - `docs/architecture.md`: the built-in tool list gains `ListMcpResources`/`ReadMcpResource`.
+- `docs/tools.md`: the Built-in tools table gains the two rows (always registered, `arbitrary`
+  class), and any wording about the fixed toolset is checked against them.
 - No new docs page; nothing added to `docs/SUMMARY.md`.
 
 ## Testing Strategy
@@ -286,8 +304,9 @@ Unit and integration tests only; no live APIs (project rule). New coverage:
   (`connect_transport` + `tokio::time::pause`, the established pattern); read capping boundary;
   notification forwarding from `MetaTap`.
 - `fontaine-core`: supervisor-level test with an injectable `McpConnector` that the resource
-  tools call through (list with zero/one/many servers, unknown server/uri errors); the two risk
-  rows asserted in `tests/choke_point.rs`; `slash_prompts()`/menu data; `run_mcp_prompt`
+  tools call through (list with zero/one/many servers, unknown server/uri errors); the two
+  descriptor rows asserted in `tests/choke_point.rs`, whose
+  `without_the_extension_the_registry_is_the_twelve_built_ins` count moves 12 → 14; `slash_prompts()`/menu data; `run_mcp_prompt`
   argument parsing (present, missing-required, malformed) with a fake connection; system prompt
   section present/absent by capability; scanner-stage invocation on a resource read result (a
   fake scanner flagging content proves the pipeline path).
