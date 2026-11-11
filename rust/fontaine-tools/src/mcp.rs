@@ -14,7 +14,7 @@ pub mod register;
 pub mod servers;
 
 pub use elicitation::{
-    CancelAll, Choice, ElicitForm, ElicitReply, Elicitor, Field, FieldKind, TextFormat,
+    CallGuard, CancelAll, Choice, ElicitForm, ElicitReply, Elicitor, Field, FieldKind, TextFormat,
 };
 pub use listings::{
     Listings, McpResourceQueries, NoMcpResources, PromptArgument, PromptSummary, ResourceSummary,
@@ -25,6 +25,6 @@ pub use output::OutputLimits;
 pub use register::{GuardedSink, mcp_tool_name};
 pub use rig_rmcp::McpConnection as McpConnectionHandle;
 pub use servers::{
-    CONNECT_TIMEOUT, Connected, McpError, McpErrorKind, McpOptions, ServerSpec, Transport, connect,
-    connect_transport,
+    CONNECT_TIMEOUT, CallScope, Connected, McpError, McpErrorKind, McpOptions, ServerSpec,
+    Transport, connect, connect_transport,
 };

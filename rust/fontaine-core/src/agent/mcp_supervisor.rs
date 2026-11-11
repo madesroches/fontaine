@@ -12,8 +12,8 @@ use fontaine_tools::error_chain::chain;
 use fontaine_tools::lock::{lock, read, read_recovering, write, write_recovering};
 use fontaine_tools::mcp::McpConnectionHandle as McpConnection;
 use fontaine_tools::mcp::{
-    CONNECT_TIMEOUT, Connected, Listings, McpError, McpErrorKind, McpOptions, McpResourceQueries,
-    ServerSpec, connect as connect_server, pull_listings,
+    CONNECT_TIMEOUT, CallScope, Connected, Listings, McpError, McpErrorKind, McpOptions,
+    McpResourceQueries, ServerSpec, connect as connect_server, pull_listings,
 };
 use fontaine_tools::tls::LoadedNetwork;
 use futures::future::BoxFuture;
@@ -134,11 +134,12 @@ impl ServerSlot {
         &self.spec.name
     }
 
-    /// The live connection the slot holds now, when the server is connected.
-    pub(crate) fn connection(&self) -> Option<McpConnection> {
+    /// The live connection and its call scope, for a request that is not a tool call but still
+    /// joins the in-flight counting and can signal a dead transport.
+    pub(crate) fn call_scope(&self) -> Option<(McpConnection, CallScope)> {
         lock(&self.connection, "MCP connection")
             .as_ref()
-            .map(|connected| connected.connection.clone())
+            .map(|connected| (connected.connection.clone(), connected.call_scope()))
     }
 
     /// The server's state; a connected server's counts are read from the connection the slot
@@ -317,8 +318,8 @@ struct SlotQueries {
 }
 
 impl SlotQueries {
-    /// The live connection and listings of `server`, or why it cannot be read from.
-    fn target(&self, server: &str) -> Result<(McpConnection, Listings), String> {
+    /// The live connection, listings and call scope of `server`, or why they cannot be read.
+    fn target(&self, server: &str) -> Result<(McpConnection, Listings, CallScope), String> {
         let slots = read(&self.slots, "MCP server slots");
         let Some(slot) = slots.get(server) else {
             let connected: Vec<String> = slots.keys().cloned().collect();
@@ -335,7 +336,11 @@ impl SlotQueries {
         let Some(connected) = guard.as_ref() else {
             return Err(format!("MCP server `{server}` is not connected"));
         };
-        Ok((connected.connection.clone(), connected.listings()))
+        Ok((
+            connected.connection.clone(),
+            connected.listings(),
+            connected.call_scope(),
+        ))
     }
 }
 
@@ -356,11 +361,12 @@ impl McpResourceQueries for SlotQueries {
 
     fn read_resource<'a>(
         &'a self,
+        root: bool,
         server: &'a str,
         uri: &'a str,
     ) -> BoxFuture<'a, Result<Vec<ResourceContents>, String>> {
         Box::pin(async move {
-            let (connection, listings) = self.target(server)?;
+            let (connection, listings, scope) = self.target(server)?;
             if !listings
                 .resources
                 .iter()
@@ -381,7 +387,10 @@ impl McpResourceQueries for SlotQueries {
                 ));
             }
             // The single-round variant: an InputRequired answer is the tool error saying the
-            // server asked for input the client does not provide, not a driven MRTR round.
+            // server asked for input the client does not provide, not a driven MRTR round. The
+            // read holds a call guard so a server unload waits it out, and a failed read can
+            // mark a dead transport for the watcher, as a failed tool call does.
+            let _in_flight = scope.enter(root);
             match connection
                 .peer()
                 .read_resource_once(ReadResourceRequestParams::new(uri))
@@ -394,10 +403,13 @@ impl McpResourceQueries for SlotQueries {
                 Ok(other) => Err(format!(
                     "reading `{uri}` from MCP server `{server}` answered unexpectedly: {other:?}"
                 )),
-                Err(error) => Err(format!(
-                    "reading `{uri}` from MCP server `{server}` failed: {}",
-                    chain(&error)
-                )),
+                Err(error) => {
+                    scope.request_failed(&error);
+                    Err(format!(
+                        "reading `{uri}` from MCP server `{server}` failed: {}",
+                        chain(&error)
+                    ))
+                }
             }
         })
     }

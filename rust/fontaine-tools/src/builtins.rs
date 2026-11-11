@@ -1286,12 +1286,17 @@ impl Tool for ReadMcpResource {
 
     async fn call(
         &self,
-        _context: &mut ToolContext,
+        context: &mut ToolContext,
         args: ReadMcpResourceArgs,
     ) -> Result<String, ToolExecutionError> {
+        // The read joins the server's in-flight call tracking as this caller's: a subagent's
+        // read must not let a server elicitation reach the person.
+        let root = context
+            .require::<AgentId>()
+            .is_ok_and(|agent| agent.0 == ROOT_AGENT);
         let contents = self
             .queries
-            .read_resource(&args.server, &args.uri)
+            .read_resource(root, &args.server, &args.uri)
             .await
             .map_err(ToolExecutionError::other)?;
         let several = contents.len() > 1;

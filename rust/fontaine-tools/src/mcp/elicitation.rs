@@ -601,8 +601,9 @@ impl CallTracker {
     }
 }
 
-/// Counts one call in flight until dropped.
-pub(crate) struct CallGuard {
+/// Counts one call in flight until dropped. What a non-tool caller holds when it joins the
+/// tracker's counting, as a resource read or a prompt fetch does.
+pub struct CallGuard {
     tracker: CallTracker,
     root: bool,
 }

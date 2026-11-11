@@ -35,7 +35,7 @@ use rmcp::transport::streamable_http_client::{
 use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport, TokioChildProcess};
 use tokio::sync::Notify;
 
-use super::elicitation::{CallTracker, CancelAll, ElicitationTap, Elicitor};
+use super::elicitation::{CallGuard, CallTracker, CancelAll, ElicitationTap, Elicitor};
 use super::listings::{Listings, pull_listings};
 use super::meta::{MetaTap, ToolMeta};
 use super::output::OutputLimits;
@@ -381,20 +381,24 @@ pub(crate) fn signals_transport_failure(outcome: &ToolOutcome, failed: &Notify) 
     let mut link: Option<&(dyn StdError + 'static)> = StdError::source(error);
     while let Some(cause) = link {
         if let Some(service) = cause.downcast_ref::<ServiceError>() {
-            let dead = match service {
-                ServiceError::TransportClosed => true,
-                ServiceError::TransportSend(error) => {
-                    classify_transport(error) == McpErrorKind::Transient
-                }
-                _ => false,
-            };
-            if dead {
+            if service_failure_is_dead(service) {
                 // A permit is stored when the watcher is not waiting yet.
                 failed.notify_one();
             }
             return;
         }
         link = cause.source();
+    }
+}
+
+/// Whether a request's typed error says the transport is gone, so the connection has to be
+/// replaced: a send that failed for a transient reason, or a closed transport. A timeout does
+/// not: a slow server is not a dead one.
+fn service_failure_is_dead(service: &ServiceError) -> bool {
+    match service {
+        ServiceError::TransportClosed => true,
+        ServiceError::TransportSend(error) => classify_transport(error) == McpErrorKind::Transient,
+        _ => false,
     }
 }
 
@@ -461,10 +465,45 @@ impl Connected {
             .await
             .is_ok()
     }
+
+    /// The connection's call tracking and transport-failure signal, for a request that is not
+    /// one of the guarded tool calls: a resource read or a prompt fetch joins the in-flight
+    /// counting and can show the transport dead, exactly as a tool call does.
+    pub fn call_scope(&self) -> CallScope {
+        CallScope {
+            tracker: self.tracker.clone(),
+            transport_failed: self.transport_failed.clone(),
+        }
+    }
     /// How many tools the server has registered now: the count follows every `list_changed`
     /// refresh.
     pub fn tool_count(&self) -> usize {
         self.tool_count.load(Ordering::Relaxed)
+    }
+}
+
+/// A connection's call tracking and transport-failure signal, handed to a request that is not
+/// one of the guarded tool calls. Cloned out of a [`Connected`] so the caller need not keep the
+/// connection itself.
+#[derive(Clone)]
+pub struct CallScope {
+    tracker: CallTracker,
+    transport_failed: Arc<Notify>,
+}
+
+impl CallScope {
+    /// Counts one request in flight until the guard drops. `root` is whether the session's
+    /// main agent made the call; anything else counts as a subagent's, the stricter side.
+    pub fn enter(&self, root: bool) -> CallGuard {
+        self.tracker.enter(root)
+    }
+
+    /// Signals the transport dead when `error` says it is, as a failed tool call does.
+    pub fn request_failed(&self, error: &ServiceError) {
+        if service_failure_is_dead(error) {
+            // A permit is stored when the watcher is not waiting yet.
+            self.transport_failed.notify_one();
+        }
     }
 }
 

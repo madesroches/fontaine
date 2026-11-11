@@ -938,7 +938,8 @@ impl AgentRuntime {
         };
         let arguments =
             parse_prompt_arguments(name, argument, &prompt).map_err(RuntimeError::new)?;
-        let Some(connection) = self.mcp.slot(&server).and_then(|slot| slot.connection()) else {
+        let Some((connection, scope)) = self.mcp.slot(&server).and_then(|slot| slot.call_scope())
+        else {
             return Err(RuntimeError::new(format!(
                 "MCP server `{server}` is not connected"
             )));
@@ -952,10 +953,14 @@ impl AgentRuntime {
             ));
         }
         // The single-round variant: server-requested input is an error, not a driven round.
-        let response = connection
-            .peer()
-            .get_prompt_once(params)
-            .await
+        // The fetch holds a root call guard so a server unload waits it out, and a failed
+        // fetch can mark a dead transport for the watcher, as a failed tool call does.
+        let _in_flight = scope.enter(true);
+        let response = connection.peer().get_prompt_once(params).await;
+        if let Err(error) = &response {
+            scope.request_failed(error);
+        }
+        let response = response
             .map_err(|e| RuntimeError::new(format!("fetching `/{name}` failed: {}", chain(&e))))?;
         let result = match response {
             GetPromptResponse::Complete(result) => result,

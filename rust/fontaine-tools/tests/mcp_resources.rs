@@ -260,6 +260,7 @@ impl McpResourceQueries for Fake {
 
     fn read_resource<'a>(
         &'a self,
+        _root: bool,
         server: &'a str,
         uri: &'a str,
     ) -> BoxFuture<'a, Result<Vec<ResourceContents>, String>> {

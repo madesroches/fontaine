@@ -117,9 +117,11 @@ pub trait McpResourceQueries: Send + Sync {
     fn connected(&self) -> Vec<(String, Listings)>;
 
     /// Reads `uri` from the connected server `server`. `Err` names what is connected or what the
-    /// server answered.
+    /// server answered. `root` is whether the session's main agent made the call: the read
+    /// joins the server's in-flight call tracking under that identity.
     fn read_resource<'a>(
         &'a self,
+        root: bool,
         server: &'a str,
         uri: &'a str,
     ) -> futures::future::BoxFuture<'a, Result<Vec<ResourceContents>, String>>;
@@ -136,6 +138,7 @@ impl McpResourceQueries for NoMcpResources {
 
     fn read_resource<'a>(
         &'a self,
+        _root: bool,
         server: &'a str,
         _uri: &'a str,
     ) -> futures::future::BoxFuture<'a, Result<Vec<ResourceContents>, String>> {
