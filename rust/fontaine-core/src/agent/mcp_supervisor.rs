@@ -548,7 +548,21 @@ impl Supervisor {
                     break;
                 }
                 _ = listings_changed.notified() => {
-                    refresh_listings(&connection, &listings).await;
+                    // The refresh rides as an in-flight future so a connection loss or a
+                    // transport failure stays selectable while a pull runs; losing the
+                    // connection cancels the refresh, keeping the listings it already
+                    // committed, and each listing's own deadline bounds a silent server.
+                    let mut refresh = Box::pin(refresh_listings(&connection, &listings));
+                    tokio::select! {
+                        _ = connection.closed() => break,
+                        _ = failed.notified(), if slot.is_remote() => {
+                            // rmcp's HTTP worker never ends the connection of a dead
+                            // server, so it is closed here, which retires its tools.
+                            connection.close().await;
+                            break;
+                        }
+                        _ = &mut refresh => {}
+                    }
                     // The mention snapshot and the counts follow the listings just pulled.
                     (self.refresh)();
                 }

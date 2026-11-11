@@ -907,12 +907,13 @@ impl AgentRuntime {
             .mcp
             .listings()
             .into_iter()
-            .filter_map(|(server, listings)| {
+            .flat_map(|(server, listings)| {
                 listings
                     .prompts
-                    .iter()
-                    .find(|prompt| mcp_tool_name(&server, &prompt.name) == name)
-                    .map(|prompt| (server, prompt.clone()))
+                    .into_iter()
+                    .filter(|prompt| mcp_tool_name(&server, &prompt.name) == name)
+                    .map(|prompt| (server.clone(), prompt))
+                    .collect::<Vec<_>>()
             })
             .collect();
         let (server, prompt) = match matches.as_slice() {

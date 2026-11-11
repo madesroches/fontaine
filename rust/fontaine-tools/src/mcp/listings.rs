@@ -2,8 +2,15 @@
 //! they feed the `@` mention popup, the `/mcp__<server>__<prompt>` commands and the
 //! `list_mcp_resources` tool, and a failed pull never fails the connection that carried it.
 
+use std::time::Duration;
+
 use rig_rmcp::McpConnection;
 use rmcp::model::ResourceContents;
+
+/// How long one listing request may go unanswered before the pull gives up on that listing
+/// and keeps its previous value. The two listings pull concurrently, so the bound covers
+/// each, and a server that accepts a request but never answers cannot stall the other.
+const LISTING_PULL_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// One resource a server listed: readable content behind a URI.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -45,17 +52,23 @@ impl Listings {
 
 /// Pulls both listings from `connection` once, starting from `previous`. Each listing is
 /// skipped when the server did not declare the capability in its initialize result
-/// (`peer_info`); an absent `peer_info` means no capabilities. The two listings are pulled
-/// independently: a declared listing that cannot be pulled keeps the field's previous value,
-/// so one failed listing never discards the other.
+/// (`peer_info`); an absent `peer_info` means no capabilities. The two listings pull
+/// concurrently under their own deadlines: a declared listing that fails or goes unanswered
+/// keeps the field's previous value and never stalls or erases the other.
 pub async fn pull_listings(connection: &McpConnection, previous: &Listings) -> Listings {
     let Some(info) = connection.peer().peer_info() else {
         return Listings::default();
     };
     let capabilities = &info.capabilities;
     let mut listings = previous.clone();
-    if capabilities.resources.is_some() {
-        if let Ok(listed) = connection.resources().await {
+    let resources = async {
+        if capabilities.resources.is_none() {
+            listings.resources = Vec::new();
+            return;
+        }
+        if let Ok(Ok(listed)) =
+            tokio::time::timeout(LISTING_PULL_TIMEOUT, connection.resources()).await
+        {
             listings.resources = listed
                 .into_iter()
                 .map(|resource| ResourceSummary {
@@ -66,11 +79,15 @@ pub async fn pull_listings(connection: &McpConnection, previous: &Listings) -> L
                 })
                 .collect();
         }
-    } else {
-        listings.resources = Vec::new();
-    }
-    if capabilities.prompts.is_some() {
-        if let Ok(listed) = connection.peer().list_all_prompts().await {
+    };
+    let prompts = async {
+        if capabilities.prompts.is_none() {
+            listings.prompts = Vec::new();
+            return;
+        }
+        if let Ok(Ok(listed)) =
+            tokio::time::timeout(LISTING_PULL_TIMEOUT, connection.peer().list_all_prompts()).await
+        {
             listings.prompts = listed
                 .into_iter()
                 .map(|prompt| PromptSummary {
@@ -88,9 +105,8 @@ pub async fn pull_listings(connection: &McpConnection, previous: &Listings) -> L
                 })
                 .collect();
         }
-    } else {
-        listings.prompts = Vec::new();
-    }
+    };
+    tokio::join!(resources, prompts);
     listings
 }
 
