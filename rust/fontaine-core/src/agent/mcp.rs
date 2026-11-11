@@ -15,7 +15,7 @@ use fontaine_tools::guarded::Guard;
 use fontaine_tools::lock::write_recovering;
 use fontaine_tools::mcp::output::{DEFAULT_MAX_TOKENS, OutputLimits, Spill};
 use fontaine_tools::mcp::{
-    ElicitForm, ElicitReply, Elicitor, McpOptions, PromptSummary, ServerSpec, Transport,
+    ElicitForm, ElicitReply, ElicitUrl, Elicitor, McpOptions, PromptSummary, ServerSpec, Transport,
     connect as connect_server, mcp_tool_name,
 };
 use fontaine_tools::result_pipeline::ResultPipeline;
@@ -501,6 +501,10 @@ pub(crate) struct ApproverElicitor(pub(crate) Arc<dyn Approver>);
 impl Elicitor for ApproverElicitor {
     fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
         self.0.elicit(form)
+    }
+
+    fn elicit_url<'a>(&'a self, request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+        self.0.elicit_url(request)
     }
 }
 

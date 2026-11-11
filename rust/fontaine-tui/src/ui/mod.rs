@@ -453,7 +453,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Prompt::Unavailable(_, reply) if reply.is_closed() => {}
             Prompt::Question(_, _, reply) if reply.is_closed() => {}
             Prompt::Elicit(_, reply) if reply.is_closed() => {}
-            Prompt::Elicit(form, reply) => self.app.begin_elicitation(*form, reply),
+            Prompt::Elicit(request, reply) => self.app.begin_elicitation(*request, reply),
             Prompt::Question(agent, questions, reply) => {
                 self.app.begin_question(agent, questions, reply);
             }
@@ -506,8 +506,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app.begin_approval(*request, reply);
                 }
                 // Asked while no call was in flight, so the request is still open.
-                Prompt::Elicit(form, reply) if !reply.is_closed() => {
-                    self.app.begin_elicitation(*form, reply);
+                Prompt::Elicit(request, reply) if !reply.is_closed() => {
+                    self.app.begin_elicitation(*request, reply);
                 }
                 Prompt::Ask(..)
                 | Prompt::Unavailable(..)

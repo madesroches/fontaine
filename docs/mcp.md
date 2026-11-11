@@ -368,9 +368,14 @@ the terminal UI shows a dialog with the server's message and one row per field t
 (text, number, whole number, yes/no, a choice, or several choices), checks what you type against
 what the server required, and sends your answer back to that server. You can fill the form in,
 decline it (the server carries on without the input) or cancel it (the server stops what it was
-doing). The keys are in [the terminal UI](tui.md#requests-for-input-from-an-mcp-server). A server's
-request to open a link (URL mode) is always declined: Fontaine never opens a browser on a server's
-say-so.
+doing). The keys are in [the terminal UI](tui.md#requests-for-input-from-an-mcp-server).
+
+Fontaine also serves the URL mode: a server can ask you to open a link. The terminal UI shows the
+server's message, the link and a warning that it goes to an external site the server chose, and
+opens it in your default browser only when you confirm with `y`. Only `http` and `https` links are
+accepted; any other scheme is declined before you are asked. The link is never opened on the
+server's say-so, and there is no "always allow": every request is confirmed. The keys are in
+[the terminal UI](tui.md#requests-for-input-from-an-mcp-server).
 
 - **Only the terminal UI shows a dialog.** A [headless run](headless.md#questions), [AFK mode](afk.md),
   the [doctor](doctor.md) probe and a call made by a subagent answer `cancel` without showing

@@ -1244,6 +1244,35 @@ mod tests {
     }
 
     #[test]
+    fn a_url_elicitation_prints_and_rings_the_bell() {
+        use fontaine_tools::mcp::{ElicitRequest, ElicitUrl};
+
+        let mut rig = Rig::new();
+        rig.app.running = true;
+        rig.render();
+        let (tx, _rx) = oneshot::channel();
+        rig.app.begin_elicitation(
+            ElicitRequest::Url(ElicitUrl {
+                server: "github".into(),
+                message: "Sign in".into(),
+                url: "https://example.com/auth".into(),
+            }),
+            tx,
+        );
+        let out = rig.render();
+        assert!(
+            out.contains('\x07') && out.contains("wants to open a link"),
+            "{out:?}"
+        );
+        assert!(
+            out.contains("https://example.com/auth")
+                && out.contains("external site chosen by the server"),
+            "{out:?}"
+        );
+        assert!(!rig.render().contains('\x07'));
+    }
+
+    #[test]
     fn the_bell_rings_for_prompts_that_need_an_answer_and_not_for_others() {
         let mut rig = Rig::new();
         rig.app.running = true;

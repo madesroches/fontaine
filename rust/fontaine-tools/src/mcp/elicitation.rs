@@ -1,7 +1,8 @@
-//! Serving an MCP server's `elicitation/create` request: a form shown to the human. rig-rmcp's
-//! client handler declines every elicitation and cannot be wrapped, so the request is taken off
-//! the wire by a transport wrapper before rmcp sees it, and the answer is written back as the
-//! response. Nothing a person types here reaches the model, the transcript or the audit log.
+//! Serving an MCP server's `elicitation/create` request: a form shown to the human, or a link
+//! the human confirms before it is opened. rig-rmcp's client handler declines every elicitation
+//! and cannot be wrapped, so the request is taken off the wire by a transport wrapper before
+//! rmcp sees it, and the answer is written back as the response. Nothing a person types here
+//! reaches the model, the transcript or the audit log.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -32,6 +33,32 @@ pub struct ElicitForm {
     pub schema: ElicitationSchema,
 }
 
+/// A server's request to open a link, with the server's name for the dialog.
+#[derive(Clone, Debug)]
+pub struct ElicitUrl {
+    pub server: String,
+    /// Untrusted text from the server.
+    pub message: String,
+    /// Untrusted text from the server; validated as an `http`/`https` URL before it is shown
+    /// or opened.
+    pub url: String,
+}
+
+/// What a server asked for: a form to fill in or a link to open.
+#[derive(Clone, Debug)]
+pub enum ElicitRequest {
+    Form(ElicitForm),
+    Url(ElicitUrl),
+}
+
+/// The parsed form of a URL-mode elicitation the person may be shown, or `None` when the text
+/// is not an absolute `http`/`https` URL. The parsed string is what is shown and handed to the
+/// opener, so escapes and control characters cannot change the meaning.
+pub fn openable_url(text: &str) -> Option<String> {
+    let parsed = url::Url::parse(text).ok()?;
+    matches!(parsed.scheme(), "http" | "https").then(|| parsed.to_string())
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum ElicitReply {
     /// Values for the form's fields, already valid for its schema.
@@ -43,6 +70,13 @@ pub enum ElicitReply {
 /// Whoever answers an elicitation: the terminal UI, or nobody.
 pub trait Elicitor: Send + Sync {
     fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply>;
+
+    /// A server's request to open a link. The default cancels, so headless runs, the doctor
+    /// probe and tests keep answering `cancel`.
+    fn elicit_url<'a>(&'a self, request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+        let _ = request;
+        Box::pin(async { ElicitReply::Cancel })
+    }
 }
 
 /// Answers every elicitation with a cancel: the doctor probe, headless runs and tests.
@@ -624,7 +658,7 @@ impl Drop for CallGuard {
 
 struct Pending {
     abort: AbortHandle,
-    form: ElicitForm,
+    request: ElicitRequest,
     /// A call was in flight when it arrived, so it ends with the last call.
     during_call: bool,
 }
@@ -715,35 +749,51 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             return;
         };
         match reply {
-            ElicitReply::Accept(answer) => match pending.form.validate(&answer) {
-                Ok(()) => self.respond(
+            ElicitReply::Accept(answer) => match &pending.request {
+                ElicitRequest::Url(_) => self.respond(
                     id,
                     ElicitResult::new(ElicitationAction::Accept)
                         .with_content(Value::Object(answer)),
                 ),
-                Err(reason) => {
-                    tracing::warn!(
-                        server = %self.shown,
-                        reason,
-                        "an elicitation answer did not match the requested form; declining"
-                    );
-                    self.answer_with(id, ElicitationAction::Decline);
-                }
+                ElicitRequest::Form(form) => match form.validate(&answer) {
+                    Ok(()) => self.respond(
+                        id,
+                        ElicitResult::new(ElicitationAction::Accept)
+                            .with_content(Value::Object(answer)),
+                    ),
+                    Err(reason) => {
+                        tracing::warn!(
+                            server = %self.shown,
+                            reason,
+                            "an elicitation answer did not match the requested form; declining"
+                        );
+                        self.answer_with(id, ElicitationAction::Decline);
+                    }
+                },
             },
             ElicitReply::Decline => self.answer_with(id, ElicitationAction::Decline),
             ElicitReply::Cancel => self.answer_with(id, ElicitationAction::Cancel),
         }
     }
 
-    fn start(&mut self, id: RequestId, message: String, schema: ElicitationSchema) {
+    /// Cancels `id` without asking when a subagent's call is in flight; otherwise the calls in
+    /// flight now, for `during_call`.
+    fn gate(&mut self, id: &RequestId) -> Option<InFlight> {
         // A set keeps each finished task's result until it is joined.
         while self.tasks.try_join_next().is_some() {}
         let flight = *self.calls.borrow();
         if flight.sub > 0 {
             // A subagent's call cannot put a dialog in front of the person.
-            self.answer_with(id, ElicitationAction::Cancel);
-            return;
+            self.answer_with(id.clone(), ElicitationAction::Cancel);
+            return None;
         }
+        Some(flight)
+    }
+
+    fn start(&mut self, id: RequestId, message: String, schema: ElicitationSchema) {
+        let Some(flight) = self.gate(&id) else {
+            return;
+        };
         let form = ElicitForm {
             server: self.server.clone(),
             message,
@@ -761,7 +811,42 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
             id,
             Pending {
                 abort,
-                form,
+                request: ElicitRequest::Form(form),
+                during_call: flight.total() > 0,
+            },
+        );
+    }
+
+    fn start_url(&mut self, id: RequestId, message: String, url: String) {
+        let Some(flight) = self.gate(&id) else {
+            return;
+        };
+        let Some(url) = openable_url(&url) else {
+            tracing::warn!(
+                server = %self.shown,
+                "declined a URL-mode elicitation: only http and https links are opened"
+            );
+            self.answer_with(id, ElicitationAction::Decline);
+            return;
+        };
+        let request = ElicitUrl {
+            server: self.server.clone(),
+            message,
+            url,
+        };
+        let elicitor = self.elicitor.clone();
+        let sender = self.answer_sender.clone();
+        let asked = request.clone();
+        let task_id = id.clone();
+        let abort = self.tasks.spawn(async move {
+            let reply = elicitor.elicit_url(asked).await;
+            let _ = sender.send(Answer { id: task_id, reply });
+        });
+        self.pending.insert(
+            id,
+            Pending {
+                abort,
+                request: ElicitRequest::Url(request),
                 during_call: flight.total() > 0,
             },
         );
@@ -800,12 +885,8 @@ impl<T: Transport<RoleClient>> ElicitationTap<T> {
                         message.clone(),
                         requested_schema.clone(),
                     ),
-                    ElicitRequestParams::UrlElicitationParams { .. } => {
-                        tracing::warn!(
-                            server = %self.shown,
-                            "declined a URL-mode elicitation: opening a link on a server's say-so is not supported"
-                        );
-                        self.answer_with(request.id.clone(), ElicitationAction::Decline);
+                    ElicitRequestParams::UrlElicitationParams { message, url, .. } => {
+                        self.start_url(request.id.clone(), message.clone(), url.clone());
                     }
                     _ => self.answer_with(request.id.clone(), ElicitationAction::Decline),
                 }
@@ -946,10 +1027,12 @@ mod tests {
         }
     }
 
-    /// Answers each form with the next reply in `replies` after `delay`, recording the forms.
+    /// Answers each elicitation with the next reply in `replies` after `delay`, recording the
+    /// forms and URLs it was shown.
     struct Scripted {
         replies: Mutex<VecDeque<ElicitReply>>,
         forms: Mutex<Vec<ElicitForm>>,
+        urls: Mutex<Vec<ElicitUrl>>,
         started: Arc<Notify>,
         dropped: Arc<Mutex<usize>>,
         delay: Duration,
@@ -960,6 +1043,7 @@ mod tests {
             Arc::new(Scripted {
                 replies: Mutex::new(replies.into()),
                 forms: Mutex::new(Vec::new()),
+                urls: Mutex::new(Vec::new()),
                 started: Arc::new(Notify::new()),
                 dropped: Arc::new(Mutex::new(0)),
                 delay: Duration::ZERO,
@@ -970,6 +1054,7 @@ mod tests {
             Arc::new(Scripted {
                 replies: Mutex::new(VecDeque::new()),
                 forms: Mutex::new(Vec::new()),
+                urls: Mutex::new(Vec::new()),
                 started: Arc::new(Notify::new()),
                 dropped: Arc::new(Mutex::new(0)),
                 delay,
@@ -977,7 +1062,7 @@ mod tests {
         }
 
         fn asked(&self) -> usize {
-            self.forms.lock().unwrap().len()
+            self.forms.lock().unwrap().len() + self.urls.lock().unwrap().len()
         }
     }
 
@@ -994,6 +1079,22 @@ mod tests {
             Box::pin(async move {
                 let _count = DropCount(self.dropped.clone());
                 self.forms.lock().unwrap().push(form);
+                self.started.notify_one();
+                if !self.delay.is_zero() {
+                    tokio::time::sleep(self.delay).await;
+                }
+                self.replies
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .unwrap_or(ElicitReply::Cancel)
+            })
+        }
+
+        fn elicit_url<'a>(&'a self, request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+            Box::pin(async move {
+                let _count = DropCount(self.dropped.clone());
+                self.urls.lock().unwrap().push(request);
                 self.started.notify_one();
                 if !self.delay.is_zero() {
                     tokio::time::sleep(self.delay).await;
@@ -1128,30 +1229,146 @@ mod tests {
         assert!(response(&sent, 1)["result"].get("content").is_none());
     }
 
+    fn url_request(id: i64, message: &str, url: &str) -> ServerJsonRpcMessage {
+        ServerJsonRpcMessage::Request(JsonRpcRequest {
+            jsonrpc: JsonRpcVersion2_0,
+            id: RequestId::Number(id),
+            request: ServerRequest::ElicitRequest(ElicitRequest::new(
+                ElicitRequestParams::UrlElicitationParams {
+                    meta: None,
+                    message: message.to_string(),
+                    url: url.to_string(),
+                    elicitation_id: format!("e{id}"),
+                },
+            )),
+        })
+    }
+
     #[tokio::test]
-    async fn url_mode_is_declined_without_asking() {
-        let mut rig = rig(Scripted::new(vec![]));
+    async fn a_url_request_is_taken_and_asks_the_elicitor() {
+        let elicitor = Scripted::new(vec![ElicitReply::Cancel]);
+        let mut rig = rig(elicitor.clone());
         rig.script
-            .push(ServerJsonRpcMessage::Request(JsonRpcRequest {
-                jsonrpc: JsonRpcVersion2_0,
-                id: RequestId::Number(3),
-                request: ServerRequest::ElicitRequest(ElicitRequest::new(
-                    ElicitRequestParams::UrlElicitationParams {
-                        meta: None,
-                        message: "Sign in".to_string(),
-                        url: "https://example.com/auth".to_string(),
-                        elicitation_id: "e1".to_string(),
-                    },
-                )),
-            }));
+            .push(url_request(3, "Sign in", "https://example.com/auth"));
         let passed = drain(&mut rig.tap, Duration::from_millis(100)).await;
         settle().await;
-        assert!(passed.is_empty());
-        assert_eq!(rig.elicitor.asked(), 0);
+        assert!(passed.is_empty(), "{passed:?}");
+        let urls = elicitor.urls.lock().unwrap().clone();
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].server, "srv");
+        assert_eq!(urls[0].message, "Sign in");
+        assert_eq!(urls[0].url, "https://example.com/auth");
         assert_eq!(
             response(&rig.script.sent(), 3)["result"]["action"],
-            json!("decline")
+            json!("cancel")
         );
+    }
+
+    #[tokio::test]
+    async fn a_valid_http_url_answered_accept_sends_accept_with_empty_content() {
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Accept(Map::default())]));
+        rig.script
+            .push(url_request(5, "Docs", "http://example.com/docs"));
+        drain(&mut rig.tap, Duration::from_millis(100)).await;
+        settle().await;
+        let sent = rig.script.sent();
+        assert_eq!(response(&sent, 5)["result"]["action"], json!("accept"));
+        assert_eq!(response(&sent, 5)["result"]["content"], json!({}));
+    }
+
+    #[tokio::test]
+    async fn a_valid_https_url_answered_decline_sends_decline() {
+        let mut rig = rig(Scripted::new(vec![ElicitReply::Decline]));
+        rig.script
+            .push(url_request(6, "Docs", "https://example.com/docs"));
+        drain(&mut rig.tap, Duration::from_millis(100)).await;
+        settle().await;
+        let sent = rig.script.sent();
+        assert_eq!(response(&sent, 6)["result"]["action"], json!("decline"));
+        assert!(response(&sent, 6)["result"].get("content").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_non_http_url_is_declined_without_asking() {
+        for url in ["file:///etc/passwd", "javascript:alert(1)", "not a url"] {
+            let elicitor = Scripted::new(vec![]);
+            let mut rig = rig(elicitor.clone());
+            rig.script.push(url_request(7, "click", url));
+            let passed = drain(&mut rig.tap, Duration::from_millis(100)).await;
+            settle().await;
+            assert!(passed.is_empty(), "{passed:?}");
+            assert_eq!(elicitor.asked(), 0, "{url}");
+            assert_eq!(
+                response(&rig.script.sent(), 7)["result"]["action"],
+                json!("decline"),
+                "{url}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_url_while_a_subagents_call_is_in_flight_is_cancelled_without_asking() {
+        let mut rig = rig(Scripted::new(vec![]));
+        let _call = rig.tracker.enter(false);
+        rig.script
+            .push(url_request(1, "Sign in", "https://example.com"));
+        drain(&mut rig.tap, Duration::from_millis(100)).await;
+        settle().await;
+        assert_eq!(rig.elicitor.asked(), 0);
+        assert_eq!(
+            response(&rig.script.sent(), 1)["result"]["action"],
+            json!("cancel")
+        );
+    }
+
+    #[tokio::test]
+    async fn when_the_last_call_ends_its_pending_url_elicitation_is_cancelled() {
+        let mut rig = rig(Scripted::slow(Duration::from_secs(3600)));
+        let call = rig.tracker.enter(true);
+        rig.script
+            .push(url_request(8, "Sign in", "https://example.com"));
+        drain(&mut rig.tap, Duration::from_millis(100)).await;
+        assert_eq!(rig.elicitor.asked(), 1);
+        assert!(rig.script.sent().is_empty());
+        drop(call);
+        drain(&mut rig.tap, Duration::from_millis(100)).await;
+        settle().await;
+        assert_eq!(
+            response(&rig.script.sent(), 8)["result"]["action"],
+            json!("cancel")
+        );
+        assert_eq!(
+            *rig.elicitor.dropped.lock().unwrap(),
+            1,
+            "its task was aborted"
+        );
+    }
+
+    #[test]
+    fn openable_url_accepts_only_absolute_http_and_https() {
+        assert_eq!(
+            openable_url("https://example.com/a b").as_deref(),
+            Some("https://example.com/a%20b")
+        );
+        assert_eq!(
+            openable_url("HTTP://EXAMPLE.COM/x").as_deref(),
+            Some("http://example.com/x")
+        );
+        for text in [
+            "file:///etc/passwd",
+            "ftp://example.com",
+            "javascript:alert(1)",
+            "//example.com",
+            "example.com",
+            "",
+        ] {
+            assert!(openable_url(text).is_none(), "{text}");
+        }
+        // A control character in the path is percent-encoded into it, so what would be opened
+        // cannot change meaning: the parsed string, never the raw one, reaches the opener.
+        let escaped = openable_url("https://example.com/\u{1b}[31m").expect("a valid URL");
+        assert!(!escaped.contains('\u{1b}'), "{escaped}");
+        assert!(escaped.contains("%1B"), "{escaped}");
     }
 
     #[tokio::test]
