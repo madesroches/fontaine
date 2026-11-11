@@ -84,6 +84,11 @@ through `AgentRuntime` alongside `mcp_states()`. `resources/templates/list` (tem
 URIs) is out of scope: reads of templated URIs would need user-supplied parameters, which the
 issue does not ask for; the listing simply omits templates.
 
+The pull is skipped for a server that does not declare the `resources`/`prompts` capability:
+`prompts/list`/`resources/list` against a tools-only server (the common case) would only answer
+method-not-found. A failed initial pull does not fail the connect either — the server stays
+Connected with empty listings, the same advisory-listing convention as a failed refresh.
+
 On a `notifications/resources/list_changed` or `notifications/prompts/list_changed` notification,
 the listings for that server are re-pulled. Tool-list changes are different: rig-rmcp's
 `McpClientHandler` already re-fetches and reconciles `tools/list_changed` internally through
@@ -163,7 +168,9 @@ naming stay uniform.
   same per-draw pattern as the `set_files` mention slot, `ui/mod.rs:127`) and calls
   `refresh_menu` when they diverge — so the startup connect and mid-session `list_changed` both
   land without a new core→UI signal, and plugin refreshes keep prompt rows too; a prompt
-  shadowed by a builtin or skill is hidden with a notice, same as skill shadowing.
+  shadowed by a builtin or skill is hidden with a notice, same as skill shadowing. Headless
+  `fontaine -p` gains no way to invoke MCP prompts: headless dispatch understands `/goal` only
+  and the stream surface is a versioned contract, so the answer is to skip it.
 - Dispatch: a `Command::Other` whose name starts with `mcp__` resolves against
   `slash_prompts()` before the skill lookup. Resolution path (mirroring `expand_skill_command`
   in `ui/turn.rs`): `refuse_if_stopped`, hook gate (`prompt_passes`), then
@@ -190,7 +197,10 @@ The bare `/mcp` notice gains two counts per connected server, `N resources` / `M
 next to the tool count (suppressed when zero — the common case stays one line). No new commands;
 `enable`/`disable` stay unoffered. Telemetry: `ListMcpResources`/`ReadMcpResource` are built-in
 tools with their own names; MCP prompt invocations record as user messages like skill runs.
-`hide_mcp_names` already covers third-party naming for server-supplied content.
+`hide_mcp_names` already covers third-party naming for server-supplied content. The CLI probes
+behind `fontaine mcp list`/`get` and `fontaine doctor` keep reporting tool connectivity/count
+only (`probe_server` returns a single tool count and nothing consumes the new listings), so no
+resource/prompt counts surface there.
 
 ## Implementation Steps
 
@@ -222,7 +232,9 @@ tools with their own names; MCP prompt invocations record as user messages like 
    against the menu's prompt rows each tick and calls `refresh_menu` on divergence (the menu is
    built before servers connect, so startup construction never sees prompts); the `mcp__*`
    dispatch arm in `dispatch_inner` next to `Command::Other`; the `run_mcp_prompt` UI wrapper
-   following `expand_skill_command`; `/mcp` counts in `reports.rs`.
+   following `expand_skill_command`; `/mcp` counts: `Connected` gains the counts in both
+   `McpState` (`reports.rs`) and `McpServerState` (`mcp_supervisor.rs`), with `Ui::mcp_listing`
+   (`ui/mcp.rs`) forwarding them.
 7. **Example server.** Extend `rust/fontaine/examples/repo_mcp_server.rs` with one resource and
    one prompt (and a `list_changed` poke if trivial) for manual verification; the example mounts
    the shared `Double` helper via `#[path = "../../fontaine-tools/tests/mcp_common/server.rs"]`,
@@ -231,7 +243,8 @@ tools with their own names; MCP prompt invocations record as user messages like 
 8. **Docs.** `docs/mcp.md` — replace "Only tools are used; resources and prompts are not." with
    Resources and Prompts sections (tool names, gating, scanner, @-mention, command syntax,
    `key=value` arguments); `docs/tui.md` file-mentions section gains the resource mention;
-   `docs/architecture.md:110` tool list gains the two new tools.
+   `docs/architecture.md:110` tool list gains the two new tools; `docs/tools.md` gains the two
+   built-in tool rows.
 9. **CHANGELOG.md** entry.
 
 Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 7–9 polish.
@@ -253,7 +266,8 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
 - `rust/fontaine-core/src/prompt.rs`, `rust/fontaine-core/prompts/system_prompt.md` — system prompt section
 - `rust/fontaine-tui/src/complete.rs`, `app.rs`, `view.rs`, `ui/mod.rs`, `linear.rs` — mention candidates (the `linear.rs` tests build `CompletionList` literals and follow the step-5 candidate change)
 - `rust/fontaine-tui/src/lib.rs`, `ui/commands/plugin.rs`, `ui/mod.rs`, `ui/turn.rs` — prompt commands
-- `rust/fontaine-tui/src/reports.rs` — `/mcp` counts
+- `rust/fontaine-tui/src/reports.rs`, `rust/fontaine-tui/src/ui/mcp.rs` — `/mcp` counts
+  (`McpState::Connected` fields; `Ui::mcp_listing` forwarding)
 - `rust/fontaine/examples/repo_mcp_server.rs` — manual-verification server
 - `rust/fontaine-tools/tests/mcp_common/server.rs` — `Double` gains resource + prompt support (step 7)
 - `docs/mcp.md`, `docs/tui.md`, `docs/architecture.md`, `docs/tools.md`, `CHANGELOG.md`
@@ -290,6 +304,10 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
 - MCP prompt text enters the conversation only as a user-invoked command's turn content; it is
   not scanner-staged (it is user-message content, like skill expansion, whose expansion is also
   transcript-invisible).
+- A failed initial resource/prompt listing leaves the server Connected with empty listings
+  rather than failing the connect. rig-rmcp fails the whole connect when the initial
+  `tools/list` fails, but tools are Fontaine's operative surface while resources and prompts are
+  advisory listings.
 
 ## Documentation
 
@@ -348,9 +366,3 @@ Unit and integration tests only; no live APIs (project rule). New coverage:
    parsing, gating and wiring, and a regression here is immediately visible to any user with an
    MCP server configured.
 
-## Open Questions
-
-- Should `fontaine mcp list`/`get` or `fontaine doctor` surface resource/prompt counts? Cheap to
-  add from the same listings, but the issue doesn't ask; leave out unless review flags it.
-- Should headless `fontaine -p` grow a way to invoke MCP prompts (e.g. an input prefix)? Headless
-  understands `/goal` only; consistent to skip.
