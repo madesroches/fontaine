@@ -25,6 +25,7 @@ fontaine-tools = { path = "fontaine-tools" }
 fontaine-guardian = { path = "fontaine-guardian" }
 fontaine-agents = { path = "fontaine-agents" }
 fontaine-tui = { path = "fontaine-tui" }
+fontaine-testkit = { path = "fontaine-testkit" }
 
 async-trait = "=0.1.92"
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }

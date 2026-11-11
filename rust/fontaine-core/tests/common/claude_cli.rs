@@ -1,5 +1,4 @@
-//! The scripted `claude_cli_double` account (built as an example of this package; prebuild it when
-//! running a test that uses it alone).
+//! The scripted `claude_cli_double` account, built as an example of this package.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -9,25 +8,13 @@ use std::sync::{Arc, Mutex};
 use super::World;
 use fontaine_core::models::{self, ModelError, Models, ResolveParams, SharedEnv, Switcher};
 use fontaine_core::providers::claude_subscription::{CONFLICTING_ENV, inherited_env_names};
+use fontaine_testkit::example_bin;
 use rig_core::completion::CompletionRequest;
 use rig_core::message::Message;
 use serde_json::{Value, json};
 
 pub fn double() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "claude_cli_double.exe"
-    } else {
-        "claude_cli_double"
-    };
-    let path = dir.join(name);
-    assert!(
-        path.exists(),
-        "{} is not built: run `cargo build -p fontaine-core --example claude_cli_double`",
-        path.display()
-    );
-    path
+    example_bin("fontaine-core", "claude_cli_double")
 }
 
 /// A world with one `claude` account whose CLI is the double and whose CLI profile directory

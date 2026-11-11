@@ -4,20 +4,8 @@
 mod common;
 
 use common::{Endpoint, Sandbox, Turn, Wire};
+use fontaine_testkit::example_bin;
 use serde_json::{Value, json};
-
-fn example(name: &str) -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    let path = dir.join(file);
-    assert!(path.exists(), "{} is not built", path.display());
-    path.to_string_lossy().into_owned()
-}
 
 fn project_settings(s: &Sandbox, text: &str) {
     s.add_file(".fontaine/settings.toml", text);
@@ -43,7 +31,9 @@ async fn a_project_mcp_server_loads_without_a_prompt_and_its_tools_are_gated_lik
         &s,
         &format!(
             "[mcp.servers.repo]\ncommand = '{}'\n",
-            example("repo_mcp_server")
+            example_bin("fontaine", "repo_mcp_server")
+                .to_string_lossy()
+                .into_owned()
         ),
     );
     let out = s.headless(&["--output-format", "stream-json", "go"]).await;
@@ -84,7 +74,9 @@ async fn only_a_user_rule_lets_a_project_mcp_tool_run() {
         &s,
         &format!(
             "[mcp.servers.repo]\ncommand = '{}'\n",
-            example("repo_mcp_server")
+            example_bin("fontaine", "repo_mcp_server")
+                .to_string_lossy()
+                .into_owned()
         ),
     );
     let out = s
@@ -122,7 +114,9 @@ async fn config_env_reaches_an_mcp_server_process() {
     let base = std::fs::read_to_string(&path).unwrap();
     s.user_config(&format!(
         "{base}\n[env]\nPROBE = \"probe-value-xyz\"\n\n[mcp.servers.repo]\ncommand = '{}'\n",
-        example("repo_mcp_server")
+        example_bin("fontaine", "repo_mcp_server")
+            .to_string_lossy()
+            .into_owned()
     ));
     let out = s
         .headless(&[
@@ -162,7 +156,9 @@ async fn a_project_hook_runs_without_a_prompt_but_its_allow_decides_nothing() {
         &s,
         &format!(
             "[[hooks.pre_tool_use]]\ncommand = '''\n'{}' '{}' '{}'\n'''\n",
-            example("hook_marker"),
+            example_bin("fontaine", "hook_marker")
+                .to_string_lossy()
+                .into_owned(),
             marker.display(),
             allow
         ),
@@ -202,7 +198,7 @@ async fn the_same_hook_in_the_users_own_settings_does_allow() {
     let config = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
     s.user_config(&format!(
         "{config}\n[[hooks.pre_tool_use]]\nmatcher = \"shell(echo from-a-hook-allowed-call)\"\ncommand = '''\n'{}' '{}' '{}'\n'''\n",
-        example("hook_marker"),
+        example_bin("fontaine", "hook_marker").to_string_lossy().into_owned(),
         marker.display(),
         allow
     ));
@@ -229,7 +225,9 @@ async fn an_mcp_tool_that_asks_for_input_in_a_headless_run_gets_cancel_and_the_r
         &s,
         &format!(
             "[mcp.servers.repo]\ncommand = '{}'\n",
-            example("repo_mcp_server")
+            example_bin("fontaine", "repo_mcp_server")
+                .to_string_lossy()
+                .into_owned()
         ),
     );
     let out = s

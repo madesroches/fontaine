@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use common::routed::{Route, Turn, start};
 use common::{Ui, World};
+use fontaine_testkit::example_bin;
 use ratatui::crossterm::event::KeyCode;
 use serde_json::json;
 
@@ -187,17 +188,10 @@ fn marker(w: &World) -> PathBuf {
 }
 
 fn touch_marker() -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "touch_marker.exe"
-    } else {
-        "touch_marker"
-    };
-    let path = dir.join(name);
-    assert!(path.exists(), "{} is not built", path.display());
     // TOML literal strings keep Windows backslashes.
-    path.to_string_lossy().into_owned()
+    example_bin("fontaine-tui", "touch_marker")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn project_server(w: &World) -> String {
@@ -240,23 +234,11 @@ async fn mcp_reports_a_declined_project_server_as_left_off() {
     .await;
 }
 
-/// The MCP server example of the `fontaine` crate; built by a workspace `cargo test`, or
-/// `cargo build -p fontaine --examples`.
+/// The MCP server example of the `fontaine` crate.
 fn repo_mcp_server() -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "repo_mcp_server.exe"
-    } else {
-        "repo_mcp_server"
-    };
-    let path = dir.join(name);
-    assert!(
-        path.exists(),
-        "{} is not built; run `cargo build -p fontaine --examples`",
-        path.display()
-    );
-    path.to_string_lossy().into_owned()
+    example_bin("fontaine", "repo_mcp_server")
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[tokio::test(flavor = "multi_thread")]

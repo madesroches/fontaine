@@ -1,20 +1,8 @@
 mod common;
 
 use common::{Output, Sandbox};
+use fontaine_testkit::example_bin;
 use serde_json::Value;
-
-fn example(name: &str) -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    let path = dir.join(file);
-    assert!(path.exists(), "{} is not built", path.display());
-    path.to_string_lossy().into_owned()
-}
 
 /// A sandbox whose one account has a static model list, so nothing is contacted.
 fn sandbox() -> Sandbox {
@@ -122,7 +110,9 @@ async fn a_user_mcp_server_is_started_and_its_tools_counted() {
     let mut config = std::fs::read_to_string(s.config.join("config.toml")).unwrap();
     config.push_str(&format!(
         "\n[mcp.servers.repo]\ncommand = '{}'\n",
-        example("repo_mcp_server")
+        example_bin("fontaine", "repo_mcp_server")
+            .to_string_lossy()
+            .into_owned()
     ));
     s.user_config(&config);
     let out = s.run(&["doctor", "--format=json"]).await;
@@ -156,7 +146,9 @@ async fn a_repository_server_is_not_started_in_an_untrusted_workspace() {
         ".fontaine/settings.toml",
         &format!(
             "[mcp.servers.repo]\ncommand = '{}'\n",
-            example("repo_mcp_server")
+            example_bin("fontaine", "repo_mcp_server")
+                .to_string_lossy()
+                .into_owned()
         ),
     );
     let out = s.run(&["doctor", "--format=json"]).await;

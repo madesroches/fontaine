@@ -5,19 +5,7 @@ mod common;
 use std::sync::Arc;
 
 use common::Sandbox;
-
-fn example(name: &str) -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    let path = dir.join(file);
-    assert!(path.exists(), "{} is not built", path.display());
-    path.to_string_lossy().into_owned()
-}
+use fontaine_testkit::example_bin;
 
 fn sandbox() -> Sandbox {
     Sandbox::compatible("http://127.0.0.1:9")
@@ -31,7 +19,9 @@ fn trust_workspace(s: &Sandbox) {
 async fn add_list_get_and_remove_work_in_each_scope() {
     let s = sandbox();
     trust_workspace(&s);
-    let server = example("repo_mcp_server");
+    let server = example_bin("fontaine", "repo_mcp_server")
+        .to_string_lossy()
+        .into_owned();
     for scope in ["local", "user"] {
         let name = format!("{scope}-srv");
         let out = s
@@ -230,7 +220,7 @@ async fn list_shows_an_unapproved_repository_server_as_pending_and_never_starts_
         ".mcp.json",
         &serde_json::json!({"mcpServers": {"repo": {
             "type": "stdio",
-            "command": example("mcp_touch_marker"),
+            "command": example_bin("fontaine", "mcp_touch_marker").to_string_lossy().into_owned(),
             "args": [marker.to_string_lossy()],
         }}})
         .to_string(),
@@ -284,7 +274,9 @@ async fn a_malformed_mcp_json_warns_and_does_not_stop_the_command() {
 async fn a_malformed_mcp_json_does_not_stop_add_or_remove_in_another_scope() {
     let s = sandbox();
     s.add_file(".mcp.json", "{nope");
-    let server = example("repo_mcp_server");
+    let server = example_bin("fontaine", "repo_mcp_server")
+        .to_string_lossy()
+        .into_owned();
     let out = s
         .run(&["mcp", "add", "-s", "local", "srv", "--", &server])
         .await;

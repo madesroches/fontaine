@@ -231,7 +231,9 @@ fontaine/
 │   │                           #   interrupt, per-type tool registries, budgets (v1); defines the
 │   │                           #   `ChildRunner` trait (implemented by core)
 │   ├── fontaine-tui/           # ratatui app: chat, approval prompts, denial/retry UI, modes
-│   └── fontaine-evals/         # eval runner (bin + lib crate, same split): scores guardian verdicts against the dataset
+│   ├── fontaine-evals/         # eval runner (bin + lib crate, same split): scores guardian verdicts against the dataset
+│   └── fontaine-testkit/       # dev-only test helper crate: builds/locates Cargo example binaries
+│                               #   (`example_bin`) for integration tests
 ├── evals/                      # golden dataset (`evals/dataset/*.jsonl`) + README; runner is rust/fontaine-evals
 ├── analytics/                  # micromegas notebooks (`notebooks/fontaine-overview.json`), applied with `micromegas-screens`
 ├── docs/                       # all product docs — one topic per page, website-ready (see `design/documentation.md` §Documentation);
@@ -250,6 +252,7 @@ fontaine-core         ─▶ fontaine-tools, fontaine-guardian, fontaine-agents
 fontaine-agents       ─▶ fontaine-tools
 fontaine-guardian     ─▶ (no Fontaine crates)
 fontaine-tools        ─▶ (no Fontaine crates — never fontaine-core)
+fontaine-testkit      ─▶ (no Fontaine crates; dev-dependency of fontaine, fontaine-core, fontaine-tools, fontaine-tui)
 ```
 
 Cargo features: `fontaine/pg2 = ["fontaine-core/pg2"]` and `fontaine-core/pg2 = ["fontaine-guardian/pg2"]` forward the optional PromptGuard 2 scanner (Phase 6); CI pg2 steps use `--features fontaine/pg2`.

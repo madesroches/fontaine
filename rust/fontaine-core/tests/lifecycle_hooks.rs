@@ -21,6 +21,7 @@ use fontaine_core::user_hooks::{
     self, CompactGate, HookDeps, HookProcess, LifecycleHooks, PostHookStage, PromptGate,
     SubagentGate, TeamGate, UserHook,
 };
+use fontaine_testkit::example_bin;
 use fontaine_tools::gate::{CallView, ROOT_AGENT};
 use fontaine_tools::result_pipeline::{ResultPipeline, StageKind};
 use fontaine_tools::risk::RiskClass;
@@ -30,16 +31,7 @@ use rig_core::tool::ToolOutput;
 use serde_json::{Value, json};
 
 fn double() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "hook_double.exe"
-    } else {
-        "hook_double"
-    };
-    let path = dir.join(name);
-    assert!(path.exists(), "{} is not built", path.display());
-    path
+    example_bin("fontaine-core", "hook_double")
 }
 
 fn word(text: &str) -> String {

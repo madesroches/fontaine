@@ -7,6 +7,7 @@ mod common;
 use std::time::Duration;
 
 use common::{Endpoint, Route, Sandbox, Turn, Wire, ledger};
+use fontaine_testkit::example_bin;
 use fontaine_tools::kills::KILL_GRACE;
 use serde_json::{Value, json};
 
@@ -1116,17 +1117,6 @@ async fn a_child_cannot_spawn_past_the_toolset_its_type_allows() {
     assert!(advertised.contains(&"send_message"));
 }
 
-fn hook_example(name: &str) -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    dir.join(file).to_string_lossy().into_owned()
-}
-
 /// A user config with a `post_tool_use` hook on `agent` that adds a note to what it returns.
 fn with_result_hook(s: &Sandbox, url: &str) {
     let note = json!({"hookSpecificOutput": {
@@ -1137,7 +1127,7 @@ fn with_result_hook(s: &Sandbox, url: &str) {
     s.user_config(&format!(
         "{}\n[[hooks.post_tool_use]]\nmatcher = \"agent\"\ncommand = '''\n'{}' '{}' '{}'\n'''\n",
         config(url, ""),
-        hook_example("hook_marker"),
+        example_bin("fontaine", "hook_marker").to_string_lossy(),
         s.work.join("post-hook.json").display(),
         note
     ));

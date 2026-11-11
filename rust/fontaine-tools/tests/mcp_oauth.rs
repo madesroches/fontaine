@@ -8,6 +8,7 @@ mod mcp_common;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use fontaine_testkit::example_bin;
 use fontaine_tools::mcp::{McpErrorKind, ServerSpec, Transport, connect};
 use mcp_common::{Gate, names, options, tool_server};
 use rmcp::transport::auth::{
@@ -194,7 +195,9 @@ async fn no_token_turns_the_401_challenge_into_the_login_hint() {
 #[tokio::test]
 async fn static_and_helper_headers_reach_the_server() {
     let server = auth_server().await;
-    let helper = helper_path();
+    let helper = example_bin("fontaine-tools", "mcp_header_helper")
+        .to_string_lossy()
+        .into_owned();
 
     let store = MemStore::default();
     let spec = ServerSpec {
@@ -238,20 +241,6 @@ async fn static_and_helper_headers_reach_the_server() {
         with_headers.headers["x-both"].to_str().unwrap(),
         "helper-wins"
     );
-}
-
-/// The built `mcp_header_helper` example next to the test binary.
-fn helper_path() -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let file = if cfg!(windows) {
-        "mcp_header_helper.exe"
-    } else {
-        "mcp_header_helper"
-    };
-    let path = dir.join(file);
-    assert!(path.exists(), "{} is not built", path.display());
-    path.to_string_lossy().into_owned()
 }
 
 #[tokio::test]

@@ -20,6 +20,7 @@ use fontaine_core::models::{
 use fontaine_core::permissions::DenyAll;
 use fontaine_core::schedule::ManualClock;
 use fontaine_core::session::Session;
+use fontaine_testkit::example_bin;
 use fontaine_tui::linear::Linear;
 use fontaine_tui::screen::Screen;
 use fontaine_tui::{DriveOutcome, Input, drive};
@@ -703,20 +704,7 @@ fn git_bash() -> Option<fontaine_tools::git_bash::GitBash> {
 
 /// The Claude CLI double, built as an example of the `fontaine` package.
 pub fn claude_double() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let name = if cfg!(windows) {
-        "fontaine_claude_cli_double.exe"
-    } else {
-        "fontaine_claude_cli_double"
-    };
-    let path = dir.join(name);
-    assert!(
-        path.exists(),
-        "{} is not built: run `cargo build -p fontaine --example fontaine_claude_cli_double`",
-        path.display()
-    );
-    path
+    example_bin("fontaine", "fontaine_claude_cli_double")
 }
 
 pub fn logins(profile: &std::path::Path) -> usize {

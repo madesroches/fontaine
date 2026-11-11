@@ -5,6 +5,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use common::{Endpoint, Route, Sandbox, Turn, Wire};
+use fontaine_testkit::example_bin;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
@@ -694,19 +695,6 @@ async fn subagents_have_spans_under_their_spawning_call_and_decisions_keyed_by_a
     assert_eq!(kinds, ["spawn", "complete"]);
 }
 
-fn example(name: &str) -> String {
-    let exe = std::env::current_exe().unwrap();
-    let dir = exe.parent().unwrap().parent().unwrap().join("examples");
-    let file = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    let path = dir.join(file);
-    assert!(path.exists(), "{} is not built", path.display());
-    path.to_string_lossy().into_owned()
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_names_are_exported_only_when_tool_details_are_on() {
     for details in [false, true] {
@@ -728,7 +716,9 @@ async fn mcp_names_are_exported_only_when_tool_details_are_on() {
             ".fontaine/settings.toml",
             &format!(
                 "[mcp.servers.repo]\ncommand = '{}'\n",
-                example("repo_mcp_server")
+                example_bin("fontaine", "repo_mcp_server")
+                    .to_string_lossy()
+                    .into_owned()
             ),
         );
         let out = s
