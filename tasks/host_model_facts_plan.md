@@ -36,8 +36,9 @@ name. A name with no facts at all gets a one-time warning that points at the new
   `rejects_forced_tool_choice` and its default `max_tokens` from the bound facts.
 - **Config.** `Account` (`config.rs:374`) is `deny_unknown_fields`. `check_account`
   (`config.rs:1594`) refuses kind-specific keys through `Provider::accepts_*` hooks
-  (`providers/mod.rs:115-135`). `[accounts.*]` is user scope only (`docs/configuration.md` scope
-  table; `tasks/design/config.md:182`), so any new account key inherits that.
+  (`providers/mod.rs:115-135`). `[accounts.*]` comes from the user file or `--settings`, never a project file
+  (`docs/configuration.md` scope table; `tasks/design/config.md:182`), so any new account key
+  inherits that.
 - **Claude Code** offers `modelOverrides`, which maps an Anthropic model id to the provider's id
   (an ARN or a deployment name), so the picker keeps canonical names.
 
@@ -68,7 +69,7 @@ team-haiku = "claude-haiku-5-5"
   (called last by `check_account`), whose error names key `model_facts` with the bad entry in the
   message; the generic "not used by kind" refusal stays in `check_account`. A mapping that silently did nothing would leave the user
   believing the model is covered.
-- User scope only, since it sits under `[accounts.*]`. It changes what the guardian believes about
+- User file or `--settings`, never a project file, since it sits under `[accounts.*]`. It changes what the guardian believes about
   its model (forced tool choice, limits), so it must never come from a project file.
 
 ### Mapping vendor
@@ -102,8 +103,9 @@ from any source (not mapped, not listed, not derived), return a one-time warning
 
 The client needs the account name to write that: `anthropic` and `databricks` keep
 `ctx.account_name` in their client. The existing one-time machinery
-(`ModelHandle.facts_notice`, `tree.first_facts_notice`) carries the warning, so no new plumbing is
-needed. On `anthropic` every id is expected to be a Claude one, so any id without facts warns. On
+carries the warning, so no new plumbing is needed: for the main model
+`ModelHandle.facts_notice` (`models.rs:254`) feeds `Models.notices` (headless printer, TUI
+`/model`), and for subagents `tree.first_facts_notice` (`fontaine-agents/src/tree.rs`). On `anthropic` every id is expected to be a Claude one, so any id without facts warns. On
 `databricks` ordinary open models (`system.ai.kimi-k3`, gpt-oss, Llama, Qwen) legitimately have no
 facts, so only a custom `catalog.schema.name` id (no `system.ai.` / `databricks-` prefix) without
 facts warns. Other kinds get no warning: an unknown id is routine there.
@@ -142,28 +144,6 @@ facts warns. Other kinds get no warning: an unknown id is routine there.
   on which Claude facts have not been measured. Opting in per kind keeps the key where the issue
   needs it. Foundry (#165) opts in with one hook.
 
-## Decisions` below to the master plan's `### Providers`
-   subsection, at its end.
-
-## Files to Modify
-
-- `rust/fontaine-core/src/config.rs`: `Account.model_facts`, `check_account`; `Account::new` is the
-  only `Account` literal to update.
-- `rust/fontaine-core/src/providers/mod.rs`: `Provider::accepts_model_facts`.
-- `rust/fontaine-core/src/providers/anthropic.rs`: binding and notices.
-- `rust/fontaine-core/src/providers/databricks.rs`: binding and notices.
-- `docs/configuration.md`, `tasks/design/config.md`, `CHANGELOG.md`,
-  `tasks/fontaine_harness_plan.md`.
-
-## Trade-offs
-
-- **Per-kind opt-in** versus every kind with a catalog vendor. `openai`, `gemini`, `openrouter`
-  and `ollama` already serve catalog ids; `openai-compatible` has no catalog vendor and a chat wire
-  on which Claude facts have not been measured. Opting in per kind keeps the key where the issue
-  needs it. Foundry (#165) opts in with one hook.
-- **Refuse an unknown target at load** versus warning at run time. A mapping that does nothing
-  defeats the key's purpose, and config errors already exit 2 at load.
-
 ## Decisions
 
 - 2026-11-11: `model_facts` maps served name → catalog id, the opposite direction to Claude Code's
@@ -189,9 +169,6 @@ facts warns. Other kinds get no warning: an unknown id is routine there.
 
 Unit tests, all offline:
 
-- `derived_facts`: `facts_as` relabels the listed facts to the served name (id, provider, no
-  pricing, `context_window` and `max_output_tokens` equal to the catalog entry's). A derived target
-  returns `listed == false`. An unknown target returns `None`.
 - `config` (`check_account`): `model_facts` refused on `openai-compatible`. An unknown value is
   refused with the path `accounts.<name>.model_facts` and the entry named in the message. A Databricks value of family `Other`
   is refused. A valid table is accepted on `anthropic` and `databricks`.
@@ -204,7 +181,7 @@ Unit tests, all offline:
   `main.team.router` unmapped gets the no-facts warning; `system.ai.kimi-k3` gets none. The existing
   `a_listed_model_has_no_notice_and_a_derived_one_does` test is updated for the flipped
   `main.team.router` assertion and moved onto a client holding the map.
-- Integration (`fontaine-core/tests/max_tokens.rs` or a new `model_facts.rs`, wiremock): an
+- Integration (new `rust/fontaine-core/tests/model_facts.rs`, with its own Anthropic Messages wiremock setup): an
   `anthropic` account whose `prod-opus` is mapped sends `max_tokens` equal to the Opus output
   limit on a main turn, where before the turn failed and sent no request. This exercises the whole path, config → client →
   handle → request, and a regression there would otherwise be silent.
