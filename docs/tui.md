@@ -354,8 +354,10 @@ ends and after `/add-dir`. Paths under the primary root are shown relative to it
 
 The list also offers the resources of connected [MCP servers](mcp.md#resources) whose uri
 matches what you typed, after the files, each labelled with its server. Accepting one puts
-`@<uri> ` in the input. The mention is inert text: the message is sent as you typed it, and the
-model fetches the content through the gated `read_mcp_resource` tool.
+`@<uri> ` in the input, or `@<uri>@<server> ` when more than one connected server exposes the
+same uri, so the model can tell the duplicates apart. The mention is inert text: the message is
+sent as you typed it, and the model fetches the content through the gated `read_mcp_resource`
+tool.
 
 Completion only edits your input. The message is sent as you typed it, and the agent reads the
 file through its `read` tool, so the content passes the same scope checks, deterministic floor and

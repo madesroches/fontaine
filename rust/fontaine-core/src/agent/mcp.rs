@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::RwLock;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use fontaine_tools::error_chain::chain;
@@ -66,21 +67,30 @@ pub struct McpResourceSummary {
     pub description: Option<String>,
 }
 
+/// Rebuilds the `@` mention resource list from what `slots` list now and bumps the listing
+/// revision, so a surface caching MCP prompt rows never sees refreshed listings without the
+/// revision moving. The completion list is advisory: a stale list only misses a suggestion.
+fn refresh_mentions(
+    revision: &AtomicU64,
+    mentions: &Arc<RwLock<Arc<Vec<McpResourceSummary>>>>,
+    slots: &Arc<RwLock<BTreeMap<String, Arc<ServerSlot>>>>,
+) {
+    revision.fetch_add(1, Ordering::Relaxed);
+    *write_recovering(mentions) = Arc::new(super::mcp_supervisor::mention_snapshot(slots));
+}
+
 /// Flattens a `prompts/get` answer into one user turn: only when every message is user-role
 /// text, joined in order with a blank line. Anything else refuses the command rather than
 /// dropping a block or folding assistant text into the user's turn.
-pub(crate) fn flatten_prompt_messages(
-    name: &str,
-    messages: &[PromptMessage],
-) -> Result<String, String> {
+pub(crate) fn flatten_prompt_messages(messages: &[PromptMessage]) -> Result<String, String> {
     let mut texts = Vec::new();
     for message in messages {
         match (&message.role, &message.content) {
             (Role::User, ContentBlock::Text(text)) => texts.push(text.text.clone()),
             (role, _) => {
                 return Err(format!(
-                    "/{name}: the server's answer carried a {role:?} message or non-text \
-                     content; only user-role text can become your turn, so the command did nothing"
+                    "the server's answer carried a {role:?} message or non-text content; \
+                     only user-role text can become your turn, so the command did nothing"
                 ));
             }
         }
@@ -119,7 +129,7 @@ pub(crate) fn parse_prompt_arguments(
             declared.join(", ")
         };
         format!(
-            "/{name}: {why}; it declares: {declared}. For example: `/{name}{spacing}{}`",
+            "{why}; it declares: {declared}. For example: `/{name}{spacing}{}`",
             example.join(" ")
         )
     }
@@ -634,14 +644,16 @@ impl AgentRuntime {
         let types = self.agent_types.clone();
         let slots = self.mcp.slots_handle();
         let mentions = self.mcp_mentions.clone();
+        let revision = self.mcp_listing_revision.clone();
         let supervisor = Supervisor::new(
             Arc::new(connector),
             approver,
+            // Watchers run on tokio worker threads, concurrent with draws that sample the
+            // revision: the bump and the snapshot ride one helper so no path refreshes the
+            // listings without moving the revision cached prompt rows key on.
             Arc::new(move || {
                 state.agents().refresh_rebuilt_toolsets(&types.get());
-                // The mention list follows the listings the watchers just refreshed.
-                *write_recovering(&mentions) =
-                    Arc::new(super::mcp_supervisor::mention_snapshot(&slots));
+                refresh_mentions(&revision, &mentions, &slots);
             }),
         );
         self.mcp.supervisor = Some(supervisor.clone());
@@ -652,11 +664,11 @@ impl AgentRuntime {
     /// listing change (connect, disconnect, reconnect, a `list_changed` refresh) rides through
     /// here, so the bump doubles as the listing revision cached prompt rows key on.
     pub(crate) fn refresh_mcp_mentions(&self) {
-        self.mcp_listing_revision.fetch_add(1, Ordering::Relaxed);
-        // The completion list is advisory: a stale list only misses a suggestion.
-        *write_recovering(&self.mcp_mentions) = Arc::new(super::mcp_supervisor::mention_snapshot(
+        refresh_mentions(
+            &self.mcp_listing_revision,
+            &self.mcp_mentions,
             &self.mcp.slots_handle(),
-        ));
+        );
     }
 
     /// The MCP listing revision: bumped on every connect, disconnect, reconnect and
@@ -974,17 +986,17 @@ impl AgentRuntime {
         let result = match response {
             GetPromptResponse::Complete(result) => result,
             GetPromptResponse::InputRequired(_) => {
-                return Err(RuntimeError::new(format!(
-                    "/{name}: the server asked for input the client does not provide"
-                )));
+                return Err(RuntimeError::new(
+                    "the server asked for input the client does not provide".to_string(),
+                ));
             }
             other => {
                 return Err(RuntimeError::new(format!(
-                    "/{name}: the server answered unexpectedly: {other:?}"
+                    "the server answered unexpectedly: {other:?}"
                 )));
             }
         };
-        flatten_prompt_messages(name, &result.messages).map_err(RuntimeError::new)
+        flatten_prompt_messages(&result.messages).map_err(RuntimeError::new)
     }
 
     /// Why a server with no slot cannot be restarted.
@@ -1083,19 +1095,19 @@ mod tests {
             PromptMessage::new_text(Role::User, "second"),
         ];
         assert_eq!(
-            flatten_prompt_messages("mcp__web__greet", &messages).unwrap(),
+            flatten_prompt_messages(&messages).unwrap(),
             "first\n\nsecond"
         );
         let assistant = vec![PromptMessage::new_text(Role::Assistant, "note")];
-        let error = flatten_prompt_messages("mcp__web__greet", &assistant).unwrap_err();
+        let error = flatten_prompt_messages(&assistant).unwrap_err();
         assert!(error.contains("Assistant"), "{error}");
         assert!(error.contains("did nothing"), "{error}");
         let image = vec![PromptMessage::new(
             Role::User,
             ContentBlock::image("data", "image/png"),
         )];
-        assert!(flatten_prompt_messages("mcp__web__greet", &image).is_err());
-        assert_eq!(flatten_prompt_messages("mcp__web__greet", &[]).unwrap(), "");
+        assert!(flatten_prompt_messages(&image).is_err());
+        assert_eq!(flatten_prompt_messages(&[]).unwrap(), "");
     }
 
     fn limits_for(value: Option<&str>) -> (usize, Vec<String>) {

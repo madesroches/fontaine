@@ -118,11 +118,12 @@ output limit is saved to a file whose path the result names, and every result pa
 [result scanner](guardian.md) like any tool result: server content is untrusted.
 
 In the terminal UI the `@` mention popup also lists resource URIs, labelled with their server.
-Accepting one inserts `@<uri>` into the message, which is sent as typed; the mention is inert
-text. The model reads the content through `read_mcp_resource` — this keeps every byte of
-server content behind the permission pipeline, instead of inlining it into your message at
-send time. While at least one resources-capable server is connected, the system prompt tells
-the model what an `@<uri>` token names.
+Accepting one inserts `@<uri>` into the message (or `@<uri>@<server>` when more than one
+connected server exposes the same uri, so the model can tell the duplicates apart), which is
+sent as typed; the mention is inert text. The model reads the content through
+`read_mcp_resource` — this keeps every byte of server content behind the permission pipeline,
+instead of inlining it into your message at send time. While at least one resources-capable
+server is connected, the system prompt tells the model what an `@<uri>` token names.
 
 ## Prompts
 

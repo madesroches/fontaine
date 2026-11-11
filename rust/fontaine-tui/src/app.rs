@@ -680,7 +680,7 @@ impl App {
         self.input.replace_range(
             list.mention.start,
             list.mention.end,
-            &format!("@{}{space}", candidate.insertion()),
+            &format!("@{}{space}", candidate.accepted(&self.mcp_mentions)),
         );
         self.history.reset();
         self.refresh_completion();
@@ -3222,6 +3222,36 @@ mod tests {
         let list = app.completion.as_ref().expect("the refreshed list");
         assert_eq!(list.matches.len(), 1, "{list:?}");
         assert_eq!(list.matches[0].insertion(), "repo://new");
+    }
+
+    #[test]
+    fn a_resource_mention_two_servers_share_carries_the_selected_server() {
+        let mut app = app_with_files();
+        let mention = |server: &str, uri: &str| fontaine_core::agent::McpResourceSummary {
+            server: server.to_string(),
+            uri: uri.to_string(),
+            name: String::new(),
+            description: None,
+        };
+        app.set_mentions(Arc::new(vec![
+            mention("alpha", "shared://doc"),
+            mention("beta", "shared://doc"),
+            mention("alpha", "only://here"),
+        ]));
+        type_text(&mut app, "@shared");
+        press(&mut app, KeyCode::Down);
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(
+            app.input.text(),
+            "@shared://doc@beta ",
+            "an ambiguous uri must name the selected server so the reader can resolve it"
+        );
+
+        // A uri only one server lists stays the plain `@<uri>`.
+        app.input.take();
+        type_text(&mut app, "@only");
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(app.input.text(), "@only://here ");
     }
 
     #[test]

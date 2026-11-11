@@ -131,11 +131,15 @@ impl<R: FnMut(&mut App)> Ui<R> {
         // The menu was built before any server connected, so its MCP prompt rows can only
         // follow the listings here: a listing revision change re-merges them, like the
         // set_files slot. The revision is a cheap atomic read, so the rows are rebuilt only
-        // when the listings may have moved, not on every draw.
-        if self.prompts_revision != Some(runtime.slash_prompts_revision()) {
+        // when the listings may have moved, not on every draw. The revision is sampled before
+        // the rows are read and that sample is stored: the watcher callback bumps it from a
+        // tokio worker thread, concurrent with this draw, and storing a fresh read could mark
+        // rows the next draw never installed as consumed.
+        let revision = runtime.slash_prompts_revision();
+        if self.prompts_revision != Some(revision) {
             let prompts = runtime.slash_prompts();
             self.refresh_menu_with(runtime, &prompts);
-            self.prompts_revision = Some(runtime.slash_prompts_revision());
+            self.prompts_revision = Some(revision);
         }
         self.trigger_statusline(StatuslineTrigger::Draw);
         if let (Some(kind), _) = self.hook_notifier.observe_opened(self.app.pending_prompt())

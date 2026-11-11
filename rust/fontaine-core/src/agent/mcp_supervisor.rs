@@ -322,7 +322,13 @@ impl SlotQueries {
     fn target(&self, server: &str) -> Result<(McpConnection, Listings, CallScope), String> {
         let slots = read(&self.slots, "MCP server slots");
         let Some(slot) = slots.get(server) else {
-            let connected: Vec<String> = slots.keys().cloned().collect();
+            // Failed and reconnecting slots stay in the map for `/mcp reconnect`; only live
+            // connections may be labelled connected.
+            let connected: Vec<String> = slots
+                .iter()
+                .filter(|(_, slot)| lock(&slot.connection, "MCP connection").is_some())
+                .map(|(name, _)| name.clone())
+                .collect();
             return Err(format!(
                 "no MCP server named `{server}` is connected{}",
                 if connected.is_empty() {

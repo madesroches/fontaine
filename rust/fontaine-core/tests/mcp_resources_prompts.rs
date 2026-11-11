@@ -295,6 +295,111 @@ async fn connect_lists_resources_and_prompts_and_the_runtime_surfaces_them() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_watcher_driven_loss_bumps_the_listing_revision_the_menu_caches_on() {
+    let server = endpoint().await;
+    let world = world(&server);
+    let runtime = connect(&world).await;
+    wait_for(|| {
+        matches!(
+            runtime.mcp_states().first().map(|(_, state)| state),
+            Some(McpServerState::Connected { .. })
+        )
+    })
+    .await;
+    let before = runtime.slash_prompts_revision();
+    // The overlay answers every request with a 500: rmcp's HTTP worker never ends the
+    // connection of a dead server, so the failed request is what marks the transport dead.
+    // Dropping the listener alone is not enough — its keep-alive connections keep serving.
+    Mock::given(method("POST"))
+        .and(path("/mcp"))
+        .respond_with(ResponseTemplate::new(500))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // The watcher's refresh callback must move the revision surfaces cache prompt rows on,
+    // not only rebuild the mention snapshot.
+    let mut failed = false;
+    for _ in 0..10 {
+        if runtime
+            .run_mcp_prompt("mcp__web__greet", "name=Ada")
+            .await
+            .is_err()
+        {
+            failed = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(failed, "the dead transport never surfaced");
+    wait_for(|| {
+        matches!(
+            runtime.mcp_states().first().map(|(_, state)| state),
+            Some(McpServerState::Reconnecting { .. })
+        )
+    })
+    .await;
+    assert!(runtime.slash_prompts_revision() > before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unknown_server_read_names_only_the_live_connections() {
+    let server = endpoint().await;
+    let world = World::new();
+    world.user_file(&format!(
+        "[mcp.servers.web]\nurl = \"{}/mcp\"\n\n\
+         [mcp.servers.dead]\ncommand = \"fontaine-no-such-mcp-binary\"\n\n\
+         [permissions]\nallow = [\"read_mcp_resource\", \"list_mcp_resources\"]\n",
+        server.uri()
+    ));
+    let mut runtime = build(&world, PermissionMode::Manual, vec![], false).runtime;
+    let outcomes = runtime.connect_mcp(&[]).await;
+    assert_eq!(outcomes.len(), 2);
+    assert!(
+        outcomes
+            .iter()
+            .any(|outcome| outcome.server == "dead" && outcome.error.is_some()),
+        "{outcomes:?}"
+    );
+    // The failed slot stays for `/mcp reconnect`.
+    assert!(
+        matches!(
+            runtime
+                .mcp_states()
+                .iter()
+                .find(|(name, _)| name == "dead")
+                .map(|(_, state)| state),
+            Some(McpServerState::Failed(_))
+        ),
+        "{:?}",
+        runtime.mcp_states()
+    );
+    let mut context = ToolContext::new();
+    context
+        .insert(AgentId(ROOT_AGENT.to_string()))
+        .expect("the agent id serializes");
+    let unknown = runtime
+        .tool_server()
+        .toolset()
+        .execute(
+            "read_mcp_resource",
+            json!({"server": "ghost", "uri": "web://info"})
+                .to_string()
+                .as_str(),
+            &mut context,
+        )
+        .await;
+    let unknown = match unknown.into_result() {
+        Ok(output) => output.render(),
+        Err(e) => e.model_output().render(),
+    };
+    assert!(unknown.contains("no MCP server named `ghost`"), "{unknown}");
+    assert!(
+        unknown.contains("(connected: web)"),
+        "the failed server must not be labelled connected: {unknown}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_tools_only_server_keeps_the_counts_zero_and_every_surface_empty() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

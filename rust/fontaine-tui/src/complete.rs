@@ -81,6 +81,25 @@ impl Candidate {
         }
     }
 
+    /// The text acceptance writes into the input: `insertion`, except a resource whose uri
+    /// more than one connected server lists, which carries its server after a second `@`
+    /// (`@<uri>@<server>`) so the reader can tell the duplicates apart; everything up to the
+    /// final `@` is the uri.
+    pub fn accepted(&self, mentions: &[fontaine_core::agent::McpResourceSummary]) -> String {
+        match self {
+            Candidate::Resource { server, uri, .. }
+                if mentions
+                    .iter()
+                    .filter(|mention| mention.uri == *uri)
+                    .count()
+                    > 1 =>
+            {
+                format!("{uri}@{server}")
+            }
+            _ => self.insertion().to_string(),
+        }
+    }
+
     /// The row the list shows: the insertion text, with a resource labelled by its server.
     pub fn label(&self) -> String {
         match self {
