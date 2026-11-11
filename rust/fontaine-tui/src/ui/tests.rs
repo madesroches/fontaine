@@ -861,7 +861,10 @@ fn runtime() -> (fontaine_core::agent::AgentRuntime, tempfile::TempDir) {
         mode: PermissionMode::Manual,
         scrub_env: Vec::new(),
         git_bash: None,
-        powershell: None,
+        // Startup refuses to run on Windows with no shell; nothing here launches one.
+        powershell: cfg!(windows).then(|| fontaine_tools::powershell::PowerShellSettings {
+            path: "powershell.exe".into(),
+        }),
         system_prompt: None,
         append_system_prompt: None,
         json_schema: None,
