@@ -84,7 +84,9 @@ through `AgentRuntime` alongside `mcp_states()`. `resources/templates/list` (tem
 URIs) is out of scope: reads of templated URIs would need user-supplied parameters, which the
 issue does not ask for; the listing simply omits templates.
 
-The pull is skipped for a server that does not declare the `resources`/`prompts` capability:
+The capability check reads `connection.peer().peer_info()` — the `ServerPeerInfo` rmcp sets
+from the server's initialize result (and re-sets on streamable-HTTP re-initialize) — and skips
+the pull for a server that does not declare the `resources`/`prompts` capability:
 `prompts/list`/`resources/list` against a tools-only server (the common case) would only answer
 method-not-found. A failed initial pull does not fail the connect either — the server stays
 Connected with empty listings, the same advisory-listing convention as a failed refresh.
@@ -207,7 +209,11 @@ resource/prompt counts surface there.
 
 1. **fontaine-tools — listings.** Add a `Listings` type (`resources`, `prompts` per server) and a
    `pull_listings(connection) -> Listings` helper using `resources()` /
-   `peer().list_all_prompts()`; extend `MetaTap` to forward `resources/list_changed` and
+   `peer().list_all_prompts()`. `pull_listings` gates each listing on
+   `connection.peer().peer_info()`: resources are skipped when
+   `peer_info().capabilities.resources` is absent, prompts when `capabilities.prompts` is
+   absent, and absent `peer_info` is treated as "no capabilities" (both listings empty).
+   Extend `MetaTap` to forward `resources/list_changed` and
    `prompts/list_changed` notifications to a callback. Store listings on `Connected` (or in a
    side map keyed by server next to it — follow where `tool_names` lives).
 2. **fontaine-tools — resource tools.** Implement `list_mcp_resources` and `read_mcp_resource`
@@ -358,7 +364,8 @@ Unit and integration tests only; no live APIs (project rule). New coverage:
   prompts`). Rendering checks run on `TestBackend`; anything touching the live area follows
   `tasks/design/testing.md`.
 - End-to-end smoke: headless `fontaine -p` against the in-repo example server (step 7) asserting
-  the tools list and a `read_mcp_resource` result through the fixture guardian — catches wiring a
+  the tools list and a `read_mcp_resource` result through a scripted guardian account (the
+  wiremock pattern of `fontaine/tests`, as in `tests/project_executables.rs`) — catches wiring a
   unit test cannot see (registry → runtime → gate).
 
 ## Manual Verification
