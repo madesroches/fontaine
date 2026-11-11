@@ -116,6 +116,11 @@ pub trait Provider: Send + Sync + 'static {
         false
     }
 
+    /// Whether the account may set `model_facts`.
+    fn accepts_model_facts(&self) -> bool {
+        false
+    }
+
     /// Whether the account may set `context_tokens` and `think`.
     fn accepts_model_options(&self) -> bool {
         false

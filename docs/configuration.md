@@ -180,6 +180,7 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 | `base_url` | Endpoint override. Required for `openai-compatible` and `databricks` (the workspace origin, with no path). | the provider's public endpoint |
 | `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
 | `wires` | `opencode-go` and `databricks` only: a table from model id to the wire it is served on (`chat`, `responses`, `messages` or `gemini`), for a model the built-in routing gets wrong. | unset |
+| `model_facts` | `anthropic` and `databricks` only: a table from a model id this account serves under a name of its own (an Azure Foundry deployment, a custom serving endpoint, a proxy's alias) to the catalog Claude model it serves, so the name takes that model's context window, output limit and tool-choice behavior. The name is not renamed anywhere else, and the mapped model is unpriced. A value the catalog does not resolve, or a key the catalog already lists, is refused. User scope only. See [model discovery](#model-discovery). | unset |
 | `context_tokens` | `ollama` only: the context window requested with every call (`options.num_ctx`), at least 2048. | `16384` |
 | `prompt_caching` | `anthropic`, `openrouter`, `opencode-go` and `databricks` only: whether requests carry cache breakpoints, so the provider reuses the unchanged prefix at a fraction of the input price. On `anthropic` they sit on the tools, the system prompt and the latest message. On `openrouter` the conversation carries one top-level marker for every model except the self-caching `openai/`, `deepseek/`, `x-ai/` and `groq/` upstreams, which are sent none, and the guardian marks its system prompt. On `opencode-go` and `databricks` it affects only models served on the Messages wire (Claude, on `databricks`); the other wires cache by prefix on their own. User scope only, because it changes spend and what the provider stores. | `true` for `anthropic`, `openrouter` and `databricks`, `false` for `opencode-go` |
 | `cache_ttl` | `anthropic`, `openrouter`, `opencode-go` and `databricks` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
@@ -194,6 +195,20 @@ Account names are not empty and contain no `/`. Accounts can be set from the use
 `--settings` only: a project file cannot choose an endpoint or a credential source. The per-account
 network keys are edited by hand; the account setup flow in the terminal UI writes only `kind` and
 `base_url`.
+
+A host that serves Claude under a name of its own maps it to the catalog model with `model_facts`:
+
+```toml
+[accounts.foundry]
+kind = "anthropic"
+base_url = "https://my-resource.services.ai.azure.com/anthropic"
+auth = "bearer"
+models = ["prod-opus", "team-haiku"]
+
+[accounts.foundry.model_facts]
+prod-opus = "claude-opus-5-5"
+team-haiku = "claude-haiku-5-5"
+```
 
 What each kind talks to:
 
@@ -278,7 +293,9 @@ vendor's: `anthropic`, `openai`, `gemini`, `ollama`, `opencode-go`, `openrouter`
 `claude-subscription`. A `databricks` account does the same for Claude, GPT and Gemini models,
 taking the facts from the same model's catalog entry (a dashed version such as `gpt-5-1` matches the
 dotted `gpt-5.1`) or else deriving them as above. A `glm-` model gets minimal facts with a known
-25,000-token output cap and tools on, and any other model gets none. An `openai-compatible` account is an arbitrary gateway with no catalog
+25,000-token output cap and tools on, and any other model gets none. A host that serves Claude under a name of its own (an Azure Foundry deployment, a custom Databricks endpoint, a proxy behind an `anthropic` account) names it under `model_facts`, and the served name then takes the facts of that catalog model; it stays unpriced. A model with no facts at all (an unmapped name on `anthropic`, a custom `catalog.schema.name` endpoint on `databricks`) is warned about once and never compacts automatically.
+
+An `openai-compatible` account is an arbitrary gateway with no catalog
 vendor, so its unlisted models never get derived facts. A derived model is unpriced, so a cost
 cap treats it as any other unpriced model.
 
@@ -353,7 +370,7 @@ OpenAI Responses route (`/ai-gateway/openai/v1`), `gemini-` models the native Ge
 (`/ai-gateway/mlflow/v1`). That covers open models such as GLM, Kimi, DeepSeek and `gpt-oss-*`,
 and custom `catalog.schema.name` model services, whose name says nothing about the wire. A
 leading `system.ai.` (or the older `databricks-`) is ignored when choosing. A model the table gets
-wrong is routed with `wires`, as on `opencode-go`. Every route carries the token as
+wrong is routed with `wires`, as on `opencode-go`. A custom endpoint that serves Claude is mapped under `model_facts` to take that model's limits, and also set under `wires` as `messages` to be served on the Messages route, because the mapping does not change routing. Every route carries the token as
 `Authorization: Bearer`. Without a `models` list the account lists the chat-capable
 `system.ai.*` model services from the workspace's Unity Catalog; custom services are not listed,
 so a `models` list that names one replaces the listing (and must then also name the `system.ai.*`
@@ -423,7 +440,7 @@ daemon not to cut it, so the guardian denies the call with the daemon's message 
 available context size ... try increasing it") and the main agent shows that error. Raise
 `context_tokens` to fit the prompt. For a model in rig's catalog, compaction uses this window, starting
 when the conversation fills three quarters of a window under about 57k tokens; a
-model the catalog does not list (a derived model counts as listed) never
+model the catalog does not list (a derived or mapped model counts as listed) never
 compacts by threshold, so a long session ends with that error at the window.
 
 OpenRouter, with prompt caching (an `openai-compatible` account pointed at OpenRouter
@@ -603,7 +620,7 @@ max_results = 8
 |---|---|---|
 | `model` | The session model as `<account>/<model>`, a [role](#modelsroles) name, or an ordered list of them. It is shorthand for the `main` role, so setting it and `[models.roles] main` in one file is an error. `--model` overrides it. There is no default model: a run with neither is a configuration error (exit code 2) that names both. | unset |
 | `effort` | The main agent's reasoning effort: `off`, `low`, `medium`, `high` or `max`. `--effort` overrides it and `/effort` changes it for a session. Fontaine passes it through rig's portable setting, which maps it onto the provider's own parameter. The levels a model takes come from rig's catalog; a derived model's come from the listed model it was derived from, and on `claude-subscription` from the flags the Claude CLI reports for it. Unset sends no reasoning parameter, so the model thinks at its own default. A level the model or its endpoint cannot take (a non-reasoning model, a level the catalog does not list for it, or a generic `openai-compatible` gateway, which has no known mapping) is left out of the request with a one-time warning, and the run goes on. Subagents use it too, unless their type sets its own. The guardian is not affected: it always runs with thinking off. Not settable from the shared project file. | unset |
-| `max_output_tokens` | The most output tokens one model call of the main agent or a subagent may produce. By default every call sends the model's own output limit, else 32000 (nothing is sent on `ollama`, `anthropic` or `claude-subscription` when the limit is unknown, so the daemon's or the wire's own default applies). A value lowers the cap but never raises it past the model's known limit, and is clamped per model, so subagents on other models stay within theirs. It does not apply to the guardian or `/btw`, which keep their own caps. A small-context local server (vLLM, for example) rejects a request whose prompt plus cap exceeds its context; set this lower for it. Not settable from the shared project file. Must be at least 1. | unset |
+| `max_output_tokens` | The most output tokens one model call of the main agent or a subagent may produce. By default every call sends the model's own output limit, else 32000 (nothing is sent on `ollama` or `claude-subscription` when the limit is unknown, so the daemon's own default applies; an `anthropic` turn then fails unless this is set or the model is mapped under `model_facts`). A value lowers the cap but never raises it past the model's known limit, and is clamped per model, so subagents on other models stay within theirs. It does not apply to the guardian or `/btw`, which keep their own caps. A small-context local server (vLLM, for example) rejects a request whose prompt plus cap exceeds its context; set this lower for it. Not settable from the shared project file. Must be at least 1. | unset |
 
 ### `[models.roles]`
 
@@ -1066,7 +1083,7 @@ mode = "inherit"
 
 Unset, compaction runs when the model's window less the reserve is passed, and only for a model
 whose window the catalog knows. Set, it also runs for a catalog-listed model whose window is not
-known. A model the catalog does not list (a gateway or local alias; a derived model counts as
+known. A model the catalog does not list (a gateway or local alias; a derived or mapped model counts as
 listed) is never compacted
 automatically, with or without the setting; `/compact` cannot summarize with it either. A small
 value also shrinks what a compaction keeps: the newest messages it leaves as they are and the

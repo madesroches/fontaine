@@ -378,6 +378,10 @@ pub struct Account {
     pub models: Option<Vec<String>>,
     /// Per-model wire overrides, for kinds that route one account over several wires.
     pub wires: Option<BTreeMap<String, Wire>>,
+    /// `anthropic` and `databricks` only: maps a model id this account serves under a name of its
+    /// own to the catalog model it serves, so the served name takes that model's facts (limits,
+    /// tool-choice behavior) without being renamed anywhere else.
+    pub model_facts: Option<BTreeMap<String, String>>,
     /// `ollama` only: the context window requested with every call (`options.num_ctx`).
     pub context_tokens: Option<u32>,
     /// `ollama` only: `false` asks a thinking model to answer without reasoning.
@@ -454,6 +458,7 @@ impl Account {
             base_url,
             models: None,
             wires: None,
+            model_facts: None,
             context_tokens: None,
             think: None,
             prompt_caching: None,
@@ -1620,6 +1625,12 @@ pub(crate) fn check_account(name: &str, account: &Account) -> Result<(), (String
     if account.wires.is_some() && !provider.accepts_wires() {
         return Err((
             format!("accounts.{name}.wires"),
+            format!("not used by kind = \"{}\"", provider.name()),
+        ));
+    }
+    if account.model_facts.is_some() && !provider.accepts_model_facts() {
+        return Err((
+            format!("accounts.{name}.model_facts"),
             format!("not used by kind = \"{}\"", provider.name()),
         ));
     }

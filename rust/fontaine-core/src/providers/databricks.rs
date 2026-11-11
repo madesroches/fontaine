@@ -24,7 +24,7 @@ use rig_core::providers::openai::{OpenAIConfig, Route};
 use rig_core::providers::registry::ProviderId;
 use serde_json::Value;
 
-use super::derived_facts::{facts_as, notice};
+use super::derived_facts::{facts_as, no_facts_notice, notice};
 use super::device_flow::REQUEST_TIMEOUT;
 use super::multi_wire::WireClients;
 use super::{
@@ -88,6 +88,10 @@ impl Provider for Databricks {
         true
     }
 
+    fn accepts_model_facts(&self) -> bool {
+        true
+    }
+
     fn accepts_prompt_caching(&self) -> bool {
         true
     }
@@ -123,7 +127,7 @@ impl Provider for Databricks {
                     .to_string(),
             ));
         }
-        Ok(())
+        check_model_facts(account)
     }
 
     fn connect(&self, ctx: ConnectContext<'_>) -> Result<Arc<dyn AccountClient>, String> {
@@ -171,6 +175,8 @@ impl Provider for Databricks {
         Ok(Arc::new(DatabricksClient {
             wires,
             overrides: ctx.account.wires.clone().unwrap_or_default(),
+            model_facts: ctx.account.model_facts.clone().unwrap_or_default(),
+            account_name: ctx.account_name.to_string(),
             listing: Listing {
                 client: reqwest_client(ctx.network).map_err(|e| chain(&e))?,
                 url: format!("{origin}/api/2.1/unity-catalog/model-services"),
@@ -238,36 +244,97 @@ pub fn wire(model: &str, overrides: &BTreeMap<String, Wire>) -> Wire {
 struct Facts {
     facts: ModelFacts,
     derived_from: Option<String>,
+    /// The catalog id an account's `model_facts` mapped the model to.
+    mapped_to: Option<String>,
 }
 
-fn facts_for(model: &str) -> Option<Facts> {
+fn facts_for(model: &str, mapped: &BTreeMap<String, String>) -> Option<Facts> {
+    let served = ProviderId::declare("databricks").ok();
+    if let Some(target) = mapped.get(model)
+        && let Some(vendor) = catalog_vendor_of(family(target))
+        && let Some(served) = served
+        && let Some((facts, from, listed)) = facts_as(vendor, served, target, model)
+    {
+        return Some(Facts {
+            facts,
+            derived_from: (!listed).then_some(from),
+            mapped_to: Some(target.clone()),
+        });
+    }
     let base = base_id(model);
     if let Some(vendor) = catalog_vendor_of(family(base))
-        && let Some(served) = ProviderId::declare("databricks").ok()
+        && let Some(served) = served
         && let Some((facts, from, listed)) = facts_as(vendor, served, base, model)
     {
         return Some(Facts {
             facts,
             derived_from: (!listed).then_some(from),
+            mapped_to: None,
         });
     }
     let (_, cap) = OUTPUT_CAPS
         .iter()
         .find(|(prefix, _)| base.starts_with(prefix))?;
-    let spec = ModelSpec::new(ProviderId::declare("databricks").ok()?, model)
+    let spec = ModelSpec::new(served?, model)
         .with_max_output_tokens(*cap)
         .with_tools(true)
         .with_reasoning(ReasoningSupport::Unknown { default: None });
     Some(Facts {
         facts: ModelFacts::new(spec),
         derived_from: None,
+        mapped_to: None,
     })
 }
 
-/// The one-time notice for a model whose facts were derived from another listed model.
-fn facts_notice_for(model: &str) -> Option<String> {
-    let from = facts_for(model)?.derived_from?;
-    Some(notice(model, base_id(model), &from, None))
+/// The one-time notice for a model whose facts were derived from another listed model, or a
+/// custom `catalog.schema.name` endpoint with no facts at all. An open model on `system.ai` has
+/// none legitimately, so it is not warned about.
+fn facts_notice_for(
+    model: &str,
+    mapped: &BTreeMap<String, String>,
+    account: &str,
+) -> Option<String> {
+    let Some(facts) = facts_for(model, mapped) else {
+        let custom = base_id(model) == model && model.contains('.');
+        return custom.then(|| no_facts_notice(model, account));
+    };
+    let from = facts.derived_from?;
+    let resolved = facts.mapped_to.as_deref().unwrap_or_else(|| base_id(model));
+    Some(notice(model, resolved, &from, None))
+}
+
+/// The `model_facts` entries of `account`: a key the catalog already lists keeps its own facts,
+/// and a value must resolve to a catalog model of a vendor Fontaine has facts for.
+fn check_model_facts(account: &Account) -> Result<(), (&'static str, String)> {
+    let served = ProviderId::declare("databricks").ok();
+    for (key, target) in account.model_facts.iter().flatten() {
+        let listed = catalog_vendor_of(family(base_id(key)))
+            .zip(served)
+            .and_then(|(vendor, served)| facts_as(vendor, served, base_id(key), key))
+            .is_some_and(|(_, _, listed)| listed);
+        if listed {
+            return Err((
+                "model_facts",
+                format!(
+                    "`{key}` is a model the catalog lists, which keeps its own facts; map only \
+                     a name the host invented"
+                ),
+            ));
+        }
+        let resolves = catalog_vendor_of(family(target))
+            .zip(served)
+            .and_then(|(vendor, served)| facts_as(vendor, served, target, key))
+            .is_some();
+        if !resolves {
+            return Err((
+                "model_facts",
+                format!(
+                    "`{key}` maps to `{target}`, which is not a catalog Claude, GPT or Gemini model"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// How a model on the Messages wire asks for streamed tool input. Claude takes the per-tool
@@ -387,6 +454,8 @@ pub(crate) fn parse_model_services(body: &str) -> Result<(Vec<String>, Option<St
 struct DatabricksClient {
     wires: WireClients,
     overrides: BTreeMap<String, Wire>,
+    model_facts: BTreeMap<String, String>,
+    account_name: String,
     listing: Listing,
 }
 
@@ -396,7 +465,7 @@ impl DatabricksClient {
         self.wires.completion(
             wire,
             model,
-            facts_for(model).map(|f| f.facts),
+            facts_for(model, &self.model_facts).map(|f| f.facts),
             scope,
             tool_input_for(model, wire),
         )
@@ -413,7 +482,7 @@ impl AccountClient for DatabricksClient {
     }
 
     fn facts_notice(&self, model: &str) -> Option<String> {
-        facts_notice_for(model)
+        facts_notice_for(model, &self.model_facts, &self.account_name)
     }
 
     fn list(&self) -> BoxFuture<'_, Result<Vec<String>, Box<ProviderError>>> {
@@ -537,23 +606,60 @@ mod tests {
         assert!(parse_model_services("nope").is_err());
     }
 
+    fn mapped() -> BTreeMap<String, String> {
+        BTreeMap::from([(
+            "main.team.claude".to_string(),
+            "claude-sonnet-5-5".to_string(),
+        )])
+    }
+
+    fn notice_of(model: &str) -> Option<String> {
+        facts_notice_for(model, &mapped(), "dbx")
+    }
+
     #[test]
     fn a_listed_model_has_no_notice_and_a_derived_one_does() {
-        assert_eq!(facts_notice_for("system.ai.claude-haiku-5-5"), None);
-        let notice = facts_notice_for("system.ai.claude-haiku-9-9").expect("derived");
+        assert_eq!(notice_of("system.ai.claude-haiku-5-5"), None);
+        let notice = notice_of("system.ai.claude-haiku-9-9").expect("derived");
         assert!(notice.contains("claude-haiku-9-9"), "{notice}");
         assert!(notice.contains("Update Fontaine"), "{notice}");
-        assert_eq!(facts_notice_for("system.ai.glm-5-3"), None);
-        assert_eq!(facts_notice_for("main.team.router"), None);
+        assert_eq!(notice_of("system.ai.glm-5-3"), None);
+        assert_eq!(notice_of("system.ai.kimi-k3"), None);
+        assert_eq!(notice_of("kimi-k3"), None);
+    }
+
+    #[test]
+    fn a_custom_endpoint_is_warned_about_unless_mapped() {
+        let notice = notice_of("main.team.router").expect("no facts");
+        assert!(notice.contains("[accounts.dbx.model_facts]"), "{notice}");
+        assert_eq!(notice_of("main.team.claude"), None);
+    }
+
+    #[test]
+    fn a_mapped_endpoint_takes_the_target_facts_under_databricks() {
+        let facts = facts_for("main.team.claude", &mapped()).expect("mapped");
+        let spec = facts.facts.spec().expect("bound").clone();
+        let sonnet = facts_for("system.ai.claude-sonnet-5-5", &BTreeMap::new())
+            .expect("listed")
+            .facts;
+        let sonnet = sonnet.spec().expect("bound");
+        assert_eq!(spec.id, "main.team.claude");
+        assert_eq!(spec.max_output_tokens, sonnet.max_output_tokens);
+        assert_eq!(spec.context_window, sonnet.context_window);
+        assert!(spec.max_output_tokens.is_some());
+        assert_eq!(spec.provider, sonnet.provider);
+        assert!(facts_for("main.team.claude", &BTreeMap::new()).is_none());
     }
 
     #[test]
     fn a_family_with_a_cap_and_no_facts_gets_a_minimal_spec() {
-        let facts = facts_for("system.ai.glm-5-3").expect("capped").facts;
+        let facts = facts_for("system.ai.glm-5-3", &BTreeMap::new())
+            .expect("capped")
+            .facts;
         let spec = facts.spec().expect("bound");
         assert_eq!(spec.max_output_tokens, Some(25_000));
         assert!(spec.tools);
         assert!(spec.provider.is_declared());
-        assert!(facts_for("system.ai.kimi-k3").is_none());
+        assert!(facts_for("system.ai.kimi-k3", &BTreeMap::new()).is_none());
     }
 }
