@@ -181,7 +181,7 @@ cargo invocation the helper relies on. Checked by hand once:
    `cargo test -p fontaine-tui --test agents` and `cargo test -p fontaine --test mcp_cmd` — the
    helper rebuilds the missing binaries and the suites pass.
 3. `cargo test -p fontaine-core --test user_hooks --test lifecycle_hooks` and
-   `cargo test -p fontaine-tools --test lsp --test mcp_registration` — pass from a cold examples
-   dir.
+   `cargo test -p fontaine-tools --test lsp --test mcp_registration --test mcp_oauth` — pass from a
+   cold examples dir.
 
 ## Open Questions

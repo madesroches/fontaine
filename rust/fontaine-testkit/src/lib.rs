@@ -145,16 +145,15 @@ impl Layout {
                 };
                 (triple, target_dir)
             }
-            // Without a configured dir, a `-`-bearing segment may be a triple (an explicit
-            // outer command-line `--target`, which cargo does not export to the test
-            // process) or a hyphenated `--target-dir`/build config dir (cargo exports
-            // neither of those either). The build script compiled the outer build's
-            // target triple into this crate, so a segment equal to it is exactly the outer
-            // build's target dir layout: forward it (correct for genuine `--target <host>`
-            // and `--target <foreign>` runs alike, and harmless for a directory
-            // coincidentally named after the build target). Any other segment — however
-            // triple-like — is a target dir.
-            None if looks_like_triple(above) => {
+            // Without a configured dir, the build script compiled the outer build's
+            // target triple into this crate, so a segment equal to it is exactly the
+            // outer build's target dir layout: forward it (correct for genuine
+            // `--target <host>` and `--target <foreign>` runs, and for a custom JSON
+            // target, where cargo uses the file stem — e.g. `foo` for `foo.json` — as
+            // both the output segment and the target name, which is not triple-like).
+            // Any other segment — however triple-like — is a `--target-dir`/build config
+            // dir cargo does not export to the test process, and stays the target dir.
+            None => {
                 let name = above.file_name()?.to_string_lossy().into_owned();
                 if build_target == Some(name.as_str()) {
                     (Some(name), above.parent()?.to_path_buf())
@@ -162,7 +161,6 @@ impl Layout {
                     (None, above.to_path_buf())
                 }
             }
-            None => (None, above.to_path_buf()),
         };
         Some(Layout {
             target_dir,
@@ -234,21 +232,6 @@ fn valid_configured_rest(rest: &Path, build_target: Option<&str>) -> bool {
             rest.components().count() == 1 && build_target.is_some_and(|t| rest == Path::new(t))
         }
     }
-}
-
-/// Best-effort triple detection for the optional segment between the target dir and the
-/// profile dir. This only gates validation: a `-`-bearing name is a triple candidate, and
-/// comparison against [`BUILD_TARGET`] decides — only a segment equal to the outer build's
-/// compiled-in target triple is treated as one. Any directory name with no `-` (including a
-/// custom `CARGO_TARGET_DIR`) is not a triple.
-fn looks_like_triple(dir: &Path) -> bool {
-    let Some(name) = dir.file_name().and_then(|n| n.to_str()) else {
-        return false;
-    };
-    name.contains('-')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Extracts the executable cargo built for example `name` from the stdout of a build run
@@ -418,6 +401,17 @@ mod tests {
     }
 
     #[test]
+    fn custom_json_target_stem_is_forwarded_as_triple() {
+        // Regression: an outer `cargo test --target foo.json` places the build under the
+        // file stem `foo` and compiles the build target in as `foo`; the segment equals
+        // the build target even though it is not triple-like, so it must be forwarded.
+        let l = layout_with_target("/ws/target/foo/debug/deps/my_test", None, Some("foo")).unwrap();
+        assert_eq!(l.target_dir, Path::new("/ws/target"));
+        assert_eq!(l.triple.as_deref(), Some("foo"));
+        assert_eq!(l.profile_dir, Path::new("/ws/target/foo/debug"));
+    }
+
+    #[test]
     fn foreign_triple_named_target_dir_is_not_misread_as_triple() {
         // Regression: an outer host build such as `cargo test --target-dir
         // /tmp/aarch64-apple-darwin` places the test exe under
@@ -582,15 +576,6 @@ mod tests {
     fn exe_not_directly_under_deps_is_rejected() {
         assert!(layout("/ws/rust/target/debug/my_test").is_none());
         assert!(layout("/ws/rust/target/debug/deps/nested/my_test").is_none());
-    }
-
-    #[test]
-    fn triple_detection() {
-        assert!(looks_like_triple(Path::new("x86_64-pc-windows-gnu")));
-        assert!(looks_like_triple(Path::new("aarch64-apple-darwin")));
-        assert!(!looks_like_triple(Path::new("target")));
-        assert!(!looks_like_triple(Path::new("mytarget")));
-        assert!(!looks_like_triple(Path::new("debug")));
     }
 
     #[test]
