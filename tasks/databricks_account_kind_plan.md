@@ -83,7 +83,13 @@ Databricks (Provider)
 uses Bearer, Gemini included (the live 401). Chat and Responses use
 `OpenAIConfig::with_key(&DBX_DIALECT, key)`, which sends Bearer. Messages uses
 `AnthropicConfig::with_key(&DBX_MESSAGES, key)`. Only Gemini needs a decorated client placing the
-key as Bearer. The kind-name constants:
+key as Bearer. rig's `GeminiConfig` appends `?key=<api_key>` to every GenerateContent URI and
+`TokenSource` has no static-key constructor, so Gemini uses `GeminiConfig::new("")` on a
+`Decorated` client whose `Decoration.headers` holds a fixed, sensitive
+`Authorization: Bearer <key>` entry (`auth: None`), and whose new `Decoration.strip_key_param: bool`
+(default `false`, applied in `transport.rs` `decorate` independent of `auth`, reusing
+`without_key_param`) is `true`. The request then carries no `key=` query at all, empty or not;
+existing placements are unchanged. The kind-name constants:
 
 - `DBX_DIALECT: Dialect = Dialect::gateway("databricks", "", "")` for Chat and Responses
   (the same gateway dialect `opencode-go` and `openai-compatible` use. Fontaine sets no
@@ -200,15 +206,6 @@ for other providers, where `ug` reports the rejection), set
 `WireClients::completion`'s `tool_input` argument. Whether the gateway passes
 `fine-grained-tool-streaming` through for a non-Claude model forced onto Messages is unverified.
 
-### `thinking_off`
-
-`thinking_off` is used where a forced tool call needs thinking off. Return `None` for Messages
-Claude ids, Responses and Gemini (as `opencode-go` does). On Chat, return `None` too: the MLflow
-unified route's acceptance of a top-level `thinking` field is unverified, and an unknown field risks
-a 400 on every forced call. A non-Claude model forced onto Messages also gets `None`, and any Claude
-check uses the stripped base id. The guardian's validated Databricks model is Claude on Messages, so it
-never needs it. Revisit once a Chat thinking model needs a forced call.
-
 ### Listing
 
 `DatabricksClient::list` GETs
@@ -246,7 +243,9 @@ override.
    entry re-labelled and unpriced, else `derive`), with unit tests.
 3. **Provider.** Create `providers/databricks.rs`: the `Databricks` `Provider` (with `validate`),
    `wire()`, the family → vendor map, `OUTPUT_CAPS`, `connect` building `WireClients` with Bearer on
-   all four wires, `DatabricksClient` (`completion`, `guardian_completion`, `thinking_off`,
+   all four wires (Gemini through the static header and `strip_key_param`: add that
+   `Decoration` field and its `decorate` branch in `transport.rs`, with a unit test there),
+   `DatabricksClient` (`completion`, `guardian_completion`,
    `list`, `catalog_vendor`, `facts_notice`), the non-Claude-on-Messages `BetaHeader` override, and the listing
    parser as a pure function (`parse_model_services(body) -> (ids, next_token)`). Register it in
    `PROVIDERS` and `mod.rs`. The provider dialog picks the kind up through the registry. Add a
@@ -275,6 +274,7 @@ override.
 - `rust/fontaine-core/src/providers/opencode_go.rs`
 - `rust/fontaine-core/src/providers/derived_facts.rs`
 - `rust/fontaine-core/src/providers/cache_minimum.rs`
+- `rust/fontaine-core/src/transport.rs` (`Decoration.strip_key_param`)
 - `rust/fontaine-core/src/config.rs`
 - `rust/fontaine-core/tests/providers.rs`
 - `rust/fontaine-core/tests/databricks.rs` (new)
@@ -311,6 +311,9 @@ override.
   tracked in #169.
 - #167 is addressed for this kind by `facts_as`; remaining guardian/scanner name handling is tracked
   in #167/#168.
+- AFK: Gemini sends the static key as a sensitive `Authorization: Bearer` entry in `Decoration.headers` plus a new `Decoration.strip_key_param` flag in `transport.rs`, so no `key=` (empty or not) ever reaches the URL; chosen over relying on unverified empty-`key=` acceptance and over a new static `TokenSource` plus placement.
+- AFK: `thinking_off` keeps the trait default (`None`): the MLflow Chat route's acceptance of a top-level `thinking` field is unverified; revisit when a Chat thinking model needs a forced call.
+- AFK: A flagged cache-bench run (steady-state cache-write ratio above 1.25, lower cache-read share or larger base context) blocks the PR unless the gap is traced to the gateway rather than Fontaine, in which case it is recorded in the PR and filed as a follow-up.
 
 ## Documentation
 
@@ -355,8 +358,8 @@ modelled on `tests/opencode_go.rs`):
 
 - Each wire hits its path (`/ai-gateway/anthropic/v1/messages`, `/ai-gateway/openai/v1/responses`,
   `/ai-gateway/gemini/v1beta/models/...`, `/ai-gateway/mlflow/v1/chat/completions`) with
-  `Authorization: Bearer <key>`, the Gemini request carries `Authorization: Bearer <key>` and no non-empty `key=` query
-  parameter (pins the live 401), and the Claude request carries no `x-api-key`.
+  `Authorization: Bearer <key>`, the Gemini request carries `Authorization: Bearer <key>` and no `key=` query
+  parameter at all (pins the live 401), and the Claude request carries no `x-api-key`.
 - **Regression for the live `max_tokens` failure**: a `system.ai.claude-haiku-5-5` turn with no
   user cap reaches the mock with `max_tokens` equal to the catalog `max_output_tokens` for
   claude-haiku-5-5.
@@ -392,5 +395,6 @@ Against a real workspace (needs a Databricks token, so not in CI). Run with an a
    (and `-opus`, `-haiku`). Pass when, for each model: the run is not flagged (steady-state
    cache-write ratio, Fontaine over Claude Code, at most 1.25); Fontaine's total cache-read share of
    input is not lower than Claude Code's by more than a few points; and Fontaine's base context is
-   not larger than Claude Code's. Any gap found is filed as a follow-up issue, not a blocker for
-   this kind.
+   not larger than Claude Code's. A failing model blocks the PR until the gap is fixed, or traced
+   to the gateway rather than to Fontaine's requests (then recorded in the PR and filed as a
+   follow-up).
