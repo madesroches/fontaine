@@ -21,8 +21,15 @@ static CACHE: OnceLock<Mutex<HashMap<(String, String), PathBuf>>> = OnceLock::ne
 /// host or foreign, unlike a `rustc -vV` host lookup.
 const BUILD_TARGET: &str = env!("FONTAINE_TESTKIT_TARGET");
 
+/// The rustc the outer build used, captured by the build script from Cargo's `RUSTC`.
+const BUILD_RUSTC: &str = env!("FONTAINE_TESTKIT_RUSTC");
+
+static BUILTIN_TARGETS: OnceLock<Vec<String>> = OnceLock::new();
+
 /// Returns the path to the built example `name` of workspace package `package`, building it on
-/// first use. Panics with cargo's combined output if the build fails.
+/// first use. Panics with cargo's combined output if the build fails. Panics early when the
+/// outer build targeted a custom JSON specification: cargo exports it to the test process
+/// only as the spec file's stem, which the nested build cannot resolve back to the file.
 pub fn example_bin(package: &str, name: &str) -> PathBuf {
     let key = (package.to_string(), name.to_string());
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -62,6 +69,7 @@ pub fn example_bin(package: &str, name: &str) -> PathBuf {
         // A triple from CARGO_BUILD_TARGET or config is inherited by the child, but an explicit
         // command-line --target is not; without the flag the nested build would place the
         // example where this helper does not look.
+        assert_nested_target_resolvable(triple, Path::new(env!("CARGO_MANIFEST_DIR")));
         cmd.arg("--target").arg(triple);
     }
     let out = cmd.output().unwrap_or_else(|e| {
@@ -98,6 +106,57 @@ pub fn example_bin(package: &str, name: &str) -> PathBuf {
         .expect("fontaine-testkit cache mutex poisoned")
         .insert(key, path.clone());
     path
+}
+
+/// The target triples built into the toolchain, from `rustc --print target-list`,
+/// cached for the process. An empty list means the lookup failed; the nested build uses
+/// the same rustc and fails for the same reason, so the resolvability check below then
+/// relies on spec files alone.
+fn builtin_targets() -> &'static [String] {
+    BUILTIN_TARGETS.get_or_init(|| {
+        Command::new(BUILD_RUSTC)
+            .args(["--print", "target-list"])
+            .output()
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// Panics when the nested `cargo build --target <triple>` cannot resolve `triple`.
+/// Cargo exports an outer `cargo test --target <spec>.json` to the test process only as
+/// the spec file's stem, which the nested build resolves again only as a built-in
+/// triple, a spec file in the nested build's working directory, or through
+/// RUST_TARGET_PATH. Rejecting any other stem here keeps the error actionable;
+/// otherwise the nested build fails with cargo's opaque target-not-found output.
+fn assert_nested_target_resolvable(triple: &str, package_dir: &Path) {
+    if builtin_targets().iter().any(|t| t == triple) {
+        return;
+    }
+    let spec = Path::new(triple);
+    let spec_json = PathBuf::from(format!("{triple}.json"));
+    let spec_resolves = |dir: &Path| dir.join(spec).is_file() || dir.join(&spec_json).is_file();
+    if spec_resolves(package_dir) {
+        return;
+    }
+    if let Some(paths) = std::env::var_os("RUST_TARGET_PATH")
+        && std::env::split_paths(&paths).any(|dir| spec_resolves(&dir))
+    {
+        return;
+    }
+    panic!(
+        "custom JSON target spec `{triple}` is not supported by fontaine-testkit: cargo \
+         forwards the outer `cargo test --target <spec>.json` to the test process only as \
+         the file stem, and the nested `cargo build --target {triple}` cannot resolve it. \
+         Run the tests with a built-in target triple, or point RUST_TARGET_PATH at the \
+         spec's directory."
+    );
 }
 
 /// The layout of a test binary's path: `target[<triple>]/<profile>/deps/<test>`.
@@ -147,12 +206,14 @@ impl Layout {
             }
             // Without a configured dir, the build script compiled the outer build's
             // target triple into this crate, so a segment equal to it is exactly the
-            // outer build's target dir layout: forward it (correct for genuine
-            // `--target <host>` and `--target <foreign>` runs, and for a custom JSON
-            // target, where cargo uses the file stem — e.g. `foo` for `foo.json` — as
-            // both the output segment and the target name, which is not triple-like).
-            // Any other segment — however triple-like — is a `--target-dir`/build config
-            // dir cargo does not export to the test process, and stays the target dir.
+            // outer build's target dir layout: the triple is forwarded for genuine
+            // `--target <host>` and `--target <foreign>` runs. For a custom JSON target
+            // cargo uses the file stem — e.g. `foo` for `foo.json` — as both the output
+            // segment and the target name, so it lands here too, where example_bin
+            // rejects forwarding it because the nested build cannot resolve the stem
+            // back to the spec file. Any other segment — however triple-like — is a
+            // `--target-dir`/build config dir cargo does not export to the test
+            // process, and stays the target dir.
             None => {
                 let name = above.file_name()?.to_string_lossy().into_owned();
                 if build_target == Some(name.as_str()) {
@@ -401,14 +462,25 @@ mod tests {
     }
 
     #[test]
-    fn custom_json_target_stem_is_forwarded_as_triple() {
-        // Regression: an outer `cargo test --target foo.json` places the build under the
-        // file stem `foo` and compiles the build target in as `foo`; the segment equals
-        // the build target even though it is not triple-like, so it must be forwarded.
+    fn custom_json_target_stem_is_detected_but_rejected_before_forwarding() {
+        // An outer `cargo test --target foo.json` places the build under the file stem
+        // `foo` and compiles the build target in as `foo`; the layout detects the segment
+        // as the outer target's dir, but example_bin must not forward the stem: cargo
+        // does not export the spec path to the test process, so the nested
+        // `cargo build --target foo` cannot resolve it and fails with an opaque error.
         let l = layout_with_target("/ws/target/foo/debug/deps/my_test", None, Some("foo")).unwrap();
         assert_eq!(l.target_dir, Path::new("/ws/target"));
         assert_eq!(l.triple.as_deref(), Some("foo"));
         assert_eq!(l.profile_dir, Path::new("/ws/target/foo/debug"));
+        std::panic::catch_unwind(|| {
+            assert_nested_target_resolvable("fontaine-custom-json-stem", Path::new("/nonexistent"))
+        })
+        .expect_err("an unresolvable custom JSON target stem must be rejected, not forwarded");
+    }
+
+    #[test]
+    fn builtin_build_target_passes_the_resolvability_check() {
+        assert_nested_target_resolvable(BUILD_TARGET, Path::new(env!("CARGO_MANIFEST_DIR")));
     }
 
     #[test]
