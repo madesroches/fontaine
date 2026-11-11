@@ -136,7 +136,7 @@ fn dotted_version(id: &str) -> Option<String> {
 
 /// The facts of `base_id` on `vendor`, for a gateway that serves it as `served_id`: the exact
 /// catalog entry when `vendor` lists it (as given, else with its dashed version dotted), else
-/// the facts [`derive`] takes from the newest listed model of its shape. The spec is relabelled
+/// the facts [`derive()`] takes from the newest listed model of its shape. The spec is relabelled
 /// to `served_id`, declared under `served` (the wire's dialect name, so rig's
 /// `ModelFacts::for_model` hands the bound spec to a wire that asks under it) and stripped of
 /// pricing (the gateway bills in its own units). Returns the facts, the catalog id they came
