@@ -9,10 +9,7 @@ model ids `system.ai.<model>`) with a Databricks token sent as `Authorization: B
 `opencode-go`, one account serves several wires and picks one per model: Claude on the Anthropic
 Messages route (with prompt caching), GPT on the OpenAI Responses route, Gemini on the native Gemini
 route, and every other model on the provider-neutral MLflow Chat Completions route. Models are
-listed from the Unity Catalog model-services API. Today a Databricks user has to choose between an
-`anthropic` account with `auth = "bearer"` (Claude only, and broken on `system.ai.*` names, see
-below) and an OpenAI-style Chat account (no `cache_control`, so no Claude prompt caching, and GPT
-models that refuse tools over Chat).
+listed from the Unity Catalog model-services API.
 
 ## Current State
 
@@ -77,23 +74,26 @@ Databricks (Provider)
   accepts_prompt_caching  true, default_prompt_caching true
   accepts_auth       false               (always Bearer)
   validate           refuse a base_url with a path (".../ai-gateway", "/serving-endpoints"),
-                     naming the key and the expected form
+                     naming the key and the expected form; also refuse a missing or empty `base_url`
+                     (as `openai_compatible.rs` does)
   connect            -> DatabricksClient
 ```
 
-`connect` trims the trailing `/` from the base URL and builds one `Decorated` client
-(`Decoration { user_agent, headers: [], auth: Some((static key source, AuthPlacement::Bearer)) }`)
-shared by all four rig clients. **Every** wire uses Bearer, Gemini included (the live 401). The
-kind-name constants:
+`connect` trims the trailing `/` from the base URL and builds the four rig clients. **Every** wire
+uses Bearer, Gemini included (the live 401). Chat and Responses use
+`OpenAIConfig::with_key(&DBX_DIALECT, key)`, which sends Bearer. Messages uses
+`AnthropicConfig::with_key(&DBX_MESSAGES, key)`. Only Gemini needs a decorated client placing the
+key as Bearer. The kind-name constants:
 
 - `DBX_DIALECT: Dialect = Dialect::gateway("databricks", "", "")` for Chat and Responses
-  (the same gateway dialect `opencode-go` and `openai-compatible` use, which sends no `store`,
-  `previous_response_id`, `background` or strict tool schemas; the live Chat and Responses probes
-  passed with it).
+  (the same gateway dialect `opencode-go` and `openai-compatible` use. Fontaine sets no
+  `store`/`background` params and rig sends no strict schemas by default; the live Chat and
+  Responses probes passed with it).
 - `DBX_MESSAGES: MessagesDialect = compatible("databricks", "", "", None)`, the gateway Messages
   dialect, as on `opencode-go`. It supplies a default `max_tokens` and sends no strict tool schemas.
-  It does not send Anthropic-only extras such as the `thinking-binding-controls` beta, whose
-  pass-through is unverified (#169).
+  It sends no thinking-binding beta. `compatible()` uses `Auth::ApiKey` (always `x-api-key`), so
+  `connect` sets `config.dialect.quirks.auth = Auth::OptionalBearer` on the Messages config
+  (mutating, since `Quirks` is non-exhaustive), as `anthropic.rs` does for `auth = "bearer"`.
 
 Roots:
 
@@ -103,10 +103,6 @@ Roots:
 | Responses | `{origin}/ai-gateway/openai/v1` (the documented route; `codex/v1` works too) |
 | Gemini | `{origin}/ai-gateway/gemini` |
 | Chat | `{origin}/ai-gateway/mlflow/v1` |
-
-The static key goes through `TokenSource` if it accepts a fixed credential. Otherwise use a minimal
-fixed-key auth source next to it in `token_source.rs`, so the `Decorated` placement path stays the
-one used everywhere.
 
 ### Routing: `databricks::wire(model, overrides) -> Wire`
 
@@ -123,10 +119,6 @@ one used everywhere.
 Routing is name-based only, matching `ug`. `supported_api_types` is advisory, so it never chooses a
 route.
 
-The `opencode-go` routing and dispatch are not merged with this one: the two tables differ in every
-row, and the dispatch is a four-arm `match`. What both kinds share is factored out (see
-"Shared multi-wire client" below).
-
 ### Shared multi-wire client
 
 `GoClient` and the new `DatabricksClient` have the same shape: four rig clients, a `wires` table, a
@@ -139,10 +131,12 @@ pub(crate) struct WireClients { pub chat: OpenAI, pub responses: OpenAI, pub mes
 impl WireClients {
     /// `model` on `wire`, with `facts` bound and the account's cache breakpoints on Messages.
     pub(crate) fn completion(&self, wire: Wire, model: &str, facts: Option<ModelFacts>,
-                             scope: CacheScope) -> DynModel<Completion>;
+                             scope: CacheScope, tool_input: Option<ToolInputStreaming>)
+                             -> DynModel<Completion>;
 }
 ```
 
+`tool_input` is applied in the Messages arm before the model is erased. `GoClient` passes `None`.
 `GoClient` keeps its own `wire()`, facts vendor, listing and `thinking_off`, and calls
 `WireClients::completion`. Behaviour stays the same, and the existing `opencode-go` tests guard the
 move.
@@ -155,25 +149,38 @@ For `system.ai.<base>`, the facts come from the base id on the family's catalog 
 |---|---|
 | `claude-*` | `anthropic` |
 | `gpt-*` | `openai` |
-| `gemini-*` | `google` (whatever `vendor()` name rig's catalog uses for Gemini) |
+| `gemini-*` | `gcp.gemini` |
 | others | none |
 
 Lookup: the exact `Catalog::builtin().get(vendor, base)` entry, else `derive(...)` on the same
-vendor (shape matching also bridges `gpt-5-6-luna` and `gpt-5.6-luna`). The resulting spec is
-re-labelled to the full requested id with pricing stripped, as `derive` already does. Make that a
-small helper in `derived_facts.rs`: `facts_as(vendor, catalog_id, served_id) -> Option<ModelFacts>`,
-which tries the exact entry and then `derive`. That gives Claude a real `max_output_tokens` (fixing
-the live `max_tokens` failure) and the model's reasoning/effort facts.
+vendor, called on the base id (shape matching also bridges `gpt-5-6-luna` and `gpt-5.6-luna`). Make
+that a small helper in `derived_facts.rs`:
+`facts_as(vendor, base_id, served_id) -> Option<(ModelFacts, String)>`. It relabels the spec to the
+served id (`spec.id`, `display_name`) and rebuilds `ModelFacts::new(spec).with_catalog(..)`
+(`ollama.rs` is the precedent). The exact-entry path clears `pricing` and `details.cost`
+explicitly. It also returns the `from` id, the catalog entry the facts came from. It sets
+`spec.provider = ProviderId::declare("databricks")` on the relabelled spec: rig's
+`ModelFacts::for_model(vendor, model)` returns a bound spec only when `spec.provider.is_declared()`
+or the vendor matches the asked name, and the wires ask under the dialect name `databricks`. That
+gives Claude a real `max_output_tokens` on the Messages and Responses wires (fixing the live
+`max_tokens` failure) and the model's reasoning/effort facts.
 
 Models with no facts fall into the existing `turn_max_tokens` fallback: `databricks` is not in the
 `ollama | anthropic | claude-subscription` list, so `FALLBACK_MAX_OUTPUT_TOKENS` (32k) is sent. The
 GLM output cap that `ug` pins (25k on the Chat route) is lower than that, so a GLM request without a
 user cap can be rejected. Add one entry, in a per-family table in `databricks.rs`
-(`OUTPUT_CAPS: &[("glm-", 25_000)]`), applied as the model's `max_output_tokens` when its facts carry
-none. More families are added there as they are found. Users can still lower the cap with
-`[model] max_output_tokens`.
+(`OUTPUT_CAPS: &[("glm-", 25_000)]`). GLM has no catalog facts, so there is no spec to put the cap
+on: for a base id matching a cap and with no facts, build a minimal spec under the declared
+`databricks` vendor with `max_output_tokens = cap`, `tools = true` and
+`reasoning = ReasoningSupport::Unknown { default: None }` (a bare `ModelSpec::new` defaults to
+`tools: false`, no reasoning). More families are added there as they are found. Users can still
+lower the cap with `[model] max_output_tokens`.
 
 `catalog_vendor()` returns `None`. Pricing is never looked up for this kind (`Billing::Unpriced`).
+Because `catalog_vendor()` is `None`, the default `facts_notice` (`providers/mod.rs:273`) never
+fires, so `DatabricksClient` overrides `facts_notice` and returns
+`derived_facts::notice(model, base_id, &from, None)` when the facts were derived
+(`claude_subscription/mod.rs:411` is the precedent).
 
 ### Prompt caching
 
@@ -188,15 +195,17 @@ the 1-hour TTL were accepted live.
 Keep rig's default `Eager` for Claude ids on the Messages wire: it was accepted live. For a
 **non-Claude** model a user forces onto Messages with `wires` (the gateway's Anthropic translator
 for other providers, where `ug` reports the rejection), set
-`ToolInputStreaming::BetaHeader` on the built model's wire. This is the one place the Messages wire
-differs by model in this kind.
+`ToolInputStreaming::BetaHeader` on the built model's wire. This is the one place the Messages wire differs by model in this kind. The override is passed as
+`WireClients::completion`'s `tool_input` argument. Whether the gateway passes
+`fine-grained-tool-streaming` through for a non-Claude model forced onto Messages is unverified.
 
 ### `thinking_off`
 
 `thinking_off` is used where a forced tool call needs thinking off. Return `None` for Messages
 Claude ids, Responses and Gemini (as `opencode-go` does). On Chat, return `None` too: the MLflow
 unified route's acceptance of a top-level `thinking` field is unverified, and an unknown field risks
-a 400 on every forced call. The guardian's validated Databricks model is Claude on Messages, so it
+a 400 on every forced call. A non-Claude model forced onto Messages also gets `None`, and any Claude
+check uses the stripped base id. The guardian's validated Databricks model is Claude on Messages, so it
 never needs it. Revisit once a Chat thinking model needs a forced call.
 
 ### Listing
@@ -215,10 +224,10 @@ reqwest client, Bearer auth and `REQUEST_TIMEOUT`, as `ModelsFetcher` does. From
 - de-duplicate and sort.
 
 Errors map to `ProviderError` so `fontaine models` and the picker report them the way other kinds
-do. Custom `catalog.schema.name` services are not listed. A user adds them through the account's
-`models` list, which is validated against the listing as on other kinds. If `models` entries
-outside the listing are refused by the shared validation, `lists()` is overridden to accept any id
-that is not `system.ai.*` (custom services) without a listing match.
+do. Custom `catalog.schema.name` services are not listed. A `models` list replaces the UC listing
+(non-discovery kinds don't validate it against the listing), so custom services are accepted as-is,
+and a user who adds one must also list the `system.ai.*` models they want. There is no `lists()`
+override.
 
 ### Config and docs surface
 
@@ -237,18 +246,16 @@ that is not `system.ai.*` (custom services) without a listing match.
 3. **Provider.** Create `providers/databricks.rs`: the `Databricks` `Provider` (with `validate`),
    `wire()`, the family → vendor map, `OUTPUT_CAPS`, `connect` building `WireClients` with Bearer on
    all four wires, `DatabricksClient` (`completion`, `guardian_completion`, `thinking_off`,
-   `list`, `catalog_vendor`), the non-Claude-on-Messages `BetaHeader` override, and the listing
+   `list`, `catalog_vendor`, `facts_notice`), the non-Claude-on-Messages `BetaHeader` override, and the listing
    parser as a pure function (`parse_model_services(body) -> (ids, next_token)`). Register it in
-   `PROVIDERS` and `mod.rs`.
+   `PROVIDERS` and `mod.rs`. The provider dialog picks the kind up through the registry. Add a
+   `"databricks" => None` arm in `tests/providers.rs` (~line 331).
 4. **Config wiring.** Update the kind enumerations in `config.rs` doc comments. Check the `wires`,
    `prompt_caching`, `cache_ttl` and `api_key_env` validation paths for `databricks`.
-5. **TUI.** Make sure `provider_dialog.rs` lists the kind and asks for the base URL (driven by
-   `BaseUrlPolicy`). Add a test row if the dialog has a per-kind table.
-6. **Guardian list.** Add a `databricks` entry for `system.ai.claude-haiku-5-5` to
-   `rust/fontaine-guardian/data/guardian_models.toml`, alongside the `opencode-go` Claude Haiku
-   entry, if that file's format scopes entries per kind.
-7. **Docs.** See Documentation.
-8. **Tests.** See Testing Strategy.
+5. **Min cacheable tokens.** Include `databricks` in `min_cacheable_tokens`
+   (`providers/cache_minimum.rs:27`), stripping `system.ai.` / `databricks-` before the Claude match.
+6. **Docs.** See Documentation.
+7. **Tests.** See Testing Strategy.
 
 ## Files to Modify
 
@@ -257,12 +264,11 @@ that is not `system.ai.*` (custom services) without a listing match.
 - `rust/fontaine-core/src/providers/mod.rs`
 - `rust/fontaine-core/src/providers/opencode_go.rs`
 - `rust/fontaine-core/src/providers/derived_facts.rs`
-- `rust/fontaine-core/src/providers/token_source.rs` (only if a fixed-key source is needed)
+- `rust/fontaine-core/src/providers/cache_minimum.rs`
 - `rust/fontaine-core/src/config.rs`
-- `rust/fontaine-tui/src/provider_dialog.rs` (only if a per-kind table needs a row)
-- `rust/fontaine-guardian/data/guardian_models.toml`
+- `rust/fontaine-core/tests/providers.rs`
 - `rust/fontaine-core/tests/databricks.rs` (new)
-- `docs/configuration.md`, `docs/guardian.md`, `docs/tui.md`
+- `docs/configuration.md`, `docs/guardian.md`, `docs/tui.md`, `docs/telemetry.md`, `docs/tools.md`
 - `CHANGELOG.md` (by the `pr` step)
 
 ## Trade-offs
@@ -279,9 +285,6 @@ that is not `system.ai.*` (custom services) without a listing match.
 - **UC model-services listing vs. `/ai-gateway/anthropic/v1/models`.** The Anthropic listing works
   but mixes in non-callable translator entries and lists no GPT/Gemini/open models. The UC listing is
   the provider-neutral source.
-- **Keeping `Eager` for Claude vs. switching everything to `BetaHeader`.** The live probe accepted
-  `Eager`, and the beta header is the legacy mechanism. `BetaHeader` stays as the fallback for the
-  translator path.
 
 ## Decisions
 
@@ -290,6 +293,12 @@ that is not `system.ai.*` (custom services) without a listing match.
 - Billing is `Unpriced`: workspace pricing is in DBUs and not in rig's catalog, so a spend cap is
   unavailable on this kind, as on `opencode-go`.
 - `databricks-` prefixed legacy ids are routed like `system.ai.` ones but are not listed.
+- The validated-guardian entry for this kind is generated post-merge by
+  `fontaine-evals --guardian live:<account>/system.ai.claude-haiku-5-5`.
+- rig never sends thinking-binding-controls on a non-Anthropic dialect; gateway pass-through is
+  tracked in #169.
+- #167 is addressed for this kind by `facts_as`; remaining guardian/scanner name handling is tracked
+  in #167/#168.
 
 ## Documentation
 
@@ -299,10 +308,13 @@ that is not `system.ai.*` (custom services) without a listing match.
   the `wires` override, custom services → Chat, `gpt-oss` → Chat). Replace the
   `/serving-endpoints/anthropic` `anthropic`+`bearer` example with a `databricks` account example,
   and keep one sentence saying `auth = "bearer"` on `anthropic` still serves other Bearer gateways.
-- `docs/guardian.md`: mention the `databricks` Claude Haiku entry next to the `opencode-go` one,
-  if step 6 adds it.
-- `docs/tui.md`: the provider dialog's base-URL sentence lists the kinds that ask for one; add
-  `databricks`.
+- `docs/configuration.md:176` (kind row), `:178` (`base_url` required list), `:182`
+  (`prompt_caching` default), `:186` (`auth` row: point the Databricks mention to the new kind),
+  `:272-276` (derived-facts paragraph): one-line update each.
+- `docs/telemetry.md:132-135`: add `databricks` to the unpriced kinds list.
+- `docs/guardian.md:675` (thinking-off on Chat), `:700-701` (no-catalog-match endpoints list):
+  one-line update each.
+- `docs/tools.md:450-452`: Databricks native search mention, one-line update.
 
 ## Testing Strategy
 
@@ -317,31 +329,31 @@ Unit tests (in `databricks.rs` / `derived_facts.rs` / `multi_wire.rs`):
   returned, de-dup.
 - `facts_as`: an exact Claude id gets a `max_output_tokens` and no pricing under the served id. A
   dashed GPT id derives from the dotted catalog entry. An unknown id gives `None`.
-- `OUTPUT_CAPS` is applied to a GLM id with no facts, and not to one that has facts.
-- `validate`: a base URL with a path is refused, and naming the key.
+- `facts_as`: the relabelled spec is declared `databricks`, so `completion("system.ai.claude-...").spec()`
+  returns the catalog `max_output_tokens` on Messages and Responses.
+- `OUTPUT_CAPS`: GLM with no user cap sends 25k, a lower user cap wins, and a non-GLM open model
+  sends 32k.
+- `validate`: a base URL with a path is refused, naming the key; a missing or empty `base_url` is
+  refused.
+- `facts_notice` returns the derived-facts notice for a derived id.
+- `Databricks.billing() == Billing::Unpriced`.
 
 Integration tests (`rust/fontaine-core/tests/databricks.rs`, wiremock stand-in for the workspace,
 modelled on `tests/opencode_go.rs`):
 
 - Each wire hits its path (`/ai-gateway/anthropic/v1/messages`, `/ai-gateway/openai/v1/responses`,
   `/ai-gateway/gemini/v1beta/models/...`, `/ai-gateway/mlflow/v1/chat/completions`) with
-  `Authorization: Bearer <key>`, and the Gemini request carries no `x-goog-api-key` (pins the live
-  401).
+  `Authorization: Bearer <key>`, the Gemini request carries no `x-goog-api-key` (pins the live
+  401), and the Claude request carries no `x-api-key`.
 - **Regression for the live `max_tokens` failure**: a `system.ai.claude-haiku-5-5` turn with no
   user cap reaches the mock with a numeric `max_tokens`.
 - The Claude request carries `cache_control` breakpoints by default, the `ttl: "1h"` form with
   `cache_ttl = "1h"`, and none with `prompt_caching = false`. The GPT, Gemini and Chat requests
   carry no `cache_control`.
-- Responses body has no `store`, `previous_response_id` or `background`. Chat body has no `store`
-  and no `tools[].function.strict` (the gateway rejects them, per the issue).
 - Claude tools carry `eager_input_streaming`. A non-Claude model forced onto Messages with
   `wires` carries the `fine-grained-tool-streaming` beta header and no per-tool field.
 - Listing pages through two mock pages, sending `parent=schemas/system.ai` and `page_size=100`.
 - The guardian handle on the kind marks only the static prefix (StaticPrefix scope).
-- Billing: a response's cost is dropped (unpriced).
-
-These run against mocks because the request shape is what Fontaine controls. The gateway's own
-acceptance is the manual check below.
 
 ## Manual Verification
 
@@ -352,16 +364,11 @@ Against a real workspace (needs a Databricks token, so not in CI). Run with an a
 1. `fontaine models` lists `dbx` with `system.ai.claude-*`, `system.ai.gpt-*` and open models, with
    no `anthropic-aigw-*` entries and no embedding models.
 2. `fontaine -p --model dbx/system.ai.claude-haiku-5-5 "Run 'echo hi' then say pong"` succeeds
-   with a tool call, and a second run in the same session reports non-zero
+   with a tool call, and a second run with `-c` in the same session reports non-zero
    `cache_read_input_tokens` in `--output-format json`.
 3. The same with `dbx/system.ai.gpt-5-6-luna` (Responses, tools) and `dbx/system.ai.glm-5-3`
    (Chat) succeeds.
 4. If the workspace serves a Gemini model, the same with `dbx/system.ai.<gemini model>` succeeds
    (the Bearer-on-Gemini path was only verified to be refused without it).
-
-## Open Questions
-
-- Which `anthropic-beta` values pass through on the Claude route (notably
-  `thinking-binding-controls-2026-08-01`, #169). The gateway Messages dialect does not send it, so
-  this does not block the kind.
-- Guardian and scanner behaviour on `system.ai.*` names (#167, #168): follow-up issues.
+5. A non-Claude model forced onto Messages with `wires` (e.g. `wires = { "system.ai.glm-5-3" = "messages" }`)
+   succeeds with a tool call, confirming `fine-grained-tool-streaming` pass-through.
