@@ -10,7 +10,7 @@ tools to the model, and turns MCP prompts into `/mcp__server__prompt` slash comm
 today (`docs/mcp.md:99`: "Only tools are used; resources and prompts are not."). This plan adds
 the two other MCP primitives with Fontaine's security posture:
 
-- **Resources** are read through two built-in tools, `ListMcpResources` and `ReadMcpResource`,
+- **Resources** are read through two built-in tools, `list_mcp_resources` and `read_mcp_resource`,
   both `RiskClass::Arbitrary`, so every read is floor-gated and guardian-judged, and the content
   flows through the result scanner like any other tool result. The TUI @-mention popup lists
   resource URIs from connected servers and inserts `@<uri>` verbatim into the prompt; the model
@@ -114,11 +114,11 @@ new `RegistryParams` field — an `Arc<dyn McpResourceQueries>` trait object imp
 runtime over the supervisor's connected servers — so the tools can reach live connections while
 the tools crate stays free of runtime types.
 
-- `ListMcpResources() -> [{server, uri, name, description, mime_type}]` across all connected
+- `list_mcp_resources() -> [{server, uri, name, description, mime_type}]` across all connected
   servers that declared the resources capability; empty (with an explanatory line) when none did.
   Read-only in spirit but `Arbitrary` in class: the *listing* is server-declared text and its
   read is a server round trip, so it takes the same gate as everything else MCP.
-- `ReadMcpResource(server: string, uri: string) -> contents` — reads one resource through
+- `read_mcp_resource(server: string, uri: string) -> contents` — reads one resource through
   `connection.peer().read_resource_once(...)` and renders text and blob contents (blobs noted with their
   mime type and size, matching how the model is told about images). Unknown server or uri is a
   tool error naming what is connected. Results are capped with the same `OutputLimits` policy as
@@ -146,7 +146,7 @@ model (the message is sent as typed; no submit-time expansion is added):
 - The system prompt (assembly in `prompt.rs` over `prompts/system_prompt.md`) gains a short
   section, fed from the runtime's resource listings at assembly time and present only while at
   least one resources-capable server is connected: an `@<uri>` token names an MCP resource, and
-  the model should call `ReadMcpResource` with the `server` from `ListMcpResources` to fetch its
+  the model should call `read_mcp_resource` with the `server` from `list_mcp_resources` to fetch its
   content (it must not pretend to know the content). This is the mechanism that keeps resource
   content behind the gate: the mention itself is inert text, and content crosses the permission
   pipeline only as a gated tool result.
@@ -195,9 +195,10 @@ naming stay uniform.
 
 The bare `/mcp` notice gains two counts per connected server, `N resources` / `M prompts`,
 next to the tool count (suppressed when zero — the common case stays one line). No new commands;
-`enable`/`disable` stay unoffered. Telemetry: `ListMcpResources`/`ReadMcpResource` are built-in
-tools with their own names; MCP prompt invocations record as user messages like skill runs.
-`hide_mcp_names` already covers third-party naming for server-supplied content. The CLI probes
+`enable`/`disable` stay unoffered. Telemetry:
+`list_mcp_resources`/`read_mcp_resource` are built-in tools with their own names; MCP prompt
+invocations record as user messages like skill runs. `hide_mcp_names` already covers
+third-party naming for server-supplied content. The CLI probes
 behind `fontaine mcp list`/`get` and `fontaine doctor` keep reporting tool connectivity/count
 only (`probe_server` returns a single tool count and nothing consumes the new listings), so no
 resource/prompt counts surface there.
@@ -209,7 +210,7 @@ resource/prompt counts surface there.
    `peer().list_all_prompts()`; extend `MetaTap` to forward `resources/list_changed` and
    `prompts/list_changed` notifications to a callback. Store listings on `Connected` (or in a
    side map keyed by server next to it — follow where `tool_names` lives).
-2. **fontaine-tools — resource tools.** Implement `ListMcpResources` and `ReadMcpResource`
+2. **fontaine-tools — resource tools.** Implement `list_mcp_resources` and `read_mcp_resource`
    against a `McpResourceQueries` trait (list servers+resources; read one resource), with
    `OutputLimits` capping on reads; add both to `builtins.rs` construction and two `Arbitrary`
    rows in `descriptor.rs`, adjusting the pinned `rows_are_pinned` count and the
@@ -258,9 +259,11 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
 - `rust/fontaine-core/src/agent/mcp.rs`, `mcp_supervisor.rs` — listing lifecycle, runtime surface
 - `rust/fontaine-core/src/agent.rs`, `agent/build.rs` — `RegistryParams` plumbing, mention slot
 - `rust/fontaine-core/src/tools.rs` — registry field
-- `rust/fontaine-core/tests/choke_point.rs` — registry count 12 → 14, the test rename, and the
+- `rust/fontaine-core/tests/choke_point.rs` — registry count 12 → 14, the test rename, the
   two new names in the `built_ins` array of
-  `the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools`
+  `the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools`, and an exemption
+  for the two new names in that test's word-filter assertion (which bans the words
+  `list`/`status`/`kill`/`interrupt`/`stop` in registered tool names)
 - `rust/fontaine-core/tests/extensions.rs` — `RegistryParams` construction gains the new field
   (it has no `Default`)
 - `rust/fontaine-core/src/prompt.rs`, `rust/fontaine-core/prompts/system_prompt.md` — system prompt section
@@ -269,6 +272,9 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
 - `rust/fontaine-tui/src/reports.rs`, `rust/fontaine-tui/src/ui/mcp.rs` — `/mcp` counts
   (`McpState::Connected` fields; `Ui::mcp_listing` forwarding)
 - `rust/fontaine/examples/repo_mcp_server.rs` — manual-verification server
+- `rust/fontaine-tools/tests/common/mod.rs` — the `env_with` helper's full-literal `BuiltinEnv`
+  construction gains the new field; `tests/result_pipeline.rs` inherits the change (one site
+  via `..env_with(...)`, one via `env_with` directly)
 - `rust/fontaine-tools/tests/mcp_common/server.rs` — `Double` gains resource + prompt support (step 7)
 - `docs/mcp.md`, `docs/tui.md`, `docs/architecture.md`, `docs/tools.md`, `CHANGELOG.md`
 
@@ -282,7 +288,7 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
 - **@-mention expansion at submit vs completion-only.** Inlining content at submit (Claude
   Code's model) needs a new expansion point that would inject server content into the user
   message outside the gate, breaking the recorded 2026-10-22 decision's rationale; routing the
-  mention through the gated `ReadMcpResource` tool keeps every byte of server content behind the
+  mention through the gated `read_mcp_resource` tool keeps every byte of server content behind the
   floor and guardian. Chosen: completion-only, model reads via tool.
 - **Always-registered vs on-connect resource tools.** Registering the pair only when a
   resources-capable server connects would keep small toolsets smaller, but toolset churn on MCP
@@ -293,7 +299,7 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
   could intercept and serve `prompts/*` off the wire like elicitation, but nothing about prompts
   needs to leave rmcp's request path (no mid-request user interaction), and `peer()` is the
   documented escape hatch. Chosen: `peer()`.
-- **`ListMcpResources` gated vs free.** A free listing tool would be quieter, but it is still a
+- **`list_mcp_resources` gated vs free.** A free listing tool would be quieter, but it is still a
   server round trip returning untrusted text; uniformity with the "MCP is never fast-pathed"
   invariant wins. Chosen: `Arbitrary`.
 
@@ -308,6 +314,10 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
   rather than failing the connect. rig-rmcp fails the whole connect when the initial
   `tools/list` fails, but tools are Fontaine's operative surface while resources and prompts are
   advisory listings.
+- The two MCP resource tools register under snake_case names `list_mcp_resources` and
+  `read_mcp_resource` (the descriptor-table and rule-name convention), not Claude Code's
+  PascalCase; the choke-point test's banned-word filter is adjusted to exempt them rather than
+  dropping `list` from the banned words.
 
 ## Documentation
 
@@ -315,7 +325,7 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
   the tools, gating, scanning, `@<uri>` mentions, `/mcp__server__prompt` syntax and `key=value`
   arguments; the "resources and prompts are not" sentence goes away.
 - `docs/tui.md`: file-mentions section gains resource mentions.
-- `docs/architecture.md`: the built-in tool list gains `ListMcpResources`/`ReadMcpResource`.
+- `docs/architecture.md`: the built-in tool list gains `list_mcp_resources`/`read_mcp_resource`.
 - `docs/tools.md`: the Built-in tools table gains the two rows (always registered, `arbitrary`
   class), and any wording about the fixed toolset is checked against them.
 - No new docs page; nothing added to `docs/SUMMARY.md`.
@@ -333,7 +343,10 @@ Unit and integration tests only; no live APIs (project rule). New coverage:
   `without_the_extension_the_registry_is_the_fourteen_built_ins` count moves 12 → 14 (renamed
   from `..._twelve_...`), and whose
   `the_registered_set_is_the_phase_two_table_plus_exactly_the_extension_tools` adds
-  `ListMcpResources`/`ReadMcpResource` to its hardcoded `built_ins` array; `slash_prompts()`/menu
+  `list_mcp_resources`/`read_mcp_resource` to its hardcoded `built_ins` array and exempts them
+  from its word-filter assertion (no registered name may contain
+  `list`/`status`/`kill`/`interrupt`/`stop` when split on `_`, which
+  `list_mcp_resources` would otherwise trip); `slash_prompts()`/menu
   data; `run_mcp_prompt`
   argument parsing (present, missing-required, malformed) with a fake connection; system prompt
   section present/absent by capability; scanner-stage invocation on a resource read result (a
@@ -345,7 +358,7 @@ Unit and integration tests only; no live APIs (project rule). New coverage:
   prompts`). Rendering checks run on `TestBackend`; anything touching the live area follows
   `tasks/design/testing.md`.
 - End-to-end smoke: headless `fontaine -p` against the in-repo example server (step 7) asserting
-  the tools list and a `ReadMcpResource` result through the fixture guardian — catches wiring a
+  the tools list and a `read_mcp_resource` result through the fixture guardian — catches wiring a
   unit test cannot see (registry → runtime → gate).
 
 ## Manual Verification
@@ -355,7 +368,7 @@ Unit and integration tests only; no live APIs (project rule). New coverage:
    `cargo run -p fontaine` in a trusted scratch workspace with both servers configured.
 2. Type `@` — the popup shows files and the server's resource URIs (labelled with the server);
    accept one; the message sends with `@<uri>` verbatim.
-3. Ask the model to read the mentioned resource — a `ReadMcpResource` call is gated (a prompt in
+3. Ask the model to read the mentioned resource — a `read_mcp_resource` call is gated (a prompt in
    `manual`, judged in `auto`) and its result reaches the model.
 4. `/` menu lists `mcp__<example>__<prompt>`; invoking it with correct `key=value` arguments
    starts a turn whose transcript shows the invocation and whose model message contains the
