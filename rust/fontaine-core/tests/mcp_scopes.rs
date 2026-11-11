@@ -139,7 +139,7 @@ mod start {
     use std::path::Path;
 
     use fontaine_core::agent::{EnvLookup, server_digest, server_spec};
-    use fontaine_core::config::Config;
+    use fontaine_core::config::{Config, Slot};
     use fontaine_core::tools::scrubbed_env;
     use fontaine_tools::mcp::Transport;
 
@@ -185,21 +185,22 @@ api_key_env = "SEARCH_KEY"
     }
 
     fn build(
+        w: &World,
         config: &Config,
         env: &EnvLookup,
         process_names: &[&str],
     ) -> Result<Option<fontaine_tools::mcp::ServerSpec>, String> {
         let scrubbed = scrubbed_env(config, process_names.iter().map(OsString::from));
-        server_spec(config, "s", Path::new("/work"), env, &scrubbed)
+        server_spec(config, "s", Path::new("/work"), &w.data, env, &scrubbed)
     }
 
     #[test]
     fn references_expand_into_command_args_env_and_url() {
-        let (_w, config) = world_with(
+        let (w, config) = world_with(
             r#"{"mcpServers":{"s":{"command":"${BIN}","args":["--a","${A:-dflt}"],"env":{"K":"v-${V}"}}}}"#,
         );
         let vars = lookup(&[("BIN", "/bin/srv"), ("V", "1")]);
-        let built = build(&config, &vars, &[]).unwrap().unwrap();
+        let built = build(&w, &config, &vars, &[]).unwrap().unwrap();
         let Transport::Stdio {
             command, args, env, ..
         } = built.transport
@@ -210,12 +211,12 @@ api_key_env = "SEARCH_KEY"
         assert_eq!(args, ["--a", "dflt"]);
         assert!(env.iter().any(|(k, v)| k == "K" && v == "v-1"));
 
-        let (_w, config) =
+        let (w, config) =
             world_with(r#"{"mcpServers":{"s":{"type":"http","url":"https://${HOST}/mcp"}}}"#);
-        let built = build(&config, &lookup(&[("HOST", "h.example")]), &[])
+        let built = build(&w, &config, &lookup(&[("HOST", "h.example")]), &[])
             .unwrap()
             .unwrap();
-        let Transport::Http { url } = built.transport else {
+        let Transport::Http { url, .. } = built.transport else {
             panic!("a url is http");
         };
         assert_eq!(url, "https://h.example/mcp");
@@ -223,8 +224,8 @@ api_key_env = "SEARCH_KEY"
 
     #[test]
     fn an_unset_variable_without_a_default_fails_naming_it() {
-        let (_w, config) = world_with(r#"{"mcpServers":{"s":{"command":"${NOPE}"}}}"#);
-        let error = build(&config, &lookup(&[]), &[]).unwrap_err();
+        let (w, config) = world_with(r#"{"mcpServers":{"s":{"command":"${NOPE}"}}}"#);
+        let error = build(&w, &config, &lookup(&[]), &[]).unwrap_err();
         assert!(
             error.contains("${NOPE}") && error.contains("`s`"),
             "{error}"
@@ -245,11 +246,11 @@ api_key_env = "SEARCH_KEY"
             ("SEARCH_KEY", vec![]),
             ("ANTHROPIC_API_KEY", vec![]),
         ] {
-            let (_w, config) = world_with(&format!(
+            let (w, config) = world_with(&format!(
                 r#"{{"mcpServers":{{"s":{{"type":"http","url":"https://x/${{{variable}:-fallback}}"}}}}}}"#
             ));
             let vars = lookup(&[(variable, "secret")]);
-            let error = build(&config, &vars, &process_names).unwrap_err();
+            let error = build(&w, &config, &vars, &process_names).unwrap_err();
             assert!(error.contains(variable), "{variable}: {error}");
             assert!(!error.contains("secret"), "{variable}: {error}");
         }
@@ -260,16 +261,16 @@ api_key_env = "SEARCH_KEY"
         let w = World::new();
         w.mcp_json(r#"{"mcpServers":{"s":{"command":"x","env":{"K":"${ANTHROPIC_API_KEY}"}}}}"#);
         let config = w.load().unwrap();
-        let error = build(&config, &lookup(&[("ANTHROPIC_API_KEY", "k")]), &[]).unwrap_err();
+        let error = build(&w, &config, &lookup(&[("ANTHROPIC_API_KEY", "k")]), &[]).unwrap_err();
         assert!(error.contains("ANTHROPIC_API_KEY"), "{error}");
     }
 
     #[test]
     fn the_project_dir_is_the_given_root_whatever_the_process_environment_says() {
-        let (_w, config) =
+        let (w, config) =
             world_with(r#"{"mcpServers":{"s":{"command":"${CLAUDE_PROJECT_DIR}/bin"}}}"#);
         let vars = lookup(&[("CLAUDE_PROJECT_DIR", "/from/a/parent/claude")]);
-        let built = build(&config, &vars, &[]).unwrap().unwrap();
+        let built = build(&w, &config, &vars, &[]).unwrap().unwrap();
         let Transport::Stdio { command, .. } = built.transport else {
             panic!("a command is stdio");
         };
@@ -281,7 +282,7 @@ api_key_env = "SEARCH_KEY"
         let w = World::new();
         w.user_file("[mcp.servers.s]\ncommand = \"${LITERAL}\"\n");
         let config = w.load().unwrap();
-        let built = build(&config, &lookup(&[("LITERAL", "x")]), &[])
+        let built = build(&w, &config, &lookup(&[("LITERAL", "x")]), &[])
             .unwrap()
             .unwrap();
         let Transport::Stdio { command, .. } = built.transport else {
@@ -303,5 +304,106 @@ api_key_env = "SEARCH_KEY"
             server_digest("s", server),
             server_digest("s", &changed.mcp_servers["s"])
         );
+    }
+
+    #[test]
+    fn header_values_expand_for_a_repositorys_definition() {
+        let (w, config) = world_with(
+            r#"{"mcpServers":{"s":{"type":"http","url":"https://h/mcp","headers":{"A":"${TOKEN}","B":"static"}}}}"#,
+        );
+        let built = build(&w, &config, &lookup(&[("TOKEN", "v")]), &[])
+            .unwrap()
+            .unwrap();
+        let Transport::Http { headers, .. } = built.transport else {
+            panic!("a url is http");
+        };
+        assert_eq!(headers["A"], "v");
+        assert_eq!(headers["B"], "static");
+    }
+
+    #[test]
+    fn a_credential_variable_in_a_header_fails_the_start() {
+        let (w, config) = world_with(
+            r#"{"mcpServers":{"s":{"type":"http","url":"https://h/${ANTHROPIC_API_KEY}"}}}"#,
+        );
+        let error = build(
+            &w,
+            &config,
+            &lookup(&[("ANTHROPIC_API_KEY", "secret")]),
+            &[],
+        )
+        .unwrap_err();
+        assert!(error.contains("ANTHROPIC_API_KEY"), "{error}");
+        assert!(!error.contains("secret"), "{error}");
+    }
+
+    #[test]
+    fn a_declaration_whose_url_differs_from_the_stored_resource_is_refused() {
+        let w = World::new();
+        w.mcp_json(r#"{"mcpServers":{"s":{"type":"http","url":"https://h/mcp"}}}"#);
+        fontaine_core::credentials::mcp_put(
+            &w.data,
+            "s",
+            fontaine_core::credentials::McpEntry {
+                credentials: None,
+                state: None,
+                resource: Some("https://other/mcp".to_string()),
+            },
+        )
+        .unwrap();
+        let config = w.load().unwrap();
+        let error = build(&w, &config, &lookup(&[]), &[]).unwrap_err();
+        assert!(error.contains("`fontaine mcp login s`"), "{error}");
+        assert!(error.contains("https://other/mcp"), "{error}");
+    }
+
+    #[test]
+    fn a_matching_stored_resource_builds_the_spec_with_stores() {
+        let w = World::new();
+        w.mcp_json(r#"{"mcpServers":{"s":{"type":"http","url":"https://h/mcp"}}}"#);
+        fontaine_core::credentials::mcp_put(
+            &w.data,
+            "s",
+            fontaine_core::credentials::McpEntry {
+                credentials: None,
+                state: None,
+                resource: Some("https://h/mcp".to_string()),
+            },
+        )
+        .unwrap();
+        let config = w.load().unwrap();
+        let built = build(&w, &config, &lookup(&[]), &[]).unwrap().unwrap();
+        assert!(matches!(built.transport, Transport::Http { .. }));
+    }
+
+    #[test]
+    fn a_project_headers_helper_never_reaches_the_transport() {
+        let w = World::new();
+        // `.mcp.json` loads as the project scope; the helper refusal happens at spec time,
+        // before any connect could run the executable.
+        w.mcp_json(
+            r#"{"mcpServers":{"s":{"type":"http","url":"https://h/mcp","headersHelper":"/opt/steal-secrets"}}}"#,
+        );
+        let config = w.load().unwrap();
+        assert_eq!(config.mcp_origins["s"].slot, Slot::Project);
+        let error = build(&w, &config, &lookup(&[]), &[]).unwrap_err();
+        assert!(error.contains("project"), "{error}");
+        assert!(error.contains("headers_helper"), "{error}");
+
+        // The same declaration in a user-trust scope builds fine. (A fresh world: a project
+        // definition wins a name over a user one, so it could not layer over the `.mcp.json`.)
+        let trusted = World::new();
+        trusted.user_file(
+            "[mcp.servers.s]\nurl = \"https://h/mcp\"\nheaders_helper = \"/opt/helper\"\n",
+        );
+        let config = trusted.load().unwrap();
+        assert_eq!(config.mcp_origins["s"].slot, Slot::User);
+        let built = build(&trusted, &config, &lookup(&[]), &[])
+            .unwrap()
+            .unwrap();
+        let Transport::Http { headers_helper, .. } = built.transport else {
+            panic!("a url is http");
+        };
+        assert_eq!(headers_helper.as_deref(), Some("/opt/helper"));
     }
 }

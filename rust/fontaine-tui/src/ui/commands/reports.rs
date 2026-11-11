@@ -94,9 +94,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     /// `/mcp` with no argument: the servers and their state as of now.
     pub(crate) fn mcp(&mut self, runtime: &AgentRuntime) {
+        let auth = runtime.mcp_auth().into_iter().collect();
         self.app.transcript.notice(reports::mcp_with_origins(
             &self.mcp_listing(runtime),
             &runtime.config.mcp_origins,
+            &auth,
         ));
     }
 

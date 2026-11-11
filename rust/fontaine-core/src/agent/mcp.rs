@@ -26,7 +26,8 @@ use super::mcp_supervisor::{
     MCP_DRAIN_BOUND, McpServerState, ReconnectTarget, ServerConnector, ServerSlot, Supervisor,
 };
 use super::{AgentRuntime, EnvLookup};
-use crate::config::{Config, McpServer};
+use crate::config::{Config, McpServer, Origin, Slot};
+use crate::mcp_auth::McpAuth;
 use crate::mcp_json::{StartContext, expand_at_start};
 use crate::permissions::Approver;
 use crate::runtime_error::RuntimeError;
@@ -63,9 +64,16 @@ pub fn server_digest(name: &str, server: &McpServer) -> String {
         "url": server.url,
     });
     // Only when set, so digests of definitions that never expand stay as approved; an expanding
-    // definition needs its own approval because `${VAR}` values reach the server.
+    // definition needs its own approval because `${VAR}` values reach the server. Headers alter
+    // what is sent to the remote just as much, so they join the digest the same way.
     if server.expand {
         canonical["expand"] = json!(true);
+    }
+    if let Some(headers) = &server.headers {
+        canonical["headers"] = json!(headers);
+    }
+    if let Some(helper) = &server.headers_helper {
+        canonical["headers_helper"] = json!(helper);
     }
     let bytes =
         serde_jcs::to_vec(&canonical).unwrap_or_else(|_| canonical.to_string().into_bytes());
@@ -108,7 +116,8 @@ fn server_description(server: &McpServer) -> String {
             .iter()
             .chain(server.args.iter().flatten())
             .chain(server.env.iter().flat_map(|env| env.values()))
-            .chain(server.url.iter());
+            .chain(server.url.iter())
+            .chain(server.headers.iter().flat_map(|headers| headers.values()));
         for text in texts {
             for name in crate::mcp_json::references(text) {
                 // Taken from the session root, never read from the environment.
@@ -121,6 +130,9 @@ fn server_description(server: &McpServer) -> String {
     let mut line = server.command_line();
     if !variables.is_empty() && !line.is_empty() {
         line.push_str(&format!("\nenvironment: {}", variables.join(", ")));
+    }
+    if let Some(helper) = &server.headers_helper {
+        line.push_str(&format!("\nheaders helper: {helper}"));
     }
     line
 }
@@ -217,7 +229,60 @@ fn expanded(
         })
         .transpose()?;
     out.url = server.url.as_ref().map(one).transpose()?;
+    out.headers = server
+        .headers
+        .as_ref()
+        .map(|headers| {
+            headers
+                .iter()
+                .map(|(k, v)| Ok((k.clone(), one(v)?)))
+                .collect::<Result<BTreeMap<_, _>, String>>()
+        })
+        .transpose()?;
     Ok(out)
+}
+
+/// Why a `headers_helper` cannot run for this server, if it cannot. The helper is an executable
+/// the declaration names, so it runs only for scopes the user controls: refused for the project
+/// scope or a tracked project-local file, where a repository Fontaine merely opened could
+/// otherwise make Fontaine run a script.
+pub fn headers_helper_refusal(name: &str, server: &McpServer, origin: Origin) -> Option<String> {
+    let repository_defined =
+        origin.slot == Slot::Project || (origin.is_project() && !origin.user_trust);
+    if server.headers_helper.is_some() && repository_defined {
+        Some(format!(
+            "MCP server `{name}` sets `headers_helper` in the {} scope, which Fontaine refuses to run: a repository must not make Fontaine execute a script; move the server to a user-trust scope or drop `headers_helper`",
+            origin.slot.label()
+        ))
+    } else {
+        None
+    }
+}
+
+/// The configured server `name` as it will be started: the `headers_helper` refusal applied and,
+/// for a definition that expands, its `${VAR}` references resolved. `Ok(None)` when unknown.
+pub fn resolved_server(
+    config: &Config,
+    name: &str,
+    root: &Path,
+    env: &EnvLookup,
+    scrubbed: &[OsString],
+) -> Result<Option<McpServer>, String> {
+    let Some(defined) = config.mcp_servers.get(name) else {
+        return Ok(None);
+    };
+    let origin = config.mcp_origins.get(name).copied().unwrap_or_default();
+    if let Some(refusal) = headers_helper_refusal(name, defined, origin) {
+        return Err(refusal);
+    }
+    if defined.expand {
+        let is_credential = credential_check(config, scrubbed);
+        expanded(defined, root, env, &is_credential)
+            .map(Some)
+            .map_err(|e| format!("MCP server `{name}`: {e}"))
+    } else {
+        Ok(Some(defined.clone()))
+    }
 }
 
 /// How to start the configured server `name` with its working directory at `root`; `Ok(None)`
@@ -228,18 +293,12 @@ pub fn server_spec(
     config: &Config,
     name: &str,
     root: &Path,
+    data_dir: &Path,
     env: &EnvLookup,
     scrubbed: &[OsString],
 ) -> Result<Option<ServerSpec>, String> {
-    let Some(defined) = config.mcp_servers.get(name) else {
+    let Some(server) = resolved_server(config, name, root, env, scrubbed)? else {
         return Ok(None);
-    };
-    let server = if defined.expand {
-        let is_credential = credential_check(config, scrubbed);
-        expanded(defined, root, env, &is_credential)
-            .map_err(|e| format!("MCP server `{name}`: {e}"))?
-    } else {
-        defined.clone()
     };
     let transport = match (&server.command, &server.url) {
         (Some(command), _) => Transport::Stdio {
@@ -249,7 +308,33 @@ pub fn server_spec(
             env: merged_server_env(tools::subprocess_env(config), &server.env),
             cwd: root.to_path_buf(),
         },
-        (None, Some(url)) => Transport::Http { url: url.clone() },
+        (None, Some(url)) => {
+            // Stored tokens are bound to the URL they were issued for; a declaration that does
+            // not match fails closed rather than receive a token issued to another server.
+            match crate::mcp_auth::stored_resource(data_dir, name) {
+                Ok(Some(resource)) if resource != *url => {
+                    return Err(format!(
+                        "MCP server `{name}` is declared at `{url}` but its stored credentials were issued for `{resource}`; run `fontaine mcp login {name}` for this URL"
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    return Err(format!(
+                        "MCP server `{name}`: cannot read the stored credentials: {}",
+                        chain(&e)
+                    ));
+                }
+            }
+            Transport::Http {
+                url: url.clone(),
+                headers: server.headers.clone().unwrap_or_default(),
+                headers_helper: server.headers_helper.clone(),
+                credentials: Arc::new(crate::mcp_auth::FileCredentialStore::new(
+                    data_dir, name, url,
+                )),
+                states: Arc::new(crate::mcp_auth::FileStateStore::new(data_dir, name)),
+            }
+        }
         (None, None) => return Ok(None),
     };
     Ok(Some(ServerSpec {
@@ -470,6 +555,7 @@ impl AgentRuntime {
             &self.config,
             name,
             &self.primary_root(),
+            &self.setup.data_dir,
             &self.setup.env,
             &self.setup.scrub_env,
         ) {
@@ -548,6 +634,7 @@ impl AgentRuntime {
                 &self.config,
                 &plan.name,
                 &root,
+                &self.setup.data_dir,
                 &self.setup.env,
                 &self.setup.scrub_env,
             ) {
@@ -565,6 +652,50 @@ impl AgentRuntime {
     /// The state of each MCP server the session attempted, by name.
     pub fn mcp_states(&self) -> Vec<(String, McpServerState)> {
         self.mcp.states()
+    }
+
+    /// The auth status of each configured server, for the `/mcp` listing's auth column: `n/a`
+    /// for a stdio server, `ok` when usable credentials are stored, else `required`.
+    pub fn mcp_auth(&self) -> Vec<(String, McpAuth)> {
+        let root = self.primary_root();
+        self.config
+            .mcp_servers
+            .iter()
+            .map(|(name, server)| {
+                let auth = if server.url.is_none() {
+                    McpAuth::Na
+                } else if crate::mcp_auth::has_credentials(&self.setup.data_dir, name) {
+                    // Credentials issued for another URL are refused at connect time, so they
+                    // are not a usable login for this declaration.
+                    let url = resolved_server(
+                        &self.config,
+                        name,
+                        &root,
+                        &self.setup.env,
+                        &self.setup.scrub_env,
+                    )
+                    .ok()
+                    .flatten()
+                    .and_then(|s| s.url);
+                    match crate::mcp_auth::stored_resource(&self.setup.data_dir, name) {
+                        Ok(Some(resource)) if url.as_deref().is_some_and(|u| u != resource) => {
+                            McpAuth::Required
+                        }
+                        Ok(_) => McpAuth::Ok,
+                        Err(e) => {
+                            self.approver.warn(&format!(
+                                "MCP server `{name}`: cannot read the stored credentials: {}",
+                                chain(&e)
+                            ));
+                            McpAuth::Required
+                        }
+                    }
+                } else {
+                    McpAuth::Required
+                };
+                (name.clone(), auth)
+            })
+            .collect()
     }
 
     /// Restarts MCP servers by hand, with no backoff. Only a server the session attempted has a
@@ -606,6 +737,7 @@ impl AgentRuntime {
                 &self.config,
                 name,
                 &self.primary_root(),
+                &self.setup.data_dir,
                 &self.setup.env,
                 &self.setup.scrub_env,
             )
@@ -629,7 +761,10 @@ impl AgentRuntime {
 
 #[cfg(test)]
 mod tests {
-    use super::{McpServerPlan, env_key_matches, not_attempted, output_limits, server_digest};
+    use super::{
+        McpServerPlan, env_key_matches, headers_helper_refusal, not_attempted, output_limits,
+        server_digest,
+    };
     use std::cell::RefCell;
     use std::ffi::OsString;
     use std::path::Path;
@@ -674,6 +809,105 @@ mod tests {
             .map(|b| format!("{b:02x}"))
             .collect();
         assert_eq!(plain, old);
+    }
+
+    #[test]
+    fn headers_and_the_helper_change_the_digest_only_when_set() {
+        let mut server = crate::mcp_config::http("https://h/mcp");
+        let plain = server_digest("srv", &server);
+        server.headers = Some(std::collections::BTreeMap::from([(
+            "Authorization".to_string(),
+            "Bearer t".to_string(),
+        )]));
+        assert_ne!(plain, server_digest("srv", &server));
+        let with_headers = server_digest("srv", &server);
+        server.headers_helper = Some("/opt/helper".to_string());
+        assert_ne!(with_headers, server_digest("srv", &server));
+        // Unset again: the digest returns to the shape without the keys.
+        let mut bare = crate::mcp_config::http("https://h/mcp");
+        bare.headers = None;
+        bare.headers_helper = None;
+        assert_eq!(plain, server_digest("srv", &bare));
+    }
+
+    #[test]
+    fn the_headers_helper_is_refused_only_for_repository_defined_servers() {
+        let mut server = crate::mcp_config::http("https://h/mcp");
+        server.headers_helper = Some("helper".to_string());
+        let origin = |slot, user_trust| crate::config::Origin { slot, user_trust };
+        for slot in [
+            crate::config::Slot::Managed,
+            crate::config::Slot::Cli,
+            crate::config::Slot::Local,
+            crate::config::Slot::ProjectLocal,
+            crate::config::Slot::User,
+            crate::config::Slot::Plugin,
+        ] {
+            assert!(
+                headers_helper_refusal("srv", &server, origin(slot, true)).is_none(),
+                "{slot:?} is a user-trust scope"
+            );
+        }
+        assert!(
+            headers_helper_refusal(
+                "srv",
+                &server,
+                origin(crate::config::Slot::ProjectLocal, false)
+            )
+            .is_some(),
+            "a tracked project-local file is repository-controlled"
+        );
+        let project = origin(crate::config::Slot::Project, false);
+        let refusal =
+            headers_helper_refusal("srv", &server, project).expect("project scope is refused");
+        assert!(refusal.contains("project"), "{refusal}");
+        assert!(refusal.contains("`srv`"), "{refusal}");
+        let mut no_helper = server.clone();
+        no_helper.headers_helper = None;
+        assert!(headers_helper_refusal("srv", &no_helper, project).is_none());
+    }
+
+    #[test]
+    fn header_values_expand_like_the_url_for_a_repositorys_definition() {
+        let env = |name: &str| (name == "SET").then(|| OsString::from("v"));
+        let credential = |name: &str| name == "KEY";
+        let cx = crate::mcp_json::StartContext {
+            project_dir: Path::new("/root"),
+            env: &env,
+            is_credential: &credential,
+        };
+        assert!(
+            crate::mcp_json::expand_at_start("Bearer ${SET}", &cx)
+                .unwrap()
+                .contains('v')
+        );
+        let err = crate::mcp_json::expand_at_start("Bearer ${KEY}", &cx).unwrap_err();
+        assert!(err.contains("credential"), "{err}");
+    }
+
+    #[test]
+    fn a_login_resolves_a_variable_url_the_way_a_connect_does() {
+        let mut config = crate::config::Config::defaults("/root".into());
+        let mut server = crate::mcp_config::http("https://${HOST}/mcp");
+        server.expand = true;
+        config.mcp_servers.insert("srv".to_string(), server);
+        let env: super::EnvLookup =
+            std::sync::Arc::new(|name| (name == "HOST").then(|| OsString::from("h.example")));
+
+        let resolved = super::resolved_server(&config, "srv", Path::new("/root"), &env, &[])
+            .unwrap()
+            .expect("the server is configured");
+        assert_eq!(resolved.url.as_deref(), Some("https://h.example/mcp"));
+
+        let unset: super::EnvLookup = std::sync::Arc::new(|_| None);
+        let err =
+            super::resolved_server(&config, "srv", Path::new("/root"), &unset, &[]).unwrap_err();
+        assert!(err.contains("HOST"), "{err}");
+        assert!(
+            super::resolved_server(&config, "nope", Path::new("/root"), &env, &[])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

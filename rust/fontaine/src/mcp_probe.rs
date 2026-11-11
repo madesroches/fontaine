@@ -76,7 +76,7 @@ pub(crate) async fn probe_servers(
                     McpGate::Start if !connect => {
                         McpState::NotStarted("probe skipped (--connect=no)".into())
                     }
-                    McpGate::Start => probe(config, name, &env, scrubbed).await,
+                    McpGate::Start => probe(config, dirs, name, &env, scrubbed).await,
                 };
                 ProbedServer {
                     name: name.clone(),
@@ -90,11 +90,12 @@ pub(crate) async fn probe_servers(
 
 async fn probe(
     config: &Config,
+    dirs: &Dirs,
     name: &str,
     env: &fontaine_core::agent::EnvLookup,
     scrubbed: &[std::ffi::OsString],
 ) -> McpState {
-    let spec = match server_spec(config, name, &config.workspace, env, scrubbed) {
+    let spec = match server_spec(config, name, &config.workspace, &dirs.data, env, scrubbed) {
         Ok(Some(spec)) => spec,
         Ok(None) => return McpState::Failed("names neither a command nor a URL".into()),
         Err(error) => return McpState::Failed(error),

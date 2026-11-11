@@ -98,11 +98,6 @@ fn parse_entry(
             return Ok(None);
         }
     }
-    if object.contains_key("headers") {
-        warnings.push(format!(
-            "MCP server `{name}` sets `headers`, which Fontaine does not support yet (#32); it connects without them"
-        ));
-    }
     let (at_start, mut expand) = match expansion {
         Expansion::Now(f) => (false, Some(f)),
         Expansion::AtStart => (true, None),
@@ -136,6 +131,33 @@ fn parse_entry(
             let text = value
                 .as_str()
                 .ok_or_else(|| format!("the `.mcp.json` entry `{name}` has a non-string `url`"))?;
+            Some(expand_text(text))
+        }
+    };
+    let headers = match object.get("headers") {
+        None => None,
+        Some(value) => {
+            let map = value.as_object().ok_or_else(|| {
+                format!("the `.mcp.json` entry `{name}` has a `headers` that is not an object")
+            })?;
+            let mut out = BTreeMap::new();
+            for (key, spec) in map {
+                let text = spec.as_str().ok_or_else(|| {
+                    format!(
+                        "the `.mcp.json` entry `{name}` has a non-string `headers` value for `{key}`"
+                    )
+                })?;
+                out.insert(key.clone(), expand_text(text));
+            }
+            Some(out)
+        }
+    };
+    let headers_helper = match object.get("headersHelper") {
+        None => None,
+        Some(value) => {
+            let text = value.as_str().ok_or_else(|| {
+                format!("the `.mcp.json` entry `{name}` has a non-string `headersHelper`")
+            })?;
             Some(expand_text(text))
         }
     };
@@ -179,12 +201,17 @@ fn parse_entry(
         ));
     }
     match (command, url) {
+        (Some(_), None) if headers.is_some() || headers_helper.is_some() => Err(format!(
+            "the `.mcp.json` entry `{name}` sets `headers` or `headersHelper`, which apply to http servers only"
+        )),
         (Some(command), None) => Ok(Some(McpServer {
             command: Some(command),
             args,
             env_vars: None,
             url: None,
             env,
+            headers: None,
+            headers_helper: None,
             expand: at_start,
         })),
         (None, Some(_)) if env.is_some() || object.contains_key("args") => Err(format!(
@@ -196,6 +223,8 @@ fn parse_entry(
             env_vars: None,
             url: Some(url),
             env: None,
+            headers,
+            headers_helper,
             expand: at_start,
         })),
         (Some(_), Some(_)) => Err(format!(
@@ -377,13 +406,50 @@ mod tests {
     }
 
     #[test]
-    fn headers_warn_and_keep_the_server() {
+    fn headers_and_headers_helper_parse_for_http_servers() {
         let parsed = at_start(
-            r#"{"mcpServers":{"h":{"type":"http","url":"https://h","headers":{"A":"b"}}}}"#,
+            r#"{"mcpServers":{"h":{
+                "type":"http","url":"https://h",
+                "headers":{"A":"b","T":"${TOKEN}"},
+                "headersHelper":"/opt/helper"
+            }}}"#,
         );
         assert_eq!(parsed.servers.len(), 1);
-        assert_eq!(parsed.warnings.len(), 1);
-        assert!(parsed.warnings[0].contains("#32"));
+        assert!(parsed.problems.is_empty());
+        assert!(parsed.warnings.is_empty());
+        let server = &parsed.servers[0].1;
+        assert_eq!(
+            server.headers.as_ref().unwrap()["T"],
+            "${TOKEN}",
+            "a repository's references stay raw"
+        );
+        assert_eq!(server.headers_helper.as_deref(), Some("/opt/helper"));
+    }
+
+    #[test]
+    fn headers_on_a_stdio_server_are_a_problem() {
+        let parsed =
+            at_start(r#"{"mcpServers":{"s":{"type":"stdio","command":"x","headers":{"A":"b"}}}}"#);
+        assert!(parsed.servers.is_empty());
+        assert_eq!(parsed.problems.len(), 1);
+        assert!(
+            parsed.problems[0].contains("`headers`"),
+            "{}",
+            parsed.problems[0]
+        );
+        assert!(parsed.problems[0].contains("http servers only"));
+    }
+
+    #[test]
+    fn a_plugin_parse_expands_headers_now() {
+        let mut expander = |text: &str| text.replace("${X}", "1");
+        let parsed = parse(
+            r#"{"mcpServers":{"h":{"type":"http","url":"https://h","headers":{"A":"${X}"}}}}"#,
+            Expansion::Now(&mut expander),
+        )
+        .unwrap();
+        assert_eq!(parsed.servers[0].1.headers.as_ref().unwrap()["A"], "1");
+        assert!(!parsed.servers[0].1.expand);
     }
 
     #[test]

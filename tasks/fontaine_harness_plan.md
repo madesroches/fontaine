@@ -854,7 +854,10 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-09: (#31) The repository's `.mcp.json` is read as project scope alongside `.fontaine/settings.toml` `[mcp.servers]`, and the TOML wins a name collision with a warning.
 - 2026-11-09: (#31) Project `.mcp.json` `${VAR}` references are expanded when the server starts, never into a credential variable (the set `tools::scrubbed_env` withholds: account and telemetry keys, the scanner HF token, `MICROMEGAS_*`, OTLP headers; plus the web-search key and the well-known provider variables); such a reference fails that server. Claude Code expands any variable. Reason: a headless run starts project servers without asking.
 - 2026-11-09: (#31) An unset `${VAR}` with no default fails only that server's start (Claude Code fails the config parse).
-- 2026-11-09: (#31) `fontaine mcp add` has `--env-var NAME` for the scrub's pass-through. It has no `-H`, `sse` transport, OAuth flags or `add-json` yet (#32, #36).
+- 2026-11-09: (#31) `fontaine mcp add` has `--env-var NAME` for the scrub's pass-through. It has `-H`/`--header` (http only) and no `sse` transport or `add-json` yet (#36); OAuth is `fontaine mcp login`, not `add` flags (#32).
+- 2026-11-10: (#32) `fontaine mcp add` drops Claude Code's `--client-id`, `--client-secret` and `--callback-port` stubs, which never worked; the callback port is fixed at 3111.
+- 2026-11-10: (#32) `fontaine mcp login` prints the authorization URL instead of opening a browser: it must work over SSH and in containers.
+- 2026-11-10: (#32) A project-scope `headersHelper` is refused (Claude Code runs it after a trust prompt): it is an executable that mints credentials, and project scope can only tighten.
 - 2026-11-09: (#31) `fontaine mcp get` masks `env` values as `***` (Claude Code prints them): the output lands in terminals and logs.
 - 2026-11-09: (#31) `fontaine mcp list` and `get` probe only what `fontaine doctor` would, so an unapproved repository server shows as pending and is never started by the CLI.
 

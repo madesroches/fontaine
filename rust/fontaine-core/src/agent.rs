@@ -80,7 +80,10 @@ mod setup;
 pub use advisor::ReportedAdvisor;
 pub(crate) use build::apply_common;
 use build::{Parts, build_agent};
-pub use mcp::{McpOutcome, McpServerPlan, mcp_plan, probe_server, server_digest, server_spec};
+pub use mcp::{
+    McpOutcome, McpServerPlan, headers_helper_refusal, mcp_plan, probe_server, resolved_server,
+    server_digest, server_spec,
+};
 pub use mcp_supervisor::{
     McpServerState, RECONNECT_ATTEMPTS as MCP_RECONNECT_ATTEMPTS, ReconnectTarget,
 };

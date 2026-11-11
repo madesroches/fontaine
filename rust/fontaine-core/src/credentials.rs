@@ -21,6 +21,30 @@ struct File {
     telemetry: Option<Entry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     websearch: Option<Entry>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    mcp: BTreeMap<String, McpEntry>,
+}
+
+/// One streamable HTTP MCP server's OAuth material. `credentials` and `state` are rmcp's
+/// `StoredCredentials` and `StoredAuthorizationState` serialized as opaque JSON strings, so this
+/// file's parsing stays decoupled from the pinned rmcp version and a newer one can migrate on
+/// read. `resource` is the URL the credentials were issued for: a declaration whose URL differs
+/// never receives the token.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+}
+
+impl McpEntry {
+    pub fn is_empty(&self) -> bool {
+        self.credentials.is_none() && self.state.is_none() && self.resource.is_none()
+    }
 }
 
 /// Exactly one of the two is set; [`check`] enforces it after parsing.
@@ -130,6 +154,11 @@ impl Credentials {
             .as_ref()
             .and_then(|e| e.api_key.as_deref())
             .filter(|k| !k.is_empty())
+    }
+
+    /// Every stored MCP server entry, for scrubbing their tokens from reports.
+    pub fn mcp_entries(&self) -> impl Iterator<Item = &McpEntry> {
+        self.0.mcp.values()
     }
 
     /// Kept apart from accounts, like the telemetry key.
@@ -258,6 +287,86 @@ pub fn remove(data_dir: &Path, name: &str) -> Result<bool, ConfigError> {
         Err(source) => return Err(ConfigError::Read { path, source }),
     };
     if file.accounts.remove(name).is_none() {
+        return Ok(false);
+    }
+    write_file(data_dir, &path, &file)?;
+    Ok(true)
+}
+
+/// The MCP server `name`'s OAuth entry, if one is stored. Takes no lock: writers replace the file
+/// atomically, so a read sees a whole file, and a refresh holding the lock across a network call
+/// must not stall read-only callers. Not for read-modify-write; use [`mcp_get_locked`] there.
+pub fn mcp_get(data_dir: &Path, name: &str) -> Result<Option<McpEntry>, ConfigError> {
+    read_mcp_entry(data_dir, name)
+}
+
+/// [`mcp_get`] for a caller that already holds the lock, which it proves by passing it.
+pub fn mcp_get_locked(
+    data_dir: &Path,
+    name: &str,
+    _lock: &Lock,
+) -> Result<Option<McpEntry>, ConfigError> {
+    read_mcp_entry(data_dir, name)
+}
+
+fn read_mcp_entry(data_dir: &Path, name: &str) -> Result<Option<McpEntry>, ConfigError> {
+    let path = credentials_path(data_dir);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(ConfigError::Read { path, source }),
+    };
+    Ok(parse(&text, path)?.mcp.get(name).cloned())
+}
+
+/// Stores `entry` as the MCP server `name`'s OAuth entry, keeping every other entry. An
+/// unparseable existing file is a config error and is left untouched.
+pub fn mcp_put(data_dir: &Path, name: &str, entry: McpEntry) -> Result<(), ConfigError> {
+    let lock = lock(data_dir)?;
+    mcp_put_locked(data_dir, name, entry, &lock)
+}
+
+/// [`mcp_put`] for a caller that already holds the lock, which it proves by passing it.
+pub fn mcp_put_locked(
+    data_dir: &Path,
+    name: &str,
+    entry: McpEntry,
+    _lock: &Lock,
+) -> Result<(), ConfigError> {
+    let path = credentials_path(data_dir);
+    let read_err = |source| ConfigError::Read {
+        path: path.clone(),
+        source,
+    };
+    let mut file = match std::fs::read_to_string(&path) {
+        Ok(text) => parse(&text, path.clone())?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => File::default(),
+        Err(e) => return Err(read_err(e)),
+    };
+    if entry.is_empty() {
+        file.mcp.remove(name);
+    } else {
+        file.mcp.insert(name.to_string(), entry);
+    }
+    write_file(data_dir, &path, &file)
+}
+
+/// Removes the MCP server `name`'s OAuth entry and keeps every other one. `false` when nothing
+/// was stored. An unparseable existing file is a config error and is left untouched.
+pub fn mcp_remove(data_dir: &Path, name: &str) -> Result<bool, ConfigError> {
+    let lock = lock(data_dir)?;
+    mcp_remove_locked(data_dir, name, &lock)
+}
+
+/// [`mcp_remove`] for a caller that already holds the lock, which it proves by passing it.
+pub fn mcp_remove_locked(data_dir: &Path, name: &str, _lock: &Lock) -> Result<bool, ConfigError> {
+    let path = credentials_path(data_dir);
+    let mut file = match std::fs::read_to_string(&path) {
+        Ok(text) => parse(&text, path.clone())?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => return Err(ConfigError::Read { path, source }),
+    };
+    if file.mcp.remove(name).is_none() {
         return Ok(false);
     }
     write_file(data_dir, &path, &file)?;

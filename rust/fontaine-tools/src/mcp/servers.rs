@@ -1,7 +1,9 @@
 //! Starting MCP servers: a child process over stdio or a streamable-HTTP endpoint.
 
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error as StdError;
 use std::ffi::OsString;
+use std::fmt;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -12,8 +14,10 @@ use std::time::Duration;
 use crate::error_chain::chain;
 use crate::guarded::Guard;
 use crate::lock::lock_recovering;
+use crate::mcp::auth;
 use crate::result_pipeline::ToolOutcome;
 use crate::tls::{LoadedNetwork, build_client};
+use http::{HeaderName, HeaderValue};
 use rig_core::tool::ManagedToolSink;
 use rig_rmcp::{McpClientError, McpClientHandler, McpConnection};
 use rmcp::ServiceError;
@@ -22,6 +26,9 @@ use rmcp::model::{
     Implementation, ProtocolVersion,
 };
 use rmcp::service::ClientInitializeError;
+use rmcp::transport::auth::{
+    AuthClient, AuthError, AuthorizationManager, CredentialStore, StateStore,
+};
 use rmcp::transport::streamable_http_client::{
     StreamableHttpClientTransportConfig, StreamableHttpError,
 };
@@ -39,7 +46,7 @@ const TARGET: &str = "fontaine::telemetry";
 /// its own.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub enum Transport {
     Stdio {
         command: String,
@@ -54,7 +61,48 @@ pub enum Transport {
     },
     Http {
         url: String,
+        /// Static headers for the protocol requests; never sent to an authorization server.
+        headers: BTreeMap<String, String>,
+        /// An executable run at connect time; its `KEY: VALUE` stdout lines become headers,
+        /// overriding static headers of the same name.
+        headers_helper: Option<String>,
+        /// The OAuth stores the transport attaches to its authorization manager; built in
+        /// fontaine-core, where the credentials file lives.
+        credentials: Arc<dyn CredentialStore>,
+        states: Arc<dyn StateStore>,
     },
+}
+
+impl fmt::Debug for Transport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Transport::Stdio {
+                command,
+                args,
+                env_vars,
+                env,
+                cwd,
+            } => f
+                .debug_struct("Stdio")
+                .field("command", command)
+                .field("args", args)
+                .field("env_vars", env_vars)
+                .field("env", env)
+                .field("cwd", cwd)
+                .finish(),
+            Transport::Http {
+                url,
+                headers,
+                headers_helper,
+                ..
+            } => f
+                .debug_struct("Http")
+                .field("url", url)
+                .field("headers", &headers.keys().collect::<Vec<_>>())
+                .field("headers_helper", headers_helper)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -171,6 +219,72 @@ impl McpError {
             Some(Box::new(source)),
         )
     }
+
+    /// Names the re-login path when the failure is the server's OAuth 401 challenge: waiting
+    /// cannot fix that, and the person needs the command that fixes it.
+    pub fn with_login_hint_if_auth_required(self) -> Self {
+        let auth_required = self.source.as_deref().is_some_and(contains_auth_required);
+        if auth_required {
+            McpError {
+                server: self.server.clone(),
+                kind: McpErrorKind::Permanent,
+                message: format!(
+                    "authentication required; run `fontaine mcp login {}`",
+                    self.server
+                ),
+                source: self.source,
+            }
+        } else {
+            self
+        }
+    }
+}
+
+/// Whether the error chain carries a streamable-HTTP `AuthRequired`: the server answered a
+/// protocol request with 401 and no usable stored credentials exist.
+fn contains_auth_required(error: &(dyn StdError + Send + Sync + 'static)) -> bool {
+    let mut link: Option<&(dyn StdError + 'static)> = Some(error);
+    while let Some(current) = link {
+        if chain_link_has_auth_required(current) {
+            return true;
+        }
+        link = current.source();
+    }
+    false
+}
+
+/// One link of the error chain, looked at directly: the transport errors wrap the typed cause
+/// without always marking it `#[source]`, so the known wrappers are opened by hand.
+fn chain_link_has_auth_required(current: &(dyn StdError + 'static)) -> bool {
+    if let Some(http) = current.downcast_ref::<StreamableHttpError<reqwest::Error>>() {
+        return matches!(http, StreamableHttpError::AuthRequired(_));
+    }
+    if let Some(transport) = current.downcast_ref::<DynamicTransportError>() {
+        return boxed_chain_has_auth_required(&*transport.error);
+    }
+    if let Some(init) = current.downcast_ref::<ClientInitializeError>()
+        && let ClientInitializeError::TransportError { error, .. } = init
+    {
+        return boxed_chain_has_auth_required(&*error.error);
+    }
+    if let Some(service) = current.downcast_ref::<ServiceError>()
+        && let ServiceError::TransportSend(error) = service
+    {
+        return boxed_chain_has_auth_required(&*error.error);
+    }
+    false
+}
+
+/// Walks the boxed cause of a `DynamicTransportError`, starting at the cause itself.
+fn boxed_chain_has_auth_required(first: &(dyn StdError + Send + Sync + 'static)) -> bool {
+    let mut link: Option<&(dyn StdError + 'static)> = Some(first);
+    while let Some(current) = link {
+        if chain_link_has_auth_required(current) {
+            return true;
+        }
+        link = current.source();
+    }
+    false
 }
 
 impl std::fmt::Display for McpError {
@@ -380,6 +494,100 @@ fn fail(
     McpError::permanent(&spec.name, message, source)
 }
 
+/// A network failure reaching the authorization server may pass; a rejection or a bad
+/// configuration will not.
+fn classify_auth(error: &AuthError) -> McpErrorKind {
+    match error {
+        AuthError::HttpError(_)
+        | AuthError::DiscoveryRequestFailed { .. }
+        | AuthError::TokenRefreshFailed(_) => McpErrorKind::Transient,
+        _ => McpErrorKind::Permanent,
+    }
+}
+
+/// The headers one HTTP server sends on its protocol requests: the static declaration with the
+/// helper's output merged over it. A bad name or value, a helper that fails, or a malformed
+/// helper line is a permanent failure naming the cause.
+async fn declared_headers(
+    spec: &ServerSpec,
+    headers: &BTreeMap<String, String>,
+    headers_helper: Option<&str>,
+) -> Result<HashMap<HeaderName, HeaderValue>, McpError> {
+    let mut out = HashMap::new();
+    for (name, value) in headers {
+        insert_header(spec, &mut out, name, value)?;
+    }
+    if let Some(helper) = headers_helper {
+        let output = tokio::process::Command::new(helper)
+            .kill_on_drop(true)
+            .output()
+            .await
+            .map_err(|e| fail(spec, format!("cannot run the headers helper `{helper}`"), e))?;
+        if !output.status.success() {
+            return Err(McpError::new(
+                &spec.name,
+                McpErrorKind::Permanent,
+                format!(
+                    "the headers helper `{helper}` exited with {} without outputting headers",
+                    output.status
+                ),
+                None,
+            ));
+        }
+        let text = String::from_utf8(output.stdout).map_err(|e| {
+            fail(
+                spec,
+                format!("the headers helper `{helper}` printed non-UTF-8 output"),
+                e,
+            )
+        })?;
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let Some((name, value)) = line.split_once(':') else {
+                return Err(McpError::new(
+                    &spec.name,
+                    McpErrorKind::Permanent,
+                    format!(
+                        "the headers helper `{helper}` printed a line without a `KEY: VALUE` pair: {line:?}"
+                    ),
+                    None,
+                ));
+            };
+            insert_header(spec, &mut out, name.trim(), value.trim())?;
+        }
+    }
+    Ok(out)
+}
+
+fn insert_header(
+    spec: &ServerSpec,
+    out: &mut HashMap<HeaderName, HeaderValue>,
+    name: &str,
+    value: &str,
+) -> Result<(), McpError> {
+    let name_parsed = HeaderName::from_bytes(name.as_bytes()).map_err(|e| {
+        McpError::new(
+            &spec.name,
+            McpErrorKind::Permanent,
+            format!("`{name}` is not a valid HTTP header name"),
+            Some(Box::new(e)),
+        )
+    })?;
+    let value_parsed = HeaderValue::from_str(value).map_err(|e| {
+        McpError::new(
+            &spec.name,
+            McpErrorKind::Permanent,
+            format!("the value of the `{name}` header is not a valid HTTP header value"),
+            Some(Box::new(e)),
+        )
+    })?;
+    out.insert(name_parsed, value_parsed);
+    Ok(())
+}
+
 /// Starts the server `spec` describes and registers its tools in `sink`, wrapped by the guard
 /// in `options`. The tools of a later list-changed notification are wrapped the same way. One
 /// attempt gets [`CONNECT_TIMEOUT`].
@@ -399,6 +607,7 @@ where
             Ok(result) => result,
             Err(_) => Err(McpError::timed_out(&spec.name, CONNECT_TIMEOUT)),
         };
+    let result = result.map_err(McpError::with_login_hint_if_auth_required);
     tracing::info!(
         target: TARGET,
         server = options.shown(&spec.name),
@@ -528,7 +737,13 @@ where
             }
             serve(&spec.name, spec.kind(), transport, sink, options).await
         }
-        Transport::Http { url } => {
+        Transport::Http {
+            url,
+            headers,
+            headers_helper,
+            credentials,
+            states,
+        } => {
             let client = http_client(network).map_err(|e| {
                 McpError::new(
                     &spec.name,
@@ -540,10 +755,34 @@ where
                     None,
                 )
             })?;
-            let transport = StreamableHttpClientTransport::with_client(
-                client,
-                StreamableHttpClientTransportConfig::with_uri(url.as_str()),
-            );
+            let headers = declared_headers(spec, headers, headers_helper.as_deref()).await?;
+            // Every HTTP server gets the OAuth wrapper: rmcp's design is lazy, so an open
+            // server pays nothing and a challenging one's 401 drives authorization.
+            let oauth = auth::build_oauth_client(network, url)
+                .map_err(|e| fail(spec, "could not set up the OAuth HTTP client", e))?;
+            let mut manager =
+                AuthorizationManager::new_with_oauth_http_client(url.as_str(), Arc::new(oauth))
+                    .await
+                    .map_err(|e| fail(spec, "could not set up OAuth for the server", e))?;
+            manager.set_credential_store(auth::SharedCredentialStore(Arc::clone(credentials)));
+            manager.set_state_store(auth::SharedStateStore(Arc::clone(states)));
+            // Without this the manager has no OAuth client, so a stored token near expiry
+            // cannot be refreshed.
+            manager.initialize_from_store().await.map_err(|e| {
+                let kind = classify_auth(&e);
+                McpError::new(
+                    &spec.name,
+                    kind,
+                    "could not load the stored OAuth credentials",
+                    Some(Box::new(e)),
+                )
+            })?;
+            let auth_client = AuthClient::new(client, manager);
+            let mut config = StreamableHttpClientTransportConfig::with_uri(url.as_str());
+            if !headers.is_empty() {
+                config = config.custom_headers(headers);
+            }
+            let transport = StreamableHttpClientTransport::with_client(auth_client, config);
             serve(&spec.name, spec.kind(), transport, sink, options).await
         }
     }
@@ -572,6 +811,16 @@ mod tests {
         }
     }
 
+    fn http_transport(url: &str) -> Transport {
+        Transport::Http {
+            url: url.to_string(),
+            headers: std::collections::BTreeMap::new(),
+            headers_helper: None,
+            credentials: Arc::new(rmcp::transport::auth::InMemoryCredentialStore::new()),
+            states: Arc::new(rmcp::transport::auth::InMemoryStateStore::new()),
+        }
+    }
+
     fn options() -> McpOptions {
         McpOptions::new(
             Guard {
@@ -588,9 +837,7 @@ mod tests {
     async fn http_error(url: &str) -> McpError {
         let spec = ServerSpec {
             name: "remote".to_string(),
-            transport: Transport::Http {
-                url: url.to_string(),
-            },
+            transport: http_transport(url),
         };
         connect(
             &spec,

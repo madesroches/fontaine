@@ -61,7 +61,26 @@ pub fn session_secrets(
     {
         out.push(Secret::new(key));
     }
+    for entry in stored.mcp_entries() {
+        let parsed = entry
+            .credentials
+            .as_deref()
+            .and_then(|c| serde_json::from_str::<serde_json::Value>(c).ok());
+        let response = parsed.as_ref().and_then(|v| v.get("token_response"));
+        for field in ["access_token", "refresh_token"] {
+            if let Some(token) = response.and_then(|r| r.get(field)).and_then(|t| t.as_str()) {
+                out.push(Secret::new(token));
+            }
+        }
+    }
     for server in config.mcp_servers.values() {
+        out.extend(
+            server
+                .headers
+                .iter()
+                .flat_map(|h| h.values())
+                .map(|v| Secret::new(v.clone())),
+        );
         out.extend(
             server
                 .env
@@ -273,6 +292,8 @@ mod tests {
                 env_vars: Some(vec!["MCP_TOKEN".into()]),
                 env: None,
                 url: None,
+                headers: None,
+                headers_helper: None,
                 expand: false,
             },
         );
@@ -289,6 +310,47 @@ mod tests {
         assert_eq!(
             r.redact("a search-key-value b mcp-token-value c"),
             "a [redacted] b [redacted] c"
+        );
+    }
+
+    #[test]
+    fn mcp_headers_and_stored_oauth_tokens_are_secrets() {
+        use crate::config::{Config, McpServer};
+        let mut config = Config::defaults(std::path::PathBuf::from("."));
+        config.mcp_servers.insert(
+            "s".into(),
+            McpServer {
+                command: None,
+                args: None,
+                env_vars: None,
+                env: None,
+                url: Some("https://h/mcp".into()),
+                headers: Some(
+                    [("X-Api-Key".to_string(), "header-secret-value".to_string())].into(),
+                ),
+                headers_helper: None,
+                expand: false,
+            },
+        );
+        let data = tempfile::tempdir().unwrap();
+        crate::credentials::mcp_put(
+            data.path(),
+            "s",
+            crate::credentials::McpEntry {
+                credentials: Some(
+                    r#"{"client_id":"c","token_response":{"access_token":"access-token-value","refresh_token":"refresh-token-value","token_type":"Bearer"}}"#
+                        .to_string(),
+                ),
+                state: None,
+                resource: Some("https://h/mcp".to_string()),
+            },
+        )
+        .unwrap();
+        let secrets = session_secrets(&config, data.path(), &|_| None, &|_| {});
+        let r = Redactor::new(secrets);
+        assert_eq!(
+            r.redact("a header-secret-value b access-token-value c refresh-token-value"),
+            "a [redacted] b [redacted] c [redacted]"
         );
     }
 

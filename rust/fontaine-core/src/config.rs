@@ -995,6 +995,14 @@ pub struct McpServer {
     /// here, already expanded.
     pub env: Option<BTreeMap<String, String>>,
     pub url: Option<String>,
+    /// Static headers sent on the protocol requests of a streamable HTTP server. They never
+    /// reach an OAuth authorization server's token, metadata or authorize endpoints, which are
+    /// a different origin and use their own client.
+    pub headers: Option<BTreeMap<String, String>>,
+    /// Path to an executable run at connect time, whose `KEY: VALUE` stdout lines become
+    /// additional headers. Refused for the project scope: a repository Fontaine merely opened
+    /// must not make Fontaine run a script.
+    pub headers_helper: Option<String>,
     /// The text holds `${VAR}` references to expand when the server starts: a repository's
     /// `.mcp.json`. Never set from a settings file.
     #[serde(skip)]
@@ -1699,6 +1707,9 @@ pub(crate) fn check_mcp_server(name: &str, server: &McpServer) -> Result<(), Str
         (Some(command), None) => {
             if command.is_empty() {
                 return Err("`command` must not be empty".to_string());
+            }
+            if server.headers.is_some() || server.headers_helper.is_some() {
+                return Err("`headers` and `headers_helper` apply to http servers only".to_string());
             }
         }
         (None, Some(url)) => {

@@ -321,8 +321,8 @@ plugin.
   [MCP server name alphabet](mcp.md): letters, digits, `_` and `-`, with no `__` and no leading
   or trailing `_`. A bare `mcp__<name>__*` reference in a plugin file is rewritten to the
   composed name. An entry's `type` may be `stdio` or `http` (or absent); an `sse` or `ws` entry is
-  skipped with a warning, and `headers` is not supported yet, so a server that sets it connects
-  without them and a warning says so.
+  skipped with a warning. A plugin's `headers` and `headersHelper` behave as documented in
+  [MCP](mcp.md): `http` servers only, with values expanded at load.
 - `${CLAUDE_PLUGIN_ROOT}` expands to the installed checkout and `${CLAUDE_PROJECT_DIR}` to the
   session's primary root, in hook commands and `.mcp.json` values. `${VAR}` reads any other
   variable from the process environment (`${VAR:-default}` falls back to the default when it is

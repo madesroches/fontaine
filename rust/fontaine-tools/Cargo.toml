@@ -8,11 +8,13 @@ publish.workspace = true
 
 [dependencies]
 async-lsp.workspace = true
+async-trait.workspace = true
 base64.workspace = true
 brush-parser.workspace = true
 futures.workspace = true
 globset.workspace = true
 htmd.workspace = true
+http.workspace = true
 ignore.workspace = true
 lsp-types.workspace = true
 regex.workspace = true

@@ -442,6 +442,8 @@ fn apply_plugins_refuses_a_composed_name_that_shadows_a_configured_server() {
                 env_vars: None,
                 env: None,
                 url: None,
+                headers: None,
+                headers_helper: None,
                 expand: false,
             },
         )]
@@ -793,6 +795,8 @@ fn apply_plugins_is_idempotent_for_a_session_switch() {
                 env_vars: None,
                 env: None,
                 url: None,
+                headers: None,
+                headers_helper: None,
                 expand: false,
             },
         )]
@@ -970,6 +974,8 @@ fn apply_plugins_replaces_the_previous_plugins_contributions() {
                 env_vars: None,
                 env: None,
                 url: None,
+                headers: None,
+                headers_helper: None,
                 expand: false,
             },
         )]

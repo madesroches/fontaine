@@ -5,6 +5,7 @@
 //! Oversized results are saved to a file instead of entering the model's context, and a server's
 //! request for input is shown to the person, never answered by the harness.
 
+pub mod auth;
 pub mod elicitation;
 mod meta;
 pub mod output;

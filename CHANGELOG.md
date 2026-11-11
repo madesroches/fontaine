@@ -8,6 +8,18 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- MCP OAuth for remote servers: `fontaine mcp login <name>` runs the OAuth 2.1 flow (metadata
+  discovery, dynamic client registration, PKCE, loopback callback on the fixed port 3111) and
+  stores the token beside your other credentials in `credentials.toml`, bound to the URL it was
+  issued for; a declaration with a different `url` fails closed naming the login command.
+  `fontaine mcp logout <name>` deletes the entry, registration included. A 401 with no usable
+  token is a permanent failure naming `fontaine mcp login <name>`, never retried; the terminal
+  UI's `/mcp` gains an auth column (`ok` / `required` / `n/a`). Streamable HTTP servers also
+  gain static `headers` (`fontaine mcp add -H KEY=value`, `headers` in `.mcp.json`) and a
+  `headers_helper`/`headersHelper` executable whose `KEY: VALUE` stdout lines become headers at
+  connect time; the helper is refused in the project scope, and changing either invalidates a
+  repository server's approval (#32).
+
 - Installing a plugin now asks whether to trust the skills that declare `allowed-tools`, at the
   moment of install: `/plugin install` asks per skill with the same digest-pinned dialog
   `/skills trust` shows, and `fontaine plugin install` asks once for the plugin's skills on a

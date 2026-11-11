@@ -33,6 +33,7 @@ pub mod instructions;
 pub mod keybindings;
 pub mod ledger;
 pub mod managed_search;
+pub mod mcp_auth;
 pub mod mcp_config;
 pub mod mcp_json;
 pub mod memory;

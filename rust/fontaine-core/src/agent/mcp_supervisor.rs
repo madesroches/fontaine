@@ -599,6 +599,10 @@ mod tests {
             transport: match kind {
                 "http" => Transport::Http {
                     url: "http://unused.test/mcp".to_string(),
+                    headers: Default::default(),
+                    headers_helper: None,
+                    credentials: Arc::new(rmcp::transport::auth::InMemoryCredentialStore::new()),
+                    states: Arc::new(rmcp::transport::auth::InMemoryStateStore::new()),
                 },
                 _ => Transport::Stdio {
                     command: "unused".to_string(),

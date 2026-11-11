@@ -176,6 +176,10 @@ pub enum McpAction {
     Get(McpGetArgs),
     /// Remove a server from the scope that declares it
     Remove(McpRemoveArgs),
+    /// Sign in to a streamable HTTP server with OAuth and store the token
+    Login(McpLoginArgs),
+    /// Delete the stored OAuth credentials of a streamable HTTP server
+    Logout(McpLogoutArgs),
 }
 
 /// Where a server is declared.
@@ -221,14 +225,6 @@ fn parse_env_name(text: &str) -> Result<String, String> {
     }
 }
 
-fn reject_header(_: &str) -> Result<String, String> {
-    Err("headers are not supported yet (see issue #32)".to_string())
-}
-
-fn reject_oauth(_: &str) -> Result<String, String> {
-    Err("OAuth is not supported yet (see issue #32)".to_string())
-}
-
 #[derive(Args, Debug, Clone)]
 pub struct McpAddArgs {
     /// Where to declare the server
@@ -244,14 +240,9 @@ pub struct McpAddArgs {
     /// scrubs. Repeatable; stdio only
     #[arg(long = "env-var", value_parser = parse_env_name, value_name = "NAME")]
     pub env_var: Vec<String>,
-    #[arg(short = 'H', long = "header", value_parser = reject_header, hide = true)]
-    pub header: Vec<String>,
-    #[arg(long = "client-id", value_parser = reject_oauth, hide = true)]
-    pub client_id: Option<String>,
-    #[arg(long = "client-secret", value_parser = reject_oauth, hide = true)]
-    pub client_secret: Option<String>,
-    #[arg(long = "callback-port", value_parser = reject_oauth, hide = true)]
-    pub callback_port: Option<String>,
+    /// A header sent on the server's protocol requests, as KEY=VALUE. Repeatable; http only
+    #[arg(short = 'H', long = "header", value_parser = parse_env_pair, value_name = "KEY=value")]
+    pub header: Vec<(String, String)>,
     /// The server's name, as it appears in tool names
     #[arg(value_name = "NAME")]
     pub name: String,
@@ -287,6 +278,18 @@ pub struct McpRemoveArgs {
     /// The scope to remove it from; needed only when several declare the name
     #[arg(short = 's', long, value_enum, value_name = "SCOPE")]
     pub scope: Option<McpScopeArg>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct McpLoginArgs {
+    #[arg(value_name = "NAME")]
+    pub name: String,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct McpLogoutArgs {
+    #[arg(value_name = "NAME")]
+    pub name: String,
 }
 
 #[derive(Args, Debug, Clone)]

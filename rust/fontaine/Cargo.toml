@@ -46,6 +46,7 @@ opentelemetry-otlp = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 rig-agent.workspace = true
 rig-core.workspace = true
+rmcp.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tar.workspace = true
