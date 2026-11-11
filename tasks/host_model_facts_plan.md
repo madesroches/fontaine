@@ -68,7 +68,9 @@ team-haiku = "claude-haiku-5-5"
   account's mapping vendor (below). It runs in each opting-in kind's `Provider::validate(account)`
   (called last by `check_account`), whose error names key `model_facts` with the bad entry in the
   message; the generic "not used by kind" refusal stays in `check_account`. A mapping that silently did nothing would leave the user
-  believing the model is covered.
+  believing the model is covered. The same check refuses a key that already binds listed facts on
+  its kind (on `anthropic`, an id the catalog lists under vendor `anthropic`; on `databricks`, one
+  the prefix-strip path resolves to a listed entry): a listed id keeps its own facts and price.
 - User file or `--settings`, never a project file, since it sits under `[accounts.*]`. It changes what the guardian believes about
   its model (forced tool choice, limits), so it must never come from a project file.
 
@@ -85,8 +87,9 @@ team-haiku = "claude-haiku-5-5"
 
 - **`anthropic`** `Connected` keeps the account's map. `model()` binds
   `map.get(id).and_then(|t| facts_as(v, served, t, id))` first, then
-  falls back to `unlisted_facts`. A mapped name that is also listed takes the mapping: the user's
-  explicit statement wins.
+  falls back to `unlisted_facts`. A mapped name is never listed (validation refuses that), so a
+  mapping never replaces a listed model's facts or strips its price. A mapped model is unpriced,
+  as `facts_as` leaves it: a host need not bill at Anthropic's list prices.
 - **`databricks`** `DatabricksClient` keeps the map. `facts_for(model)` checks the map before the
   prefix-strip path. The rest is unchanged.
 - **`facts_notice`** for a mapped model: if the target was derived (not listed), reuse
@@ -156,6 +159,7 @@ facts, so only an id with no `system.ai.` / `databricks-` prefix that contains a
   warned about once and given no assumed 200K window (Claude Code assumes 200K), keeping the "no fallback spec" rule.
 - 2026-11-11: On `databricks` the mapping does not change wire routing; a custom endpoint that
   serves Claude on Messages also sets `wires`.
+- AFK: 2026-11-11: A `model_facts` key the kind already lists is refused at load and a mapped model stays unpriced, because an unpriced model never trips a cost cap, so stripping a listed price would silently loosen spend caps and a host need not bill at list prices.
 
 ## Documentation
 
@@ -180,7 +184,9 @@ Unit tests, all offline:
 
 - `config` (`check_account`): `model_facts` refused on `openai-compatible`. An unknown value is
   refused with the path `accounts.<name>.model_facts` and the entry named in the message. A Databricks value of family `Other`
-  is refused. A valid table is accepted on `anthropic` and `databricks`.
+  is refused. A key the kind already lists (`claude-opus-5-5` on `anthropic`,
+  `databricks-claude-opus-5-5` on `databricks`) is refused with the entry named. A valid table is
+  accepted on `anthropic` and `databricks`.
 - `anthropic`: on a connected client with `model_facts = { prod-opus = "claude-opus-5-5" }`,
   `completion("prod-opus").spec()` carries the Opus context window and output limit. Without the
   map it carries none. `facts_notice("prod-opus")` is `None` when mapped and the no-facts warning
