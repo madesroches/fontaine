@@ -6,8 +6,10 @@
 //! package's targets and would silently use whatever example binaries happen to be on disk;
 //! stale ones fail with timeouts far from the cause.
 //!
-//! [`example_bin`] builds the requested example on first use per test process (a no-op under
-//! the workspace run, since cargo's own freshness check is exact) and returns its path.
+//! [`example_bin`] builds the requested example on first use (a no-op under the workspace
+//! run, since cargo's own freshness check is exact) and returns its path. The build is not
+//! deduplicated across threads: concurrent first calls for the same example each invoke
+//! cargo, whose own build lock serializes them, and only the first path is cached.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,10 +28,12 @@ const BUILD_RUSTC: &str = env!("FONTAINE_TESTKIT_RUSTC");
 
 static BUILTIN_TARGETS: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Returns the path to the built example `name` of workspace package `package`, building it on
-/// first use. Panics with cargo's combined output if the build fails. Panics early when the
-/// outer build targeted a custom JSON specification: cargo exports it to the test process
-/// only as the spec file's stem, which the nested build cannot resolve back to the file.
+/// Returns the path to the built example `name` of workspace package `package`. The first
+/// call builds it; concurrent first calls may each invoke cargo, whose own build lock
+/// serializes them, and only the first resulting path is cached. Panics with cargo's
+/// combined output if the build fails. Panics early when the outer build targeted a custom
+/// JSON specification: cargo exports it to the test process only as the spec file's stem,
+/// which the nested build cannot resolve back to the file.
 pub fn example_bin(package: &str, name: &str) -> PathBuf {
     let key = (package.to_string(), name.to_string());
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -135,6 +139,13 @@ fn builtin_targets() -> &'static [String] {
 /// triple, a spec file in the nested build's working directory, or through
 /// RUST_TARGET_PATH. Rejecting any other stem here keeps the error actionable;
 /// otherwise the nested build fails with cargo's opaque target-not-found output.
+///
+/// A custom spec must therefore not reuse a built-in target triple's filename stem (a
+/// `x86_64-unknown-linux-gnu.json` under `--target` is indistinguishable from a real
+/// built-in `x86_64-unknown-linux-gnu` run): the built-in check above returns early and
+/// the nested build resolves the stem to the built-in spec, silently building for the
+/// wrong target. The stem-only forwarding makes this case mechanically undetectable
+/// in-process, so it is rejected by convention rather than here.
 fn assert_nested_target_resolvable(triple: &str, package_dir: &Path) {
     if builtin_targets().iter().any(|t| t == triple) {
         return;

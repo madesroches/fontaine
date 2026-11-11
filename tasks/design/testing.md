@@ -111,9 +111,10 @@ account's `claude_config_dir` and logs each launch (argv, environment, files, st
 `log.jsonl` there. Two environment knobs make hangs testable in milliseconds and change nothing about
 routing or billing: `FONTAINE_CLAUDE_READ_IDLE_MS` (the silence deadline) and
 `FONTAINE_CLAUDE_PROBE_MS` (the version, login and discovery bounds). The double is located
-through `fontaine-testkit`'s `example_bin`, which builds the example on first use per test
-process (a no-op under CI's workspace `cargo test`, which builds every member's examples
-already); tests never prebuild. The live Max and Ultra qualification (Manual Verification in the plan that shipped the kind)
+through `fontaine-testkit`'s `example_bin`, which builds the example on first use (a no-op
+under CI's workspace `cargo test`, which builds every member's examples already). Concurrent
+first calls may each invoke cargo, whose own build lock serializes them; tests never
+prebuild. The live Max and Ultra qualification (Manual Verification in the plan that shipped the kind)
 is a manual step and never a CI gate.
 
 Differential baselines (manual/eval-side only — never unit/integration tests or CI, per AGENTS.md; the `claude-subscription` provider runs the official CLI as a product transport and its tests use the portable fake `claude_cli_double` instead, scripted per test through `double.json` in the account's `claude_config_dir`, never the real binary; its live Max/Ultra qualification is a manual step):
