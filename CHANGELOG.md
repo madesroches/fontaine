@@ -40,6 +40,17 @@ All notable changes are recorded here. The format follows
   terminal. Skills already trusted at their current file are not re-asked. Headless installs trust
   nothing and print a `fontaine plugin trust` hint (#561).
 
+- A `databricks` account kind for Unity Gateway: one workspace origin and one token (sent as
+  `Authorization: Bearer`) serve every model, each on its own wire, chosen by name. Claude goes on
+  the Anthropic Messages route with prompt caching on by default (`prompt_caching`, `cache_ttl`),
+  GPT on the OpenAI Responses route, Gemini on the native Gemini route, and open models and custom
+  model services on the MLflow Chat Completions route; `wires` overrides the choice per model.
+  Models are listed from the Unity Catalog model-services API (`system.ai.*`, non-chat models
+  dropped), facts come from the catalog entry of the same model (dashed versions such as
+  `gpt-5-1` match `gpt-5.1`), and the kind is unpriced. On the same gateway, Fontaine writes about
+  5% less cache per step than Claude Code on Claude 5.5 models, with a smaller base context
+  (#166).
+
 ### Fixed
 
 - A status line command, command hook or BYO scanner that times out now has its whole process

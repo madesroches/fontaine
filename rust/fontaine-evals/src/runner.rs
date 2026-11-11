@@ -62,9 +62,10 @@ enum Command {
         action: BaselineAction,
     },
     /// Compare per-step prompt-cache writes of `fontaine -p` and `claude -p` on a fixed read task
-    /// (live; needs a claude-subscription account and the real CLI)
+    /// (live; needs a Claude model on a claude-subscription or databricks account, and the real
+    /// CLI)
     CacheBench {
-        /// Fontaine model reference on a claude-subscription account
+        /// Fontaine model reference: a Claude model on a claude-subscription or databricks account
         #[arg(long, value_name = "ACCOUNT/MODEL")]
         model: String,
 
@@ -88,7 +89,7 @@ enum Command {
         #[arg(long, value_name = "PATH", default_value = "claude")]
         claude: String,
 
-        /// Scorecard to write, normally `../evals/scorecards/claude-subscription-cache-<model>.json`
+        /// Scorecard to write, normally `../evals/scorecards/<kind>-cache-<model>.json`
         #[arg(long, value_name = "PATH")]
         out: PathBuf,
     },

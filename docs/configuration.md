@@ -173,17 +173,17 @@ may contain slashes of its own (`router/anthropic/claude-sonnet-4-6`).
 
 | Key | Meaning | Default |
 |---|---|---|
-| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `kimi`, `ollama`, `opencode-go`, `openrouter` or `claude-subscription` (experimental). Required. | none |
+| `kind` | `anthropic`, `openai`, `gemini`, `openai-compatible`, `kimi`, `ollama`, `opencode-go`, `databricks`, `openrouter` or `claude-subscription` (experimental). Required. | none |
 | `api_key_env` | The name of the environment variable that holds the key. Omit it to use the stored credential. Raw keys are never accepted inline. Refused for `opencode-go`, which signs in instead. | unset |
-| `base_url` | Endpoint override. Required for `openai-compatible`. | the provider's public endpoint |
+| `base_url` | Endpoint override. Required for `openai-compatible` and `databricks` (the workspace origin, with no path). | the provider's public endpoint |
 | `models` | Explicit model list. Without it the provider is asked which models it offers. | unset |
-| `wires` | `opencode-go` only: a table from model id to the wire it is served on (`chat`, `responses`, `messages` or `gemini`), for a model the built-in routing gets wrong. | unset |
+| `wires` | `opencode-go` and `databricks` only: a table from model id to the wire it is served on (`chat`, `responses`, `messages` or `gemini`), for a model the built-in routing gets wrong. | unset |
 | `context_tokens` | `ollama` only: the context window requested with every call (`options.num_ctx`), at least 2048. | `16384` |
-| `prompt_caching` | `anthropic`, `openrouter` and `opencode-go` only: whether requests carry cache breakpoints, so the provider reuses the unchanged prefix at a fraction of the input price. On `anthropic` they sit on the tools, the system prompt and the latest message. On `openrouter` the conversation carries one top-level marker for every model except the self-caching `openai/`, `deepseek/`, `x-ai/` and `groq/` upstreams, which are sent none, and the guardian marks its system prompt. On `opencode-go` it affects only models served on the Messages wire; the other wires cache by prefix on their own. User scope only, because it changes spend and what the provider stores. | `true` for `anthropic` and `openrouter`, `false` for `opencode-go` |
-| `cache_ttl` | `anthropic`, `openrouter` and `opencode-go` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
+| `prompt_caching` | `anthropic`, `openrouter`, `opencode-go` and `databricks` only: whether requests carry cache breakpoints, so the provider reuses the unchanged prefix at a fraction of the input price. On `anthropic` they sit on the tools, the system prompt and the latest message. On `openrouter` the conversation carries one top-level marker for every model except the self-caching `openai/`, `deepseek/`, `x-ai/` and `groq/` upstreams, which are sent none, and the guardian marks its system prompt. On `opencode-go` and `databricks` it affects only models served on the Messages wire (Claude, on `databricks`); the other wires cache by prefix on their own. User scope only, because it changes spend and what the provider stores. | `true` for `anthropic`, `openrouter` and `databricks`, `false` for `opencode-go` |
+| `cache_ttl` | `anthropic`, `openrouter`, `opencode-go` and `databricks` only: how long a cached prefix lives, `"5m"` or `"1h"`. The one-hour lifetime costs more per cache write, and is not offered to the self-caching `openrouter` upstreams, which keep their own lifetime. Has no effect when `prompt_caching` is off. User scope only. | `"5m"` |
 | `think` | `ollama` only: `false` asks a thinking model to answer without reasoning, which is much faster. `true` and unset leave the model's default. An explicit [`effort`](#model) wins over it, and `effort = "off"` equals `think = false` for the main agent. | unset |
 | `quota` | `openai-compatible` only (a `kimi` account shows its subscription quota with no `quota` key, like `claude-subscription`): `"kimi"` shows the account's subscription quota in the [status bar](tui.md#status-bar) and in headless `result.account_usage`, read from Kimi for Coding's `GET <base_url>/usages`. User scope only, because it sends the account's key in extra requests. | unset |
-| `auth` | `anthropic` only: how the key is sent. `"bearer"` sends `Authorization: Bearer <key>` instead of `x-api-key`, which Databricks AI Gateway, OpenRouter's Anthropic endpoint, LiteLLM and similar gateways require; it applies to requests and to model discovery alike. User scope only. | `"x-api-key"` |
+| `auth` | `anthropic` only: how the key is sent. `"bearer"` sends `Authorization: Bearer <key>` instead of `x-api-key`, which OpenRouter's Anthropic endpoint, LiteLLM and similar gateways require (a Databricks workspace has its own `databricks` kind); it applies to requests and to model discovery alike. User scope only. | `"x-api-key"` |
 | `cli_path` | `claude-subscription` only: the absolute path of the official `claude` executable. | `claude` on `PATH` |
 | `claude_config_dir` | `claude-subscription` only: the absolute path of the CLI's own config directory, handed to it as `CLAUDE_CONFIG_DIR` for this account only, so two accounts can keep separate logins. | unset |
 | `https_proxy`, `http_proxy`, `no_proxy`, `ca_bundle`, `client_cert`, `client_key` | Override the same key of [`[network]`](#network) for this account only. | the `[network]` value |
@@ -204,6 +204,7 @@ What each kind talks to:
 | `openai-compatible` | Chat Completions | none; `base_url` is required | optional |
 | `kimi` | Chat Completions | `https://api.kimi.com/coding/v1` | optional |
 | `opencode-go` | Chat Completions, Responses, Messages and `generateContent`, per model | `https://opencode.ai/inference/go` | sign-in |
+| `databricks` | Chat Completions, Responses, Messages and `generateContent`, per model | none; `base_url` is the workspace origin and is required | required, sent as a Bearer token |
 | `openrouter` | Chat Completions, with prompt caching | `https://openrouter.ai/api/v1` | required |
 | `claude-subscription` | Messages API, through the installed Claude Code CLI | none | the CLI's own login |
 
@@ -236,7 +237,7 @@ api_key_env = "KIMI_API_KEY"
 2. Otherwise the key is the account's entry in `credentials.toml`, written by `/login` in the
    terminal UI.
 3. With neither, an `ollama`, `openai-compatible` or `kimi` account sends no `Authorization`
-   header. An `anthropic`, `openai`, `gemini` or `openrouter` account with no key is a
+   header. An `anthropic`, `openai`, `gemini`, `databricks` or `openrouter` account with no key is a
    configuration error (exit code 2) when the main model uses it.
 
 An `opencode-go` account has no key. Its credential is the sign-in that
@@ -272,7 +273,10 @@ the model it took the facts from; update Fontaine for its exact facts. An id wit
 number, or whose pattern the catalog has no usable model for, gets no facts and stays an unlisted
 model (a `claude-subscription` account refuses it). This applies to every account kind whose models are a catalog
 vendor's: `anthropic`, `openai`, `gemini`, `ollama`, `opencode-go`, `openrouter` and
-`claude-subscription`. An `openai-compatible` account is an arbitrary gateway with no catalog
+`claude-subscription`. A `databricks` account does the same for Claude, GPT and Gemini models,
+taking the facts from the same model's catalog entry (a dashed version such as `gpt-5-1` matches the
+dotted `gpt-5.1`) or else deriving them as above. A `glm-` model gets minimal facts with a known
+25,000-token output cap and tools on, and any other model gets none. An `openai-compatible` account is an arbitrary gateway with no catalog
 vendor, so its unlisted models never get derived facts. A derived model is unpriced, so a cost
 cap treats it as any other unpriced model.
 
@@ -327,19 +331,33 @@ api_key_env = "ANTHROPIC_API_KEY"
 model = "work/claude-sonnet-5"
 ```
 
-A gateway that speaks the Messages API but accepts only a Bearer token (Databricks-style):
+A Databricks workspace, serving Claude, GPT, Gemini and open models behind its Unity Gateway with
+one token (`base_url` is the workspace origin, with no path):
 
 ```toml
-[accounts.databricks]
-kind = "anthropic"
-base_url = "https://example.cloud.databricks.com/serving-endpoints/anthropic"
+[accounts.dbx]
+kind = "databricks"
+base_url = "https://example.cloud.databricks.com"
 api_key_env = "DATABRICKS_TOKEN"
-auth = "bearer"
-models = ["databricks-claude-sonnet-4-5"]
 
 [model]
-model = "databricks/databricks-claude-sonnet-4-5"
+model = "dbx/system.ai.claude-sonnet-5-5"
 ```
+
+Each request goes to the route its model is served on, chosen by model id: `claude-` models use
+the Anthropic Messages route (`/ai-gateway/anthropic`, with prompt caching), `gpt-` models the
+OpenAI Responses route (`/ai-gateway/openai/v1`), `gemini-` models the native Gemini route
+(`/ai-gateway/gemini`), and everything else the provider-neutral MLflow Chat Completions route
+(`/ai-gateway/mlflow/v1`). That covers open models such as GLM, Kimi, DeepSeek and `gpt-oss-*`,
+and custom `catalog.schema.name` model services, whose name says nothing about the wire. A
+leading `system.ai.` (or the older `databricks-`) is ignored when choosing. A model the table gets
+wrong is routed with `wires`, as on `opencode-go`. Every route carries the token as
+`Authorization: Bearer`. Without a `models` list the account lists the chat-capable
+`system.ai.*` model services from the workspace's Unity Catalog; custom services are not listed,
+so a `models` list that names one replaces the listing (and must then also name the `system.ai.*`
+models you want). Workspace usage is billed in DBUs, so the models are unpriced and
+`--max-budget-usd` with a Databricks main model is a usage error (exit code 2). `auth = "bearer"`
+on an `anthropic` account still serves other gateways that take only a Bearer token.
 
 A second Anthropic account with its own key, stored with `/login personal`:
 

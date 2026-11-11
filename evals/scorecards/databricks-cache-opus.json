@@ -1,0 +1,132 @@
+{
+  "date": "2026-11-11",
+  "model": "dbxk/system.ai.claude-opus-5-5",
+  "claude_model": "system.ai.claude-opus-5-5",
+  "files": 6,
+  "threshold": 1.25,
+  "claude_version": "2.1.322 (Claude Code)",
+  "fontaine_served_model": "dbxk/system.ai.claude-opus-5-5",
+  "claude_served_model": "system.ai.claude-opus-5-5",
+  "fontaine_steps": [
+    {
+      "input": 4,
+      "cache_read": 0,
+      "cache_creation": 11854,
+      "output": 49,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 11854,
+      "cache_creation": 4321,
+      "output": 49,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 16175,
+      "cache_creation": 4300,
+      "output": 49,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 20475,
+      "cache_creation": 4332,
+      "output": 49,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 24807,
+      "cache_creation": 4283,
+      "output": 49,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 29090,
+      "cache_creation": 4305,
+      "output": 49,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 33395,
+      "cache_creation": 4271,
+      "output": 5,
+      "calls_tool": false
+    }
+  ],
+  "claude_steps": [
+    {
+      "input": 2,
+      "cache_read": 0,
+      "cache_creation": 17974,
+      "output": 16,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 17974,
+      "cache_creation": 4543,
+      "output": 16,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 22517,
+      "cache_creation": 4524,
+      "output": 16,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 27041,
+      "cache_creation": 4556,
+      "output": 16,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 31597,
+      "cache_creation": 4507,
+      "output": 16,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 36104,
+      "cache_creation": 4560,
+      "output": 2,
+      "calls_tool": true
+    },
+    {
+      "input": 2,
+      "cache_read": 40664,
+      "cache_creation": 4516,
+      "output": 5,
+      "calls_tool": false
+    }
+  ],
+  "fontaine_totals": {
+    "input": 16,
+    "cache_read": 135796,
+    "cache_creation": 37666,
+    "output": 299
+  },
+  "claude_totals": {
+    "input": 14,
+    "cache_read": 175897,
+    "cache_creation": 45180,
+    "output": 87
+  },
+  "summary": {
+    "fontaine_base_context": 11854,
+    "claude_base_context": 17974,
+    "fontaine_mean_creation": 4305.0,
+    "claude_mean_creation": 4536.75,
+    "ratio": 0.9489171763927922,
+    "flagged": false
+  }
+}

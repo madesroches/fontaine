@@ -131,7 +131,7 @@ exported.
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
 which is always the case for an `openai-compatible` endpoint, a `kimi` account, an `opencode-go`
-account or a `claude-subscription` account (whose token usage is exported but whose cost is never inferred from
+account, a `databricks` account or a `claude-subscription` account (whose token usage is exported but whose cost is never inferred from
 the CLI's list-price figures). An
 `openrouter` account is priced by its upstream model.
 `query_source` is `main` for the session model, `guardian` for the model calls made while a

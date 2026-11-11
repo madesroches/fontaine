@@ -117,6 +117,57 @@ pub fn unlisted_facts(vendor: ProviderId, model: &str) -> Option<ModelFacts> {
     unlisted(vendor, model).map(|derived| derived.facts)
 }
 
+/// `id` with each run of short all-digit dash tokens rejoined by `.` (`gpt-5-6-luna` is
+/// `gpt-5.6-luna`), the way catalogs spell a version a gateway dashes. `None` when nothing joins.
+fn dotted_version(id: &str) -> Option<String> {
+    let short = |t: &str| (1..=2).contains(&t.len()) && t.bytes().all(|b| b.is_ascii_digit());
+    let mut out = String::new();
+    let mut prev_digits = false;
+    for (i, token) in id.split('-').enumerate() {
+        let digits = short(token);
+        if i > 0 {
+            out.push(if digits && prev_digits { '.' } else { '-' });
+        }
+        out.push_str(token);
+        prev_digits = digits;
+    }
+    (out != id).then_some(out)
+}
+
+/// The facts of `base_id` on `vendor`, for a gateway that serves it as `served_id`: the exact
+/// catalog entry when `vendor` lists it (as given, else with its dashed version dotted), else
+/// the facts [`derive()`] takes from the newest listed model of its shape. The spec is relabelled
+/// to `served_id`, declared under `served` (the wire's dialect name, so rig's
+/// `ModelFacts::for_model` hands the bound spec to a wire that asks under it) and stripped of
+/// pricing (the gateway bills in its own units). Returns the facts, the catalog id they came
+/// from and whether that entry is the model's own (listed) rather than derived; `None` when the
+/// catalog has nothing to take them from.
+pub fn facts_as(
+    vendor: ProviderId,
+    served: ProviderId,
+    base_id: &str,
+    served_id: &str,
+) -> Option<(ModelFacts, String, bool)> {
+    let catalog = Catalog::builtin();
+    let exact = catalog.get(vendor, base_id).or_else(|| {
+        let dotted = dotted_version(base_id)?;
+        catalog.get(vendor, &dotted)
+    });
+    let (mut spec, from, listed) = match exact {
+        Some(resolved) => (resolved.spec.clone(), resolved.spec.id.clone(), true),
+        None => {
+            let derived = derive(catalog, vendor, base_id, &Capabilities::default())?;
+            (derived.facts.spec()?.clone(), derived.from, false)
+        }
+    };
+    spec.id = served_id.to_string();
+    spec.display_name = served_id.to_string();
+    spec.pricing = None;
+    spec.details.cost = Default::default();
+    spec.provider = served;
+    Some((ModelFacts::new(spec).with_catalog(catalog), from, listed))
+}
+
 /// The one-time warning for a model whose facts were derived: `model` as selected, `resolved`
 /// the id the catalog was asked for, `from` the listed id the facts came from, and `also` any
 /// other source laid over them.
@@ -183,6 +234,10 @@ fn overlay_onto(spec: &mut ModelSpec, overlay: &Capabilities) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn served() -> ProviderId {
+        ProviderId::declare("databricks").expect("declares")
+    }
 
     fn anthropic() -> ProviderId {
         ProviderId::catalog("anthropic").expect("rig lists anthropic")
@@ -518,5 +573,76 @@ mod tests {
                 default: None,
             }
         );
+    }
+
+    #[test]
+    fn facts_as_relabels_an_exact_entry_without_pricing() {
+        let (facts, from, listed) = facts_as(
+            anthropic(),
+            served(),
+            "claude-haiku-5-5",
+            "system.ai.claude-haiku-5-5",
+        )
+        .expect("listed");
+        assert_eq!(from, "claude-haiku-5-5");
+        assert!(listed);
+        let spec = facts.spec().expect("bound");
+        assert_eq!(spec.id, "system.ai.claude-haiku-5-5");
+        assert_eq!(spec.display_name, "system.ai.claude-haiku-5-5");
+        assert!(spec.max_output_tokens.is_some());
+        assert_eq!(spec.pricing, None);
+        assert_eq!(spec.details.cost, Default::default());
+        assert!(spec.provider.is_declared());
+        assert_eq!(spec.provider.vendor(), "databricks");
+        let found = facts
+            .for_model("databricks", "system.ai.claude-haiku-5-5")
+            .expect("answers under the wire's name");
+        assert_eq!(found.max_output_tokens, spec.max_output_tokens);
+    }
+
+    #[test]
+    fn facts_as_finds_a_dashed_gpt_id_at_its_dotted_entry() {
+        let openai = ProviderId::catalog("openai").expect("rig lists openai");
+        let (facts, from, listed) =
+            facts_as(openai, served(), "gpt-5-6-luna", "system.ai.gpt-5-6-luna").expect("listed");
+        assert_eq!(from, "gpt-5.6-luna");
+        assert!(listed);
+        let spec = facts.spec().expect("bound");
+        assert_eq!(spec.id, "system.ai.gpt-5-6-luna");
+        assert_eq!(spec.pricing, None);
+    }
+
+    #[test]
+    fn facts_as_takes_a_dashed_gpt_5_1_from_its_own_entry() {
+        let openai = ProviderId::catalog("openai").expect("rig lists openai");
+        let own = Catalog::builtin()
+            .get(openai, "gpt-5.1")
+            .expect("listed")
+            .spec
+            .context_window;
+        let (facts, from, listed) =
+            facts_as(openai, served(), "gpt-5-1", "system.ai.gpt-5-1").expect("listed");
+        assert_eq!(from, "gpt-5.1");
+        assert!(listed);
+        assert_eq!(facts.spec().expect("bound").context_window, own);
+    }
+
+    #[test]
+    fn dotted_version_joins_only_short_adjacent_digit_tokens() {
+        assert_eq!(
+            dotted_version("gemini-3-5-flash").as_deref(),
+            Some("gemini-3.5-flash")
+        );
+        assert_eq!(
+            dotted_version("claude-haiku-4-5").as_deref(),
+            Some("claude-haiku-4.5")
+        );
+        assert_eq!(dotted_version("gpt-5-mini"), None);
+    }
+
+    #[test]
+    fn facts_as_has_nothing_for_an_unknown_id() {
+        assert!(facts_as(anthropic(), served(), "mystery", "system.ai.mystery").is_none());
+        assert!(facts_as(anthropic(), served(), "glm-5-3", "system.ai.glm-5-3").is_none());
     }
 }

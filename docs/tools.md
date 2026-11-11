@@ -449,7 +449,7 @@ Search reaches the model in one of two ways, in this order:
    `anthropic` accounts on the Anthropic API (`api.anthropic.com`, the default) and for
    [`claude-subscription`](claude-subscription.md#web-search) accounts. The search runs
    inside the model's response, and the model cites what it found. Other hosts of the kind (a
-   gateway, Databricks) are unverified, so they use it only with `[websearch] native = "on"`, and
+   gateway, a `databricks` workspace) are unverified, so they use it only with `[websearch] native = "on"`, and
    `native = "off"` never uses it. It is offered only while no `deny` or `ask` rule covers
    `websearch` and no [`pre_tool_use` hook](hooks.md) could (one with no `matcher`, a `matcher`
    naming `websearch`, or one whose matcher cannot be read), since a hook never sees a search the

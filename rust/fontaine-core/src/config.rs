@@ -382,11 +382,11 @@ pub struct Account {
     pub context_tokens: Option<u32>,
     /// `ollama` only: `false` asks a thinking model to answer without reasoning.
     pub think: Option<bool>,
-    /// `anthropic`, `openrouter` and `opencode-go` only: whether requests carry cache
-    /// breakpoints. Unset means the kind's default.
+    /// `anthropic`, `openrouter`, `opencode-go` and `databricks` only: whether requests carry
+    /// cache breakpoints. Unset means the kind's default.
     pub prompt_caching: Option<bool>,
-    /// `anthropic`, `openrouter` and `opencode-go` only: the lifetime of a cached prefix; `"5m"`
-    /// when unset.
+    /// `anthropic`, `openrouter`, `opencode-go` and `databricks` only: the lifetime of a cached
+    /// prefix; `"5m"` when unset.
     pub cache_ttl: Option<CacheTtl>,
     /// `openai-compatible` only: where to read the provider's own subscription quota for the
     /// status bar. Sends the account's key to `<base_url>/usages`.

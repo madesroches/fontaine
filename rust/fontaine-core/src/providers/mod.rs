@@ -24,12 +24,14 @@ pub mod anthropic;
 pub mod cache_minimum;
 mod cache_wire;
 pub mod claude_subscription;
+pub mod databricks;
 pub mod derived_facts;
 pub mod device_flow;
 pub(crate) mod gateway;
 pub mod gemini;
 pub mod kimi;
 pub mod kimi_quota;
+pub(crate) mod multi_wire;
 pub mod ollama;
 pub mod openai;
 pub mod openai_compatible;
@@ -407,6 +409,7 @@ const PROVIDERS: &[&dyn Provider] = &[
     &kimi::Kimi,
     &ollama::Ollama,
     &opencode_go::OpencodeGo,
+    &databricks::Databricks,
     &openrouter::OpenRouter,
     &claude_subscription::ClaudeSubscription,
 ];
