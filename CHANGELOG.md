@@ -8,6 +8,13 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- MCP URL-mode elicitation. When a server asks you to open a link, the terminal UI shows the
+  server's message, the link and a warning that it leads to an external site the server chose,
+  and opens it in your default browser only after you confirm with `y`; every request is
+  confirmed, there is no "always allow". Only `http` and `https` links are accepted, any other
+  scheme is declined before you are asked. A headless run, AFK mode, the doctor probe and a
+  subagent's call answer `cancel` without showing anything (#536).
+
 - MCP resources and prompts. Two always-registered built-in tools, `list_mcp_resources` and
   `read_mcp_resource`, both `arbitrary`, read the resources of connected servers that declared
   the `resources` capability; listings are pulled after connect and refreshed on
