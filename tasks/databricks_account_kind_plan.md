@@ -398,3 +398,18 @@ Against a real workspace (needs a Databricks token, so not in CI). Run with an a
    not larger than Claude Code's. A failing model blocks the PR until the gap is fixed, or traced
    to the gateway rather than to Fontaine's requests (then recorded in the PR and filed as a
    follow-up).
+
+### Manual verification results (2026-11-11, branch build, one live workspace)
+
+- `fontaine models`: 58 `system.ai.*` chat models listed through the UC model-services API; no embedding or `anthropic-aigw-*` entries.
+- Tool-calling turns succeeded on every wire: `system.ai.claude-haiku-5-5` (Messages), `system.ai.gpt-5-6-luna` (Responses), `system.ai.glm-5-3` (Chat), `system.ai.gemini-3-5-flash` (Gemini, Bearer with no `key=`), and `system.ai.glm-5-3` forced onto Messages with `wires` (beta header path).
+- `-c` continuation on `system.ai.claude-haiku-5-5`: 11,777 of 11,790 input tokens read from cache.
+- `cache-bench` against `claude -p` (Claude Code 2.1.322) on the same gateway, scorecards in `evals/scorecards/databricks-cache-{sonnet,opus,haiku}.json`:
+
+  | Model | Steady-state write ratio | Base context (Fontaine / Claude Code) | Total input (Fontaine / Claude Code) |
+  |---|---|---|---|
+  | Sonnet 5.5 | 0.95 | 11,850 / 17,851 | about 173k / 220k |
+  | Opus 5.5 | 0.95 | 11,854 / 17,974 | about 173k / 220k |
+  | Haiku 5.5 | 0.95 | 11,847 / 18,631 | about 173k / 222k |
+
+  Every run is under the 1.25 threshold. Fontaine's cache-read share of input is higher than Claude Code's (about 84% vs. 80%).
