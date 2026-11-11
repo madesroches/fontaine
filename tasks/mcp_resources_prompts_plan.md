@@ -71,9 +71,6 @@ Phase 5 (connect, lifecycle, tool registration, elicitation, `/mcp reconnect`).
 
 ### Discovery
 
-`client_config()` in `fontaine-tools/src/mcp/servers.rs` additionally declares the `resources`
-and `prompts` client capabilities (subscribe: false — listings are pulled at connect, not pushed).
-
 After a server connects (and on reconnect), the core pulls both listings once, alongside the
 existing `tools/list` flow:
 
@@ -114,9 +111,7 @@ the tools crate stays free of runtime types.
 - `ListMcpResources() -> [{server, uri, name, description, mime_type}]` across all connected
   servers that declared the resources capability; empty (with an explanatory line) when none did.
   Read-only in spirit but `Arbitrary` in class: the *listing* is server-declared text and its
-  read is a server round trip, so it takes the same gate as everything else MCP. The `Arbitrary`
-  class costs a guardian judgment per listing in `auto`; accepting that keeps the "MCP is never
-  fast-pathed" invariant uniform instead of carving out an exception.
+  read is a server round trip, so it takes the same gate as everything else MCP.
 - `ReadMcpResource(server: string, uri: string) -> contents` — reads one resource through
   `connection.read_resource(uri)` and renders text and blob contents (blobs noted with their
   mime type and size, matching how the model is told about images). Unknown server or uri is a
@@ -195,8 +190,7 @@ tools with their own names; MCP prompt invocations record as user messages like 
 
 ## Implementation Steps
 
-1. **fontaine-tools — capabilities and listings.** Declare `resources` + `prompts` in
-   `client_config()`; add a `Listings` type (`resources`, `prompts` per server) and a
+1. **fontaine-tools — listings.** Add a `Listings` type (`resources`, `prompts` per server) and a
    `pull_listings(connection) -> Listings` helper using `resources()` /
    `peer().list_all_prompts()`; extend `MetaTap` to forward `resources/list_changed` and
    `prompts/list_changed` notifications to a callback. Store listings on `Connected` (or in a
@@ -237,7 +231,7 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
 
 ## Files to Modify
 
-- `rust/fontaine-tools/src/mcp/servers.rs` — capabilities, listings, notification forwarding
+- `rust/fontaine-tools/src/mcp/servers.rs` — listings, notification forwarding
 - `rust/fontaine-tools/src/mcp/meta.rs` — list_changed observation
 - `rust/fontaine-tools/src/mcp.rs`, `rust/fontaine-tools/src/mcp/output.rs` — re-exports, read capping reuse
 - `rust/fontaine-tools/src/builtins.rs`, `rust/fontaine-tools/src/descriptor.rs` — the two tools + descriptor rows (and its pinned tests)
@@ -246,7 +240,7 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
 - `rust/fontaine-core/src/tools.rs` — registry field
 - `rust/fontaine-core/tests/choke_point.rs` — registry count 12 → 14
 - `rust/fontaine-core/src/prompt.rs`, `rust/fontaine-core/prompts/system_prompt.md` — system prompt section
-- `rust/fontaine-tui/src/complete.rs`, `app.rs`, `view.rs`, `ui/mod.rs` — mention candidates
+- `rust/fontaine-tui/src/complete.rs`, `app.rs`, `view.rs`, `ui/mod.rs`, `linear.rs` — mention candidates (the `linear.rs` tests build `CompletionList` literals and follow the step-5 candidate change)
 - `rust/fontaine-tui/src/lib.rs`, `ui/commands/plugin.rs`, `ui/mod.rs`, `ui/turn.rs` — prompt commands
 - `rust/fontaine-tui/src/reports.rs` — `/mcp` counts
 - `rust/fontaine/examples/repo_mcp_server.rs` — manual-verification server
