@@ -229,7 +229,7 @@ async fn a_claude_turn_without_a_user_cap_sends_the_catalogs_output_limit() {
 }
 
 #[tokio::test]
-async fn facts_are_bound_under_the_served_id_on_every_wire() {
+async fn facts_are_bound_under_the_served_id_on_the_responses_and_messages_wires() {
     let server = MockServer::start().await;
     let w = world_with(
         &server,

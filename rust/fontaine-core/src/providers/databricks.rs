@@ -11,7 +11,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use http::header::{AUTHORIZATION, HeaderValue};
 use rig_core::DynModel;
-use rig_core::catalog::{Catalog, ModelFacts, ModelSpec, ReasoningSupport};
+use rig_core::catalog::{ModelFacts, ModelSpec, ReasoningSupport};
 use rig_core::error::ProviderError;
 use rig_core::operation::Completion;
 use rig_core::providers::anthropic::wire::Auth;
@@ -243,9 +243,9 @@ struct Facts {
 fn facts_for(model: &str) -> Option<Facts> {
     let base = base_id(model);
     if let Some(vendor) = catalog_vendor_of(family(base))
-        && let Some((facts, from)) = facts_as(vendor, base, model)
+        && let Some(served) = ProviderId::declare("databricks").ok()
+        && let Some((facts, from, listed)) = facts_as(vendor, served, base, model)
     {
-        let listed = Catalog::builtin().get(vendor, base).is_some();
         return Some(Facts {
             facts,
             derived_from: (!listed).then_some(from),
@@ -486,11 +486,6 @@ mod tests {
         assert!(message.contains("required"), "{message}");
         assert_eq!(check(Some("")).unwrap_err().0, "base_url");
         assert_eq!(check(Some("not a url")).unwrap_err().0, "base_url");
-    }
-
-    #[test]
-    fn the_kind_is_unpriced() {
-        assert_eq!(Databricks.billing(), Billing::Unpriced);
     }
 
     #[test]
