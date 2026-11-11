@@ -113,7 +113,7 @@ without one is refused from project and project-local files. For those scopes:
 | `[network]` | no | no | yes |
 | `[websearch]` | no | no | yes |
 | `[models.roles]` | no | no | yes |
-| `[model] model` | no | yes | yes |
+| `[model] model`, `effort`, `max_output_tokens` | no | yes | yes |
 | `[guardian] model`, `profile`, `timeout_secs`, `confidence_threshold`, `cache` | no | yes | yes |
 | `[guardian] scanner`, `scanner_command`, `scanner_model_path`, `scanner_hf_token_env` | no | no | no |
 | `[feedback]` | no | no | yes |
@@ -583,6 +583,7 @@ max_results = 8
 |---|---|---|
 | `model` | The session model as `<account>/<model>`, a [role](#modelsroles) name, or an ordered list of them. It is shorthand for the `main` role, so setting it and `[models.roles] main` in one file is an error. `--model` overrides it. There is no default model: a run with neither is a configuration error (exit code 2) that names both. | unset |
 | `effort` | The main agent's reasoning effort: `off`, `low`, `medium`, `high` or `max`. `--effort` overrides it and `/effort` changes it for a session. Fontaine passes it through rig's portable setting, which maps it onto the provider's own parameter. The levels a model takes come from rig's catalog; a derived model's come from the listed model it was derived from, and on `claude-subscription` from the flags the Claude CLI reports for it. Unset sends no reasoning parameter, so the model thinks at its own default. A level the model or its endpoint cannot take (a non-reasoning model, a level the catalog does not list for it, or a generic `openai-compatible` gateway, which has no known mapping) is left out of the request with a one-time warning, and the run goes on. Subagents use it too, unless their type sets its own. The guardian is not affected: it always runs with thinking off. Not settable from the shared project file. | unset |
+| `max_output_tokens` | The most output tokens one model call of the main agent or a subagent may produce. By default every call sends the model's own output limit, else 32000 (nothing is sent on `ollama`, `anthropic` or `claude-subscription` when the limit is unknown, so the daemon's or the wire's own default applies). A value lowers the cap but never raises it past the model's known limit, and is clamped per model, so subagents on other models stay within theirs. It does not apply to the guardian or `/btw`, which keep their own caps. A small-context local server (vLLM, for example) rejects a request whose prompt plus cap exceeds its context; set this lower for it. Not settable from the shared project file. Must be at least 1. | unset |
 
 ### `[models.roles]`
 

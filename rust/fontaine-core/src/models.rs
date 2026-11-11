@@ -320,6 +320,26 @@ impl ModelHandle {
         (Some(options), None)
     }
 
+    /// The output cap one turn on this model sends: the user's cap clamped to the model's known
+    /// limit, else that limit, else `FALLBACK_MAX_OUTPUT_TOKENS`. `None` (send nothing) with no
+    /// known limit and no user cap on `ollama` (the daemon's own default is unbounded) and on the
+    /// `anthropic` and `claude-subscription` kinds (the wire fills it in itself).
+    pub fn turn_max_tokens(&self, cap: Option<u32>) -> Option<u64> {
+        let limit = self
+            .completion
+            .spec()
+            .and_then(|spec| spec.max_output_tokens);
+        match (cap, limit) {
+            (Some(cap), Some(limit)) => Some(u64::from(cap.min(limit))),
+            (Some(cap), None) => Some(u64::from(cap)),
+            (None, Some(limit)) => Some(u64::from(limit)),
+            (None, None) => match self.kind.as_str() {
+                "ollama" | "anthropic" | "claude-subscription" => None,
+                _ => Some(FALLBACK_MAX_OUTPUT_TOKENS),
+            },
+        }
+    }
+
     /// `generation_options`, telling the human once through `state` when the level is refused.
     pub fn generation_options_warned(
         &self,
@@ -591,6 +611,9 @@ fn unknown_model(reference: &ModelRef, available: &[String]) -> ModelError {
         }
     ))
 }
+
+/// The output cap a turn sends when the model's own limit is unknown and the user set none.
+pub const FALLBACK_MAX_OUTPUT_TOKENS: u64 = 32_000;
 
 /// How long listing one account's models may take while a model is being resolved. The kinds that
 /// discover through a local program need more than a picker's wait, but nothing is unbounded.

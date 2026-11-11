@@ -60,6 +60,7 @@ async fn say(built: &Built, prompt: &str) {
             provider: "mock".to_string(),
             native_search: false,
             generation_options: None,
+            max_tokens: None,
         },
         &mut |_| Flow::Continue,
     )

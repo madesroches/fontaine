@@ -659,6 +659,7 @@ async fn the_rebuild_before_a_turn_follows_afk_in_both_directions() {
                 provider: "mock".to_string(),
                 native_search: false,
                 generation_options: None,
+                max_tokens: None,
             },
             &mut seen,
         )

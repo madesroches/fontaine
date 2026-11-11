@@ -55,6 +55,7 @@ async fn first_prompt(built: &common::runtime::Built) -> String {
             provider: "mock".to_string(),
             native_search: false,
             generation_options: None,
+            max_tokens: None,
         },
         &mut seen,
     )

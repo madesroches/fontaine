@@ -400,6 +400,7 @@ async fn a_failed_main_model_call_emits_an_api_error_without_the_message() {
             provider: "mock".to_string(),
             native_search: false,
             generation_options: None,
+            max_tokens: None,
         },
         &mut |_| Flow::Continue,
     )
@@ -443,6 +444,7 @@ async fn a_failed_subagent_call_reports_the_subagent_as_its_source() {
             provider: "mock".to_string(),
             native_search: false,
             generation_options: None,
+            max_tokens: None,
             span: tracing::Span::none(),
         },
         None,
@@ -487,6 +489,7 @@ async fn reaching_the_turn_limit_is_not_an_api_error() {
             provider: "mock".to_string(),
             native_search: false,
             generation_options: None,
+            max_tokens: None,
         },
         &mut |_| Flow::Continue,
     )

@@ -339,6 +339,10 @@ pub const KEYS: &[KeyRow] = &[
         r.effort,
         "unset (the model's own default)"
     )),
+    row!("model.max_output_tokens", Scalar, |c, _| unset_or(
+        c.max_output_tokens,
+        "unset (the model's output limit, else 32000)"
+    )),
     row!("accounts", Map, |c, _| names(c.accounts.keys())),
     row!("models.roles", Map, |c, _| names(c.roles.keys())),
     row!("network.https_proxy", Scalar, |c, _| {
@@ -764,6 +768,10 @@ mod tests {
         assert_eq!(
             effective("model.effort", &c),
             "unset (the model's own default)"
+        );
+        assert_eq!(
+            effective("model.max_output_tokens", &c),
+            "unset (the model's output limit, else 32000)"
         );
         assert_eq!(effective("guardian.profile", &c), "full");
         assert_eq!(effective("guardian.scanner", &c), "off");
