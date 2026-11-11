@@ -579,38 +579,81 @@ async fn login(
     Ok(())
 }
 
-/// Accepts one connection and reads the request target of its first request: the path and query
-/// of the redirect. Answers the browser with a page it can close.
+/// Accepts connections until one carries the redirect and returns its path and query. Each
+/// connection is served on its own task so a browser's idle speculative pre-connect or a stray
+/// request (another path, no `state`) cannot stall or abort the sign-in; those get a 404.
 async fn wait_for_callback(listener: tokio::net::TcpListener) -> Result<String, Failure> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    loop {
+        tokio::select! {
+            accepted = listener.accept() => {
+                let (socket, _) = accepted
+                    .map_err(|e| Failure::io("cannot accept the OAuth callback", &e))?;
+                tokio::spawn(serve_callback_connection(socket, tx.clone()));
+            }
+            target = rx.recv() => {
+                if let Some(target) = target {
+                    return Ok(target);
+                }
+            }
+        }
+    }
+}
+
+/// Whether `target` is `/callback?...` carrying `state` and a `code` or `error`.
+fn is_callback_target(target: &str) -> bool {
+    let Some(query) = target.strip_prefix("/callback?") else {
+        return false;
+    };
+    let has = |key: &str| {
+        query
+            .split('&')
+            .any(|pair| pair.split('=').next() == Some(key))
+    };
+    has("state") && (has("code") || has("error"))
+}
+
+async fn serve_callback_connection(
+    mut socket: tokio::net::TcpStream,
+    found: tokio::sync::mpsc::UnboundedSender<String>,
+) {
     use tokio::io::AsyncReadExt;
     use tokio::io::AsyncWriteExt;
 
-    let (mut socket, _) = listener
-        .accept()
-        .await
-        .map_err(|e| Failure::io("cannot accept the OAuth callback", &e))?;
     let mut buf = vec![0u8; 8192];
-    let read = socket
-        .read(&mut buf)
-        .await
-        .map_err(|e| Failure::io("cannot read the OAuth callback", &e))?;
-    let text = String::from_utf8_lossy(&buf[..read]);
-    let Some(target) = text.lines().next().and_then(|line| line.split(' ').nth(1)) else {
-        return Err(Failure::failed(
-            "the OAuth callback was not an HTTP request".to_string(),
-        ));
+    let mut len = 0;
+    // The request line may arrive in several reads; an idle or closed socket ends the task.
+    while !buf[..len].contains(&b'\n') && len < buf.len() {
+        match socket.read(&mut buf[len..]).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => len += n,
+        }
+    }
+    let text = String::from_utf8_lossy(&buf[..len]);
+    let mut parts = text.lines().next().unwrap_or_default().split(' ');
+    let target = match (parts.next(), parts.next()) {
+        (Some("GET"), Some(target)) if is_callback_target(target) => Some(target.to_string()),
+        _ => None,
     };
-    let target = target.to_string();
-    let body = b"Sign-in received; you can close this tab and return to Fontaine.";
+    let (status, body): (&str, &[u8]) = if target.is_some() {
+        (
+            "200 OK",
+            b"Sign-in received; you can close this tab and return to Fontaine.",
+        )
+    } else {
+        ("404 Not Found", b"Not found.")
+    };
     let response = format!(
-        "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\ncontent-type: text/plain\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
         body.len()
     );
-    let mut writer = socket;
-    let _ = writer.write_all(response.as_bytes()).await;
-    let _ = writer.write_all(body).await;
-    let _ = writer.shutdown().await;
-    Ok(target)
+    let _ = socket.write_all(response.as_bytes()).await;
+    let _ = socket.write_all(body).await;
+    let _ = socket.shutdown().await;
+    if let Some(target) = target {
+        // The receiver is gone only once the login has already finished.
+        let _ = found.send(target);
+    }
 }
 
 fn logout(dirs: &Dirs, args: &crate::cli::McpLogoutArgs) -> Result<(), Failure> {

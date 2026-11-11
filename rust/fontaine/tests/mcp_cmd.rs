@@ -467,6 +467,19 @@ async fn login_runs_the_oauth_flow_and_logout_clears_the_entry() {
         .expect("the authorize URL carries the state")
         .to_string();
 
+    // A speculative pre-connect that never sends, and a stray request, must not end the login.
+    let _idle = tokio::net::TcpStream::connect("127.0.0.1:3111")
+        .await
+        .unwrap();
+    let stray = reqwest::get("http://127.0.0.1:3111/favicon.ico")
+        .await
+        .unwrap();
+    assert_eq!(stray.status(), 404);
+    let no_state = reqwest::get("http://127.0.0.1:3111/callback?code=x")
+        .await
+        .unwrap();
+    assert_eq!(no_state.status(), 404);
+
     let callback = format!("http://127.0.0.1:3111/callback?code=code-1&state={state}");
     let response = reqwest::get(&callback).await.unwrap();
     assert_eq!(response.status(), 200, "the callback page answers");

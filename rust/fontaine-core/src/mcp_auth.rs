@@ -115,16 +115,16 @@ impl FileCredentialStore {
 #[async_trait::async_trait]
 impl CredentialStore for FileCredentialStore {
     async fn load(&self) -> Result<Option<StoredCredentials>, AuthError> {
-        self.locked(|lock| {
-            let entry = credentials::mcp_get_locked(&self.data_dir, &self.name, lock)?;
-            let Some(json) = entry.and_then(|entry| entry.credentials) else {
-                return Ok(None);
-            };
-            // A string this build cannot parse (written by a newer rmcp) is a missing login, not
-            // a store failure: the server goes unauthenticated and the 401 names the login path.
-            Ok(serde_json::from_str(&json).ok())
-        })
-        .await
+        // Writers replace the file atomically, so a read needs no lock; this also means a load
+        // under the refresh guard cannot double-acquire.
+        let entry = credentials::mcp_get(&self.data_dir, &self.name)
+            .map_err(|e| store_error("credentials.toml", e))?;
+        let Some(json) = entry.and_then(|entry| entry.credentials) else {
+            return Ok(None);
+        };
+        // A string this build cannot parse (written by a newer rmcp) is a missing login, not
+        // a store failure: the server goes unauthenticated and the 401 names the login path.
+        Ok(serde_json::from_str(&json).ok())
     }
 
     async fn save(&self, stored: StoredCredentials) -> Result<(), AuthError> {
