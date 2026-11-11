@@ -12,6 +12,7 @@
 //! cargo, whose own build lock serializes them, and only the first path is cached.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
@@ -31,9 +32,10 @@ static BUILTIN_TARGETS: OnceLock<Vec<String>> = OnceLock::new();
 /// Returns the path to the built example `name` of workspace package `package`. The first
 /// call builds it; concurrent first calls may each invoke cargo, whose own build lock
 /// serializes them, and only the first resulting path is cached. Panics with cargo's
-/// combined output if the build fails. Panics early when the outer build targeted a custom
-/// JSON specification: cargo exports it to the test process only as the spec file's stem,
-/// which the nested build cannot resolve back to the file.
+/// combined output if the build fails. Panics early when the outer build targeted a
+/// custom JSON specification that cannot be resolved back to its file: cargo exports the
+/// target to the test process only as the spec file's stem, which resolves only against
+/// a spec file in this crate's directory or on RUST_TARGET_PATH.
 pub fn example_bin(package: &str, name: &str) -> PathBuf {
     let key = (package.to_string(), name.to_string());
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
@@ -72,9 +74,11 @@ pub fn example_bin(package: &str, name: &str) -> PathBuf {
     if let Some(triple) = &layout.triple {
         // A triple from CARGO_BUILD_TARGET or config is inherited by the child, but an explicit
         // command-line --target is not; without the flag the nested build would place the
-        // example where this helper does not look.
-        assert_nested_target_resolvable(triple, Path::new(env!("CARGO_MANIFEST_DIR")));
-        cmd.arg("--target").arg(triple);
+        // example where this helper does not look. A custom JSON spec is forwarded by
+        // absolute path so the nested build need not resolve the stem itself.
+        let target = assert_nested_target_resolvable(triple, Path::new(env!("CARGO_MANIFEST_DIR")));
+        cmd.arg("--target")
+            .arg(target.as_deref().unwrap_or_else(|| Path::new(triple)));
     }
     let out = cmd.output().unwrap_or_else(|e| {
         panic!(
@@ -133,41 +137,80 @@ fn builtin_targets() -> &'static [String] {
     })
 }
 
-/// Panics when the nested `cargo build --target <triple>` cannot resolve `triple`.
-/// Cargo exports an outer `cargo test --target <spec>.json` to the test process only as
-/// the spec file's stem, which the nested build resolves again only as a built-in
-/// triple, a spec file in the nested build's working directory, or through
-/// RUST_TARGET_PATH. Rejecting any other stem here keeps the error actionable;
-/// otherwise the nested build fails with cargo's opaque target-not-found output.
+/// Determines the `--target` value forwarded to the nested build: `None` for a built-in
+/// target triple (the triple name itself is forwarded), or the canonical absolute path
+/// of a custom JSON spec located in the nested build's working directory (`package_dir`)
+/// or on RUST_TARGET_PATH. Panics when a non-built-in stem resolves to no spec file:
+/// cargo exports an outer `cargo test --target <spec>.json` to the test process only as
+/// the spec file's stem, and rejecting an unresolvable stem here keeps the error
+/// actionable; otherwise the nested build fails with cargo's opaque target-not-found
+/// output.
+///
+/// RUST_TARGET_PATH entries are resolved against the test process's working directory —
+/// where the outer cargo read them — and the spec is forwarded by absolute path, because
+/// the nested build runs from `package_dir` and would resolve relative entries against
+/// that instead. Forwarding the absolute path also drops the nested build's dependence
+/// on RUST_TARGET_PATH entirely.
 ///
 /// A custom spec must therefore not reuse a built-in target triple's filename stem (a
 /// `x86_64-unknown-linux-gnu.json` under `--target` is indistinguishable from a real
-/// built-in `x86_64-unknown-linux-gnu` run): the built-in check above returns early and
-/// the nested build resolves the stem to the built-in spec, silently building for the
-/// wrong target. The stem-only forwarding makes this case mechanically undetectable
-/// in-process, so it is rejected by convention rather than here.
-fn assert_nested_target_resolvable(triple: &str, package_dir: &Path) {
+/// built-in `x86_64-unknown-linux-gnu` run): the built-in check returns early and the
+/// nested build resolves the stem to the built-in spec, silently building for the wrong
+/// target. The stem-only export makes this case mechanically undetectable in-process, so
+/// it is rejected by convention rather than here.
+fn assert_nested_target_resolvable(triple: &str, package_dir: &Path) -> Option<PathBuf> {
+    resolve_nested_target(
+        triple,
+        package_dir,
+        std::env::var_os("RUST_TARGET_PATH").as_deref(),
+        &std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    )
+}
+
+/// `rust_target_path` is the RUST_TARGET_PATH value the test process inherited from the
+/// outer cargo invocation, and `cwd` is the test process's working directory, the base
+/// relative entries resolve against. Injectable so the resolution logic stays testable
+/// without mutating process-global environment.
+fn resolve_nested_target(
+    triple: &str,
+    package_dir: &Path,
+    rust_target_path: Option<&OsStr>,
+    cwd: &Path,
+) -> Option<PathBuf> {
     if builtin_targets().iter().any(|t| t == triple) {
-        return;
+        return None;
     }
     let spec = Path::new(triple);
     let spec_json = PathBuf::from(format!("{triple}.json"));
-    let spec_resolves = |dir: &Path| dir.join(spec).is_file() || dir.join(&spec_json).is_file();
-    if spec_resolves(package_dir) {
-        return;
-    }
-    if let Some(paths) = std::env::var_os("RUST_TARGET_PATH")
-        && std::env::split_paths(&paths).any(|dir| spec_resolves(&dir))
-    {
-        return;
-    }
-    panic!(
-        "custom JSON target spec `{triple}` is not supported by fontaine-testkit: cargo \
-         forwards the outer `cargo test --target <spec>.json` to the test process only as \
-         the file stem, and the nested `cargo build --target {triple}` cannot resolve it. \
-         Run the tests with a built-in target triple, or point RUST_TARGET_PATH at the \
-         spec's directory."
-    );
+    let locate = |dir: &Path| -> Option<PathBuf> {
+        [spec, spec_json.as_path()]
+            .into_iter()
+            .map(|name| dir.join(name))
+            .find(|path| path.is_file())
+    };
+    let found = locate(package_dir).or_else(|| {
+        rust_target_path.and_then(|paths| {
+            std::env::split_paths(paths)
+                .map(|dir| {
+                    if dir.is_absolute() {
+                        dir
+                    } else {
+                        cwd.join(dir)
+                    }
+                })
+                .find_map(|dir| locate(&dir))
+        })
+    });
+    let found = found.unwrap_or_else(|| {
+        panic!(
+            "custom JSON target spec `{triple}` cannot be resolved to a spec file: cargo \
+             exports the outer `cargo test --target <spec>.json` to the test process only \
+             as the file stem. Run the tests with a built-in target triple, place the spec \
+             in {}, or add its directory to RUST_TARGET_PATH as an absolute path.",
+            package_dir.display()
+        )
+    });
+    Some(found.canonicalize().unwrap_or(found))
 }
 
 /// The layout of a test binary's path: `target[<triple>]/<profile>/deps/<test>`.
@@ -221,8 +264,9 @@ impl Layout {
             // `--target <host>` and `--target <foreign>` runs. For a custom JSON target
             // cargo uses the file stem — e.g. `foo` for `foo.json` — as both the output
             // segment and the target name, so it lands here too, where example_bin
-            // rejects forwarding it because the nested build cannot resolve the stem
-            // back to the spec file. Any other segment — however triple-like — is a
+            // resolves the stem back to the spec file and forwards its absolute path
+            // (see assert_nested_target_resolvable). Any other segment — however
+            // triple-like — is a
             // `--target-dir`/build config dir cargo does not export to the test
             // process, and stays the target dir.
             None => {
@@ -476,22 +520,101 @@ mod tests {
     fn custom_json_target_stem_is_detected_but_rejected_before_forwarding() {
         // An outer `cargo test --target foo.json` places the build under the file stem
         // `foo` and compiles the build target in as `foo`; the layout detects the segment
-        // as the outer target's dir, but example_bin must not forward the stem: cargo
-        // does not export the spec path to the test process, so the nested
-        // `cargo build --target foo` cannot resolve it and fails with an opaque error.
+        // as the outer target's dir, and example_bin must not forward the bare stem: no
+        // spec file named `fontaine-custom-json-stem[.json]` exists in the crate dir or
+        // on RUST_TARGET_PATH, so the nested build could not resolve it.
         let l = layout_with_target("/ws/target/foo/debug/deps/my_test", None, Some("foo")).unwrap();
         assert_eq!(l.target_dir, Path::new("/ws/target"));
         assert_eq!(l.triple.as_deref(), Some("foo"));
         assert_eq!(l.profile_dir, Path::new("/ws/target/foo/debug"));
         std::panic::catch_unwind(|| {
-            assert_nested_target_resolvable("fontaine-custom-json-stem", Path::new("/nonexistent"))
+            resolve_nested_target(
+                "fontaine-custom-json-stem",
+                Path::new("/nonexistent"),
+                None,
+                Path::new("/nonexistent"),
+            )
         })
         .expect_err("an unresolvable custom JSON target stem must be rejected, not forwarded");
     }
 
     #[test]
+    fn custom_spec_in_package_dir_resolves_to_absolute_path() {
+        let dir = unique_temp_dir("package-dir-spec");
+        std::fs::write(dir.join("fontaine-test-spec.json"), "{}").unwrap();
+        let resolved = resolve_nested_target(
+            "fontaine-test-spec",
+            &dir,
+            None,
+            Path::new("/nonexistent-cwd"),
+        )
+        .expect("a spec in the nested build's working directory must resolve");
+        assert!(resolved.is_absolute());
+        assert_eq!(
+            resolved,
+            dir.canonicalize().unwrap().join("fontaine-test-spec.json")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relative_rust_target_path_entry_resolves_against_test_cwd() {
+        // Regression: the outer cargo reads relative RUST_TARGET_PATH entries against the
+        // test process's cwd, but the nested build runs from the package dir. The spec
+        // must be located against the test cwd and forwarded by absolute path.
+        let dir = unique_temp_dir("relative-rtp");
+        let specs = dir.join("specs");
+        std::fs::create_dir_all(&specs).unwrap();
+        std::fs::write(specs.join("fontaine-test-spec.json"), "{}").unwrap();
+        let resolved = resolve_nested_target(
+            "fontaine-test-spec",
+            Path::new("/nonexistent-package-dir"),
+            Some(OsStr::new("specs")),
+            &dir,
+        )
+        .expect("a spec behind a relative RUST_TARGET_PATH entry must resolve");
+        assert!(resolved.is_absolute());
+        assert_eq!(
+            resolved,
+            specs
+                .canonicalize()
+                .unwrap()
+                .join("fontaine-test-spec.json")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn absolute_rust_target_path_entry_resolves() {
+        let dir = unique_temp_dir("absolute-rtp");
+        std::fs::write(dir.join("fontaine-test-spec.json"), "{}").unwrap();
+        let resolved = resolve_nested_target(
+            "fontaine-test-spec",
+            Path::new("/nonexistent-package-dir"),
+            Some(dir.as_os_str()),
+            Path::new("/nonexistent-cwd"),
+        )
+        .expect("a spec behind an absolute RUST_TARGET_PATH entry must resolve");
+        assert_eq!(
+            resolved,
+            dir.canonicalize().unwrap().join("fontaine-test-spec.json")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn unique_temp_dir(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("fontaine-testkit-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
     fn builtin_build_target_passes_the_resolvability_check() {
-        assert_nested_target_resolvable(BUILD_TARGET, Path::new(env!("CARGO_MANIFEST_DIR")));
+        assert_eq!(
+            assert_nested_target_resolvable(BUILD_TARGET, Path::new(env!("CARGO_MANIFEST_DIR"))),
+            None
+        );
     }
 
     #[test]
