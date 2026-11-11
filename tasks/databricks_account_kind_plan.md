@@ -56,7 +56,7 @@ listed from the Unity Catalog model-services API.
 | Same Chat route, `system.ai.claude-haiku-5-5` | Works, with no cache reads (no markers on Chat). |
 | Same Chat route, `system.ai.gpt-5-6-luna` with tools | **400**: "Function tools with reasoning_effort are not supported ... use /v1/responses". Confirms that GPT must go to Responses. |
 | `openai` kind (Responses) at `.../ai-gateway/openai/v1` and `.../ai-gateway/codex/v1`, `system.ai.gpt-5-6-luna` | Both work and both report cache creation tokens. `/openai/v1/models` returns 400; `/codex/v1/models` returns an empty list. |
-| `gemini` kind at `.../ai-gateway/gemini` | 401 "Credential was not sent or was of an unsupported type": the gateway does not take `x-goog-api-key`, it wants Bearer. |
+| `gemini` kind at `.../ai-gateway/gemini` | 401 "Credential was not sent or was of an unsupported type": the gateway refused `?key=` auth (the stock `gemini` kind's request) and wants Bearer. |
 | Unity Catalog model-services listing | Not probed live (direct HTTP with the session token was out of scope for the probe harness). Shape taken from the `databricks/unity-gateway` source: `{"model_services": [{"name": "model-services/system.ai.<id>", "supported_api_types": [...]}], "next_page_token": ...}`, with `parent=schemas/system.ai` and `page_size` ≤ 100 required. |
 
 ## Design
@@ -162,8 +162,9 @@ explicitly. It also returns the `from` id, the catalog entry the facts came from
 `spec.provider = ProviderId::declare("databricks")` on the relabelled spec: rig's
 `ModelFacts::for_model(vendor, model)` returns a bound spec only when `spec.provider.is_declared()`
 or the vendor matches the asked name, and the wires ask under the dialect name `databricks`. That
-gives Claude a real `max_output_tokens` on the Messages and Responses wires (fixing the live
-`max_tokens` failure) and the model's reasoning/effort facts.
+gives Claude its catalog `max_output_tokens` on the Messages wire and the model's reasoning/effort
+facts. The kind alone avoids the live `max_tokens` failure (`turn_max_tokens` sends the 32k fallback
+for non-anthropic kinds and `compatible()` has a fixed default); `facts_as` supplies the catalog value.
 
 Models with no facts fall into the existing `turn_max_tokens` fallback: `databricks` is not in the
 `ollama | anthropic | claude-subscription` list, so `FALLBACK_MAX_OUTPUT_TOKENS` (32k) is sent. The
@@ -249,13 +250,22 @@ override.
    `list`, `catalog_vendor`, `facts_notice`), the non-Claude-on-Messages `BetaHeader` override, and the listing
    parser as a pure function (`parse_model_services(body) -> (ids, next_token)`). Register it in
    `PROVIDERS` and `mod.rs`. The provider dialog picks the kind up through the registry. Add a
-   `"databricks" => None` arm in `tests/providers.rs` (~line 331).
+   `"databricks" => None` arm in `tests/providers.rs` (~line 331), and special-case `databricks`
+   with a pathless `base_url` (e.g. `http://localhost:1`) in
+   `every_registered_name_round_trips_through_the_kind` and
+   `every_kind_but_the_arbitrary_gateway_names_a_catalog_vendor`, as they do for claude-subscription,
+   since `validate` refuses a base_url with a path.
 4. **Config wiring.** Update the kind enumerations in `config.rs` doc comments. Check the `wires`,
    `prompt_caching`, `cache_ttl` and `api_key_env` validation paths for `databricks`.
 5. **Min cacheable tokens.** Include `databricks` in `min_cacheable_tokens`
    (`providers/cache_minimum.rs:27`), stripping `system.ai.` / `databricks-` before the Claude match.
 6. **Docs.** See Documentation.
 7. **Tests.** See Testing Strategy.
+8. **cache-bench wording.** Update the `cache-bench` help text in
+   `rust/fontaine-evals/src/runner.rs` (~lines 65-91), the module doc in `cache_bench.rs` and the
+   "Prompt-cache bench" section of `evals/README.md` to say any Claude model on a Messages-wire
+   account (claude-subscription or databricks) works. `cache_bench.rs` and `run_cache_bench` do not
+   gate on account kind, so nothing there blocks a databricks run.
 
 ## Files to Modify
 
@@ -268,6 +278,8 @@ override.
 - `rust/fontaine-core/src/config.rs`
 - `rust/fontaine-core/tests/providers.rs`
 - `rust/fontaine-core/tests/databricks.rs` (new)
+- `rust/fontaine-evals/src/runner.rs`, `rust/fontaine-evals/src/cache_bench.rs` (wording only)
+- `evals/README.md`
 - `docs/configuration.md`, `docs/guardian.md`, `docs/tui.md`, `docs/telemetry.md`, `docs/tools.md`
 - `CHANGELOG.md` (by the `pr` step)
 
@@ -330,7 +342,7 @@ Unit tests (in `databricks.rs` / `derived_facts.rs` / `multi_wire.rs`):
 - `facts_as`: an exact Claude id gets a `max_output_tokens` and no pricing under the served id. A
   dashed GPT id derives from the dotted catalog entry. An unknown id gives `None`.
 - `facts_as`: the relabelled spec is declared `databricks`, so `completion("system.ai.claude-...").spec()`
-  returns the catalog `max_output_tokens` on Messages and Responses.
+  returns the catalog `max_output_tokens` on Messages (and on Responses via a `wires` override).
 - `OUTPUT_CAPS`: GLM with no user cap sends 25k, a lower user cap wins, and a non-GLM open model
   sends 32k.
 - `validate`: a base URL with a path is refused, naming the key; a missing or empty `base_url` is
@@ -343,10 +355,11 @@ modelled on `tests/opencode_go.rs`):
 
 - Each wire hits its path (`/ai-gateway/anthropic/v1/messages`, `/ai-gateway/openai/v1/responses`,
   `/ai-gateway/gemini/v1beta/models/...`, `/ai-gateway/mlflow/v1/chat/completions`) with
-  `Authorization: Bearer <key>`, the Gemini request carries no `x-goog-api-key` (pins the live
-  401), and the Claude request carries no `x-api-key`.
+  `Authorization: Bearer <key>`, the Gemini request carries `Authorization: Bearer <key>` and no non-empty `key=` query
+  parameter (pins the live 401), and the Claude request carries no `x-api-key`.
 - **Regression for the live `max_tokens` failure**: a `system.ai.claude-haiku-5-5` turn with no
-  user cap reaches the mock with a numeric `max_tokens`.
+  user cap reaches the mock with `max_tokens` equal to the catalog `max_output_tokens` for
+  claude-haiku-5-5.
 - The Claude request carries `cache_control` breakpoints by default, the `ttl: "1h"` form with
   `cache_ttl = "1h"`, and none with `prompt_caching = false`. The GPT, Gemini and Chat requests
   carry no `cache_control`.
@@ -372,3 +385,12 @@ Against a real workspace (needs a Databricks token, so not in CI). Run with an a
    (the Bearer-on-Gemini path was only verified to be refused without it).
 5. A non-Claude model forced onto Messages with `wires` (e.g. `wires = { "system.ai.glm-5-3" = "messages" }`)
    succeeds with a tool call, confirming `fine-grained-tool-streaming` pass-through.
+6. Token and cache efficiency against Claude Code on the same workspace (manual because it needs a
+   live workspace token and the real `claude` CLI). With `claude` configured against the same
+   workspace's Unity Gateway, run for Sonnet, Opus and Haiku:
+   `cargo run -p fontaine-evals -- cache-bench --model dbx/system.ai.claude-sonnet-5-5 --claude-model <same model as claude names it on the gateway> --out ../evals/scorecards/databricks-cache-sonnet.json`
+   (and `-opus`, `-haiku`). Pass when, for each model: the run is not flagged (steady-state
+   cache-write ratio, Fontaine over Claude Code, at most 1.25); Fontaine's total cache-read share of
+   input is not lower than Claude Code's by more than a few points; and Fontaine's base context is
+   not larger than Claude Code's. Any gap found is filed as a follow-up issue, not a blocker for
+   this kind.
