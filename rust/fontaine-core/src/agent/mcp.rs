@@ -657,6 +657,7 @@ impl AgentRuntime {
     /// The auth status of each configured server, for the `/mcp` listing's auth column: `n/a`
     /// for a stdio server, `ok` when usable credentials are stored, else `required`.
     pub fn mcp_auth(&self) -> Vec<(String, McpAuth)> {
+        let root = self.primary_root();
         self.config
             .mcp_servers
             .iter()
@@ -664,7 +665,31 @@ impl AgentRuntime {
                 let auth = if server.url.is_none() {
                     McpAuth::Na
                 } else if crate::mcp_auth::has_credentials(&self.setup.data_dir, name) {
-                    McpAuth::Ok
+                    // Credentials issued for another URL are refused at connect time, so they
+                    // are not a usable login for this declaration.
+                    let url = resolved_server(
+                        &self.config,
+                        name,
+                        &root,
+                        &self.setup.env,
+                        &self.setup.scrub_env,
+                    )
+                    .ok()
+                    .flatten()
+                    .and_then(|s| s.url);
+                    match crate::mcp_auth::stored_resource(&self.setup.data_dir, name) {
+                        Ok(Some(resource)) if url.as_deref().is_some_and(|u| u != resource) => {
+                            McpAuth::Required
+                        }
+                        Ok(_) => McpAuth::Ok,
+                        Err(e) => {
+                            self.approver.warn(&format!(
+                                "MCP server `{name}`: cannot read the stored credentials: {}",
+                                chain(&e)
+                            ));
+                            McpAuth::Required
+                        }
+                    }
                 } else {
                     McpAuth::Required
                 };

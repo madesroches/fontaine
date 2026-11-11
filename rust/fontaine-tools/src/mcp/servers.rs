@@ -519,6 +519,7 @@ async fn declared_headers(
     }
     if let Some(helper) = headers_helper {
         let output = tokio::process::Command::new(helper)
+            .kill_on_drop(true)
             .output()
             .await
             .map_err(|e| fail(spec, format!("cannot run the headers helper `{helper}`"), e))?;

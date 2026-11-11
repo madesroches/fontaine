@@ -280,7 +280,7 @@ but cannot point the helper anywhere new. Documented in `docs/mcp.md`.
   rejects discovered metadata/token/authorize endpoints at private, link-local, or
   link-local-metadata addresses unless the base MCP server URL is itself loopback, which is
   what a custom client loses over rmcp's default and what keeps the wiremock tests on
-  127.0.0.1 working.
+  127.0.0.1 working. The guard is replicated at the host-string level; DNS-resolution checks are not performed.
 - **`fontaine mcp list` keeps probing connections** (2026-11-10): an authenticated server is
   still probed over the network rather than trusting stored tokens; the probe simply surfaces
   the new `auth` status. (Resolves the plan's earlier open question.)

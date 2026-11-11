@@ -288,10 +288,11 @@ pub fn remove(data_dir: &Path, name: &str) -> Result<bool, ConfigError> {
     Ok(true)
 }
 
-/// The MCP server `name`'s OAuth entry, if one is stored.
+/// The MCP server `name`'s OAuth entry, if one is stored. Takes no lock: writers replace the file
+/// atomically, so a read sees a whole file, and a refresh holding the lock across a network call
+/// must not stall read-only callers. Not for read-modify-write; use [`mcp_get_locked`] there.
 pub fn mcp_get(data_dir: &Path, name: &str) -> Result<Option<McpEntry>, ConfigError> {
-    let lock = lock(data_dir)?;
-    mcp_get_locked(data_dir, name, &lock)
+    read_mcp_entry(data_dir, name)
 }
 
 /// [`mcp_get`] for a caller that already holds the lock, which it proves by passing it.
@@ -300,6 +301,10 @@ pub fn mcp_get_locked(
     name: &str,
     _lock: &Lock,
 ) -> Result<Option<McpEntry>, ConfigError> {
+    read_mcp_entry(data_dir, name)
+}
+
+fn read_mcp_entry(data_dir: &Path, name: &str) -> Result<Option<McpEntry>, ConfigError> {
     let path = credentials_path(data_dir);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
