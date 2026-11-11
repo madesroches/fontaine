@@ -15,6 +15,8 @@ pub type Calls = Arc<Mutex<Vec<(String, Option<JsonObject>)>>>;
 #[derive(Clone, Default)]
 pub struct Double {
     tools: Arc<Mutex<Vec<Tool>>>,
+    resources: Arc<Mutex<Vec<Resource>>>,
+    prompts: Arc<Mutex<Vec<Prompt>>>,
     peer: Arc<Mutex<Option<Peer<RoleServer>>>>,
     pub calls: Calls,
     /// A `slow` call has started once this is notified, and ends when `finish` is.
@@ -95,10 +97,47 @@ pub fn marked(mut tool: Tool) -> Tool {
     tool
 }
 
+/// A resource whose content is `contents of <uri>` when read.
+pub fn info_resource() -> Resource {
+    Resource::new("repo://info", "repo_info")
+        .with_description("Repository information")
+        .with_mime_type("text/plain")
+}
+
+/// A prompt taking a required `name` and an optional `mood`.
+pub fn greet_prompt() -> Prompt {
+    Prompt::new(
+        "greet",
+        Some("Greet someone"),
+        Some(vec![
+            PromptArgument::new("name").with_required(true),
+            PromptArgument::new("mood"),
+        ]),
+    )
+}
+
+/// A prompt whose message is assistant-role text: a client that only flattens user text must
+/// refuse it.
+pub fn assistant_prompt() -> Prompt {
+    Prompt::new("assistant-note", Some("A note from the assistant"), None)
+}
+
 impl Double {
     pub fn with_tools(tools: Vec<Tool>) -> Double {
         let double = Double::default();
         *double.tools.lock().unwrap() = tools;
+        double
+    }
+
+    /// A server that also lists resources and prompts.
+    pub fn with_resources(
+        tools: Vec<Tool>,
+        resources: Vec<Resource>,
+        prompts: Vec<Prompt>,
+    ) -> Double {
+        let double = Double::with_tools(tools);
+        *double.resources.lock().unwrap() = resources;
+        *double.prompts.lock().unwrap() = prompts;
         double
     }
 
@@ -110,6 +149,24 @@ impl Double {
             let _ = peer.notify_tool_list_changed().await;
         }
     }
+
+    /// Replaces the resource list and tells the connected client.
+    pub async fn replace_resources(&self, resources: Vec<Resource>) {
+        *self.resources.lock().unwrap() = resources;
+        let peer = self.peer.lock().unwrap().clone();
+        if let Some(peer) = peer {
+            let _ = peer.notify_resource_list_changed().await;
+        }
+    }
+
+    /// Replaces the prompt list and tells the connected client.
+    pub async fn replace_prompts(&self, prompts: Vec<Prompt>) {
+        *self.prompts.lock().unwrap() = prompts;
+        let peer = self.peer.lock().unwrap().clone();
+        if let Some(peer) = peer {
+            let _ = peer.notify_prompt_list_changed().await;
+        }
+    }
 }
 
 impl ServerHandler for Double {
@@ -118,10 +175,94 @@ impl ServerHandler for Double {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_tool_list_changed()
+                .enable_resources()
+                .enable_resources_list_changed()
+                .enable_prompts()
+                .enable_prompts_list_changed()
                 .build(),
         )
         .with_protocol_version(ProtocolVersion::LATEST)
         .with_server_info(Implementation::new("double", "0.1.0"))
+    }
+
+    async fn list_resources(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::with_all_items(
+            self.resources.lock().unwrap().clone(),
+        ))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let resources = self.resources.lock().unwrap();
+        let Some(resource) = resources.iter().find(|r| r.uri == request.uri) else {
+            return Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!("unknown resource {}", request.uri),
+                None,
+            ));
+        };
+        let text = format!("contents of {}", resource.uri);
+        Ok(
+            ReadResourceResult::new(vec![ResourceContents::text(text, resource.uri.clone())])
+                .into(),
+        )
+    }
+
+    async fn list_prompts(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        Ok(ListPromptsResult::with_all_items(
+            self.prompts.lock().unwrap().clone(),
+        ))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        let prompts = self.prompts.lock().unwrap();
+        let Some(prompt) = prompts.iter().find(|p| p.name == request.name) else {
+            return Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                format!("unknown prompt {}", request.name),
+                None,
+            ));
+        };
+        let arguments = request.arguments.unwrap_or_default();
+        let value = |name: &str| {
+            arguments
+                .get(name)
+                .and_then(|value| value.as_str().map(str::to_string))
+        };
+        let messages = match prompt.name.as_str() {
+            "assistant-note" => vec![PromptMessage::new_text(
+                Role::Assistant,
+                "an assistant-role line the command must refuse",
+            )],
+            "greet" => {
+                let name = value("name").unwrap_or_default();
+                let mood = value("mood").unwrap_or_else(|| "neutral".to_string());
+                vec![
+                    PromptMessage::new_text(Role::User, format!("Hello, {name}!")),
+                    PromptMessage::new_text(Role::User, format!("Mood: {mood}.")),
+                ]
+            }
+            other => vec![PromptMessage::new_text(
+                Role::User,
+                format!("prompt {other} says hello"),
+            )],
+        };
+        Ok(GetPromptResult::new(messages).into())
     }
 
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {

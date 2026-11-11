@@ -115,7 +115,14 @@ async fn a_dropped_http_server_is_reconnected_when_it_comes_back_and_a_call_then
     let outcomes = runtime.connect_mcp(&[]).await;
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].error, None);
-    assert_eq!(state(&runtime), McpServerState::Connected { tools: 1 });
+    assert_eq!(
+        state(&runtime),
+        McpServerState::Connected {
+            tools: 1,
+            resources: 0,
+            prompts: 0
+        }
+    );
     assert_eq!(call(&runtime).await.unwrap(), "pong");
 
     drop(first);
@@ -125,7 +132,15 @@ async fn a_dropped_http_server_is_reconnected_when_it_comes_back_and_a_call_then
     wait_for(&runtime, McpServerState::Reconnecting { attempt: 1 }).await;
 
     let second = serve_on(rebind(port).await).await;
-    wait_for(&runtime, McpServerState::Connected { tools: 1 }).await;
+    wait_for(
+        &runtime,
+        McpServerState::Connected {
+            tools: 1,
+            resources: 0,
+            prompts: 0,
+        },
+    )
+    .await;
     assert_eq!(call(&runtime).await.unwrap(), "pong");
 
     // A manual reconnect restarts a live server, and refuses a name that has no slot.
@@ -134,7 +149,14 @@ async fn a_dropped_http_server_is_reconnected_when_it_comes_back_and_a_call_then
         .await;
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].error, None);
-    assert_eq!(state(&runtime), McpServerState::Connected { tools: 1 });
+    assert_eq!(
+        state(&runtime),
+        McpServerState::Connected {
+            tools: 1,
+            resources: 0,
+            prompts: 0
+        }
+    );
     assert_eq!(call(&runtime).await.unwrap(), "pong");
 
     let outcomes = runtime
@@ -179,7 +201,14 @@ async fn a_server_that_failed_at_startup_keeps_a_slot_and_reconnects_by_hand() {
     let outcomes = runtime.reconnect_mcp(ReconnectTarget::AllFailed).await;
     assert_eq!(outcomes.len(), 1);
     assert_eq!(outcomes[0].error, None);
-    assert_eq!(state(&runtime), McpServerState::Connected { tools: 1 });
+    assert_eq!(
+        state(&runtime),
+        McpServerState::Connected {
+            tools: 1,
+            resources: 0,
+            prompts: 0
+        }
+    );
     assert_eq!(call(&runtime).await.unwrap(), "pong");
     drop(server);
 }

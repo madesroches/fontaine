@@ -324,6 +324,24 @@ pub static TOOLS: &[ToolDescriptor] = &[
         Specifier::None,
         &[],
     ),
+    // The listing is server-declared text and its read is a server round trip: both take the
+    // same gate as everything else MCP, like the `mcp__*` tools.
+    row(
+        "list_mcp_resources",
+        RiskClass::Arbitrary,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &["ListMcpResources"],
+    ),
+    row(
+        "read_mcp_resource",
+        RiskClass::Arbitrary,
+        true,
+        Destructive::Never,
+        Specifier::None,
+        &["ReadMcpResource"],
+    ),
 ];
 
 pub fn find(name: &str) -> Option<&'static ToolDescriptor> {
@@ -388,8 +406,14 @@ mod tests {
             }
             // `job_cancel` stops only a process or subagent this session started, by id, and
             // names no path; `advisor` changes nothing but sends the conversation to a second
-            // model, which is why it is not read-only.
-            if d.destructive == Destructive::Never && !matches!(d.name, "job_cancel" | "advisor") {
+            // model, which is why it is not read-only; the two MCP resource tools stay
+            // arbitrary like every other MCP surface — MCP is never fast-pathed.
+            if d.destructive == Destructive::Never
+                && !matches!(
+                    d.name,
+                    "job_cancel" | "advisor" | "list_mcp_resources" | "read_mcp_resource"
+                )
+            {
                 assert_eq!(d.risk, RiskClass::ReadOnly, "{}", d.name);
             }
         }
@@ -439,7 +463,7 @@ mod tests {
         use RiskClass as R;
         use Specifier as S;
         type Pinned = (&'static str, R, bool, D, S, &'static [&'static str]);
-        let expected: [Pinned; 29] = [
+        let expected: [Pinned; 31] = [
             ("shell", R::Arbitrary, false, D::Shell, S::Shell, &["Bash"]),
             (
                 "job_output",
@@ -615,6 +639,22 @@ mod tests {
                 &[],
             ),
             ("advisor", R::Arbitrary, true, D::Never, S::None, &[]),
+            (
+                "list_mcp_resources",
+                R::Arbitrary,
+                true,
+                D::Never,
+                S::None,
+                &["ListMcpResources"],
+            ),
+            (
+                "read_mcp_resource",
+                R::Arbitrary,
+                true,
+                D::Never,
+                S::None,
+                &["ReadMcpResource"],
+            ),
         ];
         let actual: Vec<_> = TOOLS
             .iter()

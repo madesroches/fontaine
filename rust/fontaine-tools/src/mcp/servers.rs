@@ -36,6 +36,7 @@ use rmcp::transport::{DynamicTransportError, StreamableHttpClientTransport, Toki
 use tokio::sync::Notify;
 
 use super::elicitation::{CallTracker, CancelAll, ElicitationTap, Elicitor};
+use super::listings::{Listings, pull_listings};
 use super::meta::{MetaTap, ToolMeta};
 use super::output::OutputLimits;
 use super::register::{GuardedSink, Shared};
@@ -408,6 +409,11 @@ pub struct Connected {
     pub transport_failed: Arc<Notify>,
     tool_count: Arc<AtomicUsize>,
     tool_names: Arc<Mutex<Vec<String>>>,
+    /// The resources and prompts the server listed, refreshed on a `list_changed`
+    /// notification. Advisory: nothing decides on it, so a poisoned lock is read through.
+    listings: Arc<Mutex<Listings>>,
+    /// Woken by the transport tap when the server announces a resource or prompt list change.
+    listings_changed: Arc<Notify>,
     muted: Arc<AtomicBool>,
     tracker: CallTracker,
 }
@@ -417,6 +423,30 @@ impl Connected {
     pub fn tool_names(&self) -> Vec<String> {
         // Only read to remove the tools; a poisoned list still holds the last names written.
         lock_recovering(&self.tool_names).clone()
+    }
+
+    /// The server's resource and prompt listings as last pulled.
+    pub fn listings(&self) -> Listings {
+        // Advisory: a stale listing only misses a mention or command.
+        lock_recovering(&self.listings).clone()
+    }
+
+    /// Replaces the listings with what a pull answered; a failed pull keeps the previous ones.
+    pub async fn refresh_listings(&self) {
+        if let Some(pulled) = pull_listings(&self.connection).await {
+            // Advisory: a stale listing only misses a mention or command.
+            *lock_recovering(&self.listings) = pulled;
+        }
+    }
+
+    /// The signal a resource or prompt `list_changed` notification arrives on.
+    pub fn listings_changed(&self) -> Arc<Notify> {
+        self.listings_changed.clone()
+    }
+
+    /// The listings slot itself, for a watcher that re-pulls on [`Self::listings_changed`].
+    pub fn listings_slot(&self) -> Arc<Mutex<Listings>> {
+        self.listings.clone()
     }
 
     /// Stops a later `list_changed` refresh from registering the server's tools again. Call it
@@ -621,6 +651,8 @@ where
 /// What `serve` wires around one transport.
 struct Wiring {
     shared: Shared,
+    listings: Arc<Mutex<Listings>>,
+    listings_changed: Arc<Notify>,
 }
 
 impl Wiring {
@@ -634,6 +666,8 @@ impl Wiring {
                 tool_names: Arc::default(),
                 muted: Arc::new(AtomicBool::new(false)),
             },
+            listings: Arc::default(),
+            listings_changed: Arc::new(Notify::new()),
         }
     }
 }
@@ -656,7 +690,11 @@ where
         GuardedSink::new(sink, name, options, &wiring.shared),
     );
     let tapped = ElicitationTap::new(
-        MetaTap::new(transport.into_transport(), wiring.shared.meta.clone()),
+        MetaTap::new(
+            transport.into_transport(),
+            wiring.shared.meta.clone(),
+            wiring.listings_changed.clone(),
+        ),
         name,
         options.shown(name),
         options.elicitor.clone(),
@@ -673,6 +711,8 @@ where
         transport_failed: wiring.shared.transport_failed,
         tool_count: wiring.shared.tool_count,
         tool_names: wiring.shared.tool_names,
+        listings: wiring.listings,
+        listings_changed: wiring.listings_changed,
         muted: wiring.shared.muted,
         tracker: wiring.shared.tracker,
     })
@@ -1251,5 +1291,25 @@ mod tests {
         let client = http_client(&LoadedNetwork::default()).unwrap();
         assert_eq!(status_of(&client, format!("{}/a", server.uri())).await, 307);
         assert!(target.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod send_checks {
+    use super::*;
+
+    #[test]
+    fn connected_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Connected>();
+    }
+
+    #[test]
+    fn pull_listings_future_is_send() {
+        async fn pull(connection: &McpConnection) {
+            let _ = super::super::listings::pull_listings(connection).await;
+        }
+        fn check_send<F: Send>(_: F) {}
+        check_send(pull);
     }
 }

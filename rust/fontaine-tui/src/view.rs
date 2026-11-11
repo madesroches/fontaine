@@ -557,14 +557,15 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
             .enumerate()
             .skip(first)
             .take(MAX_MENU_ROWS)
-            .map(|(i, path)| {
+            .map(|(i, candidate)| {
+                let label = candidate.label();
                 if i == list.selected {
                     Line::styled(
-                        format!("> {path}"),
+                        format!("> {label}"),
                         Style::default().add_modifier(Modifier::BOLD),
                     )
                 } else {
-                    Line::raw(format!("  {path}"))
+                    Line::raw(format!("  {label}"))
                 }
             })
             .collect();

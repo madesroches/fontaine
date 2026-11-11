@@ -34,8 +34,12 @@ use fontaine_core::keybindings::TuiAction;
 /// What became of an MCP server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum McpState {
-    /// Running, with `tools` registered.
-    Connected { tools: usize },
+    /// Running, with `tools` registered and `resources`/`prompts` listed (zero stays unread).
+    Connected {
+        tools: usize,
+        resources: usize,
+        prompts: usize,
+    },
     /// Lost, and being reconnected: `attempt` is the one under way.
     Pending { attempt: u32 },
     /// The error text, which names the server.
@@ -258,8 +262,33 @@ pub fn mcp_with_origins(
         .iter()
         .map(|(name, state)| {
             let state = match state {
-                McpState::Connected { tools: 1 } => "connected · 1 tool".to_string(),
-                McpState::Connected { tools } => format!("connected · {tools} tools"),
+                McpState::Connected {
+                    tools,
+                    resources,
+                    prompts,
+                } => {
+                    let mut line = match tools {
+                        1 => "connected · 1 tool".to_string(),
+                        tools => format!("connected · {tools} tools"),
+                    };
+                    if *resources > 0 {
+                        let _ = write!(
+                            line,
+                            " · {} resource{}",
+                            resources,
+                            if *resources == 1 { "" } else { "s" }
+                        );
+                    }
+                    if *prompts > 0 {
+                        let _ = write!(
+                            line,
+                            " · {} prompt{}",
+                            prompts,
+                            if *prompts == 1 { "" } else { "s" }
+                        );
+                    }
+                    line
+                }
                 McpState::Pending { attempt } => format!(
                     "pending (reconnecting, attempt {attempt} of {})",
                     fontaine_core::agent::MCP_RECONNECT_ATTEMPTS
@@ -1275,8 +1304,22 @@ mod tests {
         ]);
         let text = mcp_with_origins(
             &[
-                ("a".into(), McpState::Connected { tools: 2 }),
-                ("e".into(), McpState::Connected { tools: 1 }),
+                (
+                    "a".into(),
+                    McpState::Connected {
+                        tools: 2,
+                        resources: 3,
+                        prompts: 1,
+                    },
+                ),
+                (
+                    "e".into(),
+                    McpState::Connected {
+                        tools: 1,
+                        resources: 0,
+                        prompts: 0,
+                    },
+                ),
                 (
                     "b".into(),
                     McpState::Failed("MCP server `b` failed: boom".into()),
@@ -1290,7 +1333,7 @@ mod tests {
         );
         assert_eq!(
             text,
-            "a: connected · 2 tools [user] · auth ok\ne: connected · 1 tool [configured] · auth n/a\nb: failed: MCP server `b` failed: boom [configured] · auth n/a\nc: left off [configured] · auth n/a\nd: pending (reconnecting, attempt 2 of 5) [configured] · auth required\nplugin_p_srv: not loaded (workspace not trusted) [plugin] · auth n/a"
+            "a: connected · 2 tools · 3 resources · 1 prompt [user] · auth ok\ne: connected · 1 tool [configured] · auth n/a\nb: failed: MCP server `b` failed: boom [configured] · auth n/a\nc: left off [configured] · auth n/a\nd: pending (reconnecting, attempt 2 of 5) [configured] · auth required\nplugin_p_srv: not loaded (workspace not trusted) [plugin] · auth n/a"
         );
     }
 

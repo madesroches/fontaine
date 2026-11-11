@@ -8,6 +8,20 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- MCP resources and prompts. Two always-registered built-in tools, `list_mcp_resources` and
+  `read_mcp_resource`, both `arbitrary`, read the resources of connected servers that declared
+  the `resources` capability; listings are pulled after connect and refreshed on
+  `resources/list_changed`, oversized reads spill to a file like any MCP result, and every
+  result passes the result scanner. The `@` mention popup lists resource URIs labelled with
+  their server and inserts `@<uri>` verbatim; the mention is inert text and the model reads
+  the content through the gated tool, so server content never enters the conversation
+  ungated. Server prompts become `/mcp__<server>__<prompt>` slash commands (merged into the
+  `/` menu, kept in sync as servers connect and on `prompts/list_changed`): invoking one
+  fetches it with `prompts/get` and starts a turn with the fetched text, flattening only
+  user-role text messages and failing with a notice on missing or malformed `key=value`
+  arguments, server-requested input, or non-text content. `/mcp` appends `N resources` and
+  `M prompts` counts per connected server (#33).
+
 - MCP OAuth for remote servers: `fontaine mcp login <name>` runs the OAuth 2.1 flow (metadata
   discovery, dynamic client registration, PKCE, loopback callback on the fixed port 3111) and
   stores the token beside your other credentials in `credentials.toml`, bound to the URL it was

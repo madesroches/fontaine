@@ -94,6 +94,8 @@ async fn the_registered_tools_are_advertised_to_the_model() {
         "job_cancel",
         "monitor",
         "webfetch",
+        "list_mcp_resources",
+        "read_mcp_resource",
         "agent",
         "skill",
         "send_message",

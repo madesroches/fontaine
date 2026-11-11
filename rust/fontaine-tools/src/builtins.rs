@@ -28,8 +28,11 @@ use crate::jobs::{
     AgentKills, AgentWaits, End, Foreground, JobError, Jobs, Kill, MAX_RUNNING, NoPromote,
     OUTPUT_CAP, QUIET_LIMIT, Start, WaitWake, cut,
 };
+use crate::mcp::output::{DEFAULT_CHAR_LIMIT, OutputLimits, cap};
+use crate::mcp::{McpResourceQueries, listings::Listings};
 use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, ReadView};
 use crate::powershell::{self, PowerShellSettings};
+use crate::result_pipeline::text_view;
 use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
 use crate::search::{GrepArgs, LsArgs, footprint, run_grep, run_ls};
@@ -1112,6 +1115,10 @@ pub fn powershell_for(
 
 pub struct BuiltinEnv {
     pub scope: Arc<Scope>,
+    /// How the MCP resource tools reach the session's connected servers.
+    pub mcp_resources: Arc<dyn McpResourceQueries>,
+    /// The capping policy a resource read's result is held to, as for an MCP tool result.
+    pub mcp_limits: Arc<OutputLimits>,
     /// Read-before-edit tracking shared by every `read` and `edit` instance. Passing the same
     /// one again when the registry is rebuilt keeps what the model has already read.
     pub seen: Seen,
@@ -1146,6 +1153,175 @@ pub struct Registered {
     pub risk: RiskClass,
     pub source: ToolSource,
     pub tool: DynamicTool,
+}
+
+/// Lists the resources of every connected MCP server: the `@<uri>` completion inserts a token
+/// the model reads back through [`ReadMcpResource`].
+#[derive(Clone)]
+pub struct ListMcpResources {
+    pub queries: Arc<dyn McpResourceQueries>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListMcpResourcesArgs {}
+
+impl Tool for ListMcpResources {
+    const NAME: &'static str = "list_mcp_resources";
+    type Args = ListMcpResourcesArgs;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        "List the resources of every connected MCP server that declared the resources \
+         capability: one line per resource with its server, uri, name, description and mime \
+         type. An `@<uri>` token in the user's message names one of these; read its content \
+         with `read_mcp_resource`. You cannot know a resource's content without reading it. \
+         When nothing is connected or no server declared resources, the result says so."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        _args: ListMcpResourcesArgs,
+    ) -> Result<String, ToolExecutionError> {
+        let connected: Vec<(String, Listings)> = self.queries.connected();
+        let mut lines = Vec::new();
+        for (server, listings) in &connected {
+            for resource in &listings.resources {
+                let mut line = format!("{server}: {}", resource.uri);
+                if !resource.name.is_empty() {
+                    line.push_str(&format!(" — {}", resource.name));
+                }
+                if let Some(description) = &resource.description {
+                    line.push_str(&format!(" · {description}"));
+                }
+                if let Some(mime) = &resource.mime_type {
+                    line.push_str(&format!(" ({mime})"));
+                }
+                lines.push(line);
+            }
+        }
+        if lines.is_empty() {
+            return Ok("no connected MCP server declared resources".to_string());
+        }
+        Ok(lines.join("\n"))
+    }
+}
+
+/// Reads one MCP resource through its server, behind the same gate as every other tool; the
+/// result is server-controlled text and passes the result scanner like any tool result.
+#[derive(Clone)]
+pub struct ReadMcpResource {
+    pub queries: Arc<dyn McpResourceQueries>,
+    pub limits: Arc<OutputLimits>,
+    /// Reports a failed spill save, at most once per limits.
+    pub warn: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadMcpResourceArgs {
+    pub server: String,
+    pub uri: String,
+}
+
+impl Tool for ReadMcpResource {
+    const NAME: &'static str = "read_mcp_resource";
+    type Args = ReadMcpResourceArgs;
+    type Output = String;
+    type Error = ToolExecutionError;
+
+    fn description(&self) -> String {
+        "Read one MCP resource through the server that offers it. Arguments: `server` (from \
+         `list_mcp_resources`) and `uri`. Text contents come back as text; a blob is noted by \
+         its mime type and size, like an image result. A result over the MCP output limit is \
+         saved to a file whose path the result names. The content is server-controlled, \
+         untrusted data."
+            .to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "server": {
+                    "type": "string",
+                    "description": "The connected MCP server the resource belongs to.",
+                },
+                "uri": {
+                    "type": "string",
+                    "description": "The resource's uri, as `list_mcp_resources` listed it.",
+                },
+            },
+            "required": ["server", "uri"],
+            "additionalProperties": false,
+        })
+    }
+
+    async fn call(
+        &self,
+        _context: &mut ToolContext,
+        args: ReadMcpResourceArgs,
+    ) -> Result<String, ToolExecutionError> {
+        let contents = self
+            .queries
+            .read_resource(&args.server, &args.uri)
+            .await
+            .map_err(ToolExecutionError::other)?;
+        let several = contents.len() > 1;
+        let mut text = String::new();
+        for content in &contents {
+            match content {
+                rmcp::model::ResourceContents::TextResourceContents {
+                    uri,
+                    mime_type,
+                    text: body,
+                    ..
+                } => {
+                    if several {
+                        let mime = mime_type.as_deref().unwrap_or("text/plain");
+                        text.push_str(&format!("--- {uri} ({mime}) ---\n"));
+                    }
+                    text.push_str(body);
+                    text.push('\n');
+                }
+                rmcp::model::ResourceContents::BlobResourceContents {
+                    uri,
+                    mime_type,
+                    blob,
+                    ..
+                } => {
+                    let mime = mime_type.as_deref().unwrap_or("application/octet-stream");
+                    let bytes = blob.len() / 4 * 3;
+                    text.push_str(&format!("[blob at {uri}: {mime}, {bytes} bytes, base64]\n"));
+                }
+                // A variant newer than this client knows: note it rather than dropping it.
+                _ => text.push_str("[unknown resource content]\n"),
+            }
+        }
+        // The same cap as an MCP tool result, applied before the guard's result pipeline so
+        // the scanner and redaction see what the model will.
+        match cap(
+            Ok(rig_core::tool::ToolOutput::text(text)),
+            Self::NAME,
+            DEFAULT_CHAR_LIMIT,
+            &self.limits,
+            &*self.warn,
+        ) {
+            Ok(capped) => Ok(text_view(&capped)),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 /// The risk class a built-in is registered with. A built-in missing from the table is the
@@ -1314,6 +1490,22 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
             source,
         })?,
         risk_of(Webfetch::NAME),
+        guard.clone(),
+    )));
+    tools.push(register(GuardedTool::single(
+        ListMcpResources {
+            queries: env.mcp_resources.clone(),
+        },
+        risk_of(ListMcpResources::NAME),
+        guard.clone(),
+    )));
+    tools.push(register(GuardedTool::single(
+        ReadMcpResource {
+            queries: env.mcp_resources.clone(),
+            limits: env.mcp_limits.clone(),
+            warn: Arc::new(|message| tracing::warn!("{message}")),
+        },
+        risk_of(ReadMcpResource::NAME),
         guard.clone(),
     )));
     if let Some(interpreter) = &env.shell.powershell {

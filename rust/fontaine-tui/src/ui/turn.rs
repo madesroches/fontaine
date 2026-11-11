@@ -523,6 +523,61 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
+    /// `/mcp__<server>__<prompt> arguments`: fetches the prompt's text and hands it back as
+    /// the invocation's turn, mirroring `expand_skill_command`. The raw line is recorded as
+    /// the user's message before the fetch, so the guardian judging the turn sees the
+    /// invocation; a failure shows a transcript error and starts no turn.
+    pub(crate) async fn run_mcp_prompt_command(
+        &mut self,
+        runtime: &mut AgentRuntime,
+        raw: &str,
+        name: &str,
+        argument: &str,
+    ) -> std::ops::ControlFlow<(), CommandOutcome> {
+        use std::ops::ControlFlow::{Break, Continue};
+        if self.refuse_if_stopped(runtime, raw) {
+            return Continue(CommandOutcome::Done);
+        }
+        match self.prompt_passes(runtime, raw).await {
+            Break(()) => return Break(()),
+            Continue(false) => return Continue(CommandOutcome::Done),
+            Continue(true) => {}
+        }
+        self.app.set_running(true);
+        // Recorded before the fetch so the guardian judging the turn has this intent.
+        runtime.append(Record::UserMessage {
+            text: raw.to_string(),
+            attachments: Vec::new(),
+            agent: None,
+        });
+        let mut fetch = Box::pin(runtime.run_mcp_prompt(name, argument));
+        let result = self.serve_while(runtime, &mut fetch, Serve::Prompts).await;
+        drop(fetch);
+        self.app.set_running(false);
+        match result {
+            Ok(Ok(prompt)) => Continue(CommandOutcome::Turn(Submission::Expanded {
+                text: raw.to_string(),
+                prompt,
+            })),
+            Ok(Err(e)) => {
+                self.app.deny_pending();
+                self.drain_prompts();
+                self.app.transcript.error(format!(
+                    "/{name}: {}",
+                    fontaine_tools::error_chain::chain(&e)
+                ));
+                runtime.clear_prompt_context();
+                Continue(CommandOutcome::Done)
+            }
+            Err(TurnEnd::InputClosed) => Break(()),
+            Err(_) => {
+                self.app.transcript.notice("interrupted");
+                runtime.clear_prompt_context();
+                Continue(CommandOutcome::Done)
+            }
+        }
+    }
+
     /// How a typed message ends when a `user_prompt_submit` hook refuses it or the wait is cut
     /// short; `None` lets it through. Nothing is recorded for a refused prompt.
     async fn refuse_by_hook(&mut self, runtime: &AgentRuntime, text: &str) -> Option<TurnEnd> {

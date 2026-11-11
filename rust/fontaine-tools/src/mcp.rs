@@ -7,6 +7,7 @@
 
 pub mod auth;
 pub mod elicitation;
+pub mod listings;
 mod meta;
 pub mod output;
 pub mod register;
@@ -14,6 +15,10 @@ pub mod servers;
 
 pub use elicitation::{
     CancelAll, Choice, ElicitForm, ElicitReply, Elicitor, Field, FieldKind, TextFormat,
+};
+pub use listings::{
+    Listings, McpResourceQueries, NoMcpResources, PromptArgument, PromptSummary, ResourceSummary,
+    pull_listings,
 };
 pub use meta::{MAX_RESULT_SIZE_CHARS, REQUIRES_USER_INTERACTION};
 pub use output::OutputLimits;

@@ -47,6 +47,7 @@ fn the_assembled_prompt_is_stable() {
             "Skills you can load with the `skill` tool, each a set of instructions for a kind of task:\n- review: Review a pull request",
         ),
         scheduling: None,
+        mcp: None,
         output_style: Some(("terse", "Answer in at most two sentences.")),
         append: Some("Keep answers under ten lines."),
     });
@@ -90,6 +91,7 @@ fn the_roots_section_lists_every_root_with_the_primary_first() {
         memory: None,
         skill_index: None,
         scheduling: None,
+        mcp: None,
         output_style: None,
         append: None,
     });
@@ -115,6 +117,7 @@ fn the_prompt_names_the_scratch_root_and_keeps_the_user_only_rule() {
         memory: None,
         skill_index: None,
         scheduling: None,
+        mcp: None,
         output_style: None,
         append: None,
     });
@@ -139,6 +142,7 @@ fn layers_come_in_order_base_then_instructions_then_append() {
         memory: None,
         skill_index: None,
         scheduling: None,
+        mcp: None,
         output_style: None,
         append: Some("APPENDED"),
     });
@@ -160,6 +164,7 @@ fn layers_come_in_order_base_then_instructions_then_append() {
         memory: None,
         skill_index: Some("SKILL INDEX"),
         scheduling: Some("SCHEDULING NOTE"),
+        mcp: None,
         output_style: Some(("terse", "STYLE TEXT")),
         append: Some("APPENDED"),
     });
@@ -188,6 +193,7 @@ fn a_replacement_system_prompt_replaces_only_the_base() {
         memory: None,
         skill_index: None,
         scheduling: None,
+        mcp: None,
         output_style: None,
         append: Some("APPENDED"),
     });
@@ -242,6 +248,7 @@ fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
         memory: None,
         skill_index: None,
         scheduling: None,
+        mcp: None,
         output_style: None,
         append: None,
     });
@@ -257,6 +264,7 @@ fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
         memory: None,
         skill_index: None,
         scheduling: Some(prompt::SCHEDULING_PROMPT),
+        mcp: None,
         output_style: None,
         append: None,
     });
@@ -264,6 +272,77 @@ fn the_scheduling_note_is_a_layer_that_is_present_only_when_given() {
     for needle in ["cron_create", "harness note", "schedule_wakeup"] {
         assert!(with.contains(needle), "the note lacks `{needle}`");
     }
+}
+
+#[test]
+fn the_mcp_resource_section_is_present_only_while_a_resources_capable_server_is_connected() {
+    use fontaine_core::prompt::mcp_resource_section;
+    use fontaine_tools::mcp::{Listings, PromptSummary, ResourceSummary};
+
+    // Nothing connected, a connected tools-only server: no section.
+    assert!(mcp_resource_section(&[]).is_none());
+    let tools_only: Vec<(String, Listings)> = vec![(
+        "github".to_string(),
+        Listings {
+            prompts: vec![PromptSummary {
+                name: "review".to_string(),
+                ..PromptSummary::default()
+            }],
+            ..Listings::default()
+        },
+    )];
+    assert!(
+        mcp_resource_section(&tools_only).is_none(),
+        "prompts alone do not make the resource section"
+    );
+
+    let listed: Vec<(String, Listings)> = vec![
+        ("github".to_string(), Listings::default()),
+        (
+            "repo".to_string(),
+            Listings {
+                resources: vec![ResourceSummary {
+                    uri: "repo://info".to_string(),
+                    ..ResourceSummary::default()
+                }],
+                ..Listings::default()
+            },
+        ),
+    ];
+    let section = mcp_resource_section(&listed).expect("the section");
+    for needle in ["@<uri>", "repo", "list_mcp_resources", "read_mcp_resource"] {
+        assert!(
+            section.contains(needle),
+            "the section lacks `{needle}`: {section}"
+        );
+    }
+    // Tools-only servers are not named in it.
+    assert!(!section.contains("github"), "{section}");
+
+    // It is a layer like the scheduling note: assembled only when fed.
+    fn parts<'a>(mcp: Option<&'a str>, roots: &'a [PathBuf]) -> PromptParts<'a> {
+        PromptParts {
+            afk: false,
+            posix_shell: true,
+            roots,
+            scratch: None,
+            memory_root: None,
+            system_prompt: None,
+            instructions: &[],
+            memory: None,
+            skill_index: None,
+            scheduling: None,
+            mcp,
+            output_style: None,
+            append: None,
+        }
+    }
+    let roots = roots();
+    let without = prompt::assemble(&parts(None, &roots));
+    assert!(!without.contains("@<uri>"));
+    let with = prompt::assemble(&parts(Some(&section), &roots));
+    assert!(with.starts_with(&without));
+    assert!(with.ends_with(&section));
 }
 
 #[test]
@@ -284,6 +363,7 @@ fn the_memory_layer_follows_the_instruction_files_and_labels_its_root() {
         memory: Some(&layer),
         skill_index: Some("skills"),
         scheduling: None,
+        mcp: None,
         output_style: None,
         append: None,
     });
@@ -310,6 +390,7 @@ fn without_the_shell_tool_the_prompt_names_powershell_instead() {
         memory: None,
         skill_index: None,
         scheduling: None,
+        mcp: None,
         output_style: None,
         append: None,
     };
