@@ -134,8 +134,10 @@ facts warns. Other kinds get no warning: an unknown id is routine there.
 - `rust/fontaine-core/src/providers/mod.rs`: `Provider::accepts_model_facts`.
 - `rust/fontaine-core/src/providers/anthropic.rs`: binding and notices.
 - `rust/fontaine-core/src/providers/databricks.rs`: binding and notices.
-- `docs/configuration.md`, `tasks/design/config.md`, `CHANGELOG.md`,
+- `docs/configuration.md`, `docs/tui.md`, `docs/headless.md`, `CHANGELOG.md`,
   `tasks/fontaine_harness_plan.md`.
+- `rust/fontaine-core/tests/providers.rs` (`check_account` refusal tests, beside the `wires` ones),
+  `rust/fontaine-core/tests/databricks.rs`, `rust/fontaine-core/tests/model_facts.rs` (new).
 
 ## Trade-offs
 
@@ -158,9 +160,13 @@ facts warns. Other kinds get no warning: an unknown id is routine there.
 ## Documentation
 
 - `docs/configuration.md`: a `model_facts` row in the `[accounts.<name>]` key table, with the
-  Foundry-style example, plus the per-key scope table if it lists account keys individually. In
-  the Databricks section, a note on custom endpoints (`model_facts` plus `wires`).
-- `tasks/design/config.md:182`: add `model_facts` to the `[accounts.*]` key list.
+  Foundry-style example. In the Databricks section, a note on custom endpoints (`model_facts` plus
+  `wires`). The model-discovery paragraph (`docs/configuration.md:272-281`) gets the `model_facts`
+  exception to "gets no facts" and the new no-facts warning.
+- `docs/tui.md:812-813`: the notice paragraph also covers the no-facts warning.
+- Each "a model the catalog does not list (a derived model counts as listed)" aside
+  (`docs/configuration.md:424` and `:1063`, `docs/tui.md:692` and `:701`, `docs/headless.md:127`)
+  becomes "a derived or mapped model counts as listed".
 - `CHANGELOG.md`: an Unreleased entry.
 - `rust/fontaine/tests/docs.rs` (`every_toml_block_validates`) validates every unlabelled `toml`
   block through `check_account`, so the example's targets must resolve.
@@ -178,7 +184,11 @@ Unit tests, all offline:
   when unmapped. A shape-derivable unlisted id keeps its derived notice.
 - `databricks`: `main.team.claude` mapped to `claude-sonnet-5-5` gets the Sonnet facts under the
   `databricks` provider. `databricks-claude-opus-5-5` behaves exactly as before (regression).
-  `main.team.router` unmapped gets the no-facts warning; `system.ai.kimi-k3` gets none. The existing
+  `main.team.router` unmapped gets the no-facts warning; `system.ai.kimi-k3` gets none. In
+  `rust/fontaine-core/tests/databricks.rs`, resolving `main.team.router` via
+  `world_with(&server, "\n[accounts.dbx.model_facts]\n\"main.team.router\" = \"claude-sonnet-5-5\"\n")`
+  asserts the Sonnet `max_output_tokens` on `completion.spec()` and no `facts_notice`, so `connect`
+  is shown to copy `Account.model_facts` into the client. The existing
   `a_listed_model_has_no_notice_and_a_derived_one_does` test is updated for the flipped
   `main.team.router` assertion and moved onto a client holding the map.
 - Integration (new `rust/fontaine-core/tests/model_facts.rs`, with its own Anthropic Messages wiremock setup): an
