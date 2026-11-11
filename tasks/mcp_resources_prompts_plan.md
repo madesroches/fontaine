@@ -61,7 +61,7 @@ Phase 5 (connect, lifecycle, tool registration, elicitation, `/mcp reconnect`).
   starts a turn returns `CommandOutcome::Turn(Submission::Expanded { text, prompt })` and may
   append `Record::UserMessage` to the ledger first (the `/init` and skill paths are the
   template). Skills (`AgentRuntime::expand_skill`) are the closest existing analog for MCP
-  prompts. Headless `fontaine -p` has no slash commands.
+  prompts. Headless `fontaine -p` has no slash-command dispatch beyond `/goal`.
 - **System prompt**: assembled in `rust/fontaine-core/src/prompt.rs`
   (`BASE_PROMPT: include_str!("../prompts/system_prompt.md")`, layered in `assemble`), which is
   the place to explain `@<uri>` resource mentions; `context.rs` only computes token-usage
@@ -157,11 +157,13 @@ naming stay uniform.
   server-supplied description) mirrors `slash_skills()`. The `/` menu is built before
   `start_mcp` connects (`lib.rs:495-502`), so it cannot contain prompt rows at construction;
   `slash_prompts()` is empty then, and `refresh_menu` (`ui/commands/plugin.rs:53`) runs only on
-  plugin changes. Prompt rows are therefore kept in sync by the draw loop: each tick it diffs
-  `runtime.slash_prompts()` against the menu's prompt rows (the same per-draw pattern as the
-  `set_files` mention slot, `ui/mod.rs:127`) and calls `refresh_menu` when they diverge — so the
-  startup connect and mid-session `list_changed` both land without a new core→UI signal; a
-  prompt shadowed by a builtin or skill is hidden with a notice, same as skill shadowing.
+  plugin changes. `refresh_menu` is therefore extended to merge `runtime.slash_prompts()` rows
+  into the menu alongside the skill rows it already merges. Prompt rows are kept in sync by the
+  draw loop: each tick it diffs `runtime.slash_prompts()` against the menu's prompt rows (the
+  same per-draw pattern as the `set_files` mention slot, `ui/mod.rs:127`) and calls
+  `refresh_menu` when they diverge — so the startup connect and mid-session `list_changed` both
+  land without a new core→UI signal, and plugin refreshes keep prompt rows too; a prompt
+  shadowed by a builtin or skill is hidden with a notice, same as skill shadowing.
 - Dispatch: a `Command::Other` whose name starts with `mcp__` resolves against
   `slash_prompts()` before the skill lookup. Resolution path (mirroring `expand_skill_command`
   in `ui/turn.rs`): `refuse_if_stopped`, hook gate (`prompt_passes`), then
@@ -178,8 +180,7 @@ naming stay uniform.
   the command and the model receives the fetched text. On failure (server gone, `prompts/get`
   error, server-requested input) a transcript error appears and no turn starts.
 - Prompt text is server-controlled, but injection happens only when the user types the command —
-  the same boundary as running a skill shipped by a plugin. The fetched text is marked as
-  harness/user-supplied in the transcript so its provenance is visible in scrollback; it is not
+  the same boundary as running a skill shipped by a plugin. It is not
   scanner-staged (it enters as the user's own message, not as a tool result), matching how skill
   expansion is treated today.
 
@@ -215,7 +216,9 @@ tools with their own names; MCP prompt invocations record as user messages like 
 5. **fontaine-tui — mention completion.** Structured candidate through `complete.rs` /
    `CompletionList` / `accept_completion` / `view.rs` rows; wire the runtime mention slot next to
    `set_files`.
-6. **fontaine-tui — prompt commands.** Menu merge: the draw loop diffs `runtime.slash_prompts()`
+6. **fontaine-tui — prompt commands.** Menu merge: `refresh_menu` gains a prompt-row merge of
+   `runtime.slash_prompts()` alongside its skill-row merge, so the divergence-triggered rebuild
+   and plugin refreshes both keep prompt rows; the draw loop diffs `runtime.slash_prompts()`
    against the menu's prompt rows each tick and calls `refresh_menu` on divergence (the menu is
    built before servers connect, so startup construction never sees prompts); the `mcp__*`
    dispatch arm in `dispatch_inner` next to `Command::Other`; the `run_mcp_prompt` UI wrapper
@@ -284,8 +287,9 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
 
 - Resources are read only through the two gated built-in tools and only listed via the same gate;
   no MCP surface bypasses the guardian or the scanner.
-- MCP prompt text enters the conversation only as a user-invoked command's turn content, marked
-  in the transcript; it is not scanner-staged (it is user-message content, like skill expansion).
+- MCP prompt text enters the conversation only as a user-invoked command's turn content; it is
+  not scanner-staged (it is user-message content, like skill expansion, whose expansion is also
+  transcript-invisible).
 
 ## Documentation
 
@@ -317,8 +321,10 @@ Unit and integration tests only; no live APIs (project rule). New coverage:
   section present/absent by capability; scanner-stage invocation on a resource read result (a
   fake scanner flagging content proves the pipeline path).
 - `fontaine-tui`: candidate ranking/merge (file vs resource, no cross-contamination), accept
-  insertion of `@<uri>`, prompt-command dispatch success/failure, shadowing notice, `/mcp`
-  counts. Rendering checks run on `TestBackend`; anything touching the live area follows
+  insertion of `@<uri>`, prompt-command dispatch success/failure, shadowing notice; `/mcp`
+  counts by extending the exact-string `mcp_with_origins` unit test
+  (`mcp_shows_each_state_with_its_origin`) with resource/prompt counts (`N resources · M
+  prompts`). Rendering checks run on `TestBackend`; anything touching the live area follows
   `tasks/design/testing.md`.
 - End-to-end smoke: headless `fontaine -p` against the in-repo example server (step 7) asserting
   the tools list and a `ReadMcpResource` result through the fixture guardian — catches wiring a
@@ -337,7 +343,7 @@ Unit and integration tests only; no live APIs (project rule). New coverage:
    starts a turn whose transcript shows the invocation and whose model message contains the
    fetched prompt text; invoking with a missing argument prints the notice naming declared
    arguments and starts no turn.
-5. `/mcp` shows `N tools · M resources · K prompts` for the connected server.
+
    Not automated because it needs real MCP servers and a live TTY; the automated tiers cover the
    parsing, gating and wiring, and a regression here is immediately visible to any user with an
    MCP server configured.
@@ -346,5 +352,5 @@ Unit and integration tests only; no live APIs (project rule). New coverage:
 
 - Should `fontaine mcp list`/`get` or `fontaine doctor` surface resource/prompt counts? Cheap to
   add from the same listings, but the issue doesn't ask; leave out unless review flags it.
-- Should headless `fontaine -p` grow a way to invoke MCP prompts (e.g. an input prefix)? Slash
-  commands don't exist headless at all today; consistent to skip.
+- Should headless `fontaine -p` grow a way to invoke MCP prompts (e.g. an input prefix)? Headless
+  understands `/goal` only; consistent to skip.
