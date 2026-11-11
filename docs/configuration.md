@@ -273,8 +273,10 @@ the model it took the facts from; update Fontaine for its exact facts. An id wit
 number, or whose pattern the catalog has no usable model for, gets no facts and stays an unlisted
 model (a `claude-subscription` account refuses it). This applies to every account kind whose models are a catalog
 vendor's: `anthropic`, `openai`, `gemini`, `ollama`, `opencode-go`, `openrouter` and
-`claude-subscription`. A `databricks` account takes the facts of a Claude, GPT or Gemini model from
-the catalog entry of the same model under its own vendor, and none for other models. An `openai-compatible` account is an arbitrary gateway with no catalog
+`claude-subscription`. A `databricks` account does the same for Claude, GPT and Gemini models,
+taking the facts from the same model's catalog entry (a dashed version such as `gpt-5-1` matches the
+dotted `gpt-5.1`) or else deriving them as above. A `glm-` model gets minimal facts with a known
+25,000-token output cap and tools on, and any other model gets none. An `openai-compatible` account is an arbitrary gateway with no catalog
 vendor, so its unlisted models never get derived facts. A derived model is unpriced, so a cost
 cap treats it as any other unpriced model.
 
