@@ -177,8 +177,12 @@ naming stay uniform.
   `slash_prompts()` before the skill lookup. Resolution path (mirroring `expand_skill_command`
   in `ui/turn.rs`): `refuse_if_stopped`, hook gate (`prompt_passes`), then
   `AgentRuntime::run_mcp_prompt(name, argument)` in core: parse `key=value` pairs out of the
-  command argument, check the prompt's declared arguments, call `prompts/get` with them, and
-  return the messages' concatenated text.
+  command argument, check the prompt's declared arguments, and call `prompts/get` with them.
+  The returned messages are flattened into one user turn only when every message has
+  `role: User` and a `ContentBlock::Text`; the texts are concatenated in order, separated by a
+  blank line. A message with any other role or a non-text block (Image/Audio/Resource/
+  ResourceLink) fails the command instead of dropping the block or folding assistant text into
+  the user's turn.
 - Missing required arguments or a `key=value` parse failure does not open a dialog: the command
   fails with a notice naming the prompt's declared arguments and an example invocation. (A
   fill-in form is a possible follow-up; the notice keeps this release non-interactive beyond the
@@ -187,7 +191,8 @@ naming stay uniform.
   judging the turn sees the invocation) and returns
   `CommandOutcome::Turn(Submission::Expanded { text: raw, prompt })`, so the transcript shows
   the command and the model receives the fetched text. On failure (server gone, `prompts/get`
-  error, server-requested input) a transcript error appears and no turn starts.
+  error, server-requested input, a non-user-role or non-text message) a transcript error
+  appears and no turn starts.
 - Prompt text is server-controlled, but injection happens only when the user types the command —
   the same boundary as running a skill shipped by a plugin. It is not
   scanner-staged (it enters as the user's own message, not as a tool result), matching how skill
@@ -324,6 +329,10 @@ Ordered so each step compiles: 1–2 are fontaine-tools, 3–4 core, 5–6 TUI, 
   `read_mcp_resource` (the descriptor-table and rule-name convention), not Claude Code's
   PascalCase; the choke-point test's banned-word filter is adjusted to exempt them rather than
   dropping `list` from the banned words.
+- AFK: `prompts/get` results are flattened only when every message is `role: User` with a
+  `ContentBlock::Text` (texts concatenated in order, blank line between); any other role or a
+  non-text block fails the command with a notice and no turn — a single user turn cannot carry
+  roles or media without silently dropping or re-attributing server-controlled content.
 
 ## Documentation
 
