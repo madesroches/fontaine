@@ -107,8 +107,8 @@ carries the warning, so no new plumbing is needed: for the main model
 `ModelHandle.facts_notice` (`models.rs:254`) feeds `Models.notices` (headless printer, TUI
 `/model`), and for subagents `tree.first_facts_notice` (`fontaine-agents/src/tree.rs`). On `anthropic` every id is expected to be a Claude one, so any id without facts warns. On
 `databricks` ordinary open models (`system.ai.kimi-k3`, gpt-oss, Llama, Qwen) legitimately have no
-facts, so only a custom `catalog.schema.name` id (no `system.ai.` / `databricks-` prefix) without
-facts warns. Other kinds get no warning: an unknown id is routine there.
+facts, so only an id with no `system.ai.` / `databricks-` prefix that contains a `.` (the
+`catalog.schema.name` shape) and has no facts warns. Other kinds get no warning: an unknown id is routine there.
 
 ## Implementation Steps
 
@@ -132,8 +132,8 @@ facts warns. Other kinds get no warning: an unknown id is routine there.
 - `rust/fontaine-core/src/config.rs`: `Account.model_facts`, `check_account`; `Account::new` is the
   only `Account` literal to update.
 - `rust/fontaine-core/src/providers/mod.rs`: `Provider::accepts_model_facts`.
-- `rust/fontaine-core/src/providers/anthropic.rs`: binding and notices.
-- `rust/fontaine-core/src/providers/databricks.rs`: binding and notices.
+- `rust/fontaine-core/src/providers/anthropic.rs`: new `Provider::validate` override (`model_facts` values), binding and notices.
+- `rust/fontaine-core/src/providers/databricks.rs`: binding and notices; its existing `validate` gains the `model_facts` check.
 - `docs/configuration.md`, `docs/tui.md`, `docs/headless.md`, `CHANGELOG.md`,
   `tasks/fontaine_harness_plan.md`.
 - `rust/fontaine-core/tests/providers.rs` (`check_account` refusal tests, beside the `wires` ones),
@@ -167,8 +167,11 @@ facts warns. Other kinds get no warning: an unknown id is routine there.
 - Each "a model the catalog does not list (a derived model counts as listed)" aside
   (`docs/configuration.md:424` and `:1063`, `docs/tui.md:692` and `:701`, `docs/headless.md:127`)
   becomes "a derived or mapped model counts as listed".
+- `docs/configuration.md:604` (the `[model] max_output_tokens` text): says an `anthropic` model with an
+  unknown limit falls back to the wire's default; it should say such a turn fails unless
+  `[model] max_output_tokens` is set or the model is mapped under `model_facts`.
 - `CHANGELOG.md`: an Unreleased entry.
-- `rust/fontaine/tests/docs.rs` (`every_toml_block_validates`) validates every unlabelled `toml`
+- `rust/fontaine-core/tests/docs.rs` (`every_toml_block_validates`) validates every unlabelled `toml`
   block through `check_account`, so the example's targets must resolve.
 
 ## Testing Strategy
@@ -184,7 +187,7 @@ Unit tests, all offline:
   when unmapped. A shape-derivable unlisted id keeps its derived notice.
 - `databricks`: `main.team.claude` mapped to `claude-sonnet-5-5` gets the Sonnet facts under the
   `databricks` provider. `databricks-claude-opus-5-5` behaves exactly as before (regression).
-  `main.team.router` unmapped gets the no-facts warning; `system.ai.kimi-k3` gets none. In
+  `main.team.router` unmapped gets the no-facts warning; `system.ai.kimi-k3` and bare `kimi-k3` get none. In
   `rust/fontaine-core/tests/databricks.rs`, resolving `main.team.router` via
   `world_with(&server, "\n[accounts.dbx.model_facts]\n\"main.team.router\" = \"claude-sonnet-5-5\"\n")`
   asserts the Sonnet `max_output_tokens` on `completion.spec()` and no `facts_notice`, so `connect`
