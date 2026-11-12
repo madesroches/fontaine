@@ -502,7 +502,8 @@ async fn an_exporter_that_never_answers_cannot_hold_the_exit_past_the_flush_cap(
 /// The real binary on a real pseudo-terminal, quit with Ctrl-D while the model is still
 /// answering and an exporter never answers: the whole process, runtime teardown and flush
 /// included, is gone within the one two-second budget, and the terminal is given back.
-#[cfg(unix)]
+/// Linux only: it relies on util-linux `script -qefc`, which BSD/macOS `script` does not take.
+#[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn quitting_mid_turn_ends_the_whole_process_inside_the_budget_with_a_stuck_exporter() {
     use std::process::Stdio;
@@ -512,7 +513,7 @@ async fn quitting_mid_turn_ends_the_whole_process_inside_the_budget_with_a_stuck
     if std::process::Command::new("script")
         .arg("--version")
         .output()
-        .is_err()
+        .map_or(true, |o| !o.status.success())
     {
         eprintln!("skipped: no `script` to give the binary a terminal");
         return;
