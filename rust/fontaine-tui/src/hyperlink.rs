@@ -459,11 +459,12 @@ impl Links {
             return None;
         }
         let path = Path::new(path);
-        let plain = path.components().all(|c| {
-            !matches!(
-                c,
-                std::path::Component::Prefix(_) | std::path::Component::ParentDir
-            )
+        let plain = path.components().all(|c| match c {
+            std::path::Component::Prefix(prefix) => {
+                path.is_absolute() && matches!(prefix.kind(), std::path::Prefix::Disk(_))
+            }
+            std::path::Component::ParentDir => false,
+            _ => true,
         });
         let full = self.cwd.join(path);
         (plain && full.starts_with(&self.cwd)).then_some(full)
@@ -759,6 +760,11 @@ mod tests {
         assert!(links.confined(&inside).is_some());
         assert!(links.file_url(&inside).is_some());
         assert!(links.file_url("in.txt").is_some());
+        #[cfg(windows)]
+        {
+            let drive = inside.split_once(':').expect("an absolute Windows path").0;
+            assert_eq!(links.confined(&format!("{drive}:in.txt")), None);
+        }
     }
 
     #[cfg(unix)]
