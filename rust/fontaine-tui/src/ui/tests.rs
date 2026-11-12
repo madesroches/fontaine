@@ -947,3 +947,20 @@ fn entering_afk_mode_closes_every_open_and_queued_prompt() {
     assert!(ui.app.approval.is_none() && ui.app.queued_approvals.is_empty());
     assert!(ui.app.questions.is_empty() && ui.app.unavailable.is_none());
 }
+
+#[tokio::test]
+async fn a_failed_pause_does_not_outlive_the_turn_that_met_it() {
+    use fontaine_core::quota::UsageRole;
+    use fontaine_core::usage_pause::PauseInfo;
+    let (runtime, _tmp) = runtime();
+    let (_tx, rx) = unbounded_channel();
+    let mut ui = ui(rx);
+    ui.pending_usage_switch = Some("other/model".into());
+    let pause = runtime.state.usage_pause();
+    pause.engage(PauseInfo::new(UsageRole::Main, "work", None));
+    pause.cancel();
+    assert!(pause.failure().is_some());
+    ui.finish_turn(&runtime, &TurnEnd::Interrupted).await;
+    assert!(pause.failure().is_none(), "idle requests are not failed");
+    assert!(ui.pending_usage_switch.is_none());
+}

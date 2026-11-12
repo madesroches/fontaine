@@ -1990,10 +1990,11 @@ impl PermissionPipeline {
             let Some(limit) = spent else {
                 break (adjudication, screened);
             };
-            self.state.add_guardian_usage(
+            self.state.add_guardian_adjudication(
                 cx.call.agent,
                 &adjudication.usage,
                 adjudication.transport.is_some() && !adjudication.cache_hit,
+                false,
                 &Served::direct(guardian.label()),
             );
             let account = guardian
@@ -2059,10 +2060,11 @@ impl PermissionPipeline {
                 UnavailableChoice::Deny => {}
             }
         }
-        self.state.add_guardian_usage(
+        self.state.add_guardian_adjudication(
             cx.call.agent,
             &adjudication.usage,
             adjudication.transport.is_some() && !adjudication.cache_hit,
+            adjudication.fail_closed.is_none(),
             &Served::direct(self.state.guardian().label()),
         );
         self.settle(cx, adjudication, screened.as_ref()).await

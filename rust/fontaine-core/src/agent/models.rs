@@ -649,17 +649,41 @@ impl AgentRuntime {
     /// to switch to. Empty for a pause on an account this session's main and guardian models
     /// are not on, such as a subagent's own.
     pub fn usage_switch_candidates(&self, info: &crate::usage_pause::PauseInfo) -> Vec<ModelRef> {
-        let switchable = match info.role {
-            crate::quota::UsageRole::Guardian => true,
-            crate::quota::UsageRole::Main => self.models.main.reference.account == info.account,
+        use crate::quota::UsageRole;
+        let from = |account: &str, model: &String| ModelRef {
+            account: account.to_string(),
+            model: model.clone(),
         };
-        if !switchable {
-            return Vec::new();
+        match info.role {
+            UsageRole::Guardian => self
+                .guardian_candidates()
+                .into_iter()
+                .filter(|reference| reference.account != info.account)
+                .collect(),
+            UsageRole::Main if self.models.main.reference.account == info.account => {
+                // The models `/model` lists, from what it last fetched, then any an account
+                // names explicitly that the fetch did not reach.
+                let mut out: Vec<ModelRef> = self
+                    .listings
+                    .iter()
+                    .filter(|l| l.account != info.account)
+                    .flat_map(|l| l.models.iter().flatten().map(|m| from(&l.account, m)))
+                    .collect();
+                for (name, account) in &self.config.accounts {
+                    if *name == info.account {
+                        continue;
+                    }
+                    for model in account.models.iter().flatten() {
+                        let reference = from(name, model);
+                        if !out.contains(&reference) {
+                            out.push(reference);
+                        }
+                    }
+                }
+                out
+            }
+            UsageRole::Main => Vec::new(),
         }
-        self.guardian_candidates()
-            .into_iter()
-            .filter(|reference| reference.account != info.account)
-            .collect()
     }
 
     /// Moves the main model to `text` for the live session after the human chose to leave a

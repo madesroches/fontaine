@@ -918,7 +918,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 // The list is spent. A model the human picked while the window was spent
                 // takes the request; otherwise a spent usage window holds the run until it
                 // resets, and the request goes again with every entry tried afresh.
-                if self.apply_usage_switch(runtime).await {
+                if failure.usage_limit.is_some() && self.apply_usage_switch(runtime).await {
                     tried = Tried::default();
                     end = self
                         .attempt(runtime, RETRY_NOTE.to_string(), None, Vec::new())
@@ -1413,6 +1413,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
 
     pub(crate) async fn finish_turn(&mut self, runtime: &AgentRuntime, end: &TurnEnd) {
         self.settle_turn(end);
+        // The run that met a failed pause is over: idle requests that follow (`/compact`, `/btw`,
+        // the goal evaluator) are not part of it and must not inherit its failure. A pick for a
+        // pause this turn did not need is stale too.
+        runtime.state.usage_pause().clear_failure();
+        self.pending_usage_switch = None;
         if matches!(end, TurnEnd::Stopped) {
             // Before the goal hears how the turn ended, so the stop is the reason it pauses.
             self.afk_stopped(runtime).await;

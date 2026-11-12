@@ -1641,3 +1641,26 @@ async fn a_guardian_record_that_sent_no_request_adds_no_call() {
     let bucket = rig.state.guardian_usage();
     assert_eq!((bucket.calls, bucket.input_tokens), (1, 6));
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_guardian_request_that_failed_does_not_end_the_pause_it_probed() {
+    use fontaine_core::quota::UsageRole;
+    use fontaine_core::usage_pause::PauseInfo;
+    let rig = Rig::new(Manual);
+    let pause = rig.state.usage_pause();
+    let usage = rig_core::completion::Usage::new();
+    for (answered, paused) in [(false, true), (true, false)] {
+        pause.engage(PauseInfo::new(UsageRole::Guardian, "work", None));
+        tokio::time::sleep(std::time::Duration::from_secs(24 * 3600)).await;
+        let admission = pause.admit().await;
+        admission.probe.expect("the probe is claimed").detach();
+        rig.state.add_guardian_adjudication(
+            ROOT_AGENT,
+            &usage,
+            true,
+            answered,
+            &Default::default(),
+        );
+        assert_eq!(pause.is_paused(), paused, "answered = {answered}");
+    }
+}

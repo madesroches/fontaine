@@ -324,7 +324,8 @@ impl UsagePause {
     /// Puts the whole run on hold. Idempotent: the first engager wins. A request that failed
     /// while a probe was out is that probe's answer: the pause goes on with the reset time it
     /// brought.
-    /// Returns whether this call began the pause.
+    /// Returns whether this call began the pause: a failed probe that re-engages it is not a
+    /// new pause, so it does not reopen a prompt the human may be answering.
     pub fn engage(&self, info: PauseInfo) -> bool {
         let mut started = None;
         self.shared.tx.send_if_modified(|s| {

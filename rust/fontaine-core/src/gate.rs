@@ -1260,9 +1260,23 @@ impl SessionState {
         sent_request: bool,
         served: &Served,
     ) {
+        self.record_usage_answered(source, agent, usage, sent_request, sent_request, served);
+    }
+
+    /// [`record_usage`](Self::record_usage) for a request that may have failed: only one the
+    /// provider `answered` proves the window open.
+    fn record_usage_answered(
+        &self,
+        source: UsageSource,
+        agent: &str,
+        usage: &Usage,
+        sent_request: bool,
+        answered: bool,
+        served: &Served,
+    ) {
         self.usage.record(source, usage, sent_request, served);
         self.agents.debit(agent, &spend_of(usage));
-        if sent_request {
+        if answered {
             // Any provider call that answered proves the window is open, whoever held the probe.
             self.usage_pause.note_success();
         }
@@ -1282,6 +1296,27 @@ impl SessionState {
         served: &Served,
     ) {
         self.record_usage(UsageSource::Guardian, agent, usage, sent_request, served);
+    }
+
+    /// [`add_guardian_usage`](Self::add_guardian_usage) for an adjudication: a request that
+    /// ended in an error or timeout is counted but did not get an answer from the provider, so
+    /// it cannot end a pause as a successful probe.
+    pub fn add_guardian_adjudication(
+        &self,
+        agent: &str,
+        usage: &Usage,
+        sent_request: bool,
+        answered: bool,
+        served: &Served,
+    ) {
+        self.record_usage_answered(
+            UsageSource::Guardian,
+            agent,
+            usage,
+            sent_request,
+            sent_request && answered,
+            served,
+        );
     }
 
     /// What the guardian has cost across the whole tree.
