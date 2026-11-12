@@ -14,6 +14,90 @@ use crate::confirm_prompt::ANSWER_GRACE;
 use crate::input::{InputBuffer, wrap};
 use crate::question::clean_multiline;
 use crate::theme::Theme;
+use crate::url_elicitation::{ElicitKey, UrlElicitationPanel};
+
+/// An MCP server's request for input and the dialog that answers it.
+pub enum ElicitDialog {
+    Form(Box<ElicitationPanel>),
+    Url(UrlElicitationPanel),
+}
+
+impl ElicitDialog {
+    pub(crate) fn id(&self) -> u64 {
+        match self {
+            ElicitDialog::Form(panel) => panel.id,
+            ElicitDialog::Url(panel) => panel.id,
+        }
+    }
+
+    /// The overlay title; both renderers match on it to say the dialog needs an answer.
+    pub(crate) fn title(&self) -> &'static str {
+        match self {
+            ElicitDialog::Form(_) => "MCP input",
+            ElicitDialog::Url(_) => "MCP link",
+        }
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        match self {
+            ElicitDialog::Form(panel) => panel.is_closed(),
+            ElicitDialog::Url(panel) => panel.is_closed(),
+        }
+    }
+
+    pub(crate) fn reply(&mut self, reply: ElicitReply) {
+        match self {
+            ElicitDialog::Form(panel) => panel.reply(reply),
+            ElicitDialog::Url(panel) => panel.reply(reply),
+        }
+    }
+
+    pub(crate) fn handle_key(&mut self, key: KeyEvent) -> ElicitKey {
+        match self {
+            ElicitDialog::Form(panel) => match panel.handle_key(key) {
+                Some(reply) => ElicitKey::Done(reply),
+                None => ElicitKey::Open,
+            },
+            ElicitDialog::Url(panel) => panel.handle_key(key),
+        }
+    }
+
+    pub(crate) fn handle_paste(&mut self, text: &str) {
+        match self {
+            ElicitDialog::Form(panel) => panel.handle_paste(text),
+            ElicitDialog::Url(panel) => panel.handle_paste(text),
+        }
+    }
+
+    pub(crate) fn body(&self, width: usize, max_rows: usize, theme: &Theme) -> Vec<Line<'static>> {
+        match self {
+            ElicitDialog::Form(panel) => panel.body(width, max_rows, theme),
+            ElicitDialog::Url(panel) => panel.body(width, max_rows, theme),
+        }
+    }
+
+    pub(crate) fn footer(&self) -> Vec<Line<'static>> {
+        match self {
+            ElicitDialog::Form(panel) => panel.footer(),
+            ElicitDialog::Url(panel) => panel.footer(),
+        }
+    }
+
+    pub(crate) fn field(&self) -> Option<(&'static str, String)> {
+        match self {
+            ElicitDialog::Form(panel) => panel.field(),
+            ElicitDialog::Url(panel) => panel.field(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn settle(&mut self) {
+        match self {
+            ElicitDialog::Form(panel) => panel.settle(),
+            ElicitDialog::Url(panel) => panel.settle(),
+        }
+    }
+}
 
 const CARET: &str = "▏";
 const PRIVACY: &str =

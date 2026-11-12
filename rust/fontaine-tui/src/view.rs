@@ -339,6 +339,7 @@ impl Overlay {
             "approval"
                 | "question"
                 | "MCP input"
+                | "MCP link"
                 | "MCP server"
                 | "guardian unavailable"
                 | "guardian"
@@ -519,9 +520,9 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
         let footer = panel.footer();
         let rows = body_rows(app, width, height, footer.len());
         return Overlay {
-            instance: Some(panel.id),
+            instance: Some(panel.id()),
             field: panel.field(),
-            ..Overlay::new("MCP input", panel.body(width, rows, theme), footer)
+            ..Overlay::new(panel.title(), panel.body(width, rows, theme), footer)
         };
     }
     if transcript_has_keys(app)

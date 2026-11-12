@@ -18,7 +18,7 @@ use fontaine_tools::descriptor::is_shell_class;
 use fontaine_tools::error_chain::chain;
 use fontaine_tools::gate::{CallView, GateDecision, ToolGate};
 use fontaine_tools::lock::lock;
-use fontaine_tools::mcp::{ElicitForm, ElicitReply};
+use fontaine_tools::mcp::{ElicitForm, ElicitReply, ElicitUrl};
 use fontaine_tools::preclassify::{Environment, Preclassifier, analyze};
 use fontaine_tools::risk::RiskClass;
 use fontaine_tools::scope::{Scope, ScopeError, is_external_read, is_external_write};
@@ -129,6 +129,13 @@ pub trait Approver: Send + Sync {
     fn elicit<'a>(&'a self, _form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
         Box::pin(async { ElicitReply::Cancel })
     }
+
+    /// An MCP server's request to open a link. Only a frontend with a dialog answers; every
+    /// other approver cancels, like every other unattended elicitation.
+    fn elicit_url<'a>(&'a self, request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+        let _ = request;
+        Box::pin(async { ElicitReply::Cancel })
+    }
 }
 
 /// Why the guardian could not be asked, for the human who has to decide what to do.
@@ -222,6 +229,13 @@ impl Approver for AfkApprover {
             return Box::pin(async { ElicitReply::Cancel });
         }
         self.inner.elicit(form)
+    }
+
+    fn elicit_url<'a>(&'a self, request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+        if self.state.afk_on() {
+            return Box::pin(async { ElicitReply::Cancel });
+        }
+        self.inner.elicit_url(request)
     }
 }
 
@@ -2597,5 +2611,106 @@ impl ToolGate for PermissionPipeline {
             self.publish_preview(tool, agent, &decision).await;
             decision
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audit::AuditLog;
+    use crate::config::PermissionMode;
+    use crate::gate::{StateParams, no_guardian};
+    use crate::ledger::Ledger;
+    use fontaine_agents::registry::AgentTypes;
+    use fontaine_agents::tree::{AgentTree, Limits};
+    use fontaine_tools::live::Live;
+    use fontaine_tools::scope::Scope;
+    use std::sync::Mutex as StdMutex;
+
+    /// Records the URL elicitations it is shown and accepts them.
+    struct Recording {
+        asked: StdMutex<usize>,
+    }
+
+    impl Approver for Recording {
+        fn approve<'a>(&'a self, _request: ApprovalRequest) -> BoxFuture<'a, Answer> {
+            Box::pin(async { Answer::Deny { feedback: None } })
+        }
+
+        fn elicit_url<'a>(&'a self, _request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+            *self.asked.lock().unwrap() += 1;
+            Box::pin(async { ElicitReply::Accept(serde_json::Map::default()) })
+        }
+    }
+
+    fn state_in(dir: &std::path::Path, mode: PermissionMode) -> Arc<SessionState> {
+        let agents = Arc::new(AgentTree::new(Limits::default(), 1));
+        agents.set_root_tools(|| {
+            fontaine_tools::descriptor::names()
+                .map(String::from)
+                .collect()
+        });
+        Arc::new(SessionState::new(StateParams {
+            session_id: "test".into(),
+            mode,
+            scope: Arc::new(Scope::new(dir.to_path_buf(), [])),
+            deny: Vec::new(),
+            ask: Vec::new(),
+            allow: Vec::new(),
+            ledger: Arc::new(Ledger::create(dir).unwrap()),
+            audit: Arc::new(AuditLog::create(dir, "test").unwrap()),
+            approver: Arc::new(DenyAll),
+            home: None,
+            protected_dirs: Vec::new(),
+            scratch: None,
+            memory_root: None,
+            guardian: no_guardian(),
+            auto: crate::gate::AutoContext::default(),
+            agents: agents.clone(),
+            agent_types: Arc::new(Live::new(AgentTypes::builtin())),
+            reveal_mcp_names: true,
+            auto_edits: Default::default(),
+            effort: None,
+        }))
+    }
+
+    fn url_request() -> ElicitUrl {
+        ElicitUrl {
+            server: "srv".into(),
+            message: "Sign in".into(),
+            url: "https://example.com".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_default_elicit_url_cancels() {
+        let reply = DenyAll.elicit_url(url_request()).await;
+        assert_eq!(reply, ElicitReply::Cancel);
+    }
+
+    #[tokio::test]
+    async fn afk_cancels_a_url_elicitation_without_asking() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path(), PermissionMode::Afk);
+        let recording = Arc::new(Recording {
+            asked: StdMutex::new(0),
+        });
+        let afk = AfkApprover::new(recording.clone(), state);
+        let reply = afk.elicit_url(url_request()).await;
+        assert_eq!(reply, ElicitReply::Cancel);
+        assert_eq!(*recording.asked.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_attended_session_forwards_a_url_elicitation() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path(), PermissionMode::Manual);
+        let recording = Arc::new(Recording {
+            asked: StdMutex::new(0),
+        });
+        let afk = AfkApprover::new(recording.clone(), state);
+        let reply = afk.elicit_url(url_request()).await;
+        assert_eq!(reply, ElicitReply::Accept(serde_json::Map::default()));
+        assert_eq!(*recording.asked.lock().unwrap(), 1);
     }
 }

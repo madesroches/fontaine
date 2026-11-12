@@ -41,6 +41,11 @@ pub fn elicit_tool() -> Tool {
     Tool::new("elicit", "Ask the user a question", schema())
 }
 
+/// A tool that asks the person to open a link while it runs, and reports the answer.
+pub fn elicit_url_tool() -> Tool {
+    Tool::new("elicit_url", "Ask the user to open a link", schema())
+}
+
 /// A tool that runs until the test releases it with `Double::finish`.
 pub fn slow_tool() -> Tool {
     Tool::new("slow", "Wait to be released", schema())
@@ -65,6 +70,15 @@ fn elicitation_params() -> ElicitRequestParams {
             .optional_integer("age", 0, 150)
             .build()
             .expect("a valid schema"),
+    }
+}
+
+fn url_elicitation_params() -> ElicitRequestParams {
+    ElicitRequestParams::UrlElicitationParams {
+        meta: None,
+        message: "Open the docs?".to_string(),
+        url: "https://example.com/docs".to_string(),
+        elicitation_id: "e1".to_string(),
     }
 }
 
@@ -302,6 +316,19 @@ impl ServerHandler for Double {
                 ),
                 Err(e) => format!("elicitation failed: {e}"),
             },
+            "elicit_url" => {
+                match context
+                    .peer
+                    .create_elicitation(url_elicitation_params())
+                    .await
+                {
+                    Ok(result) => format!(
+                        "elicited: {}",
+                        serde_json::json!({"action": result.action, "content": result.content})
+                    ),
+                    Err(e) => format!("elicitation failed: {e}"),
+                }
+            }
             "big" => "x".repeat(chars),
             "slow" => {
                 self.started.notify_one();

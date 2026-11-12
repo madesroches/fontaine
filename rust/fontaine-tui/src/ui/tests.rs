@@ -673,7 +673,7 @@ fn subagent_ask() -> (Prompt, oneshot::Receiver<Answer>) {
     (Prompt::Ask(request, reply), answer)
 }
 
-use fontaine_tools::mcp::{ElicitForm, ElicitReply};
+use fontaine_tools::mcp::{ElicitForm, ElicitReply, ElicitRequest};
 
 fn elicit_form() -> ElicitForm {
     ElicitForm {
@@ -692,11 +692,17 @@ fn an_elicitation_whose_call_ended_while_it_queued_is_dropped_and_a_live_one_ope
     let mut ui = ui(rx);
     let (reply, gone) = oneshot::channel();
     drop(gone);
-    ui.on_prompt(None, Prompt::Elicit(Box::new(elicit_form()), reply));
+    ui.on_prompt(
+        None,
+        Prompt::Elicit(Box::new(ElicitRequest::Form(elicit_form())), reply),
+    );
     assert!(ui.app.elicitations.is_empty());
 
     let (reply, mut waiting) = oneshot::channel();
-    ui.on_prompt(None, Prompt::Elicit(Box::new(elicit_form()), reply));
+    ui.on_prompt(
+        None,
+        Prompt::Elicit(Box::new(ElicitRequest::Form(elicit_form())), reply),
+    );
     assert_eq!(ui.app.elicitations.len(), 1);
     assert!(waiting.try_recv().is_err());
 }
@@ -722,7 +728,10 @@ fn prompts_that_arrive_during_afk_mode_are_answered_without_an_overlay() {
     ));
 
     let (reply, mut elicit) = oneshot::channel();
-    ui.on_prompt(None, Prompt::Elicit(Box::new(elicit_form()), reply));
+    ui.on_prompt(
+        None,
+        Prompt::Elicit(Box::new(ElicitRequest::Form(elicit_form())), reply),
+    );
     assert_eq!(elicit.try_recv(), Ok(ElicitReply::Cancel));
     assert!(ui.app.elicitations.is_empty());
 
@@ -756,7 +765,10 @@ async fn interrupting_a_prompt_fetch_denies_and_drains_pending_prompts() {
     // it is still open when the interrupt lands, and an ask can still wait in the channel.
     ui.app.set_running(true);
     let (reply, mut elicit) = oneshot::channel();
-    ui.on_prompt(None, Prompt::Elicit(Box::new(elicit_form()), reply));
+    ui.on_prompt(
+        None,
+        Prompt::Elicit(Box::new(ElicitRequest::Form(elicit_form())), reply),
+    );
     assert_eq!(ui.app.elicitations.len(), 1);
     let (queued, mut answer) = ask();
     prompt_tx.send(queued).unwrap();
@@ -913,7 +925,10 @@ fn entering_afk_mode_closes_every_open_and_queued_prompt() {
     };
     ui.on_prompt(None, Prompt::Unavailable(Box::new(info), reply));
     let (reply, mut elicit) = oneshot::channel();
-    ui.on_prompt(None, Prompt::Elicit(Box::new(elicit_form()), reply));
+    ui.on_prompt(
+        None,
+        Prompt::Elicit(Box::new(ElicitRequest::Form(elicit_form())), reply),
+    );
     assert!(ui.app.approval.is_some() && ui.app.unavailable.is_some());
     assert_eq!(ui.app.elicitations.len(), 1);
 

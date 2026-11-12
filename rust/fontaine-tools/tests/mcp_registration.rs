@@ -490,10 +490,11 @@ async fn an_http_server_is_reached_through_the_configured_proxy() {
     assert_eq!(seen[0].url.host_str(), Some("mcp.test"));
 }
 
-/// Answers every elicitation with `reply` and keeps the forms it was shown.
+/// Answers every elicitation with `reply` and keeps the forms and URLs it was shown.
 struct Answers {
     reply: fontaine_tools::mcp::ElicitReply,
     forms: std::sync::Mutex<Vec<fontaine_tools::mcp::ElicitForm>>,
+    urls: std::sync::Mutex<Vec<fontaine_tools::mcp::ElicitUrl>>,
 }
 
 impl fontaine_tools::mcp::Elicitor for Answers {
@@ -502,6 +503,15 @@ impl fontaine_tools::mcp::Elicitor for Answers {
         form: fontaine_tools::mcp::ElicitForm,
     ) -> futures::future::BoxFuture<'a, fontaine_tools::mcp::ElicitReply> {
         self.forms.lock().unwrap().push(form);
+        let reply = self.reply.clone();
+        Box::pin(async move { reply })
+    }
+
+    fn elicit_url<'a>(
+        &'a self,
+        request: fontaine_tools::mcp::ElicitUrl,
+    ) -> futures::future::BoxFuture<'a, fontaine_tools::mcp::ElicitReply> {
+        self.urls.lock().unwrap().push(request);
         let reply = self.reply.clone();
         Box::pin(async move { reply })
     }
@@ -532,6 +542,7 @@ async fn a_tool_that_asks_for_input_gets_the_form_answer() {
             ("age".to_string(), json!(36)),
         ])),
         forms: Default::default(),
+        urls: Default::default(),
     });
     let mut options = options(Gate::new(true));
     options.elicitor = answers.clone();
@@ -564,6 +575,56 @@ async fn a_tool_that_asks_for_input_gets_the_form_answer() {
             [("age".to_string(), false), ("name".to_string(), true)]
         );
     }
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_tool_that_asks_to_open_a_link_gets_the_url_answer() {
+    use fontaine_tools::mcp::ElicitReply;
+    let answers = std::sync::Arc::new(Answers {
+        reply: ElicitReply::Accept(serde_json::Map::default()),
+        forms: Default::default(),
+        urls: Default::default(),
+    });
+    let mut options = options(Gate::new(true));
+    options.elicitor = answers.clone();
+    let handle = tool_server();
+    let (connection, _task) = serve_with(
+        "double",
+        Double::with_tools(vec![mcp_common::server::elicit_url_tool()]),
+        handle.clone(),
+        &options,
+    )
+    .await;
+    let out = call(&handle, "mcp__double__elicit_url", "{}")
+        .await
+        .unwrap();
+    assert!(out.contains(r#""action":"accept""#), "{out}");
+    {
+        let urls = answers.urls.lock().unwrap();
+        assert_eq!(urls.len(), 1);
+        assert_eq!(urls[0].server, "double");
+        assert_eq!(urls[0].message, "Open the docs?");
+        assert_eq!(urls[0].url, "https://example.com/docs");
+    }
+    connection.close().await;
+}
+
+#[tokio::test]
+async fn a_tool_that_asks_to_open_a_link_gets_cancel_when_nobody_can_answer() {
+    let gate = Gate::new(true);
+    let handle = tool_server();
+    let (connection, _task) = serve(
+        "double",
+        Double::with_tools(vec![mcp_common::server::elicit_url_tool()]),
+        gate,
+        handle.clone(),
+    )
+    .await;
+    let out = call(&handle, "mcp__double__elicit_url", "{}")
+        .await
+        .unwrap();
+    assert!(out.contains(r#""action":"cancel""#), "{out}");
     connection.close().await;
 }
 

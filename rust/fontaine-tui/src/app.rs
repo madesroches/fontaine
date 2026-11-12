@@ -13,7 +13,7 @@ use fontaine_core::statusline::{RecentVerdict, StatuslineState};
 use fontaine_core::steering::Queued;
 use fontaine_core::turn::SessionEvent;
 use fontaine_tools::ask_user::{Question, QuestionReply};
-use fontaine_tools::mcp::{ElicitForm, ElicitReply};
+use fontaine_tools::mcp::{ElicitReply, ElicitRequest};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio::sync::oneshot;
 
@@ -25,7 +25,7 @@ use crate::complete::{self, Token};
 use crate::config_panel::{ConfigKey, ConfigPanel};
 use crate::confirm_prompt::ConfirmPrompt;
 use crate::denials::{DeniedKey, DeniedList, UnavailableAnswer, UnavailablePrompt};
-use crate::elicitation::ElicitationPanel;
+use crate::elicitation::ElicitDialog;
 use crate::history::History;
 use crate::input::{
     InputBuffer, MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia, typed_char,
@@ -42,6 +42,7 @@ use crate::theme::Theme;
 use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
 use crate::transcript_view::{TranscriptKey, TranscriptView};
+use crate::url_elicitation::{ElicitKey, UrlElicitationPanel, WarnSink};
 use fontaine_core::checkpoint::{RewindPlan, RewindWhat};
 use fontaine_core::config_catalog::ModelSlot;
 use fontaine_core::keybindings::TuiAction;
@@ -212,7 +213,10 @@ pub struct App {
     pub questions: VecDeque<QuestionPanel>,
     /// MCP servers' requests for input, the one being answered first. They wait behind the
     /// model's questions and behind each other.
-    pub elicitations: VecDeque<ElicitationPanel>,
+    pub elicitations: VecDeque<ElicitDialog>,
+    /// Where a warning about a link open failure is reported; the driver points it at the
+    /// prompt channel so the warning reaches the transcript and the bug report's ring buffer.
+    warn_sink: WarnSink,
     /// The `/agents` panel while it is open.
     pub agents: Option<AgentsPanel>,
     /// The model's task list, shown above the input.
@@ -419,6 +423,7 @@ impl App {
             guardian_off_prompt: None,
             bug_prompt: None,
             recent_warnings: Default::default(),
+            warn_sink: Arc::new(|message| eprintln!("fontaine: warning: {message}")),
             bug_drafts: None,
             afk_review_prompt: None,
             skill_trust_prompt: None,
@@ -794,10 +799,25 @@ impl App {
 
     /// Shows an MCP server's request for input, or queues it behind the ones the human is
     /// answering.
-    pub fn begin_elicitation(&mut self, form: ElicitForm, reply: oneshot::Sender<ElicitReply>) {
-        let mut panel = ElicitationPanel::new(form, reply);
+    pub fn begin_elicitation(
+        &mut self,
+        request: ElicitRequest,
+        reply: oneshot::Sender<ElicitReply>,
+    ) {
         self.elicitations_opened += 1;
-        panel.id = self.elicitations_opened;
+        let id = self.elicitations_opened;
+        let panel = match request {
+            ElicitRequest::Form(form) => {
+                let mut panel = crate::elicitation::ElicitationPanel::new(form, reply);
+                panel.id = id;
+                ElicitDialog::Form(Box::new(panel))
+            }
+            ElicitRequest::Url(request) => {
+                let mut panel = UrlElicitationPanel::new(request, reply, self.warn_sink.clone());
+                panel.id = id;
+                ElicitDialog::Url(panel)
+            }
+        };
         self.elicitations.push_back(panel);
     }
 
@@ -833,6 +853,12 @@ impl App {
         self.bug_opened += 1;
         prompt.id = self.bug_opened;
         self.bug_prompt = Some(prompt);
+    }
+
+    /// Points warnings a dialog raises, such as a link the browser refused, at the prompt
+    /// channel; `drive` sets this, tests keep the stderr default.
+    pub fn set_warn_sink(&mut self, warn: WarnSink) {
+        self.warn_sink = warn;
     }
 
     /// Remembers a warning for the bug report; the last [`WARNING_RING`] are kept.
@@ -918,7 +944,7 @@ impl App {
         }
         self.elicitations
             .front()
-            .map(|p| (PromptKind::Elicitation, p.id))
+            .map(|p| (PromptKind::Elicitation, p.id()))
     }
 
     /// Answers every open or queued prompt the way `AfkApprover` would, because nobody is asked
@@ -1723,15 +1749,24 @@ impl App {
         let Some(panel) = self.elicitations.front_mut() else {
             return;
         };
-        let Some(reply) = panel.handle_key(key) else {
-            return;
+        let (reply, note) = match panel.handle_key(key) {
+            ElicitKey::Open => return,
+            ElicitKey::Pending => (None, None),
+            ElicitKey::Done(reply) => {
+                let note = match &reply {
+                    ElicitReply::Accept(_) => None,
+                    ElicitReply::Decline => Some(match panel {
+                        ElicitDialog::Form(_) => "input declined",
+                        ElicitDialog::Url(_) => "link declined",
+                    }),
+                    ElicitReply::Cancel => Some("input cancelled"),
+                };
+                (Some(reply), note)
+            }
         };
-        let note = match &reply {
-            ElicitReply::Accept(_) => None,
-            ElicitReply::Decline => Some("input declined"),
-            ElicitReply::Cancel => Some("input cancelled"),
-        };
-        panel.reply(reply);
+        if let Some(reply) = reply {
+            panel.reply(reply);
+        }
         self.elicitations.pop_front();
         if let Some(note) = note {
             self.transcript.notice(note.to_string());
@@ -2674,8 +2709,8 @@ mod tests {
         assert!(app.questions.is_empty());
     }
 
-    fn elicit_form() -> ElicitForm {
-        ElicitForm {
+    fn elicit_form() -> fontaine_tools::mcp::ElicitForm {
+        fontaine_tools::mcp::ElicitForm {
             server: "srv".into(),
             message: "Who?".into(),
             schema: fontaine_tools::mcp::elicitation::ElicitationSchema::builder()
@@ -2688,7 +2723,22 @@ mod tests {
     /// An elicitation dialog past its grace period, and the receiver of its answer.
     fn open_elicitation(app: &mut App) -> oneshot::Receiver<ElicitReply> {
         let (tx, rx) = oneshot::channel();
-        app.begin_elicitation(elicit_form(), tx);
+        app.begin_elicitation(ElicitRequest::Form(elicit_form()), tx);
+        app.elicitations.back_mut().unwrap().settle();
+        rx
+    }
+
+    /// A URL-mode dialog past its grace period, and the receiver of its answer.
+    fn open_url_elicitation(app: &mut App) -> oneshot::Receiver<ElicitReply> {
+        let (tx, rx) = oneshot::channel();
+        app.begin_elicitation(
+            ElicitRequest::Url(fontaine_tools::mcp::ElicitUrl {
+                server: "srv".into(),
+                message: "Sign in".into(),
+                url: "https://example.com".into(),
+            }),
+            tx,
+        );
         app.elicitations.back_mut().unwrap().settle();
         rx
     }
@@ -2797,6 +2847,32 @@ mod tests {
         app.deny_pending();
         assert_eq!(rx.try_recv().unwrap(), ElicitReply::Cancel);
         assert!(app.elicitations.is_empty());
+    }
+
+    #[test]
+    fn afk_and_an_interrupt_cancel_an_open_url_elicitation() {
+        let mut app = app();
+        let mut rx = open_url_elicitation(&mut app);
+        assert_eq!(app.answer_for_afk(), 1);
+        assert_eq!(rx.try_recv().unwrap(), ElicitReply::Cancel);
+
+        let mut rx = open_url_elicitation(&mut app);
+        app.deny_pending();
+        assert_eq!(rx.try_recv().unwrap(), ElicitReply::Cancel);
+        assert!(app.elicitations.is_empty());
+    }
+
+    #[test]
+    fn a_url_elicitation_is_a_pending_prompt_and_declining_notes_it() {
+        let mut app = app();
+        let mut rx = open_url_elicitation(&mut app);
+        let (kind, _) = app.pending_prompt().expect("a prompt is waiting");
+        assert_eq!(kind, crate::notify::PromptKind::Elicitation);
+        assert_eq!(crate::view::overlay(&app, 60, 30, false).title, "MCP link");
+        press(&mut app, KeyCode::Char('n'));
+        assert_eq!(rx.try_recv().unwrap(), ElicitReply::Decline);
+        assert!(app.elicitations.is_empty());
+        assert_eq!(last_notice(&app), Some("link declined"));
     }
 
     #[test]

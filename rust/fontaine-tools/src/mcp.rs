@@ -14,7 +14,8 @@ pub mod register;
 pub mod servers;
 
 pub use elicitation::{
-    CallGuard, CancelAll, Choice, ElicitForm, ElicitReply, Elicitor, Field, FieldKind, TextFormat,
+    CallGuard, CancelAll, Choice, ElicitForm, ElicitReply, ElicitRequest, ElicitUrl, Elicitor,
+    Field, FieldKind, TextFormat, openable_url,
 };
 pub use listings::{
     Listings, McpResourceQueries, NoMcpResources, PromptArgument, PromptSummary, ResourceSummary,

@@ -46,6 +46,7 @@ pub mod transcript;
 pub mod transcript_view;
 pub mod trust_prompt;
 mod ui;
+pub mod url_elicitation;
 pub mod view;
 
 use crate::config_panel::ConfigKey;
@@ -65,7 +66,7 @@ use fontaine_core::permissions::{
 use fontaine_core::statusline::{StatuslineScript, StatuslineState};
 use fontaine_tools::ask_user::{Question, QuestionReply};
 use fontaine_tools::kills::KILL_SETTLE;
-use fontaine_tools::mcp::{ElicitForm, ElicitReply};
+use fontaine_tools::mcp::{ElicitReply, ElicitRequest, ElicitUrl};
 use futures::future::BoxFuture;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
@@ -134,7 +135,7 @@ enum Prompt {
     /// nobody could answer.
     Question(String, Vec<Question>, oneshot::Sender<QuestionReply>),
     /// An MCP server's request for input. A dropped sender means nobody could answer.
-    Elicit(Box<ElicitForm>, oneshot::Sender<ElicitReply>),
+    Elicit(Box<ElicitRequest>, oneshot::Sender<ElicitReply>),
     Notice(Severity, String),
 }
 
@@ -194,10 +195,30 @@ impl Approver for ChannelApprover {
         })
     }
 
-    fn elicit<'a>(&'a self, form: ElicitForm) -> BoxFuture<'a, ElicitReply> {
+    fn elicit<'a>(&'a self, form: fontaine_tools::mcp::ElicitForm) -> BoxFuture<'a, ElicitReply> {
         Box::pin(async move {
             let (reply, answer) = oneshot::channel();
-            if self.tx.send(Prompt::Elicit(Box::new(form), reply)).is_err() {
+            let request = ElicitRequest::Form(form);
+            if self
+                .tx
+                .send(Prompt::Elicit(Box::new(request), reply))
+                .is_err()
+            {
+                return ElicitReply::Cancel;
+            }
+            answer.await.unwrap_or(ElicitReply::Cancel)
+        })
+    }
+
+    fn elicit_url<'a>(&'a self, request: ElicitUrl) -> BoxFuture<'a, ElicitReply> {
+        Box::pin(async move {
+            let (reply, answer) = oneshot::channel();
+            let request = ElicitRequest::Url(request);
+            if self
+                .tx
+                .send(Prompt::Elicit(Box::new(request), reply))
+                .is_err()
+            {
                 return ElicitReply::Cancel;
             }
             answer.await.unwrap_or(ElicitReply::Cancel)
@@ -366,6 +387,7 @@ pub async fn drive(
     let Notices { startup, feed } = notices;
     let (tx, prompts) = unbounded_channel();
     let feed_tx = tx.clone();
+    let warn_tx = tx.clone();
     setup.approver = Arc::new(ChannelApprover { tx });
     let model = setup.models.main.reference.to_string();
     let mode = setup.mode;
@@ -459,6 +481,11 @@ pub async fn drive(
         statusline_result_redraw: false,
     };
     ui.app.theme = theme;
+    // A link the browser refused reaches the person the way the approver's warnings do: the
+    // transcript and the bug report's ring buffer.
+    ui.app.set_warn_sink(Arc::new(move |message: &str| {
+        let _ = warn_tx.send(Prompt::Notice(Severity::Warning, message.to_string()));
+    }));
     // Config validation has parsed and scope-checked every entry, so a resolve failure here
     // would mean the merged config came from somewhere other than `config::load`.
     ui.app.keymap = keymap::Keymap::resolve(&runtime.config.keybindings)

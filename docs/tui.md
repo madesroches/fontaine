@@ -1000,6 +1000,20 @@ so keys typed ahead cannot answer. Turning on [AFK mode](afk.md) or interrupting
 open dialog, and so does the end of the call that caused it. A request from a
 subagent's call never shows a dialog.
 
+A server can instead ask you to open a link (URL mode). The dialog shows "MCP server `<name>`
+wants to open a link", the server's message, the link in bold so it is visible and can be copied,
+and the warning "This link goes to an external site chosen by the server." Only `http` and `https`
+links are ever opened; anything else is declined before the dialog appears.
+
+| Key | Action |
+|---|---|
+| `y` | Open the link in your default browser and answer accept. If the browser refuses, the dialog closes, the server is told you declined, and Fontaine warns about the failure. |
+| `n` or Esc | Decline: the server is told you chose not to open the link, and carries on. |
+| Ctrl-D | Decline. |
+
+The grace period of the other dialogs applies, so keys typed ahead cannot answer. AFK mode, an
+interrupt and the end of the call that caused it answer `cancel`, exactly as for a form.
+
 ## MCP server approvals
 
 A repository-defined [MCP server](mcp.md#servers-a-repository-defines) in a trusted folder is asked
