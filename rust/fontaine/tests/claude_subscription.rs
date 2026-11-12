@@ -294,32 +294,6 @@ async fn a_guardian_verdict_on_the_account_gates_a_shell_call_in_auto_mode() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_guardian_that_cannot_be_read_fails_closed() {
-    let claude = Claude::new(json!({"responses": [
-        {"tool_use": {"name": "mcp__fontaine__shell", "id": "toolu_s", "input": {"command": "echo never-ran"}},
-         "denial_echo": true},
-        {"events": ["this is not the protocol"]},
-        {"events": ["this is not the protocol"]},
-        {"events": ["this is not the protocol"]},
-        {"text": "gave up"},
-    ]}));
-    let out = claude
-        .auto(&["--output-format", "stream-json", "run echo"])
-        .await;
-    let lines = out.lines();
-    let results = of_type(&lines, "tool_result");
-    assert!(
-        results.iter().all(|r| !r["text"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("never-ran\n")),
-        "the call ran without a verdict: {results:?}"
-    );
-    let decision = of_type(&lines, "gate_decision")[0];
-    assert_ne!(decision["decision"], "allow", "{decision}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_logged_out_cli_fails_before_any_turn_without_retries() {
     let claude = Claude::new(json!({"auth": {"loggedIn": false}}));
     let out = claude.headless(&["hello"]).await;

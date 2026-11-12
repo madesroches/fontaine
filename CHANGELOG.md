@@ -127,6 +127,9 @@ All notable changes are recorded here. The format follows
   clipboard is read through `powershell.exe Get-Clipboard -Format Image` (Windows PowerShell,
   STA, image returned as base64 PNG). `alt+v` is a second default binding for
   `attach_clipboard`, for terminals that take Ctrl+V as their own paste action (#586).
+- Removed the redundant full-headless `a_guardian_that_cannot_be_read_fails_closed` test, which
+  flaked on macOS; the fail-closed behavior stays covered by the guardian, `claude-subscription`
+  protocol and headless auto-mode tests (#595).
 
 ### Changed
 
