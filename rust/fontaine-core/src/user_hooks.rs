@@ -147,7 +147,8 @@ impl HookProcess {
 pub type GuardianSlot = Arc<RwLock<Option<GuardianModel>>>;
 
 /// Records what a prompt hook's model calls cost, against the agent the event is for.
-pub type UsageSink = Arc<dyn Fn(&str, &Usage) + Send + Sync>;
+/// Called with the agent, the cost, and whether the provider answered the request.
+pub type UsageSink = Arc<dyn Fn(&str, &Usage, bool) + Send + Sync>;
 
 /// Everything a hook handler needs besides its own configuration.
 #[derive(Clone)]
@@ -516,7 +517,11 @@ impl PromptSpec {
                 .get("agent_id")
                 .and_then(Value::as_str)
                 .unwrap_or(ROOT_AGENT);
-            sink(agent, &usage);
+            let answered = !matches!(
+                answer,
+                Err(JudgeFailure::Timeout(_) | JudgeFailure::Unreachable(_))
+            );
+            sink(agent, &usage, answered);
         }
         match answer {
             Ok(verdict) => Ok(Answer {
@@ -666,12 +671,6 @@ impl UserHook {
             .instrument(span.clone())
             .await;
         span.record("success", result.is_ok());
-        if result.is_ok()
-            && matches!(&*self.handler, Handler::Prompt(_))
-            && let Some(pause) = &self.pause
-        {
-            pause.note_success();
-        }
         let answer = result?;
         if !discards_system_message(self.event)
             && let Some(message) = answer

@@ -127,6 +127,9 @@ struct Recent {
     account: String,
     ended: Instant,
     attempts: u32,
+    /// Kept from a pause a probe ended, so the same spent account cannot keep sliding the wait
+    /// cap by pausing again.
+    deadline: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -139,6 +142,8 @@ struct State {
     attempts: u32,
     closed: Duration,
     last_end: Option<PauseEnd>,
+    /// The pause `last_end` ended, which outlives a cleared failure for a waiter still reporting it.
+    last_info: Option<PauseInfo>,
     terminal: Option<(PauseEnd, PauseInfo)>,
     recent: Option<Recent>,
     /// When the driver next looks at the account, for a surface to count down to. Written
@@ -175,6 +180,7 @@ impl Shared {
             s.closed += waited;
             s.probe = Probe::Idle;
             s.last_end = Some(end);
+            s.last_info = Some(info.clone());
             if end.is_failure() {
                 s.terminal = Some((end, info.clone()));
             }
@@ -182,6 +188,9 @@ impl Shared {
                 account: info.account.clone(),
                 ended: Instant::now(),
                 attempts: s.attempts,
+                deadline: matches!(end, PauseEnd::Probed)
+                    .then_some(info.deadline)
+                    .flatten(),
             });
             ended = Some((info, waited));
             // Nobody is woken yet: the observers hear of the end first, so a record or a stream
@@ -273,6 +282,7 @@ impl UsagePause {
             attempts: 0,
             closed: Duration::ZERO,
             last_end: None,
+            last_info: None,
             terminal: None,
             recent: None,
             next_check: None,
@@ -326,7 +336,7 @@ impl UsagePause {
     /// brought.
     /// Returns whether this call began the pause: a failed probe that re-engages it is not a
     /// new pause, so it does not reopen a prompt the human may be answering.
-    pub fn engage(&self, info: PauseInfo) -> bool {
+    pub fn engage(&self, mut info: PauseInfo) -> bool {
         let mut started = None;
         self.shared.tx.send_if_modified(|s| {
             if let Some(active) = &mut s.active {
@@ -349,6 +359,9 @@ impl UsagePause {
                     if recent.account == info.account
                         && recent.ended.elapsed() < BACKOFF_MEMORY =>
                 {
+                    if let (Some(kept), Some(new)) = (recent.deadline, info.deadline) {
+                        info.deadline = Some(kept.min(new));
+                    }
                     recent.attempts + 1
                 }
                 _ => 0,
@@ -457,12 +470,14 @@ impl UsagePause {
         }
     }
 
-    /// A request to the provider succeeded. If a probe was out, the window is open.
-    pub fn note_success(&self) {
+    /// A request to `account` succeeded. If a probe was out for that account, its window is
+    /// open; a success on another account says nothing about the one that is spent.
+    pub fn note_success(&self, account: &str) {
         let (claimed, epoch) = {
             let s = self.shared.tx.borrow();
             (
-                s.active.is_some() && matches!(s.probe, Probe::Claimed(_)),
+                matches!(&s.active, Some(info) if info.account == account)
+                    && matches!(s.probe, Probe::Claimed(_)),
                 s.epoch,
             )
         };
@@ -501,6 +516,17 @@ impl UsagePause {
     /// A run that was stopped for it reads this to say why.
     pub fn failure(&self) -> Option<(PauseEnd, PauseInfo)> {
         self.shared.tx.borrow().terminal.clone()
+    }
+
+    /// The pause a caller that saw it end should name: the failure when still held, else the one
+    /// that ended last, else the one in force.
+    pub fn ended_info(&self) -> Option<PauseInfo> {
+        let s = self.shared.tx.borrow();
+        s.terminal
+            .as_ref()
+            .map(|(_, info)| info.clone())
+            .or_else(|| s.last_info.clone())
+            .or_else(|| s.active.clone())
     }
 
     /// Clears [`failure`](Self::failure), as a new turn starting does.
@@ -639,7 +665,9 @@ async fn drive(shared: Arc<Shared>, epoch: u64) {
         };
         if !learned {
             learned = true;
+            // A pause already out of time ends below at once, with the reset time it came with.
             if now.info.reset_at.is_none()
+                && !now.info.deadline.is_some_and(|d| d <= Instant::now())
                 && let Some(source) = &now.info.source
                 && let Some(quota) = fetch(source).await
                 && let Some(at) = spent_reset(&quota)

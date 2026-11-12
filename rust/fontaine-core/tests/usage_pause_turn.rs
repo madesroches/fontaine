@@ -230,3 +230,25 @@ async fn a_spent_list_pauses_then_the_request_goes_again_after_the_window_opens(
     );
     assert_eq!(failure.usage_limit, None);
 }
+
+#[tokio::test(start_paused = true)]
+async fn only_an_answered_request_on_the_paused_account_ends_the_pause() {
+    use fontaine_core::usage_ledger::Served;
+    let built = build(vec![answer()]);
+    let state = built.runtime.state.clone();
+    let pause = state.usage_pause().clone();
+    pause.engage(PauseInfo::new(UsageRole::Guardian, "test", None));
+    tokio::time::sleep(Duration::from_secs(3600)).await;
+    let probe = pause.admit().await.probe.expect("the probe is open");
+    probe.detach();
+    let usage = Usage::default();
+
+    // A request that failed, or went to another account, proves nothing.
+    state.add_goal_usage(&usage, false, &Served::direct("test/mock"));
+    state.add_goal_usage(&usage, true, &Served::direct("other/mock"));
+    state.add_guardian_usage_answered("root", &usage, false, &Served::direct("test/mock"));
+    assert!(pause.is_paused());
+
+    state.add_goal_usage(&usage, true, &Served::direct("test/mock"));
+    assert!(!pause.is_paused());
+}

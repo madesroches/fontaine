@@ -791,7 +791,7 @@ fn prompt_deps(
     );
     HookDeps {
         guardian: Arc::new(RwLock::new(Some(GuardianModel::Ready(handle)))),
-        usage: Some(Arc::new(move |_agent, usage| {
+        usage: Some(Arc::new(move |_agent, usage, _answered| {
             *spent.lock().unwrap() += usage.total_tokens.unwrap_or(0);
         })),
         ..deps(warnings)

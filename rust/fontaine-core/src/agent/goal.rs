@@ -419,7 +419,8 @@ impl AgentRuntime {
             .guardian
             .as_ref()
             .map_or_else(Served::default, |model| Served::direct(model.reference()));
-        self.state.add_goal_usage(&judged.usage, &served);
+        self.state
+            .add_goal_usage(&judged.usage, judged.answered, &served);
         judged.evaluation
     }
 

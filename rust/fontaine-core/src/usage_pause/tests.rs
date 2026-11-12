@@ -69,7 +69,7 @@ async fn a_successful_probe_releases_every_waiter() {
         })
         .collect();
     tokio::time::sleep(FIRST_PROBE_INTERVAL + Duration::from_secs(1)).await;
-    pause.note_success();
+    pause.note_success("work");
     for waiter in waiters {
         assert!(waiter.await.unwrap().is_some());
     }
@@ -251,7 +251,7 @@ async fn a_dropped_waiter_does_not_strand_the_others() {
     tokio::task::yield_now().await;
     doomed.abort();
     tokio::time::sleep(FIRST_PROBE_INTERVAL + Duration::from_secs(1)).await;
-    pause.note_success();
+    pause.note_success("work");
     assert!(survivor.await.unwrap().is_some());
 }
 
@@ -353,6 +353,29 @@ async fn a_repeat_pause_for_the_same_account_continues_the_backoff() {
     assert!(claimed.is_err(), "the probe waits for the longer interval");
     tokio::time::sleep(FIRST_PROBE_INTERVAL).await;
     assert!(pause.admit().await.probe.is_some());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_success_on_another_account_does_not_end_the_pause() {
+    let pause = UsagePause::new();
+    pause.engage(info(None));
+    tokio::time::sleep(FIRST_PROBE_INTERVAL + Duration::from_secs(1)).await;
+    pause.admit().await.probe.expect("the probe").detach();
+    pause.note_success("other");
+    assert!(pause.is_paused());
+    pause.note_success("work");
+    assert!(!pause.is_paused());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_repeat_pause_for_the_same_account_keeps_the_first_deadline() {
+    let pause = UsagePause::new();
+    pause.engage(info(None).with_deadline(Some(Duration::from_secs(120))));
+    let first = pause.info().unwrap().deadline.unwrap();
+    tokio::time::sleep(FIRST_PROBE_INTERVAL + Duration::from_secs(1)).await;
+    pause.admit().await.probe.expect("the probe").succeeded();
+    pause.engage(info(None).with_deadline(Some(Duration::from_secs(120))));
+    assert_eq!(pause.info().unwrap().deadline, Some(first));
 }
 
 #[test]

@@ -1576,7 +1576,7 @@ async fn cache_tokens_reach_every_usage_bucket() {
         .add_guardian_usage(ROOT_AGENT, &usage, true, &Default::default());
     rig.state
         .add_guardian_usage(ROOT_AGENT, &usage, true, &Default::default());
-    rig.state.add_goal_usage(&usage, &Default::default());
+    rig.state.add_goal_usage(&usage, true, &Default::default());
     rig.state.record_usage(
         UsageSource::Subagent,
         ROOT_AGENT,
@@ -1659,7 +1659,7 @@ async fn a_guardian_request_that_failed_does_not_end_the_pause_it_probed() {
             &usage,
             true,
             answered,
-            &Default::default(),
+            &fontaine_core::usage_ledger::Served::direct("work/mock"),
         );
         assert_eq!(pause.is_paused(), paused, "answered = {answered}");
     }

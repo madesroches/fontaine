@@ -764,11 +764,11 @@ fn hook_deps(
         env: setup.env.clone(),
         guardian: Arc::new(RwLock::new(setup.models.guardian.clone())),
         approver: setup.approver.clone(),
-        usage: Some(Arc::new(move |agent, usage| {
-            usage_state.add_guardian_usage(
+        usage: Some(Arc::new(move |agent, usage, answered| {
+            usage_state.add_guardian_usage_answered(
                 agent,
                 usage,
-                true,
+                answered,
                 &Served::direct(usage_state.guardian().label()),
             );
         })),

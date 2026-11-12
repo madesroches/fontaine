@@ -193,7 +193,6 @@ pub enum McpAction {
     Logout(McpLogoutArgs),
 }
 
-/// Where a server is declared.
 /// What `--on-usage-limit` accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum UsageLimitAction {
@@ -210,6 +209,7 @@ impl From<UsageLimitAction> for fontaine_core::config::OnUsageLimit {
     }
 }
 
+/// Where a server is declared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum McpScopeArg {
     /// Private to you, in this workspace (`mcp-local.toml` in the config directory)

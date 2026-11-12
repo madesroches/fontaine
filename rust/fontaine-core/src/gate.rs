@@ -1094,8 +1094,7 @@ impl SessionState {
     fn ended(&self, end: PauseEnd) -> UsagePauseEnded {
         let info = self
             .usage_pause
-            .failure()
-            .map(|(_, info)| info)
+            .ended_info()
             .unwrap_or_else(|| PauseInfo::new(crate::quota::UsageRole::Main, "the", None));
         UsagePauseEnded { end, info }
     }
@@ -1276,9 +1275,14 @@ impl SessionState {
     ) {
         self.usage.record(source, usage, sent_request, served);
         self.agents.debit(agent, &spend_of(usage));
-        if answered {
-            // Any provider call that answered proves the window is open, whoever held the probe.
-            self.usage_pause.note_success();
+        // Only the paused account's own answer proves its window open, whoever held the probe.
+        // A call whose account is unknown proves nothing.
+        if answered && !served.model.is_empty() {
+            let account = served
+                .model
+                .split_once('/')
+                .map_or(served.model.as_str(), |(account, _)| account);
+            self.usage_pause.note_success(account);
         }
     }
 
@@ -1319,6 +1323,18 @@ impl SessionState {
         );
     }
 
+    /// [`add_guardian_usage`](Self::add_guardian_usage) for a call that may have failed, such as
+    /// a hook's or an assessment's: only one the provider `answered` can end a pause.
+    pub fn add_guardian_usage_answered(
+        &self,
+        agent: &str,
+        usage: &Usage,
+        answered: bool,
+        served: &Served,
+    ) {
+        self.record_usage_answered(UsageSource::Guardian, agent, usage, true, answered, served);
+    }
+
     /// What the guardian has cost across the whole tree.
     pub fn guardian_usage(&self) -> Bucket {
         self.usage.bucket(UsageSource::Guardian)
@@ -1326,8 +1342,9 @@ impl SessionState {
 
     /// Counts a goal evaluation's model calls against the root, so the spend a goal's cost cap
     /// reads includes them.
-    pub fn add_goal_usage(&self, usage: &Usage, served: &Served) {
-        self.record_usage(UsageSource::Goal, ROOT_AGENT, usage, true, served);
+    /// `answered` is false when the provider gave no response.
+    pub fn add_goal_usage(&self, usage: &Usage, answered: bool, served: &Served) {
+        self.record_usage_answered(UsageSource::Goal, ROOT_AGENT, usage, true, answered, served);
     }
 
     /// What goal evaluations have cost this session, which outlives the goal.

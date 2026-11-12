@@ -793,7 +793,6 @@ async fn drive_once(
                 params
                     .state
                     .record_usage(source, params.agent_id, &usage, true, &params.served);
-                params.state.usage_pause().note_success();
                 let flow = on_event(SessionEvent::Usage {
                     usage,
                     calls_tool: turn_calls_tool,
