@@ -3052,12 +3052,7 @@ mod tests {
         lines
             .iter()
             .flat_map(|l| l.spans.iter())
-            .filter_map(|s| match s.style.underline_color {
-                Some(ratatui::style::Color::Rgb(r, g, b)) => Some(crate::hyperlink::ref_of(
-                    u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b),
-                )),
-                _ => None,
-            })
+            .filter_map(|s| crate::hyperlink::ref_of_style(s.style))
             .collect()
     }
 

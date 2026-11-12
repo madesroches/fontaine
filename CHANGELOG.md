@@ -79,7 +79,7 @@ All notable changes are recorded here. The format follows
 - TUI: URLs, markdown links, `owner/repo#N`, `#N` (with a github.com `origin`) and `path:line`
   references to existing non-executable files are clickable OSC 8 hyperlinks in terminals that
   support them, including inside tmux. Notices link their URLs; code does not, except inline
-  code that is one URL or path. `FORCE_HYPERLINK=0` or `1` overrides detection (#83).
+  code that is one URL or path and whole-word URLs in fenced blocks. `FORCE_HYPERLINK=0` or `1` overrides detection (#83).
 
 ### Fixed
 

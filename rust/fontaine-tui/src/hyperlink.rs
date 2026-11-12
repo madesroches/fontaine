@@ -79,6 +79,20 @@ pub(crate) fn ref_of(id: u32) -> Ref {
     (*lock_recovering(&REFS).get(id).expect("a known id")).clone()
 }
 
+/// The interned id a tag colour carries.
+pub(crate) fn id_of(color: Color) -> Option<u32> {
+    let Color::Rgb(r, g, b) = color else {
+        return None;
+    };
+    Some(u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b))
+}
+
+/// The ref a span style is tagged with.
+#[cfg(test)]
+pub(crate) fn ref_of_style(style: Style) -> Option<Ref> {
+    Some(ref_of(id_of(style.underline_color?)?))
+}
+
 /// `style` with `r` attached. When the interner is full the style is returned unchanged and the
 /// text simply is not a link.
 pub(crate) fn tag(style: Style, r: Ref) -> Style {
@@ -424,11 +438,13 @@ impl Links {
     /// A `file://` URL for an existing regular file that a click cannot run.
     fn file_url(&self, path: &str) -> Option<String> {
         let full = self.cwd.join(path);
-        let meta = std::fs::metadata(&full).ok()?;
-        if !meta.is_file() || launchable(&full, &meta) {
+        // A symlink is judged by its own name and by its target, and the URL names the target.
+        let real = std::fs::canonicalize(&full).ok()?;
+        let meta = std::fs::metadata(&real).ok()?;
+        if !meta.is_file() || launchable(&full, &meta) || launchable(&real, &meta) {
             return None;
         }
-        let mut url = url::Url::from_file_path(&full).ok()?;
+        let mut url = url::Url::from_file_path(&real).ok()?;
         if let Some(host) = hostname() {
             // A rejected name leaves the host empty, which is still a valid local file URL.
             let _ = url.set_host(Some(host));
@@ -444,10 +460,9 @@ impl Links {
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
                 let cell = &mut buf[(x, y)];
-                let Color::Rgb(r, g, b) = cell.underline_color else {
+                let Some(id) = id_of(cell.underline_color) else {
                     continue;
                 };
-                let id = u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b);
                 let Some(resolved) = seen.entry(id).or_insert_with(|| self.lookup(id)) else {
                     continue;
                 };
@@ -496,9 +511,55 @@ fn launchable(path: &Path, meta: &std::fs::Metadata) -> bool {
     #[cfg(not(unix))]
     let _ = meta;
     const LAUNCHERS: &[&str] = &[
-        "desktop", "command", "tool", "terminal", "app", "workflow", "scpt", "pkg", "dmg",
-        "appimage", "exe", "com", "bat", "cmd", "ps1", "vbs", "vbe", "js", "jse", "wsf", "wsh",
-        "msi", "msc", "scr", "cpl", "lnk", "url", "reg", "hta", "jar", "py", "pyw",
+        "desktop",
+        "command",
+        "tool",
+        "terminal",
+        "app",
+        "workflow",
+        "scpt",
+        "pkg",
+        "dmg",
+        "appimage",
+        "exe",
+        "com",
+        "bat",
+        "cmd",
+        "ps1",
+        "vbs",
+        "vbe",
+        "js",
+        "jse",
+        "wsf",
+        "wsh",
+        "msi",
+        "msc",
+        "scr",
+        "cpl",
+        "lnk",
+        "url",
+        "reg",
+        "hta",
+        "jar",
+        "py",
+        "pyw",
+        "pif",
+        "application",
+        "appref-ms",
+        "jnlp",
+        "chm",
+        "xll",
+        "msp",
+        "appinstaller",
+        "msix",
+        "msixbundle",
+        "appx",
+        "appxbundle",
+        "fileloc",
+        "inetloc",
+        "webloc",
+        "mpkg",
+        "scf",
     ];
     let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
         return false;
@@ -592,10 +653,8 @@ mod tests {
     }
 
     fn id_of(r: Ref) -> u32 {
-        match tag(Style::default(), r).underline_color {
-            Some(Color::Rgb(r, g, b)) => u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b),
-            other => panic!("not tagged: {other:?}"),
-        }
+        let color = tag(Style::default(), r).underline_color;
+        super::id_of(color.expect("tagged")).expect("an rgb tag")
     }
 
     fn links_in(dir: &Path, github: Option<(&str, &str)>) -> Links {
@@ -798,11 +857,11 @@ mod tests {
     #[test]
     fn a_file_a_click_would_launch_stays_plain() {
         let dir = tempfile::tempdir().unwrap();
-        for name in ["x.desktop", "x.bat", "X.EXE"] {
+        for name in ["x.desktop", "x.bat", "X.EXE", "x.pif", "x.fileloc"] {
             std::fs::write(dir.path().join(name), "x").unwrap();
         }
         let links = links_in(dir.path(), None);
-        for name in ["x.desktop", "x.bat", "X.EXE"] {
+        for name in ["x.desktop", "x.bat", "X.EXE", "x.pif", "x.fileloc"] {
             assert_eq!(links.resolve(id_of(Ref::Path(name.into()))), None, "{name}");
         }
         #[cfg(unix)]
@@ -813,6 +872,21 @@ mod tests {
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
             assert_eq!(links.resolve(id_of(Ref::Path("run.txt".into()))), None);
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_are_judged_by_their_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("x.terminal"), "x").unwrap();
+        std::fs::write(dir.path().join("ok.rs"), "x").unwrap();
+        std::os::unix::fs::symlink("x.terminal", dir.path().join("notes.txt")).unwrap();
+        std::os::unix::fs::symlink("ok.rs", dir.path().join("link.txt")).unwrap();
+        let links = links_in(dir.path(), None);
+        assert_eq!(links.resolve(id_of(Ref::Path("notes.txt".into()))), None);
+        let real = std::fs::canonicalize(dir.path().join("ok.rs")).unwrap();
+        let url = links.resolve(id_of(Ref::Path("link.txt".into()))).unwrap();
+        assert!(url.ends_with(real.to_str().unwrap()), "{url}");
     }
 
     #[test]
