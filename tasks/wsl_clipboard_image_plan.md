@@ -62,7 +62,7 @@ directory, same `MAX_ATTACHMENT_BYTES` cap); only the call and the no-image noti
 pub(crate) enum ProbeOutcome { Missing, Failed, NoImage, Image }
 
 /// One program tried against the clipboard.
-pub(crate) struct Probe { program: &'static str, detail: &'static str, outcome: ProbeOutcome }
+pub(crate) struct Probe { program: &'static str, outcome: ProbeOutcome }
 
 /// The result of reading the clipboard image.
 pub(crate) struct ImageRead {
@@ -74,22 +74,26 @@ pub(crate) struct ImageRead {
 ```
 
 `clipboard::read_image(launcher: &Launcher, into: &Path) -> io::Result<ImageRead>` is the
-entry point; internally it delegates to `read_image_with(launcher, into, env)` where `env`
-is a `&dyn Fn(&str) -> Option<OsString>` lookup, so tests inject the environment instead of
-mutating the process's (tests run in parallel; `std::env::set_var` is process-global and
-racy). The production call site passes `std::env::var_os`.
+entry point; internally it delegates to `read_image_with(launcher, into, env, osrelease,
+deadline)` where `env` is a `&dyn Fn(&str) -> Option<OsString>` lookup, `osrelease` is a
+`&str` and `deadline` a `Duration`, so tests inject the environment, the os-release text and
+a short timeout instead of mutating the process's environment (tests run in parallel;
+`std::env::set_var` is process-global and racy) or depending on the host (a WSL machine's
+`/proc/sys/kernel/osrelease` says microsoft). Only the outer `read_image` reads the real
+ones: `std::env::var_os`, `/proc/sys/kernel/osrelease` (`NotFound` → empty string) and the
+15-second deadline. The probe-table function takes `env` and `osrelease` the same way.
 
 ### Probe table
 
 The probe list mirrors rig's env-ordered selection, recomputed per read:
 
-1. `WAYLAND_DISPLAY` set → `wl-paste --no-newline --type image/png` ("Wayland clipboard").
-2. `DISPLAY` set → `xclip -selection clipboard -target image/png -out` ("X11 clipboard").
+1. `WAYLAND_DISPLAY` set → `wl-paste --no-newline --type image/png`.
+2. `DISPLAY` set → `xclip -selection clipboard -target image/png -out`.
 3. macOS → `pngpaste -`, chosen by `cfg!(target_os = "macos")` (not injectable through
    `env`).
-4. Native Windows → `powershell.exe` ("Windows clipboard"), chosen by
-   `cfg!(target_os = "windows")`, same non-injectable pattern as the macOS row.
-5. WSL (see below) → `powershell.exe` ("Windows clipboard through WSL interop").
+4. Native Windows → `powershell.exe`, chosen by `cfg!(target_os = "windows")`, same
+   non-injectable pattern as the macOS row.
+5. WSL (see below) → `powershell.exe`.
 
 An empty probe table (headless Linux, not WSL) keeps today's `Err(Unsupported, "no clipboard
 here: it needs wl-paste and wl-copy, xclip, or pbpaste and pbcopy")` with that message
@@ -99,12 +103,14 @@ Each probe runs with the scrubbed `Launcher`, `stdin`/`stderr` nulled. The progr
 spawned directly through the child-process API, never through a parent shell, so launching
 Fontaine from cmd.exe or PowerShell makes no difference. Each probe pipes stdout, drains it
 on a reader thread into a `Vec<u8>`, polls `try_wait` until the deadline, and kills and
-reaps the child on timeout (`Failed`). rig's `Process::output(Some(timeout))` is unsuitable
+reaps the child on timeout (`Failed`); after a kill the reader thread is detached, not
+joined, because a grandchild holding the pipe (or the Windows-side process behind WSL
+interop) would keep the join blocked past the deadline. rig's `Process::output(Some(timeout))` is unsuitable
 because it decodes stdout as lossy UTF-8, which corrupts the PNG bytes from
 `wl-paste`/`xclip`/`pngpaste`. `attach_clipboard` is awaited inline by the UI loops
 (`ui/mod.rs:781`, `ui/turn.rs:433`/`1159`), so the timeout bounds how long the UI can
-freeze: all probes of one read share a single deadline of 15 seconds (powershell.exe
-startup on a cold WSL interop can take a few seconds), a probe starting after it has passed
+freeze: all probes of one read share a single deadline, 15 seconds in production (powershell.exe
+startup on a cold WSL interop can take a few seconds) and passed in so tests use a short one; a probe starting after it has passed
 is `Failed` without being spawned. A probe that cannot be spawned is `Missing`; one that
 exits non-zero or times out is `Failed`; one that exits 0 but whose output does not sniff
 as an image is `NoImage`; otherwise its bytes are sniffed, saved under `into` as
@@ -116,9 +122,9 @@ normal answer, matching today's `Ok(None)` semantics.
 ### WSL detection
 
 `on_wsl(env, osrelease)` is a pure function: WSL when `WSL_INTEROP` or `WSL_DISTRO_NAME`
-is present in `env`, or the os-release string contains `microsoft`/`WSL`
-(case-insensitive). The production `read_image` reads `/proc/sys/kernel/osrelease` (a
-`NotFound` read on non-Linux yields an empty string). The WSL row is skipped when the
+is present in `env`, or the `osrelease` string contains `microsoft`/`WSL`
+(case-insensitive). Only the production `read_image` reads `/proc/sys/kernel/osrelease` (a
+`NotFound` read on non-Linux yields an empty string) and passes it down. The WSL row is skipped when the
 native-Windows row applies. Environment variables are checked
 from the passed-in `env` lookup, not the child's, so the detection itself is unaffected by
 the scrub. This matches WSL1 and WSL2, native Linux, and WSL sessions where interop is
@@ -131,14 +137,16 @@ asks for).
 Used on native Windows and under WSL. The executable is `powershell.exe` resolved by PATH
 lookup (System32 is on PATH on native Windows; WSL interop provides it under WSL), `Missing`
 otherwise. fontaine's existing `fontaine_tools::powershell` discovery prefers `pwsh.exe` and
-is deliberately NOT reused here. Command:
-
-`powershell.exe -NoProfile -NonInteractive -Command <script>` where the script is:
+is deliberately NOT reused here. The arguments come from
+`fontaine_tools::powershell::launch_args(script)` (an `-EncodedCommand` launcher, so the
+command line cannot be re-parsed when argv crosses WSL interop's Linux→Windows conversion;
+its preamble only silences progress records and sets UTF-8 output), run on the resolved
+`powershell.exe`. The script is:
 
 ```powershell
 Add-Type -AssemblyName System.Drawing
 $image = Get-Clipboard -Format Image
-if ($null -eq $image) { exit 1 }
+if ($null -eq $image) { exit 0 }
 $stream = New-Object System.IO.MemoryStream
 $image.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
 [Console]::Out.Write([Convert]::ToBase64String($stream.ToArray()))
@@ -149,8 +157,11 @@ Rationale for the pieces:
 - `powershell.exe` (Windows PowerShell 5.1), never `pwsh`: `Get-Clipboard` needs an STA
   apartment and `powershell.exe` defaults to STA; pwsh defaults to MTA and breaks
   `Get-Clipboard -Format Image`.
-- Base64 over stdout: Fontaine trims the output and decodes it with
-  `base64::engine::general_purpose::STANDARD.decode`; a decode failure is `NoImage`.
+- No image is exit 0 with empty output, so a normal empty clipboard is `NoImage` and only a
+  timeout, crash or powershell error is `Failed`.
+- Base64 over stdout: Fontaine trims the output (empty after trim is `NoImage` before any
+  decode) and decodes it with `base64::engine::general_purpose::STANDARD.decode`; a decode
+  failure is `NoImage`.
 - Output is sniffed like any other probe's bytes, so a surprise non-PNG answer degrades to
   `NoImage` instead of attaching garbage.
 - Timeout per the probe table; `powershell.exe` that hangs (interop disabled mid-call) is
@@ -162,7 +173,7 @@ A function in `clipboard.rs` over `ImageRead` builds the notice text; `attach_cl
 calls it and renders `ImageRead { path: None, probes }` as a single line:
 
 ```
-no image on the clipboard (tried wl-paste: not installed, xclip: no image, powershell.exe: failed)
+no image on the clipboard (tried wl-paste: not installed, xclip: no image, powershell.exe: no image)
 ```
 
 Every outcome has a fixed label: `not installed` for `Missing`, `failed` for `Failed`
@@ -175,9 +186,8 @@ failure of `spawn_blocking`) keep today's messages.
 1. `rust/fontaine-tui/src/clipboard.rs`: add the read side — `ProbeOutcome`, `Probe`,
    `ImageRead` (all `pub(crate)`), `on_wsl`, `read_image_with`, `read_image`, the notice
    formatting function, the byte-safe probe runner (piped stdout, reader thread, shared
-   deadline, kill and reap on timeout), the native-Windows row and the powershell probe
-   (command construction as a separate `fn powershell_probe_command() -> (&'static str,
-   Vec<&str>)`-shaped helper so it is unit-testable). Reuse `ImageMediaType::sniff` for the
+   deadline passed in, kill and reap on timeout, reader detached), the native-Windows row and
+   the powershell probe (arguments from `fontaine_tools::powershell::launch_args`). Reuse `ImageMediaType::sniff` for the
    type detection and keep rig's `pasted-<millis>.<ext>` naming.
 2. `rust/fontaine-tui/src/ui/mod.rs:948-951`: switch `attach_clipboard` from
    `rig_tools::clipboard::read_image` to `crate::clipboard::read_image`; map the new result
@@ -189,29 +199,36 @@ failure of `spawn_blocking`) keep today's messages.
    attach names the probes tried and what each found.
 5. Unit tests (in `clipboard.rs`'s `#[cfg(test)]` module):
    - probe-table selection for each env combination (Wayland only, X11 only, both, neither,
-     WSL on/off) via the injected `env` lookup; the macOS row only under its own
+     WSL on/off) via the injected `env` and `osrelease`, gated to
+     `#[cfg(target_os = "linux")]` because the macOS and native-Windows rows are not
+     injectable and would add a row elsewhere; the macOS row only under its own
    `#[cfg(target_os = "macos")]` test and the native-Windows row only under
-   `#[cfg(windows)]`, since neither is injectable; an empty table returns the
-   `Unsupported` error;
+   `#[cfg(windows)]`; an empty table returns the `Unsupported` error (also Linux-gated);
    - `on_wsl` truth table over env vars and os-release strings;
-   - powershell script construction: program name, `-NoProfile -NonInteractive`, STA-safe
-     command, exit-1-on-empty path, base64 output;
+   - powershell script: STA-safe command, exit-0-with-empty-output on no image, base64
+     output;
    - base64 decode → sniff → save writes `pasted-*.png` whose bytes round-trip; a base64
-     decode failure and surrounding whitespace (trimmed);
+     decode failure, surrounding whitespace (trimmed) and empty/whitespace output
+     (`NoImage`);
    - notice formatting for the no-image cases (all `Missing`, all `NoImage`, a `Failed`
      mixed in);
-   - the probe runner keeps non-UTF-8 stdout bytes intact and kills a hung child at the
-     deadline.
+   - the probe runner keeps non-UTF-8 stdout bytes intact and kills a hung child at a short
+     injected deadline; `#[cfg(unix)]` because both need a fake program, and the hung child's
+     fake uses `exec sleep` so no grandchild holds the pipe.
 6. End-to-end regression test (`#[cfg(all(test, target_os = "linux"))]` in the same module):
    build a temp dir holding fake `wl-paste` (exit 1), `xclip` (exit 1), and
    `powershell.exe` (a shell script printing the base64 of a known 1×1 PNG), point the
    *child's* PATH at it with `Launcher::with_env("PATH", …)`, inject
-   `WAYLAND_DISPLAY`/`DISPLAY`/`WSL_INTEROP` via the `env` parameter, and assert
+   `WAYLAND_DISPLAY`/`DISPLAY`/`WSL_INTEROP` via the `env` parameter and an empty `osrelease`, and assert
    `read_image_with` returns the image saved as PNG with the three probes recorded. This
    pins the exact failure from the issue — WSLg exposing no image target to Linux while the
    Windows clipboard holds one — without a live WSL. Gate to Linux: on Windows a script named
    `powershell.exe` cannot execute, and on macOS the extra `pngpaste` row would record a
-   fourth probe.
+   fourth probe. The fakes are written with the same probe-until-not-busy pattern as
+   `write_executable` (retry on `ErrorKind::ExecutableFileBusy`) to avoid ETXTBSY; that
+   helper is `pub(crate)` in `fontaine-core/src/test_support.rs` and unreachable from
+   fontaine-tui, so a copy lives in this test module rather than moving it to
+   `fontaine-testkit`.
 7. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p
    fontaine-tui` from `rust/`.
 
@@ -236,6 +253,11 @@ failure of `spawn_blocking`) keep today's messages.
   this is the only `read_image` call site.
 - 2026-11-11: the bug is missing on native Windows too, so the fix covers a native-Windows
   probe, not only the WSL fallback.
+- 2026-11-11: the `powershell.exe Get-Clipboard` fallback follows the owner's direction in
+  #586 (Claude Code must read the Windows clipboard some other way, most likely
+  powershell.exe); matching Claude Code's exact mechanism remains a follow-up.
+- 2026-11-11: native Windows coverage is in scope per the same #586 thread ("it does not
+  work on windows/cmd either").
 
 ## Documentation
 
@@ -245,15 +267,14 @@ failure of `spawn_blocking`) keep today's messages.
 
 ## Testing Strategy
 
-Unit tests cover the probe table, WSL detection, the powershell command, base64
+Unit tests cover the probe table, WSL detection, the powershell script, base64
 decode-sniff-save, the byte-safe probe runner, and notice formatting — all pure or
 file-local, no live APIs. The
 end-to-end test with fake clipboard programs on the child's PATH reproduces the issue's
 exact scenario (Linux probes find no image; the interop probe does) deterministically and
 is the regression pin; the manual step covers real WSLg interop latency and a real Windows
-clipboard. The fake-executable e2e test stays Linux-gated: on Windows CI a fake
-`powershell.exe` cannot stand in for the real interpreter (a script named .exe won't
-execute), so native Windows coverage is the manual step plus the pure-function unit tests.
+clipboard. The fake-executable e2e test stays Linux-gated; native Windows coverage is the
+manual step plus the pure-function unit tests.
 Nothing here touches live providers, matching the
 CI rule.
 
@@ -267,12 +288,3 @@ CI rule.
 2. On native Windows, copy a screenshot, run `cargo run -p fontaine` in cmd.exe, press
    Ctrl+V, and confirm the chip appears. Then clear the clipboard and press Ctrl+V again:
    the notice must name `powershell.exe` and its outcome.
-
-## Open Questions
-
-- How Claude Code reads the clipboard on WSL could not be settled from this machine: the
-  installed `claude` is a native binary (PE) whose bundle is not inspectable, and public
-  material is inconclusive. The `powershell.exe Get-Clipboard -Format Image` fallback
-  follows the issue's own suggested direction, which is also the widely used approach in
-  other WSL clipboard tooling; if Claude Code is later found to use a different mechanism,
-  matching it is a follow-up.
