@@ -37,6 +37,8 @@ after the prompt on a new line, as in Claude Code; empty piped input leaves the 
 | `--include-partial-messages` | With `stream-json` output, also emits `assistant_delta` events. |
 | `--max-turns <n>` | Stops each turn after `n` model calls with `error_max_turns` (exit code 1). Without it a turn has no call limit. |
 | `--max-budget-usd <x>` | Stops the run once the session's spend, the main model plus the guardian and subagents, exceeds `x` with `error_max_budget_usd` (exit code 1). A model with no known price makes this a usage error (exit code 2). |
+| `--on-usage-limit=wait\|exit` | What the run does when an account's [usage window is spent](#usage-windows): `wait` (the default) holds the whole run until the window resets, `exit` ends it at once with exit code 3. Overrides `[headless] on_usage_limit`. |
+| `--max-usage-wait <duration>` | The longest the run waits for a spent usage window, such as `90m` or `6h` (a bare number is seconds); default 6 hours. Overrides `[headless] max_usage_wait_secs`. A zero or unreadable value is a usage error (exit code 2). |
 | `--json-schema <schema>` | An inline JSON Schema the final answer must follow. The parsed answer is returned in `result.structured_output`. A schema that is not a JSON object is a usage error. |
 | `--allowed-tools <rule>` | Adds an allow rule in `Tool(specifier)` syntax for this session, such as `shell(npm test)`. Repeatable. Loaded as the CLI scope's `[permissions] allow`; an invalid rule is a usage error. |
 | `--disallowed-tools <rule>` | Adds a deny rule for this session, such as `read(.env)`. Repeatable. See [Permissions](permissions.md#rules). |
@@ -165,6 +167,31 @@ messages of one stream-json run and end with it.
 | 0 | The run completed. Denied tool calls do not change this. |
 | 1 | A run error: a provider or model failure, a stop from `--max-turns` or `--max-budget-usd`, a [goal](#goals) that ended impossible or paused, or an `--afk` run that was blocked by repeated denials or stopped by the temperature ceiling (`afk.outcome` says which). |
 | 2 | A configuration or usage error. |
+| 3 | An account's [usage window](#usage-windows) stayed spent: the run exited at once under `--on-usage-limit=exit`, or the wait reached its cap, or was cancelled. `result.subtype` is `error_usage_limit`. |
+
+### Usage windows
+
+A subscription account that has spent its usage window answers every request with a 429 until the
+window resets. Fontaine tells that apart from a transient rate limit, which keeps its retry with a
+backoff, by the provider's own machine code or a `Retry-After` of more than five minutes. When the
+main model's list has no other entry to try, or the guardian's account is the one that is spent,
+the whole run stops at its next provider call: the main agent, the guardian and every subagent
+wait, and a tool call that is waiting for a guardian verdict stays pending. It is neither denied
+nor run. When the window resets, the run goes on and the guardian checks the pending call again
+from the start.
+
+The wait ends at the reset time the provider gave (a `Retry-After` header, a reset time in the
+reply, or the account's own usage figures), plus a margin, with one request let through to check;
+without a reset time Fontaine checks after 1 minute, doubling to 15 minutes. It never lasts longer
+than `--max-usage-wait`. When it ends without the window opening, the run ends with exit code 3 and
+a `result` whose `subtype` is `error_usage_limit` and whose `usage_limit` object names the
+`account`, its `role` (`main` or `guardian`), the `reset_at` time (Unix epoch seconds, or null) and
+how the wait `end`ed. A guardian-side pause that ends this way ends the run too, so the model
+cannot go on making gated calls that are denied. `stream-json` output carries `usage_paused` and
+`usage_resumed` events around a wait. Time spent waiting is not counted as a subagent's run time.
+
+An unattended run needs a limit on the wait, which is why `max_usage_wait_secs` is user-scope: a
+project file may set `on_usage_limit = "exit"` but nothing that makes a run wait longer.
 
 ## Questions
 
@@ -228,9 +255,11 @@ these is one line, in the order the run produces them. The table lists the kinds
 | `assistant_delta` | With `--include-partial-messages`, for each text fragment | `text` |
 | `model_call` | A model call finished: after its `assistant` text and before its `tool_call` events. Main-conversation calls in call order; subagent usage is in `result.usage.subagents` and guardian calls are not events | `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `calls_tool` (whether the call asked for a tool) |
 | `tool_call` | The model called a tool | `tool_use_id`, `tool`, `args` |
-| `gate_decision` | A tool call was adjudicated | `tool_use_id`, `agent_id` (`root` for the main conversation, `agent-N` for a subagent), `agent_name` (the subagent's name, `null` for the main conversation), `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` and, when the guardian failed closed, `fail_closed_reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable` or `not_signed_in`); when a [`[guardian.composition]`](guardian.md#composing-the-guardian) scored the call also `screen_risk`, `screen_allow_risk` and `screen_steering` (the reads named `stop`, `allow` and `steering`, when they ran), `screen_scores` (every other read, by name) and `screen_outcome` (`stop`, `allow`, `deny`, `pass` or `unavailable`) |
+| `gate_decision` | A tool call was adjudicated | `tool_use_id`, `agent_id` (`root` for the main conversation, `agent-N` for a subagent), `agent_name` (the subagent's name, `null` for the main conversation), `tier`, `decision`, `rule`; for guardian decisions also `explanation`, `confidence`, `guardian_model` and, when the guardian failed closed, `fail_closed_reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`, `not_signed_in` or `usage_pause_ended`, the wait for a spent usage window ended without it reopening); when a [`[guardian.composition]`](guardian.md#composing-the-guardian) scored the call also `screen_risk`, `screen_allow_risk` and `screen_steering` (the reads named `stop`, `allow` and `steering`, when they ran), `screen_scores` (every other read, by name) and `screen_outcome` (`stop`, `allow`, `deny`, `pass` or `unavailable`) |
 | `tool_result` | A tool answered | `tool_use_id`, `tool`, `success`, `text` (what the model received) |
 | `goal` | The evaluator judged a [goal](#goals) | `verdict` (`met`, `not_met`, `impossible`, or `failed` when no verdict arrived), `reason`, `evaluations` (verdicts so far) |
+| `usage_paused` | An account's usage window is spent and the run is held | `account`, `role` (`main` or `guardian`), `reset_at` (Unix epoch seconds, or null when the provider gave none) |
+| `usage_resumed` | The hold ended | `account`, `role`, `end` (`reset`, `probed`, `resumed`, `cancelled` or `cap_reached`), `waited_secs` |
 | `result` | At the end of every turn | see below |
 
 `tier` is the stage of the permission pipeline that decided: `deny_rule`, `ask_rule`,
@@ -247,7 +276,8 @@ The `result` object:
 
 | Field | Meaning |
 |---|---|
-| `subtype` | `success`, `error_max_turns`, `error_max_budget_usd` or `error_during_execution` |
+| `subtype` | `success`, `error_max_turns`, `error_max_budget_usd`, `error_during_execution` or `error_usage_limit` |
+| `usage_limit` | Only with `error_usage_limit`: `account`, `role`, `reset_at` and `end` (`cancelled` or `cap_reached`) |
 | `is_error` | `false` only for `success` |
 | `result` | The final answer text; empty for an error |
 | `error` | A message for an error, otherwise null |

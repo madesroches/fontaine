@@ -845,6 +845,8 @@ impl AgentHook for UsageTally {
 pub struct Judged {
     pub evaluation: Evaluation,
     pub usage: Usage,
+    /// The provider responded, whatever the response held; a timeout or a failed call did not.
+    pub answered: bool,
 }
 
 /// Judges a condition against a transcript on the guardian's model.
@@ -919,6 +921,10 @@ impl GoalEvaluator {
             request,
         )
         .await;
+        let answered = !matches!(
+            answer,
+            Err(JudgeFailure::Timeout(_) | JudgeFailure::Unreachable(_))
+        );
         let evaluation = match answer {
             Err(JudgeFailure::Timeout(wait)) => {
                 Evaluation::Failed(format!("no answer within {} seconds", wait.as_secs()))
@@ -935,7 +941,11 @@ impl GoalEvaluator {
             }
             Ok(verdict) => Evaluation::Verdict(verdict),
         };
-        Judged { evaluation, usage }
+        Judged {
+            evaluation,
+            usage,
+            answered,
+        }
     }
 }
 

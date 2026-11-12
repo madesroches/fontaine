@@ -29,12 +29,14 @@ use crate::ledger::{Ledger, Record};
 use crate::permission_rules::{
     CallContext, Posture, Rule, RuleSource, SourcedRule, is_broad_code_execution, matches,
 };
-use crate::permissions::Approver;
+use crate::permissions::{Approver, PauseChoice};
 use crate::preview::DiffPreview;
 use crate::project_env::{self, ProjectEnvironment};
 use crate::tier::Tier;
 use crate::turn::SessionEvent;
 use crate::usage_ledger::{Bucket, Served, UsageLedger, UsageSource};
+use crate::usage_limit::UsageLimit;
+use crate::usage_pause::{PauseEnd, PauseEvent, PauseInfo, UsagePause, describe_reset};
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -366,6 +368,42 @@ pub struct TrustedSkillNote {
     pub declared: Vec<String>,
 }
 
+/// How long a surface lets a usage pause last. The default waits for as long as it takes, which
+/// only a session whose human can cancel should.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UsageWait {
+    /// The longest wait; `None` for no limit.
+    pub cap: Option<std::time::Duration>,
+    /// The longest wait while AFK is on, when nobody is there to cancel.
+    pub afk_cap: Option<std::time::Duration>,
+    /// Do not wait at all: the first pause ends at once as a failure.
+    pub exit: bool,
+}
+
+/// A usage pause that ended in failure, which the run that waited on it must not outlive.
+#[derive(Clone, Debug)]
+pub struct UsagePauseEnded {
+    pub end: PauseEnd,
+    pub info: PauseInfo,
+}
+
+impl std::fmt::Display for UsagePauseEnded {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let how = match self.end {
+            PauseEnd::CapReached => "the wait reached its limit",
+            _ => "the wait was cancelled",
+        };
+        write!(
+            f,
+            "the {} account's usage window is spent ({}); {how}",
+            self.info.account,
+            describe_reset(self.info.reset_at, std::time::SystemTime::now()),
+        )
+    }
+}
+
+impl std::error::Error for UsagePauseEnded {}
+
 pub struct SessionState {
     pub session_id: String,
     pub ledger: Arc<Ledger>,
@@ -379,6 +417,10 @@ pub struct SessionState {
     inner: RwLock<Inner>,
     mode: Arc<RwLock<PermissionMode>>,
     guardian_off: RwLock<bool>,
+    usage_pause: UsagePause,
+    usage_wait: RwLock<UsageWait>,
+    /// Where the guardian's account reads its own usage figures, for a pause on that account.
+    guardian_quota: RwLock<Option<Arc<dyn crate::quota::QuotaSource>>>,
     afk: RwLock<AfkState>,
     afk_ceiling: RwLock<f64>,
     /// The blocked outcome was already announced for the breaker pause now in force.
@@ -445,6 +487,9 @@ impl SessionState {
             memory_root: params.memory_root,
             mode,
             guardian_off: RwLock::new(false),
+            usage_pause: UsagePause::new(),
+            usage_wait: RwLock::new(UsageWait::default()),
+            guardian_quota: RwLock::new(None),
             afk: RwLock::new(AfkState {
                 stretch: None,
                 stopped: restored_stop,
@@ -602,6 +647,7 @@ impl SessionState {
                 if on { "afk_on" } else { "afk_off" },
                 if on { "AFK mode on" } else { "AFK mode off" },
             );
+            self.adapt_usage_pause_to_mode(on);
         }
         tracing::info!(
             target: TARGET,
@@ -875,6 +921,206 @@ impl SessionState {
         );
     }
 
+    /// The session's usage pause: every provider call waits at it while it is in force.
+    pub fn usage_pause(&self) -> &UsagePause {
+        &self.usage_pause
+    }
+
+    /// Makes the pause's begin and end durable: ledger records, audit entries and telemetry. The
+    /// session is shared, so the observer holds it weakly and the pause never keeps it alive.
+    pub fn wire_usage_pause(self: &Arc<Self>) {
+        let state = Arc::downgrade(self);
+        self.usage_pause.observe(Arc::new(move |event| {
+            if let Some(state) = state.upgrade() {
+                state.record_usage_event(event);
+            }
+        }));
+        let pause = self.usage_pause.clone();
+        self.agents.set_pause_clock(move || pause.total_paused());
+    }
+
+    fn record_usage_event(&self, event: &PauseEvent) {
+        let epoch = |at: Option<std::time::SystemTime>| {
+            at.and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+        };
+        match event {
+            PauseEvent::Paused(info) => {
+                let reset_at = epoch(info.reset_at);
+                self.append(Record::UsagePaused {
+                    role: info.role.as_str().to_string(),
+                    account: info.account.clone(),
+                    reset_at,
+                });
+                tracing::info!(
+                    target: TARGET,
+                    role = info.role.as_str(),
+                    account = info.account.as_str(),
+                    reset_at = reset_at,
+                    "usage_paused"
+                );
+                self.record_session_event(
+                    "usage_paused",
+                    serde_json::json!({
+                        "role": info.role.as_str(),
+                        "account": info.account,
+                        "reset_at": reset_at,
+                    }),
+                    Tier::Mode,
+                    "usage_paused",
+                    &format!("the {} usage window is spent", info.account),
+                );
+            }
+            PauseEvent::Resumed { end, info, waited } => {
+                self.append(Record::UsageResumed { end: *end });
+                tracing::info!(
+                    target: TARGET,
+                    role = info.role.as_str(),
+                    account = info.account.as_str(),
+                    end = end.as_str(),
+                    waited_secs = waited.as_secs(),
+                    "usage_resumed"
+                );
+                self.record_session_event(
+                    "usage_resumed",
+                    serde_json::json!({
+                        "role": info.role.as_str(),
+                        "account": info.account,
+                        "end": end.as_str(),
+                    }),
+                    Tier::Mode,
+                    "usage_resumed",
+                    &format!("the {} usage pause ended: {}", info.account, end.as_str()),
+                );
+            }
+        }
+    }
+
+    pub fn set_guardian_quota(&self, source: Option<Arc<dyn crate::quota::QuotaSource>>) {
+        *write(&self.guardian_quota, "guardian quota") = source;
+    }
+
+    pub fn guardian_quota(&self) -> Option<Arc<dyn crate::quota::QuotaSource>> {
+        read(&self.guardian_quota, "guardian quota").clone()
+    }
+
+    /// How the surface wants usage pauses bounded.
+    pub fn set_usage_wait(&self, wait: UsageWait) {
+        *write(&self.usage_wait, "usage wait") = wait;
+    }
+
+    pub fn usage_wait(&self) -> UsageWait {
+        *read(&self.usage_wait, "usage wait")
+    }
+
+    /// The longest a pause started now may last: none at all for `exit`, the cap otherwise, and
+    /// the AFK cap while AFK is on because nobody can cancel then.
+    fn usage_deadline(&self) -> Option<std::time::Duration> {
+        let wait = self.usage_wait();
+        if wait.exit {
+            return Some(std::time::Duration::ZERO);
+        }
+        wait.cap.or_else(|| wait.afk_cap.filter(|_| self.afk_on()))
+    }
+
+    /// Holds the whole run because `account`'s window is spent, and waits for it to end. `Err`
+    /// when the wait was cancelled or ran out, which the caller reports as its own failure.
+    pub async fn pause_for_usage(
+        &self,
+        role: crate::quota::UsageRole,
+        account: &str,
+        limit: &UsageLimit,
+        source: Option<Arc<dyn crate::quota::QuotaSource>>,
+    ) -> Result<(), UsagePauseEnded> {
+        let info = PauseInfo::new(role, account, limit.reset_at)
+            .with_deadline(self.usage_deadline())
+            .with_source(source);
+        if self.usage_pause.engage(info.clone()) {
+            self.offer_usage_choice(info);
+        }
+        // Waits without claiming the probe: the caller's retry passes the gate itself and takes it.
+        match self.usage_pause.wait_ready().await {
+            Some(end) if end.is_failure() => Err(self.ended(end)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Gives a pause that began under another mode what the mode now needs: the AFK cap once
+    /// nobody can cancel, and the r/c/s prompt once somebody can answer again.
+    fn adapt_usage_pause_to_mode(&self, afk: bool) {
+        let Some(info) = self.usage_pause.info() else {
+            return;
+        };
+        if afk {
+            if info.deadline.is_none()
+                && let Some(cap) = self.usage_wait().afk_cap
+            {
+                self.usage_pause.set_deadline(cap);
+            }
+        } else {
+            self.offer_usage_choice(info);
+        }
+    }
+
+    /// Asks the human what to do about the pause, unless nobody can answer. A task of the
+    /// session's own, so a caller that is dropped does not leave the pause without its prompt;
+    /// it ends with the pause.
+    fn offer_usage_choice(&self, info: PauseInfo) {
+        if self.afk_on() {
+            return;
+        }
+        let (approver, pause) = (self.approver.clone(), self.usage_pause.clone());
+        tokio::spawn(async move {
+            tokio::select! {
+                biased;
+                _ = pause.closed() => {}
+                choice = approver.usage_paused(info) => match choice {
+                    PauseChoice::Resume => pause.resume(),
+                    PauseChoice::Cancel => pause.cancel(),
+                    PauseChoice::Wait => {}
+                },
+            }
+        });
+    }
+
+    /// The gate every provider call waits at.
+    pub async fn usage_gate(&self) -> Result<(), UsagePauseEnded> {
+        match self.usage_pause.wait_open().await {
+            Some(end) if end.is_failure() => Err(self.ended(end)),
+            _ => Ok(()),
+        }
+    }
+
+    /// [`usage_gate`](Self::usage_gate) for a request made while no run is in flight (a side
+    /// question, an advisor consult, a set-up scan). A wait cancelled earlier belonged to that
+    /// run, so it does not fail this request too.
+    pub async fn usage_gate_idle(&self) -> Result<(), UsagePauseEnded> {
+        self.usage_pause.clear_failure();
+        self.usage_gate().await
+    }
+
+    /// [`usage_gate`](Self::usage_gate) for a call to a known `account`, which alone may take
+    /// the probe of a pause on that account.
+    pub async fn usage_gate_for(&self, account: &str) -> Result<(), UsagePauseEnded> {
+        let admission = self.usage_pause.admit_for(account).await;
+        // Detached: the answer comes from `note_success` or the next limit.
+        if let Some(token) = admission.probe {
+            token.detach();
+        }
+        match admission.end {
+            Some(end) if end.is_failure() => Err(self.ended(end)),
+            _ => Ok(()),
+        }
+    }
+
+    fn ended(&self, end: PauseEnd) -> UsagePauseEnded {
+        let info = self
+            .usage_pause
+            .ended_info()
+            .unwrap_or_else(|| PauseInfo::new(crate::quota::UsageRole::Main, "the", None));
+        UsagePauseEnded { end, info }
+    }
+
     /// An audit entry for something the human did to the session rather than a tool call.
     fn record_session_event(
         &self,
@@ -1035,8 +1281,27 @@ impl SessionState {
         sent_request: bool,
         served: &Served,
     ) {
+        self.record_usage_answered(source, agent, usage, sent_request, sent_request, served);
+    }
+
+    /// [`record_usage`](Self::record_usage) for a request that may have failed: only one the
+    /// provider `answered` proves the window open.
+    fn record_usage_answered(
+        &self,
+        source: UsageSource,
+        agent: &str,
+        usage: &Usage,
+        sent_request: bool,
+        answered: bool,
+        served: &Served,
+    ) {
         self.usage.record(source, usage, sent_request, served);
         self.agents.debit(agent, &spend_of(usage));
+        // Only the paused account's own answer proves its window open, whoever held the probe.
+        // A call whose account is unknown proves nothing.
+        if answered && !served.model.is_empty() {
+            self.usage_pause.note_success(served.account());
+        }
     }
 
     /// The session's usage ledger.
@@ -1055,6 +1320,39 @@ impl SessionState {
         self.record_usage(UsageSource::Guardian, agent, usage, sent_request, served);
     }
 
+    /// [`add_guardian_usage`](Self::add_guardian_usage) for an adjudication: a request that
+    /// ended in an error or timeout is counted but did not get an answer from the provider, so
+    /// it cannot end a pause as a successful probe.
+    pub fn add_guardian_adjudication(
+        &self,
+        agent: &str,
+        usage: &Usage,
+        sent_request: bool,
+        answered: bool,
+        served: &Served,
+    ) {
+        self.record_usage_answered(
+            UsageSource::Guardian,
+            agent,
+            usage,
+            sent_request,
+            sent_request && answered,
+            served,
+        );
+    }
+
+    /// [`add_guardian_usage`](Self::add_guardian_usage) for a call that may have failed, such as
+    /// a hook's or an assessment's: only one the provider `answered` can end a pause.
+    pub fn add_guardian_usage_answered(
+        &self,
+        agent: &str,
+        usage: &Usage,
+        answered: bool,
+        served: &Served,
+    ) {
+        self.record_usage_answered(UsageSource::Guardian, agent, usage, true, answered, served);
+    }
+
     /// What the guardian has cost across the whole tree.
     pub fn guardian_usage(&self) -> Bucket {
         self.usage.bucket(UsageSource::Guardian)
@@ -1062,8 +1360,9 @@ impl SessionState {
 
     /// Counts a goal evaluation's model calls against the root, so the spend a goal's cost cap
     /// reads includes them.
-    pub fn add_goal_usage(&self, usage: &Usage, served: &Served) {
-        self.record_usage(UsageSource::Goal, ROOT_AGENT, usage, true, served);
+    /// `answered` is false when the provider gave no response.
+    pub fn add_goal_usage(&self, usage: &Usage, answered: bool, served: &Served) {
+        self.record_usage_answered(UsageSource::Goal, ROOT_AGENT, usage, true, answered, served);
     }
 
     /// What goal evaluations have cost this session, which outlives the goal.

@@ -205,6 +205,11 @@ impl StretchTracker {
     /// A denial at ledger position `seq`. Returns the new temperature.
     pub fn denial(&mut self, seq: u64, facts: &DenialFacts<'_>) -> f64 {
         self.temperature.step();
+        // A wait the human or a deadline ended says nothing about the agent, so it adds no
+        // heat and is not a denial a later call can be linked back to.
+        if facts.fail_closed == Some("usage_pause_ended") {
+            return self.temperature.current();
+        }
         let mut weight = severity_weight(facts);
         let (mut exact, mut target) = (false, false);
         for earlier in &self.denied {
@@ -1042,6 +1047,20 @@ mod tests {
         unavailable.fail_closed = Some("unavailable");
         unavailable.converted = Some(Converted::GuardianUnavailable);
         assert!((severity_weight(&unavailable) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_usage_pause_that_ended_adds_no_heat() {
+        let mut tracker = StretchTracker::default();
+        let mut ended = facts(Tier::Guardian, "UsagePauseEnded");
+        ended.fail_closed = Some("usage_pause_ended");
+        for seq in 0..20 {
+            tracker.denial(seq, &ended);
+        }
+        assert_eq!(tracker.temperature().current(), 0.0);
+        let mut timeout = facts(Tier::Guardian, "Timeout");
+        timeout.fail_closed = Some("timeout");
+        assert!(tracker.denial(21, &timeout) > 0.0);
     }
 
     #[test]

@@ -143,6 +143,19 @@ impl AgentRuntime {
                 }
             })
         };
+        let gate = if matches!(reason, CompactReason::Asked { .. }) {
+            self.state.usage_gate_idle().await
+        } else {
+            self.state.usage_gate().await
+        };
+        if let Err(ended) = gate {
+            self.approver()
+                .warn(&format!("compaction skipped: {ended}"));
+            return CompactResult::Failed {
+                usage: None,
+                falls_through: false,
+            };
+        }
         let main = &self.models.main;
         let result = if let (Some(chain), Ok(switcher)) =
             (self.role_chain(COMPACTION_ROLE), self.switcher())
@@ -257,6 +270,10 @@ impl AgentRuntime {
         let conversation = load_async(&self.session.store(), CONVERSATION_LOG)
             .await
             .map_err(|e| SideQuestionError::caused_by("the conversation could not be read", e))?;
+        self.state
+            .usage_gate_idle()
+            .await
+            .map_err(|e| SideQuestionError::caused_by("the wait for the usage window ended", e))?;
         let main = &self.models.main;
         let asked = SideQuestion::new(main.completion.clone(), main.catalog_billed())
             .ask(question, &transcript_of(&conversation))
@@ -396,6 +413,9 @@ impl AgentRuntime {
                 ));
             }
         };
+        if let Err(ended) = self.state.usage_gate_idle().await {
+            return Evaluation::Failed(ended.to_string());
+        }
         let judged = evaluator
             .evaluate(&pending.condition, &transcript_of(&conversation))
             .await;
@@ -404,7 +424,8 @@ impl AgentRuntime {
             .guardian
             .as_ref()
             .map_or_else(Served::default, |model| Served::direct(model.reference()));
-        self.state.add_goal_usage(&judged.usage, &served);
+        self.state
+            .add_goal_usage(&judged.usage, judged.answered, &served);
         judged.evaluation
     }
 

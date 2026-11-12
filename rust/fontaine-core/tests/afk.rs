@@ -484,6 +484,37 @@ async fn the_approver_decorator_answers_for_the_user_while_afk_is_on() {
     assert_eq!(rig.approver.notices.lock().unwrap().len(), 1);
 }
 
+/// An approver that answers a usage pause with cancel, so a forwarded call is told apart from the
+/// decorator's own answer.
+struct Cancelling;
+
+impl Approver for Cancelling {
+    fn approve<'a>(&'a self, _request: ApprovalRequest) -> BoxFuture<'a, Answer> {
+        Box::pin(async { Answer::Deny { feedback: None } })
+    }
+
+    fn usage_paused<'a>(
+        &'a self,
+        _info: fontaine_core::usage_pause::PauseInfo,
+    ) -> BoxFuture<'a, fontaine_core::permissions::PauseChoice> {
+        Box::pin(async { fontaine_core::permissions::PauseChoice::Cancel })
+    }
+}
+
+#[tokio::test]
+async fn the_approver_decorator_forwards_the_usage_pause_prompt_and_skips_it_while_afk() {
+    use fontaine_core::permissions::PauseChoice;
+    use fontaine_core::quota::UsageRole;
+    use fontaine_core::usage_pause::PauseInfo;
+    let rig = Rig::new(Manual);
+    let decorated = AfkApprover::new(Arc::new(Cancelling), rig.state.clone());
+    let info = || PauseInfo::new(UsageRole::Main, "work", None);
+    assert_eq!(decorated.usage_paused(info()).await, PauseChoice::Cancel);
+    afk_on(&rig);
+    // Nobody can answer while AFK, so the pause is left to run to its deadline.
+    assert_eq!(decorated.usage_paused(info()).await, PauseChoice::Wait);
+}
+
 fn elicit_form() -> fontaine_tools::mcp::ElicitForm {
     fontaine_tools::mcp::ElicitForm {
         server: "srv".into(),

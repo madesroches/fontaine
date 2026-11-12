@@ -2788,3 +2788,65 @@ mod afk_ceiling {
         }
     }
 }
+
+mod headless_usage_wait {
+    use super::common::World;
+    use fontaine_core::config::{ConfigError, DEFAULT_MAX_USAGE_WAIT_SECS, OnUsageLimit};
+
+    fn headless(w: &World) -> Result<(u64, OnUsageLimit), ConfigError> {
+        w.load()
+            .map(|c| (c.headless.max_usage_wait_secs, c.headless.on_usage_limit))
+    }
+
+    #[test]
+    fn the_default_waits_six_hours() {
+        let w = World::new();
+        assert_eq!(
+            headless(&w).unwrap(),
+            (DEFAULT_MAX_USAGE_WAIT_SECS, OnUsageLimit::Wait)
+        );
+        assert_eq!(DEFAULT_MAX_USAGE_WAIT_SECS, 6 * 3600);
+    }
+
+    #[test]
+    fn the_user_file_sets_both_keys() {
+        let w = World::new();
+        w.user_file("[headless]\nmax_usage_wait_secs = 7200\non_usage_limit = \"exit\"\n");
+        assert_eq!(headless(&w).unwrap(), (7200, OnUsageLimit::Exit));
+    }
+
+    #[test]
+    fn a_project_file_may_only_choose_exit() {
+        let w = World::new();
+        w.trusted_repo();
+        w.project_file("[headless]\non_usage_limit = \"exit\"\n");
+        assert_eq!(headless(&w).unwrap().1, OnUsageLimit::Exit);
+        for text in [
+            "[headless]\non_usage_limit = \"wait\"\n",
+            "[headless]\nmax_usage_wait_secs = 60\n",
+        ] {
+            let w = World::new();
+            w.trusted_repo();
+            w.project_file(text);
+            assert!(
+                matches!(headless(&w), Err(ConfigError::Scope { .. })),
+                "project: {text}"
+            );
+            let w = World::new();
+            w.trusted_repo();
+            w.local_file(text);
+            assert!(
+                matches!(headless(&w), Err(ConfigError::Scope { .. })),
+                "project-local: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_zero_wait_is_refused_so_exit_is_the_way_to_not_wait() {
+        let w = World::new();
+        w.user_file("[headless]\nmax_usage_wait_secs = 0\n");
+        let error = headless(&w).unwrap_err().to_string();
+        assert!(error.contains("on_usage_limit"), "{error}");
+    }
+}

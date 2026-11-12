@@ -202,13 +202,35 @@ far, such as `● Working… (1m05s · ↓ 2.3k tokens)`. The token count is est
 text and replaced by the provider's figure when each model call ends, so it can step down slightly;
 it is left out while it is 0. The row covers the whole turn, including tool waits, goal evaluation,
 `/compact`, a `!` command and a skill expansion, and in a running agent's view it shows that agent's
-elapsed time. It is hidden while an approval, a question or the guardian-unavailable prompt waits
-for you, and it never takes input: Esc works as before. With `FONTAINE_ASCII_GLYPHS=1` the glyph is
+elapsed time. While an account's [usage window](#usage-windows-spent) is spent the label reads
+`paused — work usage window spent, resets 14:30 (in 2h 14m)` instead (or `reset time unknown, next
+check in 4m`), and the clock leaves the wait out. It is hidden while an approval, a question or the
+guardian-unavailable or usage-pause prompt waits for you, and it never takes input: Esc works as before. With `FONTAINE_ASCII_GLYPHS=1` the glyph is
 `.oO0Oo`. The default 16-colour themes cannot blend colours, so there the highlight steps between
 dim, normal and bold and the glyph cycles the theme's accent colours; the RGB themes
 (`dark`, `light` and the daltonized pair) shift smoothly. Screen-reader mode shows no spinner. When
 any subagent is running or recently ended, the [agent list](#the-agent-list-and-the-agent-view)
 sits on the rows below the bar.
+
+### Usage windows spent
+
+When an account's usage window is spent (a subscription that answers every request with a 429 until
+it resets), the whole run pauses at its next provider call: the main agent, the guardian and every
+subagent. A tool call that is waiting for a guardian verdict stays pending, neither denied nor run,
+and is checked again from the start when the window reopens. Calls already running are not
+interrupted. A prompt names the account and offers:
+
+| Key | Action |
+|---|---|
+| `r` | Resume now. The first request to meet the limit again pauses the run once more. |
+| `s` | Switch the exhausted role to a model on another account (the guardian at once, the main model for the next attempt). Not offered for a subagent's own account. |
+| `c`, Esc | Cancel. Waiting calls fail, and a pending gated call is denied with `UsagePauseEnded`; that denial does not count toward the guardian's breaker. |
+
+The keys belong to the prompt, so typing never reaches the message box while it is open. Without a
+prompt the pause ends by itself: at the reset time the provider gave plus a margin, after one
+request that gets through, or, when no reset time is known, after probes at 1 minute doubling to
+15. While [AFK mode](afk.md) is on nobody can answer, so the pause shows only the status line and is
+bounded by `[headless] max_usage_wait_secs`. A subagent's run time stops counting during the wait.
 
 ## Keys
 

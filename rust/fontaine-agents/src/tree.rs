@@ -339,6 +339,10 @@ struct Node {
     exhausted: Option<Exhausted>,
     started: Instant,
     ended: Option<Instant>,
+    /// What the session's usage pause had accumulated when the run started and ended, so the
+    /// time spent paused is not counted as the agent's run time.
+    paused_start: Duration,
+    paused_end: Option<Duration>,
     writing: u64,
     /// Why the agent can no longer be resumed although it ended without a kill: an ancestor's
     /// final end, `/clear` or a rewind.
@@ -407,9 +411,26 @@ struct Inner {
     /// the tree: every resume, wake and reminder waits for it. The text is what a refused
     /// wake is told.
     wake_hold: Option<String>,
+    /// Total time the session has spent in a usage pause.
+    pause_clock: Option<PauseClock>,
 }
 
+type PauseClock = Arc<dyn Fn() -> Duration + Send + Sync>;
+
 impl Inner {
+    fn paused(&self) -> Duration {
+        self.pause_clock
+            .as_ref()
+            .map_or(Duration::ZERO, |clock| clock())
+    }
+
+    /// The pause time inside `node`'s run so far.
+    fn paused_in(&self, node: &Node) -> Duration {
+        node.paused_end
+            .unwrap_or_else(|| self.paused())
+            .saturating_sub(node.paused_start)
+    }
+
     /// Every running agent below `id`, nearest first.
     fn running_descendants(&self, id: &str) -> Vec<String> {
         let mut found = vec![id.to_string()];
@@ -462,6 +483,7 @@ impl Inner {
         handles: &mut Vec<Arc<dyn ChildHandle>>,
     ) -> Vec<Retired> {
         let mut retired = Vec::new();
+        let paused = self.paused();
         for below in self.descendants(id) {
             let Some(node) = self.nodes.get_mut(&below) else {
                 continue;
@@ -469,6 +491,7 @@ impl Inner {
             if node.status.is_running() {
                 node.status = ChildStatus::Killed;
                 node.ended = Some(Instant::now());
+                node.paused_end = Some(paused);
                 handles.extend(node.handle.clone());
             } else if is_idle(node) {
                 retired.push(retire_node(node, why));
@@ -545,6 +568,8 @@ pub struct AgentRow {
     pub started: Instant,
     /// When the latest run ended; `None` while it runs.
     pub ended: Option<Instant>,
+    /// How much of the latest run the session spent in a usage pause, which is not run time.
+    pub paused: Duration,
     /// Characters the model wrote in its current step; display state, cleared when the step ends.
     pub writing: u64,
     /// Its turn ended and a message can wake it.
@@ -594,6 +619,12 @@ pub struct AgentTree {
 type WarnSink = Arc<dyn Fn(&str) + Send + Sync>;
 
 impl AgentTree {
+    /// Tells the tree how long the session has spent in a usage pause, so a node's run time
+    /// leaves that out.
+    pub fn set_pause_clock(&self, clock: impl Fn() -> Duration + Send + Sync + 'static) {
+        self.lock().pause_clock = Some(Arc::new(clock));
+    }
+
     /// `next_agent` seeds the id counter, one past the largest ordinal a previous process
     /// of this session reserved, so ids never collide with persisted per-agent logs.
     pub fn new(limits: Limits, next_agent: u64) -> AgentTree {
@@ -618,6 +649,8 @@ impl AgentTree {
             exhausted: None,
             started: Instant::now(),
             ended: None,
+            paused_start: Duration::ZERO,
+            paused_end: None,
             writing: 0,
             retired: None,
             revival: None,
@@ -631,6 +664,7 @@ impl AgentTree {
                 session_spend: Spend::default(),
                 last_writing_wake: None,
                 wake_hold: None,
+                pause_clock: None,
             }),
             root_mode: RwLock::new(Arc::new(|| RootMode::Ladder(Ladder::Manual))),
             root_tools: RwLock::new(None),
@@ -946,6 +980,7 @@ impl AgentTree {
             None => inner.generated_name(agent_type),
         };
         let id = format!("agent-{}", self.next.fetch_add(1, Ordering::SeqCst));
+        let paused = inner.paused();
         inner.names.insert(name.clone());
         inner.order.push(id.clone());
         inner.nodes.insert(
@@ -971,6 +1006,8 @@ impl AgentTree {
                 exhausted: None,
                 started: Instant::now(),
                 ended: None,
+                paused_start: paused,
+                paused_end: None,
                 writing: 0,
                 retired: None,
                 revival: None,
@@ -1076,12 +1113,14 @@ impl AgentTree {
     /// missed.
     pub fn finish(&self, id: &str, report: ChildReport) -> Finish {
         let mut inner = self.lock();
+        let paused = inner.paused();
         let mut handles = Vec::new();
         if inner.nodes.contains_key(id) {
             for orphan in inner.running_descendants(id) {
                 if let Some(node) = inner.nodes.get_mut(&orphan) {
                     node.status = ChildStatus::Killed;
                     node.ended = Some(Instant::now());
+                    node.paused_end = Some(paused);
                     handles.extend(node.handle.clone());
                 }
             }
@@ -1095,6 +1134,7 @@ impl AgentTree {
                 node.status = report.status;
             }
             node.ended = Some(Instant::now());
+            node.paused_end = Some(paused);
             node.report = Some(report);
             keeps_tasks = is_idle(node) && node.status == ChildStatus::Done;
             final_end = matches!(
@@ -1230,6 +1270,7 @@ impl AgentTree {
             let mut inner = self.lock();
             inner.names.insert(record.name.clone());
             inner.order.push(record.id.clone());
+            let paused = inner.paused();
             inner.nodes.insert(
                 record.id.clone(),
                 Node {
@@ -1253,6 +1294,8 @@ impl AgentTree {
                     exhausted: None,
                     started: Instant::now(),
                     ended: Some(Instant::now()),
+                    paused_start: paused,
+                    paused_end: Some(paused),
                     writing: 0,
                     retired: None,
                     revival: Some(agent_type.clone()),
@@ -1289,6 +1332,7 @@ impl AgentTree {
         if Self::running_children(&inner) >= self.limits.max_parallel {
             return Err(Refusal::Parallel(self.limits.max_parallel));
         }
+        let paused = inner.paused();
         let node = inner
             .nodes
             .get_mut(id)
@@ -1297,6 +1341,8 @@ impl AgentTree {
         node.report = None;
         node.ended = None;
         node.started = Instant::now();
+        node.paused_start = paused;
+        node.paused_end = None;
         drop(inner);
         self.changed.notify_waiters();
         Ok(())
@@ -1328,9 +1374,11 @@ impl AgentTree {
             if !idle && !node.status.is_running() {
                 return None;
             }
+            let paused = inner.paused();
             let node = inner.nodes.get_mut(id).expect("checked above");
             node.status = ChildStatus::Killed;
             node.ended = Some(Instant::now());
+            node.paused_end = Some(paused);
             let mut handles = Vec::new();
             let (killed, inbox) = if idle {
                 // Nothing runs: no watcher will conclude it, and no report is queued for a kill.
@@ -1846,7 +1894,7 @@ impl AgentTree {
         let id = id.as_str();
         if node.status.is_running() {
             return Ok(AgentState::Running {
-                age: node.started.elapsed(),
+                age: node.started.elapsed().saturating_sub(inner.paused_in(node)),
                 on_permission: node.live_status() == ChildStatus::WaitingOnPermission,
             });
         }
@@ -1969,6 +2017,7 @@ impl AgentTree {
                 exhausted: n.exhausted,
                 started: n.started,
                 ended: n.ended,
+                paused: inner.paused_in(n),
                 writing: n.writing,
                 idle: is_idle(n),
             })

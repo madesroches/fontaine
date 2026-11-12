@@ -126,7 +126,7 @@ exported.
 | `fontaine.cost.usage` | USD | `model`, `query_source`; `estimated` (`true`) on the guardian spend estimate only |
 | `fontaine.tool_decision.count` | `{decision}` | `tier`, `decision` |
 | `fontaine.guardian.latency` | ms | `model`, `profile`, `cache_hit` |
-| `fontaine.guardian.fail_closed.count` | `{denial}` | `reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`, `not_signed_in`) |
+| `fontaine.guardian.fail_closed.count` | `{denial}` | `reason` (`error`, `timeout`, `unparseable`, `low_confidence`, `unavailable`, `not_signed_in`, `usage_pause_ended`) |
 | `fontaine.screen.count` | `{call}` | `outcome` (`stop`, `allow`, `deny`, `pass`, `unavailable`; in shadow mode `stop`, `allow` and `deny` are what the composition would have done) |
 
 `fontaine.cost.usage` is priced from the model catalog and is absent when the catalog has no price,
@@ -162,6 +162,8 @@ composition did not use is counted in the session's usage like any other guardia
 | `api_error` | `model`, `provider`, `query_source` (`main` or `subagent`), `agent.id`, `error_class` (rig's stable error code, such as `provider_response`, `http`, `timeout` or `json`), and `status_code` when the failure carries an HTTP status. The provider's message is not exported: it can echo the request. Retries are not visible, so there is no attempt count. Emitted for a main-agent or subagent turn that failed with a provider error or a rig error report, in practice a failed model call; `error_class` tells the rare rig-internal failures (such as `internal`, `divergence` or `handler_unavailable`) apart. A turn limit or a cancel is not one. |
 | `internal_error` | `class` (`audit_write` or `ledger_write`). Emitted for every failed write to the audit log or the session ledger, not only the first one the terminal reports. The I/O error text is not exported: it can contain a path. |
 | `permission_mode_changed` | `from`, `to` |
+| `usage_paused` | `role` (`main` or `guardian`), `account`, `reset_at` (Unix epoch seconds, absent when unknown). The run was put on hold because the account's [usage window](headless.md#usage-windows) is spent. |
+| `usage_resumed` | `role`, `account`, `end` (`reset`, `probed`, `resumed`, `cancelled` or `cap_reached`), `waited_secs`. The hold ended. |
 | `tool_decision` | `tool_name`, `agent.id`, `agent.type`, `tool_use_id`, `tier`, `decision`, `permission_mode`, `headless`, `latency_ms`; for guardian decisions also `guardian.model`, `guardian.profile`, `guardian.verdict`, `guardian.confidence`, `guardian.cache_hit`, `guardian.latency_ms` and, when it failed closed, `fail_closed_reason`; when a [composition](guardian.md#composing-the-guardian) scored the call, `screen.outcome`, `screen.risk`, `screen.allow_risk`, `screen.steering`, `screen.model` and `screen.latency_ms`, in shadow mode too; when the composition settled the call and cut a guardian request short, `guardian.dropped_input_tokens`, `guardian.dropped_provider`, `guardian.dropped_model` and `guardian.dropped_priced`. The rule label and explanation are not exported; they are in the audit log. |
 | `tool_result` | `tool_name`, `risk_class`, `tool_source`, `success`, `duration_ms`, `args_bytes`, `result_bytes` (sizes only: no arguments and no output); when the [tool-result scanner](guardian.md#scanning-tool-results) scanned the result, also `scanner_verdict` (`clean`, `flagged` or `error`) and `scanner_latency_ms`, absent when no scan ran. Emitted for every call, including a denied one. |
 

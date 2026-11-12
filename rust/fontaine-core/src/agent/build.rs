@@ -22,7 +22,10 @@ use fontaine_tools::schedule::{
 };
 use fontaine_tools::skill::SkillTool;
 use fontaine_tools::todo::TodoTool;
-use rig_agent::agent::{AgentHook, DispatchAction, DispatchEvent, HookContext};
+use rig_agent::agent::{
+    AgentHook, CompletionCallAction, CompletionCallEvent, DispatchAction, DispatchEvent,
+    HookContext,
+};
 use rig_agent::prelude::*;
 use rig_agent::tool::server::ToolServerHandle;
 use rig_core::{ErrorKind, ErrorReport};
@@ -81,6 +84,26 @@ impl AgentHook for CurrentCall {
     }
 }
 
+/// Holds every model request of an agent while a usage pause is in force, outside any timeout:
+/// the gate is per request, so a request after a long tool call is held too, not only the first
+/// of a turn. A pause that ends in failure stops the run with its reason.
+pub(crate) struct UsageGate {
+    state: Arc<SessionState>,
+}
+
+impl AgentHook for UsageGate {
+    async fn on_completion_call(
+        &self,
+        _ctx: &HookContext,
+        _event: CompletionCallEvent<'_>,
+    ) -> CompletionCallAction {
+        match self.state.usage_gate().await {
+            Ok(()) => CompletionCallAction::Continue,
+            Err(ended) => CompletionCallAction::Stop(ended.to_string()),
+        }
+    }
+}
+
 /// What the root agent and every subagent are built with: the telemetry setting and the hook
 /// that tells the permission state which model tool call a tool is serving. Applied before any
 /// other hook so `CurrentCall` runs first.
@@ -92,6 +115,9 @@ pub(crate) fn apply_common(
     builder
         .record_content_telemetry(record_content)
         .add_hook(CurrentCall {
+            state: state.clone(),
+        })
+        .add_hook(UsageGate {
             state: state.clone(),
         })
 }

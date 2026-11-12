@@ -362,6 +362,7 @@ impl AgentRuntime {
             mcp: &mcp,
         })?;
         setup::rebuild_agents(&state, &setup.session, &tree, &agent_types.get());
+        let guardian_quota = models::guardian_quota_slot(setup.models.guardian.as_ref(), &state);
         Ok(AgentRuntime {
             agent,
             prompt_pieces: pieces,
@@ -370,7 +371,7 @@ impl AgentRuntime {
             start_mode: state.mode(),
             state,
             session: setup.session,
-            guardian_quota: models::guardian_quota_slot(setup.models.guardian.as_ref()),
+            guardian_quota,
             models: setup.models,
             config: setup.config,
             guardian_profile: setup.guardian_profile,

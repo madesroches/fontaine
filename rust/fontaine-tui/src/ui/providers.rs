@@ -235,6 +235,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                             }
                             Action::RetryDenied(index) => self.retry_denied(runtime, index),
                             Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
+                            Action::UsagePause(answer) => self.answer_usage_pause(runtime, answer).await,
                             Action::KillAgent(id) => self.kill_agent(runtime, &id),
                             Action::MessageAgent { id, text } => {
                                 self.message_agent(runtime, id, text);

@@ -102,7 +102,10 @@ roles, or an `<account>/<model>`; a role your `[models.roles]` does not define i
 file or `[agents.types]` and a spawn error when the model passes it. Every subagent started on one
 role shares the role's current entry: when the entry in use runs out of quota and a subagent moves to
 the next one, the others, and later spawns, start on the entry that worked. A subagent on `$main`
-moves for itself and leaves the main conversation's entry alone. A bare `main` is the role of that
+moves for itself and leaves the main conversation's entry alone. When every entry of its list is
+spent on a [usage window](headless.md#usage-windows), the whole session pauses, the subagent
+included, and its displayed run time and wall-clock accounting leave the wait out; its token and
+cost budgets are not touched, because waiting spends nothing. A bare `main` is the role of that
 name, a list of its own, not the live session model; use `$main` for that. The tool description the main
 model sees lists the roles and their models, and it does not change during a session.
 

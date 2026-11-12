@@ -128,7 +128,7 @@ pub(super) fn turn_end(outcome: &Outcome) -> TurnOutcome {
         Subtype::Success => TurnOutcome::Answer(outcome.text.clone()),
         Subtype::MaxTurns => TurnOutcome::MaxTurns(message),
         Subtype::MaxBudget => TurnOutcome::Stopped,
-        Subtype::Execution => TurnOutcome::Failed(message.into()),
+        Subtype::Execution | Subtype::UsageLimit => TurnOutcome::Failed(message.into()),
     }
 }
 

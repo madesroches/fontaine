@@ -161,9 +161,12 @@ and the figures never leave the machine. They appear after the first turn.
 Fontaine never selects paid usage credits, but it cannot see your account's extra-usage setting: if
 it is on, exhausting the included limit can switch a Max or Ultra session to paid credits.
 Disable it at <https://claude.ai/settings/usage> if you need included-subscription-only use. A
-plan-limit or billing failure from the CLI is reported once, without a retry. It is also what moves
-a [model list](configuration.md#falling-through-to-the-next-entry) to its next entry, when the
-account sits in a list that has one; nothing else tries another account or model.
+billing failure from the CLI is reported once, without a retry. A plan limit that has used up the
+window (the CLI's rate-limit event said `rejected`) is a
+[usage window](headless.md#usage-windows) that resets by itself: the first request fails without a
+retry, a [model list](configuration.md#falling-through-to-the-next-entry) moves on to its next entry,
+and when none is left the run pauses until the reset time the CLI reported. A rate limit the CLI
+reports without a rejected window, and a billing failure, are not waited for.
 
 ## Failures
 
@@ -171,7 +174,8 @@ account sits in a list that has one; nothing else tries another account or model
 |---|---|
 | At startup: credit-billed model | exit code 2 with the corrective text; no turn runs |
 | CLI missing, too old, not signed in, wrong plan, conflicting variable, malformed protocol, or a model that turns credit-billed at request time | exit code 1 with the corrective text; no turn runs and nothing is retried. A protocol failure names the rejected event, such as `(event: system/notification)` |
-| Plan limit, allowance or billing error from the CLI | the same, after the run began; it also moves a [model list](configuration.md#falling-through-to-the-next-entry) on to its next entry |
+| Billing error, or a rate limit with no spent window, from the CLI | the same, after the run began; it also moves a [model list](configuration.md#falling-through-to-the-next-entry) on to its next entry |
+| Plan limit with the usage window spent | not retried; a model list moves on to its next entry, and a spent list pauses the run until the reset (see [usage windows](headless.md#usage-windows)) |
 | Overloaded or server error, a stream cut short, a CLI that is silent for 180 seconds | retried twice with backoff, like any provider |
 | The CLI's version, login or model-listing probe taking too long | the same as a failed probe: not retried |
 

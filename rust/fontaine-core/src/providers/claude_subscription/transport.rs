@@ -371,7 +371,7 @@ async fn write_frame(
             child.settle_stderr().await;
             return Err(exit_failure(
                 &child.stderr_text(),
-                reader.native(),
+                reader.native().as_ref(),
                 reader.login(),
             ));
         }
@@ -398,7 +398,7 @@ pub(super) async fn next(
             child.settle_stderr().await;
             Err(exit_failure(
                 &child.stderr_text(),
-                reader.native(),
+                reader.native().as_ref(),
                 reader.login(),
             ))
         }

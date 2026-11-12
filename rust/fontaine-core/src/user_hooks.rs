@@ -48,6 +48,7 @@ use crate::permissions::{
     Approver, DenyAll, HookDecision, HookError, HookPermission, PermissionDeniedEvent,
     PermissionDeniedHook, PreToolUseEvent, PreToolUseHook,
 };
+use crate::usage_pause::UsagePause;
 
 const TARGET: &str = "fontaine::telemetry";
 
@@ -146,7 +147,8 @@ impl HookProcess {
 pub type GuardianSlot = Arc<RwLock<Option<GuardianModel>>>;
 
 /// Records what a prompt hook's model calls cost, against the agent the event is for.
-pub type UsageSink = Arc<dyn Fn(&str, &Usage) + Send + Sync>;
+/// Called with the agent, the cost, and whether the provider answered the request.
+pub type UsageSink = Arc<dyn Fn(&str, &Usage, bool) + Send + Sync>;
 
 /// Everything a hook handler needs besides its own configuration.
 #[derive(Clone)]
@@ -159,6 +161,8 @@ pub struct HookDeps {
     pub guardian: GuardianSlot,
     pub approver: Arc<dyn Approver>,
     pub usage: Option<UsageSink>,
+    /// The session's usage pause, which a prompt hook waits at before its model call.
+    pub pause: Option<UsagePause>,
 }
 
 impl HookDeps {
@@ -171,6 +175,7 @@ impl HookDeps {
             guardian: Arc::new(RwLock::new(None)),
             approver: Arc::new(DenyAll),
             usage: None,
+            pause: None,
         }
     }
 }
@@ -512,7 +517,11 @@ impl PromptSpec {
                 .get("agent_id")
                 .and_then(Value::as_str)
                 .unwrap_or(ROOT_AGENT);
-            sink(agent, &usage);
+            let answered = !matches!(
+                answer,
+                Err(JudgeFailure::Timeout(_) | JudgeFailure::Unreachable(_))
+            );
+            sink(agent, &usage, answered);
         }
         match answer {
             Ok(verdict) => Ok(Answer {
@@ -563,6 +572,7 @@ pub struct UserHook {
     handler: Arc<Handler>,
     approver: Arc<dyn Approver>,
     fails_closed: bool,
+    pause: Option<UsagePause>,
 }
 
 impl UserHook {
@@ -607,6 +617,24 @@ impl UserHook {
             fails_closed: hook.kind == HandlerKind::Command && deps.process.shell.is_powershell(),
             handler: Arc::new(handler),
             approver: deps.approver.clone(),
+            pause: deps.pause.clone(),
+        }
+    }
+
+    /// Waits while a usage pause is in force, for a hook that asks the model. Outside the hook's
+    /// timeout, so a pause is never turned into one; the other handlers do not wait.
+    async fn wait_for_model(&self) -> Result<(), HookError> {
+        let Some(pause) = &self.pause else {
+            return Ok(());
+        };
+        if !matches!(&*self.handler, Handler::Prompt(_)) {
+            return Ok(());
+        }
+        match pause.wait_open().await {
+            Some(end) if end.is_failure() => Err(HookError::failed(
+                "the usage window stayed spent and the wait ended",
+            )),
+            _ => Ok(()),
         }
     }
 
@@ -659,6 +687,7 @@ impl UserHook {
 
     /// [`answer`](Self::answer) within the hook's timeout.
     async fn answer_within(&self, input: Value) -> Result<Answer, HookError> {
+        self.wait_for_model().await?;
         match tokio::time::timeout(self.timeout, self.answer(input)).await {
             Ok(result) => result,
             Err(_) => Err(HookError::failed(format!(
@@ -772,6 +801,10 @@ impl PreToolUseHook for UserHook {
         self.fails_closed
     }
 
+    fn gate<'a>(&'a self) -> BoxFuture<'a, Result<(), HookError>> {
+        Box::pin(self.wait_for_model())
+    }
+
     fn run<'a>(
         &'a self,
         event: PreToolUseEvent<'a>,
@@ -848,6 +881,10 @@ impl PermissionDeniedHook for UserHook {
 
     fn can_retry(&self) -> bool {
         self.user_trust
+    }
+
+    fn gate<'a>(&'a self) -> BoxFuture<'a, Result<(), HookError>> {
+        Box::pin(self.wait_for_model())
     }
 
     fn run<'a>(

@@ -562,6 +562,18 @@ pub const KEYS: &[KeyRow] = &[
         .max_turns
         .to_string()),
     row!("goal.max_cost_usd", Scalar, |c, _| opt(c.goal.max_cost_usd)),
+    row!("headless.max_usage_wait_secs", Scalar, |c, _| c
+        .headless
+        .max_usage_wait_secs
+        .to_string()),
+    row!(
+        "headless.on_usage_limit",
+        Scalar,
+        |c, _| match c.headless.on_usage_limit {
+            crate::config::OnUsageLimit::Wait => "wait".to_string(),
+            crate::config::OnUsageLimit::Exit => "exit".to_string(),
+        }
+    ),
     row!("afk.temperature_ceiling", Scalar, |c, _| c
         .afk
         .ceiling()

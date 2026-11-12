@@ -24,7 +24,7 @@ pub use preset::{
 use eval::EvalCtx;
 use host::{Call, VerdictKind, verdict_of};
 
-use crate::guardian::{Adjudication, Guardian};
+use crate::guardian::{Adjudication, Cause, Guardian};
 use crate::request::AdjudicationRequest;
 use crate::screen::{BackendKind, Read, Reader, check_backend, check_pairing};
 use crate::verdict::{Decision, FailClosed};
@@ -366,6 +366,8 @@ pub enum Decided {
         reason: String,
         /// Set when the composition failed rather than chose to deny.
         fail_closed: Option<FailClosed>,
+        /// The failure behind it, when a model call was what failed.
+        cause: Option<Cause>,
     },
     Allow {
         node: String,
@@ -614,6 +616,7 @@ async fn run(
                 node,
                 reason,
                 fail_closed: None,
+                cause: None,
             },
             Ran::Verdict(VerdictKind::Allow {
                 node,
@@ -631,11 +634,15 @@ async fn run(
                 node: "composition".to_owned(),
                 reason: "the composition reached no verdict".to_owned(),
                 fail_closed: Some(FailClosed::Unparseable),
+                cause: None,
             },
             Ran::Failed(kind, reason) => Decided::Deny {
                 node: "composition".to_owned(),
                 reason,
                 fail_closed: Some(kind),
+                cause: held
+                    .as_ref()
+                    .and_then(|adjudication| adjudication.cause.clone()),
             },
         }
     };

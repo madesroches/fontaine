@@ -12,7 +12,8 @@ use fontaine_core::RuntimeError;
 use fontaine_core::afk_report::{AfkOutcome, AfkReport, AfkSource};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::{Converted, Decision, DecisionRecord};
-use fontaine_core::config::PermissionMode;
+use fontaine_core::config::{OnUsageLimit, PermissionMode};
+use fontaine_core::gate::UsageWait;
 use fontaine_core::goal::{GoalArg, Step, first_turn_prompt};
 use fontaine_core::ledger::Record;
 use fontaine_core::model_roles::Tried;
@@ -21,9 +22,11 @@ use fontaine_core::quota::{AccountUsage, Quota, QuotaSource, UsageRole};
 use fontaine_core::trust;
 use fontaine_core::turn::{
     Flow, RETRY_NOTE, SessionEvent, TurnFailure, TurnOutcome, TurnParams, run_turn, user_message,
+    wait_out_usage_limit,
 };
 use fontaine_core::turn_recovery::{Fallback, Unsettled};
 use fontaine_core::usage_ledger::{Bucket, UsageSource};
+use fontaine_core::usage_pause::{PauseEnd, PauseEvent, PauseInfo};
 use fontaine_core::user_hooks::PromptGate;
 use fontaine_tools::kills::KILL_SETTLE;
 use rig_core::schemars::Schema;
@@ -41,8 +44,15 @@ pub struct Options {
     pub include_partial_messages: bool,
     pub max_turns: Option<usize>,
     pub max_budget_usd: Option<f64>,
+    /// Overrides `[headless] on_usage_limit`.
+    pub on_usage_limit: Option<OnUsageLimit>,
+    /// Overrides `[headless] max_usage_wait_secs`.
+    pub max_usage_wait: Option<std::time::Duration>,
     pub json_schema: Option<Schema>,
 }
+
+/// The exit code of a run that ended because an account's usage window stayed spent.
+pub const EXIT_USAGE_LIMIT: u8 = 3;
 
 fn emit_line(value: &Value) {
     let mut out = std::io::stdout().lock();
@@ -230,6 +240,7 @@ enum Subtype {
     MaxTurns,
     MaxBudget,
     Execution,
+    UsageLimit,
 }
 
 impl Subtype {
@@ -239,6 +250,7 @@ impl Subtype {
             Subtype::MaxTurns => "error_max_turns",
             Subtype::MaxBudget => "error_max_budget_usd",
             Subtype::Execution => "error_during_execution",
+            Subtype::UsageLimit => "error_usage_limit",
         }
     }
 }
@@ -365,6 +377,7 @@ fn result_event(
     goal: Option<&goal::GoalReport>,
     account_usage: &[Value],
     afk: Option<&AfkReport>,
+    usage_limit: Option<&Value>,
 ) -> Value {
     let (totals, guardian, subagents) = (&usage.main, &usage.guardian, &usage.subagents);
     let mut fields = json!({
@@ -424,7 +437,49 @@ fn result_event(
     if let (false, Some(map)) = (account_usage.is_empty(), fields.as_object_mut()) {
         map.insert("account_usage".into(), account_usage.to_vec().into());
     }
+    if let (Some(limit), Some(map)) = (usage_limit, fields.as_object_mut()) {
+        map.insert("usage_limit".into(), limit.clone());
+    }
     event("result", session_id, fields)
+}
+
+fn epoch_secs(at: Option<std::time::SystemTime>) -> Option<u64> {
+    at.and_then(|at| at.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+}
+
+/// The account and reset time of a usage window that stayed spent, as `result.usage_limit`.
+fn usage_limit_object(end: PauseEnd, info: &PauseInfo) -> Value {
+    json!({
+        "account": info.account,
+        "role": info.role.as_str(),
+        "reset_at": epoch_secs(info.reset_at),
+        "end": end.as_str(),
+    })
+}
+
+fn usage_event(session_id: &str, pause: &PauseEvent) -> Value {
+    match pause {
+        PauseEvent::Paused(info) => event(
+            "usage_paused",
+            session_id,
+            json!({
+                "account": info.account,
+                "role": info.role.as_str(),
+                "reset_at": epoch_secs(info.reset_at),
+            }),
+        ),
+        PauseEvent::Resumed { end, info, waited } => event(
+            "usage_resumed",
+            session_id,
+            json!({
+                "account": info.account,
+                "role": info.role.as_str(),
+                "end": end.as_str(),
+                "waited_secs": waited.as_secs(),
+            }),
+        ),
+    }
 }
 
 fn init_event(runtime: &AgentRuntime, data_dir: &Path) -> Value {
@@ -535,6 +590,36 @@ async fn run_one(
             .await
             .is_none()
         {
+            // Nothing left to try on a spent usage window: the whole run waits for it and the
+            // request goes again, or ends when the wait does.
+            let mut failure = failure;
+            let had_limit = failure.usage_limit.is_some();
+            let main = &runtime.models.main;
+            if wait_out_usage_limit(
+                &runtime.state,
+                &mut failure,
+                UsageRole::Main,
+                &main.reference.account,
+                main.quota.clone(),
+            )
+            .await
+            {
+                tried = Tried::default();
+                let (next, next_note) = run_attempt(
+                    runtime,
+                    options,
+                    RETRY_NOTE.to_string(),
+                    stream_events,
+                    &mut fell,
+                )
+                .await;
+                outcome = merge(outcome, next);
+                note = next_note;
+                continue;
+            }
+            if had_limit && failure.usage_limit.is_none() {
+                outcome.error = Some(failure.message.clone());
+            }
             if let (Some(spent), Some(error)) = (runtime.fall_through_spent(), &mut outcome.error) {
                 error.push('\n');
                 error.push_str(&spent);
@@ -1248,7 +1333,7 @@ async fn final_afk_report(runtime: &AgentRuntime) -> Option<AfkReport> {
 }
 
 /// Runs the headless session and returns the process exit code: 0 completed, 1 run error or a
-/// `/goal` that did not end met, 2 usage error.
+/// `/goal` that did not end met, 2 usage error, 3 an account's usage window stayed spent.
 ///
 /// `guardian_login` is the pinned guardian's account and the login that signs it in, when that
 /// account has nobody signed in: a run that consults the guardian then stops before it starts,
@@ -1298,11 +1383,31 @@ async fn run_session(
     if stream_events {
         emit_line(&init_event(runtime, data_dir));
     }
+    let headless = &runtime.config.headless;
+    runtime.state.set_usage_wait(UsageWait {
+        cap: Some(
+            options
+                .max_usage_wait
+                .unwrap_or(std::time::Duration::from_secs(headless.max_usage_wait_secs)),
+        ),
+        afk_cap: None,
+        exit: options.on_usage_limit.unwrap_or(headless.on_usage_limit) == OnUsageLimit::Exit,
+    });
+    if stream_events {
+        let id = session_id.clone();
+        runtime
+            .state
+            .usage_pause()
+            .observe(std::sync::Arc::new(move |pause| {
+                emit_line(&usage_event(&id, pause));
+            }));
+    }
 
     let mut last: Option<Handled> = None;
     let mut goal_failure: Option<String> = None;
     let mut reviewed = false;
     let mut code = 0u8;
+    let mut last_usage_limit: Option<Value> = None;
     let mut usage_warned = HashSet::new();
     loop {
         let text = match input.next().await {
@@ -1334,6 +1439,25 @@ async fn run_session(
                 afk: afk_report(runtime),
             },
         };
+        // A usage window that stayed spent ends the run whatever the turn made of it: a denial
+        // alone would let the model keep making gated calls.
+        let usage_limit = runtime
+            .state
+            .usage_pause()
+            .failure()
+            .map(|(end, info)| (usage_limit_object(end, &info), end, info));
+        if let Some((_, end, info)) = &usage_limit {
+            handled.outcome.subtype = Subtype::UsageLimit;
+            handled.outcome.text.clear();
+            handled.outcome.error = Some(
+                fontaine_core::gate::UsagePauseEnded {
+                    end: *end,
+                    info: info.clone(),
+                }
+                .to_string(),
+            );
+        }
+        let usage_limit = usage_limit.map(|(object, ..)| object);
         let failed = handled.outcome.subtype != Subtype::Success;
         // A goal that ended impossible or paused did not finish the task, even when the turn
         // itself answered. A failed turn already says why.
@@ -1372,9 +1496,15 @@ async fn run_session(
                 handled.goal.as_ref(),
                 &account_usage,
                 handled.afk.as_ref(),
+                usage_limit.as_ref(),
             ));
         }
         last = Some(handled);
+        last_usage_limit = usage_limit.clone();
+        if usage_limit.is_some() {
+            code = EXIT_USAGE_LIMIT;
+            break;
+        }
         if failed || goal_failure.is_some() {
             code = 1;
             break;
@@ -1413,6 +1543,7 @@ async fn run_session(
                 last.goal.as_ref(),
                 &account_usage,
                 last.afk.as_ref(),
+                last_usage_limit.as_ref(),
             ));
         }
         OutputFormat::Text => {
@@ -1476,7 +1607,7 @@ mod tests {
             goal: bucket(30, 31),
             subagents: bucket(20, 21),
         };
-        let result = result_event("s", &outcome, &usage, None, &[], None);
+        let result = result_event("s", &outcome, &usage, None, &[], None, None);
         assert_eq!(result["num_turns"], 3);
         assert_eq!(result["usage"]["main"]["input_tokens"], 3000);
         assert_eq!(result["usage"]["main"]["cache_read_input_tokens"], 1700);

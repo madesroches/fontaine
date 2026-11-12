@@ -19,6 +19,7 @@ use crate::checkpoint::RewindWhat;
 use crate::owner_only;
 use crate::project_env::ProjectEnvironment;
 use crate::tier::Tier;
+use crate::usage_pause::PauseEnd;
 use fontaine_tools::lock::lock;
 
 pub const LEDGER_DIR: &str = "ledger";
@@ -272,6 +273,18 @@ pub enum Record {
         from: String,
         to: String,
         class: String,
+    },
+    /// The run was put on hold because `account`'s usage window is spent. `reset_at` is Unix
+    /// epoch seconds, when the provider said when it resets.
+    UsagePaused {
+        role: String,
+        account: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_at: Option<u64>,
+    },
+    /// The hold ended, and how.
+    UsageResumed {
+        end: PauseEnd,
     },
 }
 
@@ -655,7 +668,9 @@ impl LedgerView {
             | Record::AfkAssessment { .. }
             | Record::Goal { .. }
             | Record::RequestFailed { .. }
-            | Record::ModelFellThrough { .. } => {}
+            | Record::ModelFellThrough { .. }
+            | Record::UsagePaused { .. }
+            | Record::UsageResumed { .. } => {}
         }
     }
 }

@@ -82,7 +82,7 @@ fn window(
     // Epoch seconds, as the captured payload shows.
     let reset_at = resets_at
         .and_then(Value::as_u64)
-        .map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs));
+        .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)));
     Some(QuotaWindow {
         label: label.to_string(),
         used_ratio,

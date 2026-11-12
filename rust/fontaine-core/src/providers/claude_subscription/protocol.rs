@@ -15,10 +15,12 @@ use sha2::{Digest, Sha256};
 
 use crate::providers::{WEB_SEARCH_NAME, WEB_SEARCH_TYPE};
 
+use std::time::{Duration, SystemTime};
+
 use super::cli::limit_error;
 use super::context::CacheUsage;
 use super::usage::{Usage, parse_rate_limit};
-use super::{ClaudeError, ErrorKind, claude_error};
+use super::{ClaudeError, ErrorKind, LimitForm, claude_error};
 
 /// What the CLI calls a tool of the `fontaine` MCP server.
 pub const TOOL_PREFIX: &str = "mcp__fontaine__";
@@ -653,9 +655,21 @@ pub enum Event {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Native {
     Auth,
-    Limit,
+    Limit {
+        form: LimitForm,
+        reset_at: Option<SystemTime>,
+    },
     Server,
     Invalid,
+}
+
+impl Native {
+    fn limit(form: LimitForm) -> Native {
+        Native::Limit {
+            form,
+            reset_at: None,
+        }
+    }
 }
 
 /// One tool call the response announced, as the CLI named it.
@@ -727,6 +741,9 @@ pub struct Reader {
     open: BTreeSet<usize>,
     suppressed: BTreeSet<usize>,
     native: Option<Native>,
+    /// A rate-limit frame said `rejected`, with the reset time it carried: the window is spent,
+    /// not merely throttled.
+    rejected: Option<Option<SystemTime>>,
     /// The account's own sign-in command, shown when the login is refused.
     login: String,
     streamed_output_tokens: Option<u64>,
@@ -754,6 +771,7 @@ impl Reader {
             open: BTreeSet::new(),
             suppressed: BTreeSet::new(),
             native: None,
+            rejected: None,
             login: "claude auth login --claudeai".into(),
             streamed_output_tokens: None,
             cache_usage: None,
@@ -788,8 +806,27 @@ impl Reader {
     }
 
     /// The failure category the CLI reported before it exited, if any.
-    pub(crate) fn native(&self) -> Option<&Native> {
-        self.native.as_ref()
+    pub(crate) fn native(&self) -> Option<Native> {
+        match self.native.clone() {
+            Some(Native::Limit { form, reset_at }) => {
+                let (form, reset_at) = self.settle_limit(form, reset_at);
+                Some(Native::Limit { form, reset_at })
+            }
+            other => other,
+        }
+    }
+
+    /// A limit form and reset time with what a rejected rate-limit frame added: a rejected frame
+    /// turns a plain rate limit into the spent window it is.
+    fn settle_limit(
+        &self,
+        form: LimitForm,
+        reset_at: Option<SystemTime>,
+    ) -> (LimitForm, Option<SystemTime>) {
+        match self.rejected {
+            Some(frame_reset) => (form.max(LimitForm::PlanLimit), reset_at.or(frame_reset)),
+            None => (form, reset_at),
+        }
     }
 
     /// The labels of the events accepted so far, repeats collapsed, oldest cut first.
@@ -858,7 +895,8 @@ impl Reader {
                 if let Some(category) = value.get("error").and_then(Value::as_str) {
                     self.native = Some(match category {
                         "authentication_failed" => Native::Auth,
-                        "rate_limit" | "billing_error" => Native::Limit,
+                        "rate_limit" => Native::limit(LimitForm::RateLimit),
+                        "billing_error" => Native::limit(LimitForm::Billing),
                         "server_error" | "overloaded" => Native::Server,
                         _ => Native::Invalid,
                     });
@@ -867,22 +905,29 @@ impl Reader {
                     .and_then(|m| m.get("error"))
                     .and_then(Value::as_str)
                 {
-                    self.native = Some(
-                        if category.contains("rate") || category.contains("billing") {
-                            Native::Limit
-                        } else if category.contains("auth") {
-                            Native::Auth
-                        } else {
-                            Native::Server
-                        },
-                    );
+                    self.native = Some(if category.contains("billing") {
+                        Native::limit(LimitForm::Billing)
+                    } else if category.contains("rate") {
+                        Native::limit(LimitForm::RateLimit)
+                    } else if category.contains("auth") {
+                        Native::Auth
+                    } else {
+                        Native::Server
+                    });
                 }
                 Ok(Event::Nothing)
             }
             "result" => self.result(value),
             "user" => self.denial_echo(value),
-            // The status is ignored: a mid-response extra-usage switch is invisible to Fontaine and failing here would not prevent a charge.
+            // Only a rejected status is read, to tell a spent window from a throttle when the
+            // request then fails: a mid-response extra-usage switch is invisible to Fontaine and
+            // failing here would not prevent a charge.
             "rate_limit_event" => {
+                if let Some(info) = value.get("rate_limit_info")
+                    && info.get("status").and_then(Value::as_str) == Some("rejected")
+                {
+                    self.rejected = Some(rejected_reset(info));
+                }
                 if let Some(usage) = &self.usage {
                     let quota = parse_rate_limit(value);
                     // A sparse frame must not erase fuller data.
@@ -1307,7 +1352,8 @@ impl Reader {
             .and_then(Value::as_u64);
         let by_status = match status {
             Some(401 | 403) => Some(Native::Auth),
-            Some(402 | 429) => Some(Native::Limit),
+            Some(402) => Some(Native::limit(LimitForm::Billing)),
+            Some(429) => Some(Native::limit(LimitForm::RateLimit)),
             Some(500..=599) => Some(Native::Server),
             Some(400..=499) => Some(Native::Invalid),
             _ => None,
@@ -1316,13 +1362,22 @@ impl Reader {
             .and_then(|r| r.get("result"))
             .and_then(Value::as_str)
             .and_then(classify_text);
-        match by_status.or(by_text).or_else(|| self.native.clone()) {
+        let reported = self.native();
+        let chosen = by_status
+            .clone()
+            .or_else(|| by_text.clone())
+            .or_else(|| reported.clone());
+        match chosen {
             Some(Native::Auth) => ClaudeError::new(
                 ErrorKind::Auth,
                 format!("the Claude CLI's login was refused; run `{}`", self.login),
             )
             .boxed(),
-            Some(Native::Limit) => limit_error().boxed(),
+            Some(Native::Limit { .. }) => {
+                let (form, reset_at) = merged_limit([&by_status, &by_text, &reported]);
+                let (form, reset_at) = self.settle_limit(form, reset_at);
+                limit_error(form, reset_at).boxed()
+            }
             Some(Native::Server) => Box::new(ProviderError::from_http_response(
                 http::StatusCode::from_u16(status.map_or(529, |s| s as u16))
                     .unwrap_or(http::StatusCode::from_u16(529).expect("529 is a valid status")),
@@ -1331,6 +1386,40 @@ impl Reader {
             Some(Native::Invalid) | None => protocol("the Claude CLI reported an error"),
         }
     }
+}
+
+/// The reset time a rejected rate-limit frame carries: its own `resetsAt`, else that of the
+/// window it names.
+fn rejected_reset(info: &Value) -> Option<SystemTime> {
+    let at = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_u64)
+            .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
+    };
+    at(info.get("resetsAt")).or_else(|| {
+        let kind = info.get("rateLimitType").and_then(Value::as_str)?;
+        at(info
+            .get("unifiedWindows")
+            .and_then(|w| w.get(kind))
+            .and_then(|w| w.get("resetsAt")))
+    })
+}
+
+/// The most specific limit form among the candidates, with the first reset time any of them has.
+fn merged_limit(candidates: [&Option<Native>; 3]) -> (LimitForm, Option<SystemTime>) {
+    let mut form = LimitForm::RateLimit;
+    let mut reset = None;
+    for candidate in candidates {
+        if let Some(Native::Limit {
+            form: seen,
+            reset_at,
+        }) = candidate
+        {
+            form = form.max(*seen);
+            reset = reset.or(*reset_at);
+        }
+    }
+    (form, reset)
 }
 
 /// Failure categories read from text the CLI wrote, never shown.
@@ -1346,17 +1435,17 @@ pub(crate) fn classify_text(text: &str) -> Option<Native> {
     .any(|needle| text.contains(needle))
     {
         Some(Native::Auth)
-    } else if [
-        "usage limit",
-        "rate limit",
-        "limit reached",
-        "credit",
-        "billing",
-    ]
-    .iter()
-    .any(|needle| text.contains(needle))
+    } else if ["credit", "billing"]
+        .iter()
+        .any(|needle| text.contains(needle))
     {
-        Some(Native::Limit)
+        Some(Native::limit(LimitForm::Billing))
+    } else if ["rate limit", "usage limit", "limit reached"]
+        .iter()
+        .any(|needle| text.contains(needle))
+    {
+        // Text never says a window is spent: only a rejected rate-limit frame does.
+        Some(Native::limit(LimitForm::RateLimit))
     } else if text.contains("overloaded") {
         Some(Native::Server)
     } else {
@@ -1367,13 +1456,18 @@ pub(crate) fn classify_text(text: &str) -> Option<Native> {
 /// The failure for a process that ended without a complete response, classified from its
 /// stderr and exit status without showing either.
 pub(crate) fn exit_failure(stderr: &str, native: Option<&Native>, login: &str) -> Failure {
-    match classify_text(stderr).or_else(|| native.cloned()) {
+    let by_text = classify_text(stderr);
+    let reported = native.cloned();
+    match by_text.clone().or_else(|| reported.clone()) {
         Some(Native::Auth) => ClaudeError::new(
             ErrorKind::Auth,
             format!("the Claude CLI's login was refused; run `{login}`"),
         )
         .boxed(),
-        Some(Native::Limit) => limit_error().boxed(),
+        Some(Native::Limit { .. }) => {
+            let (form, reset_at) = merged_limit([&by_text, &reported, &None]);
+            limit_error(form, reset_at).boxed()
+        }
         // A process that ended early may end on the next attempt, whether or not it began.
         _ => Box::new(ProviderError::Truncated),
     }

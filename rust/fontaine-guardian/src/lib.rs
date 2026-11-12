@@ -25,7 +25,7 @@ mod verdict;
 
 pub use breaker::{CONSECUTIVE_LIMIT, LoopBreaker, TOTAL_LIMIT};
 pub use cache::TTL as CACHE_TTL;
-pub use guardian::{Adjudication, EXTRACTOR_RETRIES, Guardian, Settings, WireIds};
+pub use guardian::{Adjudication, Cause, EXTRACTOR_RETRIES, Guardian, Settings, WireIds};
 pub use profile::{FULL_PROMPT, MINIMAL_PROMPT, Profile};
 pub use request::{
     ACTIONS_TAKEN, ActionTaken, ActiveSkill, AdjudicationRequest, DenialRecord, EnvFileFacts,

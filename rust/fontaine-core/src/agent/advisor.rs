@@ -45,6 +45,7 @@ impl ReportedAdvisor {
             .as_ref()
             .map(|switcher| read(switcher, "model switcher").clone())
             .ok_or("the advisor cannot be consulted in this session")?;
+        self.state.usage_gate_idle().await.map_err(|e| chain(&e))?;
         let role = self.chain.role.clone();
         let job = ChainJob {
             switcher: &switcher,

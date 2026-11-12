@@ -24,6 +24,7 @@ use crate::gate::{DecisionFeed, Published, SessionState};
 use crate::ledger::Record;
 use crate::preview::DiffPreview;
 use crate::usage_ledger::{Served, UsageSource};
+use crate::usage_limit::{UsageLimit, is_window_code, prompt_usage_limit};
 
 /// The retries a transient transport failure earns, on top of the first attempt.
 const MAX_RETRIES: usize = 2;
@@ -97,6 +98,9 @@ pub struct TurnFailure {
     pub class: Option<&'static str>,
     /// The class a `stop_failure` hook is told; one of [`crate::config::STOP_FAILURE_KINDS`].
     pub kind: &'static str,
+    /// Set when the failure is a spent usage window, which pauses the run once the model list
+    /// has no entry left to try.
+    pub usage_limit: Option<UsageLimit>,
 }
 
 impl TurnFailure {
@@ -108,6 +112,7 @@ impl TurnFailure {
             falls_through: false,
             class: None,
             kind: "unknown",
+            usage_limit: None,
         }
     }
 }
@@ -491,7 +496,8 @@ const QUOTA_CODES: &[&str] = &[
 /// endpoint overloaded: what a model list answers by moving to its next entry. A 400 or a 500 is
 /// a bug or an outage that another model would hide.
 fn quota_reply(status: Option<u16>, code: Option<&str>) -> bool {
-    matches!(status, Some(402 | 429 | 529)) || code.is_some_and(|code| QUOTA_CODES.contains(&code))
+    matches!(status, Some(402 | 429 | 529))
+        || code.is_some_and(|code| QUOTA_CODES.contains(&code) || is_window_code(code))
 }
 
 /// [`falls_through`] for a provider error, which is also what a one-shot completion returns.
@@ -549,6 +555,31 @@ pub fn error_falls_through(error: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
+/// Holds the run until the usage window `failure` reports resets, for a caller whose model list
+/// has nothing left to try. `true` means the wait ended and the caller should run the request
+/// again with its list's tried entries forgotten. `false` leaves `failure` as it was, or, when
+/// the wait was cancelled or ran out, rewritten to say so.
+pub async fn wait_out_usage_limit(
+    state: &SessionState,
+    failure: &mut TurnFailure,
+    role: crate::quota::UsageRole,
+    account: &str,
+    source: Option<std::sync::Arc<dyn crate::quota::QuotaSource>>,
+) -> bool {
+    let Some(limit) = failure.usage_limit.clone() else {
+        return false;
+    };
+    match state.pause_for_usage(role, account, &limit, source).await {
+        Ok(()) => true,
+        Err(ended) => {
+            failure.message = ended.to_string();
+            failure.usage_limit = None;
+            failure.falls_through = false;
+            false
+        }
+    }
+}
+
 /// How a single attempt ended: a settled turn, or a model failure the caller may retry.
 enum DriveEnd {
     Outcome(TurnOutcome),
@@ -599,7 +630,10 @@ pub async fn drive(
             DriveEnd::Outcome(outcome) => return outcome,
             DriveEnd::Failed(error) => error,
         };
-        if attempt == MAX_RETRIES || !retryable(&error) {
+        // A spent window is not retried with a backoff however retryable its status says it is,
+        // and a provider that never retries still reaches here: the list's owner decides.
+        let usage_limit = prompt_usage_limit(&error, std::time::SystemTime::now());
+        if usage_limit.is_some() || attempt == MAX_RETRIES || !retryable(&error) {
             let message = failure_text(&error, params.native_search);
             if let Some(class) = error_class(&error) {
                 params.state.append(Record::RequestFailed {
@@ -613,6 +647,7 @@ pub async fn drive(
                 falls_through: falls_through(&error),
                 class: error_class(&error),
                 kind: failure_kind(&error),
+                usage_limit,
             });
         }
         tokio::time::sleep(BACKOFF * (1 << attempt)).await;
@@ -1081,6 +1116,18 @@ mod tests {
         assert!(!error_falls_through(&bad));
         let io = Wrapper(Box::new(std::io::Error::other("disk")));
         assert!(!error_falls_through(&io));
+    }
+
+    #[test]
+    fn a_window_code_falls_through_even_without_a_status() {
+        let report = |code: &str| {
+            PromptError::Report(
+                ErrorReport::new(rig_core::error::ErrorKind::Request, "x").with_code(code),
+            )
+        };
+        assert!(falls_through(&report("exceeded_current_quota_error")));
+        assert!(falls_through(&report("GoUsageLimitError")));
+        assert!(!falls_through(&report("invalid_request_error")));
     }
 
     #[test]

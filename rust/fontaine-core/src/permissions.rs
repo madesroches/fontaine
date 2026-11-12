@@ -46,6 +46,7 @@ use crate::runtime_error::RuntimeError;
 use crate::tier::Tier;
 use crate::trust::{self, Tracking};
 use crate::usage_ledger::Served;
+use crate::usage_pause::PauseInfo;
 use crate::user_config;
 use crate::user_hooks::LivePlugins;
 
@@ -114,6 +115,13 @@ pub trait Approver: Send + Sync {
         Box::pin(async { UnavailableChoice::Deny })
     }
 
+    /// The run is on hold because an account's usage window is spent. A frontend with a dialog
+    /// offers resuming now, cancelling and switching account, and returns the choice; every
+    /// other approver waits for the reset.
+    fn usage_paused<'a>(&'a self, _info: PauseInfo) -> BoxFuture<'a, PauseChoice> {
+        Box::pin(async { PauseChoice::Wait })
+    }
+
     /// The model's multiple-choice questions for the human. Only a frontend with a dialog
     /// answers; every other approver reports that nobody can.
     fn ask_user<'a>(
@@ -156,6 +164,18 @@ pub enum UnavailableChoice {
     Manual,
     /// Leave the call denied.
     Deny,
+}
+
+/// What the human chose while the run waits for a usage window to reset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauseChoice {
+    /// Nothing: keep waiting.
+    Wait,
+    /// Go on now. The first request to meet the limit again pauses the run anew. A surface that
+    /// switched to another account answers this too.
+    Resume,
+    /// Give up: waiting calls fail and pending gated calls are denied.
+    Cancel,
 }
 
 /// An approver that denies everything, for runs where nobody can answer.
@@ -213,6 +233,14 @@ impl Approver for AfkApprover {
         self.inner.guardian_unavailable(info)
     }
 
+    fn usage_paused<'a>(&'a self, info: PauseInfo) -> BoxFuture<'a, PauseChoice> {
+        // Nobody can answer while AFK, so the pause runs to its deadline.
+        if self.state.afk_on() {
+            return Box::pin(async { PauseChoice::Wait });
+        }
+        self.inner.usage_paused(info)
+    }
+
     fn ask_user<'a>(
         &'a self,
         agent: &'a str,
@@ -255,6 +283,25 @@ pub struct HookDecision {
     pub reason: Option<String>,
     /// A note for the guardian, shown to it inside an untrusted block.
     pub guardian_context: Option<String>,
+}
+
+/// The denial of a call whose guardian check was waiting on a usage window that never reopened.
+fn pause_ended(guardian: &LlmGuardian, ended: &crate::gate::UsagePauseEnded) -> Adjudication {
+    let reason = FailClosed::UsagePauseEnded;
+    Adjudication {
+        decision: GuardianDecision::Deny,
+        rule: reason.label(),
+        explanation: ended.to_string(),
+        confidence: None,
+        fail_closed: Some(reason),
+        cache_hit: false,
+        latency_ms: 0,
+        model: guardian.label().to_string(),
+        profile: guardian.profile(),
+        usage: Default::default(),
+        transport: None,
+        cause: None,
+    }
 }
 
 /// What a fail-closed hook's failure turns into: a denial that says why.
@@ -378,6 +425,12 @@ pub trait PreToolUseHook: Send + Sync {
         false
     }
 
+    /// Waits for whatever the hook needs before its run starts, outside its timeout: a hook that
+    /// asks a model waits out a usage pause here. An `Err` is the hook failing.
+    fn gate<'a>(&'a self) -> BoxFuture<'a, Result<(), HookError>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn run<'a>(
         &'a self,
         event: PreToolUseEvent<'a>,
@@ -414,6 +467,11 @@ pub trait PermissionDeniedHook: Send + Sync {
     /// Whether its `retry` counts. A hook the repository defines never loosens a decision.
     fn can_retry(&self) -> bool {
         true
+    }
+
+    /// As [`PreToolUseHook::gate`].
+    fn gate<'a>(&'a self) -> BoxFuture<'a, Result<(), HookError>> {
+        Box::pin(async { Ok(()) })
     }
 
     /// `Ok(true)` when the hook says the agent may retry exactly this call.
@@ -792,7 +850,11 @@ impl PermissionPipeline {
                 workspace_roots: &roots,
             };
             let id = hook.id();
-            let decision = match tokio::time::timeout(hook.timeout(), hook.run(event)).await {
+            let ran = match hook.gate().await {
+                Ok(()) => tokio::time::timeout(hook.timeout(), hook.run(event)).await,
+                Err(e) => Ok(Err(e)),
+            };
+            let decision = match ran {
                 Ok(Ok(decision)) => decision,
                 Ok(Err(e @ HookError::Failed { .. })) if hook.fails_closed() => {
                     tracing::warn!(hook = %id, error = ?e, "a pre_tool_use hook failed; it denies the call");
@@ -1603,7 +1665,11 @@ impl PermissionPipeline {
                 reason,
             };
             let id = hook.id();
-            match tokio::time::timeout(hook.timeout(), hook.run(event)).await {
+            let ran = match hook.gate().await {
+                Ok(()) => tokio::time::timeout(hook.timeout(), hook.run(event)).await,
+                Err(e) => Ok(Err(e)),
+            };
+            match ran {
                 Ok(Ok(true)) if hook.can_retry() => retry = retry.or(Some(id.to_string())),
                 Ok(Ok(true)) => {
                     tracing::debug!(hook = %id, "a project hook's retry is ignored");
@@ -1834,78 +1900,121 @@ impl PermissionPipeline {
             call.annotations,
         );
         let request = Arc::new(request);
-        let stage = self.state.composition();
-        let guardian = self.state.guardian();
-        let (decided, screened) = match stage {
-            None => (
-                Decided::Guardian(Box::new(guardian.adjudicate(&request).await)),
-                None,
-            ),
-            Some(stage) => {
-                let composed = composition::adjudicate(
-                    stage.composition.clone(),
-                    guardian.clone(),
-                    request.clone(),
-                )
-                .await;
-                let screened = self.note_composition(&stage, &composed, &guardian);
-                if let Some(usage) = &composed.llm_usage {
-                    let served = Served::direct(guardian.label());
-                    self.state
-                        .add_guardian_usage(cx.call.agent, usage, true, &served);
-                }
-                // Reads that share a request share its usage, which one of them carries.
-                for read in &composed.reads {
-                    if let Some(usage) = &read.usage {
-                        let served = Served::direct(&read.model);
+        // A spent usage window holds the call pending, neither denied nor run, and the guardian
+        // judges it again from the start once the window is open. Every pass waits at the gate
+        // first, outside the guardian's own timeout, so a pause is never turned into one.
+        let (mut adjudication, screened) = loop {
+            let stage = self.state.composition();
+            let guardian = self.state.guardian();
+            if let Err(ended) = self
+                .state
+                .usage_gate_for(crate::usage_ledger::account_of(guardian.label()))
+                .await
+            {
+                break (pause_ended(&guardian, &ended), None);
+            }
+            let (decided, screened) = match stage {
+                None => (
+                    Decided::Guardian(Box::new(guardian.adjudicate(&request).await)),
+                    None,
+                ),
+                Some(stage) => {
+                    let composed = composition::adjudicate(
+                        stage.composition.clone(),
+                        guardian.clone(),
+                        request.clone(),
+                    )
+                    .await;
+                    let screened = self.note_composition(&stage, &composed, &guardian);
+                    if let Some(usage) = &composed.llm_usage {
+                        let served = Served::direct(guardian.label());
                         self.state
                             .add_guardian_usage(cx.call.agent, usage, true, &served);
                     }
+                    // Reads that share a request share its usage, which one of them carries.
+                    for read in &composed.reads {
+                        if let Some(usage) = &read.usage {
+                            let served = Served::direct(&read.model);
+                            self.state
+                                .add_guardian_usage(cx.call.agent, usage, true, &served);
+                        }
+                    }
+                    (composed.decided, Some(screened))
                 }
-                (composed.decided, Some(screened))
+            };
+            let adjudication = match decided {
+                Decided::Escalate { node, reason } => {
+                    let screened = screened.expect("an escalation comes from a composition");
+                    return self.screen_stop(cx, &screened, &node, &reason).await;
+                }
+                Decided::Allow {
+                    node,
+                    score,
+                    threshold,
+                } => {
+                    let screened = screened.expect("an allow comes from a composition");
+                    return self.screen_allow(cx, &screened, &node, score, threshold);
+                }
+                Decided::Deny {
+                    node,
+                    reason,
+                    fail_closed: None,
+                    ..
+                } => {
+                    let screened = screened.expect("a deny comes from a composition");
+                    return self.screen_deny(cx, &screened, &node, &reason).await;
+                }
+                // A composition that failed is a guardian denial like any other: it can be approved
+                // from `/denied`, retried by a hook, and counts toward the breaker.
+                Decided::Deny {
+                    reason,
+                    fail_closed: Some(kind),
+                    cause,
+                    ..
+                } => Adjudication {
+                    decision: GuardianDecision::Deny,
+                    rule: kind.label(),
+                    explanation: reason,
+                    confidence: None,
+                    fail_closed: Some(kind),
+                    cache_hit: false,
+                    latency_ms: 0,
+                    model: guardian.label().to_string(),
+                    profile: guardian.profile(),
+                    usage: Default::default(),
+                    transport: None,
+                    cause,
+                },
+                Decided::Guardian(adjudication) => *adjudication,
+            };
+            let spent = adjudication
+                .cause
+                .as_deref()
+                .and_then(|cause| crate::usage_limit::usage_limit(cause));
+            let Some(limit) = spent else {
+                break (adjudication, screened);
+            };
+            self.state.add_guardian_adjudication(
+                cx.call.agent,
+                &adjudication.usage,
+                adjudication.transport.is_some() && !adjudication.cache_hit,
+                false,
+                &Served::direct(guardian.label()),
+            );
+            let account = crate::usage_ledger::account_of(guardian.label());
+            match self
+                .state
+                .pause_for_usage(
+                    crate::quota::UsageRole::Guardian,
+                    account,
+                    &limit,
+                    self.state.guardian_quota(),
+                )
+                .await
+            {
+                Ok(()) => continue,
+                Err(ended) => break (pause_ended(&guardian, &ended), None),
             }
-        };
-        let mut adjudication = match decided {
-            Decided::Escalate { node, reason } => {
-                let screened = screened.expect("an escalation comes from a composition");
-                return self.screen_stop(cx, &screened, &node, &reason).await;
-            }
-            Decided::Allow {
-                node,
-                score,
-                threshold,
-            } => {
-                let screened = screened.expect("an allow comes from a composition");
-                return self.screen_allow(cx, &screened, &node, score, threshold);
-            }
-            Decided::Deny {
-                node,
-                reason,
-                fail_closed: None,
-            } => {
-                let screened = screened.expect("a deny comes from a composition");
-                return self.screen_deny(cx, &screened, &node, &reason).await;
-            }
-            // A composition that failed is a guardian denial like any other: it can be approved
-            // from `/denied`, retried by a hook, and counts toward the breaker.
-            Decided::Deny {
-                reason,
-                fail_closed: Some(kind),
-                ..
-            } => Adjudication {
-                decision: GuardianDecision::Deny,
-                rule: kind.label(),
-                explanation: reason,
-                confidence: None,
-                fail_closed: Some(kind),
-                cache_hit: false,
-                latency_ms: 0,
-                model: guardian.label().to_string(),
-                profile: guardian.profile(),
-                usage: Default::default(),
-                transport: None,
-            },
-            Decided::Guardian(adjudication) => *adjudication,
         };
         if adjudication
             .fail_closed
@@ -1952,10 +2061,11 @@ impl PermissionPipeline {
                 UnavailableChoice::Deny => {}
             }
         }
-        self.state.add_guardian_usage(
+        self.state.add_guardian_adjudication(
             cx.call.agent,
             &adjudication.usage,
             adjudication.transport.is_some() && !adjudication.cache_hit,
+            adjudication.fail_closed.is_none(),
             &Served::direct(self.state.guardian().label()),
         );
         self.settle(cx, adjudication, screened.as_ref()).await
@@ -2203,6 +2313,9 @@ impl PermissionPipeline {
                         &cx.digest,
                     );
                 }
+                // The human or a deadline ended a usage wait, which is not the guardian failing.
+                let counts_toward_breaker =
+                    adjudication.fail_closed != Some(FailClosed::UsagePauseEnded);
                 Self::note(Tier::Guardian, Decision::Deny);
                 let mut record = Self::with_guardian(
                     self.record(
@@ -2237,7 +2350,7 @@ impl PermissionPipeline {
                 });
                 // The list a surface reads when it sees this event is complete before the event.
                 self.emit(record);
-                if self.state.guardian_denied() {
+                if counts_toward_breaker && self.state.guardian_denied() {
                     let afk = self.state.afk_on();
                     if afk {
                         self.state.append(Record::AfkBlocked {});

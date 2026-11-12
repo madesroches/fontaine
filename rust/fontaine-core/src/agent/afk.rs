@@ -56,9 +56,18 @@ impl AgentRuntime {
             return;
         };
         let guardian = self.state.guardian();
+        if let Err(ended) = self.state.usage_gate_idle().await {
+            self.state.append(Record::AfkAssessment {
+                stretch_seq: report.stretch.started_seq,
+                result: AssessmentResult::Unavailable {
+                    reason: ended.to_string(),
+                },
+            });
+            return;
+        }
         let result = match assess_evasion(&guardian, &report.assessment_input()).await {
             Ok(assessed) => {
-                self.state.add_guardian_usage(
+                self.state.add_guardian_usage_answered(
                     ROOT_AGENT,
                     &assessed.usage,
                     true,
@@ -69,11 +78,12 @@ impl AgentRuntime {
                 }
             }
             Err(e) => {
-                // A timed-out or unparseable answer still cost tokens.
-                self.state.add_guardian_usage(
+                // A timed-out or unparseable answer still cost tokens, but proves nothing about the
+                // window.
+                self.state.add_guardian_usage_answered(
                     ROOT_AGENT,
                     &e.usage,
-                    true,
+                    false,
                     &Served::direct(guardian.label()),
                 );
                 AssessmentResult::Unavailable { reason: chain(&e) }
