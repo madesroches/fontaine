@@ -29,49 +29,49 @@ stays a fail-closed `FailClosed::Error` / rule `GuardianUnavailable`.
   with wording containing `could not be reached: `, and that a 500 endpoint error is denied as
   `GuardianUnavailable` with `could not be reached`. The issue asks for a new 400-with-body test
   that gets different wording while still being denied.
-- `rust/fontaine-core/src/permissions.rs` builds the `GuardianUnavailable` dialog from the
-  adjudication explanation, so fixing the explanation text fixes the unavailable-guardian screen.
+- `rust/fontaine-core/src/permissions.rs` surfaces the adjudication explanation in the guardian
+  denial message (`Denied by guardian: [GuardianUnavailable] {explanation}`), so fixing the
+  explanation text fixes that message. The `GuardianUnavailable` dialog itself is built from
+  `unavailable_reason()` (backend unavailability), not from the adjudication explanation.
 - `docs/guardian.md` (~l.246) lists "Provider error, dropped stream, connection reset or a closed
   socket" as one row in the fail-closed table.
 
 ## Design
 
-Add a helper in `structured.rs` that classifies a `PromptError` by whether the model was reached:
+Add a helper in `structured.rs` that classifies a `PromptError` by whether the model was
+reached. Every current `ProviderError` variant is classified explicitly by whether the daemon
+answered; future variants fall back conservatively (the enum is `#[non_exhaustive]`):
 
 - **Not reached** — `ProviderError::Http` (transport failure: DNS, connect, TLS, timeout, reset,
-  unreadable response), `ProviderError::Request`, `ProviderError::Url`, `ProviderError::Truncated`,
-  `ProviderError::Stalled`, or any other variant that never carried an HTTP status from the
-  provider.
+  unreadable response), `ProviderError::Json`, `ProviderError::Url`, `ProviderError::Request`,
+  `ProviderError::Provider`, `ProviderError::UnsupportedOption`, `ProviderError::Truncated`, and
+  `ProviderError::Stalled`: none of these carried an HTTP status from the provider.
 - **Reached and refused** — `ProviderError::ProviderResponse`,
-  `ProviderError::InvalidAuthentication`, `ProviderError::CacheExpired`,
-  `ProviderError::MismatchedDimensions`, `ProviderError::UnsupportedOption`, and the matching
-  `PromptError::Report` cases. These all carry a provider reply or status.
+  `ProviderError::InvalidAuthentication`, and `ProviderError::CacheExpired` preserve the
+  provider's reply, so the explanation surfaces its status and body;
+  `ProviderError::Response` and `ProviderError::MismatchedDimensions` also mean the daemon
+  answered, but carry no preserved status/body, so the explanation is formatted from the error's
+  own message. `PromptError::Report` counts as reached only when the report carries
+  `http_status` or `provider_response`; a report with neither is treated as unreachable.
+- **Fallback** — any future `ProviderError` variant classifies as not reached: claim a refusal
+  only when a provider reply is certain.
 - **Tool-support refusal** — keep the existing `lacks_tool_support` special case, which is a
   reached-and-refused 400 with a specific body.
 
 The helper returns an enum or a small struct with:
 - a display-friendly classification string (`"could not be reached"` vs `"refused the request"`);
-- the original error text to append;
-- an optional hint, e.g. when the provider message mentions the context size being exceeded.
+- the original error text to append.
 
 In `guardian.rs`, replace the `format!("the guardian model could not be reached: {error}")` arm
 with a call to the helper:
 
 - "the guardian model could not be reached: {error}" for transport failures;
 - "the guardian model refused the request: {status} {body}" (or similar) for HTTP error
-  responses, surfacing the status and the provider's own message when available;
-- optionally append "raise `context_tokens` on the account" when the provider message indicates
-  the context size was exceeded.
+  responses, surfacing the status and the provider's own message when available; reached
+  variants with no preserved status/body use the error's own message instead.
 
 The `lacks_tool_support` special case stays unchanged. The `FailClosed::Error` outcome, the
 `GuardianUnavailable` rule label, the audit telemetry, and the retry behavior are all unchanged.
-
-### Context-size hint
-
-Detect the hint from the provider response body (case-insensitive substring match for
-"context size" or "context window" plus "exceed" or a status 400 that names `num_ctx` / context
-window). Keep the detection conservative: only add the hint when the message clearly points at
-the context window, so other 400s stay clean.
 
 ## Implementation Steps
 
@@ -81,13 +81,12 @@ the context window, so other 400s stay clean.
      ModelReachability` helper.
    - Reuse the response extraction already present in `lacks_tool_support` to populate `status`
      and `body`.
-   - Add a `context_size_exceeded(body: &str) -> bool` helper for the optional hint.
 
 2. `rust/fontaine-guardian/src/guardian.rs`
    - In the `RunError::Failed(StructuredOutputError::Prompt(error))` arm, after the
      `lacks_tool_support` check, call `classify_prompt_error`.
    - Build "could not be reached" for `Unreachable`, "refused the request" for `Refused`,
-     appending status/body and the context-size hint when detected.
+     appending status/body when available.
    - Keep `tracing::warn!` logging the raw error so debug logs still have the full chain.
 
 3. `rust/fontaine-guardian/tests/guardian.rs` and `tests/common/mod.rs`
@@ -122,15 +121,6 @@ the context window, so other 400s stay clean.
 
 ## Trade-offs
 
-- Classify by `ProviderError` variant rather than by HTTP status code. This matches rig's own
-  taxonomy (`Http` means "no provider reply", `ProviderResponse` means "the provider replied
-  with a non-success status"), so a 500 still reads as "refused the request" even though the
-  server side errored. The issue's tests focus on 400, and the distinction the user cares about
-  is "did the daemon answer?" not "was the status 4xx or 5xx".
-- The context-size hint is a substring heuristic. It keeps the change local and avoids parsing
-  every provider's error envelope, but it may miss phrasings used by providers other than
-  Ollama. If missed, the explanation still shows the provider's own message, which is already
-  enough to point at `context_tokens`.
 - No new config key: the wording change is automatic and conservative.
 
 ## Decisions
@@ -138,7 +128,6 @@ the context window, so other 400s stay clean.
 - Use rig's `ProviderError` variant as the split, not the HTTP status family.
 - Keep `FailClosed::Error` and `GuardianUnavailable` unchanged; only the human-readable
   explanation changes.
-- Detect the context-size hint from the provider response body only.
 
 ## Documentation
 
@@ -151,6 +140,8 @@ the context window, so other 400s stay clean.
   - transport failure (connection reset) keeps "could not be reached";
   - 400 with a context-size error body gets "refused the request" with status and body, and is
     still denied as `GuardianUnavailable`;
+  - 401/403 auth refusal gets an explanation starting with "the guardian model refused the
+    request:", and is still denied (`Deny` / `GuardianUnavailable`);
   - 400 "does not support tools" keeps the existing "could not be used" wording.
 - Run `cargo test -p fontaine-guardian` and the full `cargo test` workspace gate.
 - No live provider needed: wiremock simulates the HTTP responses.
