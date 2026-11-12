@@ -32,7 +32,7 @@ and `path:line` file references become links.
   `Style::underline_color`.
 - `rust/fontaine-tui/src/linear.rs` (screen-reader renderer) writes flattened plain text.
 - `fontaine_core::ledger::git_origin(root)` (`ledger.rs:834`) reads `origin`'s fetch URL through
-  gix, credentials stripped, without spawning `git`. `fontaine_core::project_env::github_slug(url)` (`project_env/discover.rs:209`) extracts the
+  gix, credentials stripped, without spawning `git`. `fontaine_core::project_env::discover::github_slug(url)` (`project_env/discover.rs:209`) extracts the
   `owner/repo` of a GitHub URL. `App::set_cwd`
   (`app.rs:592`) caches per-directory git facts (`head_cache`).
 - Master plan Decisions (`### TUI`, 2026-11-03, #206): links are coloured and underlined "without
@@ -106,13 +106,13 @@ pub(crate) fn supported(env: impl Fn(&str) -> Option<String>, windows: bool) -> 
   encodes and handles Windows drive letters); otherwise `None`. The `:line` suffix is not put in the
   URL: there is no portable line syntax for `file://`.
 - `Links::github` is `git_origin(cwd).and_then(|u| github_slug(&u))` split on `/`, using the
-  existing `fontaine_core::project_env::github_slug`.
+  existing `fontaine_core::project_env::discover::github_slug`.
 - `App::set_cwd` refreshes `Links` (origin + cwd) when the directory changes, and clears the
   resolution cache.
 
 ### 3. The post-pass (`Links::apply`)
-For each cell in `area` whose `underline_color` is `Some(Rgb(..))` with a known id:
-1. Clear `underline_color` (back to `None`).
+For each cell in `area` whose `underline_color` is `Color::Rgb(..)` with a known id:
+1. Reset `underline_color` to `Color::Reset`.
 2. Resolve. If `None`, leave the cell otherwise unchanged. If the ref is context-dependent and
    resolves, patch in the link style.
 3. If `enabled` and resolved, rewrite the symbol to
@@ -152,7 +152,9 @@ screen-reader mode or headless runs (which have no TUI). Rules, in order:
 A new scanner `scan(text, kinds) -> Vec<(Range<usize>, Ref)>` in `hyperlink.rs` replaces the URL
 loop in `markdown::link_spans`. It keeps `trim_url` and the word-boundary rule, and adds the
 `Ref` kinds. `link_spans(text, style, link, kinds)` tags (and, for context-free refs, styles) each
-match. `kinds` is a small bitset: `URL`, `ISSUE`, `PATH`.
+match. `kinds` is a small bitset: `URL`, `ISSUE`, `PATH`. `scan` takes the earliest match; when two
+start at the same place it prefers URL over ISSUE over PATH, and never rescans bytes already
+claimed (so `owner/repo#7` is one `Ref::Issue`, and `#82` inside a URL is not matched separately).
 
 | Source | URL | `owner/repo#N`, `#N` | `path[:line]` |
 |---|---|---|---|
@@ -170,7 +172,8 @@ Token rules (no regex, as for #206):
   are `[A-Za-z0-9_.-]+`, the token starts at a word start, and `#N` follows directly. `GH-N` is
   not recognised.
 - Path: a whitespace-delimited token (after `trim_url`-style trimming and stripping one pair of
-  surrounding quotes or backticks), optionally ending `:line` or `:line:col`. It must contain a
+  surrounding quotes or backticks, or a leading `(`, `[`, `<` or `{` together with its matching
+  trailing closer, before the trim), optionally ending `:line` or `:line:col`. It must contain a
   `/` or carry a `:line` suffix with a `.` in the file name. It must not contain `://`. Existence
   is checked at resolve time, not scan time.
 - Fenced code: a row's whitespace-delimited token that is entirely an `http(s)` URL (after
@@ -217,7 +220,7 @@ view::draw ─ widgets ───────────────────
    "notices are not linkified" assertion in `call_rows_notices_and_errors_are_not_linkified`
    (errors stay unlinkified).
 5. **`app.rs`**: `pub(crate) links: Links` on `App`. `set_cwd` refreshes its context
-   (`git_origin` + `github_slug`) when the directory changes.
+   (`git_origin` + `project_env::discover::github_slug`) when the directory changes.
 6. **`screen.rs`**: make `link_style` in `transcript.rs` `pub(crate)`, compute it from
    `app.theme` before the `insert_before` closure, and call `app.links.apply(.., link)` in the
    closure. The closure borrows `rows`, so take `&app.links` before the loop (the `shown_with_theme` borrows end before it).
@@ -251,9 +254,6 @@ view::draw ─ widgets ───────────────────
 - **Resolving at the post-pass vs at render.** Resolving at render would need the session context
   in every row builder. At the post-pass, rendering stays context-free, and an origin or cwd
   change applies on the next frame.
-- **Env-based detection vs a config key.** A `[tui] hyperlinks` key would need a scope column and
-  validation for something `FORCE_HYPERLINK` already covers by convention. It can be added on
-  request.
 - **Interning is bounded per distinct token.** Shell-output paths cost one cached stat each.
 - **A `supports-hyperlinks` crate dependency** was rejected: it is allow-list based and turns links
   off inside tmux, the main target environment named by the issue.
@@ -275,7 +275,7 @@ view::draw ─ widgets ───────────────────
 - 2026-11-11 (#83): URLs in notices are linkified (coloured and linked); errors stay plain.
 - 2026-11-11 (#83): Hyperlinks are auto-detected from the environment (`FORCE_HYPERLINK`, `TMUX`,
   `TERM`, Windows Terminal) with no config key; screen-reader mode and headless output never emit
-  OSC 8.
+  OSC 8; reason: `FORCE_HYPERLINK` already overrides detection by convention.
 
 ## Documentation
 - `docs/tui.md`: around line 413 (markdown subset) and line 38 (tool output), say that links are
@@ -292,7 +292,7 @@ view::draw ─ widgets ───────────────────
 Unit tests, no live APIs (all logic is reachable with constructed inputs):
 - `hyperlink.rs`
   - `scan`: URL (existing #206 cases kept); `#82` at line start, after `(`, and not inside `a#82`,
-    `&#82;`, `x/#82` or `##82`; `owner/repo#7`; `GH-82` not matched; `src/main.rs:12`,
+    `&#82;`, `x/#82` or `##82`; `owner/repo#7` scans as `Ref::Issue`; `#82` inside a URL is not separately matched; `GH-82` not matched; `(src/main.rs:12)` scans as the path without the parentheses; `src/main.rs:12`,
     `src/main.rs:12:5`, `a/b`, and `` `src/x.rs` `` with quotes trimmed; `foo.rs` without `/` or
     `:line` not matched; `https://x/y` not taken as a path.
   - `resolve`: `#82` with and without a GitHub origin; `owner/repo#7` without an origin; a path
@@ -302,7 +302,7 @@ Unit tests, no live APIs (all logic is reachable with constructed inputs):
   - `supported`: each rule, including `FORCE_HYPERLINK` overriding `TERM=dumb`, `TMUX` with
     `TERM=screen-256color` on, bare `TERM=screen` off, and Windows with and without `WT_SESSION`, including `TERM` unset with `WT_SESSION` set (on).
   - `apply`: a tagged buffer row gets symbols `ESC]8;id=..;<target>ESC\<c>ESC]8;;ESC\` with
-    `ForcedWidth`, and the stripped text equals the untagged row; `underline_color` is cleared on
+    `ForcedWidth`, and the stripped text equals the untagged row; `underline_color` is `Color::Reset` on
     every cell; disabled → no escapes, tag cleared, context-free styling kept; an unresolved `#N`
     → no link style; a target with a control byte → no link.
 - **Acceptance (screen tests, `screen.rs` with `TestBackend`, `app.links.enabled = true`):** a
@@ -320,7 +320,6 @@ Unit tests, no live APIs (all logic is reachable with constructed inputs):
   tagged; a markdown target with a `javascript:` scheme is never tagged.
 - `transcript.rs`: notice URL tagged and coloured; error still not; tool output path tagged,
   `#N` in tool output not.
-- `linear.rs`: screen-reader output of a reply with links contains no `ESC]8`.
 
 ## Manual Verification
 The byte stream through a real terminal and tmux is the one thing `TestBackend` cannot show (and
