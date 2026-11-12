@@ -189,6 +189,7 @@ pub struct App {
     pub agent_list: AgentList,
     /// The linear renderer draws no agent list, so the keyboard must never move onto it.
     pub linear: bool,
+    pub(crate) links: crate::hyperlink::Links,
     /// What the human typed to the viewed agent that it has not read yet.
     pub queued_agent: Vec<String>,
     pub input: InputBuffer,
@@ -408,6 +409,7 @@ impl App {
             committed_under_overlay: false,
             agent_list: AgentList::default(),
             linear: false,
+            links: crate::hyperlink::Links::default(),
             queued_agent: Vec::new(),
             input: InputBuffer::default(),
             keymap: Keymap::default(),
@@ -612,6 +614,7 @@ impl App {
         if self.cwd != cwd {
             self.cwd = cwd.to_path_buf();
         }
+        self.links.set_context(cwd);
         let head = self
             .head_cache
             .as_ref()

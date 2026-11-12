@@ -22,6 +22,7 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use crate::app::App;
 use crate::notify::Notifier;
+use crate::transcript::link_style;
 use crate::view;
 use fontaine_core::config::NotifyMethod;
 
@@ -524,10 +525,13 @@ impl<B: Backend + Anchor> Screen<B> {
             // row would overwrite a line that has just scrolled up into it.
             self.set_previous(Cell::EMPTY);
         }
+        let link = link_style(&app.theme);
+        let links = &app.links;
         for chunk in lines.chunks(INSERT_CHUNK) {
             let rows = chunk.to_vec();
             self.terminal.insert_before(chunk.len() as u16, |buf| {
                 Paragraph::new(rows).render(buf.area, buf);
+                links.apply(buf, buf.area, link);
                 if one_row_region {
                     for cell in buf.content.iter_mut().filter(|c| **c == Cell::EMPTY) {
                         cell.modifier.insert(Modifier::HIDDEN);
@@ -2447,5 +2451,103 @@ mod tests {
         screen.clear_live().unwrap();
         let expected: Vec<String> = (0..3).map(|i| format!("· n{i}")).collect();
         assert_eq!(nonblank(everything(&screen)), expected);
+    }
+
+    /// The `(id, target)` of every OSC 8 open sequence in `text`.
+    fn osc_links(text: &str) -> Vec<(String, String)> {
+        text.split("\x1b]8;")
+            .skip(1)
+            .filter_map(|part| {
+                let params = part.split_once("\x1b\\")?.0;
+                let (id, target) = params.split_once(';')?;
+                (!target.is_empty()).then(|| (id.to_string(), target.to_string()))
+            })
+            .collect()
+    }
+
+    /// `text` without its OSC 8 open and close sequences.
+    fn strip_osc(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(at) = rest.find("\x1b]8;") {
+            out.push_str(&rest[..at]);
+            let end = rest[at..].find("\x1b\\").expect("an OSC 8 sequence ends");
+            rest = &rest[at + end + 2..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn settled(width: u16, enabled: bool, dir: &std::path::Path, reply: &str) -> Vec<String> {
+        let mut screen = screen(width, 20);
+        let mut app = app();
+        app.links.enabled = enabled;
+        app.links.configure(dir, Some(("o".into(), "r".into())));
+        app.on_event(SessionEvent::Assistant(reply.into()));
+        screen.commit_all(&mut app).unwrap();
+        everything(&screen)
+    }
+
+    #[test]
+    fn settled_links_reach_scrollback_with_their_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("sub")).unwrap();
+        std::fs::write(dir.path().join("sub/a.txt"), "x").unwrap();
+        let reply = "see https://a.io/x and #83 and sub/a.txt:2 and sub/none.txt:2\n";
+        let all = settled(100, true, dir.path(), reply).join("\n");
+        let targets: Vec<String> = osc_links(&all).into_iter().map(|(_, t)| t).collect();
+        assert!(
+            targets.contains(&"https://a.io/x".to_string()),
+            "{targets:?}"
+        );
+        assert!(
+            targets.contains(&"https://github.com/o/r/issues/83".to_string()),
+            "{targets:?}"
+        );
+        assert!(
+            targets
+                .iter()
+                .any(|t| t.starts_with("file://") && t.ends_with("/sub/a.txt")),
+            "{targets:?}"
+        );
+        assert!(
+            !targets.iter().any(|t| t.contains("none.txt")),
+            "{targets:?}"
+        );
+        assert!(strip_osc(&all).contains("see https://a.io/x and #83 and sub/a.txt:2"));
+    }
+
+    #[test]
+    fn an_issue_number_without_a_remote_is_plain_text() {
+        let mut screen = screen(60, 20);
+        let mut app = app();
+        app.links.enabled = true;
+        app.links
+            .configure(std::path::Path::new("/nonexistent-dir"), None);
+        app.on_event(SessionEvent::Assistant("fixes #83 now\n".into()));
+        screen.commit_all(&mut app).unwrap();
+        let all = everything(&screen).join("\n");
+        assert!(osc_links(&all).is_empty(), "{all:?}");
+        assert!(all.contains("fixes #83 now"));
+    }
+
+    #[test]
+    fn links_do_not_change_how_a_transcript_wraps() {
+        let dir = tempfile::tempdir().unwrap();
+        let reply = "intro text https://example.com/a/very/long/path/that/must/split and #83 end\n";
+        let on = settled(24, true, dir.path(), reply);
+        let off = settled(24, false, dir.path(), reply);
+        assert_eq!(on.len(), off.len());
+        let on_plain: Vec<String> = on.iter().map(|r| strip_osc(r)).collect();
+        assert_eq!(on_plain, off);
+        assert!(osc_links(&off.join("\n")).is_empty());
+        let url_rows: Vec<Vec<(String, String)>> = on
+            .iter()
+            .map(|r| osc_links(r))
+            .filter(|l| l.iter().any(|(_, t)| t.starts_with("https://example.com")))
+            .collect();
+        assert!(url_rows.len() >= 2, "{on:?}");
+        let ids: Vec<&String> = url_rows.iter().map(|l| &l[0].0).collect();
+        assert!(ids.iter().all(|id| **id == *ids[0]), "{ids:?}");
     }
 }

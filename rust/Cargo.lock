@@ -1841,6 +1841,7 @@ dependencies = [
  "fontaine-testkit",
  "fontaine-tools",
  "futures",
+ "libc",
  "open",
  "pulldown-cmark",
  "ratatui",
@@ -1851,6 +1852,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml_edit",
+ "url",
  "vt100",
  "wiremock",
 ]

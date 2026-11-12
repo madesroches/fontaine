@@ -36,7 +36,8 @@ A call that has finished shows more than its one line. A command that is multi-l
 the screen is shown under the `•` row, folded to three rows with `… (+N rows)` for the rest. The
 tool's output follows, dim behind a `│` gutter: the last ten rows, with `… N earlier rows` when
 more were cut. URLs in tool output and in `!` shell output are drawn in the link colour,
-underlined. An `edit`, `write` or `notebook_edit` call shows its diff instead (a `path  +added -removed` header,
+underlined, and are clickable in terminals that support [hyperlinks](terminal.md#hyperlinks), as
+are paths to existing files (`src/main.rs:12`). An `edit`, `write` or `notebook_edit` call shows its diff instead (a `path  +added -removed` header,
 then up to 20 lines in the same form as the approval prompt, with `… N more changed lines`), for
 every allowed call, not only the ones you were asked about. A failed call keeps its `✗ failed:`
 reason on the first row and shows its output. `read` and `todo_write` calls and calls with empty
@@ -437,6 +438,13 @@ The transcript renders the markdown in the assistant's replies:
 
 - `**bold**`, `*italic*` and `` `code` `` (code is shown bold), and links as their text, coloured and underlined, as are bare
   `http://` and `https://` URLs;
+- clickable links, in terminals that support [hyperlinks](terminal.md#hyperlinks): URLs, markdown
+  links, `owner/repo#N`, `#N` when the `origin` remote is on github.com, and `path:line` for a
+  file that exists and cannot be launched (a click opens it with the system's default program, so
+  executable and launchable files such as scripts and `.desktop` files stay plain text). Code is
+  not linked, except inline code that is exactly one URL or path, and a URL standing alone in a
+  fenced block. A `#N` or path that does not resolve stays plain text. Issue references are linked
+  in replies only, and URLs also in notices;
 - headings, bold, with a first-level heading also underlined;
 - bullet and numbered lists, nested by indent, wrapped under their text;
 - fenced code blocks, dimmed and indented two spaces, kept verbatim;

@@ -1,8 +1,8 @@
 # Terminal setup, colours and screen readers
 
 This page covers the terminal side of the [terminal UI](tui.md): getting a newline key to work,
-tmux and macOS settings, colours and themes, the clipboard, notifications for pending prompts, and
-screen-reader mode. Fontaine has no
+tmux and macOS settings, hyperlinks, colours and themes, the clipboard, notifications for pending
+prompts, and screen-reader mode. Fontaine has no
 `/terminal-setup` command: it never edits another program's configuration file, so the settings
 below are yours to make.
 
@@ -84,6 +84,13 @@ set -g set-clipboard external
 
 The outer terminal must itself accept OSC 52 clipboard writes.
 
+Clickable [hyperlinks](#hyperlinks) need tmux 3.4 or later and a terminal that supports them; tell
+tmux so:
+
+```text
+set -as terminal-features ',*:hyperlinks'
+```
+
 The `osc9` and `osc777` [notifications](#notifications) are dropped by tmux unless it passes them
 through; set `set -g allow-passthrough on`. The default `bell` needs no setting beyond
 `monitor-bell on`. See
@@ -130,6 +137,28 @@ as Meta:
   you use it) to "Esc+".
 - **VS Code and Cursor**: set `"terminal.integrated.macOptionIsMeta": true` in the settings.
 
+## Hyperlinks
+
+URLs, markdown links, `owner/repo#N`, `#N` (when the `origin` remote is on github.com) and
+`path:line` references to existing files are sent as OSC 8 hyperlinks, so Ctrl-click or Cmd-click
+opens them in terminals that support it. The text shown is unchanged; a terminal without OSC 8
+support ignores the extra bytes and shows the same text. A file link carries the machine's
+hostname, as the OSC 8 specification asks, so a click over SSH does not open a same-named local
+file. See [markdown in replies](tui.md#markdown-in-replies) for what is linked.
+
+Fontaine decides from the environment, in this order:
+
+1. `FORCE_HYPERLINK=1` (any non-empty value but `0`) turns links on, and `FORCE_HYPERLINK=0` off.
+2. Inside tmux they are on. tmux 3.4 and later pass them to an outer terminal that has the
+   `hyperlinks` feature (see [tmux](#tmux)) and drop them otherwise.
+3. On Windows they are on in Windows Terminal (`WT_SESSION`) and in terminals that set
+   `TERM_PROGRAM`, and off in the legacy console.
+4. They are off when `TERM` is unset, `dumb`, `linux`, or starts with `screen` (GNU screen).
+5. Otherwise they are on.
+
+Screen-reader mode and headless runs never send them. There is no setting for it beyond
+`FORCE_HYPERLINK`.
+
 ## Colours
 
 Every colour in the interface comes from a theme. Six are built in:
@@ -147,7 +176,7 @@ The `-ansi` themes follow whatever palette the terminal is set to and need no tr
 The others use fixed RGB values, which a terminal without truecolor approximates badly or not at
 all. The daltonized themes show a finished tool call in blue and a failed or denied one in orange,
 which readers with red-green colour blindness can tell apart. URLs and link text use an underlined
-blue in every theme.
+blue in every theme, whether or not [hyperlinks](#hyperlinks) are on.
 
 Choose one with `/theme <name>`, which applies at once and saves `[tui] theme` to your user
 settings file, or by writing the key yourself:

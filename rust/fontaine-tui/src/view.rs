@@ -11,6 +11,7 @@ use crate::agents_panel::row_label;
 use crate::app::App;
 use crate::input::{InputBuffer, PendingMedia, wrap};
 use crate::model_picker::PickerPurpose;
+use crate::transcript::link_style;
 use crate::{spinner, statusbar};
 
 const MAX_INPUT_ROWS: usize = 6;
@@ -133,6 +134,13 @@ pub fn height(app: &App, width: u16, max_height: u16) -> u16 {
 }
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    draw_widgets(frame, app);
+    let area = frame.area();
+    app.links
+        .apply(frame.buffer_mut(), area, link_style(&app.theme));
+}
+
+fn draw_widgets(frame: &mut Frame, app: &App) {
     let area = frame.area();
     let inner_width = usize::from(area.width.saturating_sub(2)).max(1);
     let Overlay {
@@ -1203,5 +1211,32 @@ mod tests {
             .position(|l| l.contains("why did it deny"))
             .expect("the user line");
         assert!(user < at, "{lines:?}");
+    }
+
+    #[test]
+    fn the_live_area_draws_links_when_enabled_and_plain_text_otherwise() {
+        use fontaine_core::turn::SessionEvent;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let drawn = |enabled: bool| {
+            let mut app = App::new(PermissionMode::Manual, "m".into());
+            app.links.enabled = enabled;
+            app.on_event(SessionEvent::AssistantDelta("see https://a.io/x ok".into()));
+            let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol().to_string())
+                .collect::<Vec<_>>()
+                .join("")
+        };
+        assert!(drawn(true).contains("\x1b]8;id="));
+        assert!(drawn(true).contains(";https://a.io/x\x1b\\"));
+        let off = drawn(false);
+        assert!(!off.contains('\x1b'));
+        assert!(off.contains("see https://a.io/x ok"));
     }
 }

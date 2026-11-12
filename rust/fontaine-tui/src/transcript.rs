@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::commands::ExpandTarget;
 use crate::diff::diff_rows;
+use crate::hyperlink::Kinds;
 use crate::input::wrap;
 use crate::markdown::{self, link_spans};
 use crate::theme::{Glyphs, Theme};
@@ -972,16 +973,18 @@ pub(crate) fn truncate(text: &str, width: usize) -> String {
 }
 
 fn prefixed(text: &str, width: usize, first: &str, style: Style, out: &mut Vec<Line<'static>>) {
-    prefixed_body(text, width, first, style, Style::default(), out);
+    prefixed_body(text, width, first, style, Style::default(), None, out);
 }
 
-/// `prefixed` with the wrapped text itself styled, not just the prefix.
+/// `prefixed` with the wrapped text itself styled, not just the prefix, and with the URLs in it
+/// linked when `link` is given.
 fn prefixed_body(
     text: &str,
     width: usize,
     first: &str,
     style: Style,
     body_style: Style,
+    link: Option<Style>,
     out: &mut Vec<Line<'static>>,
 ) {
     let indent = " ".repeat(first.chars().count());
@@ -991,7 +994,14 @@ fn prefixed_body(
         for piece in wrap(line, body) {
             let prefix = if head { first } else { indent.as_str() };
             head = false;
-            out.push(row(prefix, style, body_style, piece));
+            out.push(match link {
+                None => row(prefix, style, body_style, piece),
+                Some(link) => {
+                    let mut spans = vec![Span::styled(prefix.to_string(), style)];
+                    spans.extend(link_spans(&piece, body_style, link, Kinds::URL));
+                    Line::from(spans)
+                }
+            });
         }
     }
 }
@@ -1004,7 +1014,7 @@ fn row(prefix: &str, style: Style, body_style: Style, piece: String) -> Line<'st
 }
 
 /// How URLs and link text are drawn: the link colour, underlined so colour is not the only cue.
-fn link_style(theme: &Theme) -> Style {
+pub(crate) fn link_style(theme: &Theme) -> Style {
     Style::default()
         .fg(theme.link)
         .add_modifier(Modifier::UNDERLINED)
@@ -1026,7 +1036,7 @@ fn plain_rows(text: &str, from: usize, width: usize, link: Style) -> Vec<(Line<'
             if i == last && lines.peek().is_some() {
                 offset += 1;
             }
-            let spans = link_spans(&piece, Style::default(), link);
+            let spans = link_spans(&piece, Style::default(), link, Kinds::URL | Kinds::ISSUE);
             rows.push((Line::from(spans), offset));
         }
     }
@@ -1113,7 +1123,15 @@ fn entry_lines(
             severity: Severity::Info,
             headline,
             ..
-        } => prefixed(headline, width, glyphs.info, dim, out),
+        } => prefixed_body(
+            headline,
+            width,
+            glyphs.info,
+            dim,
+            Style::default(),
+            Some(link_style(theme)),
+            out,
+        ),
         Entry::Attachment(text) => prefixed(
             text,
             width,
@@ -1133,7 +1151,12 @@ fn entry_lines(
             prefixed(&format!("! {command}"), width, "", dim, out);
             for line in output.trim_end().split('\n') {
                 for piece in wrap(line, width) {
-                    out.push(Line::from(link_spans(&piece, dim, link_style(theme))));
+                    out.push(Line::from(link_spans(
+                        &piece,
+                        dim,
+                        link_style(theme),
+                        Kinds::OUTPUT,
+                    )));
                 }
             }
             out.push(Line::default());
@@ -1382,7 +1405,7 @@ fn tool_lines(
         let mut push = |text: &str, linkify: bool| {
             let mut spans = vec![Span::styled(format!("  {gutter}"), dim)];
             if linkify {
-                spans.extend(link_spans(text, dim, link));
+                spans.extend(link_spans(text, dim, link, Kinds::OUTPUT));
             } else {
                 spans.push(Span::styled(text.to_string(), dim));
             }
@@ -1425,7 +1448,16 @@ fn warning_lines(
     let style = Style::default().fg(theme.warning);
     let indent = " ".repeat(glyphs.warning.chars().count());
     let body = width.saturating_sub(indent.chars().count());
-    prefixed_body(headline, width, glyphs.warning, style, style, out);
+    let link = link_style(theme);
+    prefixed_body(
+        headline,
+        width,
+        glyphs.warning,
+        style,
+        style,
+        Some(link),
+        out,
+    );
     let Some(hint) = hint else {
         return;
     };
@@ -1436,7 +1468,7 @@ fn warning_lines(
     for line in hint.split('\n') {
         for piece in wrap(line, body) {
             let mut spans = vec![Span::styled(indent.clone(), dim)];
-            spans.extend(hint_spans(&piece, &mut in_ticks, dim, bold));
+            spans.extend(hint_spans(&piece, &mut in_ticks, dim, bold, link));
             out.push(Line::from(spans));
         }
     }
@@ -1444,16 +1476,38 @@ fn warning_lines(
 
 /// Splits one wrapped row of a hint into dim text and bold actionable spans: what sits between
 /// backticks (the backticks included) and `/command` words. `in_ticks` carries across rows.
-fn hint_spans(piece: &str, in_ticks: &mut bool, dim: Style, bold: Style) -> Vec<Span<'static>> {
+fn hint_spans(
+    piece: &str,
+    in_ticks: &mut bool,
+    dim: Style,
+    bold: Style,
+    link: Style,
+) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
     let mut run_bold = *in_ticks;
     let flush = |run: &mut String, run_bold: bool, spans: &mut Vec<Span<'static>>| {
-        if !run.is_empty() {
-            spans.push(Span::styled(
-                std::mem::take(run),
-                if run_bold { bold } else { dim },
-            ));
+        let text = std::mem::take(run);
+        if text.is_empty() {
+            return;
+        }
+        if !run_bold {
+            spans.extend(link_spans(&text, dim, link, Kinds::URL));
+            return;
+        }
+        // The backticks stay bold and out of the link, as `trim_url` would not strip them.
+        let open = text.starts_with('`');
+        let rest = text.strip_prefix('`').unwrap_or(&text);
+        let close = rest.ends_with('`');
+        let inner = rest.strip_suffix('`').unwrap_or(rest);
+        if open {
+            spans.push(Span::styled("`".to_string(), bold));
+        }
+        if !inner.is_empty() {
+            spans.extend(link_spans(inner, bold, link, Kinds::URL));
+        }
+        if close {
+            spans.push(Span::styled("`".to_string(), bold));
         }
     };
     let chars: Vec<char> = piece.chars().collect();
@@ -2986,13 +3040,101 @@ mod tests {
         assert_eq!(colored(&lines, &theme)[1], "https://a.io/sh");
     }
 
+    /// The ref of every tagged span, in order.
+    fn targets(lines: &[Line<'static>]) -> Vec<crate::hyperlink::Ref> {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter_map(|s| match s.style.underline_color {
+                Some(ratatui::style::Color::Rgb(r, g, b)) => Some(crate::hyperlink::ref_of(
+                    u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn url(u: &str) -> crate::hyperlink::Ref {
+        crate::hyperlink::Ref::Url(u.into())
+    }
+
     #[test]
-    fn call_rows_notices_and_errors_are_not_linkified() {
+    fn info_notices_and_warning_headlines_link_their_urls() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        t.notice("see https://a.io/n.");
+        t.warning("bad https://a.io/w", None);
+        let lines = t.lines(60, &theme);
+        assert_eq!(colored(&lines, &theme)[0], "https://a.io/n");
+        assert_eq!(colored(&lines, &theme)[1], "https://a.io/w");
+        assert_eq!(
+            targets(&lines),
+            vec![url("https://a.io/n"), url("https://a.io/w")]
+        );
+        assert_eq!(text(&lines)[0], "· see https://a.io/n.");
+    }
+
+    #[test]
+    fn errors_user_input_and_attachments_are_not_linkified() {
         let theme = link_theme();
         let mut t = Transcript::default();
         t.error("failed https://a.io/e");
-        t.notice("see https://a.io/n");
+        t.user("hi https://a.io/u".into());
+        t.attached("image", "https://a.io/a", 1);
         let lines = t.lines(60, &theme);
         assert!(colored(&lines, &theme).iter().all(String::is_empty));
+        assert!(targets(&lines).is_empty());
+    }
+
+    #[test]
+    fn a_hint_links_a_url_inside_backticks_without_the_backticks_and_not_commands() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        t.warning("w", Some("open `https://a.io/h` or /resume now".into()));
+        let lines = t.lines(80, &theme);
+        assert_eq!(targets(&lines), vec![url("https://a.io/h")]);
+        assert_eq!(colored(&lines, &theme)[1], "https://a.io/h");
+        assert_eq!(bold_text(&lines[1]), "`https://a.io/h`/resume");
+        assert_eq!(text(&lines)[1], "  open `https://a.io/h` or /resume now");
+    }
+
+    #[test]
+    fn tool_output_links_paths_and_urls_but_not_issue_numbers() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        result_with(
+            &mut t,
+            "a",
+            "shell",
+            true,
+            "src/a.rs:3 fixes #82 https://a.io/o\n",
+        );
+        let lines = t.lines(80, &theme);
+        assert_eq!(
+            targets(&lines),
+            vec![
+                crate::hyperlink::Ref::Path("src/a.rs".into()),
+                url("https://a.io/o")
+            ]
+        );
+    }
+
+    #[test]
+    fn the_streaming_tail_tags_urls_and_issues_but_not_paths() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        delta(&mut t, "tail #82 src/a.rs https://a.io/s");
+        let lines = t.live_lines(60, &theme);
+        assert_eq!(
+            targets(&lines),
+            vec![
+                crate::hyperlink::Ref::Issue {
+                    repo: None,
+                    number: 82
+                },
+                url("https://a.io/s")
+            ]
+        );
     }
 }
