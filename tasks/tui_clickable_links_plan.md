@@ -196,9 +196,9 @@ Token rules (no regex, as for #206):
   `Event::Code` uses the top of the link-target stack when inside a link (replacing the `in_link`
   counter) and applies the whole-token URL/path rule otherwise.
 
-Wrapped URLs keep their tag on every row in markdown rendering (per-char style). In the per-row
-paths (`plain_rows`, tool output, `!` shell output, the `raw_rows` fallback), a continuation row has already lost colour since #206, and it
-now also has no link. That caveat is unchanged and accepted.
+A link wrapped across rows keeps its colour and target on every row, because text is scanned
+before it is wrapped. A reference still streaming at the end of the unsettled tail stays plain
+until text follows it.
 
 ### Architecture
 ```
@@ -225,9 +225,9 @@ view::draw ─ widgets ───────────────────
    argument. `Inline` tags markdown link text with the target, and `Event::Code` whose whole
    content is one URL or path token gets tagged. `code_rows` tags whole-token URLs.
    `raw_rows`/`uncovered` pass prose kinds.
-4. **`transcript.rs`**: assistant prose rows pass `URL|ISSUE|PATH`; the streaming-tail `plain_rows` passes `URL|ISSUE` only, since
-   partial path tokens would be interned and stat'ed on every delta (settled rows go through
-   markdown with full kinds). Tool
+4. **`transcript.rs`**: assistant prose rows pass `URL|ISSUE|PATH`; the streaming-tail `plain_rows` passes `URL` only: it cannot tell prose from code, so `#N`
+   would link inside an open fence, and partial path tokens would be interned and stat'ed on every
+   delta (settled rows go through markdown with full kinds). Tool
    output and `Entry::Shell` rows pass `URL|PATH`. Notices pass `URL`:
    - `prefixed_body` gains a last-but-one parameter `link: Option<Style>`. With `None` it builds
      each wrapped piece as one `Span` via `row()`, as today; with `Some(link)` the piece's body is

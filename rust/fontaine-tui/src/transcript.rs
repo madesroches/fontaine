@@ -909,7 +909,28 @@ impl Cut {
             return Vec::new();
         };
         let mut all = assistant_rows(text, from, width, true, glyphs, link);
-        all.pop();
+        // A reference still streaming at the end stays live whole, or its leading rows would be
+        // committed plain.
+        let row_text = |r: &(Line<'static>, usize)| -> String {
+            r.0.spans.iter().map(|s| s.content.as_ref()).collect()
+        };
+        let mut live = all.len().saturating_sub(1);
+        while live > 0 {
+            let (prev, cur) = (row_text(&all[live - 1]), row_text(&all[live]));
+            let before = if live >= 2 { all[live - 2].1 } else { from };
+            let joined = all[live - 1].1 - before == prev.chars().count()
+                && prev.chars().last().is_some_and(|c| !c.is_whitespace())
+                && cur.chars().next().is_some_and(|c| !c.is_whitespace());
+            if !joined {
+                break;
+            }
+            live -= 1;
+        }
+        let tail: String = all[live..].iter().map(row_text).collect();
+        if !tail.contains("://") {
+            live = all.len().saturating_sub(1);
+        }
+        all.truncate(live);
         let mut keep = rows.min(all.len());
         // A rendered block's rows share one end offset, and the cursor must not land inside it.
         while keep > 0 && keep < all.len() && all[keep].1 == all[keep - 1].1 {
@@ -1042,13 +1063,7 @@ fn plain_rows(text: &str, from: usize, width: usize, link: Style) -> Vec<(Line<'
         } else {
             link_wrap_open
         };
-        let pieces = wrap(
-            line,
-            Style::default(),
-            link,
-            Kinds::URL | Kinds::ISSUE,
-            width,
-        );
+        let pieces = wrap(line, Style::default(), link, Kinds::URL, width);
         let last = pieces.len() - 1;
         for (i, spans) in pieces.into_iter().enumerate() {
             offset += spans
@@ -3078,8 +3093,6 @@ mod tests {
             targets(&rows("go https://example.com/partial ")),
             vec![url("https://example.com/partial")]
         );
-        assert!(targets(&rows("see #8")).is_empty());
-        assert_eq!(targets(&rows("see #8 ")).len(), 1);
     }
 
     #[test]
@@ -3160,34 +3173,36 @@ mod tests {
     }
 
     #[test]
-    fn an_issue_split_at_the_row_edge_in_the_streaming_tail_is_not_truncated() {
+    fn a_url_split_at_the_row_edge_in_the_streaming_tail_is_not_truncated() {
         let theme = link_theme();
         let mut t = Transcript::default();
-        delta(&mut t, "abcdef #83 x");
+        delta(&mut t, "abcdef https://a.io/xyz x");
         let lines = t.live_lines(8, &theme);
-        let issue = crate::hyperlink::Ref::Issue {
-            repo: None,
-            number: 83,
-        };
         assert!(!targets(&lines).is_empty());
-        assert!(targets(&lines).iter().all(|r| *r == issue));
+        assert!(
+            targets(&lines)
+                .iter()
+                .all(|r| *r == url("https://a.io/xyz"))
+        );
     }
 
     #[test]
-    fn the_streaming_tail_tags_urls_and_issues_but_not_paths() {
+    fn the_streaming_tail_tags_urls_only() {
         let theme = link_theme();
         let mut t = Transcript::default();
         delta(&mut t, "tail #82 src/a.rs https://a.io/s ");
         let lines = t.live_lines(60, &theme);
-        assert_eq!(
-            targets(&lines),
-            vec![
-                crate::hyperlink::Ref::Issue {
-                    repo: None,
-                    number: 82
-                },
-                url("https://a.io/s")
-            ]
-        );
+        assert_eq!(targets(&lines), vec![url("https://a.io/s")]);
+    }
+
+    #[test]
+    fn the_streaming_tail_does_not_tag_issues_in_code_or_prose() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        delta(&mut t, "```css\na { color: #333333; }\n");
+        assert!(targets(&t.live_lines(60, &theme)).is_empty());
+        let mut t = Transcript::default();
+        delta(&mut t, "see #82 ");
+        assert!(targets(&t.live_lines(60, &theme)).is_empty());
     }
 }
