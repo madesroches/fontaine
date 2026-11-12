@@ -1345,7 +1345,7 @@ The actions and their default keystrokes:
 | `todos` | `ctrl+t` | Expand or collapse the task list. |
 | `transcript` | `ctrl+o` | Open or close the transcript view. |
 | `reprint` | `ctrl+l` | Redraw the screen from the transcript. |
-| `attach_clipboard` | `ctrl+v` | Attach the clipboard's image. |
+| `attach_clipboard` | `ctrl+v`, `alt+v` | Attach the clipboard's image. |
 | `history_search` | `ctrl+r` | Search the prompt history. |
 | `history_previous` | `up` | Recall the previous input on the input's first line. |
 | `history_next` | `down` | Walk back forward while recalling; both also move the cursor inside a multi-line input. |

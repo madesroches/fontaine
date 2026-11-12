@@ -95,6 +95,14 @@ All notable changes are recorded here. The format follows
   gateways such as opencode-go sent. The new `[model] max_output_tokens` lowers the cap (clamped
   to each model's limit; not settable from the shared project file); set it lower for a
   small-context local server that rejects the 32000 fallback (#571).
+- Ctrl+V attaches a clipboard image on WSL and native Windows. The clipboard read moved from
+  rig's probe table into the TUI, and when no image is found the notice now names every probe
+  tried (`wl-paste`, `xclip`, `pngpaste` where present, `powershell.exe`) and what each found
+  (`not installed`, `no image`, `failed`). On WSL, where WSLg bridges no image content to the
+  Linux side, and on native Windows, where no clipboard read existed at all, the Windows
+  clipboard is read through `powershell.exe Get-Clipboard -Format Image` (Windows PowerShell,
+  STA, image returned as base64 PNG). `alt+v` is a second default binding for
+  `attach_clipboard`, for terminals that take Ctrl+V as their own paste action (#586).
 
 ### Changed
 

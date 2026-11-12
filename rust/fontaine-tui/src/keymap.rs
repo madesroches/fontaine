@@ -44,6 +44,7 @@ fn defaults() -> Vec<(Keystroke, TuiAction)> {
         ("ctrl+o", TuiAction::Transcript),
         ("ctrl+l", TuiAction::Reprint),
         ("ctrl+v", TuiAction::AttachClipboard),
+        ("alt+v", TuiAction::AttachClipboard),
         ("ctrl+r", TuiAction::HistorySearch),
         ("up", TuiAction::HistoryPrevious),
         ("down", TuiAction::HistoryNext),
@@ -176,6 +177,21 @@ mod tests {
             keymap.lookup(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
             Some(TuiAction::Newline)
         );
+    }
+
+    #[test]
+    fn attach_clipboard_has_ctrl_v_and_alt_v() {
+        let keymap = Keymap::default();
+        for modifier in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            assert_eq!(
+                keymap.lookup(KeyEvent::new(KeyCode::Char('v'), modifier)),
+                Some(TuiAction::AttachClipboard)
+            );
+        }
+        let keys = keymap.keys_for(TuiAction::AttachClipboard);
+        assert!(keys.contains(&parse_keystroke("ctrl+v").unwrap()));
+        assert!(keys.contains(&parse_keystroke("alt+v").unwrap()));
+        assert_eq!(keys.len(), 2);
     }
 
     #[test]
