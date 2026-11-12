@@ -832,6 +832,7 @@ pub async fn run(
         let armed = armed.clone();
         move |deadline: Instant| {
             let watchdog = ExitWatchdog::arm(deadline, restore_terminal, || std::process::exit(0));
+            // Display-only slot for the watchdog handle; a poisoned lock still holds it.
             *fontaine_tools::lock::lock_recovering(&armed) = Some(watchdog);
         }
     };
@@ -872,6 +873,7 @@ pub async fn run(
     )
     .await;
     stop.store(true, Ordering::Relaxed);
+    // The slot only holds the watchdog handle; a poisoned lock still holds it.
     let watchdog = fontaine_tools::lock::lock_recovering(&armed).take();
     // A reader stuck in a read must not hold the exit past its deadline.
     let _ = match watchdog.as_ref() {

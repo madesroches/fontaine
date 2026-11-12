@@ -768,6 +768,11 @@ impl AgentTree {
         self.shutdown.load(Ordering::SeqCst)
     }
 
+    /// Whether [`abort_all`](Self::abort_all) has run: nothing may start after it.
+    pub fn aborted(&self) -> bool {
+        self.aborted.load(Ordering::SeqCst)
+    }
+
     /// Holds every resume, wake and reminder until [`resume_wakes`](Self::resume_wakes);
     /// `why` is what a refused wake is told. Used for an AFK stop, which keeps the hold until
     /// `/afk review`.
@@ -1530,14 +1535,16 @@ impl AgentTree {
                 .collect();
             (running.into_iter().cloned().collect::<Vec<_>>(), handles)
         };
-        for id in ids {
-            self.kill(&id);
+        // Watchers first: a child that ends while the kill flags go out must not have its end
+        // recorded.
+        for (_, watcher) in lock(&self.watchers, "agent watchers").drain() {
+            watcher.abort();
         }
         for handle in handles {
             handle.abort();
         }
-        for (_, watcher) in lock(&self.watchers, "agent watchers").drain() {
-            watcher.abort();
+        for id in ids {
+            self.kill(&id);
         }
         self.changed.notify_waiters();
     }

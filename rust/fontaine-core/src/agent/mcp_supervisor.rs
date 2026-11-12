@@ -270,11 +270,17 @@ impl McpServers {
                 connected
             })
             .collect();
-        let _groups = GroupKill(connections.iter().map(Connected::group_id).collect());
+        let mut groups = GroupKill {
+            groups: connections.iter().map(Connected::group_id).collect(),
+            termed: false,
+        };
         let closes = connections.iter().map(|connected| async move {
             let _ = tokio::time::timeout(graceful, connected.connection.close()).await;
         });
         futures::future::join_all(closes).await;
+        groups.term();
+        // A descendant that ignores SIGTERM gets this long before the drop's SIGKILL.
+        tokio::time::sleep(GROUP_TERM_GRACE).await;
     }
 
     /// Unloads the server `name`: its slot is retired, its `list_changed` sink muted (a refresh
@@ -303,14 +309,31 @@ impl McpServers {
     }
 }
 
-/// Signals the process groups it holds when it drops, whether the close finished or was cut
-/// short.
-struct GroupKill(Vec<Option<u32>>);
+const GROUP_TERM_GRACE: Duration = Duration::from_millis(150);
+
+/// Ends the process groups it holds when it drops, whether the close finished or was cut short:
+/// SIGKILL, after a SIGTERM unless [`GroupKill::term`] already sent one.
+struct GroupKill {
+    groups: Vec<Option<u32>>,
+    termed: bool,
+}
+
+impl GroupKill {
+    fn term(&mut self) {
+        for group in &self.groups {
+            fontaine_tools::procgroup::terminate(*group);
+        }
+        self.termed = true;
+    }
+}
 
 impl Drop for GroupKill {
     fn drop(&mut self) {
-        for group in &self.0 {
-            fontaine_tools::procgroup::terminate(*group);
+        if !self.termed {
+            self.term();
+        }
+        for group in &self.groups {
+            fontaine_tools::procgroup::kill_group(*group);
         }
     }
 }

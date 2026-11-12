@@ -52,6 +52,8 @@ impl ExitWatchdog {
             .name("fontaine-exit-watchdog".to_owned())
             .spawn(move || {
                 let (flag, wake) = &*seen;
+                // Only a bool the watchdog and the drop touch: a poisoned lock still holds it, and
+                // the watchdog must fire regardless.
                 let mut done = lock_recovering(flag);
                 while !*done {
                     let left = deadline.saturating_duration_since(Instant::now());
@@ -61,10 +63,10 @@ impl ExitWatchdog {
                         exit();
                         return;
                     }
-                    done = wake
-                        .wait_timeout(done, left)
-                        .expect("nothing panics while holding the flag")
-                        .0;
+                    done = match wake.wait_timeout(done, left) {
+                        Ok((guard, _)) => guard,
+                        Err(poisoned) => poisoned.into_inner().0,
+                    };
                 }
             });
         ExitWatchdog { disarmed, deadline }

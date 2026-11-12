@@ -580,7 +580,14 @@ fn launch(shared: Arc<RunShared>, prompt: String, span: tracing::Span) {
         }
         .instrument(span),
     );
-    *lock(&task_slot.task, "child task") = Some(task.abort_handle());
+    let handle = task.abort_handle();
+    *lock(&task_slot.task, "child task") = Some(handle.clone());
+    // `abort_all` latches before it collects handles, so a run that started after it collected
+    // none sees the latch here.
+    if task_slot.state.agents().aborted() {
+        let _ = task_slot.kill.send(true);
+        handle.abort();
+    }
 }
 
 impl ChildRun {
