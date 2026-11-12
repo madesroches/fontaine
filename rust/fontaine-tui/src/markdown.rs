@@ -9,7 +9,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use crate::hyperlink::{self, Kinds, Ref};
-use crate::input::wrap;
 use crate::theme::Glyphs;
 
 type Row = Line<'static>;
@@ -393,8 +392,8 @@ struct Chunk {
 fn raw_rows(lines: &[SrcLine<'_>], width: usize, link: Style) -> Vec<Row> {
     lines
         .iter()
-        .flat_map(|line| wrap(line.text, width))
-        .map(|piece| Line::from(link_spans(&piece, Style::default(), link, Kinds::PROSE)))
+        .flat_map(|line| link_wrap(line.text, Style::default(), link, Kinds::PROSE, width))
+        .map(Line::from)
         .collect()
 }
 
@@ -538,14 +537,20 @@ fn into_rows(rows: Vec<Cells>) -> Vec<Row> {
 fn code_rows(line: &str, width: usize, link: Style) -> Vec<Row> {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let pad = if width > 2 { "  " } else { "" };
-    wrap(line, width - pad.len())
-        .into_iter()
-        .map(|piece| {
-            let mut spans = vec![Span::raw(pad)];
-            spans.extend(link_spans(&piece, dim, link, Kinds::URL | Kinds::WHOLE));
-            Line::from(spans)
-        })
-        .collect()
+    link_wrap(
+        line,
+        dim,
+        link,
+        Kinds::URL | Kinds::WHOLE,
+        width - pad.len(),
+    )
+    .into_iter()
+    .map(|piece| {
+        let mut spans = vec![Span::raw(pad)];
+        spans.extend(piece);
+        Line::from(spans)
+    })
+    .collect()
 }
 
 enum Piece {
@@ -726,6 +731,31 @@ pub(crate) fn link_spans(
         spans.push(Span::styled(text[plain_from..].to_string(), style));
     }
     spans
+}
+
+/// Scans `text` for references first, then splits the styled spans into rows of at most `width`
+/// chars exactly where `wrap` would, so every piece of a split reference keeps the full target.
+pub(crate) fn link_wrap(
+    text: &str,
+    style: Style,
+    link: Style,
+    kinds: Kinds,
+    width: usize,
+) -> Vec<Cells> {
+    chunk_spans(&link_spans(text, style, link, kinds), width)
+}
+
+/// Splits styled spans into rows of at most `width` chars, matching `wrap`'s boundaries.
+pub(crate) fn chunk_spans(spans: &[Span<'static>], width: usize) -> Vec<Cells> {
+    let width = width.max(1);
+    let chars: Vec<(char, Style)> = spans
+        .iter()
+        .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
+        .collect();
+    if chars.is_empty() {
+        return vec![Vec::new()];
+    }
+    chars.chunks(width).map(|c| merge(c.to_vec())).collect()
 }
 
 /// Word-wraps styled text by char count, hard-splitting a word longer than `width`. Wide
@@ -1003,6 +1033,7 @@ fn table_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::wrap;
 
     fn render(text: &str, width: usize) -> Vec<Row> {
         rows(

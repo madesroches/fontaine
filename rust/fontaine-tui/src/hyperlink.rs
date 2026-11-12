@@ -388,6 +388,7 @@ impl Links {
     pub(crate) fn configure(&mut self, cwd: &Path, github: Option<(String, String)>) {
         self.cwd = cwd.to_path_buf();
         self.github = github;
+        // Display state: a cleared cache only costs a re-resolve.
         lock_recovering(&self.resolved).clear();
     }
 
@@ -399,7 +400,10 @@ impl Links {
         }
         let r = lock_recovering(&REFS).get(id)?;
         let target = self.target(&r);
-        lock_recovering(&self.resolved).insert(id, target.clone());
+        // A file that does not exist yet may be created later, so a miss is not remembered.
+        if target.is_some() || !matches!(*r, Ref::Path(_)) {
+            lock_recovering(&self.resolved).insert(id, target.clone());
+        }
         target
     }
 
@@ -471,6 +475,7 @@ impl Links {
     }
 
     fn lookup(&self, id: u32) -> Option<Resolved> {
+        // Display state: the intern table only grows, so a stale read shows at worst no link.
         let r = lock_recovering(&REFS).get(id)?;
         Some(Resolved {
             target: self.resolve(id),
@@ -600,6 +605,16 @@ mod tests {
         };
         links.configure(dir, github.map(|(o, r)| (o.to_string(), r.to_string())));
         links
+    }
+
+    #[test]
+    fn a_path_missing_at_first_resolves_once_the_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let links = links_in(dir.path(), None);
+        let id = id_of(Ref::Path("later.txt".into()));
+        assert_eq!(links.resolve(id), None);
+        std::fs::write(dir.path().join("later.txt"), "x").unwrap();
+        assert!(links.resolve(id).is_some());
     }
 
     #[test]

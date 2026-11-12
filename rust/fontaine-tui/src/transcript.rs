@@ -13,8 +13,10 @@ use crate::commands::ExpandTarget;
 use crate::diff::diff_rows;
 use crate::hyperlink::Kinds;
 use crate::input::wrap;
-use crate::markdown::{self, link_spans};
+use crate::markdown::{self, chunk_spans, link_spans, link_wrap};
 use crate::theme::{Glyphs, Theme};
+
+type Cells = Vec<Span<'static>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -991,17 +993,23 @@ fn prefixed_body(
     let body = width.saturating_sub(indent.chars().count());
     let mut head = true;
     for line in text.split('\n') {
-        for piece in wrap(line, body) {
-            let prefix = if head { first } else { indent.as_str() };
-            head = false;
-            out.push(match link {
-                None => row(prefix, style, body_style, piece),
-                Some(link) => {
-                    let mut spans = vec![Span::styled(prefix.to_string(), style)];
-                    spans.extend(link_spans(&piece, body_style, link, Kinds::URL));
-                    Line::from(spans)
+        match link {
+            None => {
+                for piece in wrap(line, body) {
+                    let prefix = if head { first } else { indent.as_str() };
+                    head = false;
+                    out.push(row(prefix, style, body_style, piece));
                 }
-            });
+            }
+            Some(link) => {
+                for piece in link_wrap(line, body_style, link, Kinds::URL, body) {
+                    let prefix = if head { first } else { indent.as_str() };
+                    head = false;
+                    let mut spans = vec![Span::styled(prefix.to_string(), style)];
+                    spans.extend(piece);
+                    out.push(Line::from(spans));
+                }
+            }
         }
     }
 }
@@ -1029,14 +1037,22 @@ fn plain_rows(text: &str, from: usize, width: usize, link: Style) -> Vec<(Line<'
     let mut offset = from;
     let mut lines = rest.split('\n').peekable();
     while let Some(line) = lines.next() {
-        let pieces = wrap(line, width);
+        let pieces = link_wrap(
+            line,
+            Style::default(),
+            link,
+            Kinds::URL | Kinds::ISSUE,
+            width,
+        );
         let last = pieces.len() - 1;
-        for (i, piece) in pieces.into_iter().enumerate() {
-            offset += piece.chars().count();
+        for (i, spans) in pieces.into_iter().enumerate() {
+            offset += spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>();
             if i == last && lines.peek().is_some() {
                 offset += 1;
             }
-            let spans = link_spans(&piece, Style::default(), link, Kinds::URL | Kinds::ISSUE);
             rows.push((Line::from(spans), offset));
         }
     }
@@ -1150,13 +1166,8 @@ fn entry_lines(
         } => {
             prefixed(&format!("! {command}"), width, "", dim, out);
             for line in output.trim_end().split('\n') {
-                for piece in wrap(line, width) {
-                    out.push(Line::from(link_spans(
-                        &piece,
-                        dim,
-                        link_style(theme),
-                        Kinds::OUTPUT,
-                    )));
+                for spans in link_wrap(line, dim, link_style(theme), Kinds::OUTPUT, width) {
+                    out.push(Line::from(spans));
                 }
             }
             out.push(Line::default());
@@ -1382,18 +1393,20 @@ fn tool_lines(
         // filled and count the rest at one row per `body` characters.
         let lines: Vec<&str> = output.text.split('\n').collect();
         let mut taken = if full { 0 } else { lines.len() };
-        let mut tail: Vec<Vec<String>> = Vec::new();
+        let link = link_style(theme);
+        let wrap_line = |l: &str| link_wrap(l, dim, link, Kinds::OUTPUT, body);
+        let mut tail: Vec<Vec<Cells>> = Vec::new();
         let mut count = 0;
         while taken > 0 && count < OUTPUT_ROWS {
             taken -= 1;
-            let wrapped = wrap(lines[taken], body);
+            let wrapped = wrap_line(lines[taken]);
             count += wrapped.len();
             tail.push(wrapped);
         }
         if full {
-            tail = lines.iter().rev().map(|l| wrap(l, body)).collect();
+            tail = lines.iter().rev().map(|l| wrap_line(l)).collect();
         }
-        let rows: Vec<String> = tail.into_iter().rev().flatten().collect();
+        let rows: Vec<Cells> = tail.into_iter().rev().flatten().collect();
         let hidden = rows.len().saturating_sub(OUTPUT_ROWS);
         let before: usize = lines[..taken]
             .iter()
@@ -1401,32 +1414,25 @@ fn tool_lines(
             .sum();
         let skipped = if full { 0 } else { before + hidden };
         let rows = &rows[if full { 0 } else { hidden }..];
-        let link = link_style(theme);
-        let mut push = |text: &str, linkify: bool| {
+        let mut push = |body: Cells| {
             let mut spans = vec![Span::styled(format!("  {gutter}"), dim)];
-            if linkify {
-                spans.extend(link_spans(text, dim, link, Kinds::OUTPUT));
-            } else {
-                spans.push(Span::styled(text.to_string(), dim));
-            }
+            spans.extend(body);
             out.push(Line::from(spans));
         };
+        let plain = |text: &str| vec![Span::styled(text.to_string(), dim)];
         if skipped > 0 {
             cut = true;
-            push(&format!("… {skipped} earlier rows"), false);
+            push(plain(&format!("… {skipped} earlier rows")));
         }
         for row in rows {
-            push(row, true);
+            push(row.clone());
         }
         if output.clipped {
             if full {
-                push(
-                    &format!(
-                        "… clipped: only the first and last {} KiB of the output are kept",
-                        OUTPUT_KEEP_BYTES / 2048
-                    ),
-                    false,
-                );
+                push(plain(&format!(
+                    "… clipped: only the first and last {} KiB of the output are kept",
+                    OUTPUT_KEEP_BYTES / 2048
+                )));
             } else {
                 cut = true;
             }
@@ -1466,9 +1472,10 @@ fn warning_lines(
     // Backticks pair up across the whole hint, so a span that wraps stays bold on both rows.
     let mut in_ticks = false;
     for line in hint.split('\n') {
-        for piece in wrap(line, body) {
+        let spans = hint_spans(line, &mut in_ticks, dim, bold, link);
+        for piece in chunk_spans(&spans, body) {
             let mut spans = vec![Span::styled(indent.clone(), dim)];
-            spans.extend(hint_spans(&piece, &mut in_ticks, dim, bold, link));
+            spans.extend(piece);
             out.push(Line::from(spans));
         }
     }
@@ -3118,6 +3125,35 @@ mod tests {
                 url("https://a.io/o")
             ]
         );
+    }
+
+    #[test]
+    fn a_url_split_across_rows_carries_the_full_target_on_every_row() {
+        let theme = link_theme();
+        let u = "https://a.io/abcdefghij";
+        let mut t = Transcript::default();
+        t.notice(u);
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        result_with(&mut t, "a", "shell", true, &format!("{u}\n"));
+        let lines = t.lines(16, &theme);
+        let full = url(u);
+        let got = targets(&lines);
+        assert!(got.len() >= 4, "{got:?}");
+        assert!(got.iter().all(|r| *r == full), "{got:?}");
+    }
+
+    #[test]
+    fn an_issue_split_at_the_row_edge_in_the_streaming_tail_is_not_truncated() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        delta(&mut t, "abcdef #83");
+        let lines = t.live_lines(8, &theme);
+        let issue = crate::hyperlink::Ref::Issue {
+            repo: None,
+            number: 83,
+        };
+        assert!(!targets(&lines).is_empty());
+        assert!(targets(&lines).iter().all(|r| *r == issue));
     }
 
     #[test]
