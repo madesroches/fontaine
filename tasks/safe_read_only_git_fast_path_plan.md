@@ -24,8 +24,8 @@ Add a new `git` subcommand spec to the pre-classifier. Instead of running the us
 |---|---|---|
 | `git status` | Worktree status via `gix::status` or `gix::index` + HEAD comparison | none (bare `git status`) |
 | `git diff` | Diff index/worktree or HEAD/index via `gix::diff` | `--cached`, `--staged`, path positionals |
-| `git log` | Walk commits from `HEAD` via `gix::revision::walk` | `-n N`, `--max-count=N`, path positionals |
-| `git show` | Show a commit or object via `gix::object` lookup | `<rev>[:<path>]`, `--stat` |
+| `git log` | Walk commits from `HEAD` via `gix::revision::walk` | `-n N`, `--max-count=N`; no path positionals in phase 1 |
+| `git show` | Show a commit or object via `gix::object` lookup | `<rev>` or `<rev>:<path>` with `--stat`; the `<path>` part is checked like a workspace path |
 | `git ls-files` | List index entries via `gix::index` | none |
 | `git branch` | List local branches via `gix::references` | `-a`, `-r`, `-v`, `-vv` |
 | `git rev-parse HEAD` | Resolve HEAD to an object id | `HEAD` only |
@@ -39,7 +39,8 @@ Everything else falls through to the guardian, including any flag not explicitly
 2. **Path containment.** Every path argument is resolved against the call's `cwd` and verified to be inside a workspace root using the existing `Environment::in_scope` helper. If any path is outside, the call falls through.
 3. **No output capture to files.** Any redirect or flag that writes to a file (`--output`, `--ext-diff`, `-o`) is rejected; the pre-classifier only allows commands whose output goes to stdout/stderr of the shell tool.
 4. **Literal-only arguments.** The existing `ShellAnalysis` `simple` check guarantees the command is one simple command of literal words; substitutions, globs, and assignments already fall through.
-5. **Fail-closed on gix errors.** If `gix` cannot open the repository, parse the command, or perform the operation, the call falls through to the guardian rather than being denied.
+5. **Fail-closed on pre-classification errors.** If the pre-classifier cannot open the repository with `gix` or cannot parse the command, the call falls through to the guardian rather than being allowed or denied.
+6. **Execution errors return a tool result.** Once the pipeline has allowed a call at `tier05`, a `gix` error during the actual operation is returned as a `shell` tool error result (e.g., rendered from `GitFastPathError`); there is no guardian to fall back to at that point.
 
 ### Pre-classifier changes
 
@@ -58,6 +59,7 @@ enum GitVal {
     Int,
     Rev,       // a literal revision name (HEAD, branch, commit-ish)
     Path,      // a workspace-relative path
+    RevPath,   // `<rev>:<path>`; the rev is literal, the path is checked for containment
 }
 ```
 
@@ -73,11 +75,12 @@ The `permissions.rs` pipeline already applies `ruled_read_calls` and `secret_rea
 
 ### Execution path
 
-When the pre-classifier returns `Some(paths)` for a git command, the pipeline allows it at `Tier::Tier05` **and** rewrites the execution so the shell tool runs the gix-based implementation instead of the raw command. To keep the implementation in `fontaine-core` (where `gix` is available) and the pre-classifier in `fontaine-tools` (which stays dependency-light):
+When the pre-classifier returns `Some(paths)` for a git command, the pipeline allows it at `Tier::Tier05` **and** the shell tool runs a `gix`-based implementation instead of spawning the user's command. To keep the implementation in `fontaine-core` (where `gix` is available) and the pre-classifier in `fontaine-tools` (which stays dependency-light):
 
 - `fontaine-tools` exposes a new `preclassify::GitCommand` enum describing the parsed git command.
-- `fontaine-core` implements `git_fast_path::run(cmd, repo_root) -> Result<String, GitFastPathError>` using `gix`.
-- The shell tool (`rust/fontaine-tools/src/command_shell.rs` or its gate wrapper) checks whether the pipeline marked the call as a git fast path and, if so, calls the `git_fast_path` runner and returns its stdout as the tool result.
+- `fontaine-core` implements `git_fast_path::run(cmd, repo_root, cwd) -> Result<String, GitFastPathError>` using `gix`.
+- `fontaine-core` constructs the `shell` tool (`rust/fontaine-tools/src/builtins.rs` `ShellTool`) with a callback that invokes the runner.
+- `ShellTool::run` checks whether the call was pre-classified as a git command and, if so, calls the runner and returns its output. A `run_in_background: true` request disqualifies the fast path and falls back to normal shell execution.
 
 The actual user-visible output should match `git` closely enough for agent consumption; exact fidelity is not required because the fast path is only taken for read-only inspection the model uses to understand state.
 
@@ -90,20 +93,22 @@ The actual user-visible output should match `git` closely enough for agent consu
 
 2. **Add the gix-based runner in `fontaine-core`.**
    - Create `rust/fontaine-core/src/git_fast_path.rs`.
-   - Implement `run(cmd: GitCommand, repo_root: &Path) -> Result<String, GitFastPathError>`.
+   - Implement `run(cmd: GitCommand, repo_root: &Path, cwd: Option<&Path>) -> Result<String, GitFastPathError>`.
    - Open the repo with `gix::discover_opts(..., Options::isolated().strict_config(true))`.
+   - For each path argument, resolve it against `cwd`, verify it lies under the discovered repo root, and convert it to a repo-root-relative pathspec before passing it to `gix`.
    - Implement each subcommand using the smallest gix API surface that returns useful output.
 
 3. **Wire the fast path into shell execution.**
-   - Extend the shell tool's execution context to carry an optional `git_fast_path` result.
-   - When the pipeline allows a `shell` call at `tier05` and the pre-classifier identified it as a git command, run `git_fast_path::run` and return its output.
+   - Add a `git_fast_path_runner: Option<Arc<dyn Fn(GitCommand, &Path, Option<&Path>) -> Result<String, GitFastPathError> + Send + Sync>>` field to `BuiltinEnv` in `rust/fontaine-tools/src/builtins.rs`.
+   - Pass the runner from `fontaine-core` when constructing `ShellTool`.
+   - In `ShellTool::run`, if `run_in_background` is false and the pre-classifier identifies a supported `GitCommand`, invoke the runner and return its output; otherwise fall back to normal shell execution.
 
 4. **Update the pre-classifier command table and tests.**
    - Add unit tests in `rust/fontaine-tools/src/preclassify.rs` for parsing/validation of each supported git subcommand and for rejection of unsupported flags and chained commands.
 
 5. **Update adversarial eval expectations.**
-   - Change the three existing git config-execution cases in `evals/dataset/tier05.jsonl` to expect `tier05`/`allow` when the workspace contains only benign config, because `gix` ignores those helpers.
-   - Add new adversarial cases that confirm unsupported git invocations (e.g., `git diff --ext-diff`, `git log --output=x`, `git status --porcelain=v2` if unsupported, `git push`) still fall through to `mode`.
+   - Change the plain `git status`, `git log`, and `git diff` cases, plus the three git config-execution cases (`tier05-git-fsmonitor-config`, `tier05-git-gpg-program-config`, `tier05-git-filter-driver`) in `evals/dataset/tier05.jsonl` to expect `tier05`/`allow`, because `gix` ignores those helpers.
+   - Add new adversarial cases that confirm unsupported git invocations (e.g., `git diff --ext-diff`, `git log --output=x`, `git status --porcelain`, `git push`) still fall through to `mode`.
 
 6. **Add integration tests.**
    - In `rust/fontaine-core/tests/permissions.rs` (or a new test file), create temporary git repositories, issue supported `shell(git ...)` calls, and assert `Tier::Tier05` and correct output.
@@ -119,8 +124,11 @@ The actual user-visible output should match `git` closely enough for agent consu
 - `rust/fontaine-tools/src/preclassify.rs`
 - `rust/fontaine-core/src/permissions.rs`
 - `rust/fontaine-core/src/tools.rs` (or the shell tool runner)
-- `rust/fontaine-tools/src/command_shell.rs`
+- `rust/fontaine-tools/src/builtins.rs`
+- `rust/fontaine-tools/src/descriptor.rs` (if `BuiltinEnv` is defined there)
 - `rust/fontaine-core/src/lib.rs` (module export)
+- `rust/Cargo.toml` (add `status` feature to workspace `gix`)
+- `docs/tools.md`
 - `evals/dataset/tier05.jsonl`
 - `docs/permissions.md`
 - `docs/guardian.md` (if needed)
@@ -137,14 +145,20 @@ The actual user-visible output should match `git` closely enough for agent consu
 ## Decisions
 
 - Use `gix` isolated/strict open options for all fast-path git reads, matching the existing `git_head.rs` and `trust.rs` patterns.
-- Keep the pre-classifier in `fontaine-tools` dependency-light by only parsing git commands there; the actual gix execution lives in `fontaine-core`.
+- Keep the pre-classifier in `fontaine-tools` dependency-light by only parsing git commands there; the actual gix execution lives in `fontaine-core` and is supplied to `ShellTool` through a callback in `BuiltinEnv`.
 - Reject any flag or subcommand not explicitly allowlisted; do not try to enumerate every unsafe git flag.
 - Preserve the existing `tier05` audit tier for pre-classified shell commands rather than introducing a new tier.
+- Add the `status` feature to the workspace `gix` dependency (it transitively enables `blob-diff`), because the fast path needs `gix::status` and blob-level diff output.
+- `git log` takes no path positionals in phase 1, avoiding ambiguity between revisions and paths.
+- `git show` accepts only `<rev>` or `<rev>:<path>`; the path part is containment-checked like any workspace path.
+- `--porcelain` variants of `git status` are rejected in phase 1; they can be added later if needed.
+- `run_in_background: true` disqualifies the git fast path and runs through the normal shell.
 
 ## Documentation
 
 - Update `docs/permissions.md` §The shell pre-classifier to list the supported git subcommands and note that they run through `gix` with isolated config, so repo config cannot execute programs.
-- Update `docs/guardian.md` if it states that git commands always reach the guardian.
+- Update `docs/tools.md` to reflect that supported read-only git subcommands are now part of the pre-classifier set.
+- Update `docs/guardian.md` to qualify the statement that the guardian sees every shell command: read-only shell commands that take the Tier-0.5 pre-classifier fast path (including supported git subcommands) do not reach the guardian.
 - Add a changelog entry under the unreleased section.
 
 ## Testing Strategy
@@ -157,12 +171,10 @@ The actual user-visible output should match `git` closely enough for agent consu
 
 ## Manual Verification
 
-1. In a workspace with a `.git/config` containing `[core] fsmonitor = touch /tmp/fontaine-canary`, run `fontaine -p` and ask the agent to run `git status`. The call should complete without prompting and `/tmp/fontaine-canary` must not be created.
+1. In a workspace with a `.git/config` containing `[core] fsmonitor = touch /tmp/fontaine-canary`, run `fontaine -p` with a prompt that causes the agent to call `git status`. The call should complete without prompting and `/tmp/fontaine-canary` must not be created.
 2. Run `git log -n 5` and `git diff --cached` in the same workspace; both should complete via the fast path.
 3. Run `git push origin main`; this should fall through to the guardian (or prompt in manual mode) because `push` is not in the supported set.
 
 ## Open Questions
 
-- Should `--porcelain` variants of `git status` be supported, or should we require the default human-readable output? (Default: reject `--porcelain` in phase 1; add later if needed.)
-- Should `git diff` without path arguments be supported, or only path-restricted diffs? (Default: support both; the whole-repo diff still reads only inside the workspace.)
-- Is there an existing shell-tool execution context in `fontaine-core` where the gix runner should be injected, or does the wrapper live in `fontaine-tools` with a callback supplied by `fontaine-core`? (To be resolved during implementation by inspecting `command_shell.rs` and the gate wrapper.)
+None. `--porcelain` is rejected in phase 1, `git diff` without path arguments is allowed, and the runner lives in `fontaine-core` supplied to `fontaine-tools` through a callback in `BuiltinEnv`.
