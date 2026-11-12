@@ -727,7 +727,8 @@ fn link_spans_open(
     let mut spans = Vec::new();
     let mut plain_from = 0;
     for (range, r) in hyperlink::scan(text, kinds) {
-        if open && range.end == text.len() {
+        // Trimmed punctuation still belongs to the trailing run, which may yet grow.
+        if open && !text[range.end..].contains(char::is_whitespace) {
             continue;
         }
         if plain_from < range.start {
@@ -1469,6 +1470,21 @@ mod tests {
             url("http://a.io and https://b.io"),
             vec!["http://a.io", "https://b.io"]
         );
+    }
+
+    #[test]
+    fn open_link_spans_leave_a_trailing_url_with_trimmed_punctuation_plain() {
+        let url = |text: &str| {
+            link_spans_open(text, Style::default(), link(), Kinds::URL, true)
+                .into_iter()
+                .filter(|s| s.style.fg.is_some())
+                .map(|s| s.content.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(url("see https://github.").is_empty());
+        assert!(url("https://a.io:").is_empty());
+        assert_eq!(url("see https://github. "), vec!["https://github"]);
+        assert_eq!(url("https://a.io: "), vec!["https://a.io"]);
     }
 
     #[test]

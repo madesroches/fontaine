@@ -76,8 +76,8 @@ All notable changes are recorded here. The format follows
   5% less cache per step than Claude Code on Claude 5.5 models, with a smaller base context
   (#166).
 
-- TUI: URLs, markdown links, `owner/repo#N`, `#N` (with a github.com `origin`) and `path:line`
-  references to existing non-executable files are clickable OSC 8 hyperlinks in terminals that
+- TUI: URLs, markdown links, `owner/repo#N`, `#N` (with a github.com `origin`) and file paths (`dir/file`, or `name.ext:line`)
+  that name existing non-executable files are clickable OSC 8 hyperlinks in terminals that
   support them, including inside tmux. Notices link their URLs; code does not, except inline
   code that is one URL or path and whole-word URLs in fenced blocks. `FORCE_HYPERLINK=0` or `1` overrides detection (#83).
 

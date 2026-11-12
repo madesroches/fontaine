@@ -614,13 +614,18 @@ impl App {
         if self.cwd != cwd {
             self.cwd = cwd.to_path_buf();
         }
-        self.links.set_context(cwd);
         let head = self
             .head_cache
             .as_ref()
             .and_then(|(_, head)| head.as_deref())
             .and_then(fontaine_core::git_head::parse);
         self.branch = head.map(|head| head.label().to_string());
+    }
+
+    /// Relative paths in the transcript resolve against the primary root, as file tools and the
+    /// `!` shell do, not the model shell's cwd, which moves on every `cd`.
+    pub fn set_link_root(&mut self, root: &std::path::Path) {
+        self.links.set_context(root);
     }
 
     pub fn set_files(&mut self, files: Arc<Vec<String>>) {

@@ -101,7 +101,7 @@ pub(crate) fn supported(env: impl Fn(&str) -> Option<String>, windows: bool) -> 
 - `Issue { repo: Some((o, r)), n }` → `https://github.com/o/r/issues/n` (GitHub redirects issue
   URLs to PRs, so one form covers both, as Claude Code does).
 - `Issue { repo: None, n }` → the same with `Links::github`, else `None`.
-- `Path { path }` → join it to `cwd` unless absolute. If it names an existing regular file
+- `Path { path }` → join it to the primary root unless absolute. If it names an existing regular file
   (`std::fs::metadata`, hits cached per id, misses re-checked at most once a second) that is not executable, the result is
   `url::Url::from_file_path(..)` (percent-encodes and handles Windows drive letters) with its host
   set to the local hostname; otherwise `None`. The `:line` suffix is not put in the URL: there is
@@ -119,7 +119,7 @@ pub(crate) fn supported(env: impl Fn(&str) -> Option<String>, windows: bool) -> 
     `set_host` rejects the name, the host stays empty.
 - `Links::github` is `git_origin(cwd).and_then(|u| github_slug(&u))` split on `/`, using the
   existing `fontaine_core::project_env::discover::github_slug`.
-- `App::set_cwd` refreshes `Links` (origin + cwd) when the directory changes, and clears the
+- `App::set_link_root` (fed `runtime.primary_root()` by `Ui::draw`, not the model shell's cwd) refreshes `Links` (origin + root) when the directory changes, and clears the
   resolution cache.
 
 ### 3. The post-pass (`Links::apply`)
@@ -242,7 +242,7 @@ view::draw ─ widgets ───────────────────
      a backtick). `/command` spans stay single unlinked spans. `in_ticks` handling is unchanged.
    This replaces the "notices are not linkified" assertion in
    `call_rows_notices_and_errors_are_not_linkified` (errors stay unlinkified).
-5. **`app.rs`**: `pub(crate) links: Links` on `App`. `set_cwd` refreshes its context
+5. **`app.rs`**: `pub(crate) links: Links` on `App`. `set_link_root` refreshes its context
    (`git_origin` + `project_env::discover::github_slug`) when the directory changes.
 6. **`screen.rs`**: make `link_style` in `transcript.rs` `pub(crate)`, compute it from
    `app.theme` before the `insert_before` closure, and call `app.links.apply(.., link)` in the
