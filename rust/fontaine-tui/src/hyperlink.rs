@@ -501,10 +501,11 @@ impl Links {
                 let Some(id) = id_of(cell.underline_color) else {
                     continue;
                 };
+                // The tag is internal: clear it even when nothing resolves, or the backend emits it as SGR 58.
+                cell.underline_color = Color::Reset;
                 let Some(resolved) = seen.entry(id).or_insert_with(|| self.lookup(id)) else {
                     continue;
                 };
-                cell.underline_color = Color::Reset;
                 let Some(target) = &resolved.target else {
                     continue;
                 };
@@ -1079,6 +1080,21 @@ mod tests {
         for cell in &buf.content {
             assert_eq!(cell.underline_color, Color::Reset);
             assert_eq!(cell.cell_width(), 1);
+        }
+    }
+
+    #[test]
+    fn with_links_off_no_internal_tag_survives_apply() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut links = links_in(dir.path(), None);
+        links.enabled = false;
+        let mut buf = row("ab", tag(Style::default(), Ref::Path("a.txt".into())));
+        buf[(1, 0)].underline_color = Color::Rgb(0xff, 0xff, 0xfe);
+        let area = buf.area;
+        links.apply(&mut buf, area, Style::default());
+        for cell in &buf.content {
+            assert_eq!(cell.underline_color, Color::Reset);
+            assert!(!cell.symbol().contains("\x1b]8"));
         }
     }
 
