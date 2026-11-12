@@ -1155,7 +1155,9 @@ fn parse_git_args(
         }
     }
 
-    if let Some(max) = spec.max_positionals && paths.len() > max {
+    if let Some(max) = spec.max_positionals
+        && paths.len() > max
+    {
         return None;
     }
 
