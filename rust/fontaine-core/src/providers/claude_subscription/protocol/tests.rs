@@ -917,13 +917,25 @@ fn an_early_exit_keeps_the_rejected_window_it_saw() {
     .unwrap();
     let error = exit_failure("", r.native().as_ref(), "claude auth login");
     assert_eq!(limit_of(&error).0, Some(LimitForm::PlanLimit));
-    // Stderr that names the usage limit is a plan limit on its own.
+    // Stderr that names a limit is at most a plain rate limit, never a spent window.
     let error = exit_failure(
         "usage limit reached for your plan",
         None,
         "claude auth login",
     );
-    assert_eq!(limit_of(&error).0, Some(LimitForm::PlanLimit));
+    assert_eq!(limit_of(&error).0, Some(LimitForm::RateLimit));
+}
+
+#[test]
+fn rate_limit_text_without_a_rejected_frame_is_not_a_plan_limit() {
+    let mut r = reader(&[]);
+    feed(&mut r, init()).unwrap();
+    let mut failed = failed_with(429);
+    failed["result"] = json!("Rate limit reached");
+    let error = feed(&mut r, failed).unwrap_err();
+    assert_eq!(limit_of(&error), (Some(LimitForm::RateLimit), None));
+    let error = exit_failure("Rate limit reached", None, "claude auth login");
+    assert_eq!(limit_of(&error).0, Some(LimitForm::RateLimit));
 }
 
 #[test]

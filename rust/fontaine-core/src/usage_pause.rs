@@ -127,7 +127,7 @@ struct Recent {
     account: String,
     ended: Instant,
     attempts: u32,
-    /// Kept from a pause a probe ended, so the same spent account cannot keep sliding the wait
+    /// Kept from a pause that ended without failing, so the same spent account cannot keep sliding the wait
     /// cap by pausing again.
     deadline: Option<Instant>,
 }
@@ -188,9 +188,7 @@ impl Shared {
                 account: info.account.clone(),
                 ended: Instant::now(),
                 attempts: s.attempts,
-                deadline: matches!(end, PauseEnd::Probed)
-                    .then_some(info.deadline)
-                    .flatten(),
+                deadline: (!end.is_failure()).then_some(info.deadline).flatten(),
             });
             ended = Some((info, waited));
             // Nobody is woken yet: the observers hear of the end first, so a record or a stream
@@ -233,12 +231,6 @@ pub struct ProbeToken {
 }
 
 impl ProbeToken {
-    /// The request went through: the window is open again.
-    pub fn succeeded(mut self) {
-        self.settled = true;
-        self.shared.end(Some(self.epoch), PauseEnd::Probed);
-    }
-
     /// Leaves the answer to whatever notes the next success or limit, for a caller that cannot
     /// hold the token across its request. The probe lapses on its own if nothing answers.
     pub fn detach(mut self) {
@@ -317,20 +309,6 @@ impl UsagePause {
         self.shared.tx.borrow().active.is_some()
     }
 
-    /// A receiver that fires when the pause begins, changes or ends.
-    pub fn watch(&self) -> watch::Receiver<()> {
-        let mut rx = self.shared.tx.subscribe();
-        let (tx, out) = watch::channel(());
-        tokio::spawn(async move {
-            while rx.changed().await.is_ok() {
-                if tx.send(()).is_err() {
-                    break;
-                }
-            }
-        });
-        out
-    }
-
     /// Puts the whole run on hold. Idempotent: the first engager wins. A request that failed
     /// while a probe was out is that probe's answer: the pause goes on with the reset time it
     /// brought.
@@ -340,7 +318,8 @@ impl UsagePause {
         let mut started = None;
         self.shared.tx.send_if_modified(|s| {
             if let Some(active) = &mut s.active {
-                if matches!(s.probe, Probe::Claimed(_)) {
+                // Only the paused account's own failure answers the probe.
+                if matches!(s.probe, Probe::Claimed(_)) && info.account == active.account {
                     if info.reset_at.is_some() {
                         active.reset_at = info.reset_at;
                     }
@@ -403,16 +382,22 @@ impl UsagePause {
 
     /// [`wait_open`](Self::wait_open) for a caller that can hold the probe across its request.
     pub async fn admit(&self) -> Admission {
-        self.admit_with(true).await
+        self.admit_with(true, None).await
+    }
+
+    /// [`admit`](Self::admit) for a caller of `account`: it takes the probe only for a request
+    /// to the paused account, since no other account's answer could end the pause.
+    pub async fn admit_for(&self, account: &str) -> Admission {
+        self.admit_with(true, Some(account)).await
     }
 
     /// Waits like [`admit`](Self::admit) but leaves an open probe for the caller's own retry to
     /// claim, so the request that follows is not itself held at the gate for the lease.
     pub async fn wait_ready(&self) -> Option<PauseEnd> {
-        self.admit_with(false).await.end
+        self.admit_with(false, None).await.end
     }
 
-    async fn admit_with(&self, claim: bool) -> Admission {
+    async fn admit_with(&self, claim: bool, account: Option<&str>) -> Admission {
         let mut rx = self.shared.tx.subscribe();
         {
             // A pause that ended in failure still stops the run: calls after it fail the same
@@ -434,7 +419,11 @@ impl UsagePause {
             }
             let mut claimed = None;
             self.shared.tx.send_if_modified(|s| {
-                if claim && s.active.is_some() && s.probe == Probe::Open {
+                let theirs = s
+                    .active
+                    .as_ref()
+                    .is_some_and(|info| account.is_none_or(|a| info.account == a));
+                if claim && theirs && s.probe == Probe::Open {
                     s.probe = Probe::Claimed(Instant::now());
                     claimed = Some(s.epoch);
                     true

@@ -109,6 +109,17 @@ impl Served {
     }
 }
 
+/// The account of an `<account>/<model>` label; a label with no slash is taken as the account.
+pub fn account_of(model: &str) -> &str {
+    model.split_once('/').map_or(model, |(account, _)| account)
+}
+
+impl Served {
+    pub fn account(&self) -> &str {
+        account_of(&self.model)
+    }
+}
+
 impl fmt::Display for Served {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.role {

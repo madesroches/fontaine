@@ -173,7 +173,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                 })
                 .await
                 .map_err(|e| e.to_string())?;
-                state.usage_gate().await.map_err(|e| chain(&e))?;
+                state.usage_gate_idle().await.map_err(|e| chain(&e))?;
                 project_env::propose_on_chain(&switcher, &list, timeout_secs, &sample)
                     .await
                     .map_err(|e| chain(&e))
@@ -196,7 +196,7 @@ impl<R: FnMut(&mut crate::App)> Ui<R> {
                     })
                     .await
                     .map_err(|e| e.to_string())?;
-                    state.usage_gate().await.map_err(|e| chain(&e))?;
+                    state.usage_gate_idle().await.map_err(|e| chain(&e))?;
                     let proposals = project_env::propose(&model, &label, &settings, &sample)
                         .await
                         .map_err(|e| chain(&e))?;

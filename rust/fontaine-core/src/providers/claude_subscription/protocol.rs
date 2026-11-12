@@ -1440,12 +1440,11 @@ pub(crate) fn classify_text(text: &str) -> Option<Native> {
         .any(|needle| text.contains(needle))
     {
         Some(Native::limit(LimitForm::Billing))
-    } else if ["usage limit", "limit reached"]
+    } else if ["rate limit", "usage limit", "limit reached"]
         .iter()
         .any(|needle| text.contains(needle))
     {
-        Some(Native::limit(LimitForm::PlanLimit))
-    } else if text.contains("rate limit") {
+        // Text never says a window is spent: only a rejected rate-limit frame does.
         Some(Native::limit(LimitForm::RateLimit))
     } else if text.contains("overloaded") {
         Some(Native::Server)

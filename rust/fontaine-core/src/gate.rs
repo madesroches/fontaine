@@ -1091,6 +1091,28 @@ impl SessionState {
         }
     }
 
+    /// [`usage_gate`](Self::usage_gate) for a request made while no run is in flight (a side
+    /// question, an advisor consult, a set-up scan). A wait cancelled earlier belonged to that
+    /// run, so it does not fail this request too.
+    pub async fn usage_gate_idle(&self) -> Result<(), UsagePauseEnded> {
+        self.usage_pause.clear_failure();
+        self.usage_gate().await
+    }
+
+    /// [`usage_gate`](Self::usage_gate) for a call to a known `account`, which alone may take
+    /// the probe of a pause on that account.
+    pub async fn usage_gate_for(&self, account: &str) -> Result<(), UsagePauseEnded> {
+        let admission = self.usage_pause.admit_for(account).await;
+        // Detached: the answer comes from `note_success` or the next limit.
+        if let Some(token) = admission.probe {
+            token.detach();
+        }
+        match admission.end {
+            Some(end) if end.is_failure() => Err(self.ended(end)),
+            _ => Ok(()),
+        }
+    }
+
     fn ended(&self, end: PauseEnd) -> UsagePauseEnded {
         let info = self
             .usage_pause
@@ -1278,11 +1300,7 @@ impl SessionState {
         // Only the paused account's own answer proves its window open, whoever held the probe.
         // A call whose account is unknown proves nothing.
         if answered && !served.model.is_empty() {
-            let account = served
-                .model
-                .split_once('/')
-                .map_or(served.model.as_str(), |(account, _)| account);
-            self.usage_pause.note_success(account);
+            self.usage_pause.note_success(served.account());
         }
     }
 

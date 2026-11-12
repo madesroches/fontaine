@@ -51,7 +51,8 @@ async fn a_known_reset_ends_the_pause_with_a_probe_after_the_margin() {
             assert_eq!(admission.end, Some(PauseEnd::Probed));
             assert!(admission.probe.is_some());
             winners += 1;
-            admission.probe.unwrap().succeeded();
+            admission.probe.unwrap().detach();
+            pause.note_success("work");
         }
     }
     assert_eq!(winners, 1);
@@ -206,7 +207,8 @@ async fn a_waiter_that_only_watches_leaves_the_probe_for_the_retry() {
     let admission = tokio::time::timeout(Duration::from_secs(1), pause.admit())
         .await
         .expect("the probe was left open");
-    admission.probe.expect("claimed by the retry").succeeded();
+    admission.probe.expect("claimed by the retry").detach();
+    pause.note_success("work");
     assert!(!pause.is_paused());
 }
 
@@ -344,7 +346,8 @@ async fn a_repeat_pause_for_the_same_account_continues_the_backoff() {
     let pause = UsagePause::new();
     pause.engage(info(None));
     tokio::time::sleep(FIRST_PROBE_INTERVAL + Duration::from_secs(1)).await;
-    pause.admit().await.probe.expect("the probe").succeeded();
+    pause.admit().await.probe.expect("the probe").detach();
+    pause.note_success("work");
     assert!(!pause.is_paused());
     pause.engage(info(None));
     // The second pause's first probe is not due after one minute again: it starts a step up.
@@ -373,9 +376,43 @@ async fn a_repeat_pause_for_the_same_account_keeps_the_first_deadline() {
     pause.engage(info(None).with_deadline(Some(Duration::from_secs(120))));
     let first = pause.info().unwrap().deadline.unwrap();
     tokio::time::sleep(FIRST_PROBE_INTERVAL + Duration::from_secs(1)).await;
-    pause.admit().await.probe.expect("the probe").succeeded();
+    pause.admit().await.probe.expect("the probe").detach();
+    pause.note_success("work");
     pause.engage(info(None).with_deadline(Some(Duration::from_secs(120))));
     assert_eq!(pause.info().unwrap().deadline, Some(first));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_repeat_pause_after_a_resume_keeps_the_first_deadline() {
+    let pause = UsagePause::new();
+    pause.engage(info(None).with_deadline(Some(Duration::from_secs(120))));
+    let first = pause.info().unwrap().deadline.unwrap();
+    pause.resume();
+    pause.engage(info(None).with_deadline(Some(Duration::from_secs(120))));
+    assert_eq!(pause.info().unwrap().deadline, Some(first));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_probe_is_left_for_the_paused_account_and_only_its_failure_answers_it() {
+    let pause = UsagePause::new();
+    let reset = SystemTime::now() + Duration::from_secs(7200);
+    pause.engage(PauseInfo::new(UsageRole::Main, "work", Some(reset)));
+    tokio::time::sleep(FIRST_PROBE_INTERVAL + Duration::from_secs(7200)).await;
+    let other = tokio::time::timeout(Duration::from_secs(1), pause.admit_for("other")).await;
+    assert!(
+        other.is_err(),
+        "another account's caller does not take the probe"
+    );
+    let own = pause.admit_for("work").await;
+    assert!(own.probe.is_some());
+    // A failure on another account is not the probe's answer: it changes nothing.
+    pause.engage(PauseInfo::new(
+        UsageRole::Guardian,
+        "other",
+        Some(SystemTime::now() + Duration::from_secs(99_999)),
+    ));
+    assert_eq!(pause.info().unwrap().reset_at, Some(reset));
+    drop(own);
 }
 
 #[test]

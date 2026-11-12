@@ -157,6 +157,22 @@ async fn cancelling_the_wait_denies_the_pending_call_as_usage_pause_ended() {
 }
 
 #[tokio::test]
+async fn an_idle_request_is_not_failed_by_an_earlier_cancelled_wait() {
+    let (_, guardian) = guardian_behind(KIMI_WINDOW, 200);
+    let rig = rig(guardian);
+    let pause = rig.state.usage_pause().clone();
+    pause.engage(fontaine_core::usage_pause::PauseInfo::new(
+        fontaine_core::quota::UsageRole::Main,
+        "test",
+        None,
+    ));
+    pause.cancel();
+    assert!(rig.state.usage_gate().await.is_err());
+    assert!(rig.state.usage_gate_idle().await.is_ok());
+    assert!(pause.failure().is_none());
+}
+
+#[tokio::test]
 async fn a_wait_that_runs_out_denies_instead_of_allowing() {
     let (_, guardian) = guardian_behind(KIMI_WINDOW, 200);
     let rig = rig(guardian);

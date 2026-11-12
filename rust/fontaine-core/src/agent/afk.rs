@@ -56,7 +56,7 @@ impl AgentRuntime {
             return;
         };
         let guardian = self.state.guardian();
-        if let Err(ended) = self.state.usage_gate().await {
+        if let Err(ended) = self.state.usage_gate_idle().await {
             self.state.append(Record::AfkAssessment {
                 stretch_seq: report.stretch.started_seq,
                 result: AssessmentResult::Unavailable {

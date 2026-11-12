@@ -1089,12 +1089,7 @@ async fn run_child(
             // child included, and a kill ends the wait.
             if failure.usage_limit.is_some() {
                 let model = shared.model();
-                let account = model
-                    .served
-                    .model
-                    .split_once('/')
-                    .map_or(model.served.model.as_str(), |(account, _)| account)
-                    .to_string();
+                let account = model.served.account().to_string();
                 let waited = tokio::select! {
                     biased;
                     _ = kill.wait_for(|killed| *killed) => None,

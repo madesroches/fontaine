@@ -162,7 +162,7 @@ Fontaine never selects paid usage credits, but it cannot see your account's extr
 it is on, exhausting the included limit can switch a Max or Ultra session to paid credits.
 Disable it at <https://claude.ai/settings/usage> if you need included-subscription-only use. A
 billing failure from the CLI is reported once, without a retry. A plan limit that has used up the
-window (the CLI's rate-limit event said `rejected`, or its text names the usage limit) is a
+window (the CLI's rate-limit event said `rejected`) is a
 [usage window](headless.md#usage-windows) that resets by itself: the first request fails without a
 retry, a [model list](configuration.md#falling-through-to-the-next-entry) moves on to its next entry,
 and when none is left the run pauses until the reset time the CLI reported. A rate limit the CLI

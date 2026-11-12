@@ -143,7 +143,12 @@ impl AgentRuntime {
                 }
             })
         };
-        if let Err(ended) = self.state.usage_gate().await {
+        let gate = if matches!(reason, CompactReason::Asked { .. }) {
+            self.state.usage_gate_idle().await
+        } else {
+            self.state.usage_gate().await
+        };
+        if let Err(ended) = gate {
             self.approver()
                 .warn(&format!("compaction skipped: {ended}"));
             return CompactResult::Failed {
@@ -266,7 +271,7 @@ impl AgentRuntime {
             .await
             .map_err(|e| SideQuestionError::caused_by("the conversation could not be read", e))?;
         self.state
-            .usage_gate()
+            .usage_gate_idle()
             .await
             .map_err(|e| SideQuestionError::caused_by("the wait for the usage window ended", e))?;
         let main = &self.models.main;
@@ -408,7 +413,7 @@ impl AgentRuntime {
                 ));
             }
         };
-        if let Err(ended) = self.state.usage_gate().await {
+        if let Err(ended) = self.state.usage_gate_idle().await {
             return Evaluation::Failed(ended.to_string());
         }
         let judged = evaluator

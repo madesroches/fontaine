@@ -11,7 +11,7 @@ All notable changes are recorded here. The format follows
 - Usage-window pause (#115). A subscription account that has spent its usage window answers every
   request with a 429 until it resets; Fontaine now tells that apart from a transient rate limit
   (the provider's machine code, a `Retry-After` of more than five minutes, or a
-  `claude-subscription` plan limit, never error text) and pauses the whole run instead of retrying
+  `claude-subscription` rate-limit event the CLI marked `rejected`, never error text) and pauses the whole run instead of retrying
   or failing: the main agent, the guardian and every subagent stop at their next provider call, a
   tool call waiting for a guardian verdict stays pending and is judged again from the start when
   the window reopens, and a guardian whose account is spent no longer denies every call with

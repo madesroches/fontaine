@@ -1906,7 +1906,11 @@ impl PermissionPipeline {
         let (mut adjudication, screened) = loop {
             let stage = self.state.composition();
             let guardian = self.state.guardian();
-            if let Err(ended) = self.state.usage_gate().await {
+            if let Err(ended) = self
+                .state
+                .usage_gate_for(crate::usage_ledger::account_of(guardian.label()))
+                .await
+            {
                 break (pause_ended(&guardian, &ended), None);
             }
             let (decided, screened) = match stage {
@@ -1997,10 +2001,7 @@ impl PermissionPipeline {
                 false,
                 &Served::direct(guardian.label()),
             );
-            let account = guardian
-                .label()
-                .split_once('/')
-                .map_or(guardian.label(), |(a, _)| a);
+            let account = crate::usage_ledger::account_of(guardian.label());
             match self
                 .state
                 .pause_for_usage(
