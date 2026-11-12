@@ -77,7 +77,7 @@ fn tmux_load_buffer(args: &[&str], text: &str) -> bool {
 pub(crate) enum ProbeOutcome {
     /// The program could not be started.
     Missing,
-    /// It exited non-zero, timed out or could not be read.
+    /// It timed out, could not be read, or (powershell) exited non-zero.
     Failed,
     /// It ran, and what it printed is not an image.
     NoImage,
@@ -195,6 +195,8 @@ fn probe_table(env: &dyn Fn(&str) -> Option<OsString>, osrelease: &str) -> Vec<R
 enum Run {
     Missing,
     Failed,
+    /// Ran to completion but exited non-zero.
+    NonZero,
     Output(Vec<u8>),
 }
 
@@ -235,7 +237,7 @@ fn run_probe(launcher: &Launcher, program: &OsStr, args: &[OsString], deadline: 
         }
     };
     if !status.success() {
-        return Run::Failed;
+        return Run::NonZero;
     }
     match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(Ok(bytes)) => Run::Output(bytes),
@@ -313,6 +315,10 @@ pub(crate) fn read_image_with(
         let outcome = match run_probe(launcher, OsStr::new(row.program), &row.args, deadline) {
             Run::Missing => ProbeOutcome::Missing,
             Run::Failed => ProbeOutcome::Failed,
+            // wl-paste, xclip and pngpaste exit non-zero when the clipboard holds no image; the
+            // powershell script exits 0 for that, so its non-zero exit is a real failure.
+            Run::NonZero if row.output == Output::Raw => ProbeOutcome::NoImage,
+            Run::NonZero => ProbeOutcome::Failed,
             Run::Output(printed) => match image_of(row.output, &printed) {
                 None => ProbeOutcome::NoImage,
                 Some((bytes, kind)) => {
@@ -599,7 +605,7 @@ mod tests {
         ));
         assert!(matches!(
             run_probe(&launcher, fail.as_os_str(), &[], deadline),
-            Run::Failed
+            Run::NonZero
         ));
     }
 
@@ -632,11 +638,11 @@ mod tests {
             [
                 Probe {
                     program: "wl-paste",
-                    outcome: ProbeOutcome::Failed
+                    outcome: ProbeOutcome::NoImage
                 },
                 Probe {
                     program: "xclip",
-                    outcome: ProbeOutcome::Failed
+                    outcome: ProbeOutcome::NoImage
                 },
                 Probe {
                     program: "powershell.exe",
