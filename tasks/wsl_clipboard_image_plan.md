@@ -13,7 +13,10 @@ empty there, so `read_image` errors "no clipboard here". This plan re-implements
 clipboard-image read in `fontaine-tui` with per-probe diagnostics, a native-Windows probe,
 and a WSL fallback, both reading the Windows clipboard through `powershell.exe
 Get-Clipboard -Format Image`, and makes the "no image" notice name every probe it tried and
-what each one found.
+what each one found. The plan also adds Alt+V as a second default binding for the attach
+action, matching Claude Code's documented image-paste key, because Windows Terminal and
+conhost consume Ctrl+V as their own paste action and may never deliver the key to Fontaine
+— a read-path fix the terminal never lets the user reach would not fix the bug.
 
 ## Current State
 
@@ -43,9 +46,17 @@ what each one found.
 - `docs/tui.md:367-379` documents Ctrl+V as reading "the clipboard image with the desktop's
   own tool (`wl-paste`, `xclip` or `pngpaste`)" and says a missing image is "a one-line
   notice, nothing more".
-- The Ctrl+V key event itself is a plain crossterm key event, not bracketed paste
-  (`rust/fontaine-tui/src/app.rs:3359-3365` tests the mapping directly), so the failure is
-  in the read path, not the input path.
+- The Ctrl+V→AttachClipboard mapping is verified only by a synthetic unit test that feeds
+  a `KeyEvent` straight to `handle_input` (`rust/fontaine-tui/src/app.rs:3359-3365`); key
+  delivery was never checked on a real terminal. Windows Terminal binds Ctrl+V to its
+  `paste` action and conhost under cmd.exe also takes Ctrl+V as paste, so on native
+  Windows the key event may never reach Fontaine and the read path never runs — issue
+  #586 itself calls key delivery "not verified" and "worth ruling out first".
+- Key delivery cannot be verified from a headless environment, so this plan does not bet
+  the fix on it: Alt+V becomes a second default binding for `AttachClipboard` (Claude
+  Code's documented image-paste key), reachable in the terminals that swallow Ctrl+V.
+  No existing binding uses Alt+V — the only other Alt default is Alt+Enter (`newline`) —
+  and the binding map is keyed by keystroke, so the new entry displaces nothing.
 
 ## Design
 
@@ -182,6 +193,22 @@ Every outcome has a fixed label: `not installed` for `Missing`, `failed` for `Fa
 native Windows the notice names `powershell.exe` and its outcome. Error arms (`Err(e)` from the read, spawn
 failure of `spawn_blocking`) keep today's messages.
 
+### Key bindings
+
+`attach_clipboard` gains a second default keystroke, `alt+v`, alongside `ctrl+v`:
+`rust/fontaine-tui/src/keymap.rs` `defaults()` adds `("alt+v", TuiAction::AttachClipboard)`,
+mirroring `newline`'s three defaults of which only one is
+`TuiAction::default_keystroke()`. Alt+V is Claude Code's documented image-paste key and is
+reachable in terminals that consume Ctrl+V as their own paste action (Windows Terminal's
+`paste` binding, conhost under cmd.exe), where the key event never reaches Fontaine. The
+binding map is a `BTreeMap` keyed by keystroke with one action per keystroke, so an entry
+can only displace an action bound to the *same* keystroke; `alt+v` collides with nothing
+(the only other Alt default is `alt+enter` for `newline`) and displaces nothing. User
+`[keybindings]` overrides keep working for both keys: rebinding or unbinding one leaves
+the other. `keys_for(AttachClipboard)` returns both, so `/keybindings` and the status-bar
+hints list `ctrl+v/alt+v`. The read path itself is unchanged — every binding of the action
+dispatches the same `Action::AttachClipboard`.
+
 ## Implementation Steps
 
 1. `rust/fontaine-tui/src/clipboard.rs`: add the read side — `ProbeOutcome`, `Probe`,
@@ -195,10 +222,20 @@ failure of `spawn_blocking`) keep today's messages.
    onto the existing chip logic; replace the `"no image on the clipboard"` arm with the
    probe-naming notice. The viewing-agent guard, scratch guard, and `spawn_blocking` stay.
 3. Add `base64.workspace = true` to `rust/fontaine-tui/Cargo.toml`.
-4. `docs/tui.md` "Attaching files": document the Windows behavior — Ctrl+V also tries the
-   Windows clipboard through `powershell.exe` on native Windows and under WSL, and a failed
-   attach names the probes tried and what each found.
-5. Unit tests (in `clipboard.rs`'s `#[cfg(test)]` module):
+4. `rust/fontaine-tui/src/keymap.rs`: add `("alt+v", TuiAction::AttachClipboard)` to
+   `defaults()` as the action's second default keystroke, and extend the keymap tests so
+   `alt+v` resolves to `AttachClipboard` and `keys_for(AttachClipboard)` lists both
+   `ctrl+v` and `alt+v`. Update the `default_keystroke()` doc comment in
+   `rust/fontaine-core/src/keybindings.rs` to name the extra binding, the way it already
+   names `newline`'s extra defaults.
+5. Docs. `docs/tui.md` key table: the Ctrl-V row becomes "Ctrl-V or Alt-V
+   (`attach_clipboard`)", saying Alt+V is the alternative when the terminal consumes
+   Ctrl+V as its own paste (Windows Terminal, conhost). `docs/tui.md` "Attaching files":
+   Ctrl+V or Alt+V reads the clipboard image with the desktop's own tool and, on native
+   Windows and under WSL, also tries the Windows clipboard through `powershell.exe`; a
+   failed attach names the probes tried and what each found. `docs/configuration.md`
+   keybindings table: the `attach_clipboard` default becomes `` `ctrl+v`, `alt+v` ``.
+6. Unit tests (in `clipboard.rs`'s `#[cfg(test)]` module):
    - probe-table selection for each env combination (Wayland only, X11 only, both, neither,
      WSL on/off) via the injected `env` and `osrelease`, gated to
      `#[cfg(target_os = "linux")]` because the macOS and native-Windows rows are not
@@ -216,7 +253,7 @@ failure of `spawn_blocking`) keep today's messages.
    - the probe runner keeps non-UTF-8 stdout bytes intact and kills a hung child at a short
      injected deadline; `#[cfg(unix)]` because both need a fake program, and the hung child's
      fake uses `exec sleep` so no grandchild holds the pipe.
-6. End-to-end regression test (`#[cfg(all(test, target_os = "linux"))]` in the same module):
+7. End-to-end regression test (`#[cfg(all(test, target_os = "linux"))]` in the same module):
    build a temp dir holding fake `wl-paste` (exit 1), `xclip` (exit 1), and
    `powershell.exe` (a shell script printing the base64 of a known 1×1 PNG), point the
    *child's* PATH at it with `Launcher::with_env("PATH", …)`, inject
@@ -230,7 +267,7 @@ failure of `spawn_blocking`) keep today's messages.
    helper is `pub(crate)` in `fontaine-core/src/test_support.rs` and unreachable from
    fontaine-tui, so a copy lives in this test module rather than moving it to
    `fontaine-testkit`.
-7. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p
+8. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test -p
    fontaine-tui` from `rust/`.
 
 ## Files to Modify
@@ -239,7 +276,13 @@ failure of `spawn_blocking`) keep today's messages.
   fallback, notice formatting, tests.
 - `rust/fontaine-tui/src/ui/mod.rs` — `attach_clipboard` call site and notice.
 - `rust/fontaine-tui/Cargo.toml` — `base64.workspace = true`.
-- `docs/tui.md` — Windows and WSL clipboard behavior and diagnosable notice.
+- `rust/fontaine-tui/src/keymap.rs` — the `alt+v` default binding for `attach_clipboard`
+  and its tests.
+- `rust/fontaine-core/src/keybindings.rs` — `default_keystroke()` doc comment names the
+  extra binding.
+- `docs/tui.md` — Alt+V binding, Windows and WSL clipboard behavior and diagnosable
+  notice.
+- `docs/configuration.md` — the `attach_clipboard` default lists both keys.
 
 `rig_tools::clipboard::read_image` stops being called; the rig dependency itself stays
 (`Launcher` and other tools remain in use).
@@ -257,17 +300,25 @@ failure of `spawn_blocking`) keep today's messages.
 - 2026-11-11: the `powershell.exe Get-Clipboard` fallback follows the owner's direction in
   #586 (Claude Code must read the Windows clipboard some other way, most likely
   powershell.exe); matching Claude Code's exact mechanism remains a follow-up.
+- AFK: 2026-11-11: chose option (b) — add `alt+v` as a second default binding for
+  `attach_clipboard` matching Claude Code's documented image-paste key — over option (a)
+  (verify Ctrl+V delivery first), because key delivery cannot be checked from this
+  headless environment and a read-path fix the terminal never delivers would not fix #586.
+  No conflict: `alt+v` collides with no existing binding and displaces nothing.
 
 ## Documentation
 
-- `docs/tui.md` "Attaching files" — the Ctrl+V bullet gains the Windows/WSL `powershell.exe`
-  probe and the probe-naming notice.
+- `docs/tui.md` key table and "Attaching files" — the Ctrl+V bullet becomes Ctrl+V or
+  Alt+V, and gains the Windows/WSL `powershell.exe` probe and the probe-naming notice.
+- `docs/configuration.md` keybindings table — the `attach_clipboard` default lists
+  `ctrl+v` and `alt+v`.
 - `CHANGELOG.md` — bug-fix entry under the next release (the `pr` skill writes it).
 
 ## Testing Strategy
 
 Unit tests cover the probe table, WSL detection, the powershell script, base64
-decode-sniff-save, the byte-safe probe runner, and notice formatting — all pure or
+decode-sniff-save, the byte-safe probe runner, notice formatting, and the keymap's new
+`alt+v` default — all pure or
 file-local, no live APIs. The
 end-to-end test with fake clipboard programs on the child's PATH reproduces the issue's
 exact scenario (Linux probes find no image; the interop probe does) deterministically and
@@ -279,11 +330,18 @@ CI rule.
 
 ## Manual Verification
 
-1. On the WSL2 machine from the issue, copy a screenshot on the Windows side, run
-   `cargo run -p fontaine` in WSL, press Ctrl+V, and confirm the chip appears and a vision
-   model receives the image. Then clear the clipboard and press Ctrl+V again: the notice
-   must name wl-paste, xclip, and powershell.exe with their outcomes. Not automated: needs
-   a live WSLg session and a real Windows clipboard, outside any test backend.
-2. On native Windows, copy a screenshot, run `cargo run -p fontaine` in cmd.exe, press
-   Ctrl+V, and confirm the chip appears. Then clear the clipboard and press Ctrl+V again:
-   the notice must name `powershell.exe` and its outcome.
+1. On the WSL2 machine from the issue, copy a screenshot on the Windows side (image
+   only, no text on the clipboard), run `cargo run -p fontaine` in WSL, press Ctrl+V, and
+   confirm whether the chip appears — this also settles whether the terminal delivers
+   Ctrl+V or swallows it as paste. Then press Alt+V and confirm the chip appears and a
+   vision model receives the image. Then clear the clipboard and press Alt+V again: the
+   notice must name wl-paste, xclip, and powershell.exe with their outcomes. Not
+   automated: needs a live WSLg session and a real Windows clipboard, outside any test
+   backend.
+2. On native Windows, in both Windows Terminal and conhost (classic console under
+   cmd.exe): copy a screenshot (image only, no text), run `cargo run -p fontaine`, and
+   first press Ctrl+V with only the image on the clipboard — record whether the chip
+   appears or the terminal consumed the key (this is the key-delivery check #586 called
+   for). Then press Alt+V and confirm the chip appears and a vision model receives the
+   image. Then clear the clipboard and press Alt+V again: the notice must name
+   `powershell.exe` and its outcome.
