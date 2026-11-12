@@ -51,7 +51,10 @@ answered; future variants fall back conservatively (the enum is `#[non_exhaustiv
   provider's reply, so the explanation surfaces its status and body;
   `ProviderError::Response` and `ProviderError::MismatchedDimensions` also mean the daemon
   answered, but carry no preserved status/body, so the explanation is formatted from the error's
-  own message. `PromptError::Report` counts as reached only when the report carries
+  own message. `ProviderError::Relayed` reports as its inner `ErrorReport` and flattens into
+  `PromptError::Report` (rig-agent's `#[from]` conversion), so it is covered by the report rule
+  below: reached when that report carries `http_status` or `provider_response`, unreachable
+  otherwise. `PromptError::Report` counts as reached only when the report carries
   `http_status` or `provider_response`; a report with neither is treated as unreachable.
 - **Fallback** — any future `ProviderError` variant classifies as not reached: claim a refusal
   only when a provider reply is certain.
@@ -97,6 +100,10 @@ The `lacks_tool_support` special case stays unchanged. The `FailClosed::Error` o
      context-size body is denied as `GuardianUnavailable` / `FailClosed::Error` and its
      explanation starts with "the guardian model refused the request:" and contains the status
      and body.
+   - Update the existing 500 endpoint-error case in that test to expect "the guardian model
+     refused the request:" instead of "could not be reached" (a 500 is an answered HTTP
+     response, so the reached/refused split changes its wording), or split it into separate 400
+     and 500 tests.
    - Keep the existing connection-reset test asserting `could not be reached`.
    - Keep the call still denied (decision `Deny`, rule `GuardianUnavailable`).
 
@@ -140,6 +147,8 @@ The `lacks_tool_support` special case stays unchanged. The `FailClosed::Error` o
   - transport failure (connection reset) keeps "could not be reached";
   - 400 with a context-size error body gets "refused the request" with status and body, and is
     still denied as `GuardianUnavailable`;
+  - 500 endpoint error is denied as `GuardianUnavailable` with an explanation starting with
+    "the guardian model refused the request:";
   - 401/403 auth refusal gets an explanation starting with "the guardian model refused the
     request:", and is still denied (`Deny` / `GuardianUnavailable`);
   - 400 "does not support tools" keeps the existing "could not be used" wording.
