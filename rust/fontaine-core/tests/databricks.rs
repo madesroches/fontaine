@@ -469,3 +469,40 @@ async fn listing_pages_through_the_model_services_with_a_bearer_token() {
         assert_eq!(header(&request, "authorization"), Some(bearer().as_str()));
     }
 }
+
+#[tokio::test]
+async fn a_mapped_custom_endpoint_takes_the_targets_facts_and_no_warning() {
+    let server = MockServer::start().await;
+    let w = world_with(
+        &server,
+        "\n[accounts.dbx.model_facts]\n\"main.team.router\" = \"claude-sonnet-5-5\"\n",
+    );
+    let handle = resolve(&w, "main.team.router").await.unwrap();
+    let limit = Catalog::builtin()
+        .resolve("anthropic/claude-sonnet-5-5")
+        .unwrap()
+        .spec
+        .max_output_tokens
+        .expect("the catalog lists an output limit");
+    assert_eq!(
+        handle.completion.spec().unwrap().max_output_tokens,
+        Some(limit)
+    );
+    assert_eq!(handle.facts_notice, None);
+}
+
+#[tokio::test]
+async fn an_unmapped_custom_endpoint_warns_and_an_open_model_does_not() {
+    let server = MockServer::start().await;
+    let w = world(&server);
+    let notice = resolve(&w, "main.team.router")
+        .await
+        .unwrap()
+        .facts_notice
+        .expect("a custom endpoint with no facts warns");
+    assert!(notice.contains("[accounts.dbx.model_facts]"), "{notice}");
+    assert_eq!(
+        resolve(&w, "system.ai.kimi-k3").await.unwrap().facts_notice,
+        None
+    );
+}

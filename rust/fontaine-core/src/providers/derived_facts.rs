@@ -186,6 +186,16 @@ pub fn notice(model: &str, resolved: &str, from: &str, also: Option<&str>) -> St
     )
 }
 
+/// The one-time warning for a model with no facts from any source, which is therefore never
+/// compacted automatically.
+pub fn no_facts_notice(model: &str, account: &str) -> String {
+    format!(
+        "Model `{model}` is not one this build of Fontaine knows, so its context window and \
+         output limit are unknown and it is never compacted automatically. If it serves a Claude \
+         model, map it under `[accounts.{account}.model_facts]`."
+    )
+}
+
 fn overlay_onto(spec: &mut ModelSpec, overlay: &Capabilities) {
     // A level it cannot name is dropped, never claimed.
     let levels: Option<Vec<Effort>> = overlay

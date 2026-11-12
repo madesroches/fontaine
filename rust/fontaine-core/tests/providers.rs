@@ -94,6 +94,52 @@ fn wires_belong_to_the_multi_wire_kinds_only() {
 }
 
 #[test]
+fn model_facts_belong_to_anthropic_and_databricks_and_must_resolve() {
+    let anthropic = |table: &str| {
+        parse(&format!(
+            "[accounts.x]\nkind = \"anthropic\"\n\n[accounts.x.model_facts]\n{table}\n"
+        ))
+    };
+    let databricks = |table: &str| {
+        parse(&format!(
+            "[accounts.x]\nkind = \"databricks\"\nbase_url = \"http://localhost:1\"\n\n[accounts.x.model_facts]\n{table}\n"
+        ))
+    };
+    let facts = anthropic("prod-opus = \"claude-opus-5-5\"").unwrap();
+    assert_eq!(
+        facts.accounts.unwrap()["x"].model_facts.as_ref().unwrap()["prod-opus"],
+        "claude-opus-5-5"
+    );
+    databricks("\"main.team.claude\" = \"claude-sonnet-5-5\"").unwrap();
+
+    for kind in [
+        "openai-compatible",
+        "openai",
+        "gemini",
+        "ollama",
+        "openrouter",
+    ] {
+        let err = parse(&format!(
+            "[accounts.x]\nkind = \"{kind}\"\nbase_url = \"http://localhost:1/v1\"\n\n[accounts.x.model_facts]\nm = \"claude-opus-5-5\"\n"
+        ))
+        .unwrap_err();
+        assert!(err.contains("accounts.x.model_facts"), "{kind}: {err}");
+        assert!(err.contains("not used by kind"), "{kind}: {err}");
+    }
+
+    let err = anthropic("prod-opus = \"not-a-model\"").unwrap_err();
+    assert!(err.contains("accounts.x.model_facts"), "{err}");
+    assert!(err.contains("prod-opus"), "{err}");
+    let err = databricks("\"main.team.claude\" = \"kimi-k3\"").unwrap_err();
+    assert!(err.contains("main.team.claude"), "{err}");
+
+    let err = anthropic("claude-opus-5-5 = \"claude-haiku-5-5\"").unwrap_err();
+    assert!(err.contains("claude-opus-5-5"), "{err}");
+    let err = databricks("\"databricks-claude-opus-5-5\" = \"claude-haiku-5-5\"").unwrap_err();
+    assert!(err.contains("databricks-claude-opus-5-5"), "{err}");
+}
+
+#[test]
 fn prompt_caching_keys_belong_to_the_kinds_that_accept_them() {
     for kind in ["anthropic", "opencode-go", "openrouter", "databricks"] {
         let endpoint = if kind == "databricks" {

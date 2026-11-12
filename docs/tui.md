@@ -723,7 +723,7 @@ reply as it is, and replaces the older part with the summary. It shows
 `compacted the conversation: ~41.2k → ~6.3k tokens`, or `nothing to compact` when there is nothing
 older to summarize. Esc interrupts it and leaves the conversation as it was. Messages you type
 meanwhile are put back in the input box when it ends instead of being sent. The model must be one
-the catalog lists (a derived model counts as listed). Compaction also runs on its own before a turn once the conversation outgrows
+the catalog lists (a derived or mapped model counts as listed). Compaction also runs on its own before a turn once the conversation outgrows
 the model's window less a reserve, or earlier if you set
 [`[context] autocompact_window`](configuration.md#context).
 
@@ -732,7 +732,7 @@ skill index, the tool definitions (MCP tools apart), the messages and what is fr
 with the point where compaction runs on its own. `/context all` also lists each instruction file (imported files and rules included)
 and tool, largest first. The numbers are estimates from a character-based counter, not the
 provider's tokenizer, and they count the same way the compaction trigger does. When the model is
-not in the catalog (a derived model counts as listed) there is no `free` row and it never compacts automatically; a catalogued model
+not in the catalog (a derived or mapped model counts as listed) there is no `free` row and it never compacts automatically; a catalogued model
 whose window is not known has no `free` row either and compacts automatically only when
 `autocompact_window` is set. When the total is over the window it says so.
 
@@ -844,7 +844,7 @@ model with no listed model of its name pattern, is drawn dim under the account's
 can never be picked. A group keeps its heading when only its unavailable rows match the filter.
 `/guardian-model`'s overlay and the provider dialog's model picker show these rows too. Switching
 to a model whose facts are derived from a listed model of the same name pattern shows a one-time
-warning in the conversation (see [model discovery](configuration.md#model-discovery)).
+warning in the conversation (see [model discovery](configuration.md#model-discovery)). A model with no facts at all, on an `anthropic` account or a custom `catalog.schema.name` endpoint on a `databricks` one, gets a one-time warning that points at `model_facts`.
 
 `/guardian-model` with no argument opens the same overlay over a live listing of every account, as
 `/model` does, failures included. A pick pins the guardian and saves it as `[guardian] model`; a pick

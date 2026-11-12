@@ -32,6 +32,13 @@ All notable changes are recorded here. The format follows
   Repository-controlled helpers such as `core.fsmonitor`, filter drivers, and `gpg.program`
   cannot execute, so the golden adversarial cases stay green while `git status` and similar
   commands no longer reach the guardian (#61).
+- `model_facts` on `anthropic` and `databricks` accounts maps a model name the host invented (an
+  Azure Foundry deployment, a custom Databricks serving endpoint, a proxy's alias) to the catalog
+  model it serves, so the name takes that model's context window, output limit and tool-choice
+  behavior; the name is not renamed anywhere else and the model stays unpriced. A value the
+  catalog does not resolve, or a key it already lists, is refused at load. A model with no facts
+  at all (an unmapped name on `anthropic`, a custom `catalog.schema.name` endpoint on
+  `databricks`) now gets a one-time warning that points at the key (#167).
 
 - MCP URL-mode elicitation. When a server asks you to open a link, the terminal UI shows the
   server's message, the link and a warning that it leads to an external site the server chose,

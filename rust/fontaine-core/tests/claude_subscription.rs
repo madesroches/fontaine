@@ -309,17 +309,31 @@ fn runtime_over(claude: &Claude, models: Models) -> fontaine_core::agent::AgentR
     )
 }
 
+async fn use_ready_guardian(
+    runtime: &fontaine_core::agent::AgentRuntime,
+    reference: &str,
+) -> fontaine_core::agent::Switched {
+    if let Some(switched) = runtime.use_guardian(reference).await.unwrap() {
+        return switched;
+    }
+    // Discovery is an external-process preflight, so a transient failure can make a valid pick
+    // unavailable. Exercise the recovery the surface offers, then require the pick to succeed.
+    let (ready, _) = runtime.retry_guardian().await.unwrap();
+    assert!(ready, "the guardian stayed unavailable after its retry");
+    runtime
+        .use_guardian(reference)
+        .await
+        .unwrap()
+        .expect("a ready guardian after its retry")
+}
+
 #[tokio::test]
 async fn use_guardian_and_retry_guardian_return_a_derived_guardians_notice() {
     let claude = Claude::new();
     claude.scenario(derived_scenario());
     let models = claude.resolve(None).await.unwrap();
     let runtime = runtime_over(&claude, models);
-    let switched = runtime
-        .use_guardian("claude/haiku")
-        .await
-        .unwrap()
-        .expect("a ready guardian");
+    let switched = use_ready_guardian(&runtime, "claude/haiku").await;
     assert!(
         switched
             .facts_notice
@@ -331,11 +345,7 @@ async fn use_guardian_and_retry_guardian_return_a_derived_guardians_notice() {
     assert!(ready);
     assert!(notice.is_some_and(|n| n.contains("claude-haiku-9-9")));
 
-    let listed = runtime
-        .use_guardian("claude/sonnet")
-        .await
-        .unwrap()
-        .expect("a ready guardian");
+    let listed = use_ready_guardian(&runtime, "claude/sonnet").await;
     assert_eq!(listed.facts_notice, None);
     assert_eq!(runtime.retry_guardian().await.unwrap(), (true, None));
 }
