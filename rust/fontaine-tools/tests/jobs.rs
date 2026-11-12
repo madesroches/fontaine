@@ -354,7 +354,11 @@ async fn job_output_waits_on_a_monitor_and_reports_each_status() {
 #[test]
 fn the_shell_definition_offers_jobs_and_no_longer_forbids_servers() {
     let d = Dirs::new();
-    let tool = fontaine_tools::builtins::shell_for(&d.dir("w"), &Default::default());
+    let tool = fontaine_tools::builtins::shell_for(
+        &d.dir("w"),
+        &Default::default(),
+        Arc::new(fontaine_tools::scope::Scope::new(d.dir("w"), [])),
+    );
     use rig_core::tool::Tool;
     let description = tool.description();
     assert!(description.contains("run_in_background") && description.contains("wait_secs"));

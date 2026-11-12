@@ -54,7 +54,11 @@ impl AgentRuntime {
                     .run(args)
                     .await
             }
-            _ => shell_for(&root, &settings).run(args).await,
+            _ => {
+                shell_for(&root, &settings, self.state.scope())
+                    .run(args)
+                    .await
+            }
         }
         .map_err(|e| e.to_string())?;
         Ok(UserShellRun {

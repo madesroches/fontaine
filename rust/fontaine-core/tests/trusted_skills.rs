@@ -132,7 +132,7 @@ fn guardian_saw_skill(fake: &Fake) -> bool {
 #[tokio::test]
 async fn a_trusted_plugin_skills_specific_rule_is_an_allow_for_the_invoking_agent_only() {
     let s = setup(Auto, "");
-    let text = plugin_skill_text("Bash(git status), Read");
+    let text = plugin_skill_text("Bash(git push), Read");
     install_plugin_skill(&s.rig, &text);
     trust_text(&s.rig, PLUGIN_SKILL, &text);
     let runtime = runtime(&s.rig);
@@ -141,7 +141,7 @@ async fn a_trusted_plugin_skills_specific_rule_is_an_allow_for_the_invoking_agen
         .await
         .unwrap();
 
-    assert!(allowed(&s.rig.check("shell", shell("git status")).await));
+    assert!(allowed(&s.rig.check("shell", shell("git push")).await));
     assert_eq!(last_tier(&s.rig), Tier::AllowRule);
     assert_eq!(s.fake.calls(), 0, "an allow rule never asks the guardian");
 
@@ -156,11 +156,11 @@ async fn a_trusted_plugin_skills_specific_rule_is_an_allow_for_the_invoking_agen
             fontaine_agents::mode::Ladder::Auto,
         )
         .unwrap();
-    s.rig.check_as(&child, "shell", shell("git status")).await;
+    s.rig.check_as(&child, "shell", shell("git push")).await;
     assert_ne!(last_tier(&s.rig), Tier::AllowRule);
 
     s.rig.state.end_turn();
-    s.rig.check("shell", shell("git status")).await;
+    s.rig.check("shell", shell("git push")).await;
     assert_ne!(last_tier(&s.rig), Tier::AllowRule);
 }
 

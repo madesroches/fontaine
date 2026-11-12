@@ -560,7 +560,7 @@ pub struct Environment<'a> {
 
 impl Environment<'_> {
     /// The resolved working directory, or `None` when it is outside every root.
-    fn base(&self) -> Option<PathBuf> {
+    pub(crate) fn base(&self) -> Option<PathBuf> {
         match self.cwd {
             None => Some(self.scope.primary().to_path_buf()),
             Some(cwd) => self.scope.find(cwd).ok().map(|(_, path)| path),
@@ -590,6 +590,54 @@ struct Spec {
     command: &'static str,
     short: &'static [(char, Val)],
     long: &'static [(&'static str, Val)],
+}
+
+/// A parsed read-only `git` subcommand that the fast path can execute through `gix`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GitCommand {
+    /// `git status` with no flags.
+    Status,
+    /// `git diff` with optional `--cached`/`--staged` and path positionals.
+    Diff { cached: bool, paths: Vec<String> },
+    /// `git log` with an optional `-n`/`--max-count` limit and no path positionals.
+    Log { max_count: Option<usize> },
+    /// `git show <rev>` or `<rev>:<path>` with optional `--stat`.
+    Show {
+        rev: String,
+        path: Option<String>,
+        stat: bool,
+    },
+    /// `git ls-files` with no flags.
+    LsFiles,
+    /// `git branch` with optional `-a`, `-r`, `-v`, `-vv`.
+    Branch {
+        all: bool,
+        remotes: bool,
+        verbose: u8,
+    },
+    /// `git rev-parse HEAD`.
+    RevParseHead,
+    /// `git tag` with optional `-l` and `-n N`.
+    Tag { list: bool, lines: Option<usize> },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GitVal {
+    None,
+    Int,
+    Rev,
+    Path,
+    /// `<rev>:<path>`; the rev is literal and the path part is containment-checked.
+    RevPath,
+}
+
+struct GitSpec {
+    subcommand: &'static str,
+    short: &'static [(char, GitVal)],
+    long: &'static [(&'static str, GitVal)],
+    positional_kind: GitVal,
+    /// Maximum number of positional arguments allowed; `None` means any number.
+    max_positionals: Option<usize>,
 }
 
 const SPECS: &[Spec] = &[
@@ -717,6 +765,69 @@ const SPECS: &[Spec] = &[
     },
 ];
 
+const GIT_SPECS: &[GitSpec] = &[
+    GitSpec {
+        subcommand: "status",
+        short: &[],
+        long: &[],
+        positional_kind: GitVal::None,
+        max_positionals: Some(0),
+    },
+    GitSpec {
+        subcommand: "diff",
+        short: &[],
+        long: &[("cached", GitVal::None), ("staged", GitVal::None)],
+        positional_kind: GitVal::Path,
+        max_positionals: None,
+    },
+    GitSpec {
+        subcommand: "log",
+        short: &[('n', GitVal::Int)],
+        long: &[("max-count", GitVal::Int)],
+        positional_kind: GitVal::None,
+        max_positionals: Some(0),
+    },
+    GitSpec {
+        subcommand: "show",
+        short: &[],
+        long: &[("stat", GitVal::None)],
+        positional_kind: GitVal::RevPath,
+        max_positionals: Some(1),
+    },
+    GitSpec {
+        subcommand: "ls-files",
+        short: &[],
+        long: &[],
+        positional_kind: GitVal::None,
+        max_positionals: Some(0),
+    },
+    GitSpec {
+        subcommand: "branch",
+        short: &[
+            ('a', GitVal::None),
+            ('r', GitVal::None),
+            ('v', GitVal::None),
+        ],
+        long: &[],
+        positional_kind: GitVal::None,
+        max_positionals: Some(0),
+    },
+    GitSpec {
+        subcommand: "rev-parse",
+        short: &[],
+        long: &[],
+        positional_kind: GitVal::Rev,
+        max_positionals: Some(1),
+    },
+    GitSpec {
+        subcommand: "tag",
+        short: &[('l', GitVal::None), ('n', GitVal::Int)],
+        long: &[],
+        positional_kind: GitVal::None,
+        max_positionals: Some(0),
+    },
+];
+
 /// The curated read-only set plus the user's flag-free additions.
 #[derive(Clone, Debug, Default)]
 pub struct Preclassifier {
@@ -760,6 +871,10 @@ impl Preclassifier {
         if let Some(spec) = SPECS.iter().find(|s| s.command == name) {
             return curated(spec, &argv[1..], env, &base, &mut paths).then_some(paths);
         }
+        if program_name(name) == "git" {
+            let (_, git_paths) = self.parse_git(command, env)?;
+            return Some(git_paths);
+        }
         let allowed = self.extra.iter().any(|entry| {
             if entry[0] != name {
                 return false;
@@ -781,6 +896,29 @@ impl Preclassifier {
             ok
         });
         allowed.then_some(paths)
+    }
+
+    /// Parse a one-simple-command `git` invocation into a structured command and the path
+    /// operands that must lie inside the workspace. Returns `None` when the command is not
+    /// exactly one simple `git` command, names an unsupported subcommand or flag, or has a
+    /// path argument outside the workspace roots.
+    pub fn parse_git(
+        &self,
+        command: &str,
+        env: &Environment<'_>,
+    ) -> Option<(GitCommand, Vec<String>)> {
+        let analysis = analyze(command);
+        let argv = analysis.simple.as_ref()?;
+        let base = env.base()?;
+        let name = argv[0].as_str();
+        if program_name(name) != "git" {
+            return None;
+        }
+        let (subcommand, args) = argv
+            .split_first()
+            .and_then(|(_, rest)| rest.split_first())?;
+        let spec = GIT_SPECS.iter().find(|s| s.subcommand == subcommand)?;
+        parse_git_args(spec, args, env, &base)
     }
 }
 
@@ -887,6 +1025,205 @@ fn curated(
         }
     }
     true
+}
+
+fn rev_is_literal(value: &str) -> bool {
+    value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/')
+}
+
+fn git_value_ok(
+    kind: GitVal,
+    value: &str,
+    env: &Environment<'_>,
+    base: &Path,
+    paths: &mut Vec<String>,
+) -> bool {
+    match kind {
+        GitVal::None => false,
+        GitVal::Int => value.parse::<i64>().is_ok(),
+        GitVal::Rev => !value.is_empty() && !value.starts_with('-') && rev_is_literal(value),
+        GitVal::Path => {
+            let ok = !value.starts_with('-') && env.in_scope(base, value);
+            if ok {
+                paths.push(value.to_string());
+            }
+            ok
+        }
+        GitVal::RevPath => {
+            if value.starts_with('-') || value.is_empty() {
+                return false;
+            }
+            let Some((rev, path)) = value.split_once(':') else {
+                return rev_is_literal(value);
+            };
+            if rev.is_empty() || path.is_empty() || path.contains(':') {
+                return false;
+            }
+            let ok = env.in_scope(base, path);
+            if ok {
+                paths.push(path.to_string());
+            }
+            ok
+        }
+    }
+}
+
+fn parse_git_args(
+    spec: &GitSpec,
+    args: &[String],
+    env: &Environment<'_>,
+    base: &Path,
+) -> Option<(GitCommand, Vec<String>)> {
+    let mut paths = Vec::new();
+    let mut positionals = Vec::new();
+    let mut i = 0;
+    // Flag state collected during parsing. Each entry is (flag_name, optional_value).
+    let mut seen_flags: Vec<(String, Option<String>)> = Vec::new();
+
+    while i < args.len() {
+        let arg = args[i].as_str();
+        i += 1;
+        if arg == "-" || !arg.starts_with('-') {
+            if spec.positional_kind == GitVal::None {
+                return None;
+            }
+            if !git_value_ok(spec.positional_kind, arg, env, base, &mut paths) {
+                return None;
+            }
+            positionals.push(arg.to_string());
+            continue;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            if long.is_empty() {
+                return None;
+            }
+            let (name, attached) = match long.split_once('=') {
+                Some((name, value)) => (name, Some(value)),
+                None => (long, None),
+            };
+            let (_, kind) = spec.long.iter().find(|(n, _)| *n == name)?;
+            match (*kind, attached) {
+                (GitVal::None, None) => seen_flags.push((name.to_string(), None)),
+                (GitVal::None, Some(_)) => return None,
+                (kind, Some(value)) => {
+                    if !git_value_ok(kind, value, env, base, &mut paths) {
+                        return None;
+                    }
+                    seen_flags.push((name.to_string(), Some(value.to_string())));
+                }
+                (kind, None) => {
+                    let value = args.get(i)?;
+                    i += 1;
+                    if !git_value_ok(kind, value, env, base, &mut paths) {
+                        return None;
+                    }
+                    seen_flags.push((name.to_string(), Some(value.clone())));
+                }
+            }
+            continue;
+        }
+        let letters: Vec<(usize, char)> = arg.char_indices().skip(1).collect();
+        let mut consumed_value = false;
+        for (n, (at, letter)) in letters.iter().enumerate() {
+            let (_, kind) = spec.short.iter().find(|(c, _)| c == letter)?;
+            if *kind == GitVal::None {
+                seen_flags.push((letter.to_string(), None));
+                continue;
+            }
+            let rest = &arg[at + letter.len_utf8()..];
+            if !rest.is_empty() {
+                if !git_value_ok(*kind, rest, env, base, &mut paths) {
+                    return None;
+                }
+                seen_flags.push((letter.to_string(), Some(rest.to_string())));
+            } else {
+                debug_assert_eq!(n, letters.len() - 1);
+                let value = args.get(i)?;
+                i += 1;
+                if !git_value_ok(*kind, value, env, base, &mut paths) {
+                    return None;
+                }
+                seen_flags.push((letter.to_string(), Some(value.clone())));
+            }
+            consumed_value = true;
+            break;
+        }
+        if consumed_value {
+            continue;
+        }
+    }
+
+    if let Some(max) = spec.max_positionals && paths.len() > max {
+        return None;
+    }
+
+    let cmd = build_git_command(spec.subcommand, &seen_flags, &positionals)?;
+    Some((cmd, paths))
+}
+
+fn build_git_command(
+    subcommand: &str,
+    flags: &[(String, Option<String>)],
+    positionals: &[String],
+) -> Option<GitCommand> {
+    match subcommand {
+        "status" => Some(GitCommand::Status),
+        "diff" => {
+            let cached = flags.iter().any(|(n, _)| n == "cached" || n == "staged");
+            Some(GitCommand::Diff {
+                cached,
+                paths: positionals.to_vec(),
+            })
+        }
+        "log" => {
+            let max_count = flags
+                .iter()
+                .find(|(n, _)| n == "n" || n == "max-count")
+                .and_then(|(_, v)| v.as_deref().and_then(|s| s.parse::<usize>().ok()));
+            Some(GitCommand::Log { max_count })
+        }
+        "show" => {
+            let stat = flags.iter().any(|(n, _)| n == "stat");
+            let (rev, path) = match positionals.first() {
+                Some(p) if p.contains(':') => {
+                    let (r, pa) = p.split_once(':').unwrap();
+                    (r.to_string(), Some(pa.to_string()))
+                }
+                Some(p) => (p.clone(), None),
+                None => ("HEAD".to_string(), None),
+            };
+            Some(GitCommand::Show { rev, path, stat })
+        }
+        "ls-files" => Some(GitCommand::LsFiles),
+        "branch" => {
+            let all = flags.iter().any(|(n, _)| n == "a");
+            let remotes = flags.iter().any(|(n, _)| n == "r");
+            let verbose = flags.iter().filter(|(n, _)| n == "v").count().clamp(0, 2) as u8;
+            Some(GitCommand::Branch {
+                all,
+                remotes,
+                verbose,
+            })
+        }
+        "rev-parse" => {
+            if positionals.first().map(String::as_str) == Some("HEAD") {
+                Some(GitCommand::RevParseHead)
+            } else {
+                None
+            }
+        }
+        "tag" => {
+            let list = flags.iter().any(|(n, _)| n == "l");
+            let lines = flags
+                .iter()
+                .find(|(n, _)| n == "n")
+                .and_then(|(_, v)| v.as_deref().and_then(|s| s.parse::<usize>().ok()));
+            Some(GitCommand::Tag { list, lines })
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -1104,5 +1441,118 @@ mod tests {
         assert!(raw_mentions_word("echo 'x; rm -rf /", &["rm"]));
         assert!(!raw_mentions_word("echo format", &["rm"]));
         assert!(!raw_mentions_word("echo rm-rf", &["rm"]));
+    }
+
+    fn git_env() -> Environment<'static> {
+        // A fake scope that treats every path as in-scope.
+        static SCOPE: std::sync::OnceLock<Scope> = std::sync::OnceLock::new();
+        let scope = SCOPE.get_or_init(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            Scope::new(tmp.path().to_path_buf(), [])
+        });
+        Environment { scope, cwd: None }
+    }
+
+    fn parse_git(command: &str) -> Option<GitCommand> {
+        Preclassifier::default()
+            .parse_git(command, &git_env())
+            .map(|(cmd, _)| cmd)
+    }
+
+    #[test]
+    fn git_fast_path_parses_supported_subcommands() {
+        assert_eq!(parse_git("git status"), Some(GitCommand::Status));
+        assert_eq!(
+            parse_git("git diff"),
+            Some(GitCommand::Diff {
+                cached: false,
+                paths: vec![]
+            })
+        );
+        assert_eq!(
+            parse_git("git diff --cached src"),
+            Some(GitCommand::Diff {
+                cached: true,
+                paths: vec!["src".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_git("git log -n 5"),
+            Some(GitCommand::Log { max_count: Some(5) })
+        );
+        assert_eq!(
+            parse_git("git log --max-count=10"),
+            Some(GitCommand::Log {
+                max_count: Some(10)
+            })
+        );
+        assert_eq!(
+            parse_git("git show HEAD"),
+            Some(GitCommand::Show {
+                rev: "HEAD".to_string(),
+                path: None,
+                stat: false
+            })
+        );
+        assert_eq!(
+            parse_git("git show HEAD:src/main.rs --stat"),
+            Some(GitCommand::Show {
+                rev: "HEAD".to_string(),
+                path: Some("src/main.rs".to_string()),
+                stat: true
+            })
+        );
+        assert_eq!(parse_git("git ls-files"), Some(GitCommand::LsFiles));
+        assert_eq!(
+            parse_git("git branch -av"),
+            Some(GitCommand::Branch {
+                all: true,
+                remotes: false,
+                verbose: 1
+            })
+        );
+        assert_eq!(
+            parse_git("git branch -vv"),
+            Some(GitCommand::Branch {
+                all: false,
+                remotes: false,
+                verbose: 2
+            })
+        );
+        assert_eq!(
+            parse_git("git rev-parse HEAD"),
+            Some(GitCommand::RevParseHead)
+        );
+        assert_eq!(
+            parse_git("git tag -l -n 2"),
+            Some(GitCommand::Tag {
+                list: true,
+                lines: Some(2)
+            })
+        );
+    }
+
+    #[test]
+    fn git_fast_path_rejects_unsupported_invocations() {
+        for command in [
+            "git status --porcelain",
+            "git diff --ext-diff",
+            "git log --output=x",
+            "git log src",
+            "git show HEAD:src/main.rs:extra",
+            "git push origin main",
+            "git pull",
+            "git commit -m x",
+            "git status; git log",
+            "git status && git log",
+            "git log $(pwd)",
+            "git log $HOME",
+            "git log *",
+            "git log ~",
+            "git log {a,b}",
+            "git log > out",
+        ] {
+            assert_eq!(parse_git(command), None, "{command}");
+        }
     }
 }

@@ -175,6 +175,10 @@ pub fn registry(params: RegistryParams) -> Result<Vec<Registered>, String> {
         wait_wake: params.wait_wake,
         shell_cwd: params.shell_cwd,
         scratch: params.scratch,
+        git_fast_path_runner: Some(Arc::new(|cmd, repo_root, cwd| {
+            crate::git_fast_path::run(cmd, repo_root, cwd)
+                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync + 'static>)
+        })),
     })
     .map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     if let Some(extension) = params.extension {

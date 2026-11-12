@@ -11,6 +11,7 @@ use fontaine_tools::git_bash::GitBash;
 use fontaine_tools::names::is_builtin;
 use fontaine_tools::powershell::PowerShellSettings;
 use fontaine_tools::risk::RiskClass;
+use fontaine_tools::scope::Scope;
 use rig_core::tool::{Tool, ToolContext};
 use rig_tools::{OutputLimit, Seen, WriteArgs};
 
@@ -270,7 +271,7 @@ fn the_shell_is_confined_clamped_and_cut() {
         git_bash: None,
         powershell: None,
     };
-    let tool = builtins::shell_for(&root, &settings);
+    let tool = builtins::shell_for(&root, &settings, Arc::new(Scope::new(root.clone(), [])));
     assert!(!tool.through_env);
     assert_eq!(tool.max_timeout, 7);
     let shell = tool.shell;
@@ -297,7 +298,14 @@ fn the_shell_is_confined_clamped_and_cut() {
         }),
         ..settings
     };
-    assert!(builtins::shell_for(&root, &with_git_bash).through_env);
+    assert!(
+        builtins::shell_for(
+            &root,
+            &with_git_bash,
+            Arc::new(Scope::new(root.clone(), []))
+        )
+        .through_env
+    );
 }
 
 #[cfg(unix)]

@@ -26,6 +26,13 @@ All notable changes are recorded here. The format follows
   `exit`). Waiting does not count against a subagent's run time. Deviates from Claude Code, which
   reports its limit and stops.
 
+- Safe read-only fast path for `git` commands. Common read-only git subcommands (`status`,
+  `diff`, `log`, `show`, `ls-files`, `branch`, `rev-parse HEAD`, `tag`) now take the Tier-0.5
+  pre-classifier fast path by executing through `gix` with isolated, strict configuration.
+  Repository-controlled helpers such as `core.fsmonitor`, filter drivers, and `gpg.program`
+  cannot execute, so the golden adversarial cases stay green while `git status` and similar
+  commands no longer reach the guardian (#61).
+
 - MCP URL-mode elicitation. When a server asks you to open a link, the terminal UI shows the
   server's message, the link and a warning that it leads to an external site the server chose,
   and opens it in your default browser only after you confirm with `y`; every request is
