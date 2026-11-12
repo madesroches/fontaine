@@ -189,6 +189,7 @@ pub struct App {
     pub agent_list: AgentList,
     /// The linear renderer draws no agent list, so the keyboard must never move onto it.
     pub linear: bool,
+    pub(crate) links: crate::hyperlink::Links,
     /// What the human typed to the viewed agent that it has not read yet.
     pub queued_agent: Vec<String>,
     pub input: InputBuffer,
@@ -408,6 +409,7 @@ impl App {
             committed_under_overlay: false,
             agent_list: AgentList::default(),
             linear: false,
+            links: crate::hyperlink::Links::default(),
             queued_agent: Vec::new(),
             input: InputBuffer::default(),
             keymap: Keymap::default(),
@@ -618,6 +620,12 @@ impl App {
             .and_then(|(_, head)| head.as_deref())
             .and_then(fontaine_core::git_head::parse);
         self.branch = head.map(|head| head.label().to_string());
+    }
+
+    /// Relative paths in the transcript resolve against the primary root, as file tools and the
+    /// `!` shell do, not the model shell's cwd, which moves on every `cd`.
+    pub fn set_link_root(&mut self, root: &std::path::Path) {
+        self.links.set_context(root);
     }
 
     pub fn set_files(&mut self, files: Arc<Vec<String>>) {

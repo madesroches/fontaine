@@ -18,6 +18,7 @@ pub mod diff;
 pub mod elicitation;
 pub mod guardian_prompt;
 pub mod history;
+mod hyperlink;
 pub mod input;
 pub mod keymap;
 pub mod linear;
@@ -794,6 +795,7 @@ pub async fn run(
     // ends the way it does when the terminal closes.
     let on_error = stop.clone();
     let mut linear = linear::Linear::new(std::io::stdout());
+    let hyperlinks = hyperlink::supported(|k| std::env::var(k).ok(), cfg!(windows));
     let result = drive(
         setup,
         launch_dir,
@@ -801,15 +803,18 @@ pub async fn run(
         rx,
         move |app| {
             let rendered = match &screen {
-                Some(screen) => match screen.lock() {
-                    Ok(mut screen) => if app.flush {
-                        screen.commit_all(app)
-                    } else {
-                        screen.render(app)
+                Some(screen) => {
+                    app.links.enabled = hyperlinks;
+                    match screen.lock() {
+                        Ok(mut screen) => if app.flush {
+                            screen.commit_all(app)
+                        } else {
+                            screen.render(app)
+                        }
+                        .is_ok(),
+                        Err(_) => false,
                     }
-                    .is_ok(),
-                    Err(_) => false,
-                },
+                }
                 None => {
                     app.linear = true;
                     linear.render(app).is_ok()

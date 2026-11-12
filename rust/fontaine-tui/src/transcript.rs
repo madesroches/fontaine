@@ -11,9 +11,12 @@ use serde_json::Value;
 
 use crate::commands::ExpandTarget;
 use crate::diff::diff_rows;
+use crate::hyperlink::Kinds;
 use crate::input::wrap;
-use crate::markdown::{self, link_spans};
+use crate::markdown::{self, chunk_spans, link_spans, link_wrap, link_wrap_open};
 use crate::theme::{Glyphs, Theme};
+
+type Cells = Vec<Span<'static>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -906,7 +909,28 @@ impl Cut {
             return Vec::new();
         };
         let mut all = assistant_rows(text, from, width, true, glyphs, link);
-        all.pop();
+        // A reference still streaming at the end stays live whole, or its leading rows would be
+        // committed plain.
+        let row_text = |r: &(Line<'static>, usize)| -> String {
+            r.0.spans.iter().map(|s| s.content.as_ref()).collect()
+        };
+        let mut live = all.len().saturating_sub(1);
+        while live > 0 {
+            let (prev, cur) = (row_text(&all[live - 1]), row_text(&all[live]));
+            let before = if live >= 2 { all[live - 2].1 } else { from };
+            let joined = all[live - 1].1 - before == prev.chars().count()
+                && prev.chars().last().is_some_and(|c| !c.is_whitespace())
+                && cur.chars().next().is_some_and(|c| !c.is_whitespace());
+            if !joined {
+                break;
+            }
+            live -= 1;
+        }
+        let tail: String = all[live..].iter().map(row_text).collect();
+        if !tail.contains("://") {
+            live = all.len().saturating_sub(1);
+        }
+        all.truncate(live);
         let mut keep = rows.min(all.len());
         // A rendered block's rows share one end offset, and the cursor must not land inside it.
         while keep > 0 && keep < all.len() && all[keep].1 == all[keep - 1].1 {
@@ -972,26 +996,41 @@ pub(crate) fn truncate(text: &str, width: usize) -> String {
 }
 
 fn prefixed(text: &str, width: usize, first: &str, style: Style, out: &mut Vec<Line<'static>>) {
-    prefixed_body(text, width, first, style, Style::default(), out);
+    prefixed_body(text, width, first, style, Style::default(), None, out);
 }
 
-/// `prefixed` with the wrapped text itself styled, not just the prefix.
+/// `prefixed` with the wrapped text itself styled, not just the prefix, and with the URLs in it
+/// linked when `link` is given.
 fn prefixed_body(
     text: &str,
     width: usize,
     first: &str,
     style: Style,
     body_style: Style,
+    link: Option<Style>,
     out: &mut Vec<Line<'static>>,
 ) {
     let indent = " ".repeat(first.chars().count());
     let body = width.saturating_sub(indent.chars().count());
     let mut head = true;
     for line in text.split('\n') {
-        for piece in wrap(line, body) {
-            let prefix = if head { first } else { indent.as_str() };
-            head = false;
-            out.push(row(prefix, style, body_style, piece));
+        match link {
+            None => {
+                for piece in wrap(line, body) {
+                    let prefix = if head { first } else { indent.as_str() };
+                    head = false;
+                    out.push(row(prefix, style, body_style, piece));
+                }
+            }
+            Some(link) => {
+                for piece in link_wrap(line, body_style, link, Kinds::URL, body) {
+                    let prefix = if head { first } else { indent.as_str() };
+                    head = false;
+                    let mut spans = vec![Span::styled(prefix.to_string(), style)];
+                    spans.extend(piece);
+                    out.push(Line::from(spans));
+                }
+            }
         }
     }
 }
@@ -1004,7 +1043,7 @@ fn row(prefix: &str, style: Style, body_style: Style, piece: String) -> Line<'st
 }
 
 /// How URLs and link text are drawn: the link colour, underlined so colour is not the only cue.
-fn link_style(theme: &Theme) -> Style {
+pub(crate) fn link_style(theme: &Theme) -> Style {
     Style::default()
         .fg(theme.link)
         .add_modifier(Modifier::UNDERLINED)
@@ -1019,14 +1058,21 @@ fn plain_rows(text: &str, from: usize, width: usize, link: Style) -> Vec<(Line<'
     let mut offset = from;
     let mut lines = rest.split('\n').peekable();
     while let Some(line) = lines.next() {
-        let pieces = wrap(line, width);
+        let wrap = if lines.peek().is_some() {
+            link_wrap
+        } else {
+            link_wrap_open
+        };
+        let pieces = wrap(line, Style::default(), link, Kinds::URL, width);
         let last = pieces.len() - 1;
-        for (i, piece) in pieces.into_iter().enumerate() {
-            offset += piece.chars().count();
+        for (i, spans) in pieces.into_iter().enumerate() {
+            offset += spans
+                .iter()
+                .map(|s| s.content.chars().count())
+                .sum::<usize>();
             if i == last && lines.peek().is_some() {
                 offset += 1;
             }
-            let spans = link_spans(&piece, Style::default(), link);
             rows.push((Line::from(spans), offset));
         }
     }
@@ -1113,7 +1159,15 @@ fn entry_lines(
             severity: Severity::Info,
             headline,
             ..
-        } => prefixed(headline, width, glyphs.info, dim, out),
+        } => prefixed_body(
+            headline,
+            width,
+            glyphs.info,
+            dim,
+            Style::default(),
+            Some(link_style(theme)),
+            out,
+        ),
         Entry::Attachment(text) => prefixed(
             text,
             width,
@@ -1132,8 +1186,8 @@ fn entry_lines(
         } => {
             prefixed(&format!("! {command}"), width, "", dim, out);
             for line in output.trim_end().split('\n') {
-                for piece in wrap(line, width) {
-                    out.push(Line::from(link_spans(&piece, dim, link_style(theme))));
+                for spans in link_wrap(line, dim, link_style(theme), Kinds::OUTPUT, width) {
+                    out.push(Line::from(spans));
                 }
             }
             out.push(Line::default());
@@ -1359,18 +1413,20 @@ fn tool_lines(
         // filled and count the rest at one row per `body` characters.
         let lines: Vec<&str> = output.text.split('\n').collect();
         let mut taken = if full { 0 } else { lines.len() };
-        let mut tail: Vec<Vec<String>> = Vec::new();
+        let link = link_style(theme);
+        let wrap_line = |l: &str| link_wrap(l, dim, link, Kinds::OUTPUT, body);
+        let mut tail: Vec<Vec<Cells>> = Vec::new();
         let mut count = 0;
         while taken > 0 && count < OUTPUT_ROWS {
             taken -= 1;
-            let wrapped = wrap(lines[taken], body);
+            let wrapped = wrap_line(lines[taken]);
             count += wrapped.len();
             tail.push(wrapped);
         }
         if full {
-            tail = lines.iter().rev().map(|l| wrap(l, body)).collect();
+            tail = lines.iter().rev().map(|l| wrap_line(l)).collect();
         }
-        let rows: Vec<String> = tail.into_iter().rev().flatten().collect();
+        let rows: Vec<Cells> = tail.into_iter().rev().flatten().collect();
         let hidden = rows.len().saturating_sub(OUTPUT_ROWS);
         let before: usize = lines[..taken]
             .iter()
@@ -1378,32 +1434,25 @@ fn tool_lines(
             .sum();
         let skipped = if full { 0 } else { before + hidden };
         let rows = &rows[if full { 0 } else { hidden }..];
-        let link = link_style(theme);
-        let mut push = |text: &str, linkify: bool| {
+        let mut push = |body: Cells| {
             let mut spans = vec![Span::styled(format!("  {gutter}"), dim)];
-            if linkify {
-                spans.extend(link_spans(text, dim, link));
-            } else {
-                spans.push(Span::styled(text.to_string(), dim));
-            }
+            spans.extend(body);
             out.push(Line::from(spans));
         };
+        let plain = |text: &str| vec![Span::styled(text.to_string(), dim)];
         if skipped > 0 {
             cut = true;
-            push(&format!("… {skipped} earlier rows"), false);
+            push(plain(&format!("… {skipped} earlier rows")));
         }
         for row in rows {
-            push(row, true);
+            push(row.clone());
         }
         if output.clipped {
             if full {
-                push(
-                    &format!(
-                        "… clipped: only the first and last {} KiB of the output are kept",
-                        OUTPUT_KEEP_BYTES / 2048
-                    ),
-                    false,
-                );
+                push(plain(&format!(
+                    "… clipped: only the first and last {} KiB of the output are kept",
+                    OUTPUT_KEEP_BYTES / 2048
+                )));
             } else {
                 cut = true;
             }
@@ -1425,7 +1474,16 @@ fn warning_lines(
     let style = Style::default().fg(theme.warning);
     let indent = " ".repeat(glyphs.warning.chars().count());
     let body = width.saturating_sub(indent.chars().count());
-    prefixed_body(headline, width, glyphs.warning, style, style, out);
+    let link = link_style(theme);
+    prefixed_body(
+        headline,
+        width,
+        glyphs.warning,
+        style,
+        style,
+        Some(link),
+        out,
+    );
     let Some(hint) = hint else {
         return;
     };
@@ -1434,26 +1492,49 @@ fn warning_lines(
     // Backticks pair up across the whole hint, so a span that wraps stays bold on both rows.
     let mut in_ticks = false;
     for line in hint.split('\n') {
-        for piece in wrap(line, body) {
+        let spans = hint_spans(line, &mut in_ticks, dim, bold, link);
+        for piece in chunk_spans(&spans, body) {
             let mut spans = vec![Span::styled(indent.clone(), dim)];
-            spans.extend(hint_spans(&piece, &mut in_ticks, dim, bold));
+            spans.extend(piece);
             out.push(Line::from(spans));
         }
     }
 }
 
-/// Splits one wrapped row of a hint into dim text and bold actionable spans: what sits between
-/// backticks (the backticks included) and `/command` words. `in_ticks` carries across rows.
-fn hint_spans(piece: &str, in_ticks: &mut bool, dim: Style, bold: Style) -> Vec<Span<'static>> {
+/// Splits one hint line (before wrapping) into dim text and bold actionable spans: what sits between
+/// backticks (the backticks included) and `/command` words. `in_ticks` carries across lines.
+fn hint_spans(
+    piece: &str,
+    in_ticks: &mut bool,
+    dim: Style,
+    bold: Style,
+    link: Style,
+) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
     let mut run_bold = *in_ticks;
     let flush = |run: &mut String, run_bold: bool, spans: &mut Vec<Span<'static>>| {
-        if !run.is_empty() {
-            spans.push(Span::styled(
-                std::mem::take(run),
-                if run_bold { bold } else { dim },
-            ));
+        let text = std::mem::take(run);
+        if text.is_empty() {
+            return;
+        }
+        if !run_bold {
+            spans.extend(link_spans(&text, dim, link, Kinds::URL));
+            return;
+        }
+        // The backticks stay bold and out of the link, as `trim_url` would not strip them.
+        let open = text.starts_with('`');
+        let rest = text.strip_prefix('`').unwrap_or(&text);
+        let close = rest.ends_with('`');
+        let inner = rest.strip_suffix('`').unwrap_or(rest);
+        if open {
+            spans.push(Span::styled("`".to_string(), bold));
+        }
+        if !inner.is_empty() {
+            spans.extend(link_spans(inner, bold, link, Kinds::URL));
+        }
+        if close {
+            spans.push(Span::styled("`".to_string(), bold));
         }
     };
     let chars: Vec<char> = piece.chars().collect();
@@ -2954,10 +3035,10 @@ mod tests {
     fn a_streaming_tail_colors_its_urls() {
         let theme = link_theme();
         let mut t = Transcript::default();
-        delta(&mut t, "tail https://a.io/s");
+        delta(&mut t, "tail https://a.io/s now");
         let lines = t.live_lines(60, &theme);
         assert_eq!(colored(&lines, &theme), vec!["https://a.io/s"]);
-        assert_eq!(text(&lines), vec!["tail https://a.io/s"]);
+        assert_eq!(text(&lines), vec!["tail https://a.io/s now"]);
     }
 
     #[test]
@@ -2986,13 +3067,142 @@ mod tests {
         assert_eq!(colored(&lines, &theme)[1], "https://a.io/sh");
     }
 
+    /// The ref of every tagged span, in order.
+    fn targets(lines: &[Line<'static>]) -> Vec<crate::hyperlink::Ref> {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter_map(|s| crate::hyperlink::ref_of_style(s.style))
+            .collect()
+    }
+
+    fn url(u: &str) -> crate::hyperlink::Ref {
+        crate::hyperlink::Ref::Url(u.into())
+    }
+
     #[test]
-    fn call_rows_notices_and_errors_are_not_linkified() {
+    fn a_reference_at_the_end_of_a_stream_is_not_tagged_until_it_is_followed_by_more() {
+        let rows = |text: &str| -> Vec<Line<'static>> {
+            plain_rows(text, 0, 80, link_style(&link_theme()))
+                .into_iter()
+                .map(|(l, _)| l)
+                .collect()
+        };
+        assert!(targets(&rows("go https://example.com/partial")).is_empty());
+        assert_eq!(
+            targets(&rows("go https://example.com/partial ")),
+            vec![url("https://example.com/partial")]
+        );
+    }
+
+    #[test]
+    fn info_notices_and_warning_headlines_link_their_urls() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        t.notice("see https://a.io/n.");
+        t.warning("bad https://a.io/w", None);
+        let lines = t.lines(60, &theme);
+        assert_eq!(colored(&lines, &theme)[0], "https://a.io/n");
+        assert_eq!(colored(&lines, &theme)[1], "https://a.io/w");
+        assert_eq!(
+            targets(&lines),
+            vec![url("https://a.io/n"), url("https://a.io/w")]
+        );
+        assert_eq!(text(&lines)[0], "· see https://a.io/n.");
+    }
+
+    #[test]
+    fn errors_user_input_and_attachments_are_not_linkified() {
         let theme = link_theme();
         let mut t = Transcript::default();
         t.error("failed https://a.io/e");
-        t.notice("see https://a.io/n");
+        t.user("hi https://a.io/u".into());
+        t.attached("image", "https://a.io/a", 1);
         let lines = t.lines(60, &theme);
         assert!(colored(&lines, &theme).iter().all(String::is_empty));
+        assert!(targets(&lines).is_empty());
+    }
+
+    #[test]
+    fn a_hint_links_a_url_inside_backticks_without_the_backticks_and_not_commands() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        t.warning("w", Some("open `https://a.io/h` or /resume now".into()));
+        let lines = t.lines(80, &theme);
+        assert_eq!(targets(&lines), vec![url("https://a.io/h")]);
+        assert_eq!(colored(&lines, &theme)[1], "https://a.io/h");
+        assert_eq!(bold_text(&lines[1]), "`https://a.io/h`/resume");
+        assert_eq!(text(&lines)[1], "  open `https://a.io/h` or /resume now");
+    }
+
+    #[test]
+    fn tool_output_links_paths_and_urls_but_not_issue_numbers() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        result_with(
+            &mut t,
+            "a",
+            "shell",
+            true,
+            "src/a.rs:3 fixes #82 https://a.io/o\n",
+        );
+        let lines = t.lines(80, &theme);
+        assert_eq!(
+            targets(&lines),
+            vec![
+                crate::hyperlink::Ref::Path("src/a.rs".into()),
+                url("https://a.io/o")
+            ]
+        );
+    }
+
+    #[test]
+    fn a_url_split_across_rows_carries_the_full_target_on_every_row() {
+        let theme = link_theme();
+        let u = "https://a.io/abcdefghij";
+        let mut t = Transcript::default();
+        t.notice(u);
+        call_with(&mut t, "a", "shell", serde_json::json!({"command": "go"}));
+        result_with(&mut t, "a", "shell", true, &format!("{u}\n"));
+        let lines = t.lines(16, &theme);
+        let full = url(u);
+        let got = targets(&lines);
+        assert!(got.len() >= 4, "{got:?}");
+        assert!(got.iter().all(|r| *r == full), "{got:?}");
+    }
+
+    #[test]
+    fn a_url_split_at_the_row_edge_in_the_streaming_tail_is_not_truncated() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        delta(&mut t, "abcdef https://a.io/xyz x");
+        let lines = t.live_lines(8, &theme);
+        assert!(!targets(&lines).is_empty());
+        assert!(
+            targets(&lines)
+                .iter()
+                .all(|r| *r == url("https://a.io/xyz"))
+        );
+    }
+
+    #[test]
+    fn the_streaming_tail_tags_urls_only() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        delta(&mut t, "tail #82 src/a.rs https://a.io/s ");
+        let lines = t.live_lines(60, &theme);
+        assert_eq!(targets(&lines), vec![url("https://a.io/s")]);
+    }
+
+    #[test]
+    fn the_streaming_tail_does_not_tag_issues_in_code_or_prose() {
+        let theme = link_theme();
+        let mut t = Transcript::default();
+        delta(&mut t, "```css\na { color: #333333; }\n");
+        assert!(targets(&t.live_lines(60, &theme)).is_empty());
+        let mut t = Transcript::default();
+        delta(&mut t, "see #82 ");
+        assert!(targets(&t.live_lines(60, &theme)).is_empty());
     }
 }

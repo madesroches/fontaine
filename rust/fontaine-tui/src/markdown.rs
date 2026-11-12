@@ -8,7 +8,7 @@ use pulldown_cmark::{
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use crate::input::wrap;
+use crate::hyperlink::{self, Kinds, Ref};
 use crate::theme::Glyphs;
 
 type Row = Line<'static>;
@@ -273,6 +273,7 @@ pub(crate) fn rows(
             from > 0 && !starts_line(text, from),
             fence,
             width,
+            link,
         );
         out.extend(used.rows);
         rest = &rest[used.bytes..];
@@ -294,7 +295,14 @@ struct Resumed {
 
 /// The rest of a fence that began before `base`: its code lines up to the closing fence, and
 /// the blank lines after it.
-fn resume_fence(rest: &str, base: usize, mid_line: bool, fence: Fence, width: usize) -> Resumed {
+fn resume_fence(
+    rest: &str,
+    base: usize,
+    mid_line: bool,
+    fence: Fence,
+    width: usize,
+    link: Style,
+) -> Resumed {
     let mut code = Vec::new();
     let mut bytes = 0;
     let mut closed = false;
@@ -305,7 +313,7 @@ fn resume_fence(rest: &str, base: usize, mid_line: bool, fence: Fence, width: us
             closed = true;
             break;
         }
-        code.extend(code_rows(line, width));
+        code.extend(code_rows(line, width, link));
     }
     if closed {
         for piece in rest[bytes..].split_inclusive('\n') {
@@ -384,8 +392,8 @@ struct Chunk {
 fn raw_rows(lines: &[SrcLine<'_>], width: usize, link: Style) -> Vec<Row> {
     lines
         .iter()
-        .flat_map(|line| wrap(line.text, width))
-        .map(|piece| Line::from(link_spans(&piece, Style::default(), link)))
+        .flat_map(|line| link_wrap(line.text, Style::default(), link, Kinds::PROSE, width))
+        .map(Line::from)
         .collect()
 }
 
@@ -506,7 +514,11 @@ fn render_block(
             if code.is_empty() {
                 return Some(Vec::new());
             }
-            Some(code.split('\n').flat_map(|l| code_rows(l, width)).collect())
+            Some(
+                code.split('\n')
+                    .flat_map(|l| code_rows(l, width, link))
+                    .collect(),
+            )
         }
         Tag::List(start) => {
             let mut at = 0;
@@ -522,13 +534,23 @@ fn into_rows(rows: Vec<Cells>) -> Vec<Row> {
     rows.into_iter().map(Line::from).collect()
 }
 
-fn code_rows(line: &str, width: usize) -> Vec<Row> {
+fn code_rows(line: &str, width: usize, link: Style) -> Vec<Row> {
     let dim = Style::default().add_modifier(Modifier::DIM);
     let pad = if width > 2 { "  " } else { "" };
-    wrap(line, width - pad.len())
-        .into_iter()
-        .map(|piece| Line::from(vec![Span::raw(pad), Span::styled(piece, dim)]))
-        .collect()
+    link_wrap(
+        line,
+        dim,
+        link,
+        Kinds::URL | Kinds::WHOLE,
+        width - pad.len(),
+    )
+    .into_iter()
+    .map(|piece| {
+        let mut spans = vec![Span::raw(pad)];
+        spans.extend(piece);
+        Line::from(spans)
+    })
+    .collect()
 }
 
 enum Piece {
@@ -542,8 +564,9 @@ struct Inline {
     mods: Vec<Style>,
     /// What a link's text, and a bare URL, is drawn with.
     link: Style,
-    /// How many links enclose the event being fed.
-    in_link: usize,
+    /// The target of each link enclosing the event being fed; `None` for one that is not
+    /// followed (a scheme other than http or https).
+    links: Vec<Option<Ref>>,
 }
 
 impl Inline {
@@ -552,7 +575,7 @@ impl Inline {
             pieces: Vec::new(),
             mods: Vec::new(),
             link,
-            in_link: 0,
+            links: Vec::new(),
         }
     }
 
@@ -562,16 +585,38 @@ impl Inline {
 
     fn text(&mut self, text: &str) {
         let style = self.style();
-        if self.in_link > 0 {
+        if let Some(target) = self.links.last() {
+            let style = match target {
+                Some(r) if self.link != Style::default() => hyperlink::tag(style, r.clone()),
+                _ => style,
+            };
             self.pieces
                 .push(Piece::Text(Span::styled(text.to_string(), style)));
         } else {
             self.pieces.extend(
-                link_spans(text, style, self.link)
+                link_spans(text, style, self.link, Kinds::PROSE)
                     .into_iter()
                     .map(Piece::Text),
             );
         }
+    }
+
+    /// Inline code is a link only as a whole: it holds one URL or one path and nothing else.
+    fn code(&mut self, text: &str) {
+        let style = self.style().add_modifier(Modifier::BOLD);
+        let style = match self.links.last() {
+            Some(Some(r)) if self.link != Style::default() => hyperlink::tag(style, r.clone()),
+            Some(_) => style,
+            None if self.link == Style::default() => style,
+            None => match hyperlink::scan(text, Kinds::URL | Kinds::PATH).as_slice() {
+                [(range, r)] if range.len() == text.len() => {
+                    hyperlink::styled(style, self.link, r.clone())
+                }
+                _ => style,
+            },
+        };
+        self.pieces
+            .push(Piece::Text(Span::styled(text.to_string(), style)));
     }
 
     fn markup(&mut self, text: &str) {
@@ -594,10 +639,7 @@ impl Inline {
         match event {
             Event::Text(t) => self.text(t),
             Event::Html(t) | Event::InlineHtml(t) => self.markup(t),
-            Event::Code(t) => {
-                let span = Span::styled(t.to_string(), self.style().add_modifier(Modifier::BOLD));
-                self.pieces.push(Piece::Text(span));
-            }
+            Event::Code(t) => self.code(t),
             Event::SoftBreak | Event::HardBreak => self.pieces.push(Piece::Break),
             Event::Start(Tag::Strong) => self
                 .mods
@@ -605,13 +647,14 @@ impl Inline {
             Event::Start(Tag::Emphasis) => self
                 .mods
                 .push(Style::default().add_modifier(Modifier::ITALIC)),
-            Event::Start(Tag::Link { .. }) => {
+            Event::Start(Tag::Link { dest_url, .. }) => {
                 self.mods.push(self.link);
-                self.in_link += 1;
+                self.links
+                    .push(is_http(dest_url).then(|| Ref::Url(dest_url.to_string())));
             }
             Event::End(TagEnd::Link) => {
                 self.mods.pop();
-                self.in_link = self.in_link.saturating_sub(1);
+                self.links.pop();
             }
             Event::End(TagEnd::Strong | TagEnd::Emphasis) => {
                 self.mods.pop();
@@ -650,48 +693,53 @@ impl Inline {
     }
 }
 
-/// Splits `text` into spans of `style`, with each bare `http(s)://` URL in `style` patched with
-/// `link`. A URL runs to the next whitespace, minus trailing sentence punctuation and closing
-/// brackets or quotes that have no opener inside it.
-pub(crate) fn link_spans(text: &str, style: Style, link: Style) -> Vec<Span<'static>> {
+fn is_http(url: &str) -> bool {
+    let prefix =
+        |n: usize, scheme: &str| url.get(..n).is_some_and(|p| p.eq_ignore_ascii_case(scheme));
+    prefix(8, "https://") || prefix(7, "http://")
+}
+
+/// Splits `text` into spans of `style`, with each reference of `kinds` tagged as a hyperlink
+/// and, when its target needs no context, patched with `link`.
+pub(crate) fn link_spans(
+    text: &str,
+    style: Style,
+    link: Style,
+    kinds: Kinds,
+) -> Vec<Span<'static>> {
+    link_spans_open(text, style, link, kinds, false)
+}
+
+/// `link_spans`, where `open` means `text` may still grow: a reference reaching its end stays
+/// plain, since more characters could change its target.
+fn link_spans_open(
+    text: &str,
+    style: Style,
+    link: Style,
+    kinds: Kinds,
+    open: bool,
+) -> Vec<Span<'static>> {
     if link == Style::default() {
         return vec![Span::styled(text.to_string(), style)];
     }
     let mut spans = Vec::new();
     let mut plain_from = 0;
-    let mut at = 0;
-    while let Some(found) = text[at..].find("http") {
-        let start = at + found;
-        at = start + 4;
-        let rest = &text[start..];
-        let scheme = if rest.starts_with("https://") {
-            8
-        } else if rest.starts_with("http://") {
-            7
-        } else {
-            continue;
-        };
-        if text[..start]
-            .chars()
-            .next_back()
-            .is_some_and(|c| c.is_alphanumeric() || c == '_')
-        {
+    for (range, r) in hyperlink::scan(text, kinds) {
+        // Trimmed punctuation still belongs to the trailing run, which may yet grow.
+        if open && !text[range.end..].contains(char::is_whitespace) {
             continue;
         }
-        let run = rest.find(char::is_whitespace).unwrap_or(rest.len());
-        let len = trim_url(&rest[..run]).len();
-        if len <= scheme {
-            continue;
-        }
-        if plain_from < start {
-            spans.push(Span::styled(text[plain_from..start].to_string(), style));
+        if plain_from < range.start {
+            spans.push(Span::styled(
+                text[plain_from..range.start].to_string(),
+                style,
+            ));
         }
         spans.push(Span::styled(
-            text[start..start + len].to_string(),
-            style.patch(link),
+            text[range.clone()].to_string(),
+            hyperlink::styled(style, link, r),
         ));
-        plain_from = start + len;
-        at = plain_from;
+        plain_from = range.end;
     }
     if plain_from < text.len() || spans.is_empty() {
         spans.push(Span::styled(text[plain_from..].to_string(), style));
@@ -699,23 +747,40 @@ pub(crate) fn link_spans(text: &str, style: Style, link: Style) -> Vec<Span<'sta
     spans
 }
 
-fn trim_url(url: &str) -> &str {
-    let mut url = url;
-    while let Some(last) = url.chars().next_back() {
-        let count = |c: char| url.chars().filter(|x| *x == c).count();
-        let unbalanced = match last {
-            '.' | ',' | ';' | ':' | '!' | '?' => true,
-            ')' => count(')') > count('('),
-            ']' => count(']') > count('['),
-            '\'' | '"' => count(last) % 2 == 1,
-            _ => false,
-        };
-        if !unbalanced {
-            break;
-        }
-        url = &url[..url.len() - last.len_utf8()];
+/// Scans `text` for references first, then splits the styled spans into rows of at most `width`
+/// chars exactly where `wrap` would, so every piece of a split reference keeps the full target.
+pub(crate) fn link_wrap(
+    text: &str,
+    style: Style,
+    link: Style,
+    kinds: Kinds,
+    width: usize,
+) -> Vec<Cells> {
+    chunk_spans(&link_spans(text, style, link, kinds), width)
+}
+
+/// `link_wrap` for the end of a stream that may still grow.
+pub(crate) fn link_wrap_open(
+    text: &str,
+    style: Style,
+    link: Style,
+    kinds: Kinds,
+    width: usize,
+) -> Vec<Cells> {
+    chunk_spans(&link_spans_open(text, style, link, kinds, true), width)
+}
+
+/// Splits styled spans into rows of at most `width` chars, matching `wrap`'s boundaries.
+pub(crate) fn chunk_spans(spans: &[Span<'static>], width: usize) -> Vec<Cells> {
+    let width = width.max(1);
+    let chars: Vec<(char, Style)> = spans
+        .iter()
+        .flat_map(|s| s.content.chars().map(move |c| (c, s.style)))
+        .collect();
+    if chars.is_empty() {
+        return vec![Vec::new()];
     }
-    url
+    chars.chunks(width).map(|c| merge(c.to_vec())).collect()
 }
 
 /// Word-wraps styled text by char count, hard-splitting a word longer than `width`. Wide
@@ -993,6 +1058,7 @@ fn table_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::wrap;
 
     fn render(text: &str, width: usize) -> Vec<Row> {
         rows(
@@ -1356,9 +1422,23 @@ mod tests {
             .collect()
     }
 
+    /// The ref of every tagged span, in order.
+    fn targets(lines: &[Row]) -> Vec<Ref> {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .filter_map(|s| hyperlink::ref_of_style(s.style))
+            .collect()
+    }
+
     #[test]
     fn link_spans_split_a_bare_url_from_its_text() {
-        let spans = link_spans("see https://a.io/x now", Style::default(), link());
+        let spans = link_spans(
+            "see https://a.io/x now",
+            Style::default(),
+            link(),
+            Kinds::URL,
+        );
         let got: Vec<(&str, bool)> = spans
             .iter()
             .map(|s| (s.content.as_ref(), s.style.fg.is_some()))
@@ -1372,7 +1452,7 @@ mod tests {
     #[test]
     fn link_spans_trim_trailing_punctuation_and_unbalanced_brackets() {
         let url = |text: &str| {
-            link_spans(text, Style::default(), link())
+            link_spans(text, Style::default(), link(), Kinds::URL)
                 .into_iter()
                 .filter(|s| s.style.fg.is_some())
                 .map(|s| s.content.to_string())
@@ -1391,9 +1471,31 @@ mod tests {
     }
 
     #[test]
+    fn open_link_spans_leave_a_trailing_url_with_trimmed_punctuation_plain() {
+        let url = |text: &str| {
+            link_spans_open(text, Style::default(), link(), Kinds::URL, true)
+                .into_iter()
+                .filter(|s| s.style.fg.is_some())
+                .map(|s| s.content.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert!(url("see https://github.").is_empty());
+        assert!(url("https://a.io:").is_empty());
+        assert_eq!(url("see https://github. "), vec!["https://github"]);
+        assert_eq!(url("https://a.io: "), vec!["https://a.io"]);
+    }
+
+    #[test]
     fn link_spans_ignore_what_is_not_a_url() {
-        for text in ["http://", "https://.", "a.io/x", "xhttps://a.io", "http:/a"] {
-            let spans = link_spans(text, Style::default(), link());
+        for text in [
+            "http://",
+            "https://.",
+            "a.io/x",
+            "xhttps://a.io",
+            "http:/a",
+            "https:/x",
+        ] {
+            let spans = link_spans(text, Style::default(), link(), Kinds::URL);
             assert!(spans.iter().all(|s| s.style.fg.is_none()), "{text}");
             let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
             assert_eq!(joined, text);
@@ -1437,10 +1539,71 @@ mod tests {
     }
 
     #[test]
-    fn code_is_not_linkified() {
-        let text = "`https://a.io` and\n\n```\nhttps://b.io\n```\n";
-        let with = linked_rows(text, 40);
-        assert!(colored(&with).iter().all(String::is_empty), "{with:?}");
+    fn code_is_linkified_only_as_a_whole_url_or_path() {
+        let text = "`https://a.io` and `see https://a.io` and `#82`\n";
+        let with = linked_rows(text, 60);
+        assert_eq!(colored(&with), vec!["https://a.io"]);
+        assert_eq!(targets(&with), vec![Ref::Url("https://a.io".into())]);
+        let with = linked_rows("`src/main.rs:1`\n", 60);
+        assert_eq!(targets(&with), vec![Ref::Path("src/main.rs".into())]);
+        assert!(colored(&with).iter().all(String::is_empty));
+    }
+
+    #[test]
+    fn a_fenced_row_links_a_whole_url_token_and_nothing_else() {
+        let with = linked_rows("```\ncurl https://a\n```\n", 40);
+        assert_eq!(targets(&with), vec![Ref::Url("https://a".into())]);
+        let with = linked_rows("```\nx=https://a #82 src/a.rs\n```\n", 40);
+        assert!(targets(&with).is_empty(), "{with:?}");
+        let with = linked_rows("```\ncurl https://a\n", 40);
+        assert_eq!(targets(&with), vec![Ref::Url("https://a".into())]);
+    }
+
+    #[test]
+    fn markdown_link_text_carries_its_target() {
+        let with = linked_rows("a [the **docs**](https://a.io/d) b\n", 40);
+        let urls = Ref::Url("https://a.io/d".into());
+        assert_eq!(targets(&with), vec![urls.clone(), urls]);
+        let with = linked_rows("<https://a.io/x>\n", 40);
+        assert_eq!(targets(&with), vec![Ref::Url("https://a.io/x".into())]);
+        let with = linked_rows("[`code`](https://a.io/c)\n", 40);
+        assert_eq!(targets(&with), vec![Ref::Url("https://a.io/c".into())]);
+        let with = linked_rows("[docs](http://a.io/h)\n", 40);
+        assert_eq!(targets(&with), vec![Ref::Url("http://a.io/h".into())]);
+    }
+
+    #[test]
+    fn a_markdown_target_that_is_not_http_is_never_tagged() {
+        for dest in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "docs/a.md",
+            "mailto:a@b.c",
+            "https:/x",
+        ] {
+            let with = linked_rows(&format!("[text]({dest})\n"), 40);
+            assert!(targets(&with).is_empty(), "{dest}");
+        }
+    }
+
+    #[test]
+    fn prose_issues_and_paths_are_tagged_and_not_colored() {
+        let with = linked_rows("see #82 and owner/repo#7 and src/a.rs:3\n", 60);
+        assert_eq!(
+            targets(&with),
+            vec![
+                Ref::Issue {
+                    repo: None,
+                    number: 82
+                },
+                Ref::Issue {
+                    repo: Some(("owner".into(), "repo".into())),
+                    number: 7
+                },
+                Ref::Path("src/a.rs".into()),
+            ]
+        );
+        assert_eq!(colored(&with), vec!["owner/repo#7"]);
     }
 
     #[test]

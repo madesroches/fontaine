@@ -92,6 +92,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.prune_closed();
         self.app.home = runtime.home().map(Path::to_path_buf);
         self.app.set_cwd(&runtime.shell_cwd());
+        self.app.set_link_root(&runtime.primary_root());
         let rows = runtime.state.agents().rows();
         self.app.running_agents = rows.iter().filter(|r| r.status.is_running()).count();
         let main_writing = runtime.state.agents().writing_of(ROOT_AGENT);

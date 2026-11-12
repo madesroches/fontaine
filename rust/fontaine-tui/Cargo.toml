@@ -24,6 +24,10 @@ rig-tools.workspace = true
 serde_json.workspace = true
 toml_edit.workspace = true
 tokio.workspace = true
+url.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
 
 [dev-dependencies]
 fontaine-testkit.workspace = true
