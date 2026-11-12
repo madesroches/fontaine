@@ -206,12 +206,79 @@ async fn an_endpoint_error_is_denied_as_guardian_unavailable() {
     assert!(
         result
             .explanation
-            .starts_with("the guardian model could not be reached: ")
-            && result.explanation.len() > "the guardian model could not be reached: ".len(),
+            .starts_with("the guardian model refused the request: ")
+            && result.explanation.len() > "the guardian model refused the request: ".len(),
         "{}",
         result.explanation
     );
     assert_eq!(endpoint.calls().await, 3);
+}
+
+#[tokio::test]
+async fn a_context_size_refusal_is_denied_with_the_provider_reason() {
+    let body = "llama3:8b exceeds the available context size (2048 tokens)";
+    let endpoint = Endpoint::start(vec![Reply::FailWithBody(400, body.into())]).await;
+    let result = endpoint
+        .guardian(settings())
+        .adjudicate(&request("ls", false))
+        .await;
+    assert_eq!(names(&result), (Decision::Deny, "GuardianUnavailable"));
+    assert_eq!(result.fail_closed, Some(FailClosed::Error));
+    assert!(
+        result
+            .explanation
+            .starts_with("the guardian model refused the request: "),
+        "{}",
+        result.explanation
+    );
+    assert!(
+        result.explanation.contains("400") && result.explanation.contains(body),
+        "{}",
+        result.explanation
+    );
+}
+
+#[tokio::test]
+async fn an_auth_refusal_is_denied_with_the_refused_wording() {
+    for status in [401u16, 403] {
+        let endpoint =
+            Endpoint::start(vec![Reply::FailWithBody(status, "invalid api key".into())]).await;
+        let result = endpoint
+            .guardian(settings())
+            .adjudicate(&request("ls", false))
+            .await;
+        assert_eq!(names(&result), (Decision::Deny, "GuardianUnavailable"));
+        assert_eq!(result.fail_closed, Some(FailClosed::Error));
+        assert!(
+            result
+                .explanation
+                .starts_with("the guardian model refused the request: "),
+            "{}",
+            result.explanation
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_no_tool_support_refusal_keeps_the_could_not_be_used_wording() {
+    let endpoint = Endpoint::start(vec![Reply::FailWithBody(
+        400,
+        "registry.ollama.ai/library/scripted does not support tools".into(),
+    )])
+    .await;
+    let result = endpoint
+        .guardian(settings())
+        .adjudicate(&request("ls", false))
+        .await;
+    assert_eq!(names(&result), (Decision::Deny, "GuardianUnavailable"));
+    assert_eq!(result.fail_closed, Some(FailClosed::Error));
+    assert!(
+        result
+            .explanation
+            .starts_with("the guardian model could not be used: "),
+        "{}",
+        result.explanation
+    );
 }
 
 #[tokio::test]

@@ -330,6 +330,99 @@ fn attempt_slice(remaining: Duration, attempts_left: usize) -> Option<Duration> 
     Some(slice.min(remaining))
 }
 
+/// Whether the model daemon answered a failed call: a refusal surfaces its status and body,
+/// a transport failure keeps the generic wording. A reply that carried no preserved status or
+/// body is still `Refused`, with an empty detail the caller replaces with the error's own
+/// message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ModelReachability {
+    /// No provider reply was obtained, or the failure is not a provider error at all.
+    Unreachable,
+    /// The daemon answered and refused.
+    Refused { status: Option<u16>, body: String },
+}
+
+impl ModelReachability {
+    /// The phrase that names what happened, placed after "the guardian model".
+    pub(crate) fn phrase(&self) -> &'static str {
+        match self {
+            ModelReachability::Unreachable => "could not be reached",
+            ModelReachability::Refused { .. } => "refused the request",
+        }
+    }
+
+    /// What follows the phrase: the preserved status and body when there are any, otherwise
+    /// the error's own message.
+    pub(crate) fn detail(&self, error: &PromptError) -> String {
+        match self {
+            ModelReachability::Unreachable => error.to_string(),
+            ModelReachability::Refused { status, body } => match (status, body.is_empty()) {
+                (Some(status), false) => format!("HTTP {status}: {body}"),
+                (Some(status), true) => format!("HTTP {status}"),
+                (None, false) => body.clone(),
+                (None, true) => error.to_string(),
+            },
+        }
+    }
+}
+
+/// Sorts a failed call by whether the model daemon answered, so the denial can say "could not
+/// be reached" only for transport failures. Every current `ProviderError` variant is classified
+/// explicitly; the enum is `#[non_exhaustive]`, so a future variant falls back to
+/// `Unreachable`: a refusal is claimed only when a provider reply is certain.
+pub(crate) fn classify_prompt_error(error: &PromptError) -> ModelReachability {
+    match error {
+        PromptError::Provider(provider) => match provider {
+            ProviderError::ProviderResponse(response)
+            | ProviderError::InvalidAuthentication(response) => ModelReachability::Refused {
+                status: response.status.map(|status| status.as_u16()),
+                body: response.body.clone(),
+            },
+            ProviderError::CacheExpired { response, .. } => ModelReachability::Refused {
+                status: response.status.map(|status| status.as_u16()),
+                body: response.body.clone(),
+            },
+            ProviderError::Response(_) | ProviderError::MismatchedDimensions { .. } => {
+                ModelReachability::Refused {
+                    status: None,
+                    body: String::new(),
+                }
+            }
+            ProviderError::Http(_)
+            | ProviderError::Json(_)
+            | ProviderError::Url(_)
+            | ProviderError::Request(_)
+            | ProviderError::Provider(_)
+            | ProviderError::UnsupportedOption(_)
+            | ProviderError::Truncated
+            | ProviderError::Stalled(_) => ModelReachability::Unreachable,
+            _ => ModelReachability::Unreachable,
+        },
+        // A relayed failure reports as its inner report; it is reached when the report carries
+        // an HTTP status or a preserved provider response.
+        PromptError::Report(report) => {
+            if report.http_status.is_none() && report.provider_response.is_none() {
+                return ModelReachability::Unreachable;
+            }
+            let (status, body) = match &report.provider_response {
+                Some(response) => (
+                    report
+                        .http_status
+                        .or_else(|| response.status.map(|status| status.as_u16())),
+                    response.body.clone(),
+                ),
+                None => (report.http_status, String::new()),
+            };
+            ModelReachability::Refused { status, body }
+        }
+        PromptError::Memory { .. }
+        | PromptError::MaxTurns { .. }
+        | PromptError::Cancelled { .. }
+        | PromptError::UnknownToolCall { .. } => ModelReachability::Unreachable,
+        _ => ModelReachability::Unreachable,
+    }
+}
+
 /// Whether a failed run is the provider refusing a request because the model has no tool
 /// support. Read from the typed response (status and body), not from rendered error text.
 pub(crate) fn lacks_tool_support(error: &PromptError) -> bool {

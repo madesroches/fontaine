@@ -36,6 +36,8 @@ pub enum Reply {
     /// The model answers in this prose.
     Text(String),
     Fail(u16),
+    /// Answers with this status and JSON body, the way a daemon refuses a request.
+    FailWithBody(u16, String),
     /// Answers after this long.
     Slow(Duration, Value),
 }
@@ -99,6 +101,9 @@ impl Respond for Scripted {
             }
             Reply::Text(text) => completion(json!({"role": "assistant", "content": text})),
             Reply::Fail(status) => ResponseTemplate::new(*status).set_body_string("scripted"),
+            Reply::FailWithBody(status, body) => {
+                ResponseTemplate::new(*status).set_body_json(json!({"error": body}))
+            }
             Reply::Slow(delay, value) => submit(&value.to_string()).set_delay(*delay),
         }
     }
