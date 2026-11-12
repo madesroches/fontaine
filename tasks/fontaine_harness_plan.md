@@ -433,6 +433,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-08: Project and plugin agent files may name a model role or `$main` as `model`, loosening the 2026-10-21 "no `model`" rule toward Claude Code. A role names no endpoint, because the user defines every role. An undefined role runs the type on the session model, with a warning; the per-call `model` on such a type stays refused (#324).
 - 2026-11-08: A skill's `model` accepts a role name and stays unused. Claude Code's per-skill model override is not adopted (#324).
 - 2026-11-11: (#115) Waiting for a usage window spends no tokens or cost, so agent budgets are untouched; a node's displayed run time and wall-clock accounting subtract the pause time that fell inside its run.
+- 2026-11-12: (#592) Final interactive process exit aborts nested agent tasks and their report watchers (`AgentTree::abort_all`, `ChildHandle::abort`) at once, without `settled(KILL_SETTLE)` and without a fabricated killed report, so a child that never reaches a rig hook boundary cannot hold the exit; supersedes the 2026-10-31 exit-wait choice for final interactive exit only. Ordinary kills, headless runs and `/resume`/`/branch` switches keep the graceful transcript semantics (`KILL_GRACE`, `KILL_SETTLE`). Reservation and direct resume refuse atomically once the tree is shutting down.
 
 ### Build and release
 
@@ -732,6 +733,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
   skills already trusted at their current digest are not asked again, and a stale record is shown as
   a diff; `/plugin update` and auto-update re-ask nothing, since a changed file mismatches its
   pinned digest; reason: the user learned of untrusted skills only at first use, as a one-line warning.
+- 2026-11-12: (#592) On final exit the session's work is cancelled before `session_end` fires, and `session_end` shares the two-second exit budget with the rest of the cleanup instead of running first on its own timeout. MCP stdio servers adopt Fontaine's whole-tree guard on Unix (`process_group(0)` on the command, `procgroup::terminate` on the retained pid at final exit) while keeping rmcp's `TokioChildProcess` and graceful stdio close; Windows keeps rmcp's direct-child kill; reason: descendants of a wrapper survived the direct-child kill.
 
 ### Guardian
 
@@ -890,6 +892,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-10-25: Telemetry exporters are not covered by `[network]` (proxy, CA bundle, client certificate), because they use their own HTTP stack; covering them can come later as its own change (#6).
 - 2026-11-07: micromegas is pinned to crates.io `=0.33.0` and `allow-git` is gone from `deny.toml` (#141). 0.33.0 has the field hook (`span_field_hook`), which Fontaine does not adopt, so the `SpanBridge` span half stays; source paths are trimmed rather than absolute, and only a switch to omit locations is still missing (madesroches/micromegas#1725). (Superseded for the span half by the 2026-11-07 relative-paths line below.)
 - 2026-11-07 (user): Exported micromegas span locations may carry the callsite's file trimmed to a relative path (madesroches/micromegas#1725 closed as relative source paths, not an omit switch), so the `SpanBridge` span half is retired: the stock `TracingCaptureLayer` exports spans with `span_field_hook` applying the content policy, and the bridge only derives metrics and events (#141, #139).
+- 2026-11-12: (#592) A final quit's telemetry flush spends only what is left of the whole-exit deadline instead of a fresh `FLUSH_CAP`, and the exit watchdog started at the first quit request, which outlives runtime and scratch teardown and disarms only after the flush, restores the terminal before forcing the exit; other exits keep the two-second cap and its own watchdog.
 
 ### Permissions
 
@@ -1245,6 +1248,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-11: (#83) (supersedes the continuation-row clause of the 2026-11-03 (#206) bare-URL line) A link wrapped across rows keeps its colour and target on every row, because text is scanned before it is wrapped; a reference still streaming at the end of the unsettled tail stays plain until text follows it.
 - 2026-11-11: (#83) Rows of an unsettled reply committed to scrollback because the reply outgrew the screen link only URLs, not #N or paths; reason: the unsettled tail can be inside an open code fence, where #N must not link, and the tail is never re-rendered once committed.
 - 2026-11-11: (#83) File links are limited to paths inside the primary root: UNC, device and drive-prefixed paths, `..` components and paths outside the root are never touched on disk or linked, and paths are not resolved at all when hyperlinks are off; reason: resolving a path from model or tool text must not reach the network (a UNC path sends NTLM credentials) or stall the render thread.
+- 2026-11-12: (#592) `/exit`, `/quit` and empty-prompt Ctrl-D quit at once even mid-turn: the quit latches, cancels the session's work, drops queued input and automatic continuations, and the whole exit shares a fixed two-second budget (not configurable), after which a watchdog restores the terminal and ends the process. Supersedes the 2026-10-29 statement that every built-in except `/loop` queues mid-turn, for these terminal commands only; Ctrl-C and Esc still interrupt, Ctrl-D with text still edits, and in an MCP elicitation it still declines.
 
 ## Open Questions
 

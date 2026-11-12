@@ -77,6 +77,7 @@ mod models;
 mod reload;
 mod rewind;
 mod setup;
+mod shutdown;
 
 pub use advisor::ReportedAdvisor;
 pub(crate) use build::apply_common;
@@ -243,6 +244,8 @@ pub struct AgentRuntime {
     prompt_afk: bool,
     /// The `@<uri>` resource section the built prompt carries, if any.
     prompt_mcp: Option<String>,
+    /// What the final exit has already done, so each half runs once however often it is asked.
+    final_shutdown: shutdown::Progress,
 }
 
 /// The shell hooks and the status line run in: `sh` off Windows, Git Bash when found, else
@@ -402,6 +405,7 @@ impl AgentRuntime {
             listings: Vec::new(),
             native_search: native,
             prompt_mcp: None,
+            final_shutdown: shutdown::Progress::default(),
             instruction_stage: gates.instruction_stage,
         })
     }

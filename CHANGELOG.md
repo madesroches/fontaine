@@ -97,6 +97,15 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- Quitting is prompt and bounded (#592). `/exit`, `/quit` and Ctrl-D on an empty input now end the
+  terminal UI at once even while a turn, a `!` command, a hook or a subagent runs, instead of
+  queueing behind them or being ignored. The quit stops everything the session owns (nested agent
+  tasks without waiting for a hook boundary, background jobs, MCP servers with their process
+  groups, language servers and a SearXNG instance Fontaine started) inside one two-second budget
+  shared with the `session_end` hook, the terminal restore and the telemetry flush, and a watchdog
+  restores the terminal and ends the process if something is still stuck. Queued input and
+  automatic continuations are dropped. Ctrl-C, Esc, `/resume`, `/branch` and headless runs keep
+  their behavior.
 - A guardian denial after a provider HTTP error response no longer says the guardian model
   "could not be reached": the daemon answered and refused, so the explanation reads "the
   guardian model refused the request" and surfaces the status and the provider's own body,

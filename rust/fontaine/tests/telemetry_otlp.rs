@@ -499,6 +499,129 @@ async fn an_exporter_that_never_answers_cannot_hold_the_exit_past_the_flush_cap(
     );
 }
 
+/// The real binary on a real pseudo-terminal, quit with Ctrl-D while the model is still
+/// answering and an exporter never answers: the whole process, runtime teardown and flush
+/// included, is gone within the one two-second budget, and the terminal is given back.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn quitting_mid_turn_ends_the_whole_process_inside_the_budget_with_a_stuck_exporter() {
+    use std::process::Stdio;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    if std::process::Command::new("script")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("skipped: no `script` to give the binary a terminal");
+        return;
+    }
+    let model = Endpoint::start_routed(
+        Wire::Responses,
+        vec![
+            Route::new("first task", vec![Turn::text("never arrives")])
+                .slow(Duration::from_secs(120)),
+        ],
+    )
+    .await;
+    let (addr, handle, stop) = black_hole();
+    let s = sandbox(&model.url(), &format!("http://{addr}"), "");
+
+    let configured = s.command(&[]);
+    let binary = env!("CARGO_BIN_EXE_fontaine");
+    let mut cmd = tokio::process::Command::new("script");
+    cmd.args([
+        "-qefc",
+        &format!("stty cols 120 rows 40; exec '{binary}'"),
+        "/dev/null",
+    ]);
+    for (name, value) in configured.as_std().get_envs() {
+        match value {
+            Some(value) => cmd.env(name, value),
+            None => cmd.env_remove(name),
+        };
+    }
+    cmd.current_dir(&s.work)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().unwrap();
+    let mut keys = child.stdin.take().unwrap();
+    let mut out = child.stdout.take().unwrap();
+    let seen = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let sink = seen.clone();
+    tokio::spawn(async move {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = out.read(&mut buf).await {
+            if n == 0 {
+                break;
+            }
+            sink.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
+    });
+    let shows = |needle: &str| String::from_utf8_lossy(&seen.lock().unwrap()).contains(needle);
+    // No terminal emulator answers the cursor-position query the interface opens with, so the
+    // test does.
+    let mut answered = 0;
+    macro_rules! wait_for {
+        ($needle:expr) => {{
+            let mut found = false;
+            for _ in 0..1000 {
+                let queries = String::from_utf8_lossy(&seen.lock().unwrap())
+                    .matches("\x1b[6n")
+                    .count();
+                while answered < queries {
+                    keys.write_all(b"\x1b[20;1R").await.unwrap();
+                    answered += 1;
+                }
+                if shows($needle) {
+                    found = true;
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(found, "never showed {}", $needle);
+        }};
+    }
+    // The workspace trust question comes first, in a folder the sandbox has never seen.
+    wait_for!("Do you trust the files");
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    keys.write_all(b"y").await.unwrap();
+    wait_for!("add-dir");
+    keys.write_all(b"first task\r").await.unwrap();
+    for _ in 0..1000 {
+        if !model.requests().await.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !model.requests().await.is_empty(),
+        "the model was never asked"
+    );
+
+    let sent = Instant::now();
+    keys.write_all(&[0x04]).await.unwrap();
+    let status = tokio::time::timeout(Duration::from_secs(30), child.wait())
+        .await
+        .expect("the process outlived thirty seconds")
+        .unwrap();
+    let took = sent.elapsed();
+    stop.send(()).unwrap();
+    handle.join().unwrap();
+
+    assert!(status.success(), "{status:?}");
+    assert!(
+        took < Duration::from_millis(2000 + 2500),
+        "the process took {took:?} to end after the quit"
+    );
+    // Back out of raw input: bracketed paste off and the cursor shown again.
+    assert!(shows("\x1b[?2004l"), "bracketed paste was left on");
+    assert!(shows("\x1b[?25h"), "the cursor was left hidden");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_micromegas_recipe_over_otlp_appends_signal_paths_to_the_endpoint() {
     let model = Endpoint::start(Wire::Responses, vec![Turn::text("done")]).await;

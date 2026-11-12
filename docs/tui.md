@@ -253,7 +253,7 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is kept in the model's conversation up to its last finished tool round, followed by an interruption marker, and the next prompt continues from there; text the model was still streaming is not kept. Earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one (the model can also stop the subagents it started). While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
 | Esc when idle and a self-paced `/loop` waits for its next iteration | Ends the loop; see [Scheduled prompts](#scheduled-prompts). |
 | Esc twice in quick succession when idle with an empty input | Opens the `/rewind` picker; see [Checkpoints and /rewind](checkpoints.md). Any other meaning of Esc above wins first. Off while a subagent's transcript is on screen. |
-| Ctrl-C (`interrupt`), or Ctrl-D on an empty input (`quit`), when idle | Quit. Both keys are reserved: they cannot be rebound or unbound. With text in the input, Ctrl-D deletes the character under the cursor in Emacs mode and in vim's Insert state. |
+| Ctrl-C (`interrupt`) when idle, or Ctrl-D on an empty input (`quit`), idle or not | Quit; see [Quitting](#quitting). Both keys are reserved: they cannot be rebound or unbound. With text in the input, Ctrl-D deletes the character under the cursor in Emacs mode and in vim's Insert state, and in an MCP elicitation it declines. While a turn runs Ctrl-C interrupts instead. |
 | PageUp, PageDown | Scroll the command or diff in an open approval prompt. |
 | Arrows, Home, End, Backspace, Delete, Ctrl-A/E/B/F/H/D | Move by character or line and delete a character. Ctrl-H is Backspace, Ctrl-D is Delete. |
 | Ctrl-Left, Ctrl-Right, Alt-Left, Alt-Right, Alt-B, Alt-F | Move by word. A word is a run of letters and digits, so `/`, `.` and `_` separate words. |
@@ -480,7 +480,7 @@ as yours for the [guardian](guardian.md).
   in the model's conversation, so a message the agent received with a tool round that finished
   before the interrupt is kept; a message delivered into the tool batch still running at the
   interrupt is lost and must be sent again.
-- A built-in command other than `/loop`, or a known skill invocation, queues like a message and
+- A built-in command other than `/loop` and `/exit`, or a known skill invocation, queues like a message and
   runs when the turn ends, in the order typed: a skill runs as its expanded prompt, a built-in
   command does exactly what it would have done had it been submitted at that moment. Neither is
   steered into the running turn, and a message queued behind one waits with it rather than
@@ -497,6 +497,28 @@ as yours for the [guardian](guardian.md).
 - A queued command that opens a picker or dialog (`/model`, bare `/resume`, `/rewind`, `/login`)
   holds the later queued entries until it closes. `/resume <name>` and `/branch` are refused while
   later entries remain, so a session switch cannot silently discard them.
+
+## Quitting
+
+`/exit`, `/quit` and Ctrl-D on an empty input end the session immediately, whatever is running: a
+model request, a tool call, a `!` command, a hook, a subagent, a background job or an open
+prompt. Nothing waits behind the turn, and nothing the session still had in mind starts: input you
+queued is dropped (not run, not put back in the input), and a stop hook's continuation, a goal
+step, a scheduled prompt, a subagent report that would wake the main agent and a pending `/resume`
+or `/branch` are all skipped. Scheduled prompts and goals are not deleted from disk. What the
+partial turn had committed is kept in the conversation, so a later `--resume` continues from there.
+
+The whole exit shares one budget of two seconds, counted from the first quit request: the
+`session_end` hook, keeping the partial turn, stopping jobs, MCP servers (their process groups
+included), language servers and a SearXNG instance Fontaine started, restoring the terminal and
+the telemetry flush all run inside it, side by side, not one after another. If anything is still
+stuck when it runs out, the terminal is restored again and the process ends. The two seconds are
+fixed.
+
+Ctrl-C and Esc are unchanged: they interrupt a running turn and never quit it. Ctrl-D with text in
+the input still deletes a character, and in an MCP elicitation it still declines. Leaving through
+`/resume` or `/branch` is not a quit: it keeps the graceful wait for subagents to save their
+transcripts, as does a headless run.
 
 ## Approval prompts
 
@@ -660,7 +682,7 @@ error: an export never overwrites.
 | `/cost`, `/usage` | Shows the session's token usage and spend by source and by model, guardian included; see [Usage and cost](#usage-and-cost). Runs immediately, turn or no turn. |
 | `/denied` | Lists the calls the guardian denied this session, with their rule label and explanation. Up and Down select; `r` approves the selected call once, as if you had approved it at a prompt, and tells the agent on its next turn that it may retry exactly that call. The retry runs without asking the guardian, never enters the verdict cache and does not count toward the denial limits. The deterministic floor still runs first, so an `ask` rule or a critical path still prompts. Esc closes the list. |
 | `/bug [<description> \| <draft id> \| discard <draft id>]` | Files a Fontaine bug report as a GitHub issue on `madesroches/fontaine`. It first shows the exact text that will be sent; nothing is written or sent until you confirm, and Esc cancels. The default `minimal` level holds the environment, a redacted settings snapshot, recent warnings and guardian verdict summaries; `full` adds the last turns of the transcript, and you toggle it in the preview. Known secret values (stored credentials, API-key environment values, MCP environment values) are scrubbed, plus a token-pattern pass. With `gh` installed and authenticated it runs `gh issue create`; otherwise it prints a prefilled new-issue URL and keeps the full report in an owner-only file under the data directory's `bug-reports/` folder. The transcript never goes in the URL. The submission is recorded in the ledger and audit log. The URL carries the report without the transcript, cut so the encoded URL stays under 8000 bytes, and names the bundle file rather than its path. Drafts the model queued with `draft_bug_report` are listed by a bare `/bug` and can be loaded as the description with `/bug <draft id>`; a draft is deleted once the report built from it is filed, and `/bug discard <draft id>` deletes one without filing. The footer counts the drafts still pending. Main conversation only. |
-| `/exit`, `/quit` | Leave. |
+| `/exit`, `/quit` | Leave, at once, even while a turn, a `!` command or a subagent runs; see [Quitting](#quitting). |
 | `/expand [<n> \| thinking]` | Prints tool call `n` in full (command, retained output, diff) as new transcript lines; the latest call without a number. `n` is the number in the card's `expand:` hint, counted from the start of the session. It is an error for a call that does not exist or that `/clear` removed. `/expand thinking` prints the latest [reasoning card](#model-reasoning) in full instead. |
 | `/export [<path>]` | Writes the conversation to a Markdown file, owner-only, never over an existing file; with subagents it is a folder — `main.md` plus one `<agent-id>.md` per subagent. See [Sessions](#sessions). |
 | `/goal [<condition> \| clear]` | Keeps working until the condition is met; see [Goals](#goals). Bare `/goal` shows the goal's status. |

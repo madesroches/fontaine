@@ -23,7 +23,7 @@ use fontaine_core::session::Session;
 use fontaine_testkit::example_bin;
 use fontaine_tui::linear::Linear;
 use fontaine_tui::screen::Screen;
-use fontaine_tui::{DriveOutcome, Input, drive};
+use fontaine_tui::{DriveOptions, DriveOutcome, Input, drive};
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -53,6 +53,9 @@ pub fn text_turn(text: &str) -> Vec<MockStreamEvent> {
 }
 
 /// A scratch world with a workspace, a second directory to add, and the user settings file.
+/// When `drive` returned, once it has.
+pub type Finished = Rc<Cell<Option<std::time::Instant>>>;
+
 pub struct World {
     _tmp: TempDir,
     pub work: PathBuf,
@@ -428,6 +431,18 @@ impl World {
         F: FnOnce(Ui) -> Fut,
         Fut: Future<Output = ()>,
     {
+        // Boxed: the drive future is large, and nesting it unboxed in every test's own future
+        // overflows the compiler's layout query depth.
+        Box::pin(self.run_with(DriveOptions::default(), |ui, _| script(ui))).await
+    }
+
+    /// [`World::run`] with the interface's options, and the instant `drive` returned at,
+    /// which the script can wait on while it keeps the input open.
+    pub async fn run_with<F, Fut>(&self, options: DriveOptions, script: F) -> DriveOutcome
+    where
+        F: FnOnce(Ui, Finished) -> Fut,
+        Fut: Future<Output = ()>,
+    {
         self.runs.set(self.runs.get() + 1);
         let (keys, rx) = unbounded_channel();
         let screen = Rc::new(RefCell::new(String::new()));
@@ -461,20 +476,28 @@ impl World {
             live,
             copied,
         };
+        let finished: Finished = Rc::default();
+        let stamp = finished.clone();
         let (result, ()) = tokio::join!(
-            drive(
-                self.setup(),
-                self.work.clone(),
-                fontaine_tui::Notices {
-                    startup: self.startup.clone(),
-                    feed: self.feed.clone(),
-                },
-                rx,
-                render,
-                clipboard,
-                fontaine_tui::no_suspend()
-            ),
-            script(ui)
+            async {
+                let result = drive(
+                    self.setup(),
+                    self.work.clone(),
+                    fontaine_tui::Notices {
+                        startup: self.startup.clone(),
+                        feed: self.feed.clone(),
+                    },
+                    rx,
+                    render,
+                    clipboard,
+                    fontaine_tui::no_suspend(),
+                    options,
+                )
+                .await;
+                stamp.set(Some(std::time::Instant::now()));
+                result
+            },
+            script(ui, finished)
         );
         result.unwrap()
     }
@@ -512,7 +535,8 @@ impl World {
                 rx,
                 render,
                 |_: &str| Ok(()),
-                fontaine_tui::no_suspend()
+                fontaine_tui::no_suspend(),
+                fontaine_tui::DriveOptions::default()
             ),
             script(ui)
         );

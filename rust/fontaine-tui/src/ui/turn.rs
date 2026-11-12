@@ -4,7 +4,7 @@ use std::path::Path;
 use crate::config_panel::ConfigKey;
 use crate::input::{MAX_ATTACHMENT_BYTES, PendingAttachment};
 use crate::transcript::Transcript;
-use crate::{Action, App, Ui, parse_command};
+use crate::{Action, App, Command, Ui, parse_command};
 use fontaine_core::RuntimeError;
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::audit::Decision;
@@ -288,6 +288,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         runtime: &mut AgentRuntime,
         launch_dir: &Path,
     ) -> std::ops::ControlFlow<()> {
+        if self.quitting() {
+            return std::ops::ControlFlow::Break(());
+        }
         let kinds = runtime.state.agents().root_notification_kinds();
         let reminders = !kinds.is_empty()
             && kinds
@@ -352,6 +355,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         launch_dir: &Path,
         fired: Fired,
     ) -> std::ops::ControlFlow<()> {
+        if self.quitting() {
+            return std::ops::ControlFlow::Break(());
+        }
         let prompt = runtime.scheduled_prompt(&fired).await;
         self.app
             .transcript
@@ -380,6 +386,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         launch_dir: &Path,
         next: Continue,
     ) -> std::ops::ControlFlow<()> {
+        if self.quitting() {
+            return std::ops::ControlFlow::Break(());
+        }
         let prompt = runtime.goal_prompt(&next).await;
         let end = match self.refresh_before_turn(runtime) {
             Some(end) => end,
@@ -407,11 +416,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let tick = super::soonest_tick(&self.app, &[]);
             tokio::select! {
                 biased;
-                result = &mut *fut => return Ok(result),
+                // Input before the work: a quit already waiting must not lose a same-poll race.
                 input = self.input.recv() => match input {
                     None => return Err(TurnEnd::InputClosed),
-                    Some(input) => match self.app.handle_input(input) {
-                        Action::Interrupt | Action::Quit => return Err(TurnEnd::Interrupted),
+                    Some(input) => match self.act_on(runtime, input) {
+                        Action::Quit => return Err(TurnEnd::InputClosed),
+                        Action::Interrupt => return Err(TurnEnd::Interrupted),
                         Action::CycleMode => self.cycle_mode(runtime, true),
                         Action::RetryDenied(index) if retry => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
@@ -437,10 +447,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::Command { command, raw } => {
                             self.remember(&raw);
                             self.run_immediate(runtime, &command);
+                            if self.quitting() {
+                                return Err(TurnEnd::InputClosed);
+                            }
                         }
                         _ => {}
                     },
                 },
+                result = &mut *fut => return Ok(result),
                 Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
                 Some(first) = self.agent_events.recv() => self.on_agent_events(runtime, first),
                 () = async {
@@ -641,6 +655,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
     ) -> std::ops::ControlFlow<()> {
         use std::ops::ControlFlow::{Break, Continue};
         while let Some(submission) = pending.pop_front() {
+            if self.quitting() {
+                runtime.steering.set_delivery_hold(false);
+                return Break(());
+            }
             self.review_afk_exits(runtime).await;
             if runtime.state.afk().stopped.is_some()
                 && matches!(
@@ -807,9 +825,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
         while self.app.covered() {
             self.draw(runtime);
             let action = tokio::select! {
+                biased;
                 input = self.input.recv() => match input {
                     None => return Break(()),
-                    Some(input) => self.app.handle_input(input),
+                    Some(input) => self.act_on(runtime, input),
                 },
                 Some(prompt) = self.prompts.recv() => {
                     self.on_prompt(Some(runtime), prompt);
@@ -845,6 +864,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 Action::OpenRewind => self.open_rewind(runtime),
                 Action::Interrupt | Action::Quit => return Break(()),
+                Action::Command {
+                    command: Command::Exit,
+                    ..
+                } => {
+                    self.request_quit(runtime);
+                    return Break(());
+                }
                 Action::CycleMode => {
                     self.cycle_mode(runtime, false);
                     self.review_afk_exits(runtime).await;
@@ -903,6 +929,11 @@ impl<R: FnMut(&mut App)> Ui<R> {
         let mut human = human;
         let mut attachments = attachments;
         loop {
+            // A retry, a fall-through or a stop hook's continuation is a new run: none starts
+            // once the session is leaving.
+            if self.quitting() {
+                return TurnEnd::InputClosed;
+            }
             let mut end = self.attempt(runtime, text, human, attachments).await;
             let mut tried = Tried::default();
             while let TurnEnd::Finished(TurnOutcome::Failed(failure)) = &end
@@ -1055,37 +1086,39 @@ impl<R: FnMut(&mut App)> Ui<R> {
         // would misplace the settled run's save.
         let sent = user_message(&prompt, &attachments, &modalities);
         let started_at = std::sync::atomic::AtomicUsize::new(usize::MAX);
-        let mut record_error: Option<String> = match runtime.conversation_len().await {
-            Ok(len) => {
-                started_at.store(len, std::sync::atomic::Ordering::Relaxed);
-                None
-            }
-            Err(e) => Some(format!(
-                "the conversation's length could not be read, so the turn did not run: {}",
-                fontaine_tools::error_chain::chain(&e)
-            )),
-        };
-        // The run's durable record goes before the run future's compaction: a process that
-        // dies during compaction still leaves the prompt for the fold that resumes the
-        // session. A failed write refuses the turn: nothing is journaled yet, and a kill in
-        // the unrecorded window would lose the prompt.
-        if record_error.is_none() {
-            record_error = runtime
-                .record_run_start(
-                    sent.clone(),
-                    started_at.load(std::sync::atomic::Ordering::Relaxed),
-                )
-                .await
-                .err()
-                .map(|e| {
+        let record_prompt = sent.clone();
+        let first_record = sent.clone();
+        let mut run = Box::pin(async {
+            // Inside the future the input select guards, so a persistence call that blocks
+            // cannot keep a quit from being served.
+            let first_len = match runtime.conversation_len().await {
+                Ok(len) => {
+                    started_at.store(len, std::sync::atomic::Ordering::Relaxed);
+                    len
+                }
+                Err(e) => {
+                    return TurnOutcome::Failed(
+                        format!(
+                            "the conversation's length could not be read, so the turn did not run: {}",
+                            fontaine_tools::error_chain::chain(&e)
+                        )
+                        .into(),
+                    );
+                }
+            };
+            // The run's durable record goes before compaction: a process that dies during it
+            // still leaves the prompt for the fold that resumes the session. A failed write
+            // refuses the turn: nothing is journaled yet, and a kill in the unrecorded window
+            // would lose the prompt.
+            if let Err(e) = runtime.record_run_start(first_record, first_len).await {
+                return TurnOutcome::Failed(
                     format!(
                         "the turn could not be journaled: {}",
                         fontaine_tools::error_chain::chain(&e)
                     )
-                });
-        }
-        let record_prompt = sent.clone();
-        let mut run = Box::pin(async {
+                    .into(),
+                );
+            }
             runtime.compact_if_needed().await;
             // A compaction that saved shrank the conversation; the run record's positions
             // are post-compaction, like the fallback's. An unreadable count refuses the
@@ -1156,11 +1189,6 @@ impl<R: FnMut(&mut App)> Ui<R> {
         });
         let tree = runtime.state.agents().clone();
         let end = loop {
-            if let Some(e) = record_error.take() {
-                // The turn never ran: no fold is owed, and `finish_turn` below reports the
-                // failure to the transcript.
-                break TurnEnd::Finished(TurnOutcome::Failed(e.into()));
-            }
             let changed = tree.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
@@ -1178,23 +1206,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
             );
             tokio::select! {
                 biased;
-                // Before the turn: a stopped session gets no further tool-capable model turn.
-                Ok(()) = self.afk_stops.changed() => break TurnEnd::Stopped,
-                _ = &mut changed => {}
-                _ = &mut display => {}
-                Some(event) = seen.recv() => {
-                    self.on_event(runtime, event);
-                    // One redraw for everything already queued, not one per streamed delta.
-                    while let Ok(event) = seen.try_recv() {
-                        self.on_event(runtime, event);
-                    }
-                    self.show_delivered(runtime);
-                }
-                outcome = &mut run => break TurnEnd::Finished(outcome),
+                // Input first: a quit already waiting must not lose a same-poll race to the run.
                 input = self.input.recv() => match input {
                     None => break TurnEnd::InputClosed,
-                    Some(input) => match self.app.handle_input(input) {
-                        Action::Interrupt | Action::Quit => break TurnEnd::Interrupted,
+                    Some(input) => match self.act_on(runtime, input) {
+                        // Leaving is not an interruption: nothing is restored or replayed, and
+                        // no hook or continuation follows.
+                        Action::Quit => break TurnEnd::InputClosed,
+                        Action::Interrupt => break TurnEnd::Interrupted,
                         Action::CycleMode => self.cycle_mode(runtime, true),
                         Action::RetryDenied(index) => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
@@ -1220,6 +1239,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::Command { command, raw } => {
                             self.remember(&raw);
                             self.run_immediate(runtime, &command);
+                            if self.quitting() {
+                                break TurnEnd::InputClosed;
+                            }
                         }
                         // A turn or a sign-in is under way, so a rewind cannot start: the picker closes.
                         Action::SelectRewind(_) => self.app.rewind = None,
@@ -1238,6 +1260,19 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         | Action::CancelWakeup => {}
                     },
                 },
+                // Before the turn: a stopped session gets no further tool-capable model turn.
+                Ok(()) = self.afk_stops.changed() => break TurnEnd::Stopped,
+                _ = &mut changed => {}
+                _ = &mut display => {}
+                Some(event) = seen.recv() => {
+                    self.on_event(runtime, event);
+                    // One redraw for everything already queued, not one per streamed delta.
+                    while let Ok(event) = seen.try_recv() {
+                        self.on_event(runtime, event);
+                    }
+                    self.show_delivered(runtime);
+                }
+                outcome = &mut run => break TurnEnd::Finished(outcome),
                 Some(prompt) = self.prompts.recv() => self.on_prompt(Some(runtime), prompt),
                 Some(first) = self.agent_events.recv() => self.on_agent_events(runtime, first),
                 () = async {
@@ -1255,6 +1290,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
         // landed in the same poll and is relabelled below. A failure with the stop standing
         // was ended by the stop's dispatch denial and is kept with its marker.
         let unsettled = match &end {
+            // A quit keeps the partial turn too, unless the run never got as far as reading
+            // the conversation, when there is no position to fold from.
+            TurnEnd::InputClosed
+                if self.quitting()
+                    && started_at.load(std::sync::atomic::Ordering::Relaxed) != usize::MAX =>
+            {
+                Some(Unsettled::SessionEnded)
+            }
             TurnEnd::Interrupted => Some(Unsettled::User),
             TurnEnd::Stopped => Some(Unsettled::AfkStop),
             TurnEnd::Finished(TurnOutcome::Failed(_)) if runtime.state.afk().stopped.is_some() => {
@@ -1267,7 +1310,21 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 prompt: sent,
                 log_len_before: started_at.into_inner(),
             };
-            runtime.keep_unsettled_turn(cause, Some(fallback)).await;
+            match self.quit_deadline() {
+                // Under the one deadline the whole exit shares, beside the hooks and the
+                // process cleanup that start with it.
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                    let _ = tokio::time::timeout(remaining, async {
+                        tokio::join!(
+                            runtime.keep_unsettled_turn(cause, Some(fallback)),
+                            runtime.finish_final_shutdown(deadline),
+                        )
+                    })
+                    .await;
+                }
+                None => runtime.keep_unsettled_turn(cause, Some(fallback)).await,
+            }
         }
         // A stop that lands inside the poll that also finishes the turn is still a stop.
         let end = match end {

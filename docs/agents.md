@@ -453,6 +453,14 @@ normally within the grace. What the subagent committed up to the kill is kept in
 and a later look has the evidence of what it was doing. A killed subagent still cannot be
 resumed.
 
+Quitting the terminal UI does not wait for that grace. The final exit aborts every subagent's
+tasks and the task that watches for its report at once, even one that never reaches a boundary,
+and starts nothing new (a spawn or a wake after the quit is refused). No report is made up and
+nothing is recorded as the subagent's end; what it had journaled to its log up to then is kept on a
+best-effort basis. Background jobs, MCP servers, language servers and a SearXNG instance Fontaine
+started are stopped inside the same two-second budget. Switching session and headless runs keep the
+graceful wait.
+
 ### Messaging a subagent
 
 Text typed in a subagent's view is yours, not another agent's, and is handled as the main

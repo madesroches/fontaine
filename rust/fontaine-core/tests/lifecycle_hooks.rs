@@ -1317,3 +1317,42 @@ async fn plugin_subagent_hooks_follow_the_layer_and_the_gate_exists_without_hook
     live.set(Arc::default());
     assert!(gate.subagent_start("agent-1", "explore").await.is_empty());
 }
+
+// ---- the final exit ----
+
+#[tokio::test]
+async fn the_final_shutdown_fires_session_end_once_and_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let ended = path_arg(&dir, "ended.jsonl");
+    let world = common::World::new();
+    world.user_file(&hook_toml("session_end", "", &["--append", &ended]));
+    let (runtime, _) = compacting_runtime(&world, Arc::new(Warnings::default()), false);
+
+    runtime.begin_final_shutdown();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    runtime.finish_final_shutdown(deadline).await;
+    runtime.finish_final_shutdown(deadline).await;
+
+    let events = recorded(&ended);
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["reason"], "prompt_input_exit");
+    assert!(runtime.state.agents().shutting_down());
+}
+
+#[tokio::test]
+async fn a_slow_session_end_hook_is_cut_off_at_the_shared_deadline() {
+    let world = common::World::new();
+    world.user_file(&hook_toml(
+        "session_end",
+        "timeout_secs = 30\n",
+        &["--sleep", "20"],
+    ));
+    let (runtime, _) = compacting_runtime(&world, Arc::new(Warnings::default()), false);
+    let started = std::time::Instant::now();
+    runtime
+        .finish_final_shutdown(started + Duration::from_millis(600))
+        .await;
+    let took = started.elapsed();
+    assert!(took >= Duration::from_millis(500), "{took:?}");
+    assert!(took < Duration::from_secs(4), "{took:?}");
+}

@@ -473,6 +473,10 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
     let mut cli = cli;
     let mut headless = headless;
     let mut ax_warnings = ax_warnings;
+    // Declared outside the runtime's scope and the loop: the watchdog of a final quit must
+    // outlive the session span, the scratch directory and the runtime's drop, and only
+    // disarms once the telemetry has finished.
+    let mut watchdog: Option<fontaine_tui::ExitWatchdog> = None;
     let code = match export.runtime() {
         // A `/resume` or `/branch` ends the run and starts another in the same process, so the
         // telemetry guard, the configuration and the trust decision carry across.
@@ -501,6 +505,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
                                 startup: std::mem::take(&mut ax_warnings),
                                 feed: Some(plugin_feed.clone()),
                             },
+                            &mut watchdog,
                         )
                         .await
                     }
@@ -544,7 +549,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             ) {
                 Ok(prepared) => prepared,
                 Err(code) => {
-                    export.finish(code);
+                    export.finish(code, None);
                     return ExitCode::from(code);
                 }
             };
@@ -556,7 +561,14 @@ pub fn run(args: impl IntoIterator<Item = OsString>, mut host: Host) -> ExitCode
             1
         }
     };
-    export.finish(code);
+    // The runtime is gone by now; a final quit's telemetry spends what is left of its budget.
+    export.finish(
+        code,
+        watchdog.as_ref().map(fontaine_tui::ExitWatchdog::deadline),
+    );
+    if let Some(watchdog) = watchdog {
+        watchdog.disarm();
+    }
     ExitCode::from(code)
 }
 
@@ -1230,6 +1242,7 @@ fn signed_out_login(
     Some((account, login))
 }
 
+#[allow(clippy::too_many_arguments)] // the watchdog slot belongs to the caller, past this session
 async fn run_interactive(
     cli: &Cli,
     prep: SessionPrep,
@@ -1238,6 +1251,7 @@ async fn run_interactive(
     host: &Host,
     screen_reader: Option<accessibility::Source>,
     notices: fontaine_tui::Notices,
+    watchdog: &mut Option<fontaine_tui::ExitWatchdog>,
 ) -> Outcome {
     let fontaine_tui::Notices {
         startup: ax_warnings,
@@ -1316,10 +1330,17 @@ async fn run_interactive(
     )
     .await
     {
-        Ok(fontaine_tui::DriveOutcome::Exit) => Outcome::Done(0),
-        Ok(fontaine_tui::DriveOutcome::Switch(target)) => {
-            Outcome::Switch(target, added.map(Box::new))
-        }
+        Ok(ended) => match ended.outcome {
+            fontaine_tui::DriveOutcome::Exit => {
+                // Still armed: the caller disarms it after the runtime and the telemetry are
+                // done with.
+                *watchdog = ended.watchdog;
+                Outcome::Done(0)
+            }
+            fontaine_tui::DriveOutcome::Switch(target) => {
+                Outcome::Switch(target, added.map(Box::new))
+            }
+        },
         Err(message) => {
             print_warnings(&pending.0);
             print_warnings(&pending.1);

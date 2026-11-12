@@ -819,6 +819,60 @@ mod managed {
     }
 
     #[tokio::test]
+    async fn a_final_terminate_stops_an_owned_instance_even_when_it_ignores_sigterm() {
+        let server = serve_searxng(sample()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let pidfile = dir.path().join("pid");
+        let script = format!(
+            "trap '' TERM\necho $$ > {}\nsleep 300 &\nwait",
+            pidfile.display()
+        );
+        let child = Arc::new(SearxngChild::default());
+        let tool = Websearch::new(
+            config(&server, &script, Arc::default()),
+            &Default::default(),
+            child.clone(),
+        )
+        .unwrap();
+        tool.call(&mut ToolContext::new(), args("x")).await.unwrap();
+        let pid = wait_for_record(pidfile).await.trim().to_string();
+        assert!(alive(&pid));
+        let started = std::time::Instant::now();
+        child.terminate_owned(Duration::from_millis(300)).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        for _ in 0..100 {
+            if !alive(&pid) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            !alive(&pid),
+            "the owned instance outlived the final terminate"
+        );
+        assert!(!child.is_running().await);
+    }
+
+    #[tokio::test]
+    async fn a_final_terminate_leaves_an_instance_the_session_does_not_own() {
+        let server = serve_searxng(sample()).await;
+        let base_url: url::Url = server.uri().parse().unwrap();
+        let config = WebsearchConfig::new(BackendConfig::Managed(Managed::new(
+            Duration::from_secs(20),
+            move || ready(Ok(Prepared::Reuse(base_url.clone()))),
+        )));
+        let child = Arc::new(SearxngChild::default());
+        let tool = Websearch::new(config, &Default::default(), child.clone()).unwrap();
+        tool.call(&mut ToolContext::new(), args("x")).await.unwrap();
+        child.terminate_owned(Duration::from_millis(300)).await;
+        assert!(child.is_running().await, "the shared instance is still up");
+    }
+
+    #[tokio::test]
     async fn a_reused_instance_spawns_nothing() {
         let server = serve_searxng(sample()).await;
         // The second search's and `is_running`'s probes see it up; later ones see it down.

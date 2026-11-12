@@ -73,10 +73,26 @@ The steps of a run:
    list an account's models), and drives the agent over that handle with the wrapped tool
    registry.
 6. It closes the session span, flushes the exporter for at most two seconds, and exits with the
-   run's code.
+   run's code. Quitting the terminal UI has one two-second budget for the whole exit instead (see
+   below).
 
 Any configuration or usage error exits with code 2 and a message on stderr; a run error exits
 with code 1.
+
+### Quitting the terminal UI
+
+A quit (`/exit`, `/quit`, Ctrl-D on an empty input) latches first, so no turn, continuation or
+queued input starts after it, and cancels what the session owns in the same instant: the running
+request is dropped, nested agent tasks and their report watchers are aborted, every background
+job's process group is killed, and MCP reconnects are retired. Then the `session_end` hook, keeping
+the partial main turn, reaping jobs, closing MCP servers (each stdio server runs in its own process
+group, which is signalled so descendants of a wrapper die too), terminating language servers and
+stopping a SearXNG instance Fontaine started run side by side under one deadline of two seconds
+from the quit. A shared SearXNG instance Fontaine did not start is left running. Unlike a kill, the
+abort waits for no hook boundary and invents no report: what a subagent had journaled is all that
+survives. An independent watchdog thread restores the terminal and ends the process at that same
+deadline if a destructor or exporter is still stuck. Switching session with `/resume` or `/branch`
+keeps its graceful teardown.
 
 ## The agent loop
 

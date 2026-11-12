@@ -530,6 +530,9 @@ struct RunShared {
     budget: fontaine_agents::budget::Budget,
     list: Option<ChildList>,
     kill: watch::Sender<bool>,
+    /// The current run's task, which only a final exit aborts: a kill waits for the run to
+    /// reach a hook boundary and save its transcript.
+    task: Mutex<Option<tokio::task::AbortHandle>>,
     status: Mutex<ChildStatus>,
     /// The ordinal of the latest run, and its report once it has ended.
     reports: watch::Sender<(u64, Option<ChildReport>)>,
@@ -566,7 +569,8 @@ struct ChildRun {
 /// with the run, so nothing but the task holds it.
 fn launch(shared: Arc<RunShared>, prompt: String, span: tracing::Span) {
     let kill = shared.kill.subscribe();
-    tokio::spawn(
+    let task_slot = shared.clone();
+    let task = tokio::spawn(
         async move {
             let report = run_child(&shared, prompt, kill).await;
             *lock(&shared.status, "child status") = report.status;
@@ -576,6 +580,7 @@ fn launch(shared: Arc<RunShared>, prompt: String, span: tracing::Span) {
         }
         .instrument(span),
     );
+    *lock(&task_slot.task, "child task") = Some(task.abort_handle());
 }
 
 impl ChildRun {
@@ -625,6 +630,13 @@ impl ChildHandle for ChildRun {
 
     fn kill(&self) {
         let _ = self.shared.kill.send(true);
+    }
+
+    fn abort(&self) {
+        let _ = self.shared.kill.send(true);
+        if let Some(task) = lock(&self.shared.task, "child task").take() {
+            task.abort();
+        }
     }
 
     fn report(&self) -> BoxFuture<'_, ChildReport> {
@@ -825,6 +837,7 @@ impl CoreChildRunner {
             budget,
             list,
             kill,
+            task: Mutex::new(None),
             status: Mutex::new(ChildStatus::Running),
             reports,
         });

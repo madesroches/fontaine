@@ -416,6 +416,35 @@ async fn a_server_that_ignores_shutdown_is_killed_after_the_timeout() {
     assert!(!alive(&pid), "the server outlived shutdown_all");
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_final_terminate_ends_an_unresponsive_server_without_its_shutdown_timeout() {
+    let f = Fixture::new();
+    let mut spec = f.spec("fake", &[("FAKE_LSP_IGNORE_SHUTDOWN", "1")]);
+    // An ordinary shutdown would wait this long for the server to leave on its own.
+    spec.shutdown_timeout = Duration::from_secs(30);
+    let servers = f.servers(vec![spec]);
+    run(&f.tool(&servers), at("hover")).await.unwrap();
+    let pid = f.log_lines()[0].split(' ').nth(1).unwrap().to_string();
+    let alive = |pid: &str| {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    assert!(alive(&pid));
+    let started = Instant::now();
+    servers.terminate_all().await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(!alive(&pid), "the server outlived terminate_all");
+}
+
 #[tokio::test]
 async fn the_server_gets_the_base_variables_the_named_ones_and_the_literals_only() {
     let f = Fixture::new();

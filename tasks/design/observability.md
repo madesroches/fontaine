@@ -98,7 +98,10 @@ code reads telemetry state; exporters run off-thread with bounded queues that dr
 exporter init failure logs to the debug file, shows a one-line notice, and the run continues
 with export off (a malformed `[telemetry]` value is still a config error, exit 2); shutdown
 flush is capped (2 s) on both TUI exit and `-p` exit (`main` drops the guard, then returns an
-`ExitCode` — `std::process::exit` would skip the flush), after which data is dropped.
+`ExitCode` — `std::process::exit` would skip the flush), after which data is dropped. A final TUI quit shares one two-second deadline with the rest of its
+exit instead: the flush spends what is left of it (no second cap), and the quit's own watchdog,
+which outlives runtime and scratch teardown and disarms only after the flush, restores the
+terminal and ends the process if an exporter ignores its timeout.
 
 **Secrets.** Credentials are env-var names only (`api_key_env`), never inline. The variables
 removed from the shell tool's and hooks' child environment are listed in the Phase 2 plan, step 1. Opt-in content still passes through `rig_core::redact` and is

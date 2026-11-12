@@ -216,6 +216,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         purpose: PickerPurpose,
         reference: &str,
     ) {
+        if self.quitting() {
+            return;
+        }
         match purpose {
             PickerPurpose::Main => self.model(runtime, reference).await,
             PickerPurpose::Guardian => self.guardian_model(runtime, reference).await,

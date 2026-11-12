@@ -11,7 +11,7 @@ mod turn;
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 use crate::agent_list;
 use crate::agents_panel::{AgentsPanel, BoardRow, JobRow, PanelRow, trimmed_count};
@@ -22,7 +22,7 @@ use crate::resume_picker::ResumePicker;
 use crate::ui::schedule::IDLE_POLL;
 use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
 use crate::usage_prompt::UsagePausePrompt;
-use crate::{Action, App, Command, Prompt, Ui, parse_command};
+use crate::{Action, App, Command, Input, Prompt, Ui, parse_command};
 use crate::{StatuslineTrigger, reports, statusbar};
 use fontaine_core::afk_report::AfkSource;
 use fontaine_core::agent::{AgentRuntime, Delivered, MessageRefusal};
@@ -74,6 +74,54 @@ fn signed_out_guardian_account(runtime: &AgentRuntime) -> Option<&str> {
 }
 
 impl<R: FnMut(&mut App)> Ui<R> {
+    /// Latches the final exit, once: nothing the session still had in mind (queued input, a
+    /// picked model, a session switch, a continuation) may start, the session's own work is
+    /// cancelled now, and the clock the whole exit shares starts. Idempotent; the first call's
+    /// time is the one that counts.
+    pub(crate) fn request_quit(&mut self, runtime: &AgentRuntime) {
+        if self.quit_started.is_some() {
+            return;
+        }
+        let started = Instant::now();
+        self.quit_started = Some(started);
+        self.input.close();
+        while self.input.try_recv().is_ok() {}
+        self.switch = None;
+        self.pending_pick = None;
+        self.pending_resume = None;
+        self.pending_afk_review.clear();
+        self.pending_config.clear();
+        self.pending_provider.clear();
+        if let Some(task) = self.statusline_task.take() {
+            task.abort();
+        }
+        let deadline = started + self.quit_budget;
+        if let Some(on_quit) = self.on_quit.as_mut() {
+            on_quit(deadline);
+        }
+        runtime.begin_final_shutdown();
+    }
+
+    /// Whether a quit was requested, after which nothing new may start.
+    pub(crate) fn quitting(&self) -> bool {
+        self.quit_started.is_some()
+    }
+
+    /// When the final exit must be over: the first quit request plus the budget.
+    pub(crate) fn quit_deadline(&self) -> Option<Instant> {
+        self.quit_started.map(|started| started + self.quit_budget)
+    }
+
+    /// What one input does, with a quit key latching the final exit on the way out. Every place
+    /// the interface reads input while work runs or a dialog is open goes through here.
+    pub(crate) fn act_on(&mut self, runtime: &AgentRuntime, input: Input) -> Action {
+        let action = self.app.handle_input(input);
+        if matches!(action, Action::Quit) {
+            self.request_quit(runtime);
+        }
+        action
+    }
+
     fn draw(&mut self, runtime: &AgentRuntime) {
         self.app.mode = runtime.state.mode();
         self.app.guardian_off = runtime.state.guardian_off();
@@ -288,13 +336,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.statusline_running = true;
         self.statusline_dirty = false;
         self.statusline_last_run = Some(std::time::Instant::now());
-        tokio::spawn(async move {
+        self.statusline_task = Some(tokio::spawn(async move {
             let line = script
                 .run(&payload)
                 .await
                 .map(|line| StatuslineState { line });
             let _ = result_tx.send(line);
-        });
+        }));
     }
 
     /// Applies finished status-line results if any arrived. Returns true when a new line
@@ -605,6 +653,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
     /// Reviews the AFK stretches the human left since the last review: the evasion assessment,
     /// then the outcome. Runs at once when nothing is in progress and otherwise when it ends.
     pub(crate) async fn review_afk_exits(&mut self, runtime: &AgentRuntime) {
+        if self.quitting() {
+            return;
+        }
         for stretch in std::mem::take(&mut self.pending_afk_review) {
             self.app
                 .transcript
@@ -678,13 +729,25 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let display = tree.display_changed().notified();
             tokio::pin!(display);
             display.as_mut().enable();
-            if self.drain_deferred(runtime).await.is_break() {
+            if self.quitting() {
                 return;
             }
-            self.announce_blocked(runtime).await;
+            // Input already waiting is served before anything starts on its own, so a quit
+            // that is queued cannot lose to a notification, a scheduled prompt or a goal step.
+            let buffered = match self.input.try_recv() {
+                Ok(input) => Some(input),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => return,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => None,
+            };
+            if buffered.is_none() && self.drain_deferred(runtime).await.is_break() {
+                return;
+            }
+            if buffered.is_none() {
+                self.announce_blocked(runtime).await;
+            }
             // While AFK is blocked or stopped nothing the user did not type may start a turn:
             // not news, not a scheduled prompt, not a goal step. Jobs stay listed, not deleted.
-            let held = runtime.unattended_blocked().is_some();
+            let held = buffered.is_some() || runtime.unattended_blocked().is_some();
             // A subagent that finished while nothing was running has news for the
             // main conversation, which gets a turn of its own to read it.
             if !held && tree.has_notifications(ROOT_AGENT) {
@@ -736,55 +799,59 @@ impl<R: FnMut(&mut App)> Ui<R> {
             let statusline_result_rx = &mut self.statusline_result_rx;
             let afk_stops = &mut self.afk_stops;
             let mut stopped = false;
-            let action = tokio::select! {
-                // A stop tripped while the main turn is idle, such as by a running subagent.
-                Ok(()) = afk_stops.changed() => {
-                    stopped = true;
-                    Action::None
-                }
-                input = self.input.recv() => match input {
-                    Some(input) => self.app.handle_input(input),
-                    None => return,
-                },
-                Some(prompt) = self.prompts.recv() => {
-                    self.on_prompt(Some(runtime), prompt);
-                    Action::None
-                }
-                Some(first) = self.agent_events.recv() => {
-                    self.on_agent_events(runtime, first);
-                    Action::None
-                }
-                Some(_trigger) = async {
-                    match statusline_rx.as_mut() {
-                        Some(rx) => rx.recv().await,
-                        None => std::future::pending().await,
+            let action = if let Some(input) = buffered {
+                self.act_on(runtime, input)
+            } else {
+                tokio::select! {
+                    // A stop tripped while the main turn is idle, such as by a running subagent.
+                    Ok(()) = afk_stops.changed() => {
+                        stopped = true;
+                        Action::None
                     }
-                } => {
-                    let payload = self.build_statusline_payload(runtime).await;
-                    self.run_statusline(payload);
-                    Action::None
-                }
-                // A finished run wakes the loop so its line lands in the bar without
-                // waiting for an unrelated event.
-                Some(line) = statusline_result_rx.recv() => {
-                    self.statusline_running = false;
-                    self.statusline_result_redraw = true;
-                    self.statusline_last_run = Some(std::time::Instant::now());
-                    if let Some(line) = line {
-                        self.app.statusline = Some(line);
+                    input = self.input.recv() => match input {
+                        Some(input) => self.act_on(runtime, input),
+                        None => return,
+                    },
+                    Some(prompt) = self.prompts.recv() => {
+                        self.on_prompt(Some(runtime), prompt);
+                        Action::None
                     }
-                    Action::None
-                }
-                _ = &mut changed => Action::None,
-                _ = &mut display => Action::None,
-                Ok(()) = main_quota.changed() => Action::None,
-                Ok(()) = guardian_quota.changed() => Action::None,
-                () = async {
-                    match tick {
-                        Some(wait) => tokio::time::sleep(wait).await,
-                        None => std::future::pending().await,
+                    Some(first) = self.agent_events.recv() => {
+                        self.on_agent_events(runtime, first);
+                        Action::None
                     }
-                } => Action::None,
+                    Some(_trigger) = async {
+                        match statusline_rx.as_mut() {
+                            Some(rx) => rx.recv().await,
+                            None => std::future::pending().await,
+                        }
+                    } => {
+                        let payload = self.build_statusline_payload(runtime).await;
+                        self.run_statusline(payload);
+                        Action::None
+                    }
+                    // A finished run wakes the loop so its line lands in the bar without
+                    // waiting for an unrelated event.
+                    Some(line) = statusline_result_rx.recv() => {
+                        self.statusline_running = false;
+                        self.statusline_result_redraw = true;
+                        self.statusline_last_run = Some(std::time::Instant::now());
+                        if let Some(line) = line {
+                            self.app.statusline = Some(line);
+                        }
+                        Action::None
+                    }
+                    _ = &mut changed => Action::None,
+                    _ = &mut display => Action::None,
+                    Ok(()) = main_quota.changed() => Action::None,
+                    Ok(()) = guardian_quota.changed() => Action::None,
+                    () = async {
+                        match tick {
+                            Some(wait) => tokio::time::sleep(wait).await,
+                            None => std::future::pending().await,
+                        }
+                    } => Action::None,
+                }
             };
             if stopped {
                 self.afk_stopped(runtime).await;
@@ -1063,7 +1130,10 @@ impl<R: FnMut(&mut App)> Ui<R> {
             return Continue(CommandOutcome::Done);
         }
         match command {
-            Command::Exit => Break(()),
+            Command::Exit => {
+                self.request_quit(runtime);
+                Break(())
+            }
             // /loop never reaches here: the idle path keeps its direct arm, and mid-turn it
             // is refused, not queued.
             Command::Loop(_) => Continue(CommandOutcome::Done),
@@ -1396,6 +1466,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             Command::Cost => self.cost(runtime),
             Command::Vim => self.vim(),
             Command::Keybindings => self.keybindings(),
+            Command::Exit => self.request_quit(runtime),
             _ => {}
         }
     }
@@ -1406,6 +1477,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         &mut self,
         runtime: &mut AgentRuntime,
     ) -> std::ops::ControlFlow<()> {
+        if self.quitting() {
+            return std::ops::ControlFlow::Break(());
+        }
         self.review_afk_exits(runtime).await;
         if let Some((purpose, reference)) = self.pending_pick.take() {
             self.apply_pick(runtime, purpose, &reference).await;
@@ -1426,6 +1500,9 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
         while let Some(request) = self.pending_provider.pop_front() {
             self.provider_request(runtime, request).await;
+        }
+        if self.quitting() {
+            return std::ops::ControlFlow::Break(());
         }
         std::ops::ControlFlow::Continue(())
     }

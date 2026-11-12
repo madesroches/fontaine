@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fontaine_core::config::{Config, TelemetryBackend};
 use fontaine_core::credentials::Credentials;
@@ -262,20 +262,32 @@ impl Telemetry {
 
     /// Flushes and shuts the exporters down, giving up after the flush cap. A fast flush
     /// returns normally; if it runs past `FLUSH_CAP` a watchdog force-exits with the run's code.
-    pub fn finish(self, exit_code: u8) {
+    ///
+    /// A final quit passes the `deadline` its whole exit shares: the flush spends only what is
+    /// left of it, and no second watchdog starts because the caller's own already covers the
+    /// stretch (including a third-party shutdown that ignores its timeout).
+    pub fn finish(self, exit_code: u8, deadline: Option<Instant>) {
         if !self.is_active() {
             return;
         }
-        // The exporters can wait on a collector that never answers; past the cap the run's own
-        // exit code is the only thing left to deliver.
-        std::thread::spawn(move || {
-            std::thread::sleep(FLUSH_CAP);
-            std::process::exit(i32::from(exit_code));
-        });
+        let deadline = match deadline {
+            Some(deadline) => deadline,
+            None => {
+                // The exporters can wait on a collector that never answers; past the cap the
+                // run's own exit code is the only thing left to deliver.
+                std::thread::spawn(move || {
+                    std::thread::sleep(FLUSH_CAP);
+                    std::process::exit(i32::from(exit_code));
+                });
+                Instant::now() + FLUSH_CAP
+            }
+        };
         #[cfg(feature = "telemetry-otlp")]
         if let Some(providers) = self.otlp {
-            providers.shutdown(FLUSH_CAP);
+            providers.shutdown(deadline);
         }
+        #[cfg(not(feature = "telemetry-otlp"))]
+        let _ = deadline;
         #[cfg(feature = "telemetry-micromegas")]
         drop(self.micromegas);
     }

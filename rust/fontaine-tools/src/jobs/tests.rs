@@ -647,6 +647,8 @@ fn bare_monitor(
         cursor: 0,
         control: Arc::new(Control {
             kill: AtomicU8::new(0),
+            forced: AtomicBool::new(false),
+            group: None,
             deadline: None,
         }),
         ended: None,
@@ -875,5 +877,50 @@ async fn a_monitor_without_a_timeout_has_no_deadline() {
         assert!(deadline(&unbounded).is_none());
         assert!(deadline(&bounded).is_some());
     }
+    jobs.terminate_all().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_forced_stop_kills_a_group_that_ignores_sigterm_and_its_descendant_at_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let (leader_file, child_file) = (dir.path().join("leader"), dir.path().join("child"));
+    let (jobs, sink) = jobs();
+    // Ignores the polite stop an ordinary shutdown would wait ten seconds on.
+    let command = format!(
+        "trap '' TERM; echo $$ > {}; (trap '' TERM; sleep 60 & echo $! > {}; wait) & wait",
+        leader_file.display(),
+        child_file.display()
+    );
+    start(&jobs, &command, true);
+    let leader = pid_in(&leader_file).await;
+    let child = pid_in(&child_file).await;
+    let started = Instant::now();
+    jobs.force_stop_all();
+    jobs.wait_stopped(Instant::now() + Duration::from_secs(5))
+        .await;
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert_eq!(running(&jobs), 0);
+    until("the leader and its descendant to be gone", || {
+        gone(leader) && gone(child)
+    })
+    .await;
+    assert!(sink.notes().is_empty(), "a forced stop posts nothing");
+}
+
+#[tokio::test]
+async fn waiting_for_a_forced_stop_gives_up_at_its_deadline() {
+    let (jobs, _) = jobs();
+    start(&jobs, "sleep 30", true);
+    // Nothing asked the job to stop, so the wait can only end at its deadline.
+    let started = Instant::now();
+    jobs.wait_stopped(Instant::now() + Duration::from_millis(200))
+        .await;
+    assert!(started.elapsed() >= Duration::from_millis(200));
+    assert_eq!(running(&jobs), 1);
     jobs.terminate_all().await;
 }

@@ -610,6 +610,15 @@ impl Client {
         }
     }
 
+    /// Ends the server's process group at once, skipping the `shutdown` request and the
+    /// configured grace: for the final exit, which has a fixed budget to spend.
+    pub async fn terminate(&self) {
+        if let Some(mut child) = self.process.take() {
+            procgroup::terminate(self.process.pid);
+            procgroup::settle(&mut child, self.process.pid, Duration::from_millis(200)).await;
+        }
+    }
+
     async fn kill(&mut self) {
         if let Some(mut child) = self.process.take() {
             procgroup::terminate(self.process.pid);

@@ -93,6 +93,13 @@ pub trait ChildHandle: Send + Sync {
     /// Stops the child. Its pending approvals are answered as denied.
     fn kill(&self);
 
+    /// Ends the child's tasks at once, for the session's final exit: no rig hook boundary is
+    /// awaited and no report is produced. A handle with no task of its own falls back to
+    /// [`kill`](Self::kill).
+    fn abort(&self) {
+        self.kill();
+    }
+
     /// Resolves when the child has ended, with how it ended. After a [`resume`](Self::resume)
     /// it resolves with the report of the run that is current when it is called.
     fn report(&self) -> BoxFuture<'_, ChildReport>;
