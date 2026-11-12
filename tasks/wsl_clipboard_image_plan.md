@@ -102,10 +102,12 @@ unchanged; `Ok(ImageRead { path: None, .. })` is only for a non-empty table.
 Each probe runs with the scrubbed `Launcher`, `stdin`/`stderr` nulled. The program is
 spawned directly through the child-process API, never through a parent shell, so launching
 Fontaine from cmd.exe or PowerShell makes no difference. Each probe pipes stdout, drains it
-on a reader thread into a `Vec<u8>`, polls `try_wait` until the deadline, and kills and
-reaps the child on timeout (`Failed`); after a kill the reader thread is detached, not
-joined, because a grandchild holding the pipe (or the Windows-side process behind WSL
-interop) would keep the join blocked past the deadline. rig's `Process::output(Some(timeout))` is unsuitable
+on a reader thread into a `Vec<u8>`, polls `try_wait` until the deadline, and on timeout
+calls `rig_tools::process::kill_group(&mut child)` (the `Launcher` detaches each probe into its
+own process group, so helpers such as a shell wrapper die with it; off Unix it kills the child
+alone) and reaps the child (`Failed`); the reader thread is still detached, not
+joined, because the Windows-side process behind WSL interop (outside the group) or a non-Unix
+grandchild holding the pipe would keep the join blocked past the deadline. rig's `Process::output(Some(timeout))` is unsuitable
 because it decodes stdout as lossy UTF-8, which corrupts the PNG bytes from
 `wl-paste`/`xclip`/`pngpaste`. `attach_clipboard` is awaited inline by the UI loops
 (`ui/mod.rs:781`, `ui/turn.rs:433`/`1159`), so the timeout bounds how long the UI can
@@ -136,8 +138,7 @@ asks for).
 
 Used on native Windows and under WSL. The executable is `powershell.exe` resolved by PATH
 lookup (System32 is on PATH on native Windows; WSL interop provides it under WSL), `Missing`
-otherwise. fontaine's existing `fontaine_tools::powershell` discovery prefers `pwsh.exe` and
-is deliberately NOT reused here. The arguments come from
+otherwise. The arguments come from
 `fontaine_tools::powershell::launch_args(script)` (an `-EncodedCommand` launcher, so the
 command line cannot be re-parsed when argv crosses WSL interop's Linux→Windows conversion;
 its preamble only silences progress records and sets UTF-8 output), run on the resolved
@@ -186,7 +187,7 @@ failure of `spawn_blocking`) keep today's messages.
 1. `rust/fontaine-tui/src/clipboard.rs`: add the read side — `ProbeOutcome`, `Probe`,
    `ImageRead` (all `pub(crate)`), `on_wsl`, `read_image_with`, `read_image`, the notice
    formatting function, the byte-safe probe runner (piped stdout, reader thread, shared
-   deadline passed in, kill and reap on timeout, reader detached), the native-Windows row and
+   deadline passed in, `kill_group` and reap on timeout, reader detached), the native-Windows row and
    the powershell probe (arguments from `fontaine_tools::powershell::launch_args`). Reuse `ImageMediaType::sniff` for the
    type detection and keep rig's `pasted-<millis>.<ext>` naming.
 2. `rust/fontaine-tui/src/ui/mod.rs:948-951`: switch `attach_clipboard` from
@@ -251,13 +252,11 @@ failure of `spawn_blocking`) keep today's messages.
   binary-through-interop hazards.
 - 2026-11-11: keep the read local rather than upstreaming a diagnostics API into rig, since
   this is the only `read_image` call site.
-- 2026-11-11: the bug is missing on native Windows too, so the fix covers a native-Windows
-  probe, not only the WSL fallback.
+- 2026-11-11: the bug is missing on native Windows too (per #586), so the fix covers a
+  native-Windows probe, not only the WSL fallback.
 - 2026-11-11: the `powershell.exe Get-Clipboard` fallback follows the owner's direction in
   #586 (Claude Code must read the Windows clipboard some other way, most likely
   powershell.exe); matching Claude Code's exact mechanism remains a follow-up.
-- 2026-11-11: native Windows coverage is in scope per the same #586 thread ("it does not
-  work on windows/cmd either").
 
 ## Documentation
 
