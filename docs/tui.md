@@ -443,7 +443,8 @@ The transcript renders the markdown in the assistant's replies:
   file that exists and cannot be launched (a click opens it with the system's default program, so
   executable and launchable files such as scripts and `.desktop` files stay plain text). Code is
   not linked, except inline code that is exactly one URL or path, and a URL that is a whole word in a
-  fenced block. A `#N` or path that does not resolve stays plain text. Issue references are linked
+  fenced block. A `#N` or path that does not resolve stays plain text. While a reply is still streaming, rows
+  that scroll off before their paragraph is complete link only URLs. Issue references are linked
   in replies only, and URLs also in notices;
 - headings, bold, with a first-level heading also underlined;
 - bullet and numbered lists, nested by indent, wrapped under their text;

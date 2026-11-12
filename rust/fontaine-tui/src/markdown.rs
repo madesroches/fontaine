@@ -694,11 +694,9 @@ impl Inline {
 }
 
 fn is_http(url: &str) -> bool {
-    let lower = |n: usize| {
-        url.get(..n)
-            .is_some_and(|p| p.eq_ignore_ascii_case(&"https://"[..n]))
-    };
-    lower(8) || lower(7)
+    let prefix =
+        |n: usize, scheme: &str| url.get(..n).is_some_and(|p| p.eq_ignore_ascii_case(scheme));
+    prefix(8, "https://") || prefix(7, "http://")
 }
 
 /// Splits `text` into spans of `style`, with each reference of `kinds` tagged as a hyperlink
@@ -1489,7 +1487,14 @@ mod tests {
 
     #[test]
     fn link_spans_ignore_what_is_not_a_url() {
-        for text in ["http://", "https://.", "a.io/x", "xhttps://a.io", "http:/a"] {
+        for text in [
+            "http://",
+            "https://.",
+            "a.io/x",
+            "xhttps://a.io",
+            "http:/a",
+            "https:/x",
+        ] {
             let spans = link_spans(text, Style::default(), link(), Kinds::URL);
             assert!(spans.iter().all(|s| s.style.fg.is_none()), "{text}");
             let joined: String = spans.iter().map(|s| s.content.as_ref()).collect();
@@ -1563,6 +1568,8 @@ mod tests {
         assert_eq!(targets(&with), vec![Ref::Url("https://a.io/x".into())]);
         let with = linked_rows("[`code`](https://a.io/c)\n", 40);
         assert_eq!(targets(&with), vec![Ref::Url("https://a.io/c".into())]);
+        let with = linked_rows("[docs](http://a.io/h)\n", 40);
+        assert_eq!(targets(&with), vec![Ref::Url("http://a.io/h".into())]);
     }
 
     #[test]
@@ -1572,6 +1579,7 @@ mod tests {
             "file:///etc/passwd",
             "docs/a.md",
             "mailto:a@b.c",
+            "https:/x",
         ] {
             let with = linked_rows(&format!("[text]({dest})\n"), 40);
             assert!(targets(&with).is_empty(), "{dest}");

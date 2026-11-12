@@ -1238,6 +1238,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-11: AFK: (#83) Only non-executable regular files get `file://` links (no unix execute bit, extension not in a fixed launcher list, on Windows not in `PATHEXT`); executable or launchable files stay plain text; reason: a click passes the target to the OS opener, which runs such files, and a prompt-injected reply can name one in the repo.
 - 2026-11-11: AFK: (#83) Notices are linkified through a `link: Option<Style>` parameter on `prefixed_body` that only the info-notice branch and the warning headline set, and through `link_spans` in `hint_spans`'s `flush` (`/command` runs unlinked); `prefixed` passes `None`, so errors and user input stay plain; reason: it keeps one wrap path and cannot linkify the plain call sites by accident.
 - 2026-11-11: (#83) (supersedes the continuation-row clause of the 2026-11-03 (#206) bare-URL line) A link wrapped across rows keeps its colour and target on every row, because text is scanned before it is wrapped; a reference still streaming at the end of the unsettled tail stays plain until text follows it.
+- 2026-11-11: (#83) Rows of an unsettled reply committed to scrollback because the reply outgrew the screen link only URLs, not #N or paths; reason: the unsettled tail can be inside an open code fence, where #N must not link, and the tail is never re-rendered once committed.
 
 ## Open Questions
 

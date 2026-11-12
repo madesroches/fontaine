@@ -227,7 +227,7 @@ view::draw ─ widgets ───────────────────
    `raw_rows`/`uncovered` pass prose kinds.
 4. **`transcript.rs`**: assistant prose rows pass `URL|ISSUE|PATH`; the streaming-tail `plain_rows` passes `URL` only: it cannot tell prose from code, so `#N`
    would link inside an open fence, and partial path tokens would be interned and stat'ed on every
-   delta (settled rows go through markdown with full kinds). Tool
+   delta (settled rows go through markdown with full kinds; the exception is rows committed under budget pressure because the reply outgrew the screen, which come from `plain_rows` and so link URLs only). Tool
    output and `Entry::Shell` rows pass `URL|PATH`. Notices pass `URL`:
    - `prefixed_body` gains a last-but-one parameter `link: Option<Style>`. With `None` it builds
      each wrapped piece as one `Span` via `row()`, as today; with `Some(link)` the piece's body is
