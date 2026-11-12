@@ -32,6 +32,7 @@ use crate::mcp::output::{DEFAULT_CHAR_LIMIT, OutputLimits, cap};
 use crate::mcp::{McpResourceQueries, listings::Listings};
 use crate::notebook::{NOTEBOOK_STEER, NotebookEdit, ReadView};
 use crate::powershell::{self, PowerShellSettings};
+use crate::preclassify::{GitCommand, Preclassifier};
 use crate::result_pipeline::{ToolOutcome, text_view};
 use crate::risk::{RiskClass, ToolSource, registered_risk};
 use crate::scope::{Scope, glob_target};
@@ -348,7 +349,17 @@ impl Tracking {
 /// rig's `shell`, with the command kept off the Windows command line when it runs through
 /// Git Bash. For the main agent a call is a job: one that outlives its timeout moves to the
 /// background instead of being stopped.
-#[derive(Clone, Debug)]
+pub type GitFastPathRunner = Arc<
+    dyn Fn(
+            GitCommand,
+            &Path,
+            Option<&Path>,
+        ) -> Result<String, Box<dyn std::error::Error + Send + Sync + 'static>>
+        + Send
+        + Sync,
+>;
+
+#[derive(Clone)]
 pub struct ShellTool {
     pub shell: Shell,
     /// The longest timeout a call may ask for; a longer one is cut to it.
@@ -359,6 +370,24 @@ pub struct ShellTool {
     /// Where a foreground call's final directory is kept; `None` leaves every call in the
     /// directory it names or the primary root.
     pub track: Option<Tracking>,
+    /// The scope used to resolve `cwd` and path containment for the git fast path.
+    pub scope: Option<Arc<Scope>>,
+    /// The gix-based runner for supported read-only git commands.
+    pub git_fast_path_runner: Option<GitFastPathRunner>,
+}
+
+impl std::fmt::Debug for ShellTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ShellTool")
+            .field("shell", &self.shell)
+            .field("max_timeout", &self.max_timeout)
+            .field("through_env", &self.through_env)
+            .field("jobs", &self.jobs)
+            .field("track", &self.track)
+            .field("scope", &self.scope)
+            .field("git_fast_path_runner", &self.git_fast_path_runner.is_some())
+            .finish()
+    }
 }
 
 impl ShellTool {
@@ -394,6 +423,24 @@ impl ShellTool {
     pub async fn run(&self, args: ShellArgs) -> Result<ShellRun, ToolExecutionError> {
         let (shell, args) = self.prepared(self.bounded(args));
         shell.run(args).await
+    }
+
+    /// If the command is a supported read-only git invocation, run it through the configured
+    /// gix-based runner instead of spawning a shell.
+    fn try_git_fast_path(&self, args: &ShellCall) -> Option<Result<String, ToolExecutionError>> {
+        if args.run_in_background == Some(true) {
+            return None;
+        }
+        let (scope, runner) = (self.scope.as_ref()?, self.git_fast_path_runner.as_ref()?);
+        let cwd = args.cwd.as_deref();
+        let env = crate::preclassify::Environment { scope, cwd };
+        let (cmd, _paths) = Preclassifier::default().parse_git(&args.command, &env)?;
+        let repo_root = self.shell.launcher.cwd.as_deref()?;
+        let resolved_cwd = env.base();
+        Some(
+            runner(cmd, repo_root, resolved_cwd.as_deref())
+                .map_err(|e| ToolExecutionError::other(chain(&*e))),
+        )
     }
 
     /// Starts the command `args` names in the workspace, as rig's `shell` does, its stdout and
@@ -683,6 +730,9 @@ impl Tool for ShellTool {
         context: &mut ToolContext,
         args: ShellCall,
     ) -> Result<String, ToolExecutionError> {
+        if let Some(result) = self.try_git_fast_path(&args) {
+            return result;
+        }
         let agent = context
             .get::<AgentId>()
             .ok()
@@ -1059,7 +1109,7 @@ pub fn search_external(primary: &Path) -> Search {
     }
 }
 
-pub fn shell_for(root: &Path, settings: &ShellSettings) -> ShellTool {
+pub fn shell_for(root: &Path, settings: &ShellSettings, scope: Arc<Scope>) -> ShellTool {
     let mut launcher = Launcher::default()
         .in_dir(root)
         .without_env(settings.scrub_env.iter().cloned());
@@ -1083,6 +1133,8 @@ pub fn shell_for(root: &Path, settings: &ShellSettings) -> ShellTool {
         through_env: settings.git_bash.is_some(),
         jobs: None,
         track: None,
+        scope: Some(scope),
+        git_fast_path_runner: None,
     }
 }
 
@@ -1148,6 +1200,9 @@ pub struct BuiltinEnv {
     /// The session scratch directory, where a call's final directory is written. With none,
     /// the shell directory never moves.
     pub scratch: Option<PathBuf>,
+    /// The gix-based runner for supported read-only git commands. With none, the shell tool
+    /// falls back to normal shell execution for all git invocations.
+    pub git_fast_path_runner: Option<GitFastPathRunner>,
 }
 
 pub struct Registered {
@@ -1477,10 +1532,12 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
                 scope.clone(),
                 risk_of(ShellTool::NAME),
                 guard.clone(),
-                |root| ShellTool {
-                    jobs: Some(env.jobs.clone()),
-                    track: Some(tracking.clone()),
-                    ..shell_for(root, &env.shell)
+                |root| {
+                    let mut tool = shell_for(root, &env.shell, env.scope.clone());
+                    tool.jobs = Some(env.jobs.clone());
+                    tool.track = Some(tracking.clone());
+                    tool.git_fast_path_runner = env.git_fast_path_runner.clone();
+                    tool
                 },
             )
             .with_pre_gate(tracking.start_in()),
@@ -1512,9 +1569,11 @@ pub fn build(env: &BuiltinEnv) -> Result<Vec<Registered>, BuildError> {
     if posix_shell {
         tools.push(register(GuardedTool::single(
             MonitorTool {
-                shell: ShellTool {
-                    jobs: Some(env.jobs.clone()),
-                    ..shell_for(scope.primary(), &env.shell)
+                shell: {
+                    let mut tool = shell_for(scope.primary(), &env.shell, env.scope.clone());
+                    tool.jobs = Some(env.jobs.clone());
+                    tool.git_fast_path_runner = env.git_fast_path_runner.clone();
+                    tool
                 },
             },
             risk_of(MonitorTool::NAME),

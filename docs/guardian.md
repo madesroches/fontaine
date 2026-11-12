@@ -13,7 +13,7 @@ an agent type that can only read, and excludes reads of secret files such as `.e
 pre-classifier all run first, in every mode; the guardian never sees a call they decided. In `auto`
 it also does not see file-tool edits to tracked, new or session-created files in your workspace or
 writes into the session scratch directory (see [the pipeline](permissions.md#the-pipeline)); it
-still sees instruction files, `.github/`, existing untracked files and every shell command.
+still sees instruction files, `.github/`, existing untracked files and every shell command that does not take the read-only pre-classifier fast path (including supported read-only `git` subcommands).
 
 ## Threat model
 

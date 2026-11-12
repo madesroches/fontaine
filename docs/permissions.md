@@ -404,14 +404,24 @@ substitution, variable, tilde, glob, brace pattern or assignment prefix.
 | `head`, `tail` | `-n N -c N -q -v` | positionals |
 | `rg` | `-i -s -S -n -N -H -w -x -F -v -c -l -A N -B N -C N -m N -t TYPE -T TYPE --hidden --no-heading -f FILE --file FILE --ignore-file FILE` | positionals and file values |
 | `grep` | `-i -n -v -w -x -F -E -c -l -L -H -h -o -q -s -r -A N -B N -C N -f FILE --file FILE` | positionals and file values |
+| `git status` | none | |
+| `git diff` | `--cached`, `--staged` | path positionals |
+| `git log` | `-n N`, `--max-count=N` | |
+| `git show` | `--stat` | `<rev>` or `<rev>:<path>` (path part checked) |
+| `git ls-files` | none | |
+| `git branch` | `-a`, `-r`, `-v`, `-vv` | |
+| `git rev-parse` | none | `HEAD` only |
+| `git tag` | `-l`, `-n N` | |
 
 Any other flag, any `--flag=value` whose flag is not listed, and any short-flag cluster with an
 unlisted letter falls through. `ls -la` is accepted as `-l -a`. A value-taking short flag takes an
 attached value (`-n5`) or, as the last letter of a cluster, the next word (`-nA 3`). Numbers must
 parse as integers. Excluded on purpose: `tail -f`, `file -f`, `rg --pre`, `rg -z`, `rg -L`,
 `rg -g`, `grep -R` and `grep --exclude-from`, because they run programs, follow links or read
-indirectly. No `git` subcommand is in the set, because repository configuration can make a
-read-only subcommand run a program.
+indirectly. Supported `git` subcommands are executed through `gix` with isolated, strict
+configuration, so repository-controlled helpers (fsmonitor, filter drivers, `gpg.program`) cannot
+run. Every other `git` subcommand, including `git push`, `git clean`, and any flag not listed
+above, falls through.
 
 `[shell_preclassifier] allow_extra` adds commands to the set: a command (`make`) or a `command
 subcommand` pair (`cargo metadata`). It is accepted from user-trust scopes only, an extra entry

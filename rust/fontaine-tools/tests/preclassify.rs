@@ -76,6 +76,42 @@ fn the_curated_commands_pre_classify_inside_the_workspace() {
 }
 
 #[test]
+fn supported_git_subcommands_pre_classify() {
+    let w = world();
+    for command in [
+        "git status",
+        "git diff",
+        "git diff --cached",
+        "git diff --staged",
+        "git diff notes.txt",
+        "git log",
+        "git log -n 5",
+        "git log --max-count=5",
+        "git show HEAD",
+        "git show HEAD --stat",
+        "git ls-files",
+        "git branch",
+        "git branch -a",
+        "git branch -v",
+        "git rev-parse HEAD",
+        "git tag",
+        "git tag -l",
+    ] {
+        assert!(w.ok(command), "{command}");
+    }
+    for command in [
+        "git status --porcelain",
+        "git diff --output=x",
+        "git log --output=x",
+        "git log -- src",
+        "git push",
+        "git status; ls",
+    ] {
+        assert!(!w.ok(command), "{command} must fall through");
+    }
+}
+
+#[test]
 fn the_golden_adversarial_set_falls_through() {
     let w = world();
     let outside = w.outside.to_str().unwrap().to_string();
@@ -93,12 +129,13 @@ fn the_golden_adversarial_set_falls_through() {
         "$(rm -rf /)",
         "ls $(pwd)",
         "ls `pwd`",
-        "git status",
         "git clean -fdx",
-        "git log",
-        "git diff",
         "git diff --output=out.txt",
         "git log --output=out.txt",
+        "git status --porcelain",
+        "git log -- src",
+        "git push",
+        "git status; ls",
         "ls *",
         "ls *.txt",
         "ls ?",
@@ -375,7 +412,9 @@ fn allow_extra_entries_take_no_flags_and_only_in_scope_positionals() {
         "-x".to_string(),
         "a b c".to_string(),
     ]);
-    assert!(!w.ok_with(&pre, "git status", None));
+    // `git status` is now a curated command, not an extra entry.
+    assert!(w.ok_with(&pre, "git status", None));
+    assert!(!w.ok_with(&pre, "git status -s", None));
 }
 
 #[test]

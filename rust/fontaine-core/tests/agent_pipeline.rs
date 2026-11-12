@@ -177,12 +177,16 @@ async fn an_agent_types_specifiers_limit_and_forbid_calls() {
         rig.audit().last().unwrap().rule.as_deref(),
         Some("agent tools")
     );
-    rig.check_as(&id, "shell", shell("git status")).await;
-    assert_eq!(
-        rig.approver.asked(),
-        asked + 1,
-        "the permitted command goes on to the mode"
+    let out = rig.check_as(&id, "shell", shell("git status")).await;
+    assert!(
+        allowed(&out),
+        "the permitted command is allowed through the tier05 fast path"
     );
+    assert_eq!(rig.approver.asked(), asked, "tier05 does not prompt");
+    let audit = rig.audit();
+    let record = audit.last().unwrap();
+    assert_eq!(record.decision, Decision::Allow);
+    assert_eq!(record.tier, Tier::Tier05);
 
     // A forbidden path is denied; another is not.
     assert!(!allowed(
