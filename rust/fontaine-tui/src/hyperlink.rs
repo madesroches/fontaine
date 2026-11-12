@@ -256,6 +256,9 @@ fn issues(text: &str, out: &mut Vec<(Range<usize>, u8, Ref)>) {
         let Ok(number) = text[hash + 1..end].parse::<u64>() else {
             continue;
         };
+        if number == 0 {
+            continue;
+        }
         let before = text[..hash].chars().next_back();
         if !before.is_some_and(blocks_start) {
             out.push((hash..end, 1, Ref::Issue { repo: None, number }));
@@ -374,8 +377,8 @@ struct Resolved {
     context_free: bool,
 }
 
-/// How long an unresolved path is trusted before the disk is asked again.
-const MISS_RECHECK: Duration = Duration::from_secs(1);
+/// How long a path's result, hit or miss, is trusted before the disk is asked again.
+const PATH_RECHECK: Duration = Duration::from_secs(1);
 
 /// The session context hyperlinks resolve against, and whether to emit them at all.
 #[derive(Default)]
@@ -386,8 +389,9 @@ pub(crate) struct Links {
     github: Option<(String, String)>,
     cwd: PathBuf,
     resolved: Mutex<HashMap<u32, Option<String>>>,
-    /// When a path last failed to resolve; a file created later still links.
-    missed: Mutex<HashMap<u32, Instant>>,
+    /// Path results with when they were read: a file created, deleted or made executable later
+    /// changes its link.
+    checked: Mutex<HashMap<u32, (Instant, Option<String>)>>,
 }
 
 impl Links {
@@ -410,7 +414,7 @@ impl Links {
         self.github = github;
         // Display state: a cleared cache only costs a re-resolve.
         lock_recovering(&self.resolved).clear();
-        lock_recovering(&self.missed).clear();
+        lock_recovering(&self.checked).clear();
     }
 
     /// The URL the interned ref `id` opens, or `None` when it points at nothing.
@@ -419,20 +423,17 @@ impl Links {
         if let Some(known) = lock_recovering(&self.resolved).get(&id) {
             return known.clone();
         }
-        let is_path = |r: &Ref| matches!(r, Ref::Path(_));
-        if let Some(at) = lock_recovering(&self.missed).get(&id)
-            && at.elapsed() < MISS_RECHECK
+        if let Some((at, known)) = lock_recovering(&self.checked).get(&id)
+            && at.elapsed() < PATH_RECHECK
         {
-            return None;
+            return known.clone();
         }
         let r = lock_recovering(&REFS).get(id)?;
         let target = self.target(&r);
-        // A file that does not exist yet may be created later, so a miss is only remembered
-        // briefly.
-        if target.is_some() || !is_path(&r) {
-            lock_recovering(&self.resolved).insert(id, target.clone());
+        if matches!(*r, Ref::Path(_)) {
+            lock_recovering(&self.checked).insert(id, (Instant::now(), target.clone()));
         } else {
-            lock_recovering(&self.missed).insert(id, Instant::now());
+            lock_recovering(&self.resolved).insert(id, target.clone());
         }
         target
     }
@@ -689,9 +690,30 @@ mod tests {
         let id = id_of(Ref::Path("later.txt".into()));
         assert_eq!(links.resolve(id), None);
         std::fs::write(dir.path().join("later.txt"), "x").unwrap();
-        assert_eq!(links.resolve(id), None, "a miss is trusted briefly");
-        lock_recovering(&links.missed).clear();
+        assert_eq!(links.resolve(id), None, "a result is trusted briefly");
+        lock_recovering(&links.checked).clear();
         assert!(links.resolve(id).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_path_stops_linking_once_it_becomes_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("deploy.sh");
+        std::fs::write(&file, "x").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let links = links_in(dir.path(), None);
+        let id = id_of(Ref::Path("deploy.sh".into()));
+        assert!(links.resolve(id).is_some());
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        lock_recovering(&links.checked).clear();
+        assert_eq!(links.resolve(id), None);
+    }
+
+    #[test]
+    fn issue_zero_is_not_a_reference() {
+        assert!(found("see #0 and #000", Kinds::ISSUE).is_empty());
     }
 
     #[test]

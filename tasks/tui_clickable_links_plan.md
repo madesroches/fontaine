@@ -79,7 +79,7 @@ pub(crate) fn tag(style: Style, r: Ref) -> Style;   // sets underline_color = Rg
 pub(crate) struct Links { enabled: bool, github: Option<(String, String)>, cwd: PathBuf,
                           resolved: Mutex<HashMap<u32, Option<String>>> }
 impl Links {
-    pub(crate) fn resolve(&self, id: u32) -> Option<String>;   // cached per id; path misses re-checked at most once a second
+    pub(crate) fn resolve(&self, id: u32) -> Option<String>;   // URL and issue results cached per id; path results re-checked at most once a second
     pub(crate) fn apply(&self, buf: &mut Buffer, area: Rect, link: Style);
 }
 pub(crate) fn supported(env: impl Fn(&str) -> Option<String>, windows: bool) -> bool;
@@ -102,7 +102,7 @@ pub(crate) fn supported(env: impl Fn(&str) -> Option<String>, windows: bool) -> 
   URLs to PRs, so one form covers both, as Claude Code does).
 - `Issue { repo: None, n }` → the same with `Links::github`, else `None`.
 - `Path { path }` → join it to the primary root unless absolute. If it names an existing regular file
-  (`std::fs::metadata`, hits cached per id, misses re-checked at most once a second) that is not executable, the result is
+  (`std::fs::metadata`, re-checked at most once a second, hit or miss) that is not executable, the result is
   `url::Url::from_file_path(..)` (percent-encodes and handles Windows drive letters) with its host
   set to the local hostname; otherwise `None`. The `:line` suffix is not put in the URL: there is
   no portable line syntax for `file://`.
@@ -277,7 +277,7 @@ view::draw ─ widgets ───────────────────
 - **Resolving at the post-pass vs at render.** Resolving at render would need the session context
   in every row builder. At the post-pass, rendering stays context-free, and an origin or cwd
   change applies on the next frame.
-- **Interning is bounded per distinct token.** Shell-output paths cost one cached stat each.
+- **Interning is bounded per distinct token.** Shell-output paths cost at most one stat a second each.
 - **A `supports-hyperlinks` crate dependency** was rejected: it is allow-list based and turns links
   off inside tmux, the main target environment named by the issue.
 
