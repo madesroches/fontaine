@@ -124,13 +124,13 @@ Split final process exit from session switching. `DriveOutcome::Switch` keeps th
 | Main model/provider/tool, compaction, usage wait, skill/MCP prompt, `!`, lifecycle hook | Drop the selected run future immediately. Its existing drop guards cancel prompts and kill owned process groups. No stop-hook or other continuation follows. |
 | Nested agents, including one never reaching a rig hook boundary | Retain launch and report-watch `AbortHandle`s; add a final-only `ChildHandle::abort` and `AgentTree::abort_all`. Abort immediately without `settled(KILL_SETTLE)` and without fabricating killed reports. Make reservation and direct resume reject the tree's shutdown latch atomically; late attach still replays the kill. Ordinary `kill`, `KILL_GRACE`, transcript recovery, and headless settlement are unchanged. |
 | Background jobs and monitors | Add a forced, deadline-bounded variant alongside the existing `Jobs::terminate_all` (left unchanged); it tells job workers to skip ordinary stop grace and terminate their groups, plus a wait bounded by the shared deadline. No job notifications are posted. Unix keeps group signals; Windows keeps its current direct-child kill. `Jobs::drop` remains protected by the process watchdog. |
-| MCP servers | Retire every slot/watch/reconnect first, take and close all connections concurrently without the plugin-removal ten-second drain, and synchronously kill the retained stdio `TreeGuard` on timeout/drop so descendants cannot survive. |
+| MCP servers | Retire every slot/watch/reconnect first, take and close all connections concurrently without the plugin-removal ten-second drain, and synchronously group-kill each stdio server's retained pid with `procgroup::terminate` on timeout/drop so descendants cannot survive on Unix (Windows keeps rmcp's direct-child kill). |
 | LSP servers | Add a final `terminate_all` path which removes clients, terminates their process groups instead of honoring each configured graceful shutdown timeout, and reaps concurrently within the shared deadline. Keep `shutdown_all` for normal reset/reload paths. |
 | SearXNG and managed helpers | Take and terminate session-owned children/process groups immediately rather than scheduling a later hard kill. Do not kill a configured shared SearXNG instance or other resource the session does not own. Provider CLI children continue to use their existing whole-tree drop guard. |
 | TUI-owned tasks and input | Close input, abort status-line and notice-forwarder tasks, stop quota pollers with `Ui`, and stop the terminal reader. Any other fire-and-forget task touched by this work must be owned and aborted rather than left to runtime drop. |
 | `session_end` and final persistence | Start only after cancellation has begun, concurrently with resource reaping. Both are best-effort within the remaining budget. Already-journaled child messages and settled reports survive; no final report is awaited. |
 
-MCP stdio currently relies on rmcp's direct-child `kill_on_drop`, which neither covers descendants nor runs synchronously during runtime teardown. Replace only that launch wrapper: spawn the child under Fontaine's `TreeGuard`, build rmcp's public `AsyncRwTransport` from its pipes, and retain the guard in `Connected`. This keeps the exact rmcp pin while giving every stdio server the same Unix process-group/Windows Job Object cleanup as hooks and status-line commands. Convert the headers-helper launch to `TreeGuard` plus `collect_output` as well.
+MCP stdio currently relies on rmcp's direct-child `kill_on_drop`, which does not cover descendants. Keep rmcp's `TokioChildProcess` and its graceful stdio close; on Unix set `process_group(0)` on the existing command, record `TokioChildProcess::id()` before `serve`, and at final shutdown call `procgroup::terminate` on that pid synchronously. `procgroup::terminate` is a no-op off Unix, so Windows keeps the direct-child `kill_on_drop` (matching the jobs row); whole-tree Windows MCP cleanup is out of scope. The headers helper is unchanged: it runs to completion during connect and cannot outlive quit.
 
 `fire_session_end` is not called before `kill_all` on final exit. The `resume` and `clear` hook
 reasons and their behavior are unchanged.
@@ -217,8 +217,7 @@ At the same original deadline in every case: restore terminal again, then force 
    `fontaine-tools/src/jobs.rs`, `lsp/client.rs`, `lsp/manager.rs`, `websearch.rs`,
    `mcp/servers.rs`, `procgroup.rs`, and `fontaine-core/src/agent/mcp_supervisor.rs`. Use the
    process-group helpers already present; do not add a dependency or change ordinary shutdown
-   methods. The MCP stdio transport wrapper and headers helper must gain whole-tree guards, not
-   merely direct-child kills.
+   methods. MCP stdio servers gain a Unix process group and a final group kill; no custom transport.
 4. **Final TUI teardown and watchdog** — add `fontaine-tui/src/shutdown.rs`; split final exit from
    switch teardown in `fontaine-tui/src/lib.rs`; run final stages concurrently against the one
    deadline; bound reader joining; return `RunOutcome` from production `run` while keeping
@@ -332,3 +331,7 @@ reaping rather than duplicating the renderer model.
 ## Open Questions
 
 None.
+
+## Decisions
+
+- AFK: MCP stdio keeps rmcp's `TokioChildProcess` with `process_group(0)` and a final `procgroup::terminate` on its pid (Unix whole-tree; Windows stays direct-child); no `AsyncRwTransport`/`TreeGuard` rewrite and no headers-helper conversion.
