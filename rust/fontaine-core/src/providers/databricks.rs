@@ -250,7 +250,7 @@ struct Facts {
 
 fn facts_for(model: &str, mapped: &BTreeMap<String, String>) -> Option<Facts> {
     let served = ProviderId::declare("databricks").ok();
-    if let Some(target) = mapped.get(model)
+    if let Some(target) = mapped.get(model).map(|t| base_id(t))
         && let Some(vendor) = catalog_vendor_of(family(target))
         && let Some(served) = served
         && let Some((facts, from, listed)) = facts_as(vendor, served, target, model)
@@ -258,7 +258,7 @@ fn facts_for(model: &str, mapped: &BTreeMap<String, String>) -> Option<Facts> {
         return Some(Facts {
             facts,
             derived_from: (!listed).then_some(from),
-            mapped_to: Some(target.clone()),
+            mapped_to: Some(target.to_owned()),
         });
     }
     let base = base_id(model);
@@ -308,6 +308,7 @@ fn facts_notice_for(
 fn check_model_facts(account: &Account) -> Result<(), (&'static str, String)> {
     let served = ProviderId::declare("databricks").ok();
     for (key, target) in account.model_facts.iter().flatten() {
+        let target = base_id(target);
         let listed = catalog_vendor_of(family(base_id(key)))
             .zip(served)
             .and_then(|(vendor, served)| facts_as(vendor, served, base_id(key), key))
@@ -649,6 +650,16 @@ mod tests {
         assert!(spec.max_output_tokens.is_some());
         assert_eq!(spec.provider, sonnet.provider);
         assert!(facts_for("main.team.claude", &BTreeMap::new()).is_none());
+    }
+
+    #[test]
+    fn a_prefixed_target_maps_to_the_same_facts_as_the_bare_one() {
+        let bare = mapped();
+        let (key, target) = bare.iter().next().expect("one entry");
+        let prefixed = BTreeMap::from([(key.clone(), format!("system.ai.{target}"))]);
+        let a = facts_for(key, &bare).expect("bare").facts;
+        let b = facts_for(key, &prefixed).expect("prefixed").facts;
+        assert_eq!(a.spec().expect("bound"), b.spec().expect("bound"));
     }
 
     #[test]

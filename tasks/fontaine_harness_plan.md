@@ -1006,6 +1006,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-11: `model_facts` maps served name → catalog id, the opposite direction to Claude Code's `modelOverrides`, because Fontaine model references, ledger, telemetry and `served_model` all record the host's id and reversing would rename models on the wire and in every record; the mapping binds facts only (#167).
 - 2026-11-11: An unmapped, unknown model on `anthropic`, or a custom-id one on `databricks`, is warned about once and given no assumed 200K window (Claude Code assumes 200K), keeping the "no fallback spec" rule (#167).
 - 2026-11-11: On `databricks` the mapping does not change wire routing; a custom endpoint that serves Claude on Messages also sets `wires` (#167).
+- 2026-11-11: On `anthropic`, a turn on a model with no known limit and no `[model] max_output_tokens` fails unless the model is mapped under `model_facts`, because rig's wire fills `max_tokens` only for ids it knows; this corrects the 2026-11-10 "the Messages wire fills its own" claim (#167).
 - AFK: 2026-11-11: A `model_facts` key the kind already lists is refused at load and a mapped model stays unpriced, because an unpriced model never trips a cost cap, so stripping a listed price would silently loosen spend caps and a host need not bill at list prices (#167).
 
 ### Sessions

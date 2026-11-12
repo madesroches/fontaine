@@ -323,7 +323,9 @@ impl ModelHandle {
     /// The output cap one turn on this model sends: the user's cap clamped to the model's known
     /// limit, else that limit, else `FALLBACK_MAX_OUTPUT_TOKENS`. `None` (send nothing) with no
     /// known limit and no user cap on `ollama` (the daemon's own default is unbounded) and on the
-    /// `anthropic` and `claude-subscription` kinds (the wire fills it in itself).
+    /// `claude-subscription` kind (the CLI fills it in itself). On `anthropic` the wire fills a
+    /// default only for an id it has facts or a prefix default for; any other id fails the turn
+    /// with "`max_tokens` must be set for Anthropic".
     pub fn turn_max_tokens(&self, cap: Option<u32>) -> Option<u64> {
         let limit = self
             .completion
