@@ -331,15 +331,16 @@ fn attempt_slice(remaining: Duration, attempts_left: usize) -> Option<Duration> 
 }
 
 /// Whether the model daemon answered a failed call: a refusal surfaces its status and body,
-/// a transport failure keeps the generic wording. A reply that carried no preserved status or
-/// body is still `Refused`, with an empty detail the caller replaces with the error's own
-/// message.
+/// a transport failure keeps the generic wording, an unusable reply is named as such.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ModelReachability {
     /// No provider reply was obtained, or the failure is not a provider error at all.
     Unreachable,
     /// The daemon answered and refused.
     Refused { status: Option<u16>, body: String },
+    /// The daemon answered, but its reply carried no usable answer (rig's decoded reply that
+    /// does not answer the request, or mismatched embedding dimensions).
+    Unusable,
 }
 
 impl ModelReachability {
@@ -348,6 +349,7 @@ impl ModelReachability {
         match self {
             ModelReachability::Unreachable => "could not be reached",
             ModelReachability::Refused { .. } => "refused the request",
+            ModelReachability::Unusable => "returned a response that could not be used",
         }
     }
 
@@ -362,6 +364,7 @@ impl ModelReachability {
                 (None, false) => body.clone(),
                 (None, true) => error.to_string(),
             },
+            ModelReachability::Unusable => error.to_string(),
         }
     }
 }
@@ -382,11 +385,10 @@ pub(crate) fn classify_prompt_error(error: &PromptError) -> ModelReachability {
                 status: response.status.map(|status| status.as_u16()),
                 body: response.body.clone(),
             },
+            // rig's `Response` is a decoded reply that does not answer the request (no
+            // choices, no valid message) — a valid but unusable response, not a refusal.
             ProviderError::Response(_) | ProviderError::MismatchedDimensions { .. } => {
-                ModelReachability::Refused {
-                    status: None,
-                    body: String::new(),
-                }
+                ModelReachability::Unusable
             }
             ProviderError::Http(_)
             | ProviderError::Json(_)
