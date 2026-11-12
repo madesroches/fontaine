@@ -9,6 +9,7 @@ use std::num::NonZeroU16;
 use std::ops::{BitOr, Range};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use fontaine_tools::lock::lock_recovering;
 use ratatui::buffer::{Buffer, CellDiffOption, CellWidth};
@@ -373,6 +374,9 @@ struct Resolved {
     context_free: bool,
 }
 
+/// How long an unresolved path is trusted before the disk is asked again.
+const MISS_RECHECK: Duration = Duration::from_secs(1);
+
 /// The session context hyperlinks resolve against, and whether to emit them at all.
 #[derive(Default)]
 pub(crate) struct Links {
@@ -382,6 +386,8 @@ pub(crate) struct Links {
     github: Option<(String, String)>,
     cwd: PathBuf,
     resolved: Mutex<HashMap<u32, Option<String>>>,
+    /// When a path last failed to resolve; a file created later still links.
+    missed: Mutex<HashMap<u32, Instant>>,
 }
 
 impl Links {
@@ -404,6 +410,7 @@ impl Links {
         self.github = github;
         // Display state: a cleared cache only costs a re-resolve.
         lock_recovering(&self.resolved).clear();
+        lock_recovering(&self.missed).clear();
     }
 
     /// The URL the interned ref `id` opens, or `None` when it points at nothing.
@@ -412,11 +419,20 @@ impl Links {
         if let Some(known) = lock_recovering(&self.resolved).get(&id) {
             return known.clone();
         }
+        let is_path = |r: &Ref| matches!(r, Ref::Path(_));
+        if let Some(at) = lock_recovering(&self.missed).get(&id)
+            && at.elapsed() < MISS_RECHECK
+        {
+            return None;
+        }
         let r = lock_recovering(&REFS).get(id)?;
         let target = self.target(&r);
-        // A file that does not exist yet may be created later, so a miss is not remembered.
-        if target.is_some() || !matches!(*r, Ref::Path(_)) {
+        // A file that does not exist yet may be created later, so a miss is only remembered
+        // briefly.
+        if target.is_some() || !is_path(&r) {
             lock_recovering(&self.resolved).insert(id, target.clone());
+        } else {
+            lock_recovering(&self.missed).insert(id, Instant::now());
         }
         target
     }
@@ -673,6 +689,8 @@ mod tests {
         let id = id_of(Ref::Path("later.txt".into()));
         assert_eq!(links.resolve(id), None);
         std::fs::write(dir.path().join("later.txt"), "x").unwrap();
+        assert_eq!(links.resolve(id), None, "a miss is trusted briefly");
+        lock_recovering(&links.missed).clear();
         assert!(links.resolve(id).is_some());
     }
 

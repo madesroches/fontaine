@@ -13,7 +13,7 @@ use crate::commands::ExpandTarget;
 use crate::diff::diff_rows;
 use crate::hyperlink::Kinds;
 use crate::input::wrap;
-use crate::markdown::{self, chunk_spans, link_spans, link_wrap};
+use crate::markdown::{self, chunk_spans, link_spans, link_wrap, link_wrap_open};
 use crate::theme::{Glyphs, Theme};
 
 type Cells = Vec<Span<'static>>;
@@ -1037,7 +1037,12 @@ fn plain_rows(text: &str, from: usize, width: usize, link: Style) -> Vec<(Line<'
     let mut offset = from;
     let mut lines = rest.split('\n').peekable();
     while let Some(line) = lines.next() {
-        let pieces = link_wrap(
+        let wrap = if lines.peek().is_some() {
+            link_wrap
+        } else {
+            link_wrap_open
+        };
+        let pieces = wrap(
             line,
             Style::default(),
             link,
@@ -3015,10 +3020,10 @@ mod tests {
     fn a_streaming_tail_colors_its_urls() {
         let theme = link_theme();
         let mut t = Transcript::default();
-        delta(&mut t, "tail https://a.io/s");
+        delta(&mut t, "tail https://a.io/s now");
         let lines = t.live_lines(60, &theme);
         assert_eq!(colored(&lines, &theme), vec!["https://a.io/s"]);
-        assert_eq!(text(&lines), vec!["tail https://a.io/s"]);
+        assert_eq!(text(&lines), vec!["tail https://a.io/s now"]);
     }
 
     #[test]
@@ -3058,6 +3063,23 @@ mod tests {
 
     fn url(u: &str) -> crate::hyperlink::Ref {
         crate::hyperlink::Ref::Url(u.into())
+    }
+
+    #[test]
+    fn a_reference_at_the_end_of_a_stream_is_not_tagged_until_it_is_followed_by_more() {
+        let rows = |text: &str| -> Vec<Line<'static>> {
+            plain_rows(text, 0, 80, link_style(&link_theme()))
+                .into_iter()
+                .map(|(l, _)| l)
+                .collect()
+        };
+        assert!(targets(&rows("go https://example.com/partial")).is_empty());
+        assert_eq!(
+            targets(&rows("go https://example.com/partial ")),
+            vec![url("https://example.com/partial")]
+        );
+        assert!(targets(&rows("see #8")).is_empty());
+        assert_eq!(targets(&rows("see #8 ")).len(), 1);
     }
 
     #[test]
@@ -3141,7 +3163,7 @@ mod tests {
     fn an_issue_split_at_the_row_edge_in_the_streaming_tail_is_not_truncated() {
         let theme = link_theme();
         let mut t = Transcript::default();
-        delta(&mut t, "abcdef #83");
+        delta(&mut t, "abcdef #83 x");
         let lines = t.live_lines(8, &theme);
         let issue = crate::hyperlink::Ref::Issue {
             repo: None,
@@ -3155,7 +3177,7 @@ mod tests {
     fn the_streaming_tail_tags_urls_and_issues_but_not_paths() {
         let theme = link_theme();
         let mut t = Transcript::default();
-        delta(&mut t, "tail #82 src/a.rs https://a.io/s");
+        delta(&mut t, "tail #82 src/a.rs https://a.io/s ");
         let lines = t.live_lines(60, &theme);
         assert_eq!(
             targets(&lines),

@@ -709,12 +709,27 @@ pub(crate) fn link_spans(
     link: Style,
     kinds: Kinds,
 ) -> Vec<Span<'static>> {
+    link_spans_open(text, style, link, kinds, false)
+}
+
+/// `link_spans`, where `open` means `text` may still grow: a reference reaching its end stays
+/// plain, since more characters could change its target.
+fn link_spans_open(
+    text: &str,
+    style: Style,
+    link: Style,
+    kinds: Kinds,
+    open: bool,
+) -> Vec<Span<'static>> {
     if link == Style::default() {
         return vec![Span::styled(text.to_string(), style)];
     }
     let mut spans = Vec::new();
     let mut plain_from = 0;
     for (range, r) in hyperlink::scan(text, kinds) {
+        if open && range.end == text.len() {
+            continue;
+        }
         if plain_from < range.start {
             spans.push(Span::styled(
                 text[plain_from..range.start].to_string(),
@@ -743,6 +758,17 @@ pub(crate) fn link_wrap(
     width: usize,
 ) -> Vec<Cells> {
     chunk_spans(&link_spans(text, style, link, kinds), width)
+}
+
+/// `link_wrap` for the end of a stream that may still grow.
+pub(crate) fn link_wrap_open(
+    text: &str,
+    style: Style,
+    link: Style,
+    kinds: Kinds,
+    width: usize,
+) -> Vec<Cells> {
+    chunk_spans(&link_spans_open(text, style, link, kinds, true), width)
 }
 
 /// Splits styled spans into rows of at most `width` chars, matching `wrap`'s boundaries.
