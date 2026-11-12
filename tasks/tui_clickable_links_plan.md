@@ -32,11 +32,13 @@ and `path:line` file references become links.
   `Style::underline_color`.
 - `rust/fontaine-tui/src/linear.rs` (screen-reader renderer) writes flattened plain text.
 - `fontaine_core::ledger::git_origin(root)` (`ledger.rs:834`) reads `origin`'s fetch URL through
-  gix, credentials stripped, without spawning `git`. It is unused today. `App::set_cwd`
+  gix, credentials stripped, without spawning `git`. `fontaine_core::project_env::github_slug(url)` (`project_env/discover.rs:209`) extracts the
+  `owner/repo` of a GitHub URL. `App::set_cwd`
   (`app.rs:592`) caches per-directory git facts (`head_cache`).
 - Master plan Decisions (`### TUI`, 2026-11-03, #206): links are coloured and underlined "without
-  OSC 8 hyperlinks", and notices/errors are not linkified. This plan supersedes the OSC 8 part and
-  the notices part.
+  OSC 8 hyperlinks". This plan supersedes that. That notices and errors are not linkified is not a
+  recorded decision, only the behaviour asserted by the test above, which the notices change here
+  supersedes.
 
 ### Claude Code baseline (observed 2026-11-11, Claude Code 2.1.322, interactive, in tmux 3.6, repo with a `github.com` origin)
 Raw output captured with `tmux pipe-pane` for the reply
@@ -94,7 +96,7 @@ pub(crate) fn supported(env: impl Fn(&str) -> Option<String>, windows: bool) -> 
   file stays plain text, as the issue requires.
 
 ### 2. Resolution (`Links::resolve`)
-- `Url(u)` → `u`. Only `http`/`https` reach here: the scanner only finds those, and a markdown
+- `Url(u)` → `url::Url::parse(u)` serialized, `None` if malformed. Only `http`/`https` reach here: the scanner only finds those, and a markdown
   link target with another scheme (`javascript:`, `file:`, a relative path) is not tagged.
 - `Issue { repo: Some((o, r)), n }` → `https://github.com/o/r/issues/n` (GitHub redirects issue
   URLs to PRs, so one form covers both, as Claude Code does).
@@ -103,10 +105,8 @@ pub(crate) fn supported(env: impl Fn(&str) -> Option<String>, windows: bool) -> 
   (`std::fs::metadata`, cached per id), the result is `url::Url::from_file_path(..)` (percent-
   encodes and handles Windows drive letters); otherwise `None`. The `:line` suffix is not put in the
   URL: there is no portable line syntax for `file://`.
-- `Links::github` is parsed from `git_origin(cwd)`. It is set only when the host is exactly
-  `github.com`, from `git@github.com:o/r(.git)`, `ssh://git@github.com/o/r(.git)` or
-  `https://github.com/o/r(.git)`. A new `parse_github(url) -> Option<(String, String)>` lives in
-  `hyperlink.rs`.
+- `Links::github` is `git_origin(cwd).and_then(|u| github_slug(&u))` split on `/`, using the
+  existing `fontaine_core::project_env::github_slug`.
 - `App::set_cwd` refreshes `Links` (origin + cwd) when the directory changes, and clears the
   resolution cache.
 
@@ -117,13 +117,13 @@ For each cell in `area` whose `underline_color` is `Some(Rgb(..))` with a known 
    resolves, patch in the link style.
 3. If `enabled` and resolved, rewrite the symbol to
    `ESC]8;id=<id-hex>;<target> ESC\ <symbol> ESC]8;; ESC\` and set
-   `CellDiffOption::ForcedWidth(width of the original symbol)`. Wrapping **each cell** on its own,
-   not the run, means any cell ratatui's diff redraws alone still carries its link. The shared
+   `CellDiffOption::ForcedWidth(width of the original symbol)`. The shared
    `id=` makes terminals treat the run, and its wrapped continuation rows, as one link for hover
-   and click. The target is percent-encoded already (URL scanner output has no whitespace, and
-   control characters are stripped before rows are built). `apply` still drops any target holding
-   a byte outside `0x20..=0x7E` as a guard against escape injection, and leaves that cell
-   unlinked.
+   and click. Targets are not pre-sanitised: assistant deltas and `!` shell output are stored raw
+   and the scanner stops only at whitespace. `resolve` normalizes `Url` targets through
+   `url::Url::parse` (percent-encodes non-ASCII, rejects malformed → `None`). `apply` still drops
+   any target holding a byte outside `0x20..=0x7E` as the final guard against escape injection,
+   and leaves that cell unlinked.
 
 It is called at two places:
 - `screen.rs` `draw_frame`, in the `insert_before` closure right after `Paragraph::render`
@@ -137,15 +137,15 @@ flattens text), so screen-reader mode stays plain.
 
 ### 4. Detection (`hyperlink::supported`)
 `App` gains `links: Links`, with `enabled = false` from `App::new`, so all existing tests render
-as today. `lib.rs` sets it from `supported(...)` when it builds the `Screen`, and never in
+as today. `lib.rs` sets it from `supported(...)` in the render closure's `Some(screen)` branch, and never in
 screen-reader mode or headless runs (which have no TUI). Rules, in order:
 1. `FORCE_HYPERLINK`: `0` → off, any other non-empty value → on (the `supports-hyperlinks`
    convention).
 2. `TMUX` set → on. tmux 3.4+ parses OSC 8 and forwards it only to an outer terminal with the
    `hyperlinks` feature, and drops it otherwise, so nothing leaks either way.
-3. `TERM` unset, `dumb`, `linux`, or starting with `screen` (GNU screen without tmux) → off.
-4. Windows: on only with `WT_SESSION` (Windows Terminal) or `TERM_PROGRAM` set. Legacy conhost
-   → off.
+3. Windows: on only with `WT_SESSION` (Windows Terminal) or `TERM_PROGRAM` set, regardless of
+   `TERM`. Legacy conhost → off.
+4. `TERM` unset, `dumb`, `linux`, or starting with `screen` (GNU screen without tmux) → off.
 5. Otherwise → on. Terminals that do not implement OSC 8 ignore the OSC per ECMA-48.
 
 ### 5. What gets scanned where
@@ -175,12 +175,13 @@ Token rules (no regex, as for #206):
   is checked at resolve time, not scan time.
 - Fenced code: a row's whitespace-delimited token that is entirely an `http(s)` URL (after
   trimming) is tagged. Nothing else in code is.
-- Markdown links: `Inline` keeps a stack of link targets. Text and code inside `Tag::Link` are
-  tagged with `Ref::Url(dest_url)` when the destination is `http(s)`. Otherwise they are only
-  coloured, as today.
+- Markdown links: `Inline` keeps a stack of link targets. Text inside `Tag::Link` is tagged with
+  `Ref::Url(dest_url)` when the destination is `http(s)`; otherwise it is only coloured, as today.
+  `Event::Code` uses the top of the link-target stack when inside a link (replacing the `in_link`
+  counter) and applies the whole-token URL/path rule otherwise.
 
 Wrapped URLs keep their tag on every row in markdown rendering (per-char style). In the per-row
-paths (`plain_rows`, tool output), a continuation row has already lost colour since #206, and it
+paths (`plain_rows`, tool output, `!` shell output, the `raw_rows` fallback), a continuation row has already lost colour since #206, and it
 now also has no link. That caveat is unchanged and accepted.
 
 ### Architecture
@@ -199,7 +200,7 @@ view::draw ─ widgets ───────────────────
 
 ## Implementation Steps
 1. **`hyperlink.rs`** (new, `mod hyperlink;` in `lib.rs`): `Ref`, interner + `tag`, `scan`,
-   `parse_github`, `Links` (`new`, `set_context`, `resolve`, `apply`), `supported`. Unit tests
+   `Links` (`new`, `set_context`, `resolve`, `apply`), `supported`. Unit tests
    here (see Testing).
 2. **`Cargo.toml`** (`fontaine-tui`): add `url.workspace = true` (already a workspace dependency,
    `rust/Cargo.toml:114`).
@@ -207,17 +208,25 @@ view::draw ─ widgets ───────────────────
    argument. `Inline` tags markdown link text with the target, and `Event::Code` whose whole
    content is one URL or path token gets tagged. `code_rows` tags whole-token URLs.
    `raw_rows`/`uncovered` pass prose kinds.
-4. **`transcript.rs`**: prose paths (`plain_rows`, assistant rows) pass `URL|ISSUE|PATH`. Tool
-   output and `Entry::Shell` rows pass `URL|PATH`. Notices pass `URL`, which replaces the
+4. **`transcript.rs`**: assistant prose rows pass `URL|ISSUE|PATH`; the streaming-tail `plain_rows` passes `URL|ISSUE` only, since
+   partial path tokens would be interned and stat'ed on every delta (settled rows go through
+   markdown with full kinds). Tool
+   output and `Entry::Shell` rows pass `URL|PATH`. Notices pass `URL`: call `link_spans` in the
+   info-notice branch before `prefixed` (`prefixed` is shared with errors and user input and stays
+   unlinkified) and in `warning_lines`/`hint_spans` for warning notices. This replaces the
    "notices are not linkified" assertion in `call_rows_notices_and_errors_are_not_linkified`
    (errors stay unlinkified).
 5. **`app.rs`**: `pub(crate) links: Links` on `App`. `set_cwd` refreshes its context
-   (`git_origin` + `parse_github`) when the directory changes.
-6. **`screen.rs`**: call `app.links.apply` in the `insert_before` closure. The closure borrows
-   `rows`, so take `&app.links` before the loop (the `shown_with_theme` borrows end before it).
-7. **`view.rs`**: `view::draw` ends with `app.links.apply(frame.buffer_mut(), area, link)`.
-8. **`lib.rs`**: set `app.links.enabled = hyperlink::supported(|k| std::env::var(k).ok(),
-   cfg!(windows))` for the full-screen TUI only. Screen-reader mode leaves it off.
+   (`git_origin` + `github_slug`) when the directory changes.
+6. **`screen.rs`**: make `link_style` in `transcript.rs` `pub(crate)`, compute it from
+   `app.theme` before the `insert_before` closure, and call `app.links.apply(.., link)` in the
+   closure. The closure borrows `rows`, so take `&app.links` before the loop (the `shown_with_theme` borrows end before it).
+7. **`view.rs`**: `view::draw` computes `link = link_style(&app.theme)` and ends with
+   `app.links.apply(frame.buffer_mut(), area, link)`.
+8. **`lib.rs`**: `App` is created in `drive()`, after the `Screen`. In the `run()` render
+   closure's `Some(screen)` branch, set `app.links.enabled = hyperlink::supported(|k|
+   std::env::var(k).ok(), cfg!(windows))`, mirroring `app.linear = true` in its `None` branch
+   (~774). Screen-reader mode leaves it off.
 9. **Docs** (see Documentation) and **master plan Decisions** (see Decisions): add the lines at
    the end of `### TUI`.
 
@@ -245,6 +254,7 @@ view::draw ─ widgets ───────────────────
 - **Env-based detection vs a config key.** A `[tui] hyperlinks` key would need a scope column and
   validation for something `FORCE_HYPERLINK` already covers by convention. It can be added on
   request.
+- **Interning is bounded per distinct token.** Shell-output paths cost one cached stat each.
 - **A `supports-hyperlinks` crate dependency** was rejected: it is allow-list based and turns links
   off inside tmux, the main target environment named by the issue.
 
@@ -262,8 +272,7 @@ view::draw ─ widgets ───────────────────
   GitHub Enterprise hosts leave it plain.
 - 2026-11-11 (#83): Issue references are linked only in assistant prose, not in tool output, code
   or notices; reason: `#N` in logs and code is rarely an issue.
-- 2026-11-11 (#83): URLs in notices are linkified (coloured and linked), superseding the #206 "notices are not
-  linkified" behaviour; errors stay plain.
+- 2026-11-11 (#83): URLs in notices are linkified (coloured and linked); errors stay plain.
 - 2026-11-11 (#83): Hyperlinks are auto-detected from the environment (`FORCE_HYPERLINK`, `TMUX`,
   `TERM`, Windows Terminal) with no config key; screen-reader mode and headless output never emit
   OSC 8.
@@ -275,7 +284,8 @@ view::draw ─ widgets ───────────────────
   (code, except whole URLs and paths in inline code).
 - `docs/terminal.md`: new `## Hyperlinks` section covering detection, `FORCE_HYPERLINK=0/1`, and
   under `## tmux` the setting `set -as terminal-features ",*:hyperlinks"` (tmux 3.4+). Add the
-  section to the page's intro list.
+  section to the page's intro list, and cross-reference it from `## Colours` ("URLs and link text use
+  an underlined blue in every theme").
 - `CHANGELOG.md`: Unreleased > Added > TUI entry.
 
 ## Testing Strategy
@@ -285,13 +295,12 @@ Unit tests, no live APIs (all logic is reachable with constructed inputs):
     `&#82;`, `x/#82` or `##82`; `owner/repo#7`; `GH-82` not matched; `src/main.rs:12`,
     `src/main.rs:12:5`, `a/b`, and `` `src/x.rs` `` with quotes trimmed; `foo.rs` without `/` or
     `:line` not matched; `https://x/y` not taken as a path.
-  - `parse_github`: scp, ssh and https forms, with and without `.git`; a GitLab host and GitHub
-    Enterprise give `None`.
   - `resolve`: `#82` with and without a GitHub origin; `owner/repo#7` without an origin; a path
     to an existing temp file gives a `file://` URL with percent-encoding (a name with a space); a
-    missing path gives `None`; a markdown target with a `javascript:` scheme is never tagged.
+    missing path gives `None`; a non-ASCII URL (`https://de.wikipedia.org/wiki/Müller`) resolves
+    percent-encoded.
   - `supported`: each rule, including `FORCE_HYPERLINK` overriding `TERM=dumb`, `TMUX` with
-    `TERM=screen-256color` on, bare `TERM=screen` off, and Windows with and without `WT_SESSION`.
+    `TERM=screen-256color` on, bare `TERM=screen` off, and Windows with and without `WT_SESSION`, including `TERM` unset with `WT_SESSION` set (on).
   - `apply`: a tagged buffer row gets symbols `ESC]8;id=..;<target>ESC\<c>ESC]8;;ESC\` with
     `ForcedWidth`, and the stripped text equals the untagged row; `underline_color` is cleared on
     every cell; disabled → no escapes, tag cleared, context-free styling kept; an unresolved `#N`
@@ -308,7 +317,7 @@ Unit tests, no live APIs (all logic is reachable with constructed inputs):
 - `markdown.rs`: markdown link text tagged with its target; inline code that is exactly a URL is
   tagged; a fenced code row `curl https://a` tags `https://a` (a whole token) but `x=https://a`
   tags nothing, and `#82` or a path in a fenced row is not tagged; `#82` in inline code is not
-  tagged.
+  tagged; a markdown target with a `javascript:` scheme is never tagged.
 - `transcript.rs`: notice URL tagged and coloured; error still not; tool output path tagged,
   `#N` in tool output not.
 - `linear.rs`: screen-reader output of a reply with links contains no `ESC]8`.
@@ -323,7 +332,6 @@ AGENTS.md asks for tmux reproduction of terminal output issues):
    and `tmux capture-pane -p` shows the text with no stray characters.
 2. In a terminal with OSC 8 support (outside tmux), Ctrl/Cmd-click a URL; it opens. Clicking is
    manual because it is the terminal's own behaviour.
-3. `FORCE_HYPERLINK=0 cargo run -p fontaine`: the pipe-pane capture has no `ESC]8`.
 
 ## Open Questions
 None.
