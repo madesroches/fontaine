@@ -136,7 +136,15 @@ impl ResultStage for ScannerStage {
                         Some(_) => Scan::Failed {
                             reason: "the usage window stayed spent and the wait ended".into(),
                         },
-                        None => scanner.scan(call.tool, &content).await,
+                        None => {
+                            let scan = scanner.scan(call.tool, &content).await;
+                            if !matches!(scan, Scan::Failed { .. })
+                                && let Some(pause) = &self.pause
+                            {
+                                pause.note_success();
+                            }
+                            scan
+                        }
                     }
                 }
             };

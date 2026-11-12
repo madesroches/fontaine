@@ -666,6 +666,12 @@ impl UserHook {
             .instrument(span.clone())
             .await;
         span.record("success", result.is_ok());
+        if result.is_ok()
+            && matches!(&*self.handler, Handler::Prompt(_))
+            && let Some(pause) = &self.pause
+        {
+            pause.note_success();
+        }
         let answer = result?;
         if !discards_system_message(self.event)
             && let Some(message) = answer

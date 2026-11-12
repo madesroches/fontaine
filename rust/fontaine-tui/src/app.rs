@@ -846,6 +846,13 @@ impl App {
         }
         self.questions.retain(|panel| !panel.is_closed());
         self.elicitations.retain(|panel| !panel.is_closed());
+        if self
+            .usage_pause_prompt
+            .as_ref()
+            .is_some_and(UsagePausePrompt::is_closed)
+        {
+            self.usage_pause_prompt = None;
+        }
     }
 
     pub fn begin_server(&mut self, mut prompt: ConfirmPrompt) {
@@ -3616,6 +3623,18 @@ mod tests {
             Some(PromptKind::UsagePause)
         );
         app.finish_usage_pause(PauseChoice::Resume);
+        assert!(app.usage_pause_prompt.is_none());
+    }
+
+    #[test]
+    fn a_pause_that_ends_on_its_own_closes_its_prompt() {
+        let mut app = app();
+        let (prompt, choice) = usage_pause_prompt();
+        app.begin_usage_pause(prompt);
+        app.prune_closed();
+        assert!(app.usage_pause_prompt.is_some());
+        drop(choice);
+        app.prune_closed();
         assert!(app.usage_pause_prompt.is_none());
     }
 

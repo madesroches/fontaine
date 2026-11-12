@@ -630,10 +630,15 @@ fn prepare_headless(cli: &Cli) -> Result<headless::Options, ExitCode> {
     let max_usage_wait = match &cli.max_usage_wait {
         None => None,
         Some(text) => match fontaine_core::duration::parse_duration(text) {
-            Some(wait) if !wait.is_zero() => Some(wait),
+            Some(wait)
+                if !wait.is_zero()
+                    && wait.as_secs() <= fontaine_core::config::MAX_USAGE_WAIT_SECS =>
+            {
+                Some(wait)
+            }
             _ => {
                 return Err(usage(
-                    "--max-usage-wait must be a duration of at least a second, such as `90m` or `6h`",
+                    "--max-usage-wait must be a duration between a second and a year, such as `90m` or `6h`",
                 ));
             }
         },

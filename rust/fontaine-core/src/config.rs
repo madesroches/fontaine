@@ -2002,11 +2002,12 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         );
     }
     if let Some(h) = &s.headless
-        && h.max_usage_wait_secs == Some(0)
+        && let Some(v) = h.max_usage_wait_secs
+        && !(1..=MAX_USAGE_WAIT_SECS).contains(&v)
     {
         return bad(
             "headless.max_usage_wait_secs",
-            "must be at least 1; use `on_usage_limit = \"exit\"` to not wait",
+            "must be between 1 and 31536000 (a year); use `on_usage_limit = \"exit\"` to not wait",
         );
     }
     if let Some(sh) = &s.shell
@@ -2661,6 +2662,8 @@ pub struct Headless {
 /// How long a `-p` run waits for a spent usage window unless told otherwise: longer than one
 /// five-hour window.
 pub const DEFAULT_MAX_USAGE_WAIT_SECS: u64 = 6 * 60 * 60;
+/// The longest wait a configured cap may ask for, so adding it to a clock cannot overflow.
+pub const MAX_USAGE_WAIT_SECS: u64 = 365 * 24 * 60 * 60;
 
 /// The merged `[shell]` section.
 #[derive(Clone, Debug, PartialEq)]

@@ -157,7 +157,7 @@ fn body_reset(response: &ProviderResponseError) -> Option<SystemTime> {
                 } else {
                     secs
                 };
-                Some(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+                SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs))
             })
         })
 }

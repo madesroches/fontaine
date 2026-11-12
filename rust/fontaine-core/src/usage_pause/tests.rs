@@ -192,6 +192,51 @@ async fn total_paused_counts_closed_and_open_pauses() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_waiter_that_only_watches_leaves_the_probe_for_the_retry() {
+    let pause = UsagePause::new();
+    pause.engage(info(None));
+    let watcher = tokio::spawn({
+        let pause = pause.clone();
+        async move { pause.wait_ready().await }
+    });
+    tokio::time::sleep(FIRST_PROBE_INTERVAL + Duration::from_secs(1)).await;
+    assert_eq!(watcher.await.unwrap(), Some(PauseEnd::Probed));
+    assert!(pause.is_paused());
+    // The retry's own gate takes the probe at once instead of waiting out a lease.
+    let admission = tokio::time::timeout(Duration::from_secs(1), pause.admit())
+        .await
+        .expect("the probe was left open");
+    admission.probe.expect("claimed by the retry").succeeded();
+    assert!(!pause.is_paused());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_deadline_set_later_ends_a_pause_that_had_none() {
+    let pause = UsagePause::new();
+    pause.engage(info(None));
+    pause.set_deadline(Duration::from_secs(30));
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    assert_eq!(
+        pause.failure().map(|(end, _)| end),
+        Some(PauseEnd::CapReached)
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_overflowing_deadline_is_left_unset() {
+    let pause = UsagePause::new();
+    pause.engage(info(None));
+    pause.set_deadline(Duration::MAX);
+    assert!(pause.info().unwrap().deadline.is_none());
+    assert!(
+        info(None)
+            .with_deadline(Some(Duration::MAX))
+            .deadline
+            .is_none()
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_dropped_waiter_does_not_strand_the_others() {
     let pause = UsagePause::new();
     pause.engage(info(None));

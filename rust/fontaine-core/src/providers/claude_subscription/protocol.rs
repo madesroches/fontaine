@@ -1394,7 +1394,7 @@ fn rejected_reset(info: &Value) -> Option<SystemTime> {
     let at = |value: Option<&Value>| {
         value
             .and_then(Value::as_u64)
-            .map(|secs| SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+            .and_then(|secs| SystemTime::UNIX_EPOCH.checked_add(Duration::from_secs(secs)))
     };
     at(info.get("resetsAt")).or_else(|| {
         let kind = info.get("rateLimitType").and_then(Value::as_str)?;

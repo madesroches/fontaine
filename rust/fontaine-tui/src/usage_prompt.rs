@@ -57,6 +57,11 @@ impl UsagePausePrompt {
         }
     }
 
+    /// Whether the pause stopped waiting for an answer, because it ended on its own.
+    pub fn is_closed(&self) -> bool {
+        self.reply.as_ref().is_none_or(|reply| reply.is_closed())
+    }
+
     pub fn is_picking(&self) -> bool {
         self.picking
     }

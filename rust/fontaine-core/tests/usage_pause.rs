@@ -192,3 +192,56 @@ async fn a_throttle_without_a_window_is_still_an_ordinary_guardian_failure() {
     assert!(denied_message(&decision).contains("[GuardianUnavailable]"));
     assert!(!rig.state.usage_pause().is_paused());
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_probe_won_by_the_guardian_ends_the_pause() {
+    let (_, guardian) = guardian_behind(KIMI_WINDOW, 0);
+    let rig = rig(guardian);
+    rig.state
+        .usage_pause()
+        .engage(fontaine_core::usage_pause::PauseInfo::new(
+            fontaine_core::quota::UsageRole::Guardian,
+            "test",
+            None,
+        ));
+    let decision = rig.check("shell", shell("make all")).await;
+    assert!(allowed(&decision));
+    // Ended by the guardian's answer, not by the lease lapsing into another backoff.
+    assert!(!rig.state.usage_pause().is_paused());
+    assert_eq!(
+        rig.state.usage_pause().failure().map(|(end, _)| end),
+        None,
+        "not a failure"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn turning_afk_on_gives_a_pause_without_a_deadline_the_afk_cap() {
+    let (_, guardian) = guardian_behind(KIMI_WINDOW, 0);
+    let rig = rig(guardian);
+    rig.state.set_usage_wait(UsageWait {
+        cap: None,
+        afk_cap: Some(Duration::from_secs(30)),
+        exit: false,
+    });
+    rig.state
+        .usage_pause()
+        .engage(fontaine_core::usage_pause::PauseInfo::new(
+            fontaine_core::quota::UsageRole::Main,
+            "test",
+            None,
+        ));
+    assert!(rig.state.usage_pause().info().unwrap().deadline.is_none());
+    rig.state
+        .set_mode(
+            fontaine_core::config::PermissionMode::Afk,
+            fontaine_core::afk_report::AfkSource::Cli,
+        )
+        .expect("AFK starts");
+    assert!(rig.state.usage_pause().info().unwrap().deadline.is_some());
+    tokio::time::sleep(Duration::from_secs(31)).await;
+    assert_eq!(
+        rig.state.usage_pause().failure().map(|(end, _)| end),
+        Some(PauseEnd::CapReached)
+    );
+}

@@ -647,6 +647,7 @@ impl SessionState {
                 if on { "afk_on" } else { "afk_off" },
                 if on { "AFK mode on" } else { "AFK mode off" },
             );
+            self.adapt_usage_pause_to_mode(on);
         }
         tracing::info!(
             target: TARGET,
@@ -1037,7 +1038,28 @@ impl SessionState {
         if self.usage_pause.engage(info.clone()) {
             self.offer_usage_choice(info);
         }
-        self.usage_gate().await
+        // Waits without claiming the probe: the caller's retry passes the gate itself and takes it.
+        match self.usage_pause.wait_ready().await {
+            Some(end) if end.is_failure() => Err(self.ended(end)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Gives a pause that began under another mode what the mode now needs: the AFK cap once
+    /// nobody can cancel, and the r/c/s prompt once somebody can answer again.
+    fn adapt_usage_pause_to_mode(&self, afk: bool) {
+        let Some(info) = self.usage_pause.info() else {
+            return;
+        };
+        if afk {
+            if info.deadline.is_none()
+                && let Some(cap) = self.usage_wait().afk_cap
+            {
+                self.usage_pause.set_deadline(cap);
+            }
+        } else {
+            self.offer_usage_choice(info);
+        }
     }
 
     /// Asks the human what to do about the pause, unless nobody can answer. A task of the
@@ -1240,6 +1262,10 @@ impl SessionState {
     ) {
         self.usage.record(source, usage, sent_request, served);
         self.agents.debit(agent, &spend_of(usage));
+        if sent_request {
+            // Any provider call that answered proves the window is open, whoever held the probe.
+            self.usage_pause.note_success();
+        }
     }
 
     /// The session's usage ledger.

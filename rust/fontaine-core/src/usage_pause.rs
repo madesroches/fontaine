@@ -91,7 +91,7 @@ impl PauseInfo {
     }
 
     pub fn with_deadline(mut self, wait: Option<Duration>) -> Self {
-        self.deadline = wait.map(|wait| self.since + wait);
+        self.deadline = wait.and_then(|wait| self.since.checked_add(wait));
         self
     }
 
@@ -389,6 +389,16 @@ impl UsagePause {
 
     /// [`wait_open`](Self::wait_open) for a caller that can hold the probe across its request.
     pub async fn admit(&self) -> Admission {
+        self.admit_with(true).await
+    }
+
+    /// Waits like [`admit`](Self::admit) but leaves an open probe for the caller's own retry to
+    /// claim, so the request that follows is not itself held at the gate for the lease.
+    pub async fn wait_ready(&self) -> Option<PauseEnd> {
+        self.admit_with(false).await.end
+    }
+
+    async fn admit_with(&self, claim: bool) -> Admission {
         let mut rx = self.shared.tx.subscribe();
         {
             // A pause that ended in failure still stops the run: calls after it fail the same
@@ -402,9 +412,15 @@ impl UsagePause {
             }
         }
         loop {
+            if !claim && self.shared.tx.borrow().probe == Probe::Open {
+                return Admission {
+                    end: Some(PauseEnd::Probed),
+                    probe: None,
+                };
+            }
             let mut claimed = None;
             self.shared.tx.send_if_modified(|s| {
-                if s.active.is_some() && s.probe == Probe::Open {
+                if claim && s.active.is_some() && s.probe == Probe::Open {
                     s.probe = Probe::Claimed(Instant::now());
                     claimed = Some(s.epoch);
                     true
@@ -452,6 +468,22 @@ impl UsagePause {
         if claimed {
             self.shared.end(Some(epoch), PauseEnd::Probed);
         }
+    }
+
+    /// Bounds a pause that had no deadline, `wait` from now. An overflowing wait leaves it as it
+    /// was.
+    pub fn set_deadline(&self, wait: Duration) {
+        self.shared.tx.send_if_modified(|s| {
+            let Some(info) = s.active.as_mut().filter(|i| i.deadline.is_none()) else {
+                return false;
+            };
+            let Some(at) = Instant::now().checked_add(wait) else {
+                return false;
+            };
+            info.deadline = Some(at);
+            s.rev += 1;
+            true
+        });
     }
 
     /// The human chose to go on now. Waiting callers resume; the first to meet the limit again
