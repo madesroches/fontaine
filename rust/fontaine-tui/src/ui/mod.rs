@@ -978,12 +978,13 @@ impl<R: FnMut(&mut App)> Ui<R> {
         };
         let launcher = rig_tools::process::Launcher::default()
             .without_env(runtime.scrub_env().iter().cloned());
-        let read = tokio::task::spawn_blocking(move || {
-            rig_tools::clipboard::read_image(&launcher, &scratch)
-        })
-        .await;
+        let read =
+            tokio::task::spawn_blocking(move || crate::clipboard::read_image(&launcher, &scratch))
+                .await;
         match read {
-            Ok(Ok(Some(path))) => {
+            Ok(Ok(crate::clipboard::ImageRead {
+                path: Some(path), ..
+            })) => {
                 let size = std::fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
                 let label = path
                     .file_name()
@@ -1016,7 +1017,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                     self.app.attach_notice = Some("model does not accept images".into());
                 }
             }
-            Ok(Ok(None)) => self.app.attach_notice = Some("no image on the clipboard".into()),
+            Ok(Ok(read)) => self.app.attach_notice = Some(crate::clipboard::no_image_notice(&read)),
             Ok(Err(e)) => {
                 self.app.attach_notice = Some(format!("the clipboard could not be read: {e}"));
             }

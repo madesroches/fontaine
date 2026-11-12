@@ -246,7 +246,7 @@ cursor keys (see [Vim input mode](#vim-input-mode)).
 | Up, Down (`history_previous`, `history_next`), Ctrl-P, Ctrl-N | With the `@` list or the slash-command menu open, move the selection. Otherwise, on the first or last line of the input, recall older or newer submitted inputs; elsewhere they move the cursor. With messages queued, Up takes them back into the input. Down on the last line, when the input is not walking the history and the [agent list](#the-agent-list-and-the-agent-view) shows, moves the keyboard into the list: Up and Down select a row, Up on the first row gives the keyboard back. Ctrl-P and Ctrl-N are hardcoded aliases of Up and Down. |
 | Enter, x, Esc in the agent list | Enter shows the selected row's transcript (`main` or a subagent). `x` stops a running subagent, or hides an ended one; on `main` or the agent on screen it is typed into the input. Esc gives the keyboard back to the input, and any printable key does too and is typed there. |
 | Ctrl-R (`history_search`) | Search the prompt history; see [History](#history). |
-| Ctrl-V (`attach_clipboard`) | Attach the clipboard's image to the message; see [Attaching files](#attaching-files). Terminals that turn Ctrl+V into a bracketed paste never deliver the key event; their paste arrives as text, and a dropped PDF path becomes a PDF attachment. |
+| Ctrl-V or Alt-V (`attach_clipboard`) | Attach the clipboard's image to the message; see [Attaching files](#attaching-files). Terminals that turn Ctrl+V into a bracketed paste (Windows Terminal, conhost) never deliver the key event, so Alt+V is the alternative there; their paste arrives as text, and a dropped PDF path becomes a PDF attachment. |
 | Tab | Completes the `@` file under the cursor, or the command name in the slash-command menu, when a list is open. In the `/` menu and the `@` list it first extends what you typed to what all the listed commands, files or directories share, and accepts the selected row only when nothing more can be extended. |
 | Shift+Tab (`cycle_mode`) | Cycle the mode by increasing autonomy: manual, plan, accept edits, auto, [AFK](afk.md), and back to manual. It takes effect on the next tool call, even mid-turn. Entering `auto` or AFK lists the broad allow rules it sets aside and says so when the guardian cannot be asked. Entering AFK answers every open or queued approval, question and guardian dialog as a denial or no-answer; leaving it reviews the stretch, when the turn ends if one is running. A rebound key runs the same cycle — no binding can jump to a mode outside it. |
 | Esc, Ctrl-C while a turn or a `!` command runs | Interrupt it. The interrupted turn is kept in the model's conversation up to its last finished tool round, followed by an interruption marker, and the next prompt continues from there; text the model was still streaming is not kept. Earlier turns are kept, and an open prompt is answered with deny. An open history search, `@` list or slash-command menu is closed first. Interrupting never stops a subagent: it keeps running and reports later, and the agents panel stops one (the model can also stop the subagents it started). While a subagent's transcript is on screen only Ctrl-C interrupts the main turn: Esc does not, because the turn is out of sight. |
@@ -389,13 +389,16 @@ when the model accepts images.
 ## Attaching files
 
 An inline file rides your message to the model as a content part, the way a typed sentence does.
-Two kinds exist: a clipboard image (Ctrl+V) and a dropped PDF (drop the file on the terminal, which
+Two kinds exist: a clipboard image (Ctrl+V or Alt+V) and a dropped PDF (drop the file on the terminal, which
 pastes its path).
 
-- Ctrl+V reads the clipboard image with the desktop's own tool (`wl-paste`, `xclip` or
-  `pngpaste`) and saves it in the session's private scratch directory. No image on the clipboard
-  is a one-line notice, nothing more. Terminals that turn Ctrl+V into a bracketed paste never
-  deliver the key event; the paste path already handles their text.
+- Ctrl+V or Alt+V reads the clipboard image with the desktop's own tool (`wl-paste`, `xclip` or
+  `pngpaste`) and saves it in the session's private scratch directory. On native Windows and
+  under WSL it also tries the Windows clipboard through `powershell.exe`. No image on the
+  clipboard is a one-line notice that names each program tried and what it found, such as
+  `no image on the clipboard (tried wl-paste: not installed, xclip: no image, powershell.exe: no
+  image)`. Terminals that turn Ctrl+V into a bracketed paste never deliver the key event; use
+  Alt+V there. The paste path already handles their text.
 - A dropped file whose path lands in the input as a paste becomes a PDF attachment when the file
   sniffs as `%PDF-`; any other path stays typed text.
   On Windows a dropped path is not detected as a PDF attachment; see [Pasting](#pasting).

@@ -253,7 +253,7 @@ impl TuiAction {
 
     /// The default keystroke for this action, `None` for an action with no default key
     /// (`agents_panel`, reached with `/agents`). The TUI's default table adds the two other
-    /// `newline` bindings (`shift+enter`, `alt+enter`).
+    /// `newline` bindings (`shift+enter`, `alt+enter`) and `alt+v` for `attach_clipboard`.
     pub fn default_keystroke(self) -> Option<Keystroke> {
         Some(match self {
             TuiAction::CycleMode => Keystroke {
