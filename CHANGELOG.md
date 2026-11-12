@@ -97,6 +97,11 @@ All notable changes are recorded here. The format follows
 
 ### Fixed
 
+- A guardian denial after a provider HTTP error response no longer says the guardian model
+  "could not be reached": the daemon answered and refused, so the explanation reads "the
+  guardian model refused the request" and surfaces the status and the provider's own body,
+  e.g. an Ollama 400 when the prompt exceeds the context window. Transport failures (DNS,
+  connect, TLS, timeout, reset) keep the "could not be reached" wording (#148).
 - A status line command, command hook or BYO scanner that times out now has its whole process
   tree stopped, not just the direct child. On Windows, where a launcher `sh` left a grandchild
   holding the output pipes open, this deadlocked the status line test and leaked a process tree and

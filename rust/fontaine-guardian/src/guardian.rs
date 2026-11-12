@@ -16,7 +16,7 @@ use crate::prompt_builder::{Rendered, render, with_schema_answer};
 use crate::request::AdjudicationRequest;
 use crate::structured::{
     self, ModeResolver, Notifier, Options, OutputMode, OutputProbe, RunError, Tally,
-    lacks_tool_support,
+    classify_prompt_error, lacks_tool_support,
 };
 use crate::verdict::{AuditLabel, Decision, FailClosed, Verdict};
 
@@ -344,12 +344,17 @@ impl Guardian {
             )),
             Err(RunError::Failed(StructuredOutputError::Prompt(error))) => {
                 tracing::warn!(error = %error, "the guardian model call failed");
+                let reachability = classify_prompt_error(&error);
                 let explanation = if lacks_tool_support(&error) {
                     format!(
                         "the guardian model could not be used: this model does not support tool calls, so the guardian could not use the `submit` output tool: {error}"
                     )
                 } else {
-                    format!("the guardian model could not be reached: {error}")
+                    format!(
+                        "the guardian model {}: {}",
+                        reachability.phrase(),
+                        reachability.detail(&error)
+                    )
                 };
                 finish(Outcome::FailClosed(
                     FailClosed::Error,
