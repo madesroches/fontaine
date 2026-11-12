@@ -52,15 +52,6 @@ an exact failure reason: its current assertions still accept a legitimate fail-c
 an overloaded runner, while the deterministic guardian tests already pin exact retry and reason
 behavior.
 
-The remaining tests divide responsibility without a timing-sensitive third full-stack repetition:
-
-```text
-Claude protocol failure → fontaine-core Claude guardian test
-Provider/malformed/timeout fail-closed policy → fontaine-guardian tests
-Decision event + denial feedback + no tool execution → fontaine auto_headless tests
-Claude guardian happy-path composition → remaining claude_subscription headless test
-```
-
 ## Implementation Steps
 
 1. Remove `a_guardian_that_cannot_be_read_fails_closed` from
@@ -76,18 +67,9 @@ Claude guardian happy-path composition → remaining claude_subscription headles
 
 ## Trade-offs
 
-- **Remove the redundant test vs. add diagnostics and a larger deadline.** The failing run completed
-  too quickly to support the hypothesis that a short test deadline fired. A deadline change would be
-  speculative, and diagnostics alone would not make the test reliable. The issue explicitly permits
-  removal when fail-closed behavior is covered; the coverage map above includes the Claude-specific
-  protocol path and the headless security outcome.
-- **Remove it vs. retain the unique full-stack composition.** The deleted test is the only test that
-  combines every layer in one scenario, but each required behavior remains pinned at the layer that
-  owns it and the Claude happy path still checks their composition. Retaining a known-flaky duplicate
-  risks hiding future regressions behind reruns.
-- **Strengthen the remaining lower-level assertions vs. leave them tolerant.** Exact retry counts and
-  failure classes belong in the deterministic guardian tests. Requiring them again in the
-  subprocess-backed Claude test could recreate the same load sensitivity.
+- **Remove it vs. retain the unique full-stack composition.** The deleted test is the only one that
+  combines every layer in one scenario. Retaining a known-flaky duplicate risks hiding future
+  regressions behind reruns.
 
 ## Decisions
 
@@ -118,9 +100,6 @@ cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-The focused guardian tests pin exact retry, denial, and timeout behavior. The core Claude test pins
-the non-JSON protocol path. The two headless tests pin `gate_decision`, denial feedback, and physical
-non-execution. The remaining Claude subscription suite must retain its valid-verdict guardian test.
 The macOS CI run of the ordinary workspace suite is the final cross-platform check that the removed
 panic site is gone; no live API or real Claude CLI is involved.
 
