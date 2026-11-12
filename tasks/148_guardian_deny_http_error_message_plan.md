@@ -56,6 +56,9 @@ answered; future variants fall back conservatively (the enum is `#[non_exhaustiv
   below: reached when that report carries `http_status` or `provider_response`, unreachable
   otherwise. `PromptError::Report` counts as reached only when the report carries
   `http_status` or `provider_response`; a report with neither is treated as unreachable.
+- **Non-provider run failures** — `PromptError::Memory`, `PromptError::MaxTurns`,
+  `PromptError::Cancelled`, and `PromptError::UnknownToolCall` are classified explicitly as
+  `Unreachable`, with the explanation appending the error's own message.
 - **Fallback** — any future `ProviderError` variant classifies as not reached: claim a refusal
   only when a provider reply is certain.
 - **Tool-support refusal** — keep the existing `lacks_tool_support` special case, which is a
@@ -63,7 +66,8 @@ answered; future variants fall back conservatively (the enum is `#[non_exhaustiv
 
 The helper returns an enum or a small struct with:
 - a display-friendly classification string (`"could not be reached"` vs `"refused the request"`);
-- the original error text to append.
+- the text to append: the original error text for `Unreachable`, or the extracted
+  status/body for `Refused`.
 
 In `guardian.rs`, replace the `format!("the guardian model could not be reached: {error}")` arm
 with a call to the helper:
