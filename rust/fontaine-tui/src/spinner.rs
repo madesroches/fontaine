@@ -67,6 +67,7 @@ pub fn active(app: &App) -> bool {
         || !app.questions.is_empty()
         || !app.elicitations.is_empty()
         || app.unavailable.is_some()
+        || app.usage_pause_prompt.is_some()
     {
         return false;
     }
@@ -90,11 +91,18 @@ pub fn lines(app: &App, width: usize) -> Vec<Line<'static>> {
         cells.push((c, glyph_style(theme, frame)));
     }
     cells.push((' ', Style::default()));
-    let label_len = LABEL.chars().count();
-    for (i, c) in LABEL.chars().enumerate() {
-        cells.push((c, shimmer_style(theme, frame, i, label_len)));
-    }
     let dim = Style::default().add_modifier(Modifier::DIM);
+    if let Some(paused) = &app.usage_pause_text {
+        // A pause is not progress: the label stops shimmering and says what is being waited for.
+        for c in paused.chars() {
+            cells.push((c, Style::default().fg(theme.error)));
+        }
+    } else {
+        let label_len = LABEL.chars().count();
+        for (i, c) in LABEL.chars().enumerate() {
+            cells.push((c, shimmer_style(theme, frame, i, label_len)));
+        }
+    }
     for c in suffix(app).chars() {
         cells.push((c, dim));
     }
@@ -485,6 +493,26 @@ mod tests {
             std::time::SystemTime::now(),
         ));
         assert!(active(&app));
+    }
+
+    #[test]
+    fn a_pause_replaces_the_label_with_what_is_being_waited_for_and_its_prompt_hides_the_row() {
+        let mut app = running_app();
+        let line = "paused — work usage window spent, resets 14:30 (in 2h 14m)";
+        app.usage_pause_text = Some(line.into());
+        app.turn_elapsed = Some(Duration::from_secs(65));
+        assert_eq!(text(&lines(&app, 120)[0]), format!("· {line} (1m05s)"));
+        let (reply, _choice) = tokio::sync::oneshot::channel();
+        app.usage_pause_prompt = Some(crate::usage_prompt::UsagePausePrompt::new(
+            fontaine_core::usage_pause::PauseInfo::new(
+                fontaine_core::quota::UsageRole::Main,
+                "work",
+                None,
+            ),
+            Vec::new(),
+            reply,
+        ));
+        assert!(!active(&app));
     }
 
     #[test]

@@ -8,7 +8,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -19,7 +19,7 @@ use tokio::sync::OnceCell;
 use super::context::Verdicts;
 use super::protocol::{Event, Failure, Reader};
 use super::transport::{next, rejected};
-use super::{ClaudeError, ErrorKind, USAGE_SETTINGS_URL, claude_error};
+use super::{ClaudeError, ErrorKind, LimitForm, USAGE_SETTINGS_URL, claude_error};
 use crate::models::SharedEnv;
 use crate::owner_only;
 use crate::providers::ExternalLogin;
@@ -1233,13 +1233,14 @@ fn detached_kill(mut child: Child, pid: Option<u32>) {
 }
 
 /// The usage-credit text shown whenever a plan limit or billing failure is reported.
-pub(crate) fn limit_error() -> ClaudeError {
+pub(crate) fn limit_error(form: LimitForm, reset_at: Option<SystemTime>) -> ClaudeError {
     ClaudeError::new(
         ErrorKind::Limit,
         format!(
             "the Claude CLI reported a plan limit, allowance or billing failure; wait for it to reset or check your account at {USAGE_SETTINGS_URL}"
         ),
     )
+    .with_limit(form, reset_at)
 }
 
 #[cfg(test)]

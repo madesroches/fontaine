@@ -841,6 +841,91 @@ fn native_errors_map_without_echoing_what_the_cli_said() {
     assert_eq!(claude_error(&error).map(|e| e.kind), Some(ErrorKind::Auth));
 }
 
+fn limit_of(error: &Failure) -> (Option<LimitForm>, Option<SystemTime>) {
+    let claude = claude_error(error).expect("a typed Claude error");
+    assert_eq!(claude.kind, ErrorKind::Limit);
+    (claude.limit_form, claude.reset_at)
+}
+
+fn rejected_frame() -> Value {
+    json!({"type": "rate_limit_event", "rate_limit_info": {
+        "status": "rejected", "resetsAt": 1790578200u64, "rateLimitType": "five_hour"}})
+}
+
+fn failed_with(status: u64) -> Value {
+    let mut failed = result("error_during_execution");
+    failed["is_error"] = json!(true);
+    failed["api_error_status"] = json!(status);
+    failed
+}
+
+#[test]
+fn a_rejected_rate_limit_frame_makes_the_limit_a_spent_plan_window_with_its_reset() {
+    let mut r = reader(&[]);
+    feed(&mut r, init()).unwrap();
+    // A frame with no window figures still counts: only its status and reset are read.
+    feed(&mut r, rejected_frame()).unwrap();
+    let error = feed(&mut r, failed_with(429)).unwrap_err();
+    assert_eq!(
+        limit_of(&error),
+        (
+            Some(LimitForm::PlanLimit),
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(1_790_578_200))
+        )
+    );
+}
+
+#[test]
+fn a_rate_limit_with_no_rejected_frame_and_a_billing_failure_are_not_plan_limits() {
+    let mut r = reader(&[]);
+    feed(&mut r, init()).unwrap();
+    feed(
+        &mut r,
+        json!({"type": "rate_limit_event", "rate_limit_info": {"status": "allowed_warning"}}),
+    )
+    .unwrap();
+    let error = feed(&mut r, failed_with(429)).unwrap_err();
+    assert_eq!(limit_of(&error), (Some(LimitForm::RateLimit), None));
+
+    let mut r = reader(&[]);
+    feed(&mut r, init()).unwrap();
+    let error = feed(&mut r, failed_with(402)).unwrap_err();
+    assert_eq!(limit_of(&error).0, Some(LimitForm::Billing));
+
+    let mut r = reader(&[]);
+    feed(&mut r, init()).unwrap();
+    feed(
+        &mut r,
+        json!({"type": "assistant", "error": "billing_error", "message": {}}),
+    )
+    .unwrap();
+    let mut failed = result("error_during_execution");
+    failed["is_error"] = json!(true);
+    let error = feed(&mut r, failed).unwrap_err();
+    assert_eq!(limit_of(&error).0, Some(LimitForm::Billing));
+}
+
+#[test]
+fn an_early_exit_keeps_the_rejected_window_it_saw() {
+    let mut r = reader(&[]);
+    feed(&mut r, init()).unwrap();
+    feed(&mut r, rejected_frame()).unwrap();
+    feed(
+        &mut r,
+        json!({"type": "assistant", "error": "rate_limit", "message": {}}),
+    )
+    .unwrap();
+    let error = exit_failure("", r.native().as_ref(), "claude auth login");
+    assert_eq!(limit_of(&error).0, Some(LimitForm::PlanLimit));
+    // Stderr that names the usage limit is a plan limit on its own.
+    let error = exit_failure(
+        "usage limit reached for your plan",
+        None,
+        "claude auth login",
+    );
+    assert_eq!(limit_of(&error).0, Some(LimitForm::PlanLimit));
+}
+
 #[test]
 fn the_reported_category_backs_an_empty_stderr() {
     assert!(!exit_failure("", Some(&Native::Auth), "claude auth login").is_retryable());

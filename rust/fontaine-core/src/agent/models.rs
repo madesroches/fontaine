@@ -85,10 +85,15 @@ pub(super) fn guardian_quota_of(model: Option<&GuardianModel>) -> Option<Guardia
     }
 }
 
+/// The runtime's slot for the guardian's quota, which the session state is told of too, for a
+/// pause on the guardian's account.
 pub(super) fn guardian_quota_slot(
     model: Option<&GuardianModel>,
+    state: &SessionState,
 ) -> Arc<RwLock<Option<GuardianQuota>>> {
-    Arc::new(RwLock::new(guardian_quota_of(model)))
+    let quota = guardian_quota_of(model);
+    state.set_guardian_quota(quota.as_ref().map(|(_, source)| source.clone()));
+    Arc::new(RwLock::new(quota))
 }
 
 /// What a model switch did.
@@ -139,6 +144,8 @@ impl AgentRuntime {
         warm_output_mode(&guardian);
         self.state.set_guardian(guardian);
         *write(&self.guardian_quota, "guardian quota") = guardian_quota_of(Some(model));
+        self.state
+            .set_guardian_quota(guardian_quota_of(Some(model)).map(|(_, source)| source));
         self.setup.lifecycle.set_guardian(model);
         if let Some(slot) = &self.llm_scanner {
             let timeout = std::time::Duration::from_secs(self.config.guardian.timeout_secs);
@@ -636,6 +643,29 @@ impl AgentRuntime {
             facts_notice,
             session_only: None,
         }))
+    }
+
+    /// The models the role a usage pause is for could move to, on other accounts, for the human
+    /// to switch to. Empty for a pause on an account this session's main and guardian models
+    /// are not on, such as a subagent's own.
+    pub fn usage_switch_candidates(&self, info: &crate::usage_pause::PauseInfo) -> Vec<ModelRef> {
+        let switchable = match info.role {
+            crate::quota::UsageRole::Guardian => true,
+            crate::quota::UsageRole::Main => self.models.main.reference.account == info.account,
+        };
+        if !switchable {
+            return Vec::new();
+        }
+        self.guardian_candidates()
+            .into_iter()
+            .filter(|reference| reference.account != info.account)
+            .collect()
+    }
+
+    /// Moves the main model to `text` for the live session after the human chose to leave a
+    /// spent account, without saving anything.
+    pub async fn use_main_after_usage_limit(&mut self, text: &str) -> Result<(), RuntimeError> {
+        self.install_main_chain(text).await.map(|_| ())
     }
 
     /// Guardian models to offer in place of an unavailable one.

@@ -87,7 +87,13 @@ pub struct Adjudication {
     pub usage: Usage,
     /// The transport the verdict was obtained on; absent when the model could not be asked.
     pub transport: Option<OutputMode>,
+    /// The failure behind a [`FailClosed::Error`], kept whole so the caller can tell a spent
+    /// usage window from a broken provider. Shared because an adjudication is cloned.
+    pub cause: Option<Cause>,
 }
+
+/// An error kept for a caller that knows more error types than this crate does.
+pub type Cause = Arc<dyn std::error::Error + Send + Sync>;
 
 pub struct Guardian {
     pub(crate) backend: Backend,
@@ -255,6 +261,7 @@ impl Guardian {
                     FailClosed::NotSignedIn,
                     reason.clone(),
                     Usage::default(),
+                    None,
                 ));
             }
             Backend::Unavailable { reason, .. } => {
@@ -262,6 +269,7 @@ impl Guardian {
                     FailClosed::Unavailable,
                     format!("the guardian model {} is unavailable: {reason}", self.label),
                     Usage::default(),
+                    None,
                 ));
             }
         };
@@ -273,6 +281,7 @@ impl Guardian {
                     FailClosed::Unavailable,
                     format!("the guardian model {} is unavailable: {reason}", self.label),
                     Usage::default(),
+                    None,
                 ));
             }
         };
@@ -331,6 +340,7 @@ impl Guardian {
                     self.settings.timeout.as_secs()
                 ),
                 spent.total(),
+                None,
             )),
             Err(RunError::Failed(StructuredOutputError::Prompt(error))) => {
                 tracing::warn!(error = %error, "the guardian model call failed");
@@ -345,6 +355,7 @@ impl Guardian {
                     FailClosed::Error,
                     explanation,
                     spent.total(),
+                    Some(Arc::new(error)),
                 ))
             }
             Err(RunError::Failed(error)) => {
@@ -353,6 +364,7 @@ impl Guardian {
                     FailClosed::Unparseable,
                     format!("the guardian's answer was not a valid verdict: {error}"),
                     spent.total(),
+                    None,
                 ))
             }
             Ok(verdict) => {
@@ -398,18 +410,23 @@ impl Guardian {
                     profile: self.settings.profile,
                     usage,
                     transport,
+                    cause: None,
                 }
             };
         match outcome {
-            Outcome::FailClosed(reason, explanation, usage) => base(
-                Decision::Deny,
-                reason.label(),
-                explanation,
-                None,
-                Some(reason),
-                false,
-                usage,
-            ),
+            Outcome::FailClosed(reason, explanation, usage, cause) => {
+                let mut adjudication = base(
+                    Decision::Deny,
+                    reason.label(),
+                    explanation,
+                    None,
+                    Some(reason),
+                    false,
+                    usage,
+                );
+                adjudication.cause = cause;
+                adjudication
+            }
             Outcome::Verdict {
                 verdict,
                 cache_hit,
@@ -455,5 +472,5 @@ enum Outcome {
         cache_hit: bool,
         usage: Box<Usage>,
     },
-    FailClosed(FailClosed, String, Usage),
+    FailClosed(FailClosed, String, Usage, Option<Cause>),
 }

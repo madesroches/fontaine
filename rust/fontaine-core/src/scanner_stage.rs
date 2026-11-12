@@ -17,6 +17,7 @@ use futures::future::BoxFuture;
 use crate::config::{Config, Scanner as ScannerKind};
 use crate::models::GuardianModel;
 use crate::notice::Notice;
+use crate::usage_pause::UsagePause;
 
 /// A scanner that is on, or the reason it cannot be asked.
 #[derive(Clone)]
@@ -36,13 +37,21 @@ pub struct ScannerStart {
 
 pub struct ScannerStage {
     backend: Arc<RwLock<Backend>>,
+    /// Set for a scanner that asks a model, which waits out a usage pause before each scan.
+    pause: Option<UsagePause>,
 }
 
 impl ScannerStage {
     pub fn new(backend: Backend) -> ScannerStage {
         ScannerStage {
             backend: Arc::new(RwLock::new(backend)),
+            pause: None,
         }
+    }
+
+    pub fn with_pause(mut self, pause: UsagePause) -> ScannerStage {
+        self.pause = Some(pause);
+        self
     }
 
     /// The slot the stage reads on every scan, for a scanner that must follow a model the
@@ -119,7 +128,16 @@ impl ResultStage for ScannerStage {
                     if content.trim().is_empty() {
                         return (outcome, None);
                     }
-                    scanner.scan(call.tool, &content).await
+                    let ended = match &self.pause {
+                        Some(pause) => pause.wait_open().await.filter(|end| end.is_failure()),
+                        None => None,
+                    };
+                    match ended {
+                        Some(_) => Scan::Failed {
+                            reason: "the usage window stayed spent and the wait ended".into(),
+                        },
+                        None => scanner.scan(call.tool, &content).await,
+                    }
                 }
             };
             let latency_ms = started.elapsed().as_millis() as u64;

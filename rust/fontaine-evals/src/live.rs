@@ -537,6 +537,7 @@ pub async fn adjudicate(case: &Case, live: &Live) -> Result<Scored, String> {
             node,
             reason,
             fail_closed,
+            ..
         } => {
             return Ok(settled(
                 "deny",

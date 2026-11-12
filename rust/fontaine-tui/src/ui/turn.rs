@@ -13,12 +13,13 @@ use fontaine_core::gate::AgentViewEvent;
 use fontaine_core::goal::Continue;
 use fontaine_core::ledger::Record;
 use fontaine_core::model_roles::Tried;
+use fontaine_core::quota::UsageRole;
 use fontaine_core::schedule::{Fired, Kind};
 use fontaine_core::steering::Queued;
 use fontaine_core::tier::Tier;
 use fontaine_core::turn::{
-    Attachment, AttachmentMedia, Flow, RETRY_NOTE, SessionEvent, TurnOutcome, TurnParams, run_turn,
-    user_message,
+    Attachment, AttachmentMedia, Flow, RETRY_NOTE, SessionEvent, TurnFailure, TurnOutcome,
+    TurnParams, run_turn, user_message, wait_out_usage_limit,
 };
 use fontaine_core::turn_recovery::{Fallback, Unsettled};
 use fontaine_core::user_hooks::PromptGate;
@@ -414,6 +415,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::CycleMode => self.cycle_mode(runtime, true),
                         Action::RetryDenied(index) if retry => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
+                        Action::UsagePause(answer) => self.answer_usage_pause(runtime, answer).await,
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),
                         Action::MessageAgent { id, text } => self.message_agent(runtime, id, text),
                         Action::KillJob(id) => self.kill_job(runtime, &id),
@@ -849,6 +851,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 }
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
                 Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
+                Action::UsagePause(answer) => self.answer_usage_pause(runtime, answer).await,
                 Action::KillAgent(id) => self.kill_agent(runtime, &id),
                 Action::MessageAgent { id, text } => self.message_agent(runtime, id, text),
                 Action::KillJob(id) => self.kill_job(runtime, &id),
@@ -912,11 +915,37 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         .await;
                     continue;
                 }
+                // The list is spent. A model the human picked while the window was spent
+                // takes the request; otherwise a spent usage window holds the run until it
+                // resets, and the request goes again with every entry tried afresh.
+                if self.apply_usage_switch(runtime).await {
+                    tried = Tried::default();
+                    end = self
+                        .attempt(runtime, RETRY_NOTE.to_string(), None, Vec::new())
+                        .await;
+                    continue;
+                }
                 if let Some(spent) = runtime.fall_through_spent()
                     && let TurnEnd::Finished(TurnOutcome::Failed(failure)) = &mut end
                 {
                     failure.message.push('\n');
                     failure.message.push_str(&spent);
+                }
+                if let TurnEnd::Finished(TurnOutcome::Failed(failure)) = &mut end
+                    && failure.usage_limit.is_some()
+                {
+                    match self.wait_out_usage(runtime, failure).await {
+                        Ok(true) => {
+                            tried = Tried::default();
+                            self.apply_usage_switch(runtime).await;
+                            end = self
+                                .attempt(runtime, RETRY_NOTE.to_string(), None, Vec::new())
+                                .await;
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(interrupted) => end = interrupted,
+                    }
                 }
                 break;
             }
@@ -952,6 +981,33 @@ impl<R: FnMut(&mut App)> Ui<R> {
         }
     }
 
+    /// Holds the turn while the main model's usage window is spent, still serving keys and
+    /// prompts. `Ok(true)` when the wait ended and the request should go again. Esc gives up on
+    /// the wait and cancels the pause.
+    async fn wait_out_usage(
+        &mut self,
+        runtime: &AgentRuntime,
+        failure: &mut TurnFailure,
+    ) -> Result<bool, TurnEnd> {
+        let main = &runtime.models.main;
+        let (account, quota) = (main.reference.account.clone(), main.quota.clone());
+        let mut waiting = Box::pin(wait_out_usage_limit(
+            &runtime.state,
+            failure,
+            UsageRole::Main,
+            &account,
+            quota,
+        ));
+        let waited = self
+            .serve_while(runtime, &mut waiting, Serve::Prompts)
+            .await;
+        drop(waiting);
+        if waited.is_err() {
+            runtime.state.usage_pause().cancel();
+        }
+        waited
+    }
+
     /// One run of the agent on `text`, to its end.
     async fn attempt(
         &mut self,
@@ -960,6 +1016,8 @@ impl<R: FnMut(&mut App)> Ui<R> {
         human: Option<&str>,
         attachments: Vec<Attachment>,
     ) -> TurnEnd {
+        // A wait that ended in failure stopped the run before; this is a new one.
+        runtime.state.usage_pause().clear_failure();
         // A refusal left by a step that reset `running` without settling would show here, with
         // no input event to clear it.
         self.app.refusal = None;
@@ -1140,6 +1198,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                         Action::CycleMode => self.cycle_mode(runtime, true),
                         Action::RetryDenied(index) => self.retry_denied(runtime, index),
                         Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
+                        Action::UsagePause(answer) => self.answer_usage_pause(runtime, answer).await,
                         Action::KillAgent(id) => self.kill_agent(runtime, &id),
                         Action::MessageAgent { id, text } => self.message_agent(runtime, id, text),
                         Action::KillJob(id) => self.kill_job(runtime, &id),

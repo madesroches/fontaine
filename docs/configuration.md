@@ -130,6 +130,8 @@ without one is refused from project and project-local files. For those scopes:
 | `[schedule] enabled` | no | no | yes |
 | `[memory] auto` | no | no | yes |
 | `[goal]` keys | no | no | yes |
+| `[headless] max_usage_wait_secs` | no | no | yes |
+| `[headless] on_usage_limit` | `exit` only | `exit` only | yes |
 | `[afk] temperature_ceiling` | lower only, positive and finite | lower only, positive and finite | yes |
 | `[shell] max_timeout_secs` | no | no | yes |
 | `[statusline]` | no | no | no |
@@ -662,8 +664,12 @@ and not the account's.
 - A subagent on a role or a list moves for itself, and the role's other subagents start on the entry
   that worked. A subagent on `$main` moves its own agent without changing the main conversation's entry.
 - Compaction, the advisor, the critique and the setup scan walk their own role's list the same way.
-- Each request tries every entry once. When the whole list is spent the turn fails as it does today,
-  with `every model in <role> failed` added.
+- Each request tries every entry once. When the whole list is spent on a quota error the turn fails
+  with `every model in <role> failed` added. When it is spent on a usage window that has run out
+  (a provider's window code, a `Retry-After` of more than five minutes, or a `claude-subscription`
+  plan limit), the whole run is paused until the window resets instead, and the request then goes
+  through the list again from the entry the list is on; see
+  [Usage windows](headless.md#usage-windows).
 - With an explicit `--max-budget-usd`, an entry with no known price is skipped, because a capped run
   has to stay measurable.
 - A resumed session starts every list at its first entry again.
@@ -1143,6 +1149,23 @@ tool for it, and edits to settings files are a protected-path and Safety Bypass 
 temperature_ceiling = 8.0
 ```
 
+### `[headless]`
+
+| Key | Meaning | Default |
+|---|---|---|
+| `max_usage_wait_secs` | The longest a run waits for an account's spent [usage window](headless.md#usage-windows) to reset, in seconds, at least 1. It bounds `fontaine -p`, and the terminal UI while AFK mode is on, because nobody can cancel a wait then. | `21600` (6 hours) |
+| `on_usage_limit` | `wait` holds the run until the window resets; `exit` ends a headless run at once with exit code 3. | `wait` |
+
+`--max-usage-wait` and `--on-usage-limit=wait|exit` override both for one run. A shared project
+file or a project-local file may set `on_usage_limit = "exit"`, which only ends a run sooner, and
+nothing else here.
+
+```toml
+[headless]
+max_usage_wait_secs = 7200
+on_usage_limit = "wait"
+```
+
 ### `[shell]`
 
 | Key | Meaning | Default |
@@ -1481,6 +1504,7 @@ for any reason other than not existing, is a configuration error naming the path
 | `--allowed-tools <rule>`, `--disallowed-tools <rule>` | Adds an allow or deny rule for the session (CLI scope). Repeatable. |
 | `--afk` | Starts the session in [AFK mode](afk.md), which decides as `auto` does. It is shorthand for `--permission-mode afk`; combined with another `--permission-mode` it is a usage error. |
 | `--afk-temperature-ceiling <n>` | Sets `[afk] temperature_ceiling` for the session (CLI scope). |
+| `--on-usage-limit=wait\|exit`, `--max-usage-wait <duration>` | Set `[headless] on_usage_limit` and `max_usage_wait_secs` for the session (CLI scope); see [Usage windows](headless.md#usage-windows). |
 | `--ax-screen-reader` | Prints the interface as plain labelled lines for a screen reader instead of drawing it, and prints `[Screen Reader Mode: on via flag]` first. A headless run ignores it. |
 | `FONTAINE_AX_SCREEN_READER` | `1` turns screen-reader mode on and `0` keeps it off even when `[tui] screen_reader` is `true`; the flag still turns it on. Any other value is ignored, with a warning in the conversation (or on stderr when the UI cannot start). |
 | `MAX_MCP_OUTPUT_TOKENS` | The token limit of one successful [MCP tool result](mcp.md#large-outputs); a larger one is saved to a file in the session's scratch directory. A positive whole number; anything else is warned about once at startup and the default (`25000`) is used. |

@@ -1,11 +1,13 @@
 use crate::model_picker::{Group, ModelPicker, PickerPurpose};
 use crate::ui::commands::config::overriding_scope;
+use crate::usage_prompt::UsagePauseAnswer;
 use crate::{App, Ui, UnavailableAnswer};
 use fontaine_core::agent::AgentRuntime;
 use fontaine_core::config::Slot;
 use fontaine_core::effort::Effort;
 use fontaine_core::models::{GuardianModel, ModelError, ModelRef};
-use fontaine_core::permissions::UnavailableChoice;
+use fontaine_core::permissions::{PauseChoice, UnavailableChoice};
+use fontaine_core::quota::UsageRole;
 
 /// The account `reference` names, when `error` is that account's external program having
 /// nobody signed in.
@@ -273,6 +275,80 @@ impl<R: FnMut(&mut App)> Ui<R> {
             "approved once: {} {}; the agent is told it may retry",
             call.tool, call.summary
         ));
+    }
+
+    /// The human's answer to a usage pause. Resuming and cancelling are the pause's own; a switch
+    /// changes the exhausted role first, then lets the run go on. The guardian moves at once. The
+    /// main model cannot move under a run in flight, so its switch is kept for the point where
+    /// the turn next chooses a model, which is right after the request that met the limit.
+    pub(crate) async fn answer_usage_pause(
+        &mut self,
+        runtime: &AgentRuntime,
+        answer: UsagePauseAnswer,
+    ) {
+        let role = self.app.usage_pause_prompt.as_ref().map(|p| p.info.role);
+        let choice = match answer {
+            UsagePauseAnswer::Resume => PauseChoice::Resume,
+            UsagePauseAnswer::Cancel => PauseChoice::Cancel,
+            UsagePauseAnswer::Pick(reference) => match role {
+                Some(UsageRole::Guardian) => match runtime.use_guardian(&reference).await {
+                    Ok(Some(switched)) => {
+                        self.remember_model(PickerPurpose::Guardian, &switched.reference);
+                        self.finish_switch(
+                            format!("guardian is now {}", switched.reference),
+                            switched.persist_error,
+                            overriding_scope(&runtime.config, "guardian.model"),
+                        );
+                        if let Some(notice) = switched.facts_notice {
+                            self.app.transcript.warning(notice, None);
+                        }
+                        PauseChoice::Resume
+                    }
+                    Ok(None) => {
+                        self.app
+                            .transcript
+                            .error(format!("{reference} is unavailable too"));
+                        return;
+                    }
+                    Err(e) => {
+                        self.app
+                            .transcript
+                            .error(fontaine_tools::error_chain::chain(&e));
+                        return;
+                    }
+                },
+                _ => {
+                    self.app.transcript.notice(format!(
+                        "the main model moves to {reference} for the next attempt"
+                    ));
+                    self.pending_usage_switch = Some(reference);
+                    PauseChoice::Resume
+                }
+            },
+        };
+        self.app.finish_usage_pause(choice);
+    }
+
+    /// Moves the main model to the one the human picked while a usage window was spent, before
+    /// the request that met the limit goes again. `true` when the session moved.
+    pub(crate) async fn apply_usage_switch(&mut self, runtime: &mut AgentRuntime) -> bool {
+        let Some(reference) = self.pending_usage_switch.take() else {
+            return false;
+        };
+        match runtime.use_main_after_usage_limit(&reference).await {
+            Ok(()) => {
+                self.app
+                    .transcript
+                    .notice(format!("model is now {reference} (this session only)"));
+                true
+            }
+            Err(e) => {
+                self.app
+                    .transcript
+                    .error(fontaine_tools::error_chain::chain(&e));
+                false
+            }
+        }
     }
 
     /// The human's answer to an unavailable guardian: the session is changed first, then the

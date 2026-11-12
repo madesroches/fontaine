@@ -342,6 +342,7 @@ impl Overlay {
                 | "MCP link"
                 | "MCP server"
                 | "guardian unavailable"
+                | "usage paused"
                 | "guardian"
                 | "bug report"
                 | "auto-mode setup"
@@ -356,6 +357,7 @@ pub(crate) fn transcript_has_keys(app: &App) -> bool {
     app.transcript_view.is_some()
         && app.denied.is_none()
         && app.unavailable.is_none()
+        && app.usage_pause_prompt.is_none()
         && app.server.is_none()
         && app.guardian_off_prompt.is_none()
         && app.bug_prompt.is_none()
@@ -391,6 +393,15 @@ pub(crate) fn overlay(app: &App, width: usize, height: u16, linear: bool) -> Ove
         return Overlay::new(
             "guardian unavailable",
             prompt.body(width, theme),
+            prompt.footer(),
+        )
+        .with_instance(prompt.id);
+    }
+    if let Some(prompt) = &app.usage_pause_prompt {
+        let status = app.usage_pause_text.as_deref().unwrap_or_default();
+        return Overlay::new(
+            "usage paused",
+            prompt.body(width, theme, status),
             prompt.footer(),
         )
         .with_instance(prompt.id);

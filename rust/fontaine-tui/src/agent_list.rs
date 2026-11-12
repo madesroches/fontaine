@@ -105,7 +105,8 @@ pub fn rows(
                 elapsed: row
                     .ended
                     .unwrap_or(now)
-                    .saturating_duration_since(row.started),
+                    .saturating_duration_since(row.started)
+                    .saturating_sub(row.paused),
                 spend: spend_text(&SpendView {
                     tokens: row.spend.tokens(),
                     token_budget: row.budget.tokens,
@@ -492,6 +493,7 @@ mod tests {
             exhausted: None,
             started: now,
             ended: (!status.is_running()).then_some(now),
+            paused: Duration::ZERO,
             writing: 0,
             idle: false,
         }

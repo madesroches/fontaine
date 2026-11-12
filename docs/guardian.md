@@ -247,6 +247,7 @@ Fontaine's code, not the model, decides what happens when there is no usable ver
 | No answer within `[guardian] timeout_secs` (default 30, retries included; an attempt that stalls is dropped and retried inside it) | deny, rule `Timeout` | `timeout` |
 | Malformed, schema-invalid or out-of-enum verdict after two retries | deny, rule `Unparseable` | `unparseable` |
 | An allow on a **destructive** call with confidence below `confidence_threshold` (default 0.7) | deny, rule `LowConfidence` | `low_confidence` |
+| The guardian's account has [spent its usage window](#a-spent-usage-window) and the wait was cancelled or ran out | deny, rule `UsagePauseEnded` | `usage_pause_ended` |
 
 The retry budget is two retries, shared between malformed answers, provider errors and stalled
 attempts, and the last failure names the denial. Each attempt gets a slice of `timeout_secs`: the
@@ -265,6 +266,22 @@ run later (`cron_create`), runs a command as a `monitor` (judged like `shell`), 
 such as `timeout` is judged by the program it wraps), is an MCP call, or uses any construct the
 shell parser cannot classify. A plain `cargo test 2>&1 | tail` is not destructive, and neither is `rg x src 2>/dev/null`: a redirect to `/dev/null` (that exact
 spelling) writes no file.
+
+### A spent usage window
+
+A provider that answers a spent usage window with a 429 is not a guardian failing: the provider's
+own machine code (`exceeded_current_quota_error`, `GoUsageLimitError`), a `Retry-After` of more
+than five minutes, or a `claude-subscription` plan limit says so, and a short `Retry-After` is
+still an ordinary transient 429. A call that meets a spent window is therefore not denied with
+`GuardianUnavailable`. The whole run [pauses](headless.md#usage-windows), the call stays pending,
+and when the window reopens the guardian judges it again from the start, so the verdict is a real
+one. No dialog asks you in a headless run or in AFK mode: the wait runs to its limit.
+
+If the wait is cancelled, or reaches `--max-usage-wait`, the pending call is denied with rule
+`UsagePauseEnded`. That is a decision by you or by a deadline, so it does not count toward the
+[denial limits](#denial-limits) and adds nothing to AFK's session temperature. A 429 never
+becomes an allow, and a pause that ends without the window opening ends a headless run with exit
+code 3.
 
 ### Denial limits
 

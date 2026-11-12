@@ -80,6 +80,18 @@ pub enum ErrorKind {
     SetupTimeout,
 }
 
+/// Which of the CLI's limit failures an [`ErrorKind::Limit`] is. They share one kind because
+/// each is reported once and not retried, but only a spent plan window ends by itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LimitForm {
+    /// A short-term throttle with nothing to say about a window.
+    RateLimit,
+    /// The subscription's usage window is spent and resets on its own.
+    PlanLimit,
+    /// Credit or billing: it never resets.
+    Billing,
+}
+
 /// A CLI failure with a message that is safe to show and to export: fixed text or text built
 /// from names, never raw CLI output or a credential value.
 #[derive(Clone, Debug)]
@@ -87,6 +99,10 @@ pub struct ClaudeError {
     pub kind: ErrorKind,
     message: String,
     source: Option<std::sync::Arc<std::io::Error>>,
+    /// Set on a [`ErrorKind::Limit`].
+    pub limit_form: Option<LimitForm>,
+    /// When the CLI's rejected rate-limit frame said the window resets.
+    pub reset_at: Option<std::time::SystemTime>,
 }
 
 impl PartialEq for ClaudeError {
@@ -103,7 +119,16 @@ impl ClaudeError {
             kind,
             message: message.into(),
             source: None,
+            limit_form: None,
+            reset_at: None,
         }
+    }
+
+    /// Marks a limit failure's form and the reset time the CLI reported for it.
+    pub fn with_limit(mut self, form: LimitForm, reset_at: Option<std::time::SystemTime>) -> Self {
+        self.limit_form = Some(form);
+        self.reset_at = reset_at;
+        self
     }
 
     /// Keeps the I/O failure behind this error as its `source()`, out of the message.

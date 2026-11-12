@@ -44,8 +44,11 @@ use crate::model_roles::{ModelChain, RoleChains, Roles, Tried, fall_through_noti
 use crate::models::{Listing, ModelHandle, ModelRef, SharedSwitcher};
 use crate::permission_rules::parse_rule;
 use crate::permissions::Approver;
+use crate::quota::UsageRole;
 use crate::steering::{Steering, SteeringHook};
-use crate::turn::{Drive, Flow, RETRY_NOTE, SessionEvent, TurnFailure, TurnOutcome, drive};
+use crate::turn::{
+    Drive, Flow, RETRY_NOTE, SessionEvent, TurnFailure, TurnOutcome, drive, wait_out_usage_limit,
+};
 use crate::turn_recovery::{InflightHook, RecoveryHook};
 use crate::usage_ledger::Served;
 
@@ -712,6 +715,7 @@ fn child_model(
         provider,
         generation_options: model.generation_options_warned(&context.state, effort),
         max_tokens: model.turn_max_tokens(context.max_output_tokens),
+        quota: model.quota.clone(),
         modalities: model
             .completion
             .spec()
@@ -937,6 +941,8 @@ struct ChildModel {
     modalities: rig_core::catalog::Modalities,
     /// The role and model its calls are recorded against.
     served: Served,
+    /// Where its account's own usage figures are read, when it opted in.
+    quota: Option<Arc<dyn crate::quota::QuotaSource>>,
 }
 
 /// How a child's wait for its own subagents ended.
@@ -1068,19 +1074,49 @@ async fn run_child(
             && failure.falls_through
             && !*kill.borrow()
         {
-            match fall_through_child(shared, failure, &mut tried).await {
+            let mut failure = failure.clone();
+            match fall_through_child(shared, &failure, &mut tried).await {
                 Ok(()) => {
                     prompt = RETRY_NOTE.to_string();
                     continue;
                 }
                 Err(spent) if !spent.is_empty() => {
-                    outcome = TurnOutcome::Failed(TurnFailure {
-                        message: format!("{}\n{spent}", failure.message),
-                        ..failure.clone()
-                    });
+                    failure.message = format!("{}\n{spent}", failure.message);
                 }
                 Err(_) => {}
             }
+            // Nothing left to try on a spent usage window: the whole run waits for it, the
+            // child included, and a kill ends the wait.
+            if failure.usage_limit.is_some() {
+                let model = shared.model();
+                let account = model
+                    .served
+                    .model
+                    .split_once('/')
+                    .map_or(model.served.model.as_str(), |(account, _)| account)
+                    .to_string();
+                let waited = tokio::select! {
+                    biased;
+                    _ = kill.wait_for(|killed| *killed) => None,
+                    waited = wait_out_usage_limit(
+                        state,
+                        &mut failure,
+                        UsageRole::Main,
+                        &account,
+                        model.quota.clone(),
+                    ) => Some(waited),
+                };
+                match waited {
+                    Some(true) => {
+                        tried = Tried::default();
+                        prompt = RETRY_NOTE.to_string();
+                        continue;
+                    }
+                    Some(false) => {}
+                    None => break None,
+                }
+            }
+            outcome = TurnOutcome::Failed(failure);
         }
         let TurnOutcome::Answer(_) = outcome else {
             break Some(outcome);

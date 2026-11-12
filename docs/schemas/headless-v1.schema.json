@@ -11,6 +11,8 @@
     { "$ref": "#/$defs/gate_decision" },
     { "$ref": "#/$defs/tool_result" },
     { "$ref": "#/$defs/goal" },
+    { "$ref": "#/$defs/usage_paused" },
+    { "$ref": "#/$defs/usage_resumed" },
     { "$ref": "#/$defs/result" },
     { "$ref": "#/$defs/user_input" }
   ],
@@ -211,7 +213,16 @@
             },
             "screen_outcome": { "enum": ["stop", "allow", "deny", "pass", "unavailable", null] },
             "fail_closed_reason": {
-              "enum": ["error", "timeout", "unparseable", "low_confidence", "unavailable", "not_signed_in", null]
+              "enum": [
+                "error",
+                "timeout",
+                "unparseable",
+                "low_confidence",
+                "unavailable",
+                "not_signed_in",
+                "usage_pause_ended",
+                null
+              ]
             },
             "afk": { "type": "boolean" },
             "converted": {
@@ -262,6 +273,40 @@
         }
       ]
     },
+    "usage_paused": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "type": "object",
+          "required": ["type", "account", "role"],
+          "properties": {
+            "type": { "const": "usage_paused" },
+            "account": { "type": "string", "minLength": 1 },
+            "role": { "enum": ["main", "guardian"] },
+            "reset_at": {
+              "type": ["integer", "null"],
+              "description": "Unix epoch seconds when the provider said the window resets; null when it did not say."
+            }
+          }
+        }
+      ]
+    },
+    "usage_resumed": {
+      "allOf": [
+        { "$ref": "#/$defs/envelope" },
+        {
+          "type": "object",
+          "required": ["type", "account", "role", "end", "waited_secs"],
+          "properties": {
+            "type": { "const": "usage_resumed" },
+            "account": { "type": "string", "minLength": 1 },
+            "role": { "enum": ["main", "guardian"] },
+            "end": { "enum": ["reset", "probed", "resumed", "cancelled", "cap_reached"] },
+            "waited_secs": { "type": "integer", "minimum": 0 }
+          }
+        }
+      ]
+    },
     "result": {
       "allOf": [
         { "$ref": "#/$defs/envelope" },
@@ -285,8 +330,20 @@
                 "success",
                 "error_max_turns",
                 "error_max_budget_usd",
-                "error_during_execution"
+                "error_during_execution",
+                "error_usage_limit"
               ]
+            },
+            "usage_limit": {
+              "type": "object",
+              "description": "Present with error_usage_limit: the account whose usage window stayed spent.",
+              "required": ["account", "role", "end"],
+              "properties": {
+                "account": { "type": "string", "minLength": 1 },
+                "role": { "enum": ["main", "guardian"] },
+                "reset_at": { "type": ["integer", "null"] },
+                "end": { "enum": ["cancelled", "cap_reached"] }
+              }
             },
             "is_error": { "type": "boolean" },
             "result": { "type": "string" },

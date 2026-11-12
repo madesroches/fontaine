@@ -496,7 +496,7 @@ pub(super) fn session_state(
     let scope = sources.scope.clone();
     let launch = instructions::load(&sources);
     let telemetry = &setup.config.telemetry;
-    Arc::new(SessionState::new(StateParams {
+    let state = Arc::new(SessionState::new(StateParams {
         session_id: setup.session.id.clone(),
         mode: setup.mode,
         scope,
@@ -538,7 +538,9 @@ pub(super) fn session_state(
             tracked: permissions.auto_tracked_edits,
             scratch: permissions.auto_scratch_writes,
         },
-    }))
+    }));
+    state.wire_usage_pause();
+    state
 }
 
 /// What the session state needs before the agent is built: the AFK backstop on the approver, which
@@ -770,6 +772,7 @@ fn hook_deps(
                 &Served::direct(usage_state.guardian().label()),
             );
         })),
+        pause: Some(state.usage_pause().clone()),
     }
 }
 
@@ -869,9 +872,10 @@ pub(super) fn result_pipeline(
     }
     let mut llm_scanner = None;
     if let Some(backend) = backend {
-        let stage = ScannerStage::new(backend);
+        let mut stage = ScannerStage::new(backend);
         if config.guardian.scanner == crate::config::Scanner::Llm {
             llm_scanner = Some(stage.handle());
+            stage = stage.with_pause(state.usage_pause().clone());
         }
         results = results.with_stage(StageKind::Scanner, Arc::new(stage));
     }

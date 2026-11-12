@@ -158,6 +158,9 @@ pub enum FailClosed {
     Unavailable,
     /// The pinned guardian's account has nobody signed in.
     NotSignedIn,
+    /// The run was held for a spent usage window and the wait was cancelled or ran out. The
+    /// human or a deadline decided this, so it is not the guardian failing.
+    UsagePauseEnded,
 }
 
 impl FailClosed {
@@ -176,6 +179,7 @@ impl FailClosed {
             FailClosed::LowConfidence => "low_confidence",
             FailClosed::Unavailable => "unavailable",
             FailClosed::NotSignedIn => "not_signed_in",
+            FailClosed::UsagePauseEnded => "usage_pause_ended",
         }
     }
 
@@ -186,6 +190,7 @@ impl FailClosed {
             FailClosed::Timeout => AuditLabel::Timeout,
             FailClosed::Unparseable => AuditLabel::Unparseable,
             FailClosed::LowConfidence => AuditLabel::LowConfidence,
+            FailClosed::UsagePauseEnded => AuditLabel::UsagePauseEnded,
         }
     }
 }
@@ -200,6 +205,7 @@ pub enum AuditLabel {
     Unparseable,
     LowConfidence,
     Timeout,
+    UsagePauseEnded,
 }
 
 impl AuditLabel {
@@ -211,6 +217,7 @@ impl AuditLabel {
             AuditLabel::Unparseable => "Unparseable",
             AuditLabel::LowConfidence => "LowConfidence",
             AuditLabel::Timeout => "Timeout",
+            AuditLabel::UsagePauseEnded => "UsagePauseEnded",
         }
     }
 }
@@ -332,13 +339,14 @@ mod tests {
             (Timeout, "timeout", "Timeout"),
             (Unparseable, "unparseable", "Unparseable"),
             (LowConfidence, "low_confidence", "LowConfidence"),
+            (UsagePauseEnded, "usage_pause_ended", "UsagePauseEnded"),
         ];
         for (reason, name, label) in table {
             assert_eq!(reason.as_str(), name);
             assert_eq!(reason.label().as_str(), label);
         }
         assert!(Unavailable.is_unavailable() && NotSignedIn.is_unavailable());
-        assert!(!Error.is_unavailable());
+        assert!(!Error.is_unavailable() && !UsagePauseEnded.is_unavailable());
     }
 
     fn answer(rule: &str, decision: &str, confidence: &str) -> String {

@@ -47,6 +47,7 @@ pub mod transcript_view;
 pub mod trust_prompt;
 mod ui;
 pub mod url_elicitation;
+pub mod usage_prompt;
 pub mod view;
 
 use crate::config_panel::ConfigKey;
@@ -61,9 +62,10 @@ use fontaine_core::config::PermissionMode;
 use fontaine_core::gate::AgentViewEvent;
 use fontaine_core::notice::{Notice, Severity};
 use fontaine_core::permissions::{
-    Answer, ApprovalRequest, Approver, GuardianUnavailable, UnavailableChoice,
+    Answer, ApprovalRequest, Approver, GuardianUnavailable, PauseChoice, UnavailableChoice,
 };
 use fontaine_core::statusline::{StatuslineScript, StatuslineState};
+use fontaine_core::usage_pause::PauseInfo;
 use fontaine_tools::ask_user::{Question, QuestionReply};
 use fontaine_tools::kills::KILL_SETTLE;
 use fontaine_tools::mcp::{ElicitReply, ElicitRequest, ElicitUrl};
@@ -131,6 +133,8 @@ enum Prompt {
     Ask(Box<ApprovalRequest>, oneshot::Sender<Answer>),
     /// The pinned guardian cannot be used and the human has to decide what to do.
     Unavailable(Box<GuardianUnavailable>, oneshot::Sender<UnavailableChoice>),
+    /// The run is held for a spent usage window; the human may resume, cancel or switch account.
+    UsagePaused(Box<PauseInfo>, oneshot::Sender<PauseChoice>),
     /// The model's questions for the human, with the agent that asks. A dropped sender means
     /// nobody could answer.
     Question(String, Vec<Question>, oneshot::Sender<QuestionReply>),
@@ -254,6 +258,21 @@ impl Approver for ChannelApprover {
             answer.await.unwrap_or(UnavailableChoice::Deny)
         })
     }
+
+    fn usage_paused<'a>(&'a self, info: PauseInfo) -> BoxFuture<'a, PauseChoice> {
+        Box::pin(async move {
+            let (reply, answer) = oneshot::channel();
+            if self
+                .tx
+                .send(Prompt::UsagePaused(Box::new(info), reply))
+                .is_err()
+            {
+                return PauseChoice::Wait;
+            }
+            // A prompt that was dropped unanswered leaves the pause to run its course.
+            answer.await.unwrap_or(PauseChoice::Wait)
+        })
+    }
 }
 
 type ClipboardSink = Box<dyn FnMut(&str) -> std::io::Result<()>>;
@@ -310,6 +329,12 @@ struct Ui<R> {
     /// A model picked while a turn ran, applied once the turn is over: only the idle loop owns
     /// the runtime mutably.
     pending_pick: Option<(PickerPurpose, String)>,
+    /// A model the human picked while the main model's usage window was spent; the turn applies
+    /// it before it tries the request again.
+    pending_usage_switch: Option<String>,
+    /// The usage pause's total when the turn on screen started, so its clock leaves the waits out.
+    paused_base: Duration,
+    paused_base_for: Option<Instant>,
     /// A session picked in `/resume` while a turn ran, switched to once it is over.
     pending_resume: Option<String>,
     /// The AFK stretches the human left whose independent review has not run yet, by start
@@ -406,6 +431,17 @@ pub async fn drive(
         AgentRuntime::new(setup).map_err(|e| fontaine_tools::error_chain::chain(&e))?;
     let (agent_sink, agent_events) = unbounded_channel();
     runtime.state.set_agent_event_sink(agent_sink);
+    // A pause waits for as long as it takes while the human can cancel it; while AFK nobody
+    // can, so it gets the cap a headless run has.
+    runtime
+        .state
+        .set_usage_wait(fontaine_core::gate::UsageWait {
+            cap: None,
+            afk_cap: Some(Duration::from_secs(
+                runtime.config.headless.max_usage_wait_secs,
+            )),
+            exit: false,
+        });
     runtime.record_session_start().await;
     // Merged into the prompts so a notice shows the way the approver's own do. Stopped with the
     // session; what it had not yet taken stays in the feed for the next one.
@@ -451,6 +487,9 @@ pub async fn drive(
         render,
         spinner_epoch: std::time::Instant::now(),
         recent,
+        pending_usage_switch: None,
+        paused_base: Duration::ZERO,
+        paused_base_for: None,
         pending_pick: None,
         pending_resume: None,
         pending_afk_review: Vec::new(),

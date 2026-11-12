@@ -41,6 +41,8 @@ pub enum Turn {
     },
     /// An HTTP failure.
     Fail(u16),
+    /// An HTTP failure with a body of the test's choosing, such as a provider's error envelope.
+    Reply(u16, String),
     /// Part of a streamed answer, then the body ends without the closing frames: a cut
     /// connection, as the wire sees one.
     Cut(String),
@@ -210,6 +212,9 @@ fn chat_response(turn: &Turn, usage: Usage) -> ResponseTemplate {
             frames.push(chat_chunk(json!({}), Some("tool_calls")));
         }
         Turn::Fail(status) => return ResponseTemplate::new(*status).set_body_string("scripted"),
+        Turn::Reply(status, body) => {
+            return ResponseTemplate::new(*status).set_body_string(body.clone());
+        }
         Turn::Cut(prefix) => {
             frames.push(chat_chunk(
                 json!({"role": "assistant", "content": prefix}),
@@ -254,6 +259,9 @@ fn chat_json(turn: &Turn, usage: Usage) -> ResponseTemplate {
             })
         }
         Turn::Fail(status) => return ResponseTemplate::new(*status).set_body_string("scripted"),
+        Turn::Reply(status, body) => {
+            return ResponseTemplate::new(*status).set_body_string(body.clone());
+        }
         Turn::Cut(_) => {
             return ResponseTemplate::new(500).set_body_string("a cut is only streamed");
         }
@@ -342,6 +350,9 @@ fn responses_response(turn: &Turn, usage: Usage, id: usize) -> ResponseTemplate 
             unreachable!("answer() drops the reasoning")
         }
         Turn::Fail(status) => return ResponseTemplate::new(*status).set_body_string("scripted"),
+        Turn::Reply(status, body) => {
+            return ResponseTemplate::new(*status).set_body_string(body.clone());
+        }
         Turn::Cut(prefix) => {
             frames.push(event(
                 "response.output_text.delta",

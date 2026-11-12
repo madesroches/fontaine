@@ -1,6 +1,8 @@
 //! The built-in slash commands: one table that both the parser and the `/` menu read, so a
 //! command cannot be runnable without being listed, or listed without being runnable.
 
+use fontaine_core::duration::{compact_interval, unit_seconds};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Command {
     Exit,
@@ -687,27 +689,6 @@ fn cadence_cron(minutes: u64) -> String {
             n => format!("0 0 */{n} * *"),
         }
     }
-}
-
-fn unit_seconds(unit: &str) -> Option<u64> {
-    Some(match unit.to_lowercase().as_str() {
-        "s" | "sec" | "secs" | "second" | "seconds" => 1,
-        "m" | "min" | "mins" | "minute" | "minutes" => 60,
-        "h" | "hr" | "hrs" | "hour" | "hours" => 3_600,
-        "d" | "day" | "days" => 86_400,
-        _ => return None,
-    })
-}
-
-/// `5m`, `2h`, `30s`, `5min`: digits then a unit.
-fn compact_interval(token: &str) -> Option<(u64, u64, String)> {
-    let split = token.find(|c: char| !c.is_ascii_digit())?;
-    let (digits, unit) = token.split_at(split);
-    if digits.is_empty() {
-        return None;
-    }
-    let seconds = unit_seconds(unit)?;
-    Some((digits.parse().ok()?, seconds, token.to_string()))
 }
 
 /// A trailing `every 2 hours` or `every hour`: the text before it and the interval.

@@ -56,6 +56,15 @@ impl AgentRuntime {
             return;
         };
         let guardian = self.state.guardian();
+        if let Err(ended) = self.state.usage_gate().await {
+            self.state.append(Record::AfkAssessment {
+                stretch_seq: report.stretch.started_seq,
+                result: AssessmentResult::Unavailable {
+                    reason: ended.to_string(),
+                },
+            });
+            return;
+        }
         let result = match assess_evasion(&guardian, &report.assessment_input()).await {
             Ok(assessed) => {
                 self.state.add_guardian_usage(

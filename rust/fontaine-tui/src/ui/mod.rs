@@ -21,6 +21,7 @@ use crate::input::{MAX_ATTACHMENT_BYTES, PendingAttachment, PendingMedia};
 use crate::resume_picker::ResumePicker;
 use crate::ui::schedule::IDLE_POLL;
 use crate::ui::turn::{CommandOutcome, SkillRun, Submission};
+use crate::usage_prompt::UsagePausePrompt;
 use crate::{Action, App, Command, Prompt, Ui, parse_command};
 use crate::{StatuslineTrigger, reports, statusbar};
 use fontaine_core::afk_report::AfkSource;
@@ -122,7 +123,25 @@ impl<R: FnMut(&mut App)> Ui<R> {
         self.app.goal = runtime.session.goal().indicator();
         self.app.spinner_frame =
             (self.spinner_epoch.elapsed().as_millis() / TICK.as_millis()) as u64;
-        self.app.turn_elapsed = self.app.turn_started.map(|started| started.elapsed());
+        let pause = runtime.state.usage_pause();
+        let paused = pause.total_paused();
+        if self.paused_base_for != self.app.turn_started {
+            self.paused_base_for = self.app.turn_started;
+            self.paused_base = paused;
+        }
+        // Time spent waiting for a usage window is not the turn's.
+        self.app.turn_elapsed = self.app.turn_started.map(|started| {
+            started
+                .elapsed()
+                .saturating_sub(paused.saturating_sub(self.paused_base))
+        });
+        self.app.usage_pause_text = pause.info().map(|info| {
+            fontaine_core::usage_pause::status_line(
+                &info,
+                pause.next_check(),
+                std::time::SystemTime::now(),
+            )
+        });
         // The completion index is advisory: a stale list only misses a suggestion.
         let files = read_recovering(&runtime.files).clone();
         self.app.set_files(files);
@@ -451,6 +470,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
             // The call's turn was cut short while the prompt sat in the queue.
             Prompt::Ask(_, reply) if reply.is_closed() => {}
             Prompt::Unavailable(_, reply) if reply.is_closed() => {}
+            Prompt::UsagePaused(_, reply) if reply.is_closed() => {}
             Prompt::Question(_, _, reply) if reply.is_closed() => {}
             Prompt::Elicit(_, reply) if reply.is_closed() => {}
             Prompt::Elicit(request, reply) => self.app.begin_elicitation(*request, reply),
@@ -462,6 +482,12 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 let candidates = runtime.map_or_else(Vec::new, AgentRuntime::guardian_candidates);
                 self.app
                     .begin_unavailable(UnavailablePrompt::new(*info, candidates, reply));
+            }
+            Prompt::UsagePaused(info, reply) => {
+                let candidates =
+                    runtime.map_or_else(Vec::new, |runtime| runtime.usage_switch_candidates(&info));
+                self.app
+                    .begin_usage_pause(UsagePausePrompt::new(*info, candidates, reply));
             }
             Prompt::Notice(severity, message) => {
                 if severity == fontaine_core::notice::Severity::Warning {
@@ -509,8 +535,14 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Prompt::Elicit(request, reply) if !reply.is_closed() => {
                     self.app.begin_elicitation(*request, reply);
                 }
+                // The pause outlives the turn that met it.
+                Prompt::UsagePaused(info, reply) if !reply.is_closed() => {
+                    self.app
+                        .begin_usage_pause(UsagePausePrompt::new(*info, Vec::new(), reply));
+                }
                 Prompt::Ask(..)
                 | Prompt::Unavailable(..)
+                | Prompt::UsagePaused(..)
                 | Prompt::Question(..)
                 | Prompt::Elicit(..) => {}
             }
@@ -789,6 +821,7 @@ impl<R: FnMut(&mut App)> Ui<R> {
                 Action::CancelWakeup => self.cancel_wakeup(runtime),
                 Action::RetryDenied(index) => self.retry_denied(runtime, index),
                 Action::Guardian(answer) => self.answer_unavailable(runtime, answer).await,
+                Action::UsagePause(answer) => self.answer_usage_pause(runtime, answer).await,
                 Action::ResumeSession(id) => {
                     if self.switch_to(runtime, &id).is_break() {
                         return;
@@ -1495,6 +1528,10 @@ fn answer_unattended(prompt: Prompt) -> Result<(), Prompt> {
         }
         Prompt::Elicit(_, reply) => {
             let _ = reply.send(fontaine_tools::mcp::ElicitReply::Cancel);
+        }
+        // Nobody can answer while AFK, so the pause runs to its deadline.
+        Prompt::UsagePaused(_, reply) => {
+            let _ = reply.send(fontaine_core::permissions::PauseChoice::Wait);
         }
         other @ Prompt::Notice(..) => return Err(other),
     }

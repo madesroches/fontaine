@@ -627,6 +627,17 @@ fn prepare_headless(cli: &Cli) -> Result<headless::Options, ExitCode> {
             "--max-budget-usd must be a finite number, zero or more",
         ));
     }
+    let max_usage_wait = match &cli.max_usage_wait {
+        None => None,
+        Some(text) => match fontaine_core::duration::parse_duration(text) {
+            Some(wait) if !wait.is_zero() => Some(wait),
+            _ => {
+                return Err(usage(
+                    "--max-usage-wait must be a duration of at least a second, such as `90m` or `6h`",
+                ));
+            }
+        },
+    };
     let json_schema = match &cli.json_schema {
         None => None,
         Some(text) => {
@@ -647,6 +658,8 @@ fn prepare_headless(cli: &Cli) -> Result<headless::Options, ExitCode> {
         include_partial_messages: cli.include_partial_messages,
         max_turns: cli.max_turns,
         max_budget_usd: cli.max_budget_usd,
+        on_usage_limit: cli.on_usage_limit.map(Into::into),
+        max_usage_wait,
         json_schema,
     })
 }
@@ -1070,6 +1083,16 @@ fn agent_setup(
     let afk = requested_mode(cli, config) == PermissionMode::Afk;
     let mut config = config.clone();
     config.effort = cli.effort.or(config.effort);
+    if let Some(wait) = cli
+        .max_usage_wait
+        .as_deref()
+        .and_then(fontaine_core::duration::parse_duration)
+    {
+        config.headless.max_usage_wait_secs = wait.as_secs();
+    }
+    if let Some(action) = cli.on_usage_limit {
+        config.headless.on_usage_limit = action.into();
+    }
     let explicit_budget_cap = headless && cli.max_budget_usd.is_some();
     if headless && let Some(cap) = cli.max_budget_usd {
         // The tree's session ceiling counts root, guardian and child spend alike, so a running

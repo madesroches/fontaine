@@ -128,6 +128,8 @@ const GOAL: &str =
     "goal turns run unattended, so only the user file or --settings sets how long they may run";
 const AFK_CEILING: &str =
     "a repository can only lower the AFK temperature ceiling, and only to a positive, finite value";
+const HEADLESS_WAIT: &str = "how long an unattended run waits for a usage window is set only in the user file or --settings";
+const HEADLESS_EXIT: &str = "only `exit` may be set here: a repository can end a run at a spent usage window but not make it wait longer";
 const SHELL: &str =
     "how long a model's shell command may block or run is set only in the user file or --settings";
 const STATUSLINE: &str =
@@ -139,6 +141,10 @@ const TELEMETRY: &str = "only `enabled = false` may be set here";
 
 fn is_tightening_mode(v: &toml::Value) -> bool {
     matches!(v.as_str(), Some("manual" | "dontAsk"))
+}
+
+fn is_exit(v: &toml::Value) -> bool {
+    v.as_str() == Some("exit")
 }
 
 fn is_positive_finite(v: &toml::Value) -> bool {
@@ -164,6 +170,8 @@ pub(crate) const RULES: &[Rule] = &[
     Rule::user_or_cli("memory", MEMORY),
     Rule::user_or_cli("goal", GOAL),
     Rule::if_project_local("afk.temperature_ceiling", is_positive_finite, AFK_CEILING),
+    Rule::user_or_cli("headless.max_usage_wait_secs", HEADLESS_WAIT),
+    Rule::if_project_local("headless.on_usage_limit", is_exit, HEADLESS_EXIT),
     Rule::user_or_cli("shell", SHELL),
     Rule::user_only("checkpoints", CHECKPOINTS),
     Rule::user_only("plugins.auto_update", PLUGINS),
@@ -650,6 +658,16 @@ mod tests {
             "afk.temperature_ceiling",
             "[afk]\ntemperature_ceiling = 5.0\n",
             Some("[afk]\ntemperature_ceiling = -1.0\n"),
+        ),
+        (
+            "headless.max_usage_wait_secs",
+            "[headless]\nmax_usage_wait_secs = 3600\n",
+            None,
+        ),
+        (
+            "headless.on_usage_limit",
+            "[headless]\non_usage_limit = \"exit\"\n",
+            Some("[headless]\non_usage_limit = \"wait\"\n"),
         ),
         ("shell", "[shell]\nmax_timeout_secs = 900\n", None),
         (

@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use fontaine_core::audit::DecisionRecord;
 use fontaine_core::config::PermissionMode;
-use fontaine_core::permissions::{Answer, ApprovalRequest, UnavailableChoice};
+use fontaine_core::permissions::{Answer, ApprovalRequest, PauseChoice, UnavailableChoice};
 use fontaine_core::statusline::{RecentVerdict, StatuslineState};
 use fontaine_core::steering::Queued;
 use fontaine_core::turn::SessionEvent;
@@ -43,6 +43,7 @@ use crate::todo_panel::TodoPanel;
 use crate::transcript::Transcript;
 use crate::transcript_view::{TranscriptKey, TranscriptView};
 use crate::url_elicitation::{ElicitKey, UrlElicitationPanel, WarnSink};
+use crate::usage_prompt::{UsagePauseAnswer, UsagePausePrompt};
 use fontaine_core::checkpoint::{RewindPlan, RewindWhat};
 use fontaine_core::config_catalog::ModelSlot;
 use fontaine_core::keybindings::TuiAction;
@@ -83,6 +84,8 @@ pub enum Action {
     RetryDenied(usize),
     /// The human answered the unavailable-guardian prompt.
     Guardian(UnavailableAnswer),
+    /// The human answered the usage-pause prompt.
+    UsagePause(UsagePauseAnswer),
     /// The human chose `<account>/<model>` in the model picker.
     PickModel(PickerPurpose, String),
     /// The human chose a session in the `/resume` picker.
@@ -296,6 +299,11 @@ pub struct App {
     pub denied: Option<DeniedList>,
     /// The pinned guardian cannot be used, and the human has to say what to do.
     pub unavailable: Option<UnavailablePrompt>,
+    /// The run is held for a spent usage window, and the human may resume, cancel or switch.
+    pub usage_pause_prompt: Option<UsagePausePrompt>,
+    /// `paused — work usage window spent, resets 14:30 (in 2h 14m)` while a pause is in force,
+    /// as of the last redraw so rendering reads no clock.
+    pub usage_pause_text: Option<String>,
     /// Harness notes the next message to the agent carries, such as a retry the human approved.
     /// They are not the user's words and never enter the ledger as such.
     pub pending_notices: Vec<String>,
@@ -337,6 +345,7 @@ pub struct App {
     questions_opened: u64,
     elicitations_opened: u64,
     unavailable_opened: u64,
+    usage_pause_opened: u64,
 }
 
 /// The `/` menu while it is open.
@@ -456,6 +465,8 @@ impl App {
             wakeup_pending: false,
             denied: None,
             unavailable: None,
+            usage_pause_prompt: None,
+            usage_pause_text: None,
             pending_notices: Vec::new(),
             flush: false,
             shell_running: false,
@@ -482,6 +493,7 @@ impl App {
             questions_opened: 0,
             elicitations_opened: 0,
             unavailable_opened: 0,
+            usage_pause_opened: 0,
         }
     }
 
@@ -905,12 +917,21 @@ impl App {
         self.unavailable = Some(prompt);
     }
 
+    pub fn begin_usage_pause(&mut self, mut prompt: UsagePausePrompt) {
+        self.usage_pause_opened += 1;
+        prompt.id = self.usage_pause_opened;
+        self.usage_pause_prompt = Some(prompt);
+    }
+
     /// The first prompt that waits for an answer, in `view::overlay`'s order, with its id. It
     /// looks at pending state rather than the displayed overlay, so a prompt under a panel that
     /// outranks it still counts.
     pub(crate) fn pending_prompt(&self) -> Option<(PromptKind, u64)> {
         if let Some(p) = &self.unavailable {
             return Some((PromptKind::Unavailable, p.id));
+        }
+        if let Some(p) = &self.usage_pause_prompt {
+            return Some((PromptKind::UsagePause, p.id));
         }
         if let Some(p) = &self.server {
             return Some((PromptKind::Server, p.id));
@@ -965,6 +986,11 @@ impl App {
             prompt.reply(UnavailableChoice::Deny);
             closed += 1;
         }
+        if let Some(mut prompt) = self.usage_pause_prompt.take() {
+            // Nobody can answer while AFK: the pause runs to its deadline.
+            prompt.reply(PauseChoice::Wait);
+            closed += 1;
+        }
         for mut panel in self.questions.drain(..) {
             panel.reply(QuestionReply::Unavailable);
             closed += 1;
@@ -1016,6 +1042,13 @@ impl App {
         }
     }
 
+    /// Tells the pause what the human chose.
+    pub fn finish_usage_pause(&mut self, choice: PauseChoice) {
+        if let Some(mut prompt) = self.usage_pause_prompt.take() {
+            prompt.reply(choice);
+        }
+    }
+
     /// Tells the waiting pipeline what the human chose about the unavailable guardian.
     pub fn finish_unavailable(&mut self, choice: UnavailableChoice) {
         if let Some(mut prompt) = self.unavailable.take() {
@@ -1044,6 +1077,7 @@ impl App {
                 // Overlays that take keys before the dialog also own the paste.
                 let above_dialog = self.denied.is_some()
                     || self.unavailable.is_some()
+                    || self.usage_pause_prompt.is_some()
                     || self.server.is_some()
                     || self.guardian_off_prompt.is_some()
                     || self.bug_prompt.is_some()
@@ -1151,6 +1185,7 @@ impl App {
             || !self.elicitations.is_empty()
             || self.denied.is_some()
             || self.unavailable.is_some()
+            || self.usage_pause_prompt.is_some()
             || self.server.is_some()
             || self.guardian_off_prompt.is_some()
             || self.bug_prompt.is_some()
@@ -1209,6 +1244,12 @@ impl App {
         if let Some(prompt) = &mut self.unavailable {
             return match prompt.handle_key(key) {
                 Some(answer) => Action::Guardian(answer),
+                None => Action::None,
+            };
+        }
+        if let Some(prompt) = &mut self.usage_pause_prompt {
+            return match prompt.handle_key(key) {
+                Some(answer) => Action::UsagePause(answer),
                 None => Action::None,
             };
         }
@@ -3546,6 +3587,45 @@ mod tests {
                 assert_eq!(app.completion.as_ref().unwrap().selected, 0, "{open}");
             }
         }
+    }
+
+    fn usage_pause_prompt() -> (UsagePausePrompt, oneshot::Receiver<PauseChoice>) {
+        let (reply, choice) = oneshot::channel();
+        let info = fontaine_core::usage_pause::PauseInfo::new(
+            fontaine_core::quota::UsageRole::Main,
+            "work",
+            None,
+        );
+        (UsagePausePrompt::new(info, Vec::new(), reply), choice)
+    }
+
+    #[test]
+    fn an_open_usage_pause_prompt_owns_the_keys_so_typing_never_reaches_the_message_box() {
+        let mut app = app();
+        let (prompt, _choice) = usage_pause_prompt();
+        app.begin_usage_pause(prompt);
+        app.usage_pause_text = Some("paused — work usage window spent, reset time unknown".into());
+        let overlay = crate::view::overlay(&app, 80, 24, false);
+        assert_eq!(overlay.title, "usage paused");
+        assert!(overlay.needs_answer());
+        type_text(&mut app, "rcs");
+        assert!(app.input.is_empty());
+        assert_eq!(press(&mut app, KeyCode::Enter), Action::None);
+        assert_eq!(
+            app.pending_prompt().map(|(kind, _)| kind),
+            Some(PromptKind::UsagePause)
+        );
+        app.finish_usage_pause(PauseChoice::Resume);
+        assert!(app.usage_pause_prompt.is_none());
+    }
+
+    #[test]
+    fn afk_leaves_the_pause_to_run_to_its_deadline() {
+        let mut app = app();
+        let (prompt, mut choice) = usage_pause_prompt();
+        app.begin_usage_pause(prompt);
+        assert_eq!(app.answer_for_afk(), 1);
+        assert_eq!(choice.try_recv(), Ok(PauseChoice::Wait));
     }
 
     #[test]

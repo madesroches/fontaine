@@ -8,6 +8,24 @@ All notable changes are recorded here. The format follows
 
 ### Added
 
+- Usage-window pause (#115). A subscription account that has spent its usage window answers every
+  request with a 429 until it resets; Fontaine now tells that apart from a transient rate limit
+  (the provider's machine code, a `Retry-After` of more than five minutes, or a
+  `claude-subscription` plan limit, never error text) and pauses the whole run instead of retrying
+  or failing: the main agent, the guardian and every subagent stop at their next provider call, a
+  tool call waiting for a guardian verdict stays pending and is judged again from the start when
+  the window reopens, and a guardian whose account is spent no longer denies every call with
+  `GuardianUnavailable`. The pause ends at the provider's reset time plus a margin, on a probe, or
+  at a deadline, and a cancelled or expired wait denies the pending call as `UsagePauseEnded`
+  (never an allow, and not counted toward the guardian's breaker). The terminal UI shows `paused —
+  <account> usage window spent, resets 14:30 (in 2h 14m)` and a prompt to resume, cancel or switch
+  account; `fontaine -p` waits up to `--max-usage-wait` (default 6 hours) or, with
+  `--on-usage-limit=exit`, ends at once with the new exit code 3 and `result.subtype =
+  "error_usage_limit"`, with additive `usage_paused` and `usage_resumed` stream events. New
+  `[headless] max_usage_wait_secs` and `on_usage_limit` settings (a project file may only set
+  `exit`). Waiting does not count against a subagent's run time. Deviates from Claude Code, which
+  reports its limit and stops.
+
 - MCP URL-mode elicitation. When a server asks you to open a link, the terminal UI shows the
   server's message, the link and a warning that it leads to an external site the server chose,
   and opens it in your default browser only after you confirm with `y`; every request is

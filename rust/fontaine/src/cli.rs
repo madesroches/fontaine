@@ -85,6 +85,17 @@ pub struct Cli {
     #[arg(long, value_name = "USD")]
     pub max_budget_usd: Option<f64>,
 
+    /// What a headless run does when an account's usage window is spent: `wait` holds the whole
+    /// run until the window resets, up to --max-usage-wait; `exit` ends it at once with exit
+    /// code 3. Overrides `[headless] on_usage_limit`
+    #[arg(long, value_enum, value_name = "ACTION")]
+    pub on_usage_limit: Option<UsageLimitAction>,
+
+    /// The longest a headless run waits for a spent usage window, such as `90m` or `6h`; a bare
+    /// number is seconds. Overrides `[headless] max_usage_wait_secs`
+    #[arg(long, value_name = "DURATION")]
+    pub max_usage_wait: Option<String>,
+
     /// JSON Schema (inline) the final answer must follow; the answer lands in
     /// `result.structured_output`
     #[arg(long, value_name = "SCHEMA")]
@@ -183,6 +194,22 @@ pub enum McpAction {
 }
 
 /// Where a server is declared.
+/// What `--on-usage-limit` accepts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+pub enum UsageLimitAction {
+    Wait,
+    Exit,
+}
+
+impl From<UsageLimitAction> for fontaine_core::config::OnUsageLimit {
+    fn from(action: UsageLimitAction) -> Self {
+        match action {
+            UsageLimitAction::Wait => Self::Wait,
+            UsageLimitAction::Exit => Self::Exit,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum McpScopeArg {
     /// Private to you, in this workspace (`mcp-local.toml` in the config directory)

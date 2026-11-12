@@ -1187,6 +1187,25 @@ pub struct AfkSection {
     pub temperature_ceiling: Option<f64>,
 }
 
+/// What a headless run does when an account's usage window is spent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OnUsageLimit {
+    /// Wait for the window to reset, up to `max_usage_wait_secs`.
+    #[default]
+    Wait,
+    /// End the run at once with its own exit code.
+    Exit,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HeadlessSection {
+    /// The longest a run waits for a spent usage window, in seconds; at least one.
+    pub max_usage_wait_secs: Option<u64>,
+    pub on_usage_limit: Option<OnUsageLimit>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ShellSection {
@@ -1477,6 +1496,7 @@ pub struct Settings {
     pub plugins: Option<PluginsSection>,
     pub goal: Option<GoalSection>,
     pub afk: Option<AfkSection>,
+    pub headless: Option<HeadlessSection>,
     pub shell: Option<ShellSection>,
     pub shell_preclassifier: Option<ShellPreclassifierSection>,
     pub statusline: Option<StatuslineSection>,
@@ -1979,6 +1999,14 @@ fn validate_values(s: &Settings, path: &Path) -> Result<(), ConfigError> {
         return bad(
             "afk.temperature_ceiling",
             "must be a finite number above zero",
+        );
+    }
+    if let Some(h) = &s.headless
+        && h.max_usage_wait_secs == Some(0)
+    {
+        return bad(
+            "headless.max_usage_wait_secs",
+            "must be at least 1; use `on_usage_limit = \"exit\"` to not wait",
         );
     }
     if let Some(sh) = &s.shell
@@ -2622,6 +2650,18 @@ impl Afk {
     }
 }
 
+/// The merged `[headless]` section.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Headless {
+    /// The longest a `-p` run waits for a spent usage window.
+    pub max_usage_wait_secs: u64,
+    pub on_usage_limit: OnUsageLimit,
+}
+
+/// How long a `-p` run waits for a spent usage window unless told otherwise: longer than one
+/// five-hour window.
+pub const DEFAULT_MAX_USAGE_WAIT_SECS: u64 = 6 * 60 * 60;
+
 /// The merged `[shell]` section.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Shell {
@@ -2717,6 +2757,7 @@ pub struct Config {
     pub plugins: Plugins,
     pub goal: Goal,
     pub afk: Afk,
+    pub headless: Headless,
     pub shell: Shell,
     pub shell_preclassifier_allow_extra: Vec<String>,
     pub statusline: Statusline,
@@ -2849,6 +2890,10 @@ impl Config {
             afk: Afk {
                 temperature_ceiling: fontaine_guardian::temperature::DEFAULT_CEILING,
                 ceiling_project_cap: None,
+            },
+            headless: Headless {
+                max_usage_wait_secs: DEFAULT_MAX_USAGE_WAIT_SECS,
+                on_usage_limit: OnUsageLimit::default(),
             },
             shell: Shell {
                 max_timeout_secs: DEFAULT_SHELL_MAX_TIMEOUT_SECS,
@@ -3127,6 +3172,14 @@ impl Config {
                 self.afk.ceiling_project_cap = Some(cap);
             } else {
                 self.afk.temperature_ceiling = v;
+            }
+        }
+        if let Some(h) = &s.headless {
+            if let Some(v) = h.max_usage_wait_secs {
+                self.headless.max_usage_wait_secs = v;
+            }
+            if let Some(v) = h.on_usage_limit {
+                self.headless.on_usage_limit = v;
             }
         }
         if let Some(v) = s.shell.as_ref().and_then(|sh| sh.max_timeout_secs) {
