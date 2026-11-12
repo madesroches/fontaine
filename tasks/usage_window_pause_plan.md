@@ -63,9 +63,11 @@ status, the provider body's machine code (`provider_response().machine_code()`),
 A reply is a **spent window** when either (a) its machine code is in `WINDOW_CODES`
 (`exceeded_current_quota_error`, `GoUsageLimitError`, …), with or without an HTTP status (a
 mid-stream error carries none), or (b) status is 429/402 and its `Retry-After` exceeds `TRANSIENT_RETRY_AFTER_MAX` (5 minutes, far
-above the 250 ms backoff ceiling). `claude-subscription`'s plan-limit form of `ErrorKind::Limit` is a spent
+above the 250 ms backoff ceiling). `claude-subscription`'s plan-limit form is a spent
 window; `billing_error` and the generic `rate_limit` form (`protocol.rs:861,872,1310`) stay
-failures, since a billing failure never resets. The Anthropic subscription is served only by the
+failures. All three collapse into one `ErrorKind::Limit` today (`cli.rs:1236-1243`
+`limit_error()`), so `ClaudeError` (`mod.rs:86-90`) gains a `LimitForm` sub-field (plan limit,
+rate limit, billing) set from `Native` where each is raised, and the classifier reads it; since a billing failure never resets. The Anthropic subscription is served only by the
 `claude-subscription` kind, so there is no Anthropic `WINDOW_CODES` entry; an Anthropic API-key
 `rate_limit_error` is a per-minute limit rig classes as transient (`provider_response.rs:268`) and
 stays transient. `drive` classifies with `usage_limit()` before its `!retryable` return, so the
@@ -78,8 +80,11 @@ account (or its `QuotaSource`) is passed separately to the reset-time step. `WIN
 falling through: `falls_through` stays true for them, so a model list still moves to its next entry before any pause is engaged (the pause is the
 outcome when no next entry exists or the chain is spent).
 
-Reset time, in order: `Retry-After` / reset header via rig's `ErrorReport::retry_after(now)`
-(rig-core 0.46.0 `error/retry.rs:24`; headers are absent, so `None`, for mid-stream errors, which
+Reset time, in order: the header-derived `Retry-After` / reset value only, read from
+`ErrorReport::from(&e)` (rig-core 0.46.0 `error/retry.rs:42-51`); `ErrorReport::retry_after`
+returns a `Duration` and also falls back to scanning the body text ("try again in",
+`retryDelay`), which is not used, so the header value is read directly and converted with
+`now + d`; headers are absent, so `None`, for mid-stream errors, which
 fall back to the body codes and quota source below); reset in the body's structured fields; the
 account's `QuotaSource` windows (the soonest `reset_at` of a window at or above 1.0 used ratio);
 else unknown. For `claude-subscription`, `ClaudeError` carries no reset time (`mod.rs:86-90`) and
@@ -123,15 +128,20 @@ record. `wait_open` is awaited **before every provider call**, outside any hook 
   and the judge timeout wrap only the call after the wait, so a spent window is never turned into
   a timeout and a fail-closed hook Deny. Hook `run_through` runs once for jobs that use it.
 
-A pause is an explicit state; in the TUI it has no deadline (`PauseInfo.deadline` is `None`)
-because the user can cancel; headless sets it from the cap.
+A pause is an explicit state with a deadline. Interactive TUI has no deadline
+(`PauseInfo.deadline` is `None`) because the user can cancel; in AFK, where `AfkApprover` skips
+every dialog so nobody can cancel, the TUI gets the same cap headless uses; headless sets it from
+the cap.
 
 Driver: a task spawned and owned by `UsagePause`/`SessionState`, not by a waiter, because caller
 futures are dropped (Esc drops the run, `ui/turn.rs:1121-1139`; a killed subagent is dropped after
 `KILL_GRACE`, `child_runner.rs:1053-1062`; headless `kill_all`, `headless.rs:1360`), which would
 strand every other waiter. If `reset_at` is known, sleep until it plus a small margin
 (30 s), then **probe** by letting exactly one caller through (`QuotaSource::fetch` when the account
-has one, else the next real call); a probe that 429s again re-engages with the new reset time. If
+has one, else the next real call); a probe that 429s again re-engages with the new reset time. The let-through caller holds a
+probe token that reports success or 429 to `UsagePause` directly (a 429 re-engages the pause
+without walking the model list); if the token is dropped unreported (Esc, `KILL_GRACE`, `kill_all`),
+the owned driver task picks a new prober. If
 unknown, probe at intervals starting at 1 minute, doubling to a 15-minute ceiling. A probe that
 succeeds ends the pause `Probed`/`Reset` and releases every waiter.
 
@@ -161,8 +171,9 @@ Per call site:
 ### TUI
 
 Status line while paused: `paused — <account> usage window spent, resets 14:30 (in 2h 14m)`, or
-`… reset time unknown, next check in 4m`. A dialog-less key row offers `r` resume now (an early
-probe), `c` cancel, `s` switch account. Switch reuses `use_guardian` (as `answer_unavailable` does,
+`… reset time unknown, next check in 4m`. A modal prompt, modelled on the guardian-unavailable prompt
+(`app.rs:1209-1213`, `denials.rs:125-142`) so the keys never collide with the always-live input
+box, offers `r` resume now (an early probe), `c` cancel, `s` switch account; none in AFK. Switch reuses `use_guardian` (as `answer_unavailable` does,
 `ui/commands/model.rs:280-320`, `agent/models.rs:621`) for the guardian role and the
 between-attempts `fall_through` point (`models.rs:391`) for the main role: `/model` and
 `/guardian-model` are not in `runs_mid_turn` (`commands.rs:137-161`), so a mid-turn pick would only
@@ -216,12 +227,13 @@ top-level `oneOf` entry per new event (lines ~5-16) and the new subtype in the e
 ## Implementation Steps
 
 1. `usage_limit.rs`: classifier, flat `WINDOW_CODES` slice, reset-time extraction via
-   `ErrorReport::retry_after`; `claude-subscription` provider records the rejected rate-limit
-   frame's `resetsAt` and status; unit tests over constructed `ProviderError`s, the Go 429
+   the header-derived `Retry-After` via `ErrorReport::from(&e)`; `claude-subscription` provider
+   records the rejected rate-limit frame's `resetsAt` and status and carries the `LimitForm`
+   (plan/rate/billing) on `ClaudeError`; unit tests over constructed `ProviderError`s, the Go 429
    capture, and the `exceeded_current_quota_error` body quoted in issue #115 (not a `research/`
    capture).
-2. `usage_pause.rs`: `UsagePause`, `PauseInfo`, `PauseEnd`, driver/probe loop (tokio paused time
-   in tests); `SessionState` owns one and exposes `total_paused`.
+2. `usage_pause.rs`: `UsagePause`, `PauseInfo`, `PauseEnd`, driver/probe loop with the probe
+   token (tokio paused time in tests); `SessionState` owns one and exposes `total_paused`.
 3. Wire `wait_open` at every provider call site listed under The pause (an `on_completion_call`
    gate for streams; `run_through` for its jobs; explicit calls at `/btw`, judge/prompt hooks,
    scanner, composition screen, guardian), outside hook and judge timeouts; `drive` classifies
@@ -280,6 +292,11 @@ top-level `oneOf` entry per new event (lines ~5-16) and the new subtype in the e
 - An Anthropic API-key spend/credit limit keeps today's behaviour: no distinct machine code, text matching is forbidden, and rig already classes `insufficient_quota`/`billing_hard_limit_reached` as final via `QUOTA_CODES`.
 - Headless exit code 3 is the distinct "usage window spent" code; the cap default (6h) exceeds one
   5-hour window.
+- AFK: `claude-subscription` carries the native limit form (plan limit, rate limit, billing) as a `LimitForm` sub-field of `ClaudeError`, listed in Step 1; only the plan-limit form is a spent window.
+- AFK: the probe's caller holds a probe token reporting success or 429 to `UsagePause`; a dropped token lets the owned driver task pick a new prober, and a probe 429 re-engages the pause without walking the model list.
+- AFK: the pause always has a deadline except in the interactive TUI; AFK TUI uses the same cap as headless, since no one can cancel there.
+- AFK: the TUI pause controls (`r`/`c`/`s`) are a modal prompt modelled on the guardian-unavailable prompt, not a dialog-less key row, to avoid colliding with the live input box.
+- AFK: reset time reads only the header-derived `Retry-After` through `ErrorReport::from(&e)` (a `Duration`, converted with `now + d`), never rig's body-text fallback.
 
 ## Documentation
 
