@@ -101,7 +101,7 @@ pub(crate) fn supported(env: impl Fn(&str) -> Option<String>, windows: bool) -> 
 - `Issue { repo: Some((o, r)), n }` → `https://github.com/o/r/issues/n` (GitHub redirects issue
   URLs to PRs, so one form covers both, as Claude Code does).
 - `Issue { repo: None, n }` → the same with `Links::github`, else `None`.
-- `Path { path }` → join it to the primary root unless absolute. If it names an existing regular file
+- `Path { path }` → join it to the primary root. A path with a Windows prefix (UNC, device, drive), a leading `//` or `\\`, a `..` component, or that does not lie inside the primary root (checked lexically, and again on the canonical path) is never touched on disk and gets no link; paths are not resolved at all while hyperlinks are off. If it names an existing regular file
   (`std::fs::metadata`, re-checked at most once a second, hit or miss) that is not executable, the result is
   `url::Url::from_file_path(..)` (percent-encodes and handles Windows drive letters) with its host
   set to the local hostname; otherwise `None`. The `:line` suffix is not put in the URL: there is

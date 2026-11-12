@@ -140,7 +140,7 @@ as Meta:
 ## Hyperlinks
 
 URLs, markdown links, `owner/repo#N`, `#N` (when the `origin` remote is on github.com) and
-file paths (`dir/file`, or `name.ext:line`) that exist and are neither executable nor launchable (scripts and `.desktop` files stay plain text) are sent as OSC 8 hyperlinks, so Ctrl-click or Cmd-click
+file paths inside the project (`dir/file`, or `name.ext:line`) that exist and are neither executable nor launchable (scripts and `.desktop` files stay plain text) are sent as OSC 8 hyperlinks, so Ctrl-click or Cmd-click
 opens them in terminals that support it. The text shown is unchanged; a terminal without OSC 8
 support ignores the extra bytes and shows the same text. A file link carries the machine's
 hostname, as the OSC 8 specification asks, so a click over SSH does not open a same-named local

@@ -1501,8 +1501,8 @@ fn warning_lines(
     }
 }
 
-/// Splits one wrapped row of a hint into dim text and bold actionable spans: what sits between
-/// backticks (the backticks included) and `/command` words. `in_ticks` carries across rows.
+/// Splits one hint line (before wrapping) into dim text and bold actionable spans: what sits between
+/// backticks (the backticks included) and `/command` words. `in_ticks` carries across lines.
 fn hint_spans(
     piece: &str,
     in_ticks: &mut bool,

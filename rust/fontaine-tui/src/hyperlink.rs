@@ -452,11 +452,32 @@ impl Links {
         }
     }
 
+    /// The path joined to the primary root, judged lexically before any filesystem call: the text
+    /// comes from the model or a tool, and resolving a UNC or device path would reach the network.
+    fn confined(&self, path: &str) -> Option<PathBuf> {
+        if path.starts_with("//") || path.starts_with("\\\\") {
+            return None;
+        }
+        let path = Path::new(path);
+        let plain = path.components().all(|c| {
+            !matches!(
+                c,
+                std::path::Component::Prefix(_) | std::path::Component::ParentDir
+            )
+        });
+        let full = self.cwd.join(path);
+        (plain && full.starts_with(&self.cwd)).then_some(full)
+    }
+
     /// A `file://` URL for an existing regular file that a click cannot run.
     fn file_url(&self, path: &str) -> Option<String> {
-        let full = self.cwd.join(path);
+        let full = self.confined(path)?;
         // A symlink is judged by its own name and by its target, and the URL names the target.
         let real = std::fs::canonicalize(&full).ok()?;
+        // A symlink inside the root must not lead out to a network mount.
+        if !real.starts_with(std::fs::canonicalize(&self.cwd).ok()?) {
+            return None;
+        }
         let meta = std::fs::metadata(&real).ok()?;
         if !meta.is_file() || launchable(&full, &meta) || launchable(&real, &meta) {
             return None;
@@ -509,6 +530,10 @@ impl Links {
     fn lookup(&self, id: u32) -> Option<Resolved> {
         // Display state: the intern table only grows, so a stale read shows at worst no link.
         let r = lock_recovering(&REFS).get(id)?;
+        // A path is only ever resolved to be linked, so with links off it stays unresolved.
+        if !self.enabled && matches!(*r, Ref::Path(_)) {
+            return None;
+        }
         Some(Resolved {
             target: self.resolve(id),
             context_free: r.context_free(),
@@ -709,6 +734,52 @@ mod tests {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
         lock_recovering(&links.checked).clear();
         assert_eq!(links.resolve(id), None);
+    }
+
+    #[test]
+    fn paths_outside_the_root_are_never_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("o.txt"), "x").unwrap();
+        std::fs::write(dir.path().join("in.txt"), "x").unwrap();
+        let links = links_in(dir.path(), None);
+        let abs_outside = outside.path().join("o.txt").to_string_lossy().into_owned();
+        for p in [
+            "\\\\host\\share\\a.txt",
+            "//host/x",
+            "../outside.txt",
+            "sub/../in.txt",
+            abs_outside.as_str(),
+        ] {
+            assert_eq!(links.confined(p), None, "{p}");
+            assert_eq!(links.file_url(p), None, "{p}");
+        }
+        let inside = dir.path().join("in.txt").to_string_lossy().into_owned();
+        assert!(links.confined(&inside).is_some());
+        assert!(links.file_url(&inside).is_some());
+        assert!(links.file_url("in.txt").is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_the_root_is_not_linked() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("o.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("o.txt"), dir.path().join("l.txt")).unwrap();
+        assert_eq!(links_in(dir.path(), None).file_url("l.txt"), None);
+    }
+
+    #[test]
+    fn a_path_stays_unresolved_when_links_are_off() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("in.txt"), "x").unwrap();
+        let mut links = links_in(dir.path(), None);
+        links.enabled = false;
+        let id = id_of(Ref::Path("in.txt".into()));
+        assert!(links.lookup(id).is_none());
+        links.enabled = true;
+        assert!(links.lookup(id).is_some());
     }
 
     #[test]

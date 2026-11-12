@@ -1239,6 +1239,7 @@ spot; add a subsection, in alphabetical order, when no existing one fits.
 - 2026-11-11: AFK: (#83) Notices are linkified through a `link: Option<Style>` parameter on `prefixed_body` that only the info-notice branch and the warning headline set, and through `link_spans` in `hint_spans`'s `flush` (`/command` runs unlinked); `prefixed` passes `None`, so errors and user input stay plain; reason: it keeps one wrap path and cannot linkify the plain call sites by accident.
 - 2026-11-11: (#83) (supersedes the continuation-row clause of the 2026-11-03 (#206) bare-URL line) A link wrapped across rows keeps its colour and target on every row, because text is scanned before it is wrapped; a reference still streaming at the end of the unsettled tail stays plain until text follows it.
 - 2026-11-11: (#83) Rows of an unsettled reply committed to scrollback because the reply outgrew the screen link only URLs, not #N or paths; reason: the unsettled tail can be inside an open code fence, where #N must not link, and the tail is never re-rendered once committed.
+- 2026-11-11: (#83) File links are limited to paths inside the primary root: UNC, device and drive-prefixed paths, `..` components and paths outside the root are never touched on disk or linked, and paths are not resolved at all when hyperlinks are off; reason: resolving a path from model or tool text must not reach the network (a UNC path sends NTLM credentials) or stall the render thread.
 
 ## Open Questions
 
