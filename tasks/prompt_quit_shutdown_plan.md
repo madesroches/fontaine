@@ -61,7 +61,10 @@ headless-run shutdown keep their existing semantics.
 
 Add an idempotent `Ui::request_quit` and a `quit_started: Option<Instant>` latch. Route every
 `App::handle_input` call in `Ui` through one helper which invokes the latch for `Action::Quit`
-(six call sites; see Step 1). The latch:
+(six call sites, the running-work and nested-modal loops; see Step 1). The idle-prompt dialogs under
+`ui/commands/` (`afk.rs`, `skills.rs`, `guardian.rs`, `bug.rs`, `plugin.rs`, ...) also call
+`App::handle_input` but are unchanged: they are opened from `dispatch_command`, where Quit already
+exits through `Break`. The latch:
 
 - records the first timestamp and never clears;
 - closes the input receiver, discards pending deferred/session-switch state, and prevents a queued
@@ -72,8 +75,9 @@ Add an idempotent `Ui::request_quit` and a `quit_started: Option<Instant>` latch
 
 Special-case `Command::Exit` in `App::queue_during_turn`: return the existing immediate
 `Action::Command { command: Exit, raw }` instead of `Action::Queue`, without adding exit to
-`runs_mid_turn` (whose contract remains synchronous UI-only commands). `run_immediate` handles
-`Exit` by calling `request_quit`, preserving the existing history handling; idle `dispatch_command`
+`runs_mid_turn` (whose contract remains synchronous UI-only commands). `run_immediate_inner` gains a new
+`Exit` arm which calls `request_quit` (it has none today), and the `serve_modal` and provider loops get
+matching `Command::Exit` handling; idle `dispatch_command`
 returns `Break`, and both mid-turn input loops stop on the latch. Empty-prompt Ctrl-D now returns
 `Action::Quit` regardless of `running`. It keeps its text-editing behavior with nonempty input and
 keeps the MCP form/URL meaning of decline, because the issue applies only where Ctrl-D means quit.
@@ -119,14 +123,14 @@ Split final process exit from session switching. `DriveOutcome::Switch` keeps th
 |---|---|
 | Main model/provider/tool, compaction, usage wait, skill/MCP prompt, `!`, lifecycle hook | Drop the selected run future immediately. Its existing drop guards cancel prompts and kill owned process groups. No stop-hook or other continuation follows. |
 | Nested agents, including one never reaching a rig hook boundary | Retain launch and report-watch `AbortHandle`s; add a final-only `ChildHandle::abort` and `AgentTree::abort_all`. Abort immediately without `settled(KILL_SETTLE)` and without fabricating killed reports. Make reservation and direct resume reject the tree's shutdown latch atomically; late attach still replays the kill. Ordinary `kill`, `KILL_GRACE`, transcript recovery, and headless settlement are unchanged. |
-| Background jobs and monitors | Add a shutdown-specific forced request which tells job workers to skip ordinary stop grace and terminate their groups, plus a wait bounded by the shared deadline. No job notifications are posted. Unix keeps group signals; Windows keeps its current direct-child kill. `Jobs::drop` remains protected by the process watchdog. |
-MCP stdio currently relies on rmcp's direct-child `kill_on_drop`, which neither covers descendants nor runs synchronously during runtime teardown. Replace only that launch wrapper: spawn the child under Fontaine's `TreeGuard`, build rmcp's public `AsyncRwTransport` from its pipes, and retain the guard in `Connected`. This keeps the exact rmcp pin while giving every stdio server the same Unix process-group/Windows Job Object cleanup as hooks and status-line commands. Convert the headers-helper launch to `TreeGuard` plus `collect_output` as well.
-
+| Background jobs and monitors | Add a forced, deadline-bounded variant alongside the existing `Jobs::terminate_all` (left unchanged); it tells job workers to skip ordinary stop grace and terminate their groups, plus a wait bounded by the shared deadline. No job notifications are posted. Unix keeps group signals; Windows keeps its current direct-child kill. `Jobs::drop` remains protected by the process watchdog. |
 | MCP servers | Retire every slot/watch/reconnect first, take and close all connections concurrently without the plugin-removal ten-second drain, and synchronously kill the retained stdio `TreeGuard` on timeout/drop so descendants cannot survive. |
 | LSP servers | Add a final `terminate_all` path which removes clients, terminates their process groups instead of honoring each configured graceful shutdown timeout, and reaps concurrently within the shared deadline. Keep `shutdown_all` for normal reset/reload paths. |
 | SearXNG and managed helpers | Take and terminate session-owned children/process groups immediately rather than scheduling a later hard kill. Do not kill a configured shared SearXNG instance or other resource the session does not own. Provider CLI children continue to use their existing whole-tree drop guard. |
 | TUI-owned tasks and input | Close input, abort status-line and notice-forwarder tasks, stop quota pollers with `Ui`, and stop the terminal reader. Any other fire-and-forget task touched by this work must be owned and aborted rather than left to runtime drop. |
 | `session_end` and final persistence | Start only after cancellation has begun, concurrently with resource reaping. Both are best-effort within the remaining budget. Already-journaled child messages and settled reports survive; no final report is awaited. |
+
+MCP stdio currently relies on rmcp's direct-child `kill_on_drop`, which neither covers descendants nor runs synchronously during runtime teardown. Replace only that launch wrapper: spawn the child under Fontaine's `TreeGuard`, build rmcp's public `AsyncRwTransport` from its pipes, and retain the guard in `Connected`. This keeps the exact rmcp pin while giving every stdio server the same Unix process-group/Windows Job Object cleanup as hooks and status-line commands. Convert the headers-helper launch to `TreeGuard` plus `collect_output` as well.
 
 `fire_session_end` is not called before `kill_all` on final exit. The `resume` and `clear` hook
 reasons and their behavior are unchanged.
@@ -147,9 +151,11 @@ binary. `TerminalGuard` still performs normal restoration; the watchdog repeats 
 raw-mode/cursor/bracketed-paste restoration on the forced path, without trying to take a stuck
 screen mutex.
 
-In `fontaine/src/lib.rs`, carry the watchdog in `Outcome::Done` through session-span and scratch
-destruction and, crucially, through Tokio runtime drop. Only after runtime teardown call
-`Telemetry::finish`, then disarm the watchdog. Change `Telemetry::finish` to accept an optional
+In `fontaine/src/lib.rs`, the `Outcome::Done(code)` arm breaks out of the loop with `(code, watchdog)`,
+and the watchdog is moved into a binding declared outside the loop and the `match export.runtime()`
+scope, so it outlives session-span and scratch destruction and Tokio runtime drop. It is not held in
+`Outcome` or disarmed by `Drop`. Only after runtime teardown call `Telemetry::finish`, then disarm
+the watchdog explicitly. Change `Telemetry::finish` to accept an optional
 absolute deadline: a final quit uses only the remaining time and needs no second watchdog; other
 exits retain the current `FLUSH_CAP` behavior. OTLP's per-provider timeout argument is the remaining
 duration, not a fresh two seconds, and the global watchdog still covers Micromegas drop and any
@@ -184,10 +190,10 @@ At the same original deadline in every case: restore terminal again, then force 
 ## Implementation Steps
 
 1. **Quit recognition and latch** — `fontaine-tui/src/app.rs`, `commands.rs`, `lib.rs`,
-   `ui/mod.rs`, and `ui/turn.rs`:
+   `ui/mod.rs`, `ui/turn.rs`, `ui/mcp.rs`, and `ui/providers.rs`:
    - make both aliases immediate and empty-prompt Ctrl-D quit while running;
    - add the common `Ui` input wrapper, `request_quit`, a new `DriveOptions` type, and continuation
-     guards. All six `Ui` input loops call `request_quit` on `Action::Quit`: the idle loop
+     guards. The six running-work and nested-modal `Ui` input loops call `request_quit` on `Action::Quit`: the idle loop
      (`ui/mod.rs:~745`), the two generic running-work loops (`ui/turn.rs:~413`, `:~1196`),
      `serve_modal` (`ui/turn.rs:~812`, today `Break`), the MCP approval prompt (`ui/mcp.rs:~90`,
      today returns false), and the provider sign-in loop (`ui/providers.rs:~228`, today grouped
@@ -217,20 +223,21 @@ At the same original deadline in every case: restore terminal again, then force 
    switch teardown in `fontaine-tui/src/lib.rs`; run final stages concurrently against the one
    deadline; bound reader joining; return `RunOutcome` from production `run` while keeping
    `DriveOutcome` stable for `drive` callers. Update the `drive` call sites in
-   `rust/fontaine-tui/tests/common/mod.rs` (~465, ~505) for the new parameter.
+   `rust/fontaine-tui/src/lib.rs` (production, ~797) and `rust/fontaine-tui/tests/common/mod.rs`
+   (~465, ~505) for the new parameter.
 5. **Binary and telemetry propagation** — `fontaine/src/lib.rs`, `telemetry/mod.rs`, and
    `telemetry/otlp.rs`: carry the watchdog through runtime/scratch teardown, pass the absolute
    deadline into telemetry, and disarm only after telemetry finishes. Do not call `process::exit`
    early enough to skip normal restoration or a flush which can finish within budget.
 6. **Tests and documentation** — add `fontaine-tui/tests/quit.rs` and focused unit/integration
    coverage below; update `docs/tui.md`, `docs/hooks.md`, `docs/agents.md`, `docs/architecture.md`,
-   `docs/telemetry.md`, `tasks/design/sessions.md`, `tasks/design/observability.md`, `CHANGELOG.md`, and the
+   `docs/telemetry.md`, `docs/configuration.md`, `tasks/design/sessions.md`, `tasks/design/observability.md`, `CHANGELOG.md`, and the
    master plan's dated Decisions as described below.
 
 ## Files to Modify
 
 - `rust/fontaine-tui/src/app.rs`, `commands.rs`, `lib.rs`, `shutdown.rs` (new),
-  `ui/mod.rs`, `ui/turn.rs`, `ui/tests.rs`
+  `ui/mod.rs`, `ui/turn.rs`, `ui/mcp.rs`, `ui/providers.rs`, `ui/tests.rs`
 - `rust/fontaine-tui/tests/quit.rs` (new), `tests/common/mod.rs`, and focused existing TUI tests
 - `rust/fontaine-agents/src/runner.rs`, `tree.rs`, `spawn.rs`, and agent test doubles implementing
   `ChildHandle` if the default abort is insufficient
@@ -240,12 +247,14 @@ At the same original deadline in every case: restore terminal again, then force 
   `websearch.rs`, `mcp/servers.rs` (and a focused stdio-transport helper if that keeps the change small)
 - `rust/fontaine/src/lib.rs`, `telemetry/mod.rs`, `telemetry/otlp.rs`
 - `docs/tui.md`, `docs/hooks.md`, `docs/agents.md`, `docs/architecture.md`,
-  `docs/telemetry.md`, `CHANGELOG.md`
+  `docs/telemetry.md`, `docs/configuration.md`, `CHANGELOG.md`
 - `tasks/fontaine_harness_plan.md` (TUI, Agents, Tools, Extensibility, and Observability Decisions),
   `tasks/design/sessions.md`, `tasks/design/observability.md`
 
 ## Documentation
 
+- `docs/configuration.md`: the MCP `shutdown_timeout_ms` row notes that the shared final-exit budget
+  overrides it on quit.
 - `docs/tui.md`: both aliases and empty-prompt Ctrl-D quit during
   work; queued work and automatic continuations are discarded; the two-second whole-exit bound;
   editing/elicitation and ordinary interrupt distinctions; update the mid-turn command and
