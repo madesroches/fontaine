@@ -2577,10 +2577,13 @@ impl PermissionPipeline {
         };
         let preview = {
             let (tool, args, scope) = (call.tool.to_string(), args.clone(), scope.clone());
-            tokio::task::spawn_blocking(move || preview::preview(&tool, &args, &scope))
-                .await
-                .ok()
-                .flatten()
+            let memory_root = self.state.memory_root.clone();
+            tokio::task::spawn_blocking(move || {
+                preview::preview(&tool, &args, &scope, memory_root.as_deref())
+            })
+            .await
+            .ok()
+            .flatten()
         };
         if let Some(preview) = &preview {
             lock(&self.prompted, "prompted previews")
@@ -2719,15 +2722,15 @@ impl PermissionPipeline {
         }
     }
 
-    /// Shows the human the diff of an allowed `edit` or `write` after the fact, whether or not
-    /// they were asked. Display only: it feeds no decision, and failing to compute it just leaves
-    /// the call without a diff.
+    /// Shows the human the diff of an allowed `edit`, `write` or `memory` after the fact,
+    /// whether or not they were asked. Display only: it feeds no decision, and failing to
+    /// compute it just leaves the call without a diff.
     async fn publish_preview(&self, tool: &str, agent: &str, decision: &GateDecision) {
         let prompted = lock(&self.prompted, "prompted previews").remove(agent);
         let GateDecision::Allow { args } = decision else {
             return;
         };
-        if !matches!(tool, "edit" | "write" | "notebook_edit") {
+        if !matches!(tool, "edit" | "write" | "notebook_edit" | "memory") {
             return;
         }
         let Some(id) = self.state.current_call(agent) else {
@@ -2737,10 +2740,13 @@ impl PermissionPipeline {
             Some(preview) => Some(preview),
             None => {
                 let (tool, args, scope) = (tool.to_string(), args.clone(), self.state.scope());
-                tokio::task::spawn_blocking(move || preview::preview(&tool, &args, &scope))
-                    .await
-                    .ok()
-                    .flatten()
+                let memory_root = self.state.memory_root.clone();
+                tokio::task::spawn_blocking(move || {
+                    preview::preview(&tool, &args, &scope, memory_root.as_deref())
+                })
+                .await
+                .ok()
+                .flatten()
             }
         };
         if let Some(preview) = preview {
