@@ -87,8 +87,8 @@ impl AgentHook for DeferredAdvertiser {
         if held && self.active(&registered) && self.deferral.is_registered(name) {
             return Some(InvalidToolCallAction::skip(format!(
                 "`{name}` is a deferred tool whose definition is not loaded, so it was not \
-                 called. Search first with `tool_search` (for example `select:{name}`), then \
-                 call it."
+                 called. Search first with `tool_search` (for example `select:{name}`, or keywords \
+                 if the name is not in your list), then call it."
             )));
         }
         None

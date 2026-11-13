@@ -5,6 +5,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use fontaine_tools::mcp::TOOL_SEARCH;
+
 use crate::effort::Effort;
 use crate::mode::ModeSetting;
 
@@ -244,8 +246,6 @@ impl AgentType {
 
 /// Tools only the user's session has: it alone drafts bug reports, and a child consulting the
 /// advisor would multiply its spend and what leaves for the second provider.
-use fontaine_tools::mcp::TOOL_SEARCH;
-
 const ROOT_ONLY: &[&str] = &[fontaine_tools::descriptor::DRAFT_BUG_REPORT, "advisor"];
 
 #[derive(Clone, Debug, Default)]

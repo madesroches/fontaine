@@ -82,13 +82,23 @@ impl Deferral {
     }
 
     /// Replaces what `server` offers with `tools`, as its connection `connection` last committed.
+    /// A connection older than the one already recorded is ignored: its late commit must not
+    /// replace a newer connection's tools, which its own drop would then delete.
     pub fn record(&self, server: &str, connection: u64, tools: Vec<ToolDefinition>) {
         let counter = HeuristicTokenCounter::default();
         let tokens = tools.iter().map(|t| counter.count_tool(t) as u64).sum();
         let tools = tools.into_iter().map(Arc::new).collect();
         // Advertisement only: a poisoned registry still holds what was last written, and no
         // permission decision reads it.
-        write_recovering(&self.0.state).servers.insert(
+        let mut state = write_recovering(&self.0.state);
+        if state
+            .servers
+            .get(server)
+            .is_some_and(|served| served.connection > connection)
+        {
+            return;
+        }
+        state.servers.insert(
             server.to_string(),
             Served {
                 connection,
@@ -413,6 +423,19 @@ mod tests {
         assert!(deferral.is_registered("mcp__gh__c"));
         deferral.forget("gh", new);
         assert!(!deferral.is_registered("mcp__gh__c"));
+    }
+
+    #[test]
+    fn an_older_connection_cannot_overwrite_a_newer_ones_tools() {
+        let deferral = Deferral::default();
+        let old = deferral.begin_connection();
+        let new = deferral.begin_connection();
+        deferral.record("gh", new, vec![def("mcp__gh__new", "n")]);
+        deferral.record("gh", old, vec![def("mcp__gh__old", "o")]);
+        assert!(deferral.is_registered("mcp__gh__new"));
+        assert!(!deferral.is_registered("mcp__gh__old"));
+        deferral.forget("gh", old);
+        assert!(deferral.is_registered("mcp__gh__new"));
     }
 
     #[test]

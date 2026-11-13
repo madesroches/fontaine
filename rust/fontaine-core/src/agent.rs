@@ -1139,6 +1139,9 @@ impl AgentRuntime {
         let pruned = agents.clear_ended();
         spawn::settle_retired(agents, &self.ledger_window(), pruned, true);
         agents.discard_root_reminders();
+        // Definitions loaded for the conversation that just ended would be advertised into the
+        // emptied one.
+        self.mcp.loaded.clear_all();
         self.end_jobs().await;
         self.reset_shell_cwd();
         self.state.append(Record::ContextCleared {});

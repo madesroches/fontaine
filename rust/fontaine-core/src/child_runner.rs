@@ -838,10 +838,12 @@ impl CoreChildRunner {
         let priced = child.priced;
         let tools = fork_tools(&context.tool_server, tools);
         // A child loads only the deferred tools its own toolset holds, and starts with none.
-        let held = tools.clone();
+        // Names, not the handle: the closure outlives the child in the session-long map and a
+        // handle would keep the pruned child's forked tool set alive.
+        let held: Vec<String> = tools.snapshot().names().map(str::to_string).collect();
         context.loaded.enroll(
             id,
-            Arc::new(move |name| held.snapshot().names().any(|held| held == name)),
+            Arc::new(move |name| held.iter().any(|held| held == name)),
         );
         // The channel lives above the agent build so the hook can subscribe; the choke
         // point's registry takes the same receiver.

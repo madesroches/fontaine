@@ -122,7 +122,7 @@ the CLI's claude.ai connectors are not fetched.
 The CLI is started with its own memory, instruction files, compaction, hooks, subagents, retries,
 fallbacks, prompt suggestions, tool search and updates switched off, and refuses to start a
 response that shows any of that is active. Fontaine's own [MCP tool search](mcp.md#tool-search)
-is off for these accounts whatever `[mcp] tool_search` says: the CLI owns the tool list. The CLI's own builtin plugins are accepted, since it
+is off whenever the main model is on these accounts, whatever `[mcp] tool_search` says: the CLI owns the tool list. The CLI's own builtin plugins are accepted, since it
 lists them even with every setting source off; any other plugin or skill is refused with an error
 naming it. Instruction files stay off even though one accepted builtin is `cc-plugin-agents-md`:
 each CLI process runs in an empty private directory and `CLAUDE_CODE_DISABLE_CLAUDE_MDS=1` is

@@ -128,8 +128,8 @@ loaded ones: they are `arbitrary` tools, your rules and hooks match their `mcp__
 names, and every call is judged by the same gate. A call to a deferred tool whose definition was
 never loaded is not run and is not judged: the model gets a note to search first. `tool_search`
 itself is read-only (it reads only the in-memory list of definitions), and loading a definition
-grants nothing. The setting is not a loosening key, so a repository's settings may set it. With the
-`claude-subscription` provider Fontaine never defers, because the Claude CLI owns the tool list
+grants nothing. The setting is not a loosening key, so a repository's settings may set it. When the main
+model uses the `claude-subscription` provider Fontaine never defers, because the Claude CLI owns the tool list
 (see [Claude subscription](claude-subscription.md)).
 
 ## Resources
