@@ -23,9 +23,9 @@ use rig_rmcp::{McpClientError, McpClientHandler, McpConnection};
 use rmcp::ServiceError;
 use rmcp::model::{
     ClientCapabilities, ClientConfig, ElicitationCapability, FormElicitationCapability,
-    Implementation, JsonObject, TASKS_EXTENSION_ID, UrlElicitationCapability,
+    Implementation, JsonObject, ProtocolVersion, TASKS_EXTENSION_ID, UrlElicitationCapability,
 };
-use rmcp::service::ClientInitializeError;
+use rmcp::service::{ClientInitializeError, ClientLifecycleMode, ClientServiceExt};
 use rmcp::transport::auth::{
     AuthClient, AuthError, AuthorizationManager, CredentialStore, StateStore,
 };
@@ -319,6 +319,8 @@ fn classify_init(error: &ClientInitializeError) -> McpErrorKind {
         ClientInitializeError::ConnectionClosed(_)
         | ClientInitializeError::ExpectedInitResponse(None) => McpErrorKind::Transient,
         ClientInitializeError::TransportError { error, .. } => classify_transport(error),
+        // The fallback is the legacy attempt that decides whether the server is reachable.
+        ClientInitializeError::LegacyFallbackFailed { fallback, .. } => classify_init(fallback),
         _ => McpErrorKind::Permanent,
     }
 }
@@ -543,7 +545,8 @@ impl CallScope {
 }
 
 /// Elicitation in form and URL mode, and the tasks extension, over the newest protocol version
-/// rmcp offers. A server that answers `initialize` with an older version is served the request
+/// rmcp offers. The lifecycle is `Auto`: `server/discover` first, then `initialize` for a server
+/// that does not know it. A server that answers `initialize` with an older version is served the request
 /// form; one that answers with the newest sends it as an `input_required` result, and may answer
 /// a tool call with a task handle. The elicitation tap drives both because rig-rmcp cannot
 /// surface them.
@@ -748,11 +751,39 @@ impl Wiring {
                 tool_count: Arc::new(AtomicUsize::new(0)),
                 tool_names: Arc::default(),
                 muted: Arc::new(AtomicBool::new(false)),
+                listed: Arc::new(Notify::new()),
             },
             listings: Arc::default(),
             listings_changed: Arc::new(Notify::new()),
         }
     }
+}
+
+/// What rig-rmcp's `McpClientHandler::connect` does, with the lifecycle chosen here: `connect`
+/// always starts the legacy `initialize`, which a server that only speaks 2026-07-28 rejects.
+/// The initial tool list is fetched by the handler itself on the `tools/list_changed` that
+/// `MetaTap` injects after the startup response. A failing `tools/list` is only logged by the
+/// handler, so it never signals `listed` and the caller's deadline ends the attempt.
+async fn start_service<S, T, E, A>(
+    handler: McpClientHandler<S>,
+    transport: T,
+    listed: &Notify,
+) -> Result<McpConnection, Box<McpClientError>>
+where
+    S: ManagedToolSink + Send + Sync + 'static,
+    T: rmcp::transport::IntoTransport<rmcp::RoleClient, E, A>,
+    E: StdError + Send + Sync + 'static,
+{
+    let lifecycle = ClientLifecycleMode::Auto {
+        preferred_versions: vec![ProtocolVersion::LATEST],
+        legacy_version: None,
+    };
+    let service = handler
+        .serve_with_lifecycle(transport, lifecycle)
+        .await
+        .map_err(|e| Box::new(McpClientError::from(e)))?;
+    listed.notified().await;
+    Ok(McpConnection::new(service))
 }
 
 async fn serve<S, T, E, A>(
@@ -784,10 +815,9 @@ where
         options.elicitor.clone(),
         &wiring.shared.tracker,
     );
-    let connection = handler
-        .connect(tapped)
+    let connection = start_service(handler, tapped, &wiring.shared.listed)
         .await
-        .map_err(|e| McpError::from_client(name, e))?;
+        .map_err(|e| McpError::from_client(name, *e))?;
     Ok(Connected {
         server: name.to_string(),
         connection,
@@ -1169,6 +1199,14 @@ mod tests {
         let closed = ClientInitializeError::ConnectionClosed("eof".into());
         assert_eq!(
             classify_client_error(&McpClientError::Connection(closed)),
+            McpErrorKind::Transient
+        );
+        let fallback = ClientInitializeError::LegacyFallbackFailed {
+            discover: Box::new(ClientInitializeError::Cancelled),
+            fallback: Box::new(ClientInitializeError::ConnectionClosed("eof".into())),
+        };
+        assert_eq!(
+            classify_client_error(&McpClientError::Connection(fallback)),
             McpErrorKind::Transient
         );
         let rpc = ClientInitializeError::JsonRpcError(rmcp::model::ErrorData::new(

@@ -395,6 +395,16 @@ fontaine mcp logout <name>
 Exit status: 0 on success; 1 for an unknown name, a duplicate, an ambiguous `remove` or an I/O
 error; 2 for a usage or configuration error.
 
+## Protocol versions
+
+Fontaine starts each server by asking it for `server/discover` and falls back to the older
+`initialize` handshake when the server does not know that request. A server that supports only
+protocol 2026-07-28 and rejects `initialize` therefore connects. A legacy server that answers the
+probe with "method not found" falls back at once; one that never answers it delays the connection
+by up to 10 seconds before the fallback. The whole start, including the first tool list, shares
+the 30 second connection deadline. A server whose `tools/list` fails does not connect: the attempt
+ends at that deadline and is retried like any other timeout.
+
 ## Requests for input
 
 A server can ask you for input while a tool runs (MCP elicitation). Fontaine supports the form mode:

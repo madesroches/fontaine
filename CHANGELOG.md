@@ -10,6 +10,9 @@ All notable changes are recorded here. The format follows
 
 - A provider guide, `docs/providers.md` (#578): a comparison of every account kind and a minimal
   example each. `claude-subscription` is no longer labeled experimental.
+- MCP servers that support only protocol 2026-07-28 and reject `initialize` now connect (#613).
+  Fontaine probes `server/discover` first and falls back to `initialize` for older servers; a
+  legacy server that ignores the probe adds up to 10 seconds to its connection.
 - MCP tool calls that a server answers with a task (protocol 2026-07-28, tasks extension) now
   work (#614). Fontaine declares the extension, polls the task until it ends, serves the task's
   requests for input through the usual dialogs, and cancels the task when the call times out or is

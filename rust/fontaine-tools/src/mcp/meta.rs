@@ -9,7 +9,10 @@ use std::sync::{Arc, RwLock};
 use super::output::{DEFAULT_CHAR_LIMIT, MAX_CHAR_LIMIT};
 use crate::lock::{read, write};
 use rmcp::RoleClient;
-use rmcp::model::{ServerJsonRpcMessage, ServerNotification, ServerResult, Tool};
+use rmcp::model::{
+    JsonRpcNotification, JsonRpcVersion2_0, ServerJsonRpcMessage, ServerNotification, ServerResult,
+    Tool, ToolListChangedNotification,
+};
 use rmcp::service::{RxJsonRpcMessage, TxJsonRpcMessage};
 use rmcp::transport::Transport;
 use tokio::sync::Notify;
@@ -72,11 +75,16 @@ fn marks(tool: &Tool) -> bool {
         .is_some_and(|value| value.as_bool() == Some(true))
 }
 
-/// Passes every message through unchanged, noting what a `tools/list` response declares and
-/// signalling when the server announces its resource or prompt list changed.
+/// Passes every message through, noting what a `tools/list` response declares and signalling
+/// when the server announces its resource or prompt list changed. After the first successful
+/// `server/discover` or `initialize` response it adds one `tools/list_changed` notification,
+/// which makes rig-rmcp's handler fetch and commit the initial tool list through its own
+/// refresh path: the handler's other entry points are not public.
 pub(crate) struct MetaTap<T> {
     inner: T,
     meta: ToolMeta,
+    queued: Option<ServerJsonRpcMessage>,
+    started: bool,
     /// Woken by a `resources/list_changed` or `prompts/list_changed` notification; the
     /// connection's owner re-pulls the listings. A permit is stored when nobody waits yet.
     listings_changed: Arc<Notify>,
@@ -87,6 +95,8 @@ impl<T> MetaTap<T> {
         MetaTap {
             inner,
             meta,
+            queued: None,
+            started: false,
             listings_changed,
         }
     }
@@ -107,8 +117,26 @@ impl<T: Transport<RoleClient>> Transport<RoleClient> for MetaTap<T> {
     }
 
     async fn receive(&mut self) -> Option<RxJsonRpcMessage<RoleClient>> {
+        if let Some(message) = self.queued.take() {
+            return Some(message);
+        }
         let message = self.inner.receive().await?;
         match &message {
+            ServerJsonRpcMessage::Response(response)
+                if !self.started
+                    && matches!(
+                        &response.result,
+                        ServerResult::DiscoverResult(_) | ServerResult::InitializeResult(_)
+                    ) =>
+            {
+                self.started = true;
+                self.queued = Some(ServerJsonRpcMessage::Notification(JsonRpcNotification {
+                    jsonrpc: JsonRpcVersion2_0,
+                    notification: ServerNotification::ToolListChangedNotification(
+                        ToolListChangedNotification::default(),
+                    ),
+                }));
+            }
             ServerJsonRpcMessage::Response(response)
                 if matches!(&response.result, ServerResult::ListToolsResult(_)) =>
             {
@@ -213,6 +241,42 @@ mod tests {
         }
         assert!(tap.receive().await.is_none());
         (marked, changed)
+    }
+
+    #[tokio::test]
+    async fn the_first_startup_response_is_followed_by_one_tool_list_change() {
+        use rmcp::model::{DiscoverResult, InitializeResult};
+        let response = |result| {
+            ServerJsonRpcMessage::Response(JsonRpcResponse {
+                jsonrpc: JsonRpcVersion2_0,
+                id: RequestId::Number(1),
+                result,
+            })
+        };
+        let changed = ServerJsonRpcMessage::Notification(rmcp::model::JsonRpcNotification {
+            jsonrpc: JsonRpcVersion2_0,
+            notification: ServerNotification::ToolListChangedNotification(
+                ToolListChangedNotification::default(),
+            ),
+        });
+        for first in [
+            ServerResult::DiscoverResult(DiscoverResult::new(vec![], Default::default())),
+            ServerResult::InitializeResult(InitializeResult::default()),
+        ] {
+            let later = response(ServerResult::InitializeResult(InitializeResult::default()));
+            let mut tap = MetaTap::new(
+                Script(VecDeque::from([response(first), later.clone()])),
+                ToolMeta::default(),
+                Arc::new(Notify::new()),
+            );
+            let mut seen = Vec::new();
+            while let Some(message) = tap.receive().await {
+                seen.push(serde_json::to_value(message).unwrap());
+            }
+            assert_eq!(seen.len(), 3);
+            assert_eq!(seen[1], serde_json::to_value(&changed).unwrap());
+            assert_eq!(seen[2], serde_json::to_value(&later).unwrap());
+        }
     }
 
     #[tokio::test]

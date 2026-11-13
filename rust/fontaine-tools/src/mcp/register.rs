@@ -65,6 +65,7 @@ pub struct GuardedSink<S> {
     tool_count: Arc<AtomicUsize>,
     tool_names: Arc<Mutex<Vec<String>>>,
     muted: Arc<AtomicBool>,
+    listed: Arc<Notify>,
     deferral: Deferral,
     connection: u64,
 }
@@ -81,6 +82,9 @@ pub(crate) struct Shared {
     /// Set when the server is being unloaded: a later `list_changed` refresh must not register
     /// the tools again.
     pub(crate) muted: Arc<AtomicBool>,
+    /// Woken, with a stored permit, each time the sink commits a tool list, empty ones included;
+    /// connect waits on the first.
+    pub(crate) listed: Arc<Notify>,
     /// This connection's token in the session's deferral registry.
     pub(crate) connection: u64,
 }
@@ -105,6 +109,7 @@ impl<S> GuardedSink<S> {
             tool_count: shared.tool_count.clone(),
             tool_names: shared.tool_names.clone(),
             muted: shared.muted.clone(),
+            listed: shared.listed.clone(),
             deferral: options.deferral.clone(),
             connection: shared.connection,
         }
@@ -125,6 +130,7 @@ impl<S> GuardedSink<S> {
             self.connection,
             wrapped.iter().map(DynamicTool::definition).collect(),
         );
+        self.listed.notify_one();
     }
 
     fn wrap(&self, tool: DynamicTool) -> Option<DynamicTool> {
